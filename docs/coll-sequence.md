@@ -8,7 +8,7 @@ Today a non-agent pod gets L1 (pod-local SQLite, no grant involved, works for
 any principal) and neither of the other two.
 
 Facts, sites and ratified decisions live in
-`14-eng-ai-bot/.prawduct/artifacts/collection-support-evidence.md`. Shards cite
+`14-eng-ai-bot/docs/collection-support-evidence.md`. Shards cite
 it rather than restating; where both carry a fact, the ledger wins.
 
 This file is a sequence, not a task. It has no shard number.
@@ -73,17 +73,39 @@ each piece alone is inert or breaking.
 
 ## Landing mechanics
 
-Three repos against a PyPI-pinned dependency, and the mechanics are not
-currently in place. Verified state: all three consumers pin `3tears*==0.26.1`
-from PyPI **and** carry `3tears-search==0.26.1` in `constraint-dependencies`;
-hub `[tool.uv.sources]` has no `../3tears` entry; 3tears is already on `0.27.x`
-intra-family bounds; the hub depends on the SDK and admin as **editable path
-sources**, so all three resolve together.
+Three repos against a PyPI-pinned dependency. **Step 2 is now landed** — the
+paragraph below described the pre-step-2 state and read as if it still held.
+
+Verified state at this commit: all three consumers pin `3tears*==0.27.0` and
+resolve the whole family from the local checkout, via ~30 per-package
+`[tool.uv.sources]` entries pointing through a gitignored `.3tears` symlink in
+each repo. `3tears-search==0.27.0` rides in `constraint-dependencies`. The hub
+depends on the SDK and admin as **editable path sources**, so all three resolve
+together. `0.27.0` is unreleased — no `v0.27.0` tag exists on `3tears` locally
+or on `origin`. Steps 3 through 5 are outstanding.
+
+**Three symlink roots, not one.** uv canonicalizes each shared editable source
+to whichever repo's `.3tears` it resolved through, so the hub's own `uv.lock`
+names all three. At this commit:
+
+| root | packages resolved through it |
+|---|---|
+| `14-eng-ai-bot-agent-admin/.3tears` | `3tears` (core), `-agent-acl`, `-epoch`, `-langgraph`, `-mcp`, `-models`, `-nats`, `-observe` |
+| `14-eng-ai-bot-agents/.3tears` | `-agent-audit`, `-agent-knowledge`, `-agent-memory`, `-agent-tools`, `-agent-workspace`, `-channels`, `-conversations`, `-datasources`, `-iam`, `-media-contracts`, `-registry` |
+| `14-eng-ai-bot/.3tears` (the hub's own) | `-enforcement`, `-geo`, `-object-store`, `-scheduled-jobs`, `-search` |
+
+Two consequences. **`uv sync` in any one repo needs all three siblings present
+and all three symlinks created** — `scripts/link-3tears.sh` only ever links its
+own repo root, so it must be run in each. And **nothing requires the three to
+point at the same checkout**: aim the hub's at one 3tears worktree and the SDK's
+at another and you install a silently mixed family, the exact failure
+`14-eng-ai-bot/CLAUDE.md` opens by forbidding, with no error at install time.
 
 There is also **no producer-side matrix gate** — `matrix-fan-out.yml` was never
 committed and the `override-matrix-gate` label is read by no workflow. Consumer
-CI checks out 3tears by the tag in its own `uv.lock`, so it is blind to
-unreleased 3tears work.
+CI checks out 3tears by the version in its own `uv.lock` as a tag (`v${VERSION}`),
+so it is blind to unreleased 3tears work — and while the block is in at an
+unreleased version, that checkout step has no tag to resolve.
 
 1. 3tears feature branch. Pick the target version now; use it everywhere.
 2. **In hub + SDK + admin, in one commit each:** bump every `3tears*` pin *and*
@@ -94,10 +116,13 @@ unreleased 3tears work.
    resolution.
    The override is ~30 per-package entries per repo, not one line, and **there
    is no generator for them**. `scripts/link-3tears.sh` only runs `ln -sfn` to
-   create a `.3tears` symlink; it writes no `pyproject.toml` entries, no
-   pyproject in any repo references `.3tears` any more, and the hub has no such
-   symlink at all. The script and the matching block in the hub's `ci.yaml` are
-   vestigial. Recover the entries from `git show 540fcfcd -- pyproject.toml` in
+   create the repo's own `.3tears` symlink; it writes no `pyproject.toml`
+   entries and it touches no sibling repo, so run it in each of the three.
+   Neither it nor the hub `ci.yaml` block is vestigial: the committed
+   `[tool.uv.sources]` paths resolve through `.3tears`, and ci.yaml's "Link
+   .3tears in every aibots repo to the 3tears checkout" step exists precisely
+   because the lock canonicalizes the shared sources across all three roots.
+   Recover the entries from `git show 540fcfcd -- pyproject.toml` in
    the hub, which added 29 — **it omits `3tears-search`**, the one every consumer pins via
    `constraint-dependencies`, so add that by hand or you ship the mixed family
    this section warns about.
@@ -106,15 +131,19 @@ unreleased 3tears work.
 4. Consumers: `uv lock`, commit the lock.
 5. **Remove the sources block** and re-verify the build resolves from PyPI alone
    (`uv export --locked`). This is the step most likely to be skipped, and
-   skipping it ships a repo that builds only on a machine with a sibling
-   checkout.
+   skipping it ships a repo that builds only on a machine with three sibling
+   checkouts, each symlinked. Note that `--locked` is only a valid check *after*
+   the block is gone: while it is in, `--locked` re-resolves through the path
+   deps and fails naming innocent packages, which is why the Dockerfile uses
+   `--frozen`.
 6. Merge consumers. Fire `matrix-nightly.yml` by hand — nothing runs on a
    schedule.
 
-Whoever lands steps 2 and 5 also fixes `14-eng-ai-bot/CLAUDE.md`'s "3tears
-Library Dependency" section, which is wrong on **both** lines: there is no local
-path dependency, and CI/deployment does not use a git dependency with a pinned
-tag — all three locks resolve from PyPI.
+`14-eng-ai-bot/CLAUDE.md`'s "3tears Library Dependency" section has been
+reconciled to this: it now states the PyPI default, flags that the branch is in
+the opt-in state, and requires all three repos' symlinks to be aimed at one
+checkout. Whoever lands step 5 removes that branch-state flag in the same
+commit.
 
 ---
 

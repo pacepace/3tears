@@ -193,16 +193,43 @@ class TestIdentityIsolation:
         a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
         assert f"{_NS}.audit.tool.call" in a.publish
 
-    def test_agent_pod_may_publish_the_channel_default_engagement_rail(self) -> None:
+    def test_agent_pod_may_publish_the_channel_default_engagement_resolve(self) -> None:
         # the runtime resolves the conversation channel's default engagement at the tool-call stamp
-        # seam, and an operator binds/clears that default over the same rail. the resolve SOFT-FAILS
-        # to "unbound" on any transport error, so a missing grant does not surface as a refused
-        # publish -- it surfaces later, and elsewhere, as a scan refused for a missing engagement
-        # that was in fact configured. that silence is why the grant is pinned here.
+        # seam. the resolve SOFT-FAILS to "unbound" on any transport error, so a missing grant does
+        # not surface as a refused publish -- it surfaces later, and elsewhere, as a scan refused for
+        # a missing engagement that was in fact configured. that silence is why the grant is pinned
+        # here. READ only: the write half of the rail is asserted absent directly below.
         a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
         assert f"{_NS}.hub.channel.engagement.default.resolve" in a.publish
-        assert f"{_NS}.hub.channel.engagement.default.set" in a.publish
-        assert f"{_NS}.hub.channel.engagement.default.clear" in a.publish
+
+    def test_agent_pod_may_not_publish_the_retired_channel_default_write_subjects(self) -> None:
+        # this assertion is INVERTED from what it once was, deliberately. the ``.set`` / ``.clear``
+        # NATS write rail was retired: binding and clearing a channel's default engagement is an
+        # OPERATOR action and now rides the hub's authenticated admin HTTP surface, so no responder
+        # subscribes to either subject anywhere on the platform. the grants outlived the rail and
+        # were left overstating what an agent pod may do -- a least-privilege gap, closed here.
+        # an agent NEVER writes a channel's engagement binding; it only reads it. if a future
+        # feature needs an agent-driven write, it gets its OWN subject and its own justification,
+        # never these back.
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        assert f"{_NS}.hub.channel.engagement.default.set" not in a.publish
+        assert f"{_NS}.hub.channel.engagement.default.clear" not in a.publish
+        # and not smuggled in under any other principal or verb either.
+        for principal in Principal:
+            granted = _all_subjects(_build(principal))
+            assert f"{_NS}.hub.channel.engagement.default.set" not in granted, principal
+            assert f"{_NS}.hub.channel.engagement.default.clear" not in granted, principal
+
+    def test_retired_channel_default_write_subject_constructors_are_gone(self) -> None:
+        # the grant and the constructor are removed TOGETHER: a surviving ``Subjects`` constructor is
+        # a standing invitation to re-add the grant (or to publish on a dead subject from elsewhere).
+        # no back-compat alias -- when the rail went, the API went with it.
+        assert not hasattr(Subjects, "hub_channel_engagement_default_set")
+        assert not hasattr(Subjects, "hub_channel_engagement_default_clear")
+        # the READ half stays: the runtime genuinely calls it.
+        assert Subjects.hub_channel_engagement_default_resolve().path == (
+            f"{_NS}.hub.channel.engagement.default.resolve"
+        )
 
     def test_agent_pod_holds_proxy_assertion_nonce_bucket(self) -> None:
         # the in-process tool server verifies the proxy's body-bound assertion under enforce

@@ -103,6 +103,21 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- `nats`: **agent pods no longer hold publish on the retired channel-default
+  WRITE subjects.** `hub.channel.engagement.default.set` / `.clear` are dropped
+  from the `AGENT_POD` grant, and `Subjects.hub_channel_engagement_default_set`
+  / `_clear` are removed with them. **Breaking for any caller of those two
+  constructors** -- there is no alias; binding or clearing a channel's default
+  engagement is an operator action on the hub's authenticated admin HTTP
+  surface.
+
+  The rail was retired on the hub side and no responder subscribes to either
+  subject, so the publishes already reached nothing. What survived was a
+  permission table claiming an agent may write the engagement binding it is
+  only ever supposed to read. The read half,
+  `hub_channel_engagement_default_resolve`, is unaffected and still granted --
+  the runtime genuinely calls it at the tool-call stamp seam.
+
 - `enforcement`: **exemption entries can be keyed on a scope instead of a line.**
   `Exemption` gains `scope` and `occurrence`; `parse_exemptions_with_rationale`
   accepts `path:qualname[#N]:symbol` when the caller passes

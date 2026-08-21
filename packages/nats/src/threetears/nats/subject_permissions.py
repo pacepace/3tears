@@ -187,14 +187,15 @@ def _agent_pod(
         # HITL: on a requires_confirmation tool pause the agent records a pending-approval marker
         # with the hub (forwarding its own identity token; the hub verifies + tenant-scopes).
         str(Subjects.hub_approval_record()),
-        # engagement selection: the runtime resolves the conversation channel's default engagement at
-        # the tool-call stamp seam, and an operator binds/clears that default over the same rail.
-        # Without these the publish is refused at the connection, the resolve soft-fails to
-        # "unbound", and a scan that should have authorized against an explicitly-selected
-        # engagement is refused for a missing engagement that was in fact configured.
+        # engagement selection, READ ONLY: the runtime resolves the conversation channel's default
+        # engagement at the tool-call stamp seam. Without this the publish is refused at the
+        # connection, the resolve soft-fails to "unbound", and a scan that should have authorized
+        # against an explicitly-selected engagement is refused for a missing engagement that was in
+        # fact configured. The matching ``.set`` / ``.clear`` write rail is NOT granted: binding a
+        # channel to an engagement is an OPERATOR action and rides the hub's authenticated admin
+        # HTTP surface, so no responder subscribes to those subjects and an agent has no business
+        # writing the binding it reads.
         str(Subjects.hub_channel_engagement_default_resolve()),
-        str(Subjects.hub_channel_engagement_default_set()),
-        str(Subjects.hub_channel_engagement_default_clear()),
         str(Subjects.hub_jwks()),
         str(Subjects.gateway_completion()),
         str(Subjects.gateway_embedding()),

@@ -8,7 +8,7 @@ subject.
 
 This lands the data half: the key shape, the scope helper, and validation at
 wiring time. Facts cited below live in the evidence ledger
-(`14-eng-ai-bot/.prawduct/artifacts/collection-support-evidence.md`).
+(`14-eng-ai-bot/docs/collection-support-evidence.md`).
 
 ---
 
