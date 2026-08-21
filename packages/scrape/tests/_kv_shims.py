@@ -28,6 +28,7 @@ class _Entry:
     revision: int
 
 
+# parity-exempt: subset shim for nats.js.KeyValue carrying only the create/get_entry/update/delete surface KVLease calls while a session claim is held; put and get are deliberately absent so a claim renewed by an unconditional write fails here instead of passing
 class FakeKvBucket:
     """In-memory stand-in for the KV bucket ``KVLease`` writes its entries to.
 
@@ -89,6 +90,7 @@ class FakeKvBucket:
         return True
 
 
+# parity-exempt: subset shim for nats.aio.Client exposing kv_bucket alone, which is the entire surface KVLease reaches through; the full client's two dozen publish/subscribe/jetstream methods are unreachable from a lease
 class FakeNatsClient:
     """Just enough NATS client for ``KVLease`` to open a bucket through.
 

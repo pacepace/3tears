@@ -293,7 +293,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -334,7 +334,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -367,7 +367,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -412,7 +412,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                     data["group_id"] = _coerce_uuid(data["group_id"])
                 if "customer_id" in data:
                     data["customer_id"] = _coerce_uuid(data["customer_id"])
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -458,7 +458,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -635,7 +635,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -764,7 +764,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -791,7 +791,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -875,7 +875,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -1022,7 +1022,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -1493,7 +1493,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -1516,7 +1516,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -1555,7 +1555,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -1612,7 +1612,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 

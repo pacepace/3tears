@@ -13,6 +13,7 @@ from threetears.agent.tools.bootstrap import EX_CONFIG, ToolPodConfigError, Tool
 from threetears.observe import HealthTier
 
 
+# parity-exempt: TearsTool subset shim covering the tool-server registration flow under unit test; full TearsTool surface includes mcp_schema/mcp_name/etc. but the test only exercises register+call
 class _FakeToolServer:
     """minimal ToolServer stand-in for bootstrap behavioral tests.
 

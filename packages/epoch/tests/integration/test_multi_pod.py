@@ -1,7 +1,12 @@
 """multi-pod integration test: two listeners stay coherent on bumps.
 
-verifies the full push-plus-pull design end-to-end against a real
-Postgres + NATS testcontainer pair:
+verifies the full push-plus-pull design end-to-end against real
+testcontainers. The NATS container is what these tests exercise: every
+subject here is ephemeral, so the counter is KV. A Postgres container is
+still provisioned by the fixtures and injected into every EpochClient here,
+but no test in this file reads or writes a row --
+it would earn its place the day a tile-shaped subject is added here to
+cover the durable carve-out at integration level.
 
 - happy path: a writer bumps :class:`EpochClient.bump`; both
   subscribed listeners receive the broadcast and advance their
@@ -10,8 +15,10 @@ Postgres + NATS testcontainer pair:
   unsubscribed BEFORE a bump, the missed-broadcast listener still
   catches up via :meth:`EpochListener.catch_up` (the periodic-tick
   shape) and via :meth:`EpochListener.echo` (the per-message-echo
-  shape). proves Postgres is the source of truth and a missed
-  broadcast does not leak forward.
+  shape). proves the counter is the source of truth and a missed
+  broadcast does not leak forward. That counter is the NATS KV one:
+  no subject in this file matches the durable tile family, so nothing
+  here reads a Postgres row.
 - monotonicity under contention: 50 random bumps from two writers
   yield strictly-monotonic last-seen on every listener.
 
@@ -118,9 +125,16 @@ async def pg_pool(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Pool]:
         await pool.close()
 
 
-def _subject() -> Subject:
-    """canonical test subject."""
-    return Subject(path="itest.epoch.unit", kind="point")
+def _subject(name: str = "unit") -> Subject:
+    """one epoch subject per test.
+
+    The counter lives in a NATS KV bucket now, and the broker container is
+    session-scoped, so the bucket OUTLIVES a single test. A shared subject
+    would therefore accumulate counts across tests and make every absolute
+    epoch assertion depend on execution order -- passing alone, failing in
+    suite. Under Postgres the per-test schema gave this isolation for free.
+    """
+    return Subject(path=f"itest.epoch.{name}", kind="point")
 
 
 async def _connect_pod(nats_url: str, name: str) -> NatsClient:
@@ -158,7 +172,7 @@ async def test_two_pods_receive_bump_via_broadcast(
         async def cb_b(epoch: int, _payload: dict[str, object] | None) -> None:
             cb_b_calls.append(epoch)
 
-        subject = _subject()
+        subject = _subject("broadcast")
         await listener_a.subscribe(subject, cb_a)
         await listener_b.subscribe(subject, cb_b)
         # let subscriptions register server-side before publishing
@@ -184,9 +198,11 @@ async def test_pull_on_stale_recovers_missed_broadcast(
 ) -> None:
     """pod B never sees the broadcast; catches up on the next pull.
 
-    proves the durable Postgres write is the recovery mechanism. a
-    missed broadcast becomes a < 1-tick delay before any consumer
-    notices the staleness and reloads.
+    proves the COUNTER is the recovery mechanism, not the broadcast: a
+    missed broadcast becomes a < 1-tick delay before any consumer notices
+    the staleness and reloads. That counter is the NATS KV one -- this
+    subject is not in the durable tile family, so no Postgres row is
+    involved on this path.
     """
     set_default_namespace("itest")
 
@@ -197,7 +213,7 @@ async def test_pull_on_stale_recovers_missed_broadcast(
         writer = EpochClient(pg_pool, writer_nc)
         listener_b = EpochListener(pod_b_nc, EpochClient(pg_pool, pod_b_nc))
 
-        subject = _subject()
+        subject = _subject("stale-pull")
         cb_b_calls: list[int] = []
 
         async def cb_b(epoch: int, _payload: dict[str, object] | None) -> None:
@@ -236,7 +252,7 @@ async def test_per_message_echo_recovers_missed_broadcast(
     """per-message echo path is the second recovery channel after pull-tick.
 
     consumer receives a response whose envelope echoes a higher
-    epoch; :meth:`EpochListener.echo` confirms via L3 and fires.
+    epoch; :meth:`EpochListener.echo` confirms against the counter and fires.
     """
     set_default_namespace("itest")
 
@@ -247,7 +263,7 @@ async def test_per_message_echo_recovers_missed_broadcast(
         writer = EpochClient(pg_pool, writer_nc)
         listener = EpochListener(pod_nc, EpochClient(pg_pool, pod_nc))
 
-        subject = _subject()
+        subject = _subject("echo")
         cb_calls: list[int] = []
 
         async def cb(epoch: int, _payload: dict[str, object] | None) -> None:
@@ -272,10 +288,11 @@ async def test_monotonicity_under_concurrent_writers(
 ) -> None:
     """50 interleaved bumps from two writers yield strict monotonicity.
 
-    proves the row-lock serialization of ``ON CONFLICT DO UPDATE
-    SET epoch = epoch + 1`` plus the listener's dedupe-on-equal
-    discipline together produce a monotonically-increasing sequence
-    on every subscriber.
+    proves the KV counter's compare-and-swap loop plus the listener's
+    dedupe-on-equal discipline together produce a monotonically-increasing
+    sequence on every subscriber. NOT the Postgres ``ON CONFLICT DO UPDATE
+    SET epoch = epoch + 1`` row lock: that SQL is ``_BUMP_SQL``, which only
+    the durable tile family reaches and this test never executes.
     """
     set_default_namespace("itest")
 
@@ -288,7 +305,7 @@ async def test_monotonicity_under_concurrent_writers(
         w2 = EpochClient(pg_pool, w2_nc)
         listener = EpochListener(pod_nc, EpochClient(pg_pool, pod_nc))
 
-        subject = _subject()
+        subject = _subject("monotonic")
         observed: list[int] = []
 
         async def cb(epoch: int, _payload: dict[str, object] | None) -> None:
@@ -309,9 +326,9 @@ async def test_monotonicity_under_concurrent_writers(
         # let any in-flight broadcasts drain
         await asyncio.sleep(0.5)
 
-        # final last-seen must equal 50 (all bumps committed durably)
-        durable = await listener._epoch_client.current(subject)  # noqa: SLF001
-        assert durable == 50
+        # every bump landed: the counter itself reports 50
+        counted = await listener._epoch_client.current(subject)  # noqa: SLF001
+        assert counted == 50
 
         # observed deliveries must be strictly monotonic (some may have
         # been deduped or merged via gap-jump; the contract is no
@@ -320,3 +337,65 @@ async def test_monotonicity_under_concurrent_writers(
         assert all(b > a for a, b in zip(observed, observed[1:], strict=False))
         assert observed[-1] == 50
         assert listener.last_seen(subject) == 50
+
+
+@pytest.mark.asyncio
+async def test_a_recreated_bucket_is_detected_and_the_pod_recovers(
+    nats_container: Any,
+    pg_pool: asyncpg.Pool,
+) -> None:
+    """The regression this whole chunk exists for, against a REAL broker.
+
+    A memory-backed KV bucket is wiped when NATS restarts, and the counter
+    starts again from zero while pods keep running with a high last-seen.
+    Every KV operation still SUCCEEDS -- there is no exception to catch and no
+    gap in the sequence -- so without detection ``catch_up``'s guard can never
+    fire again for the life of the process and the pod stops reloading,
+    permanently and silently.
+
+    A fake cannot prove this. ``FakeKvBucket`` has no notion of a stream that
+    can be deleted out from under it, so a test built on one would exercise the
+    comparison and not the failure. The wipe here is the same one-line
+    ``delete_stream`` the nats package's own self-heal test performs.
+    """
+    set_default_namespace("itest")
+
+    async with await _connect_pod(nats_container, "recover") as nc:
+        client = EpochClient(pg_pool, nc)
+        listener = EpochListener(nc, client)
+        subject = _subject("recovery")
+
+        reloads: list[str] = []
+
+        async def on_bump(_epoch: int, _payload: dict[str, object] | None) -> None:
+            reloads.append("bump")
+
+        async def on_reset() -> None:
+            reloads.append("reset")
+
+        await listener.subscribe(subject, on_bump, on_reset=on_reset)
+
+        # advance the counter well past anything a fresh bucket could reach
+        for _ in range(5):
+            await client.bump(subject)
+        await listener.catch_up(subject, on_bump)
+        assert listener.last_seen(subject) == 5
+        reloads.clear()
+
+        # the broker loses the bucket. every subsequent KV call still succeeds.
+        js = nc.jetstream_context()
+        await js.delete_stream("KV_itest-epochs")
+
+        await listener.catch_up(subject, on_bump)
+
+        assert "reset" in reloads, (
+            "a recreated bucket was not detected; the pod is wedged and will never "
+            "reload again for the life of the process"
+        )
+        assert listener.last_seen(subject) == 0
+
+        # and the pod is genuinely live again: the new counter's first bump dispatches
+        reloads.clear()
+        await client.bump(subject)
+        await listener.catch_up(subject, on_bump)
+        assert "bump" in reloads

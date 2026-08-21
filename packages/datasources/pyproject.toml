@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "3tears-datasources"
 # versioned in lockstep with the rest of the 3tears monorepo (every
 # package tracks the framework git tag). do NOT decouple this number.
-version = "0.26.1"
+version = "0.27.0"
 description = "datasource entities, collections, namespace helpers, agent-yaml config model + driver abstraction for postgres/redshift/snowflake/bigquery backends"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -26,8 +26,8 @@ classifiers = [
 # depends on 3tears core via a compatible-release range; the whole
 # monorepo bumps in lockstep so any 0.9.x core satisfies this.
 dependencies = [
-    "3tears>=0.26.0,<0.27.0",
-    "3tears-observe>=0.26.0,<0.27.0",
+    "3tears>=0.27.0,<0.28.0",
+    "3tears-observe>=0.27.0,<0.28.0",
     "pydantic>=2.0",
     # asyncpg is the baseline backend lib: postgres / yugabyte /
     # agent_internal coverage is expected of every 3tears consumer,

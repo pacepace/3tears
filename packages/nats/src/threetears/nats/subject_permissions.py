@@ -261,6 +261,12 @@ def _agent_pod(
         allow_responses=True,  # replies to the hub's route request
         inbox_prefix=inbox,
         kv_buckets=(
+            # the epoch counter: every EPHEMERAL config epoch counts here.
+            # a missing grant does NOT raise -- the JS call blocks to its
+            # deadline, which reads as an unreachable broker rather than as a
+            # permission problem, so this is the kind of omission that costs a
+            # day. the epoch client opens the bucket on its first bump.
+            f"{ns}-epochs",
             f"{ns}_agent_config",  # direct js.create_key_value in the hub; no transport prefix
             f"{ns}-collections",
             "checkpoints",
@@ -523,6 +529,12 @@ def _hub(
         allow_responses=True,
         inbox_prefix=inbox,
         kv_buckets=(
+            # the epoch counter: every EPHEMERAL config epoch counts here.
+            # a missing grant does NOT raise -- the JS call blocks to its
+            # deadline, which reads as an unreachable broker rather than as a
+            # permission problem, so this is the kind of omission that costs a
+            # day. the epoch client opens the bucket on its first bump.
+            f"{ns}-epochs",
             # THE UNDERSCORE SPELLING IS NOT NECESSARILY A TYPO, and that is the whole reason
             # these are here. A bucket created by a DIRECT ``js.create_key_value(bucket=...)``
             # never receives the ``{ns}-`` prefix ``kv_bucket`` layers on, so a component that
@@ -588,7 +600,15 @@ def _gateway(
         subscribe=subscribe,
         allow_responses=True,  # replies to completion / embedding / health requests
         inbox_prefix=inbox,
-        kv_buckets=(f"{ns}-collections",),
+        kv_buckets=(
+            # the epoch counter: every EPHEMERAL config epoch counts here.
+            # a missing grant does NOT raise -- the JS call blocks to its
+            # deadline, which reads as an unreachable broker rather than as a
+            # permission problem, so this is the kind of omission that costs a
+            # day. the epoch client opens the bucket on its first bump.
+            f"{ns}-epochs",
+            f"{ns}-collections",
+        ),
     )
 
 

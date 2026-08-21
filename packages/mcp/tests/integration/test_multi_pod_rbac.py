@@ -23,7 +23,9 @@ shape mirrors :mod:`threetears.epoch.tests.integration.test_multi_pod`:
 - a missed-broadcast path covers the periodic catch-up tick: the
   receiver's listener never sees the broadcast (subscription
   detached), but the next ``catch_up`` call discovers the higher
-  durable epoch and reloads the cache.
+  epoch and reloads the cache. The grants are in Postgres; the EPOCH
+  is a NATS KV counter -- ``mcp.rbac.epoch`` is not in the durable
+  tile family.
 
 requires docker; gated by ``pytest.mark.integration``.
 """
@@ -49,6 +51,7 @@ from threetears.mcp import (
     McpToolGrantCollection,
 )
 from threetears.mcp.migrations import register as register_mcp
+from threetears.nats.subjects import Subject
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 
 pytestmark = pytest.mark.integration
@@ -202,6 +205,23 @@ async def _build_started_authorizer(
 # ---------------------------------------------------------------------
 
 
+def _rbac_epoch(test_name: str) -> Subject:
+    """a test-scoped RBAC epoch subject, used by the catch-up test alone.
+
+    The epoch counter lives in a NATS KV bucket now, and the broker container
+    is session-scoped, so the bucket OUTLIVES a single test. The catch-up test
+    asserts ABSOLUTE epochs (``new_epoch == 1``), which would otherwise depend
+    on execution order -- passing alone, failing in suite. The per-test
+    ``pg_schema`` used to give that isolation for free by resetting
+    ``config_epochs``.
+
+    Built from the real builder rather than a literal, so a change to the
+    subject's shape still reaches these tests.
+    """
+    base = Subjects.mcp_rbac_epoch()
+    return Subject(path=f"{base.path}.{test_name}", kind=base.kind)
+
+
 @pytest.mark.asyncio
 async def test_grant_added_on_pod_a_propagates_to_pod_b(
     pg_pool: asyncpg.Pool,
@@ -343,13 +363,13 @@ async def test_missed_broadcast_recovers_via_catchup(
 
     proves the safety net: even if every NATS broadcast dropped
     (subscriber blip, JetStream redelivery edge), the periodic
-    :meth:`EpochListener.catch_up` reads the durable Postgres view
+    :meth:`EpochListener.catch_up` reads the epoch counter
     and the authorizer reloads.
 
     deterministic simulation: pod B never subscribes (so it cannot
     receive any broadcast). pod A mutates + bumps. pod B's
     last_seen stays at 0; the next ``catch_up`` call sees the
-    higher durable epoch and reloads. no NATS-dispatch race.
+    higher epoch on the KV counter and reloads. no NATS-dispatch race.
     """
     set_default_namespace("itest")
     async with (
@@ -396,7 +416,7 @@ async def test_missed_broadcast_recovers_via_catchup(
             permission=permission,
         )
         new_epoch = await pod_a_epoch_client.bump(
-            Subjects.mcp_rbac_epoch(),
+            _rbac_epoch("catchup"),
             payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
         )
         assert new_epoch == 1
@@ -409,7 +429,7 @@ async def test_missed_broadcast_recovers_via_catchup(
         # current=1 > last_seen=0, advances last_seen, fires the
         # callback which calls _reload_cache.
         result = await pod_b_listener.catch_up(
-            Subjects.mcp_rbac_epoch(),
+            _rbac_epoch("catchup"),
             pod_b_authorizer._on_rbac_bump,  # noqa: SLF001
         )
         assert result == 1

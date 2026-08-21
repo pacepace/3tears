@@ -61,6 +61,13 @@ _WRAPPER_MODULES: set[str] = {
     # string-matching RequestError's message) is the legitimate reason
     # it consumes nats-py, exactly as client.py does.
     "threetears.nats.forward",
+    # _publish.py is the wrapper's own publish path -- it exists precisely to
+    # hold nats-py publish semantics the caller cannot reach from outside (an
+    # ack wait that survives cancellation, an oversized-publish refusal raised
+    # client-side). Classifying MaxPayloadError by class rather than by
+    # string-matching a message is the same legitimate reason client.py and
+    # forward.py consume nats-py.
+    "threetears.nats._publish",
 }
 
 

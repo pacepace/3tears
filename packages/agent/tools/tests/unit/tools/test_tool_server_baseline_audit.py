@@ -40,6 +40,7 @@ from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 
 @dataclass
+# parity-exempt: NatsClient subset for the tool-server baseline-audit unit test; the test exercises publish + subscribe_typed only and the wrapper's full surface is out of scope
 class _FakeNats:
     """records :meth:`publish` + :meth:`publish_reply` calls.
 

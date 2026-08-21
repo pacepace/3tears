@@ -132,6 +132,7 @@ def _make_workspace_file_version_row() -> dict[str, Any]:
     }
 
 
+# parity-exempt: NatsClient subset for the workspace-collection unit test exercising namespace-emit publish flows; the production NatsClient surface is huge and out of scope
 class _FakeNatsBus:
     """in-process fake NATS client matching typed NatsClient surface.
 

@@ -6,12 +6,14 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.cache.base import _CACHED_AT_COLUMN
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
@@ -1400,3 +1402,482 @@ class TestCorruptL2EntryFallsThroughToL3:
 
         assert entity is not None
         assert entity.name == "FromCache", "a healthy L2 entry was bypassed"
+
+
+class TestCacheAgeStampOnLowerTierReads:
+    """A row's provenance is stamped wherever it arrives from a lower tier.
+
+    The stamp records when a row was last obtained from a LOWER tier, never
+    when it was last touched locally. That distinction is the mechanism: a row
+    renewed by every local edit would be immortal, which is precisely the
+    staleness this is meant to bound.
+    """
+
+    @staticmethod
+    def _stored_stamp(backend: SQLiteBackend, entity_id: str) -> float | None:
+        """Read the stamp straight from SQLite, since every read strips it."""
+        conn = backend.get_connection()
+        row = conn.execute(
+            f'SELECT "{_CACHED_AT_COLUMN}" FROM test_entities WHERE id = ?',
+            (entity_id,),
+        ).fetchone()
+        return None if row is None else row[0]
+
+    @pytest.mark.asyncio
+    async def test_a_pull_through_from_l3_stamps_the_l1_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        nats = _make_nats_mock()
+        l3_rows = {"p1": {"id": "p1", "name": "FromL3", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        assert await coll.get("p1") is not None
+
+        assert self._stored_stamp(l1_backend, "p1") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_pull_through_from_l2_stamps_the_l1_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        nats = _make_nats_mock()
+        nats.store["test_entities.p2"] = json.dumps({"id": "p2", "name": "FromL2", "score": 2}).encode()
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        assert await coll.get("p2") is not None
+
+        assert self._stored_stamp(l1_backend, "p2") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_locally_authored_write_is_not_stamped(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """This pod wrote it; no lower tier has served it yet."""
+        nats = _make_nats_mock()
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        coll.write_to_cache_sync({"id": "p3", "name": "Local", "score": 3})
+
+        assert self._stored_stamp(l1_backend, "p3") is None
+
+    @pytest.mark.asyncio
+    async def test_reload_entity_stamps_the_row_it_fetched_from_l3(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """Reached via ``BaseEntity.reload()``, not via get/ensure -- and it still counts.
+
+        It is not a pull-through, but it fetches from L3 and writes the result
+        into L1, so the row's provenance is a lower tier. An unstamped reload
+        would read as locally authored, and locally authored rows never expire.
+        """
+        nats = _make_nats_mock()
+        l3_rows = {"p5": {"id": "p5", "name": "FromL3", "score": 5}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        entity = coll.create({"id": "p5", "name": "Local", "score": 0})
+        await coll.reload_entity(entity)
+
+        assert self._stored_stamp(l1_backend, "p5") is not None
+
+    @pytest.mark.asyncio
+    async def test_the_stamp_never_reaches_the_caller(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        nats = _make_nats_mock()
+        l3_rows = {"p4": {"id": "p4", "name": "FromL3", "score": 4}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        entity = await coll.get("p4")
+        assert entity is not None
+        assert _CACHED_AT_COLUMN not in entity.to_dict()
+
+        row = coll.get_row_sync("p4")
+        assert row is not None
+        assert _CACHED_AT_COLUMN not in row
+
+        ensured = await coll.ensure("p4")
+        assert ensured is not None
+        assert _CACHED_AT_COLUMN not in ensured
+
+
+class TestL1MaxAgePolicy:
+    """Who gets a staleness bound, and who is structurally refused one."""
+
+    def test_expiry_is_off_until_a_collection_asks(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll.l3_pool = object()
+        assert coll.l1_max_age_seconds is None
+
+    def test_a_configured_collection_with_an_l3_gets_its_bound(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        registry.set_l1_max_age("test_entities", 3600.0)
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll.l3_pool = object()
+        assert coll.l1_max_age_seconds == 3600.0
+
+    def test_a_collection_with_no_l3_is_refused_a_bound_even_when_configured(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """The regression this chunk exists to prevent.
+
+        With no L3 there is nothing to pull through from, so an expired row is
+        not a miss that repairs itself -- it is a deletion. A caller that reads
+        absence and writes goes on to replace live state with a fresh empty
+        row, and nothing raises. Refusing the bound here is what makes that
+        impossible rather than merely unlikely.
+        """
+        registry.set_l1_max_age("test_entities", 1.0)
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll.l3_pool = None
+        assert coll.l1_max_age_seconds is None
+
+    def test_a_nonpositive_bound_is_refused_at_configuration_time(self, registry: CollectionRegistry) -> None:
+        with pytest.raises(ValueError, match="positive"):
+            registry.set_l1_max_age("test_entities", 0)
+
+    @pytest.mark.asyncio
+    async def test_an_expired_row_pulls_through_and_picks_up_a_peers_write(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """End to end, staged the way the failure actually happens.
+
+        The residue this bounds is a peer's write whose invalidation never
+        arrived. That write DID reach L2, which is shared -- only this pod's L1
+        copy is stale. So expiry is checked against what L2 holds, not L3: a
+        pull-through consults L2 first and stops there on a hit.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"m1": {"id": "m1", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        # a real L3 handle, because a collection without one is refused a bound
+        # outright -- that gate is the subject of the tests above.
+        coll.l3_pool = object()
+
+        assert await coll.get("m1") is not None
+        # a peer writes; its invalidation is lost, so this pod's L1 keeps the
+        # old row while the shared tier already holds the new one.
+        nats.store["test_entities.m1"] = json.dumps({"id": "m1", "name": "PeerWrote", "score": 2}).encode()
+        conn = l1_backend.get_connection()
+        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m1"))
+
+        entity = await coll.get("m1")
+
+        assert entity is not None
+        assert entity.name == "PeerWrote"
+
+    @pytest.mark.asyncio
+    async def test_without_the_bound_the_same_stale_row_is_served_forever(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """The control for the test above: no bound, no recovery.
+
+        Same staging, expiry off. This is the unbounded staleness the chunk
+        exists to close, and it is worth pinning so the previous test cannot
+        quietly start passing for some other reason.
+        """
+        nats = _make_nats_mock()
+        l3_rows = {"m2": {"id": "m2", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        # a real L3 handle, because a collection without one is refused a bound
+        # outright -- that gate is the subject of the tests above.
+        coll.l3_pool = object()
+
+        assert await coll.get("m2") is not None
+        nats.store["test_entities.m2"] = json.dumps({"id": "m2", "name": "PeerWrote", "score": 2}).encode()
+        conn = l1_backend.get_connection()
+        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m2"))
+
+        entity = await coll.get("m2")
+
+        assert entity is not None
+        assert entity.name == "Original"
+
+
+class TestExpiryDoesNotBreakNonRepairingReads:
+    """Expiry converts a stale hit into a miss, which is only safe where a miss repairs.
+
+    Three reviewers converged on this independently: routing the reporting
+    readers through the expiring path made a field write vanish and an entity
+    handle answer wrongly, because those callers treat a miss as "not cached"
+    and do not fall back.
+    """
+
+    @staticmethod
+    def _age_out(backend: SQLiteBackend, entity_id: str) -> None:
+        conn = backend.get_connection()
+        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
+
+    @pytest.mark.asyncio
+    async def test_a_field_write_survives_an_aged_out_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """``collection[id, "field"] = v`` must not silently drop the write.
+
+        ``__setitem__`` reads the row back through ``get_row_sync`` and skips
+        propagation on ``None``. If that read expired the row, the write landed
+        nowhere and nothing raised.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"w1": {"id": "w1", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("w1") is not None
+        self._age_out(l1_backend, "w1")
+
+        coll["w1", "name"] = "Written"
+
+        assert coll.get_row_sync("w1") is not None
+        assert coll.get_row_sync("w1")["name"] == "Written"
+
+    @pytest.mark.asyncio
+    async def test_an_entity_handle_still_reads_its_fields_across_the_bound(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """A handle resolves attributes through the reporting readers.
+
+        Expiring under it made ``to_dict()`` raise and field reads answer for a
+        row that is present in every tier.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"w2": {"id": "w2", "name": "Held", "score": 7}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        entity = await coll.get("w2")
+        assert entity is not None
+        self._age_out(l1_backend, "w2")
+
+        assert entity.name == "Held"
+        assert entity.to_dict()["score"] == 7
+
+    @pytest.mark.asyncio
+    async def test_the_repairing_read_still_expires(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """The control: narrowing expiry must not have turned it off.
+
+        ``ensure`` repairs by pulling through, so it is one of the two callers
+        that still applies the bound.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"w3": {"id": "w3", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("w3") is not None
+        nats.store["test_entities.w3"] = json.dumps({"id": "w3", "name": "PeerWrote", "score": 2}).encode()
+        self._age_out(l1_backend, "w3")
+
+        refreshed = await coll.ensure("w3")
+        assert refreshed is not None
+        assert refreshed["name"] == "PeerWrote"
+
+
+class TestAnOlderL1BackendStillWorks:
+    """``L1Backend`` is a published Protocol, so implementers live out of repo.
+
+    Passing ``max_age_seconds=`` on every read -- even as ``None`` -- raises
+    ``TypeError`` on an implementation that predates the parameter, which is
+    every cached read for a feature nobody opted into. Both in-repo backends
+    accept the kwarg, so nothing else in the suite can catch a regression here.
+    """
+
+    class _PreExpiryBackend:
+        """An L1 backend whose reads predate the expiry parameters."""
+
+        def __init__(self) -> None:
+            self.rows: dict[Any, dict[str, Any]] = {}
+
+        def select_by_id(
+            self,
+            table: str,  # noqa: ARG002
+            entity_id: Any,
+            primary_key: Any = "id",  # noqa: ARG002
+            columns: Any = None,  # noqa: ARG002
+        ) -> dict[str, Any] | None:
+            key = entity_id if not isinstance(entity_id, tuple) else entity_id[0]
+            return self.rows.get(key)
+
+    def test_a_read_without_a_bound_omits_the_new_kwargs(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        backend = self._PreExpiryBackend()
+        backend.rows["old1"] = {"id": "old1", "name": "kept"}
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
+
+        row = coll.get_row_sync("old1")
+
+        assert row is not None
+        assert row["name"] == "kept"
+
+    def test_a_configured_bound_does_not_reach_a_reporting_read_either(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """Even opted in, the reporting reads never pass the new parameters.
+
+        ``get_row_sync`` reports whether a row is cached; it does not repair a
+        miss, so it does not expire and has no reason to ask. That keeps an
+        older backend working for the majority of reads on a collection that
+        HAS opted in -- only the repairing paths reach the parameter.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        backend = self._PreExpiryBackend()
+        backend.rows["old2"] = {"id": "old2", "name": "kept"}
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
+        coll.l3_pool = object()
+
+        assert coll.get_row_sync("old2") is not None
+
+    @pytest.mark.asyncio
+    async def test_only_a_repairing_read_under_a_bound_reaches_the_new_kwargs(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """And there the loud failure is the right one.
+
+        A deployment that configures a bound against a backend too old to
+        honour it should hear about it; the alternative is a bound that
+        silently never fires, which is the staleness it was asking to remove.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        backend = self._PreExpiryBackend()
+        backend.rows["old3"] = {"id": "old3", "name": "kept"}
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
+        coll.l3_pool = object()
+
+        with pytest.raises(TypeError):
+            await coll.ensure("old3")
+
+
+class TestTheBoundReachesTheSubscriptReadPath:
+    """``collection[id]`` is the primary read, and the bound has to reach it.
+
+    ``_resolve_row`` repairs a miss by pulling through, so it is a repairing
+    caller. It briefly read L1 through ``get_row_sync``, which is a REPORTING
+    read and does not expire -- so a stale row was returned before the
+    pull-through below it could ever run, and every subscript read served it
+    indefinitely on a collection that had opted into a bound.
+
+    Nothing caught that: the collection-tier tests covered ``ensure`` and the
+    reporting readers, and the backend-tier tests covered the predicate. The
+    wiring between them was the gap.
+    """
+
+    @staticmethod
+    def _age_out(backend: SQLiteBackend, entity_id: str) -> None:
+        conn = backend.get_connection()
+        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
+
+    @pytest.mark.asyncio
+    async def test_the_entity_subscript_expires_and_pulls_through(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """``collection[id]`` past the bound reloads instead of serving the stale row.
+
+        :param registry: collection registry bound to the L1 backend
+        :ptype registry: CollectionRegistry
+        :param config_always: flush-always config
+        :ptype config_always: DefaultCoreConfig
+        :param l1_backend: the SQLite L1 backend, used to age the row out
+        :ptype l1_backend: SQLiteBackend
+        :return: nothing
+        :rtype: None
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"s1": {"id": "s1", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("s1") is not None
+        nats.store["test_entities.s1"] = json.dumps({"id": "s1", "name": "PeerWrote", "score": 2}).encode()
+        self._age_out(l1_backend, "s1")
+
+        assert coll["s1"].name == "PeerWrote"
+
+    @pytest.mark.asyncio
+    async def test_the_field_subscript_expires_and_pulls_through(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """``collection[id, "field"]`` resolves through the same row read.
+
+        :param registry: collection registry bound to the L1 backend
+        :ptype registry: CollectionRegistry
+        :param config_always: flush-always config
+        :ptype config_always: DefaultCoreConfig
+        :param l1_backend: the SQLite L1 backend, used to age the row out
+        :ptype l1_backend: SQLiteBackend
+        :return: nothing
+        :rtype: None
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"s2": {"id": "s2", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("s2") is not None
+        nats.store["test_entities.s2"] = json.dumps({"id": "s2", "name": "PeerWrote", "score": 2}).encode()
+        self._age_out(l1_backend, "s2")
+
+        assert coll["s2", "name"] == "PeerWrote"
+
+    @pytest.mark.asyncio
+    async def test_a_row_inside_the_bound_is_served_without_pulling_through(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """The control: expiring the subscript path must not make every read a pull-through.
+
+        :param registry: collection registry bound to the L1 backend
+        :ptype registry: CollectionRegistry
+        :param config_always: flush-always config
+        :ptype config_always: DefaultCoreConfig
+        :return: nothing
+        :rtype: None
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"s3": {"id": "s3", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("s3") is not None
+        nats.store["test_entities.s3"] = json.dumps({"id": "s3", "name": "PeerWrote", "score": 2}).encode()
+
+        # Not aged out: the L1 row is inside its window and must win.
+        assert coll["s3"].name == "Original"
+
+    @pytest.mark.asyncio
+    async def test_an_unbounded_collection_keeps_serving_the_old_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """No opt-in, no expiry -- the subscript path must not have become always-expiring.
+
+        :param registry: collection registry bound to the L1 backend
+        :ptype registry: CollectionRegistry
+        :param config_always: flush-always config
+        :ptype config_always: DefaultCoreConfig
+        :param l1_backend: the SQLite L1 backend, used to age the row out
+        :ptype l1_backend: SQLiteBackend
+        :return: nothing
+        :rtype: None
+        """
+        nats = _make_nats_mock()
+        l3_rows = {"s4": {"id": "s4", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("s4") is not None
+        nats.store["test_entities.s4"] = json.dumps({"id": "s4", "name": "PeerWrote", "score": 2}).encode()
+        self._age_out(l1_backend, "s4")
+
+        assert coll["s4"].name == "Original"

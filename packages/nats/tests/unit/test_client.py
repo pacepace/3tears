@@ -50,6 +50,7 @@ class _StreamBoom:
         self.message = message
 
 
+# parity-exempt: subset shim for nats-py Subscription used by the wrapper unit tests; the production class is internal to nats-py and tests intentionally cover only unsubscribe + messages iteration
 class _FakeSubscription:
     """fake nats-py subscription with an asyncio.Queue-backed message stream."""
 
@@ -74,6 +75,7 @@ class _FakeSubscription:
         return _gen()
 
 
+# parity-exempt: minimal Msg dataclass for the NATS wrapper handler shim; nats-py Msg carries reply/sid/headers metadata the unit tests do not exercise
 class _FakeMsg:
     """tiny stand-in for nats.aio.msg.Msg with .data, .reply, and .subject."""
 
@@ -83,6 +85,7 @@ class _FakeMsg:
         self.subject = subject
 
 
+# parity-exempt: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
 class _FakeNatsPyClient:
     """minimal fake of nats.aio.client.Client used by tests."""
 

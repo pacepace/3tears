@@ -6,7 +6,505 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Added
+
+- `epoch`: **`catchup_tick(listener, subjects)`** -- one catch-up pass over a
+  consumer's subjects, pure-async, no internal polling. The consumer keeps its
+  loop, interval and shutdown; what it stops keeping is an opinion on which
+  subjects to poll and whether one failing subject abandons the rest. A
+  framework-owned loop is not available at any price here: `3tears-epoch`
+  cannot own a task in `3tears` without inverting the dependency arrow.
+
+  **A consumer that subscribes and schedules nothing gets no catch-up**, and
+  therefore never detects a replaced counter. That is a wiring requirement, not
+  a default.
+
+- `epoch`: **`EpochListener.deregister(subject, on_bump=None)`.** Registrations
+  were append-only, so a consumer that had shut down still received resets
+  through bound methods of a stopped object.
+
+  **Pass `on_bump` when the subject may be shared.** The listener keeps one
+  registration list per subject because two consumers on one subject are
+  supported, so omitting it drops the others too. Passing the callback you
+  subscribed with drops exactly your own entry; omitting it stays correct for a
+  sole owner tearing the subject down. Match is by equality, so a bound method
+  works -- identity does not, because one is built fresh on every attribute
+  access.
+
+- `epoch`: **`ResetCallback` / `subscribe(..., on_reset=)` / `signal_reset()`.**
+  A reset means the counter being tracked was REPLACED, not advanced, so it
+  carries no epoch: the only number available is below everything the consumer
+  has already acted on, which is exactly what epoch dedupe discards. The
+  listener now records every registration and fans a reset out to all of them,
+  clearing last-seen rather than re-priming.
+
+- `epoch`: **a recreated counter bucket is detected by identity.** The bucket
+  carries an opaque `uuid7` under a reserved key, minted create-if-absent so a
+  race resolves to one value and every opener converges on it. The listener
+  compares it for EQUALITY only and, on a change, clears last-seen and notifies
+  every registered consumer.
+
+  This is the conclusive detector. A memory-backed bucket is wiped when the
+  broker restarts, and every KV operation then *succeeds* while reading zero --
+  no exception, no gap in the sequence. The backwards-counter arm below is
+  cheaper but ambiguous (a counter legitimately reads zero when nothing has
+  bumped it), and it cannot see a bucket replaced while last-seen was already
+  zero. Both are kept.
+
+- `epoch`: `catch_up` treats a BACKWARDS counter as a generation reset. A
+  monotonic counter cannot go back, so a lower reading means a different
+  counter -- and without this arm the `current > last_seen` guard could never
+  fire again for the life of the process.
+
+- `core`: **a bounded lifetime for L1 rows, off unless a collection asks for it.**
+  `CollectionRegistry.set_l1_max_age` / `get_l1_max_age`, with
+  `DEFAULT_L1_MAX_AGE_SECONDS` (3600s) applied when a collection opts in without
+  naming a number. A read past the bound deletes the row and reports a miss, so
+  the next read pulls through.
+
+  It exists for the staleness nothing else reaches: an invalidation dropped when
+  the outbound buffer overflows, and a pod whose *subscription* is partitioned
+  while its peers stay healthy, which misses every invalidation published in that
+  window and never learns it did. No publisher-side mechanism can see the second.
+
+  **A collection with no L3 pool is refused a bound**, whatever configuration
+  says. With nothing to pull through from, an expired row is not a miss that
+  repairs itself, it reads as "this row does not exist" -- and a compare-and-set
+  that reads absence writes a fresh row over live state. That covers the
+  presence and heartbeat collections, which are L1+L2 only by design.
+
+  Expiry applies only on the read paths that repair by pulling through. The
+  paths that merely report whether a row is cached do not expire: for them a
+  miss is a final answer a caller acts on, so converting a stale hit into one
+  loses the row rather than refreshing it. The repairing set is `ensure`,
+  `collection[id]` and `collection[id, "field"]`; the reporting set is
+  `get_row_sync`, `get_field_sync`, `set_field_sync` and `exists_in_cache_sync`.
+
+  A read that does expire deletes the row, and a delete that loses a lock does
+  not raise out of the read: the row is withheld either way and the next read
+  retries. The stamp is stripped from every row the `L1Backend` protocol
+  returns, `execute_query` included. Expiry drops increment
+  `threetears_l1_rows_expired_total`, labelled by table, because the rate is
+  what separates a bound doing its job from one that never fires.
+
+- `core`: two keyword parameters on the `L1Backend` protocol reads,
+  `max_age_seconds` and `now_monotonic`. Both default to off, and the framework
+  **omits them entirely** rather than passing `None` when expiry is not
+  configured, so existing callers and out-of-repo `L1Backend` implementations
+  are unaffected until a collection opts into a bound.
+
+  Once one does, an out-of-tree backend must accept the two keywords, and the
+  failure mode is worse than a rejected type: `runtime_checkable` compares
+  member NAMES only, so such a backend still passes `isinstance` and the break
+  surfaces as a `TypeError` at call time rather than at the seam. In-tree
+  backends are updated. `DuckDBBackend` raises `NotImplementedError` rather than
+  accepting a bound it cannot honour -- it injects no stamp, so silence there
+  would hand back exactly the unbounded staleness the caller asked to be rid of.
+
+- `core`: **`TableSchema(cas_null_safe=True)` — a compare-and-swap fence that
+  covers a row's FIRST write.** Default `False`, so no existing schema, caller
+  or emitted statement changes.
+
+  The fence a `SchemaBackedCollection` could generate had a hole in it, and the
+  hole was silent. `SqlL3Backend._upsert_schema` treated a write as
+  fence-eligible only when the expected value was non-`None`; a save carrying
+  `original_timestamp=None` fell through to an UNFENCED
+  `INSERT … ON CONFLICT (pk) DO UPDATE SET …`. That is correct for a RANDOM
+  primary key, where two writers cannot collide on one id. It is wrong for a
+  DERIVED one — a `uuid5` or hash of the business key — where two writers who
+  have never seen the row still compute the same id and collide on its first
+  insert. Both statements reported one row affected, the second overwrote the
+  first, and a read-modify-write lost an increment with nothing raised
+  anywhere. The other branch could not cover it either: `WHERE cas_column = $n`
+  is an equality test, and `= NULL` matches nothing, ever.
+
+  With the flag on, one statement serves create and update alike::
+
+      INSERT INTO t (…) VALUES (…)
+      ON CONFLICT (pk) DO UPDATE SET <mutable> = EXCLUDED.…
+      WHERE t.<cas_column> IS NOT DISTINCT FROM $N
+
+  `IS NOT DISTINCT FROM` is Postgres's NULL-safe equality, so an expected value
+  of `NULL` matches a row nobody has stamped and matches NOTHING once a rival
+  has. With no conflicting row at all the plain INSERT applies and the fence is
+  never evaluated, so it cannot block a genuine creation — it only stops a
+  second writer clobbering the first. The loser affects 0 rows, which
+  `save_entity` turns into `ConcurrentModificationError` for the caller's retry
+  loop.
+
+  This is the shape three `14-eng-ai-survey` collections hand-write today
+  precisely because the generator could not express it, and it is what blocked
+  converting them. The 20-way concurrency test that exercises it is an
+  INTEGRATION test, which is why nobody's unit gate ever saw the loss.
+
+  The opt-in is validated at construction rather than trusted, because every
+  way of getting it wrong degrades silently: it requires `cas_column` set,
+  `on_conflict="update"`, and a `cas_column` that is a mutable non-pk column
+  with no `server_default` — anything else leaves the fence unable to advance,
+  or drops it out of the statement altogether. Constructing such a collection
+  with the table also listed in `collection_flush_tables` is refused for the
+  same reason: a buffered write is replayed without the fence value it was
+  decided under, so every deferred write to an existing row would evaporate.
+
+- `core`: `BaseCollection.emits_cas_fence`, a `False`-by-default property a
+  collection overrides to declare that EVERY write it generates is fenced. The
+  framework uses it in the fire-and-forget `collection[id] = value` path, which
+  has no caller left to return a rowcount to: a 0 there is now logged as a lost
+  write rather than discarded. Unfenced collections are unaffected, where 0 is
+  the ordinary "DO NOTHING matched" outcome and not a loss.
+
+- `agent-tools`, `core`: **a tool may declare a REST address — and nothing
+  serves it yet.** `TearsTool` gains a fourth reach face, `face_rest`, beside
+  `face_platform_tool` / `face_api` / `face_mcp`. It ships INERT on purpose: the
+  contract lands and is released before anything consumes it, so the serving
+  side is built against a published declaration rather than a moving one.
+
+  It is the one face that cannot be a boolean. The other three have a derived
+  address — a mesh subject, an API operation, an MCP tool name all fall out of
+  `mcp_name()` — while a REST resource needs a method, a path template, a
+  binding from URL positions to schema properties, and a cacheability posture.
+  Those live on `threetears.agent.tools.http_operation.RestAffordance`, and
+  `None` is the off state: every face is surface to defend.
+
+  **It is not a new descriptor type.** The outbound half of this exact idea
+  already shipped one directory down: `HttpOperationDescriptor` derives its
+  `{name}` placeholders from its own path template. Both now inherit
+  `PathTemplateBinding`, which owns the template, the placeholder derivation and
+  the `QUERY_METHODS` split, so the two directions cannot disagree about how a
+  template is read. What inbound deliberately does NOT inherit is as
+  load-bearing: no `credentials_ref` (inbound is authorized per caller, not by
+  an upstream secret), no `param_schema` (the tool's own `mcp_schema()` is the
+  one place it exists), and a CLOSED method vocabulary where outbound stays
+  permissive — an imported third-party spec may legitimately carry `PROPFIND`;
+  an authored declaration carrying `BREW` is a typo.
+
+  `HttpMethod` covers all seven verbs, HEAD and OPTIONS included. A five-verb
+  list would have left half of `QUERY_METHODS` — `{GET, DELETE, HEAD, OPTIONS}`
+  — undeclarable while the binding rule still branched on it.
+
+  **Binding covers path AND query, because a GET has nowhere else to put its
+  arguments.** `RestAffordance.bind()` partitions the tool's declared properties
+  into path (the template placeholders), then query for a `QUERY_METHODS` verb
+  and body otherwise. Header and cookie locations are unrepresented inbound:
+  those carry the platform's concerns, not a tool's arguments.
+
+  **Cacheability is derived and narrowable, never declared outright.**
+  `CacheClass` moves out of `threetears.datasources.geo_config` (where it was
+  spelled `CacheClassConfig` and served map tiles only) into
+  `threetears.core.http_cache`, because a second consumer arrived and neither
+  package may import the other. `threetears.datasources` re-exports the name it
+  has always used, so no geo declaration changes — one enum object, two names,
+  not two vocabularies. `narrow_cache_class()` is the rule as a function: a
+  declaration may narrow what the resolved resource already is and is clamped if
+  it tries to widen. A tool REST read is per-caller authorized by construction,
+  so a class attribute that could say "cacheable" outright is exactly the
+  widening that leaks to an edge. `cache_version_param` must name a path
+  placeholder — an HTTP shared cache keys on URL and cannot key on a bearer
+  token, so a version outside the URL keys nothing, and a tenant-varying
+  resource is either origin-only or carries its tenant in the path.
+
+  **What is validated, and what is not.** Intra-tool coherence fails early: the
+  method vocabulary and the cache posture at class-definition time (the
+  declaration is a class attribute, so constructing it IS defining the class),
+  and the path template against the tool's own `mcp_schema()` at registration,
+  with a message naming the offending property and the tool. Inter-tool
+  coherence — template collision across pods, prefix ownership within a
+  customer, whether a resolved tool has an ingress principal — needs the full
+  `platform.namespaces` view and belongs to the serving side, which refuses on
+  collision.
+
+  The existing registration manifest carries it; there is no second channel.
+  `ToolManifestEntry.face_rest` holds the declaration and deliberately has no
+  boolean twin — the declaration's presence IS the flag. The platform-scope
+  `v003` migration adds `face_rest BOOLEAN NOT NULL DEFAULT FALSE` beside the
+  other three face columns plus a nullable `face_rest_declaration JSONB`, both
+  idempotent. They ship here rather than in a consumer because splitting one
+  column family across two repositories puts half of it on a second release
+  train.
+
+  **Known open gap, assigned:** `_coercion` engages only for declared types
+  `object` and `array`, and `run` performs no schema validation, so a tool
+  declaring `{"page": {"type": "integer"}}` would receive `"5"` over REST and
+  `5` over a JSON body — a per-face divergence inside one tool. Closing it by
+  widening `_coercion` to scalars would change the arguments EVERY existing tool
+  receives on EVERY existing face, which an inert declaration-only change must
+  not carry. The serving shard parses path and query segments against the
+  declared schema before dispatch instead; `bind()` gives it the property names
+  and `mcp_schema().input_schema` the types. This is recorded in
+  `http_operation`'s module docstring so it cannot be lost.
+
+- `channels`: **`threetears.channels.mail` — outbound email, and the delivery
+  reports that come back.** The platform had no mail at all: no SMTP, no
+  provider API, nothing in `packages/*`. The `channels` protocol is not an
+  answer either — `ChannelDeliveryMessage` requires a `conversation_id` and an
+  `agent_id` and routes to a thread, and a survey respondent or a
+  password-reset recipient has no platform presence at all.
+
+  A complete implementation existed one repo over, in
+  `14-eng-ai-bot-identity`'s `identity_core/email/`, whose own module docstring
+  set the condition for moving it: *"Not a new 3tears primitive — revisit only
+  if a second 3tears product needs the same capability."* Survey fielding is
+  that second product, so this is that implementation promoted rather than a
+  second copy of it.
+
+  Promoted as-is, including the decisions that are load-bearing rather than
+  incidental: stdlib `smtplib` on `asyncio.to_thread` instead of an async SMTP
+  dependency; no provider SDK, so changing relay is a settings edit rather than
+  a rewrite; settings read PER SEND, so an operator correcting a wrong password
+  waits for the next send rather than the next deploy; and EVERY failure
+  leaving as `EmailSendError`, because narrowing that catch was measured wrong
+  once already — a header the stdlib refuses to fold raises `HeaderWriteError`,
+  and it escaped a caller handling exactly one type.
+
+  What is a seam rather than a lift: the settings STORE stays with each
+  product. identity-core resolves its own from `platform_email_settings` with
+  the password sealed, a residency-routed pool and its own audit trail, none of
+  which generalises, so what moves upstream is `EmailSettingsResolver` — which
+  `PlatformEmailSettingsService` already satisfies structurally, method name
+  and return shape included. `StaticEmailSettingsResolver` is the answer for a
+  product with no settings table, and it keeps both disciplines: the password
+  arrives as a `scheme://locator` secret reference, resolved on every send.
+  The original's hard-wired NATS audit call becomes an `on_failure` callback
+  for the same reason.
+
+- `channels`: **`threetears.channels.mail.bounce` — a `bounced` outcome now has
+  a source.** An SMTP send is fire-and-forget: the relay accepts the message,
+  the conversation ends, and nothing on the outbound path can ever report a
+  bounce. `BounceReceiver` is the inbound half — verify the provider's
+  signature, parse the body into `DeliveryEvent` values, hand each to the
+  product.
+
+  `DeliveryEventType` separates `bounced_hard` from `bounced_soft` because the
+  policies are opposite (suppress immediately versus retry then suppress), and
+  keeps `complained` distinct from both: a spam report is a suppression event
+  where the address works perfectly, and folding it into a bounce loses an
+  opt-out and corrupts the bounce rate a sender's reputation is measured on.
+
+  It deliberately does NOT run through `WebhookReceiver`. That path resolves a
+  `webhook_subscriptions` row and dispatches a `WakeTrigger` into a
+  conversation for an agent to act on, and a delivery report has no
+  conversation, no agent and no user. What it DOES reuse is that receiver's
+  verification contract entire: the same `Verifier` callable shape, the same
+  canonical `verify_generic_hmac_sha256`, the same default signature header and
+  body-size cap. A second HMAC implementation was found and removed once in
+  this package already.
+
+  No provider-specific verifier ships. The default is the platform's own
+  `sha256=<hex>` HMAC; SendGrid signs with ECDSA and SES arrives as an
+  RSA-signed SNS notification, and both are `register_verifier`
+  implementations with a real signature-scheme decision behind them rather than
+  something to guess at here.
+
+- `channels`: **`threetears.channels.mail.batch` — many recipients, where one
+  failing is ordinary.** `send_batch` isolates per recipient, pulls the
+  iterable lazily so sample size does not drive memory, bounds concurrency, and
+  reports each failure by ADDRESS as it happens rather than only at the end —
+  a caller that records an outcome per recipient can resume from its own
+  records. Rate limiting plugs in through `SendPacer`, and `TokenBucketPacer`
+  is the platform's existing distributed `TokenBucket` over NATS KV rather than
+  a second limiter, because a per-process limiter set to a relay's rate is that
+  rate multiplied by the replica count.
+
+  Its ceiling is documented rather than discovered: no durability, no retry,
+  one process. Past roughly a hundred thousand recipients per run, or wherever
+  a partial run has to survive a restart, the shape wanted is a durable job per
+  recipient with this function reduced to the worker body.
+
+- `channels`: **`threetears.channels.mail.templating` — per-recipient
+  substitution, an HTML alternative, and `List-Unsubscribe`.** Products supply
+  the content; this owes a consistent way to fill it in. `{name}` substitution,
+  one pass, with a missing value refused BY NAME rather than rendering
+  `Hello , open` into a live inbox, values HTML-escaped in the HTML part only,
+  and a value carrying CRLF refused where it would land in a header. An HTML
+  body without a plain-text alternative is refused at construction.
+
+  `EmailMessage` carries `list_unsubscribe_url` / `list_unsubscribe_mailto`,
+  which the transport renders as RFC 2369 `List-Unsubscribe` and — for an
+  `https://` URL only — RFC 8058 `List-Unsubscribe-Post`. Bulk survey mail
+  legally needs both; transactional mail never bothered with either.
+
+  Deliberately not a template language, and the alternative was weighed:
+  `jinja2.sandbox.SandboxedEnvironment` is already used in
+  `threetears.agent.wake` and was ruled out because adding `jinja2` to
+  `3tears-channels` changes this package's dependency metadata for every
+  consumer that only wants Slack, and because a bulk-mail substitution surface
+  actively wants to be incapable of evaluating an expression.
+
+- `agent-acl`: **`threetears.agent.acl.catalog` — a declarable vocabulary for
+  `Role.permissions`.** `Role.permissions` is free text. A role may name any
+  resource type and any action, both are compared by string equality at
+  evaluation time, and a pair nothing serves does not fail — it resolves to an
+  empty action set and the role grants silence. The role exists, it reads as
+  granted, and it does nothing.
+
+  `PermissionCatalog` is an application's statement of which pairs mean
+  something, built from `ResourceTypeDescriptor` entries that each carry a
+  declaring application, an operator-facing label, and a closed tuple of
+  `ActionDescriptor`s. `validate_permissions(permissions, catalog)` returns
+  every undeclared pair as a `CatalogViolation`; `enforce_declared_permissions`
+  is the raising form and carries the same detail on `UndeclaredPermission`.
+
+  Labels ship with the declaration rather than being retrofitted, because the
+  consumer is a role builder rendering `survey_version.field` to a researcher,
+  and a display string invented separately by each surface is a different string
+  on each surface.
+
+  **The resource type is a namespace type, not a free label**, and everything
+  else follows from that. Evaluation is namespace-centric end to end — the
+  evaluator resolves `role.actions_for(namespace.namespace_type)` — so a
+  declared resource type that `platform.namespaces.namespace_type` does not
+  admit has nothing to bind to, and a role naming it can never be reached.
+
+  That is also why the declaring application is a FIELD on the descriptor rather
+  than a prefix on the resource type. An application-prefixed wire form would
+  have to be the bucket key to have any effect, and the bucket key is what the
+  evaluator looks up by namespace type; a `survey/report` bucket would need a
+  `survey/report`-type namespace row, which the platform's
+  `namespaces_namespace_type_ck` CHECK does not admit and no product can widen
+  from its own repo. Two applications claiming one resource type is therefore
+  REFUSED at catalog construction, by name, rather than disambiguated: at
+  evaluation time there is no application dimension available to tell them
+  apart, so merging their action sets would let one application's role grant the
+  other's action on the same rows.
+
+  The wildcard bucket is skipped by an explicit branch rather than by failing to
+  find an entry for `"*"`. `{"*": ["read"]}` is the shipped `Reader` shape, it
+  names no resource type, and there is nothing to check it against;
+  `ResourceTypeDescriptor` separately refuses `"*"` as a declared type, so the
+  two cases cannot converge. Parameterized actions — the
+  `read_file_matching:<glob>` shape the evaluator already ships — are declared
+  once as a stem and match any argument.
+
+  Nothing here participates in evaluation. It is a write-path and
+  authoring-path concern; a role evaluates identically whether or not a catalog
+  exists.
+
+  Whether a declared resource type is a namespace type the platform actually
+  admits is deliberately NOT checked here. The authoritative closed set is the
+  `namespaces_namespace_type_ck` CHECK in the deploying hub. The nearest thing
+  on this side, `threetears.core.namespaces.PLURAL_PREFIX_BY_NAMESPACE_TYPE`,
+  already disagrees with it in both directions — it carries `hitl`, which no
+  CHECK admits, and omits `intention` and `identity`, which ship as role buckets
+  in `threetears.agent.intention` and `threetears.agent.identity`. Validating
+  against a list known to be wrong would refuse correct declarations and admit
+  incorrect ones, so that check belongs where the CHECK is.
+
 ### Changed
+
+- `enforcement`: **exemption entries can be keyed on a scope instead of a line.**
+  `Exemption` gains `scope` and `occurrence`; `parse_exemptions_with_rationale`
+  accepts `path:qualname[#N]:symbol` when the caller passes
+  `allow_scope_keys=True`; `apply_exemptions` accepts a `scope_of` resolver and
+  matches on the scope when one is supplied. Both default to off, so a line-keyed
+  file in any other domain parses and matches exactly as before -- including
+  still raising on a non-numeric key, which for those domains is a typo.
+
+  `underscore_access` opts in, and its ledger is regenerated onto scope keys. A
+  line number is a fact about a file's LAYOUT, so an edit anywhere above an entry
+  silently stopped it matching and the reconciliation check then reported the
+  original violation against code nobody had touched. `#N` is retained because
+  two accesses in one function routinely have two different reasons, and
+  collapsing them replaced the second rationale with a copy of the first.
+
+  New in `threetears.enforcement.underscore_access`: `MODULE_SCOPE`,
+  `scoped_accesses`, `ledger_scope_entries`, `ledger_paths`. `ledger_entries`
+  still reads line-keyed entries only and is unchanged for consumers using them.
+
+- `enforcement`: **fake-parity exemptions moved out of the line-keyed file and
+  onto the classes they describe.** All 82 live entries are now
+  `# parity-exempt: <rationale>` markers; `_fake_parity_exemptions.txt` is
+  empty and documents why.
+
+  A file entry is keyed `path:LINE:symbol`, which is a property of the file's
+  layout rather than of the fake. Adding one import to a test module shifted
+  four entries and failed the gate with `no_declaration` for four fakes nobody
+  had touched, pointing at a declaration that already existed. Three further
+  entries named a module deleted some time ago and nothing noticed.
+
+  The in-place marker now clears the same rationale bar the file applies (30
+  characters, no blanket phrases), enforced through one shared
+  `common.exemptions.rationale_defect` so the route that survives a reformat is
+  not also the route with no standard. A marker that fails it reports
+  `fake_parity.weak_exempt_rationale`.
+
+- `nats`: **an ungranted KV bucket now says so, and says how to fix it.** A KV
+  operation the server refuses on permissions is never answered, so it dies on
+  the wrapper's deadline and reports a timeout -- the same thing an unreachable
+  broker reports. The operator goes to the network and finds a connection that
+  is up and carrying every other subject perfectly well.
+
+  The server does announce it, on a channel nothing was reading closely: a
+  `permissions violation` frame reaches the error callback and, unlike an
+  authorization violation, leaves the connection OPEN. Nothing downstream
+  re-reports it. That frame is now decoded to the bucket it names -- from the
+  `$KV` data subject or the `$JS.API...KV_{bucket}` control subject, whichever
+  was refused -- and logged with the `kv_buckets` entry to add. The deadline
+  path says the same thing where only the bucket name is available, and a
+  failed bucket open carries it in the raised `KvError`.
+
+  This is the failure mode a new grant requirement produces when someone misses
+  it, and the reason the requirement had to be written in a release note before:
+  there was nowhere else to put it.
+
+- `epoch`: **which substrate an epoch takes is now declared per family, with a
+  test that fails when a new `*_epoch` builder is declared by neither.** Previously
+  a subject nobody had considered was classified silently, and the silent answer
+  is ephemeral, which is the direction that cannot be repaired once a version
+  number has reached a CDN. The classifier still applies a path marker; what
+  changed is that the marker now belongs to a named, reasoned declaration and
+  that nothing can be absent from the tables.
+
+  Both tables now carry every epoch subject with its reason as a FIELD the
+  test can read, and
+  `packages/epoch/tests/unit/test_durability_policy.py` enumerates the real
+  `Subjects` factory: a new `*_epoch` builder fails until someone decides, a
+  declaration for a deleted subject fails, and a declaration that disagrees with
+  the classifier fails. All five existing subjects were re-decided on their
+  merits; the classification is unchanged.
+
+  **There is no durable epoch in NATS and that is a decision.** `storage="file"`
+  exists, but file-backed JetStream survives only if the store directory does,
+  and the failure this design answers wipes JetStream wholesale -- so NATS
+  durability is conditional on a volume someone provisioned. Conditional is the
+  wrong guarantee for the one value that escapes to caches we cannot purge.
+
+- `epoch`: **the epoch counter moved off Postgres onto NATS KV.** An epoch is a
+  coherence signal, not a durable fact, so every `current()`, catch-up tick and
+  echo confirmation was putting L3 on the cache-coherence path for a number
+  that has no business surviving a restart. Ephemeral epochs now count on
+  `DistributedCounter`. The semantics consumers rely on are unchanged: per-key
+  contiguous counters, so `0` still means "never bumped" and the first bump
+  still returns `1`.
+
+  **`datasource_tile_epoch` is carved out and stays durable.** Its value is the
+  `v{n}` in a tile URL and reaches browser and CDN caches this cluster cannot
+  touch, so a counter that resets with the broker would re-issue `v1..vN` for
+  different content while those caches still hold the old generation. Routing
+  is by subject family, because durability is a property of what the number
+  means rather than of who bumps it.
+
+  Two things Postgres gave for free: a wildcard path matched no row and
+  returned `0`, so `current()` now short-circuits before the lookup (`*` and
+  `>` are illegal KV key characters); and a subject segment carrying a
+  caller-supplied value is a legal row PK but not always a legal key, so a path
+  outside the grammar is digested rather than raising at `bump` in production.
+
+  **Deployments must grant the `{ns}-epochs` KV bucket** to AGENT_POD, HUB and
+  GATEWAY. A missing KV grant does not raise: the call blocks to its deadline
+  and reads as an unreachable broker.
+
+- `core`: **a subclass accessor that caches an L3 read must say so.**
+  `BaseCollection.write_to_cache_sync` takes `from_lower_tier=`, which stamps
+  the row's provenance and is what makes it eligible for expiry. Without it a
+  cached L3 read is indistinguishable from a local write and never expires, so
+  the rows most likely to go stale were exactly the ones exempt. Every in-repo
+  accessor that caches an L3 read now passes it.
+
+- `core`: **`_3t_cached_at` is now a reserved L1 column name.** The backend
+  injects it into generated entity tables to record when a row was last obtained
+  from a lower tier, and strips it from every row a read returns. A table
+  declaring a column of that name raises at `initialize()` rather than emitting
+  duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
 
 - `langgraph`: **`ThreeTierCheckpointSaver` now requires a tenancy decision.**
   `customer_id: UUID | None = None` is replaced by `scope: CheckpointScope`,
@@ -297,6 +795,22 @@ packages (bumped in lock-step).
 
 ### Fixed
 
+- `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
+  below an early return taken whenever there was no catch-up task -- which is
+  every single-process authorizer, since that task exists only in epoch mode --
+  so a stopped authorizer stayed marked started and `start()`'s double-start
+  guard refused to bring it back up. It also now releases the task handle
+  before awaiting it, so a raise during teardown cannot strand a cancelled
+  task on an object that already reads as not-started.
+
+- `epoch`: `EpochListener.subscribe` records its registration only after the
+  NATS subscribe succeeds. Registering first left an entry behind on failure,
+  so a retry double-registered and every later reset fired that consumer twice.
+
+- `core`: `DuckDBBackend.upsert` now filters writes to the table's registered
+  schema, as `SQLiteBackend` already did. Without it any framework-injected
+  column reached the SQL against a table that does not declare it.
+
 - `nats`: **a NATS permissions violation is no longer an anonymous error line.**
   `NatsClient`'s error callback logged every nats-py error identically
   (`NATS error: %s`), which for a permissions violation was the wrong shape for
@@ -545,295 +1059,78 @@ packages (bumped in lock-step).
   it parametrizes over every `.py` file in the repo, so deleting a file deletes
   a case.
 
+## v0.27.0 -- 2026-08-18
+
+Names the limit above the publish bound, and lets a caller ask about it before
+building something that misses it.
+
+**A minor because the surface grew, and it had to.** A refusal nobody can catch
+specifically is a refusal nobody can act on, so the new type and the new
+property are the change; `BLD-7QM3`'s ruling puts them on a minor line.
+
 ### Added
 
-- `core`: **`TableSchema(cas_null_safe=True)` — a compare-and-swap fence that
-  covers a row's FIRST write.** Default `False`, so no existing schema, caller
-  or emitted statement changes.
+- `nats`: **`PayloadTooLargeError`, for a publish the broker will not accept.**
+  `nats-py` refuses an oversized publish client-side, against the `max_payload`
+  the server advertised in its INFO -- 1 MB on an untuned broker. That refusal
+  arrived as a generic `PublishError` carrying a stringified cause, which left
+  the two failures a caller most needs to tell apart -- the frame we built is
+  too big, versus the connection is gone -- separable only by matching on
+  message text. One of them is a bug in what we built and **must never be
+  retried**: nothing about the next attempt is smaller, so a retry is an
+  infinite loop that logs. The other is an outage, where retrying is often
+  right.
 
-  The fence a `SchemaBackedCollection` could generate had a hole in it, and the
-  hole was silent. `SqlL3Backend._upsert_schema` treated a write as
-  fence-eligible only when the expected value was non-`None`; a save carrying
-  `original_timestamp=None` fell through to an UNFENCED
-  `INSERT … ON CONFLICT (pk) DO UPDATE SET …`. That is correct for a RANDOM
-  primary key, where two writers cannot collide on one id. It is wrong for a
-  DERIVED one — a `uuid5` or hash of the business key — where two writers who
-  have never seen the row still compute the same id and collide on its first
-  insert. Both statements reported one row affected, the second overwrote the
-  first, and a read-modify-write lost an increment with nothing raised
-  anywhere. The other branch could not cover it either: `WHERE cas_column = $n`
-  is an equality test, and `= NULL` matches nothing, ever.
+  Both numbers ride the exception as attributes rather than only as prose. It
+  subclasses `PublishError`, so every existing catch site is unaffected.
 
-  With the flag on, one statement serves create and update alike::
+  Every public publish entry point reaches it, including the JetStream path,
+  where the refusal fires before the ack wait. The task this came from assumed
+  all four funnelled through `_publish_bytes`; two of them do not, so the funnel
+  callers can rely on is the classification rather than the call.
 
-      INSERT INTO t (…) VALUES (…)
-      ON CONFLICT (pk) DO UPDATE SET <mutable> = EXCLUDED.…
-      WHERE t.<cas_column> IS NOT DISTINCT FROM $N
+- `nats`: **`NatsClient.max_payload`, so a frame builder can ask what fits.**
+  The half that makes the error more than a nicer message: a caller that can ask
+  how much fits can pick a shape that fits -- a narrower projection, a handle to
+  the part that did not, a chunked `pipe` transfer -- instead of building it
+  large, publishing it, and learning the answer as an exception.
 
-  `IS NOT DISTINCT FROM` is Postgres's NULL-safe equality, so an expected value
-  of `NULL` matches a row nobody has stamped and matches NOTHING once a rival
-  has. With no conflicting row at all the plain INSERT applies and the fence is
-  never evaluated, so it cannot block a genuine creation — it only stops a
-  second writer clobbering the first. The loser affects 0 rows, which
-  `save_entity` turns into `ConcurrentModificationError` for the caller's retry
-  loop.
+  It answers `None` before connect and `None` while disconnected, which is the
+  point of it rather than a gap in it. `nats-py` pre-fills its own attribute
+  with a 1 MB default, so reading that early returns a guess wearing the shape
+  of an answer; a default here would be a second source of truth for the one
+  number this change exists to stop guessing. The classification is
+  catch-and-retype for the same reason -- the limit has exactly one source of
+  truth, and it is the connected server.
 
-  This is the shape three `14-eng-ai-survey` collections hand-write today
-  precisely because the generator could not express it, and it is what blocked
-  converting them. The 20-way concurrency test that exercises it is an
-  INTEGRATION test, which is why nobody's unit gate ever saw the loss.
+### Changed
 
-  The opt-in is validated at construction rather than trusted, because every
-  way of getting it wrong degrades silently: it requires `cas_column` set,
-  `on_conflict="update"`, and a `cas_column` that is a mutable non-pk column
-  with no `server_default` — anything else leaves the fence unable to advance,
-  or drops it out of the statement altogether. Constructing such a collection
-  with the table also listed in `collection_flush_tables` is refused for the
-  same reason: a buffered write is replayed without the fence value it was
-  decided under, so every deferred write to an existing row would evaporate.
+- `channels`: **`RoomFanout.broadcast` documents what it propagates and what
+  must not be retried.** It still does not catch, which is correct -- this
+  package is not where the decision about a lost room frame is made, and its two
+  consumers each handle it differently on purpose. What it owed them was a
+  failure they can tell apart, and the docstring now names it.
 
-- `core`: `BaseCollection.emits_cas_fence`, a `False`-by-default property a
-  collection overrides to declare that EVERY write it generates is fenced. The
-  framework uses it in the fire-and-forget `collection[id] = value` path, which
-  has no caller left to return a rowcount to: a 0 there is now logged as a lost
-  write rather than discarded. Unfenced collections are unaffected, where 0 is
-  the ordinary "DO NOTHING matched" outcome and not a loss.
+  The failure is silent by construction: the publishing pod's own sockets
+  already hold the content, so the person who caused an oversized frame sees
+  everything while the room sees nothing, and a single-pod test never reaches
+  the publish at all.
 
-- `agent-tools`, `core`: **a tool may declare a REST address — and nothing
-  serves it yet.** `TearsTool` gains a fourth reach face, `face_rest`, beside
-  `face_platform_tool` / `face_api` / `face_mcp`. It ships INERT on purpose: the
-  contract lands and is released before anything consumes it, so the serving
-  side is built against a published declaration rather than a moving one.
+- `langgraph`: **`DEFAULT_STRUCTURED_INLINE_MAX_CHARS` records the ceiling above
+  it.** The inline bound was a placeholder with an owner; it now has an upper
+  limit too, so the open question is answered inside a range rather than into
+  open air. Measured through the real event -> `Frame` -> `RoomFrame` nesting,
+  an untuned 1 MB broker works back to roughly 780,000 characters of artifact --
+  and the nesting cost is neither 1.0 nor stable (1.20x on a body-heavy payload,
+  1.34x on a metadata-heavy one), so the note points at
+  `scripts/measure-structured-result-sizes.py` rather than at either ratio.
 
-  It is the one face that cannot be a boolean. The other three have a derived
-  address — a mesh subject, an API operation, an MCP tool name all fall out of
-  `mcp_name()` — while a REST resource needs a method, a path template, a
-  binding from URL positions to schema properties, and a cacheability posture.
-  Those live on `threetears.agent.tools.http_operation.RestAffordance`, and
-  `None` is the off state: every face is surface to defend.
+### Docs
 
-  **It is not a new descriptor type.** The outbound half of this exact idea
-  already shipped one directory down: `HttpOperationDescriptor` derives its
-  `{name}` placeholders from its own path template. Both now inherit
-  `PathTemplateBinding`, which owns the template, the placeholder derivation and
-  the `QUERY_METHODS` split, so the two directions cannot disagree about how a
-  template is read. What inbound deliberately does NOT inherit is as
-  load-bearing: no `credentials_ref` (inbound is authorized per caller, not by
-  an upstream secret), no `param_schema` (the tool's own `mcp_schema()` is the
-  one place it exists), and a CLOSED method vocabulary where outbound stays
-  permissive — an imported third-party spec may legitimately carry `PROPFIND`;
-  an authored declaration carrying `BREW` is a typo.
-
-  `HttpMethod` covers all seven verbs, HEAD and OPTIONS included. A five-verb
-  list would have left half of `QUERY_METHODS` — `{GET, DELETE, HEAD, OPTIONS}`
-  — undeclarable while the binding rule still branched on it.
-
-  **Binding covers path AND query, because a GET has nowhere else to put its
-  arguments.** `RestAffordance.bind()` partitions the tool's declared properties
-  into path (the template placeholders), then query for a `QUERY_METHODS` verb
-  and body otherwise. Header and cookie locations are unrepresented inbound:
-  those carry the platform's concerns, not a tool's arguments.
-
-  **Cacheability is derived and narrowable, never declared outright.**
-  `CacheClass` moves out of `threetears.datasources.geo_config` (where it was
-  spelled `CacheClassConfig` and served map tiles only) into
-  `threetears.core.http_cache`, because a second consumer arrived and neither
-  package may import the other. `threetears.datasources` re-exports the name it
-  has always used, so no geo declaration changes — one enum object, two names,
-  not two vocabularies. `narrow_cache_class()` is the rule as a function: a
-  declaration may narrow what the resolved resource already is and is clamped if
-  it tries to widen. A tool REST read is per-caller authorized by construction,
-  so a class attribute that could say "cacheable" outright is exactly the
-  widening that leaks to an edge. `cache_version_param` must name a path
-  placeholder — an HTTP shared cache keys on URL and cannot key on a bearer
-  token, so a version outside the URL keys nothing, and a tenant-varying
-  resource is either origin-only or carries its tenant in the path.
-
-  **What is validated, and what is not.** Intra-tool coherence fails early: the
-  method vocabulary and the cache posture at class-definition time (the
-  declaration is a class attribute, so constructing it IS defining the class),
-  and the path template against the tool's own `mcp_schema()` at registration,
-  with a message naming the offending property and the tool. Inter-tool
-  coherence — template collision across pods, prefix ownership within a
-  customer, whether a resolved tool has an ingress principal — needs the full
-  `platform.namespaces` view and belongs to the serving side, which refuses on
-  collision.
-
-  The existing registration manifest carries it; there is no second channel.
-  `ToolManifestEntry.face_rest` holds the declaration and deliberately has no
-  boolean twin — the declaration's presence IS the flag. The platform-scope
-  `v003` migration adds `face_rest BOOLEAN NOT NULL DEFAULT FALSE` beside the
-  other three face columns plus a nullable `face_rest_declaration JSONB`, both
-  idempotent. They ship here rather than in a consumer because splitting one
-  column family across two repositories puts half of it on a second release
-  train.
-
-  **Known open gap, assigned:** `_coercion` engages only for declared types
-  `object` and `array`, and `run` performs no schema validation, so a tool
-  declaring `{"page": {"type": "integer"}}` would receive `"5"` over REST and
-  `5` over a JSON body — a per-face divergence inside one tool. Closing it by
-  widening `_coercion` to scalars would change the arguments EVERY existing tool
-  receives on EVERY existing face, which an inert declaration-only change must
-  not carry. The serving shard parses path and query segments against the
-  declared schema before dispatch instead; `bind()` gives it the property names
-  and `mcp_schema().input_schema` the types. This is recorded in
-  `http_operation`'s module docstring so it cannot be lost.
-
-- `channels`: **`threetears.channels.mail` — outbound email, and the delivery
-  reports that come back.** The platform had no mail at all: no SMTP, no
-  provider API, nothing in `packages/*`. The `channels` protocol is not an
-  answer either — `ChannelDeliveryMessage` requires a `conversation_id` and an
-  `agent_id` and routes to a thread, and a survey respondent or a
-  password-reset recipient has no platform presence at all.
-
-  A complete implementation existed one repo over, in
-  `14-eng-ai-bot-identity`'s `identity_core/email/`, whose own module docstring
-  set the condition for moving it: *"Not a new 3tears primitive — revisit only
-  if a second 3tears product needs the same capability."* Survey fielding is
-  that second product, so this is that implementation promoted rather than a
-  second copy of it.
-
-  Promoted as-is, including the decisions that are load-bearing rather than
-  incidental: stdlib `smtplib` on `asyncio.to_thread` instead of an async SMTP
-  dependency; no provider SDK, so changing relay is a settings edit rather than
-  a rewrite; settings read PER SEND, so an operator correcting a wrong password
-  waits for the next send rather than the next deploy; and EVERY failure
-  leaving as `EmailSendError`, because narrowing that catch was measured wrong
-  once already — a header the stdlib refuses to fold raises `HeaderWriteError`,
-  and it escaped a caller handling exactly one type.
-
-  What is a seam rather than a lift: the settings STORE stays with each
-  product. identity-core resolves its own from `platform_email_settings` with
-  the password sealed, a residency-routed pool and its own audit trail, none of
-  which generalises, so what moves upstream is `EmailSettingsResolver` — which
-  `PlatformEmailSettingsService` already satisfies structurally, method name
-  and return shape included. `StaticEmailSettingsResolver` is the answer for a
-  product with no settings table, and it keeps both disciplines: the password
-  arrives as a `scheme://locator` secret reference, resolved on every send.
-  The original's hard-wired NATS audit call becomes an `on_failure` callback
-  for the same reason.
-
-- `channels`: **`threetears.channels.mail.bounce` — a `bounced` outcome now has
-  a source.** An SMTP send is fire-and-forget: the relay accepts the message,
-  the conversation ends, and nothing on the outbound path can ever report a
-  bounce. `BounceReceiver` is the inbound half — verify the provider's
-  signature, parse the body into `DeliveryEvent` values, hand each to the
-  product.
-
-  `DeliveryEventType` separates `bounced_hard` from `bounced_soft` because the
-  policies are opposite (suppress immediately versus retry then suppress), and
-  keeps `complained` distinct from both: a spam report is a suppression event
-  where the address works perfectly, and folding it into a bounce loses an
-  opt-out and corrupts the bounce rate a sender's reputation is measured on.
-
-  It deliberately does NOT run through `WebhookReceiver`. That path resolves a
-  `webhook_subscriptions` row and dispatches a `WakeTrigger` into a
-  conversation for an agent to act on, and a delivery report has no
-  conversation, no agent and no user. What it DOES reuse is that receiver's
-  verification contract entire: the same `Verifier` callable shape, the same
-  canonical `verify_generic_hmac_sha256`, the same default signature header and
-  body-size cap. A second HMAC implementation was found and removed once in
-  this package already.
-
-  No provider-specific verifier ships. The default is the platform's own
-  `sha256=<hex>` HMAC; SendGrid signs with ECDSA and SES arrives as an
-  RSA-signed SNS notification, and both are `register_verifier`
-  implementations with a real signature-scheme decision behind them rather than
-  something to guess at here.
-
-- `channels`: **`threetears.channels.mail.batch` — many recipients, where one
-  failing is ordinary.** `send_batch` isolates per recipient, pulls the
-  iterable lazily so sample size does not drive memory, bounds concurrency, and
-  reports each failure by ADDRESS as it happens rather than only at the end —
-  a caller that records an outcome per recipient can resume from its own
-  records. Rate limiting plugs in through `SendPacer`, and `TokenBucketPacer`
-  is the platform's existing distributed `TokenBucket` over NATS KV rather than
-  a second limiter, because a per-process limiter set to a relay's rate is that
-  rate multiplied by the replica count.
-
-  Its ceiling is documented rather than discovered: no durability, no retry,
-  one process. Past roughly a hundred thousand recipients per run, or wherever
-  a partial run has to survive a restart, the shape wanted is a durable job per
-  recipient with this function reduced to the worker body.
-
-- `channels`: **`threetears.channels.mail.templating` — per-recipient
-  substitution, an HTML alternative, and `List-Unsubscribe`.** Products supply
-  the content; this owes a consistent way to fill it in. `{name}` substitution,
-  one pass, with a missing value refused BY NAME rather than rendering
-  `Hello , open` into a live inbox, values HTML-escaped in the HTML part only,
-  and a value carrying CRLF refused where it would land in a header. An HTML
-  body without a plain-text alternative is refused at construction.
-
-  `EmailMessage` carries `list_unsubscribe_url` / `list_unsubscribe_mailto`,
-  which the transport renders as RFC 2369 `List-Unsubscribe` and — for an
-  `https://` URL only — RFC 8058 `List-Unsubscribe-Post`. Bulk survey mail
-  legally needs both; transactional mail never bothered with either.
-
-  Deliberately not a template language, and the alternative was weighed:
-  `jinja2.sandbox.SandboxedEnvironment` is already used in
-  `threetears.agent.wake` and was ruled out because adding `jinja2` to
-  `3tears-channels` changes this package's dependency metadata for every
-  consumer that only wants Slack, and because a bulk-mail substitution surface
-  actively wants to be incapable of evaluating an expression.
-
-- `agent-acl`: **`threetears.agent.acl.catalog` — a declarable vocabulary for
-  `Role.permissions`.** `Role.permissions` is free text. A role may name any
-  resource type and any action, both are compared by string equality at
-  evaluation time, and a pair nothing serves does not fail — it resolves to an
-  empty action set and the role grants silence. The role exists, it reads as
-  granted, and it does nothing.
-
-  `PermissionCatalog` is an application's statement of which pairs mean
-  something, built from `ResourceTypeDescriptor` entries that each carry a
-  declaring application, an operator-facing label, and a closed tuple of
-  `ActionDescriptor`s. `validate_permissions(permissions, catalog)` returns
-  every undeclared pair as a `CatalogViolation`; `enforce_declared_permissions`
-  is the raising form and carries the same detail on `UndeclaredPermission`.
-
-  Labels ship with the declaration rather than being retrofitted, because the
-  consumer is a role builder rendering `survey_version.field` to a researcher,
-  and a display string invented separately by each surface is a different string
-  on each surface.
-
-  **The resource type is a namespace type, not a free label**, and everything
-  else follows from that. Evaluation is namespace-centric end to end — the
-  evaluator resolves `role.actions_for(namespace.namespace_type)` — so a
-  declared resource type that `platform.namespaces.namespace_type` does not
-  admit has nothing to bind to, and a role naming it can never be reached.
-
-  That is also why the declaring application is a FIELD on the descriptor rather
-  than a prefix on the resource type. An application-prefixed wire form would
-  have to be the bucket key to have any effect, and the bucket key is what the
-  evaluator looks up by namespace type; a `survey/report` bucket would need a
-  `survey/report`-type namespace row, which the platform's
-  `namespaces_namespace_type_ck` CHECK does not admit and no product can widen
-  from its own repo. Two applications claiming one resource type is therefore
-  REFUSED at catalog construction, by name, rather than disambiguated: at
-  evaluation time there is no application dimension available to tell them
-  apart, so merging their action sets would let one application's role grant the
-  other's action on the same rows.
-
-  The wildcard bucket is skipped by an explicit branch rather than by failing to
-  find an entry for `"*"`. `{"*": ["read"]}` is the shipped `Reader` shape, it
-  names no resource type, and there is nothing to check it against;
-  `ResourceTypeDescriptor` separately refuses `"*"` as a declared type, so the
-  two cases cannot converge. Parameterized actions — the
-  `read_file_matching:<glob>` shape the evaluator already ships — are declared
-  once as a stem and match any argument.
-
-  Nothing here participates in evaluation. It is a write-path and
-  authoring-path concern; a role evaluates identically whether or not a catalog
-  exists.
-
-  Whether a declared resource type is a namespace type the platform actually
-  admits is deliberately NOT checked here. The authoritative closed set is the
-  `namespaces_namespace_type_ck` CHECK in the deploying hub. The nearest thing
-  on this side, `threetears.core.namespaces.PLURAL_PREFIX_BY_NAMESPACE_TYPE`,
-  already disagrees with it in both directions — it carries `hitl`, which no
-  CHECK admits, and omits `intention` and `identity`, which ship as role buckets
-  in `threetears.agent.intention` and `threetears.agent.identity`. Validating
-  against a list known to be wrong would refuse correct declarations and admit
-  incorrect ones, so that check belongs where the CHECK is.
+- `docs/structured-result-tiers.md` and its three task documents: let a client
+  declare what it wants from a structured result -- `citations` or `full` --
+  rather than having the platform drop everything when a projection does not fit
+  the frame. Proposal only; task-03, the ceiling above, is the first piece built.
 
 ## v0.26.1 -- 2026-08-18
 

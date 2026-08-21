@@ -99,6 +99,12 @@ _CONFIG = CacheEnforcementConfig(
             # caches on top of itself buys nothing and risks staleness
             # of the staleness signal. one row per subject, atomic
             # row-lock serialization, no derived view to cache.
+            #
+            # the table now serves ONLY the durable epoch family -- an
+            # epoch whose value escapes the cluster into browser and CDN
+            # caches, which therefore cannot live on a counter that
+            # resets with the broker. every other epoch counts in NATS
+            # KV and touches no table at all.
             "config_epochs",
         }
     ),

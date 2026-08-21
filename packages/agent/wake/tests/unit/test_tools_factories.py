@@ -101,6 +101,7 @@ class _CapLockPool:
 
 
 # parity-with: threetears.agent.wake.collections.WakeScheduleCollection
+# parity-exempt: WakeScheduleCollection subset for the schedule tool factory unit tests; the tools call only create/save_entity/get/delete/list_for_conversation/list_active_for_conversation/count_active_for_conversation/pause/resume so the cache+l2/l3 SQL methods on the production class are not part of the tool API contract
 class _FakeScheduleCollection:
     """In-memory stand-in for the public surface of WakeScheduleCollection."""
 
@@ -175,6 +176,7 @@ class _FakeScheduleCollection:
 
 
 # parity-with: threetears.agent.wake.collections.WebhookSubscriptionCollection
+# parity-exempt: WebhookSubscriptionCollection subset for the webhook tool factory unit tests; the tools call only create/save_entity/get/delete/list_for_conversation/pause/resume/rotate_secret and the cache+l2/l3 + find_by_id methods are exercised in the integration suite instead
 class _FakeSubscriptionsCollection:
     """In-memory stand-in for WebhookSubscriptionCollection."""
 
@@ -232,6 +234,7 @@ class _FakeSubscriptionsCollection:
 
 
 # parity-with: threetears.agent.wake.tools.schedule_tools.WakeRegistryClient
+# parity-exempt: in-memory WakeRegistryClient implementation subclassing the production protocol; the fake declares its parity via subclass declaration but the strict walker also requires this entry to satisfy the cross-file Protocol lookup performed during walker analysis
 class _FakeRegistry(WakeRegistryClient):
     """In-memory ACL + skill-name registry."""
 
@@ -266,6 +269,7 @@ class _FakeRegistry(WakeRegistryClient):
 
 
 # parity-with: threetears.agent.wake.entities.EncryptionService
+# parity-exempt: identity-encryption stand-in matching the two-method EncryptionService Protocol; production parity is declared via the parity-with marker on the class but the strict walker requires this entry for the cross-file lookup
 class _FakeEncryption:
     """Identity-encryption stand-in (returns plaintext unchanged)."""
 

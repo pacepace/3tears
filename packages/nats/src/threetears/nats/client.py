@@ -90,7 +90,8 @@ from nats.errors import (
 from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger, representative_exception
 
-from threetears.nats._publish import publish_bounded, raise_as_publish_error
+from threetears.nats._diagnostics import permissions_violation_remedy
+from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
 from threetears.nats.errors import (
     NamespaceNotConfiguredError,
     NatsClientError,
@@ -1302,6 +1303,38 @@ class NatsClient:
         return bool(self._raw.is_closed)
 
     @property
+    def max_payload(self) -> int | None:
+        """the largest single publish this broker will accept, in bytes.
+
+        ``None`` until the server's INFO has been seen, and ``None`` again while
+        disconnected. **That is the point of the property, not a gap in it.**
+        The value is a deployment's, not a library's: 1 MB on an untuned broker
+        and whatever the operator chose otherwise. ``nats-py`` fills its own
+        attribute with a 1 MB default *before* connecting, so reading it early
+        gets a guess wearing the shape of an answer -- which is the one thing a
+        caller asking this question must not be handed. A default here would
+        also be a second source of truth for the number
+        :class:`~threetears.nats.errors.PayloadTooLargeError` exists to stop
+        guessing.
+
+        A caller that can ask how much fits can build something that fits --
+        a narrower projection, a handle to the part that did not, a chunked
+        :mod:`threetears.nats.pipe` transfer -- instead of building it large,
+        publishing it, and learning the answer as an exception. That is the
+        whole reason this is exposed rather than left to the error path.
+
+        :return: the broker's advertised ``max_payload``, or ``None`` when no
+            server has told us
+        :rtype: int | None
+        """
+        if not self._raw.is_connected:
+            return None
+        advertised = getattr(self._raw, "max_payload", None)
+        if not isinstance(advertised, int) or advertised <= 0:
+            return None
+        return advertised
+
+    @property
     def is_healthy(self) -> bool:
         """whether the connection is NOT stuck in a persistent auth-violation or outbound-overflow loop.
 
@@ -1581,6 +1614,38 @@ class NatsClient:
                 },
             )
 
+    def _publish_failure(self, *, subject: str, size_bytes: int, exc: Exception, label: str) -> PublishError:
+        """classify a raised publish failure into the wrapper's typed error.
+
+        One classifier for every publish entry point, so "too large" cannot mean
+        :class:`~threetears.nats.errors.PayloadTooLargeError` on one method and a
+        stringified generic on another. The four public entry points do NOT all
+        share a single call into nats-py -- :meth:`publish` and
+        :meth:`publish_raw` funnel through :meth:`_publish_bytes` while the two
+        reply methods publish directly -- so the funnel a caller can rely on is
+        this classification, not the call.
+
+        :param subject: subject the publish targeted
+        :ptype subject: str
+        :param size_bytes: size of the payload that was handed to nats-py
+        :ptype size_bytes: int
+        :param exc: the exception the underlying publish raised
+        :ptype exc: Exception
+        :param label: leading text for the generic case, naming the entry point
+        :ptype label: str
+        :return: the error to raise
+        :rtype: PublishError
+        """
+        too_large = as_payload_too_large(
+            subject=subject,
+            size_bytes=size_bytes,
+            max_payload=self.max_payload,
+            exc=exc,
+        )
+        if too_large is not None:
+            return too_large
+        return PublishError(f"{label}: subject={subject}: {exc}")
+
     async def publish(
         self,
         *args: Any,
@@ -1695,7 +1760,12 @@ class NatsClient:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
             self._note_if_outbound_overflow(exc)  # resilience-task-03
-            raise PublishError(f"publish_reply failed: subject={reply_subject}: {exc}") from exc
+            raise self._publish_failure(
+                subject=reply_subject,
+                size_bytes=len(payload),
+                exc=exc,
+                label="publish_reply failed",
+            ) from exc
         self._note_publish_success()  # resilience-task-03
 
     async def publish_raw_reply(
@@ -1726,7 +1796,12 @@ class NatsClient:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
             self._note_if_outbound_overflow(exc)  # resilience-task-03
-            raise PublishError(f"publish_raw_reply failed: subject={reply_subject}: {exc}") from exc
+            raise self._publish_failure(
+                subject=reply_subject,
+                size_bytes=len(payload),
+                exc=exc,
+                label="publish_raw_reply failed",
+            ) from exc
         self._note_publish_success()  # resilience-task-03
 
     async def _publish_bytes(
@@ -1758,7 +1833,12 @@ class NatsClient:
             # publish boundary) -- it never reaches error_cb. re-raised as a typed PublishError so the
             # caller gets the wrapper's contract, not an unhandled nats-py raise crashing the coroutine.
             self._note_if_outbound_overflow(exc)
-            raise PublishError(f"publish failed: subject={subject.path}: {exc}") from exc
+            raise self._publish_failure(
+                subject=subject.path,
+                size_bytes=len(payload),
+                exc=exc,
+                label="publish failed",
+            ) from exc
         self._note_publish_success()
 
     # ------------------------------------------------------------------
@@ -2414,7 +2494,15 @@ class NatsClient:
         except PublishError:
             raise
         except Exception as exc:
-            raise raise_as_publish_error(subject.path, exc) from exc
+            # The oversized-publish refusal fires before the ack wait, so it reaches here too and
+            # must land on the same type the core publish path raises -- a caller branching on it
+            # should not have to know which publish path produced the frame.
+            raise raise_as_publish_error(
+                subject.path,
+                exc,
+                size_bytes=len(payload),
+                max_payload=self.max_payload,
+            ) from exc
 
     async def jetstream_subscribe_durable(
         self,
@@ -2985,12 +3073,22 @@ def _permissions_violation(exc: Exception) -> _ViolationDetail | None:
 async def _on_error(exc: Exception) -> None:
     """nats-py error callback with rate-limited logging.
 
-    A PERMISSIONS VIOLATION is singled out because it is otherwise INVISIBLE. The server refuses
-    the operation and keeps the connection open, and nothing is raised to any caller, so a refused
-    SUBSCRIBE leaves a live client-side subscription that will never receive a message and never
-    complain -- the capability is simply dead. Reported as one more ``NATS error: ...`` line, that
-    states neither which subject died nor that anything died at all. The dedicated line below names
-    the subject, says whether the refusal was a publish or a subscribe, and states the consequence.
+    A PERMISSIONS VIOLATION is singled out because it is otherwise INVISIBLE. It is the one
+    condition here that arrives with the connection still UP -- ``nats-py``'s ``_process_err``
+    closes the connection for every other ``-ERR`` but returns early for this one -- and nothing
+    is raised to any caller, so nothing downstream will re-report it. A refused SUBSCRIBE leaves a
+    live client-side subscription that will never receive a message and never complain, and a
+    refused JetStream request is simply never answered, resurfacing much later as a timeout that
+    reads like an unreachable broker. This callback is the only place the truth is available.
+
+    The line is therefore built from BOTH halves of that truth:
+
+    - the REMEDY, from :mod:`threetears.nats._diagnostics`, which recognises a ``$KV`` subject and
+      names the grant declaration that is missing rather than only the wire subject; and
+    - the DECOMPOSITION -- which operation was refused, on which subject, and what that costs --
+      because a remedy alone does not say whether a publish was dropped or a subscription went
+      permanently deaf, and the subject's case is only trustworthy under the condition
+      :data:`_SUBJECT_CASE_VERBATIM` documents.
 
     Rate limiting keeps DISTINCT SUBJECTS distinct: the key carries the subject, so a second dead
     subject is never suppressed behind the first (each one is a different capability lost, not a
@@ -3017,16 +3115,21 @@ async def _on_error(exc: Exception) -> None:
         else:
             operation = violation.operation or _UNKNOWN_OPERATION
             caveat = "" if violation.subject_case != _SUBJECT_CASE_LOWERCASED else f" {_LOWERCASED_SUBJECT_CAVEAT}"
+            # the remedy leads because it names the FIX (and, for a ``$KV`` subject, the bucket and
+            # the `kv_buckets` declaration that grants it); the decomposition follows because the
+            # remedy does not say which operation died or what that costs. the remedy already ends
+            # with the server's own words, so the raw error is carried once, not twice.
+            # ``_permissions_violation`` and ``permissions_violation_remedy`` key off the SAME
+            # phrase, so a decomposed violation always has a remedy -- the fallback exists only so a
+            # future divergence degrades to a shorter line instead of logging ``None``.
+            remedy = permissions_violation_remedy(exc) or f"NATS PERMISSIONS VIOLATION. Server said: {exc}"
             log.error(
-                "NATS PERMISSIONS VIOLATION: the server refused this connection's %s of subject "
-                "%s. %s The minted user JWT does not grant that subject -- add it to this "
-                "principal's allow-list in threetears.nats.subject_permissions.build_permissions.%s "
-                "raw error: %s",
+                "%s -- REFUSED OPERATION: the server refused this connection's %s of subject %s. %s%s",
+                remedy,
                 operation,
                 violation.subject or _UNKNOWN_SUBJECT,
                 _VIOLATION_CONSEQUENCES.get(operation, _UNKNOWN_CONSEQUENCE),
                 caveat,
-                exc,
                 extra={
                     "extra_data": {
                         "subject": violation.subject,

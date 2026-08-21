@@ -6,8 +6,15 @@ every test fake in this repo (class named ``Fake<Name>`` or
 for, via subclass declaration or a ``# parity-with: <fqname>``
 marker on the line above the class. fakes whose target is too large
 to fully implement (``asyncpg.Pool``, ``nats.aio.Client``, etc.) are
-exempted with a per-fake rationale in
-``_fake_parity_exemptions.txt``.
+exempted with a ``# parity-exempt: <rationale>`` marker on the line
+above the class, on ONE line however long -- the walker reads the
+first non-blank line above the class and stops.
+
+``_fake_parity_exemptions.txt`` still parses and is deliberately
+empty. Its entries are keyed ``path:LINE:symbol``, so an edit
+anywhere above a fake silently stops the entry matching and this
+test then reports ``no_declaration`` against code nobody touched.
+A marker on the class moves with the class.
 
 the test class / method names preserve the canonical shape so any
 external CI looking for them continues to find them.

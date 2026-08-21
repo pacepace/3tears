@@ -19,11 +19,24 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
 __all__ = [
+    "DEFAULT_L1_MAX_AGE_SECONDS",
     "CacheInvalidationMessage",
     "CollectionRegistry",
 ]
 
 log = get_logger(__name__)
+
+#: Default bound applied when a collection opts into L1 expiry without naming a
+#: number. Not a fleet-wide default: nothing is bounded until a collection asks,
+#: because the collections here differ by orders of magnitude in read volume and
+#: in the staleness they tolerate, and one number would be tuned for the worst.
+#:
+#: Chosen against the L2 bucket TTL rather than measured. L2 self-expires at
+#: 7200s, so a bound below it means a refetch usually resolves at L2 rather than
+#: L3, and a bound above it is largely inert. This sits under that with room.
+#: Revisit against real read volume; it moves without structural change, which
+#: is why the per-collection knob was the design decision and this value was not.
+DEFAULT_L1_MAX_AGE_SECONDS: float = 3600.0
 
 
 def _as_l3_backend(l3_pool: Any) -> Any:
@@ -104,6 +117,11 @@ class CollectionRegistry:
         self._l3_pool: L3Backend | None = None
         self._collections: dict[str, Any] = {}  # table_name -> collection instance
         self._overrides: dict[str, dict[str, Any]] = {}  # table_name -> {l1_backend, l2_client, l3_pool}
+        # Deliberately NOT in ``_overrides``: ``register()`` hard-resets that dict
+        # when given any tier override, and wiring commonly configures before
+        # registering, so a bound stored there would be silently dropped by a
+        # later ``register()`` call. Separate dict, separate lifetime.
+        self._l1_max_ages: dict[str, float | None] = {}
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
@@ -206,6 +224,56 @@ class CollectionRegistry:
         """Get L1 backend for a collection (override or default)."""
         overrides = self._overrides.get(table_name, {})
         return overrides.get("l1_backend", self._l1_backend)
+
+    def set_l1_max_age(self, table_name: str, max_age_seconds: float | None = DEFAULT_L1_MAX_AGE_SECONDS) -> None:
+        """Bound how long ``table_name``'s L1 rows may be served after a pull-through.
+
+        **Per collection, and off until one asks.** Collections in this repo
+        differ by orders of magnitude in read volume and in how much staleness
+        they can tolerate, so a single fleet-wide number would be tuned for the
+        worst of them and wrong for the rest. Nothing is bounded until a
+        collection sets a value.
+
+        Not every backend can honour one. ``DuckDBBackend`` injects no stamp and
+        raises ``NotImplementedError`` on the first repairing read rather than
+        silently never expiring -- so a bound accepted here surfaces at read
+        time, not at configuration time. It has no production construction site
+        today, which is why this is a documented sharp edge rather than a
+        validation: the check would have to reach into the backend a collection
+        happens to hold, and the refusal it would duplicate is already loud.
+
+        A collection with no L3 pool is refused a bound at the point of use
+        (:attr:`BaseCollection.l1_max_age_seconds`), regardless of what is set
+        here: with nothing to pull through from, an expired row is not a miss,
+        it is a deletion.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :param max_age_seconds: the bound, or ``None`` to turn expiry off.
+            Omitted, it is :data:`DEFAULT_L1_MAX_AGE_SECONDS` -- opting in
+            without a number is the supported way to take the default.
+        :ptype max_age_seconds: float | None
+        :return: nothing
+        :rtype: None
+        :raises ValueError: if ``max_age_seconds`` is not positive
+        """
+        if max_age_seconds is not None and max_age_seconds <= 0:
+            raise ValueError(
+                f"l1 max age for {table_name!r} must be positive or None, got {max_age_seconds!r}; "
+                f"a zero or negative bound expires every row on the read that follows its own write, "
+                f"which is not a cache",
+            )
+        self._l1_max_ages[table_name] = max_age_seconds
+
+    def get_l1_max_age(self, table_name: str) -> float | None:
+        """Return the configured L1 max age for a collection, or ``None``.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :return: the bound in seconds, or ``None`` when expiry is off
+        :rtype: float | None
+        """
+        return self._l1_max_ages.get(table_name)
 
     @property
     def scan_cache(self) -> ScanCache:
@@ -346,10 +414,17 @@ class CollectionRegistry:
         order.
 
         narrow exception scope: only :class:`PublishError` is logged
-        and swallowed (the write has already succeeded; the
-        invalidation broadcast is best-effort because the next pod
-        read will pull a stale-but-still-correct row from L3 if it
-        misses the eviction). programming errors propagate.
+        and swallowed. The write has already succeeded, and nats-py
+        buffers a publish issued while disconnected and flushes it on
+        reconnect, so an ordinary outage loses nothing.
+
+        The older justification here -- that a peer would "pull a
+        stale-but-still-correct row from L3" -- does not hold and is
+        recorded as wrong rather than deleted: a peer that missed the
+        eviction keeps serving its own L1 and never re-reads. What
+        actually bounds that staleness is the L1 max-age, and only for
+        a collection that has opted into one. programming errors
+        propagate.
 
         :param nats_client: connected typed NATS wrapper client;
             ``None`` short-circuits (no-op)
@@ -411,7 +486,9 @@ class CollectionRegistry:
             # wire envelope failed validation -- programming error,
             # but propagating would mask the calling write op. log
             # loud and continue; surfaces as a real failure in CI
-            # because tests assert on this counter.
+            # (there is no such counter, and nothing in
+            # test_cache_coherence.py asserts on one -- the claim this
+            # comment used to make was simply untrue).
             log.error(
                 "Invalidation envelope validation failed",
                 extra={
@@ -426,6 +503,12 @@ class CollectionRegistry:
             )
 
     def clear(self) -> None:
-        """Remove all registered collections and overrides (for tests)."""
+        """Remove all registered collections, overrides and L1 bounds (for tests)."""
         self._collections.clear()
         self._overrides.clear()
+        # The bound keeps its own dict so ``register()`` cannot wipe it, but a
+        # separate lifetime is not an unbounded one: a table re-registered after
+        # a clear would otherwise inherit a bound nobody in the new setup asked
+        # for, which is the same silent-config class of bug in the other
+        # direction.
+        self._l1_max_ages.clear()

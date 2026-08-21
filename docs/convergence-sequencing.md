@@ -46,9 +46,10 @@ All items independent; all can start today.
   store-shape rule.
   → [`family-convergence.md` §4.2 (verified corrections)](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon),
   [open question 22](family-convergence.md#6-open-questions)
-- **discodon:** reshape budget refusal to the
+- **discodon:** ~~reshape budget refusal to the
   `check(estimate)`/`record(spend)` port shape, copied from
-  `threetears.search.contracts`, not invented.
+  `threetears.search.contracts`, not invented.~~ **Withdrawn 2026-08-19 —
+  this asked for the wrong shape.** See the correction below.
   → [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing);
   [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)
 - **metallm:** close the family version lag.
@@ -67,6 +68,53 @@ this repo: discodon still declares `>=3.12`, and metallm's lock resolves the
 family at 0.10.6. Because the phase gate is a coordination convention rather
 than a build dependency, 3tears carried on into Phase 2 work that does not
 consume either — see the Phase 2 note.
+
+***Correction 2026-08-19 — both outstanding items above have moved, and the
+note asserting otherwise was five days stale.*** discodon adopted 3.14 on
+2026-08-14 (`build: take the interpreter from uv, and move it to CPython
+3.14`); it now declares `requires-python = ">=3.14"`, not `>=3.12`. metallm
+closed its lag the same day, `v0.17.7 -> v0.24.4`, so it is current and no
+longer resolves the family at 0.10.6. **Neither landed because of this
+sequence** — each repo did it on its own clock, and nothing here was watching,
+which is the same failure mode Phase 2's third bullet recorded from the other
+direction: a status note goes stale in whichever direction nobody is checking.
+
+**What actually remains of discodon's two items is narrower than "outstanding",
+and one of them is subtler than not-done.**
+
+- **The storage carve is half-present, and the present half is not the half
+  this sequence needs.** `discodon/eval/storage.py` does carve a `Protocol` —
+  `EvalRunDocumentStore`, two methods, `load_eval_run_with_etag` and
+  `save_eval_run` — but it was carved for its own local reason (stating the
+  conditional-write retry policy over the protocol rather than over Postgres),
+  and it covers only that pair. `EvalStorage` does not declare it, and the
+  analysis bundle is not on it. So the seam Phase 3's replay record schema is
+  meant to be elicited against still does not exist. **A protocol in the file
+  is not the protocol the item names**, and grepping for the item's own word —
+  `StorageProtocol` — finds nothing, which is how this reads as untouched from
+  outside.
+- **The budget reshape was withdrawn on 2026-08-19, and the paragraph that
+  called discodon's shape a defect was wrong.** It read: `EvalRunCostCap`
+  exposes `check()` and `record(cost_usd)`, matching
+  [`threetears.search.contracts.BudgetPort`](../packages/search/src/threetears/search/contracts/budget.py)
+  by name, but `check()` takes no estimate and reports `accumulated > ceiling`,
+  so it can only stop a run *after* the ceiling is crossed — filed as the shape
+  most likely to be mistaken for done at wiring time.
+
+  **The two are solving different problems, and both shapes are right.** The
+  search port wraps exactly one provider call — `check(estimate)` before it,
+  `record(spend)` after it, both below the retry boundary — so it can refuse a
+  spend that has not happened yet. discodon's cap fires *between eval cells*,
+  where the cell's spend is already booked and the cell contains an unknown
+  number of LLM calls; there is no honest pre-estimate to give, and the port's
+  own "an estimate a run may freely exceed is not an estimate" is the argument
+  against inventing one. Requiring one shape for both was the error.
+
+  The eval budget contract will be shaped from what discodon runs in
+  production. Recorded as R6 of
+  [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md),
+  stated there as a requirement precisely because an agent reading the
+  withdrawn instruction would "fix" a working production control.
 
 ## Phase 2 — In-family integration (3tears)
 
@@ -204,6 +252,26 @@ to be forgotten, because nothing downstream complains. The design is now written
 and it is design-only as the bullet always said, so nothing that shipped is
 wrong; the record was.
 
+*Status 2026-08-19 — the design-only bullet was built, and it grew a workstream.*
+[#355](https://github.com/pacepace/3tears/pull/355) shipped the channel on both
+streaming faces on 2026-08-18, four days after the design was written. The
+bullet said *design only* and the build came with it, for the reason recorded
+above: the decision the design could not take alone turned out to be one of
+five, and the other four were answerable from the two consumers' own code.
+**With that, every item in this phase is both decided and built** — the
+2026-08-14 correction stands as the record of how it was nearly missed.
+
+What followed is **not** part of this sequence and should not be counted
+against it. Building the channel surfaced a question the design had deferred —
+what a client may ask for, and what happens when the answer is too big — ruled
+in [`structured-result-tiers.md`](structured-result-tiers.md)
+([#367](https://github.com/pacepace/3tears/pull/367), 2026-08-18) and carved
+into three tasks. Task-03 is in flight
+([#368](https://github.com/pacepace/3tears/pull/368)); tasks 01 and 02 are
+unbuilt. It belongs to the chat-kit workstream
+([§4.11](family-convergence.md#411-chat-ui--a-headless-typescript-kit-protocol-from-3tears-seeds-from-scriob-and-metallm)),
+which this document explicitly does not sequence.
+
 See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
 table and the item 5 rulings.
 
@@ -337,9 +405,13 @@ will, and that build waits on discodon.
 - **metallm:** `feature/new-search` — pin the released family, delete both
   side-steps (check 1).
   → [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing)
-- **discodon:** `feature/new-search` — collapse its two implementations, wire
-  the eval cost cap onto `BudgetPort` (check 3, D27), adopt pipeline-eval
-  replay over its own store, re-capture web_search cassettes.
+- **discodon:** `feature/new-search` — collapse its two implementations,
+  ~~wire the eval cost cap onto `BudgetPort`~~ (**withdrawn 2026-08-19** — the
+  eval budget contract is shaped from what discodon runs; check 3's spend half
+  is R5 of
+  [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md)),
+  adopt pipeline-eval replay over its own store, re-capture web_search
+  cassettes.
   → [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing)
 - **samsung (non-gating):** build phase-2 image search on the leaf when that
   work schedules (checks 2, 5, 9).
@@ -350,6 +422,91 @@ will, and that build waits on discodon.
 *2026-08-14:* the first two are **not** blocked on the same thing — metallm's
 surface is released (0.24.2+), discodon's replay piece is unbuilt and waits on
 its own Phase 1 storage port. See the correction under Phase 3.
+
+*Status 2026-08-19 — nothing here has started, and the reasons differ per repo,
+as the note above predicted.* The family has released six more times since
+(v0.24.5 through v0.26.1, all tagged; 0.27.0 is bumped and in flight on
+[#368](https://github.com/pacepace/3tears/pull/368), not yet tagged), none of it
+search-side. **metallm is unblocked on every axis this document tracks**: it is
+current at 0.24.4, its lag item is closed, and Gate B closed on 2026-08-14. What
+it lacks is the branch — `feature/new-search` does not exist. **discodon is
+still hard-blocked, and the chain runs back through discodon itself**: it needs the
+replay piece (search Phase 3 item 8), which is unbuilt here —
+`packages/search/src/threetears/search/` has `aggregate`, `select`, `extract`,
+`bind`, `call`, `limiter` and `standalone`, and no `replay.py` — and which is
+elicited against the storage port that is still uncarved *in discodon*. Not a
+cycle — a three-link chain, discodon → 3tears → discodon — but one whose first
+link nobody outside discodon can pull. Neither end has moved in the five days
+since this was last written.
+
+*Status 2026-08-19 (same day, later) — metallm's migration is up, and it is
+almost entirely not a migration.* **Check 1 already passed**, by a deletion
+that happened on 2026-06-23: metallm's `f0b6903` removed
+`api/src/services/web_fetch_utils.py` as a file and replaced the SearXNG
+scrape in `lookup_details` with `threetears.models.lookup_price`, as a side
+effect of unrelated pricing work. No wrapper, no re-export;
+`grep -rin searxng api/src/` is empty. Step 4's clause has no target either —
+metallm deliberately refuses to sniff result text for structure and says so in
+`_execute_service_tool`'s docstring. What remained was step 2, the pin:
+[metallm#288](https://github.com/pacepace/metallm/pull/288) pins the whole
+family at `v0.26.1`, which under D29 is the event that **binds these
+contracts** — the first consumer pin against a version carrying search, which
+is exactly what Gate B was standing in front of. It also unblocks
+[metallm#287](https://github.com/pacepace/metallm/pull/287), a live production
+defect (the model reading stringified `(content, artifact)` tuples) that is the
+fourth site of what [#318](https://github.com/pacepace/3tears/pull/318)
+and [#326](https://github.com/pacepace/3tears/pull/326) closed here.
+
+**Neither metallm PR waits on anything in 3tears.** Both need only released
+tags — `v0.26.1` for the pin, `v0.24.7` for what #287 consumes — so
+[#368](https://github.com/pacepace/3tears/pull/368) and the unreleased 0.27.0
+are not in their path. Merge order between them is #288 then #287.
+
+**What this costs to know, and the rule it argues for.** Establishing the above
+meant re-deriving a three-month-old deletion, because
+[`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing) states check 1 as
+*instructions to change two named files* rather than as the property it wants.
+Consumer-repo checks rot at the consumer's commit rate and nothing here
+notices. Checks 2, 3, 9 and 10 are written the same way and are owed the same
+re-verification before anyone works from them. The correction is recorded at
+that section.
+
+*Status 2026-08-19 (same day, later still) — the other four consumer checks were
+re-verified against their trees, and the picture per repo is now firm.*
+
+**samsung's phase-2 image search is built and is not on the leaf**, which is a
+decision rather than a gap: `curation/src/curation/discovery/` carries
+`phase_two.py`, an `ImageSearch` seam and an Art Institute provider, solving a
+different problem from the leaf's (collection identity lookup, zero spend,
+provider relevance scores refused as evidence). Its recorded reason for keeping
+3tears out of the default install is transitive weight on a `MemoryMax=2G` Pi —
+so **the bar the leaf must clear there is install size, not capability** — and
+measured against that bar the leaf clears it: `3tears-search[standalone]` is 14
+packages and 10 MB, of which curation already carries all but three wheels and
+~684 KB, because both family leaves under it declare `dependencies = []`. The
+exclusion samsung recorded was about `3tears-models`' closure and does not
+transfer. `[extract]` is the extra to keep off that Pi (+16 packages, +65 MB,
+babel and lxml dominating), and phase 2 has no use for it. Check 2 never asked
+about size, so nobody measured it. Check 9's premise expired outright: the plane
+that would call search is a long-lived uvicorn process whose sync code runs in a
+threadpool, not the one-shot `asyncio.run()` the check describes.
+
+**discodon has no 3tears dependency at all** — nothing in `pyproject.toml` or
+`uv.lock`, no `threetears` import — so its steps 1 and 2 have no referent, and
+its position is a first adoption rather than a migration. Check 3's spend half
+is *already largely true by other means*: research-tool search dollars enter
+`EvalRunCostCap` through a per-run rate card whenever the operator declared a
+credit rate, while the standalone `web_search` tool's credits are deliberately
+excluded until cassette withholding reaches that seam. Its replay half holds at
+the two seams D28 gave discodon and is unbuilt at the one this program proposes,
+on both sides. **Check 10 has no site**: no `nats` anywhere in discodon, 49
+modules on `zmq`, no leaf consumed — there is no "before" for the switch to
+preserve.
+
+Detail and evidence for all four at
+[`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing); the check list at
+[`search-requirements.md` §3](search-requirements.md#3-how-we-would-know-it-worked)
+now carries a pointer to it.
 
 **Checkpoint:** metallm and discodon merged and green; acceptance recorded.
 (**Gate C** — the wire-compatibility promise and released envelope asks —
@@ -368,6 +525,31 @@ discodon's NATS convergence and sits outside this sequence.)
 - **discodon:** consume its own extraction — first consumer, green before
   anyone else binds.
   → [`family-convergence.md` §5 (discodon)](family-convergence.md#5-implications-per-family-member)
+- **discodon (first, and it is the only thing this phase currently waits on):**
+  put the package boundary inside its own tree — the eval modules destined for
+  `3tears-eval-contracts` stop reaching into the host, asserted by a test.
+  Requirements, measured and stated as properties, at
+  [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md).
+  Nothing moves out of discodon and no package is published; the lift becomes
+  mechanical once it holds.
+
+  **Held as of 2026-08-20.** In place: R1's boundary test; the `DocumentStore`
+  port with its YugabyteDB adapter; the narrow completion protocol
+  (`CompletionClient` / `CompletionResult`); R10's fidelity axis; an installable
+  chart/spec package with a host-supplied palette.
+
+  Outstanding — the first item was this phase's pair of open decisions and both
+  are now ruled, so what remains of it is build:
+
+  - **`SweepableValue`'s `display` and `scale`** (R9) and **the pooling boundary**
+    (R11) are ruled (discodon Wave 2 design §5.2; C6) and unbuilt. Both are cheaper
+    before the cut than after, so they still belong to this phase.
+  - **`universe` → `scope`** — discodon Wave 2; touches the MCP surface. Binding
+    eval-contracts before it lands means binding under provisional vocabulary.
+  - **The package still imports `discodon.llm`** — discodon #2402–#2407.
+  - **R8's input registry** — not built, and **R10's authoring-time gate cannot be
+    built without it**, since controllability derives from the registry. One of
+    R10's four axes exists.
 
 **Checkpoint:** discodon running on the extracted packages; the eval
 contracts ratified per
@@ -396,9 +578,11 @@ is delivered; the remaining §4 workstreams sequence on their own.
 
 Phase 1 front-loads everything that is independent *and* everything later
 phases are elicited against: the storage port and budget shapes must exist
-before search's replay record schema and `BudgetPort` wiring are cut against
-them, and 3.14 must land before discodon can consume anything the family
-ships. Phases 2–3 are single-repo and mechanical. Phase 4 deliberately
+before search's replay record schema is cut against them, and 3.14 must land
+before discodon can consume anything the family ships. (This sentence used to
+name `BudgetPort` wiring as the other thing elicited against those shapes;
+that wiring was withdrawn on 2026-08-19 and the eval budget contract is shaped
+from discodon's own instead.) Phases 2–3 are single-repo and mechanical. Phase 4 deliberately
 precedes the extraction so the eval seams (budget, replay identity) are
 extracted in their *post-migration* shape — extract-don't-invent applied to
 sequencing: lift proven code, never code that is about to change. Phase 6

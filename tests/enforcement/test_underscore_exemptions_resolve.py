@@ -1,7 +1,7 @@
 """thin shell -- actual reconciliation logic in
 :mod:`threetears.enforcement.underscore_access.ledger`.
 
-``_underscore_exemptions.txt`` is a list of ``path:line:symbol`` triples, each with a rationale
+``_underscore_exemptions.txt`` is a list of ``path:scope#N:symbol`` keys, each with a rationale
 recording why one private access was judged acceptable. Nothing verified either half of that
 until this existed, and both had rotted: entries pointing at code that had moved or gone, and
 accesses in the scrape suites with no entry at all. A stale exemption is worse than a missing
@@ -25,9 +25,11 @@ from pathlib import Path
 
 from threetears.enforcement.underscore_access import (
     carry_forward_rationales,
-    missing_files,
     orphan_rationales,
     unlisted_accesses,
+    ledger_paths,
+    missing_files,
+    scoped_accesses,
     unresolved_entries,
 )
 
@@ -64,7 +66,7 @@ class TestUnderscoreExemptionsResolve:
         )
 
     def test_every_entry_resolves_to_the_symbol_it_claims(self) -> None:
-        """A triple whose line no longer holds that symbol is a rationale for the wrong code."""
+        """An entry whose scope no longer holds that symbol is a rationale for the wrong code."""
         unresolved = unresolved_entries(_EXEMPTIONS, _REPO_ROOT)
 
         assert not unresolved, (
@@ -253,3 +255,223 @@ class TestCarryForwardAcrossScopeDrift:
 
         assert ("sample.py", "first", "_a", 0) not in carried
         assert carried[("sample.py", "inserted", "_a", 0)] == "reason belonging to first"
+
+
+class TestAnEditAboveAnEntryIsNotDrift:
+    """The guarantee the key was changed for, stated as the thing it must not do.
+
+    A line-keyed entry stops matching when anything above it moves, so the gate
+    reports the original violation against code nobody touched and the only remedy
+    is re-running a regeneration script. That fired twice in one session here: a
+    `# parity-exempt:` comment, then a one-line import.
+
+    A gate that fails on unrelated edits trains people to re-run the script without
+    reading what changed, which is the state in which a genuinely wrong entry gets
+    regenerated straight past. That is why this is worth a key change rather than
+    care.
+    """
+
+    _SOURCE = "def only():\n    obj._thing\n"
+    _PADDED = "import calendar\nimport json\nimport os\n\n\ndef only():\n    obj._thing\n"
+
+    def _ledger(self, tmp_path: Path, key: str) -> Path:
+        path = tmp_path / "_exemptions.txt"
+        path.write_text(f"# rationale: {'framework-stable internal read the test needs'}\nsample.py:{key}:_thing\n")
+        return path
+
+    def test_a_scope_keyed_entry_survives_five_lines_inserted_above_it(self, tmp_path: Path) -> None:
+        """Same access, same scope, five lines further down. Nothing to re-run.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        source = tmp_path / "sample.py"
+        ledger = self._ledger(tmp_path, "only#0")
+
+        source.write_text(self._SOURCE)
+        assert unresolved_entries(ledger, tmp_path) == [], "the scope key did not resolve before the edit"
+
+        source.write_text(self._PADDED)
+        assert unresolved_entries(ledger, tmp_path) == [], "an edit above the access broke a scope-keyed entry"
+
+    def test_the_line_keyed_form_is_what_breaks(self, tmp_path: Path) -> None:
+        """The control. Without it the test above passes on a check that resolves nothing.
+
+        Line-keyed entries are skipped by the scope-keyed reader, so they resolve
+        vacuously rather than failing -- which is the shape that would make the first
+        test meaningless. Asserted here so that stays visible.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        source = tmp_path / "sample.py"
+        source.write_text(self._PADDED)
+
+        assert unresolved_entries(self._ledger(tmp_path, "2"), tmp_path) == []
+
+    def test_an_access_that_leaves_its_scope_is_still_caught(self, tmp_path: Path) -> None:
+        """The key is stable, not blind: a genuinely stale entry must still surface.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        source = tmp_path / "sample.py"
+        ledger = self._ledger(tmp_path, "only#0")
+
+        source.write_text("def renamed():\n    obj._thing\n")
+
+        assert unresolved_entries(ledger, tmp_path) == ["sample.py:only#0:_thing"]
+
+    def test_a_second_access_in_the_scope_needs_its_own_entry(self, tmp_path: Path) -> None:
+        """Occurrence still separates two accesses, so the second is not silently covered.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        source = tmp_path / "sample.py"
+        source.write_text("def only():\n    obj._thing\n    obj._thing\n")
+        ledger = self._ledger(tmp_path, "only#0")
+
+        assert unresolved_entries(ledger, tmp_path) == []
+        assert scoped_accesses(source).keys() == {("only", "_thing", 0), ("only", "_thing", 1)}
+
+
+class TestTheMissingFileGateCannotSilentlyEmpty:
+    """`missing_files` had no test, and the format change disabled it.
+
+    It reads only the path field, so it looked untouched by a change to the KEY
+    field. It was not: it went through `ledger_entries`, which filters on a digit
+    key, so on a scope-keyed ledger it returned `[]` for any possible content and
+    `test_every_entry_names_a_file_that_exists` could not fail.
+
+    A disabled gate, not a wrong answer -- every path currently exists. The
+    direction it guards is covered nowhere else: `unresolved_entries` skips a
+    non-existent source BECAUSE this owned it, and `unlisted_accesses` only walks
+    files that do exist. All three reviewers found it independently.
+    """
+
+    def test_a_deleted_path_is_reported_under_a_scope_key(self, tmp_path: Path) -> None:
+        """The case the check exists for, in the format the ledger now uses.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        ledger = tmp_path / "_exemptions.txt"
+        ledger.write_text("# rationale: a reason long enough to satisfy the bar\ngone/away.py:only#0:_thing\n")
+
+        assert missing_files(ledger, tmp_path) == ["gone/away.py"]
+
+    def test_a_deleted_path_is_reported_under_a_line_key_too(self, tmp_path: Path) -> None:
+        """Both forms, because a consumer ledger may still be line-keyed.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        ledger = tmp_path / "_exemptions.txt"
+        ledger.write_text("# rationale: a reason long enough to satisfy the bar\ngone/away.py:7:_thing\n")
+
+        assert missing_files(ledger, tmp_path) == ["gone/away.py"]
+
+    def test_a_present_path_is_not_reported(self, tmp_path: Path) -> None:
+        """The control, so the two above cannot pass by reporting everything.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        (tmp_path / "here.py").write_text("def only():\n    obj._thing\n")
+        ledger = tmp_path / "_exemptions.txt"
+        ledger.write_text("# rationale: a reason long enough to satisfy the bar\nhere.py:only#0:_thing\n")
+
+        assert missing_files(ledger, tmp_path) == []
+
+    def test_the_real_ledger_is_actually_read(self) -> None:
+        """The vacuity guard: the live check must see all 311 entries, not zero.
+
+        This is what would have caught the defect. `test_every_entry_names_a_file_that_exists`
+        asserts an empty result, which an empty INPUT satisfies just as well.
+
+        :return: nothing
+        :rtype: None
+        """
+        assert len(ledger_paths(_EXEMPTIONS)) > 300
+
+
+class TestTheTwoOccurrenceCountersAgree:
+    """Occurrence ordinals are computed twice, over different populations.
+
+    `common.exemptions._occurrences` numbers WALKER VIOLATIONS; this module's
+    `scoped_accesses` numbers `private_accesses`. They are not the same set:
+
+    - `private_accesses` returns a `set[(line, symbol)]`, so two reads of one
+      private on ONE line collapse to a single access while the walkers report
+      both;
+    - the walkers also emit violations that are not private reads at all --
+      shape_a imports, shape_c/shape_e `__all__` symbols -- which can collide on
+      `(file, scope, symbol)` with a read.
+
+    Either shape needs an ordinal the sanctioned regeneration can never emit, so
+    the ledger and the matcher would disagree about which access an entry covers.
+    Latent today, and "today" is the whole guarantee -- so this asserts it rather
+    than leaving it in a commit message. If it fires, the fix is one numbering
+    source, not a new entry.
+
+    Nothing in THIS module exercises `_occurrences`: both directions here number
+    via `scoped_accesses` on both sides, so a check written here could never see
+    the two counters disagree. Nor does anything else in this repo -- all five
+    walkers currently report zero violations over its src roots, so the matcher
+    runs over an empty list and `test_underscore_access.py` matches none of the
+    311 entries. It is a regression guard for when violations appear, not a
+    present check.
+
+    Which makes THIS the only live guard: it does not prove the counters agree,
+    it proves the shape on which they could disagree is absent.
+    """
+
+    def test_no_walker_scanned_file_has_two_accesses_of_one_symbol_on_one_line(self) -> None:
+        """The collapse `private_accesses` can hide, checked where BOTH counters run.
+
+        Scoped to exempted files under a `src` root, deliberately. The walkers scan
+        `packages/*/src` and never enter a `tests/` tree, so for every other exempted
+        file only this module's counter runs and there is no second opinion to
+        disagree with. Two such lines exist today in
+        `packages/models/tests/.../test_tracking.py` (`tracker_a._prom is
+        tracker_b._prom`) and they are harmless for exactly that reason.
+
+        Widening this to every exempted file would fail on those two and say nothing
+        true: it would be reporting a divergence between one counter and a counter
+        that never runs.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.enforcement.underscore_access import all_exempted_files, private_accesses
+
+        scanned = [p for p in all_exempted_files(_REPO_ROOT) if "/src/" in p.as_posix()]
+        assert scanned, "no exempted file sits under a src root; this check would be vacuous"
+
+        collapsed: list[str] = []
+        for source in scanned:
+            text = source.read_text(errors="replace").split("\n")
+            for number, symbol in sorted(private_accesses(source)):
+                if number <= len(text) and text[number - 1].count(f".{symbol}") > 1:
+                    collapsed.append(f"{source.relative_to(_REPO_ROOT)}:{number}:{symbol}")
+
+        assert not collapsed, (
+            "two accesses of one private on one line, in a file the walkers DO scan: "
+            "`private_accesses` counts these once and the walkers count them twice, so the "
+            f"ledger's ordinals and the matcher's diverge -- {collapsed}"
+        )

@@ -65,6 +65,7 @@ _NS_TYPE = "story"
 
 
 @dataclass
+# parity-exempt: inlined in-memory MembershipLoader+GrantLoader (the acl test pattern); a two-protocol composite with no single production parity target
 class _FakeStore:
     """in-memory MembershipLoader + GrantLoader (the acl test pattern, inlined)."""
 

@@ -19,6 +19,7 @@ from .conftest import InMemoryNatsBus, make_pod
 pytestmark = pytest.mark.asyncio
 
 
+# parity-exempt: live-socket transport stand-in; transport handle, no public parity to assert
 class _FakeSocket:
     """a stand-in live socket handle."""
 

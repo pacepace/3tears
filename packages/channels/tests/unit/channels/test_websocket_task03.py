@@ -43,6 +43,7 @@ from .test_websocket import MockWebSocket, _EchoRouter, _valid_auth
 # -- fakes for the injected seams ------------------------------------------
 
 
+# parity-exempt: RoomState stand-in recording register/unregister + rooms-left without a real collection; intentional subset
 class _FakeRoomState:
     """records register/unregister + the rooms left, no real collection."""
 
@@ -57,6 +58,7 @@ class _FakeRoomState:
         self.unregistered.append(connection_id)
 
 
+# parity-exempt: fanout stand-in recording join/leave/broadcast for dispatch assertions; intentional subset
 class _FakeFanout:
     """records join/leave/broadcast calls so dispatch can be asserted."""
 
@@ -99,6 +101,7 @@ class _Ns:
     owner_agent_id = uuid4()
 
 
+# parity-exempt: op-handler seam stand-in returning incrementing op-log seqs + recording appended frames; intentional subset
 class _FakeOpHandler:
     """returns incrementing op-log seqs and records the frames it appended."""
 

@@ -1,6 +1,6 @@
 """reconciliation between ``_underscore_exemptions.txt`` and the code it claims to describe.
 
-the ledger is a list of ``path:line:symbol`` triples, each preceded by a rationale recording why
+the ledger is a list of ``path:scope#N:symbol`` keys, each preceded by a rationale recording why
 one private access was judged acceptable. the underscore walkers scan a repo's ``src`` roots and
 never enter a ``tests/`` tree, so for every exempted test file the ledger is documentation that
 nothing reads back -- and it rots in both directions:
@@ -25,13 +25,18 @@ import re
 import subprocess
 from collections import Counter
 from pathlib import Path
+from typing import Final
 
 from threetears.enforcement.underscore_access.ruff_config import all_exempted_files
 
 __all__ = [
     "blanket_noqa_offenders",
     "carry_forward_rationales",
+    "MODULE_SCOPE",
     "enclosing_scopes",
+    "ledger_paths",
+    "ledger_scope_entries",
+    "scoped_accesses",
     "ledger_entries",
     "missing_files",
     "orphan_rationales",
@@ -55,7 +60,13 @@ _RATIONALE_PREFIX = "# rationale:"
 
 
 def ledger_entries(exemptions_path: Path) -> list[tuple[str, int, str]]:
-    """every ``path:line:symbol`` triple in the ledger, comments and blanks dropped."""
+    """every LINE-keyed ``path:line:symbol`` triple, comments and blanks dropped.
+
+    Scope-keyed entries are skipped, so this returns nothing for a ledger written in
+    that form -- see :func:`ledger_scope_entries` for those and :func:`ledger_paths`
+    for the key-agnostic path list. Retained because it is published and a consumer
+    ledger may still be line-keyed.
+    """
     found: list[tuple[str, int, str]] = []
     for raw in exemptions_path.read_text().split("\n"):
         line = raw.strip()
@@ -88,6 +99,14 @@ def private_accesses(path: Path) -> set[tuple[int, str]]:
             continue
         found.add((node.lineno, node.attr))
     return found
+
+
+#: What a line outside every ``def`` and ``class`` is keyed under.
+#:
+#: A real name rather than the empty string, because this one is WRITTEN now: a
+#: scope-keyed ledger entry spells it, and an empty middle field would not parse.
+#: ``<module>`` cannot collide with a qualname, which cannot contain angle brackets.
+MODULE_SCOPE: Final = "<module>"
 
 
 def enclosing_scopes(path: Path) -> dict[int, str]:
@@ -252,7 +271,19 @@ def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tup
             continue
         path, _, rest = line.partition(":")
         number, _, symbol = rest.partition(":")
-        if not number.isdigit() or not rationale:
+        if not rationale:
+            continue
+        if not number.isdigit():
+            # A SCOPE-KEYED entry carries its own identity, so none of the drift
+            # machinery below applies: there is no line to resolve, nothing to
+            # resolve it against, and no snapshot to consult. That is the whole
+            # reason the key was changed. Line-keyed entries keep the old path --
+            # this function is published, and a consumer ledger may still use them.
+            scope, _, occurrence = number.partition("#")
+            group = (path, scope, symbol)
+            index = int(occurrence) if occurrence.isdigit() else seen[group]
+            found.setdefault((*group, index), rationale)
+            seen[group] += 1
             continue
         source = repo_root / path
         if path not in scopes_by_path:
@@ -268,43 +299,156 @@ def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tup
                 recorded = _source_when_ledger_was_written(exemptions_path, repo_root, path)
                 recorded_scopes_by_path[path] = _scopes_from_source(recorded) if recorded is not None else None
             scopes = recorded_scopes_by_path[path] or scopes
-        group = (path, scopes.get(entry_line, ""), symbol)
+        group = (path, scopes.get(entry_line, MODULE_SCOPE), symbol)
         found.setdefault((*group, seen[group]), rationale)
         seen[group] += 1
     return found
 
 
+def ledger_paths(exemptions_path: Path) -> list[str]:
+    """the path field of every entry, whatever key form it uses.
+
+    Deliberately key-agnostic. :func:`ledger_entries` filters on a digit key, so on a
+    scope-keyed ledger it returns nothing -- and :func:`missing_files`, which only ever
+    needed the path, silently answered "no missing files" for any possible content. That
+    is a disabled gate rather than a wrong answer, and the direction it guards is not
+    covered anywhere else: :func:`unresolved_entries` skips a non-existent source
+    precisely BECAUSE this owned it, and :func:`unlisted_accesses` only walks files that
+    do exist.
+
+    :param exemptions_path: ledger file
+    :ptype exemptions_path: Path
+    :return: relative path of each entry, in file order, duplicates kept
+    :rtype: list[str]
+    """
+    found: list[str] = []
+    for raw in exemptions_path.read_text().split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        path, _, rest = line.partition(":")
+        _key, _, symbol = rest.partition(":")
+        if path and symbol:
+            found.append(path)
+    return found
+
+
 def missing_files(exemptions_path: Path, repo_root: Path) -> list[str]:
     """ledger paths that do not exist, so the entry documents a decision about nothing."""
-    return sorted({path for path, _, _ in ledger_entries(exemptions_path) if not (repo_root / path).exists()})
+    return sorted({path for path in ledger_paths(exemptions_path) if not (repo_root / path).exists()})
+
+
+def scoped_accesses(path: Path) -> dict[tuple[str, str, int], int]:
+    """every private access in *path*, keyed the way a ledger entry keys it.
+
+    ``(scope, symbol, occurrence) -> line``. The occurrence is the ordinal among
+    same-scope, same-symbol accesses ordered by line, which is the rule
+    :func:`carry_forward_rationales` and the regeneration script also use, so a
+    ledger the script writes is a ledger these checks read.
+
+    **It is NOT the only implementation of that rule.**
+    :func:`~threetears.enforcement.common.exemptions.apply_exemptions` numbers the
+    same ordinals over WALKER VIOLATIONS, which is a different population:
+    :func:`private_accesses` returns a set keyed by line, so two reads of one
+    private on a single line collapse here and are counted twice there, and the
+    walkers also emit violations that are not private reads at all. Where both
+    counters run -- an exempted file under a ``src`` root -- they must agree or an
+    entry covers a different access than the one it was written for.
+
+    **No live gate in this repo catches that.** All five walkers currently report
+    zero violations over its src roots, so the matcher is handed an empty list and
+    never matches one of these entries; ``test_underscore_access.py`` is a
+    regression guard for when that changes, not a present check. What does hold
+    today is ``TestTheTwoOccurrenceCountersAgree``, which asserts the divergent
+    shape is absent, and the unit tests that drive the matcher over a synthetic
+    repo with real violations. Agreement is asserted, never guaranteed by
+    construction.
+
+    The line is carried as the VALUE rather than the key: it is what an error
+    message needs to point a reader at, and nothing matches on it.
+
+    :param path: source file to scan
+    :ptype path: Path
+    :return: access key to the line it was found on
+    :rtype: dict[tuple[str, str, int], int]
+    """
+    scopes = enclosing_scopes(path)
+    counters: Counter[tuple[str, str]] = Counter()
+    found: dict[tuple[str, str, int], int] = {}
+    for number, symbol in sorted(private_accesses(path)):
+        scope = scopes.get(number, MODULE_SCOPE)
+        found[(scope, symbol, counters[scope, symbol])] = number
+        counters[scope, symbol] += 1
+    return found
+
+
+def ledger_scope_entries(exemptions_path: Path) -> list[tuple[str, str, str, int]]:
+    """every SCOPE-keyed entry as ``(path, scope, symbol, occurrence)``.
+
+    Line-keyed entries are skipped rather than converted: converting one needs the
+    file, and a check that silently reinterpreted a line as a scope would report
+    nothing for exactly the entries that had gone stale.
+
+    **An ordinal-less key is read as occurrence 0 here, and as EVERY occurrence by
+    the matcher** (:func:`~threetears.enforcement.common.exemptions.apply_exemptions`
+    treats a ``None`` ordinal as a wildcard). The two readings disagree, and this
+    domain never has to choose between them because it never writes that form:
+    ``scripts/regen-underscore-exemptions.py`` always emits ``#N``, and all 311
+    live entries carry one. Hand-writing an ordinal-less entry here would make
+    ``unlisted_accesses`` report occurrence 1 as unlisted while the matcher
+    silently exempted it, so do not.
+
+    :param exemptions_path: ledger file
+    :ptype exemptions_path: Path
+    :return: parsed scope-keyed entries in file order
+    :rtype: list[tuple[str, str, str, int]]
+    """
+    found: list[tuple[str, str, str, int]] = []
+    for raw in exemptions_path.read_text().split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        path, _, rest = line.partition(":")
+        key, _, symbol = rest.partition(":")
+        if not path or not symbol or key.isdigit():
+            continue
+        scope, _, occurrence = key.partition("#")
+        found.append((path, scope, symbol, int(occurrence) if occurrence.isdigit() else 0))
+    return found
 
 
 def unresolved_entries(exemptions_path: Path, repo_root: Path) -> list[str]:
-    """``path:line:symbol`` triples whose line no longer contains the symbol they name.
+    """entries naming an access the file no longer has.
 
-    files that do not exist at all are skipped, so :func:`missing_files` reports them once
-    instead of both checks counting the same entry.
+    Keyed on the SCOPE, so an edit above an entry is not drift: only an access that
+    was removed, renamed, or moved to another function shows up here. Files that do
+    not exist at all are skipped, so :func:`missing_files` reports them once instead
+    of both checks counting the same entry.
     """
     unresolved: list[str] = []
-    for path, number, symbol in ledger_entries(exemptions_path):
+    by_path: dict[str, dict[tuple[str, str, int], int]] = {}
+    for path, scope, symbol, occurrence in ledger_scope_entries(exemptions_path):
         source = repo_root / path
         if not source.exists():
             continue
-        lines = source.read_text(errors="replace").split("\n")
-        if number > len(lines) or symbol not in lines[number - 1]:
-            unresolved.append(f"{path}:{number}:{symbol}")
+        if path not in by_path:
+            by_path[path] = scoped_accesses(source)
+        if (scope, symbol, occurrence) not in by_path[path]:
+            unresolved.append(f"{path}:{scope}#{occurrence}:{symbol}")
     return unresolved
 
 
 def unlisted_accesses(exemptions_path: Path, repo_root: Path) -> list[str]:
     """private accesses on an exempted path that have no ledger entry."""
-    entries = set(ledger_entries(exemptions_path))
+    entries = {
+        (path, scope, symbol, occurrence) for path, scope, symbol, occurrence in ledger_scope_entries(exemptions_path)
+    }
     unlisted: list[str] = []
     for source in all_exempted_files(repo_root):
         rel = source.relative_to(repo_root).as_posix()
-        for number, symbol in sorted(private_accesses(source)):
-            if (rel, number, symbol) not in entries:
-                unlisted.append(f"{rel}:{number}:{symbol}")
+        for (scope, symbol, occurrence), number in sorted(scoped_accesses(source).items()):
+            if (rel, scope, symbol, occurrence) not in entries:
+                unlisted.append(f"{rel}:{number}:{symbol} (scope {scope}#{occurrence})")
     return unlisted
 
 

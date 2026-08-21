@@ -12,14 +12,20 @@ import enum
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from threetears.core.cache.base import build_select_clause
-from threetears.observe import get_logger
+from threetears.core.cache.base import (
+    _CACHED_AT_COLUMN,
+    _TABLES_WITHOUT_CACHE_STAMP,
+    _entry_is_fresh,
+    build_select_clause,
+)
+from threetears.observe import counter, get_logger
 
 __all__ = [
     "SQLiteBackend",
@@ -33,6 +39,18 @@ except ImportError:
     _UUID_TYPES = (uuid.UUID,)
 
 log = get_logger(__name__)
+
+#: Name of the expired-row counter, resolved at the call site rather than here.
+#:
+#: NOT built at module scope. ``counter()`` registers with prometheus's global
+#: registry, which outlives a module reload, while the helper's own cache does
+#: not -- so a re-import raises ``Duplicated timeseries``. That is not
+#: hypothetical here: ``test_l1_surface_imports_without_the_client`` purges
+#: ``threetears`` and re-imports the L1 path to prove it needs no NATS client,
+#: and a module-level metric turned that guard into an error. Building it inside
+#: the function keeps this module free of import-time side effects, which is the
+#: property that test exists to defend, and costs a cached lookup per drop.
+_EXPIRED_DROPS_METRIC: str = "threetears_l1_rows_expired_total"
 
 
 class _PooledConnection:
@@ -137,6 +155,13 @@ class SQLiteBackend:
             ddl = self._generate_create_table(table)
             self._anchor_conn.execute(ddl)
             self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
+            # The stamp must land in BOTH the DDL and this registry. ``upsert``
+            # filters writes to the registry, so a column present only in the
+            # table would silently drop every stamp write and leave the column
+            # permanently NULL -- with any test that only inspects the DDL
+            # still passing.
+            if self._stamps_cache_age(table.name):
+                self._schema_info[table.name][_CACHED_AT_COLUMN] = "REAL"
             new_tables += 1
             log.debug(f"Created SQLite table: {table.name}")
 
@@ -287,6 +312,15 @@ class SQLiteBackend:
             col_type = schema.get(col_name, "TEXT")
             values.append(self.serialize_value(value, col_type))
 
+        # The stamp is preserved on absence, and that falls out of the column
+        # filter above rather than needing its own branch: a key the caller did
+        # not supply is not in ``columns``, so DO UPDATE SET never names it and
+        # the stored value survives. That matters because reads strip the stamp,
+        # so a read-modify-write caller (the context-item collection touching
+        # ``date_accessed``, for one) hands back a dict without it. Clearing on
+        # absence would make an hours-old row read as locally-authored, and
+        # locally-authored rows never expire. A fresh INSERT leaves it NULL,
+        # which is exactly right: that row WAS authored locally.
         update_cols = [c for c in columns if c not in pk_cols]
         update_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
         conflict_clause = ", ".join(pk_cols)
@@ -313,6 +347,9 @@ class SQLiteBackend:
         entity_id: Any,
         primary_key: str | tuple[str, ...] = "id",
         columns: Sequence[str] | None = None,
+        *,
+        max_age_seconds: float | None = None,
+        now_monotonic: float | None = None,
     ) -> dict[str, Any] | None:
         """select single row by primary key with type deserialization.
 
@@ -328,23 +365,36 @@ class SQLiteBackend:
             selects every column. Exactly the named columns come back --
             pk columns are NOT implicitly added.
         :ptype columns: Sequence[str] | None
-        :return: row dict on hit, ``None`` on miss
+        :param max_age_seconds: bound on how long a row cached from a lower
+            tier may be served; ``None`` (the default) disables expiry
+        :ptype max_age_seconds: float | None
+        :param now_monotonic: caller-supplied monotonic clock reading, so a
+            test can exercise an hour-long window without sleeping
+        :ptype now_monotonic: float | None
+        :return: row dict on hit, ``None`` on miss or when the row was past
+            its max age (in which case the row is also deleted)
         :rtype: dict[str, Any] | None
         :raises ValueError: if ``columns`` is empty, or names a column
             the table's registered schema does not have
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
-        select_clause = build_select_clause(self._schema_info.get(table), table, columns)
+        select_clause = build_select_clause(
+            self._schema_info.get(table), table, self._with_stamp(table, columns, max_age_seconds)
+        )
         where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
         sql = f"SELECT {select_clause} FROM {table} WHERE {where_clause}"
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, pk_vals)
         row = cursor.fetchone()
-        if row is not None:
-            return self._deserialize_row(table, dict(row))
-        return None
+        if row is None:
+            return None
+        raw = dict(row)
+        if self._is_past_max_age(table, raw, max_age_seconds, now_monotonic):
+            self._drop_expired(table, entity_id, primary_key, raw, max_age_seconds, now_monotonic)
+            return None
+        return self._deserialize_row(table, raw)
 
     def select_batch(
         self,
@@ -352,6 +402,9 @@ class SQLiteBackend:
         entity_ids: list[Any],
         primary_key: str | tuple[str, ...] = "id",
         columns: Sequence[str] | None = None,
+        *,
+        max_age_seconds: float | None = None,
+        now_monotonic: float | None = None,
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key with type deserialization.
 
@@ -369,14 +422,23 @@ class SQLiteBackend:
             selects every column. Exactly the named columns come back --
             pk columns are NOT implicitly added.
         :ptype columns: Sequence[str] | None
-        :return: list of row dicts; empty list when ``entity_ids`` is empty
+        :param max_age_seconds: bound on how long a row cached from a lower
+            tier may be served; ``None`` (the default) disables expiry
+        :ptype max_age_seconds: float | None
+        :param now_monotonic: caller-supplied monotonic clock reading, so a
+            test can exercise an hour-long window without sleeping
+        :ptype now_monotonic: float | None
+        :return: list of row dicts, omitting (and deleting) any past its max
+            age; empty list when ``entity_ids`` is empty
         :rtype: list[dict[str, Any]]
         :raises ValueError: if ``columns`` is empty, or names a column
             the table's registered schema does not have
         """
         if not entity_ids:
             return []
-        select_clause = build_select_clause(self._schema_info.get(table), table, columns)
+        select_clause = build_select_clause(
+            self._schema_info.get(table), table, self._with_stamp(table, columns, max_age_seconds)
+        )
         pk_cols = self._pk_columns(primary_key)
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
@@ -396,7 +458,29 @@ class SQLiteBackend:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
-        return [self._deserialize_row(table, dict(row)) for row in rows]
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            # Age is read from the raw row, because ``_deserialize_row`` strips
+            # the stamp; the pk is taken from the deserialized one, because
+            # ``delete_by_id`` serializes what it is given and a raw value
+            # would be serialized twice.
+            expired = self._is_past_max_age(table, raw, max_age_seconds, now_monotonic)
+            deserialized = self._deserialize_row(table, raw)
+            if not expired:
+                kept.append(deserialized)
+                continue
+            if all(c in deserialized for c in pk_cols):
+                # Same disposal as the single-row path: drop it rather than
+                # leave a tombstone every later read has to re-evaluate. A
+                # projection that omitted a pk column leaves nothing to delete
+                # BY, so the row is skipped this read and collected on the next
+                # unprojected one.
+                pk_value: Any = (
+                    tuple(deserialized[c] for c in pk_cols) if len(pk_cols) > 1 else deserialized[pk_cols[0]]
+                )
+                self._drop_expired(table, pk_value, primary_key, raw, max_age_seconds, now_monotonic)
+        return kept
 
     def delete_by_id(
         self,
@@ -431,12 +515,28 @@ class SQLiteBackend:
             raise
 
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        """Execute a generic SELECT query, returning list of row dicts."""
+        """Execute a generic SELECT query, returning list of row dicts.
+
+        The cached-at stamp is stripped here too. ``_deserialize_row`` strips it
+        on the keyed reads, but this is an ``L1Backend`` protocol member and a
+        ``SELECT *`` through it would hand a caller an internal bookkeeping
+        column that :data:`~threetears.core.cache.base._CACHED_AT_COLUMN`
+        promises never escapes.
+
+        :param sql: SELECT statement with ``?`` placeholders
+        :ptype sql: str
+        :param params: positional parameter values
+        :ptype params: tuple[Any, ...]
+        :return: row dicts, stamp removed
+        :rtype: list[dict[str, Any]]
+        """
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
-        return [dict(row) for row in rows] if rows else []
+        if not rows:
+            return []
+        return [{k: v for k, v in dict(row).items() if k != _CACHED_AT_COLUMN} for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
         """Serialize a Python value for SQLite storage based on column type."""
@@ -489,10 +589,28 @@ class SQLiteBackend:
         return result
 
     def _deserialize_row(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
-        """Deserialize a SQLite row back to Python types using schema registry."""
+        """Deserialize a SQLite row back to Python types using schema registry.
+
+        Strips the injected cache-age stamp. This is the single funnel both
+        ``select_by_id`` and ``select_batch`` pass every row through, so
+        stripping here covers the ``SELECT *`` path AND a caller that names the
+        column explicitly, so no projection through those two reaches past it.
+
+        ``execute_query`` is NOT covered: it is on the same protocol, returns
+        raw rows, and a ``SELECT *`` through it against a non-exempt entity
+        table yields the stamp. No in-repo caller is affected (the scan cache
+        and geo name their columns; the flush buffer is exempt), and it is
+        documented as the raw escape hatch -- but a future caller that selects
+        star through it and hands the row onward would carry the stamp with it. The
+        stamp is backend bookkeeping; nothing above the cache tier has any use
+        for it, and a row handed to an entity constructor carrying an unknown
+        key is a bug waiting on the first strict consumer.
+        """
         schema = self._schema_info.get(table, {})
         return {
-            col_name: self.deserialize_field(value, schema.get(col_name, "TEXT")) for col_name, value in row.items()
+            col_name: self.deserialize_field(value, schema.get(col_name, "TEXT"))
+            for col_name, value in row.items()
+            if col_name != _CACHED_AT_COLUMN
         }
 
     def reset(self) -> None:
@@ -539,12 +657,167 @@ class SQLiteBackend:
                     primary = " PRIMARY KEY"
             columns.append(f'"{column.name}" {ddl_type}{nullable}{primary}')
 
+        if self._stamps_cache_age(table.name):
+            if any(col.name == _CACHED_AT_COLUMN for col in table.columns):
+                raise ValueError(
+                    f"table {table.name!r} declares {_CACHED_AT_COLUMN!r}, which is reserved "
+                    f"for the L1 cache-age stamp and is injected by the backend",
+                )
+            columns.append(f'"{_CACHED_AT_COLUMN}" REAL')
+
         if is_composite_pk:
             pk_clause = ", ".join(f'"{c}"' for c in pk_cols)
             columns.append(f"PRIMARY KEY ({pk_clause})")
 
         columns_sql = ", ".join(columns)
         return f"CREATE TABLE IF NOT EXISTS {table.name} ({columns_sql})"
+
+    @staticmethod
+    def _stamps_cache_age(table: str) -> bool:
+        """Whether ``table`` carries the injected cache-age stamp column."""
+        return table not in _TABLES_WITHOUT_CACHE_STAMP
+
+    def _with_stamp(
+        self,
+        table: str,
+        columns: Sequence[str] | None,
+        max_age_seconds: float | None,
+    ) -> Sequence[str] | None:
+        """Add the stamp to an explicit projection when expiry needs to read it.
+
+        An unprojected read already returns every column. A projected one does
+        not, and the stamp missing from the row is indistinguishable from a row
+        that carries no stamp -- which reads as fresh. That would let a caller
+        silently opt out of expiry by naming columns, so the projection is
+        widened rather than trusted. ``_deserialize_row`` strips it again, so
+        the caller still never sees it.
+
+        :param table: target table name
+        :ptype table: str
+        :param columns: the caller's projection, or ``None`` for all columns
+        :ptype columns: Sequence[str] | None
+        :param max_age_seconds: the expiry bound, or ``None`` when off
+        :ptype max_age_seconds: float | None
+        :return: the projection to query with
+        :rtype: Sequence[str] | None
+        """
+        if columns is None or max_age_seconds is None or not self._stamps_cache_age(table):
+            return columns
+        if _CACHED_AT_COLUMN in columns:
+            return columns
+        return [*columns, _CACHED_AT_COLUMN]
+
+    def _drop_expired(
+        self,
+        table: str,
+        entity_id: Any,
+        primary_key: str | tuple[str, ...],
+        raw_row: dict[str, Any],
+        max_age_seconds: float | None,
+        now_monotonic: float | None,
+    ) -> None:
+        """Delete a row that aged out, and say so.
+
+        Deleting silently makes the two states nobody can otherwise tell apart
+        look identical: a bound doing its job, and a bound that never fires
+        because the stamp column stayed NULL. The design record names that
+        second failure explicitly, and without a line here the only symptom is
+        staleness that was supposed to have been bounded.
+
+        Debug rather than info: on a busy collection this is per-read, and the
+        interesting signal is the rate, not the individual row -- which is why
+        the rate is a counter (:data:`_EXPIRED_DROPS_METRIC`) rather than something a
+        reader has to reconstruct by grepping debug logs that production does
+        not keep at that level.
+
+        **The delete may fail, and a read must not raise because of it.**
+        ``delete_by_id`` opens ``BEGIN IMMEDIATE`` and re-raises
+        ``OperationalError`` on lock contention. Letting that out would make
+        reads newly susceptible to write contention -- and in ``select_batch``
+        it would abandon every row after the failure. A failed delete costs
+        nothing: the row is already being withheld from this caller, and the
+        next read judges it again and retries the delete.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_id: pk value to delete by, in deserialized form
+        :ptype entity_id: Any
+        :param primary_key: pk column name or tuple, as the caller declared it
+        :ptype primary_key: str | tuple[str, ...]
+        :param raw_row: the row as read, stamp still present
+        :ptype raw_row: dict[str, Any]
+        :param max_age_seconds: the bound that was exceeded
+        :ptype max_age_seconds: float | None
+        :param now_monotonic: the clock reading judged against
+        :ptype now_monotonic: float | None
+        :return: nothing
+        :rtype: None
+        """
+        stamp = raw_row.get(_CACHED_AT_COLUMN)
+        reading = time.monotonic() if now_monotonic is None else now_monotonic
+        try:
+            self.delete_by_id(table, entity_id, primary_key)
+        except sqlite3.OperationalError as exc:
+            log.warning(
+                "L1 row past its max age could not be dropped; withholding it anyway",
+                extra={"extra_data": {"table": table, "max_age_seconds": max_age_seconds, "error": str(exc)}},
+            )
+            return
+        counter(
+            _EXPIRED_DROPS_METRIC,
+            description="L1 rows deleted for exceeding their configured max age",
+            label_names=("table",),
+        ).labels(table=table).inc()
+        log.debug(
+            "L1 row dropped past its max age",
+            extra={
+                "extra_data": {
+                    "table": table,
+                    "age_seconds": None if stamp is None else reading - stamp,
+                    "max_age_seconds": max_age_seconds,
+                }
+            },
+        )
+
+    def _is_past_max_age(
+        self,
+        table: str,
+        raw_row: dict[str, Any],
+        max_age_seconds: float | None,
+        now_monotonic: float | None,
+    ) -> bool:
+        """Whether ``raw_row`` is older than the caller's bound allows.
+
+        Reads the stamp before ``_deserialize_row`` strips it, which is why the
+        comparison lives at this tier at all: nothing above the cache can see
+        the value.
+
+        A row with no stamp is never past its age. That is not a special case
+        bolted on here -- it is the rule stated once in
+        :func:`~threetears.core.cache.base._entry_is_fresh`: an unstamped row
+        was authored locally and has never been served by a lower tier, so
+        expiring it would discard a local write.
+
+        :param table: target table name
+        :ptype table: str
+        :param raw_row: the row as read, stamp still present
+        :ptype raw_row: dict[str, Any]
+        :param max_age_seconds: the expiry bound, or ``None`` when off
+        :ptype max_age_seconds: float | None
+        :param now_monotonic: caller-supplied clock reading, or ``None`` to read one
+        :ptype now_monotonic: float | None
+        :return: ``True`` when the row must be treated as a miss
+        :rtype: bool
+        """
+        if max_age_seconds is None or not self._stamps_cache_age(table):
+            return False
+        stamp = raw_row.get(_CACHED_AT_COLUMN)
+        reading = time.monotonic() if now_monotonic is None else now_monotonic
+        return not _entry_is_fresh(
+            stamp,
+            now_monotonic=reading,
+            max_age_seconds=max_age_seconds,
+        )
 
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:

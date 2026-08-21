@@ -207,6 +207,32 @@ Controls when deferred writes reach L3 (PostgreSQL):
 
 Only tables listed in `collection_flush_tables` are eligible for deferred writes. All other tables always write immediately regardless of strategy.
 
+## Bounding L1 Staleness
+
+Off unless a collection asks for it:
+
+```python
+registry.set_l1_max_age("my_table", 3600.0)   # omit the value for the 3600s default
+```
+
+A read past the bound deletes the L1 row and pulls through, so the next read is
+fresh. It applies only to rows cached **from a lower tier** -- a row this process
+wrote locally is not stamped and never expires, so a field write cannot renew a
+stale row's lifetime.
+
+Use it for the staleness invalidation cannot reach: a dropped invalidation when
+the outbound buffer overflows, and a pod whose subscription is partitioned while
+its peers stay healthy.
+
+**A collection with no L3 pool is refused a bound at the point of use.**
+`set_l1_max_age` still accepts and stores the value -- the refusal is in
+`BaseCollection.l1_max_age_seconds`, which reports `None` whatever was
+configured, so wiring order cannot defeat it. With nothing to pull through from,
+an expired row is not a miss that repairs -- it reads as "this row does not
+exist", and a compare-and-set that reads absence writes fresh state over live
+state. `DuckDBBackend` refuses too, with `NotImplementedError`: it injects no
+stamp, so accepting a bound would silently not enforce it.
+
 ## Optimistic Locking
 
 Collections use `date_updated` for optimistic locking. When saving an existing entity, the `save_to_store` implementation should check:
