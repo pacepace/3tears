@@ -719,7 +719,7 @@ def _agent_pod(
             # the durable answer stream carries BOTH directions this pod touches: the results its
             # in-process tool server delivers, and the replies the registry delivers back to it for
             # the long calls it makes. one stream, so one JetStream control-plane grant.
-            JsResource.stream(f"{ns}_channels_deliver"),
+            JsResource.stream(f"{ns}-channels-deliver"),
             JsResource.stream(result_stream_name()),
         ),
     )
@@ -1041,7 +1041,7 @@ def _hub(
             # whole nested loop, so one refused bucket aborts every REMAINING bucket mid-flush at
             # WARNING. Fix the hub, not this grant.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True, declare=True),
-            JsResource.stream(f"{ns}_channels_deliver"),
+            JsResource.stream(f"{ns}-channels-deliver"),
         ),
     )
 
@@ -1129,7 +1129,7 @@ def _channel_adapter(
         inbox_prefix=inbox,
         js_resources=(
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
-            JsResource.stream(f"{ns}_channels_deliver"),
+            JsResource.stream(f"{ns}-channels-deliver"),
         ),
     )
 
