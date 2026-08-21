@@ -123,12 +123,6 @@ _ALLOWLIST = (
         rationale=("static config, downgrade callables registered once at startup"),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/kv.py",
-        class_name="NatsKvClient",
-        attr_name="_buckets",
-        rationale=("live NATS KV connection references, non-serializable"),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/cache/sqlite.py",
         class_name="SQLiteBackend",
         attr_name="_schema_info",

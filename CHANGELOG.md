@@ -251,7 +251,29 @@ packages (bumped in lock-step).
   schema, as `SQLiteBackend` already did. Without it any framework-injected
   column reached the SQL against a table that does not declare it.
 
-## v0.27.0 -- 2026-08-18
+### Removed
+
+- `core`: **`threetears.core.cache.kv` is deleted** -- both `NatsKvClient` and
+  `BucketConfig`, and the module itself. The class had zero production
+  construction sites: every live KV path goes through `NatsClient.kv_bucket` /
+  `NatsKvBucket`, and `BaseCollection._ensure_kv` has not called its
+  `get(bucket, key)` / `put(bucket, key, value)` api since the typed-wrapper
+  migration. `BucketConfig` existed only to configure it and had no other
+  consumer, so it goes with it rather than surviving as an orphan.
+
+  It was not inert. Its docstrings advertised **file** storage while
+  `BucketConfig.storage` defaulted to memory, and the hub's CLAUDE.md cache
+  carve-out cited that stale declaration as the authority for the
+  memory-storage decision -- a reader following the citation found a
+  contradiction and no live code path. The real authority is
+  `NatsClient.kv_bucket`'s `storage: str = "memory"`. Its `connect` also
+  wrapped every bucket open in `except Exception: log.warning(...)`, commented
+  "fail-open", and its 7200 s `collections` TTL was routinely misread as
+  evidence that live bucket config had drifted.
+
+  Per the no-shims rule there is no deprecation alias and no re-export at the
+  old path. Callers import `NatsClient` from `threetears.nats` and open buckets
+  through `kv_bucket`.
 
 Names the limit above the publish bound, and lets a caller ask about it before
 building something that misses it.

@@ -4,9 +4,9 @@
 talk to NATS. it absorbs the lifecycle, dual-phase reconnect-ceiling,
 rate-limited error logging, deadletter dispatch, typed publish, and
 JetStream KV access that previously lived in three half-overlapping
-wrappers (``<upstream-hub>/common/nats.py``,
-``threetears.core.cache.kv.NatsKvClient`` (formerly
-``cache.nats.NatsClient``), ``<consumer>.runtime.nats_transport``).
+wrappers (``<upstream-hub>/common/nats.py``, the KV facade formerly at
+``threetears.core.cache.kv`` (since deleted),
+``<consumer>.runtime.nats_transport``).
 there is exactly one canonical wrapper now; :func:`from nats import`
 outside this module is flagged by the per-repo enforcement walker.
 

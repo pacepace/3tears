@@ -54,10 +54,34 @@ leaving:
 
 ---
 
+## Decision: `BucketConfig` is deleted with the class
+
+Checked before deciding. Outside `cache/kv.py` itself and its own unit test,
+`BucketConfig` had no consumer in any of the seven repos — the only other hits
+were prose in the CHANGELOG, these shards, and `14-eng-ai-bot-agent-map`'s
+`docs/geo-tile-caching-design.md`. The three `TestBucketConfiguration` classes
+under `packages/core/tests/unit/coordination/` are unrelated: they name a test
+class, not this type.
+
+It existed solely to describe a bucket for `NatsKvClient.connect`, and the whole
+of what it described — suffix, TTL, storage — is now expressed as keyword
+arguments to `NatsClient.kv_bucket`. Keeping it would have left an orphan
+dataclass no code constructs, which is the same "reader follows a citation and
+finds no live code path" failure the stale storage docstring already caused. So
+the whole module goes: `BucketConfig`, `NatsKvClient`, `_PING_TIMEOUT_SECONDS`,
+and `packages/core/src/threetears/core/cache/kv.py` itself.
+`threetears/core/cache/__init__.py` never exported either name, so no
+`__all__` edit was needed.
+
+---
+
 ## Files to Modify
 
 - `packages/core/src/threetears/core/cache/kv.py` — delete `NatsKvClient`; decide `BucketConfig`.
 - `packages/core/tests/test_kv_client.py` — deleted with it (24 tests).
+- `packages/core/src/threetears/core/coordination/replay_guard.py` and
+  `packages/nats/src/threetears/nats/client.py` — module docstrings name the
+  class as the fail-open counterexample / migration ancestor.
 - `3tears/tests/enforcement/test_dict_state_detection.py` — a catalog entry names `NatsKvClient`.
 - `14-eng-ai-bot-agents/src/aibots_agents/bootstrap/phases/backend.py` and
   `devx/workspace_runtime.py` — the comments marking it retired now name a class
@@ -80,11 +104,27 @@ leaving:
 
 ## Success criteria
 
-- [ ] `NatsKvClient` appears nowhere in any of the seven repos, as symbol or as a dotted-path string
-- [ ] `BucketConfig`'s fate is decided and the decision is recorded in the commit
-- [ ] `./scripts/check-all.sh` green (it drops the 24 deleted tests — state the expected new total rather than treating the drop as a regression)
-- [ ] SDK unit suite green
-- [ ] The hub CLAUDE.md carve-out no longer cites the deleted class as its authority (04a does this; confirm it held)
+- [x] `NatsKvClient` appears nowhere in any of the seven repos, as symbol or as a dotted-path string. The symbol is gone entirely; the surviving hits are past-tense prose in records of the deletion itself (this shard, `coll-task-04a`, `coll-sequence.md`, the CHANGELOG, `14-eng-ai-bot/docs/done/*` and the evidence ledger), which are history and stay
+- [x] `BucketConfig`'s fate is decided and the decision is recorded — deleted with the class; see **Decision** above
+- [x] `./scripts/check-all.sh` green — **15843 -> 15811 passed, 3 skipped, 410 deselected**, plus 139 sidecar unchanged
+- [x] SDK unit suite green — **2984 -> 2983 passed**, the delta being `test_bootstrap_does_not_construct_nats_kv_client`, which asserted the absence of a class that can no longer exist
+- [x] The hub CLAUDE.md carve-out no longer cites the deleted class as its authority (04a does this; confirmed at `14-eng-ai-bot/CLAUDE.md:375`, which now cites `NatsClient.kv_bucket`)
+
+### The drop is 32, not 24
+
+`test_kv_client.py` carried 24 tests, and four enforcement suites parametrize
+one case **per source file**, so deleting `cache/kv.py` removes eight more:
+three in `packages/core/tests/enforcement/test_docstring_conventions.py`, two in
+`packages/registry/tests/enforcement/test_no_hardcoded_timeouts.py`, one in
+`tests/enforcement/test_uuid_stringification.py`, and two in
+`tests/enforcement/test_uuidv7_enforcement.py`. Verified by diffing
+`--collect-only` output either side of the deletion: every one of the 32 is
+accounted for and nothing else moved.
+
+Removing the `NatsKvClient` entry from the dict-state allowlist changes no
+count — that catalog is not parametrized — but it is not optional either:
+`TestDictStateDetection.test_no_stale_allowlist_entries` fails on an entry
+naming a file that no longer exists.
 
 ---
 

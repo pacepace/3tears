@@ -11,8 +11,8 @@ The bucket TTL bounds both memory and the replay window: a nonce only needs reme
 long as the assertion carrying it is still inside its accept window. Set ``ttl_seconds`` to that
 window.
 
-FAIL-CLOSED, unlike the L2 cache facade (:class:`threetears.core.cache.kv.NatsKvClient`, which is
-deliberately fail-open): a transport failure that the backing
+FAIL-CLOSED, unlike the L2 cache accessors on :class:`~threetears.core.collections.BaseCollection`
+(deliberately fail-open): a transport failure that the backing
 :class:`~threetears.nats.kv.KvBucketLike` cannot self-heal propagates as
 :class:`~threetears.nats.KvError`, so the caller DENIES rather than silently admitting a possible
 replay. The bucket uses ``file`` storage so a normal NATS restart re-binds the intact on-disk

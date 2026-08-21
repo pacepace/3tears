@@ -331,7 +331,7 @@ and the `direct` field to collections.
 - [x] KVC-10's reconnect hook is wired — `hub/app.py`'s `_redeclare_collections_bucket`, registered via `NatsClient.add_reconnect_callback`. Statically pinned by `tests/enforcement/test_collections_bucket_declaration.py`; the equivalent behaviour (JetStream wiped out from under a live handle, bucket returns carrying `allow_direct`) is proven live by `test_the_self_heal_recreates_with_direct`. **Not yet proven by killing NATS under a running hub** — the hub cannot boot until `coll-task-06b` supplies its `kv_key_scope`
 - [ ] No static-user process can create the collections bucket — `coll-task-05b`
 - [x] Hub lifespan declares the collections bucket, before `registry.configure(l2_client=nc)`
-- [ ] `NatsKvClient` is gone; no import or patch target remains in any repo — `coll-task-04b`
+- [x] `NatsKvClient` is gone; no import or patch target remains in any repo — `coll-task-04b` (landed: the whole `threetears.core.cache.kv` module deleted, `BucketConfig` with it)
 - [ ] Live bucket reports `allow_direct: true` — the MECHANISM is proven against a live broker (`test_declaring_flips_allow_direct_on_a_live_bucket`: a bucket created by `create_key_value` with `allow_direct: false`, holding a value, ends the call with `allow_direct: true`, still bound, value intact). **Not yet run against cobalt-dev or the local stack**, because the hub cannot boot until `-06b`
 - [x] `./scripts/check-all.sh` and `./scripts/test-integration.sh` green
 
