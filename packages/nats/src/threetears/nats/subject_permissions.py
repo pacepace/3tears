@@ -1182,6 +1182,24 @@ def _agent_router(
             # so no namespace prefix is ever applied -- the same exception the registry's
             # ``tool_catalog`` is.
             JsResource.kv("agent_router_catalog", scope=None, writable=True),
+            # ALSO UNPREFIXED, and ALSO a direct bind: ``agent_router/proxy.py``'s ``start`` does
+            # ``js.key_value(bucket=f"{namespace}_agent_config")`` for the per-agent turn-timeout
+            # lookup, so the name is underscore-spelled verbatim and never receives the ``{ns}-``
+            # that ``kv_bucket`` layers on. Matches the live ``aibots_agent_config`` bucket.
+            #
+            # READ-ONLY, and that is a rule rather than a trim: CLAUDE.md's Config Source-of-Truth
+            # makes ``platform.agents`` the source and this bucket a hot cache over it, written
+            # ONLY by the hub's admin endpoints. The router resolves a timeout from it and never
+            # puts (``_config_kv`` is read at one site), and a KV read is a ``$JS.API`` request
+            # rather than a ``$KV.`` publish, so withholding write authority costs it nothing.
+            #
+            # ADDED here (evidence-ledger bug 21) because the resolver is the canonical model and
+            # the omission was already being papered over downstream: the hub's static-conf
+            # generator carries this same bucket in its ``_EXTRA_RESOURCES`` table with the note
+            # "``_agent_router`` in the canonical model does not declare it; reported upstream".
+            # That entry must be dropped when this lands, or the rendered conf declares the bucket
+            # twice.
+            JsResource.kv(f"{ns}_agent_config", scope=None, writable=False),
             # ``PodAffinityCollection`` -- sticky conversation-to-pod routing, and another
             # ``L3 = None`` collection, so a key that no longer resolves is a lost route rather
             # than a cache miss.

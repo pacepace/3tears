@@ -1,0 +1,13 @@
+# exemptions for packages/nats/tests/enforcement/test_l2_scope_wiring.py (coll-task-06a).
+#
+# format (one entry per violation, each preceded by exactly one rationale line):
+#   # rationale: <specific reason, >= 30 chars, not a blanket phrase>
+#   relative/posix/path.py:LINE:RegistrySpelling
+#
+# LINE may be a concrete line number or '*' for a file-wide exemption of that spelling.
+#
+# Deliberately empty. An unscoped L2-live registry does not fail: it writes keys under no
+# principal segment, onto a bucket shared by every service, and the only symptom is that a
+# narrowed grant stops matching -- which arrives as a JetStream deadline, not as an error.
+# "This registry is only used for X" is the shape the failure takes, so an entry here needs a
+# reason that names which other call site supplies the scope for the same registry object.

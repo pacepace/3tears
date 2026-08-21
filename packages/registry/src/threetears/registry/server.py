@@ -15,6 +15,8 @@ import os
 import signal
 from collections.abc import Awaitable, Callable
 
+from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.config import DefaultCoreConfig
@@ -27,8 +29,11 @@ from threetears.nats import (
     RESULT_RETENTION_SECONDS,
     RESULT_STREAM_SUFFIX,
     NatsClient,
+    Principal,
     Subjects,
+    kv_key_scope_for,
 )
+from threetears.nats.errors import KvError
 from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
@@ -51,7 +56,9 @@ from threetears.registry.config import (
 from threetears.registry.registration import RegistrationHandler
 
 __all__ = [
+    "COLLECTIONS_BUCKET_SUFFIX",
     "RegistryServer",
+    "build_heartbeat_collection_registry",
     "nats_connect",
 ]
 
@@ -60,6 +67,79 @@ _logger = get_logger(__name__)
 # a pop nonce must be remembered at least as long as a proof stays valid: the iat freshness
 # window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
 _POP_NONCE_TTL_SECONDS = 120
+
+#: the shared L2 bucket every ``BaseCollection`` in every process opens. taken from the
+#: collection base rather than spelled again here: the name is a wire fact shared by the hub's
+#: canonical declaration, this process's eager bind, and the minted grant, and a second literal
+#: would be a second source of truth for it.
+COLLECTIONS_BUCKET_SUFFIX: str = BaseCollection.L2_BUCKET_SUFFIX
+
+#: how many times the eager collections-bucket BIND is retried before the process gives up.
+#: sized against the cold-cluster race it exists for: the hub declares the bucket in its own
+#: lifespan and nothing sequences this process behind it, so the first bind can precede the
+#: declaration by however long hub startup takes. the schedule below tops out at 30s, so 20
+#: attempts span several minutes -- long enough for a hub doing migrations, short enough that a
+#: genuinely missing grant is reported rather than hung on forever.
+_COLLECTIONS_BIND_ATTEMPTS = 20
+_COLLECTIONS_BIND_BACKOFF_SECONDS = 2.0
+_COLLECTIONS_BIND_MAX_BACKOFF_SECONDS = 30.0
+
+
+def build_heartbeat_collection_registry(
+    *,
+    nats_client: NatsClient,
+    l1_backend: SQLiteBackend,
+    core_config: DefaultCoreConfig,
+) -> tuple[CollectionRegistry, HeartbeatCollection]:
+    """build the registry server's own L2-live collection registry and its heartbeat store.
+
+    THE FIRST OF TWO REGISTRIES in this process; :func:`~threetears.registry.rbac_stack.build_registry_rbac_stack`
+    builds the second. Both resolve to the same principal and therefore to the same key scope --
+    one process, one NATS identity, one scope -- and replicas of the registry share it
+    deliberately, because the scope is the SHARING boundary rather than the connection.
+
+    ``HeartbeatCollection`` has **no L3**, so this process's L2 is a SOURCE OF TRUTH and not a
+    cache: a key that no longer resolves is a pod liveness record that no longer exists. That is
+    also why the scope has to be right rather than merely present -- a wrong one does not miss,
+    it loses.
+
+    Extracted from :meth:`RegistryServer._start_handlers` so the scope decision is drivable by a
+    test without standing up the whole serve loop, mirroring the reason
+    :meth:`RegistryServer.apply_rbac_factory` is a method rather than an inline block.
+
+    :param nats_client: connected canonical NATS wrapper client, used as the L2 tier and as the
+        heartbeat collection's own client
+    :ptype nats_client: NatsClient
+    :param l1_backend: the process-local SQLite L1 tier
+    :ptype l1_backend: SQLiteBackend
+    :param core_config: collection flush configuration
+    :ptype core_config: DefaultCoreConfig
+    :return: the configured registry and the heartbeat collection snapped onto it
+    :rtype: tuple[CollectionRegistry, HeartbeatCollection]
+    :raises L2ScopeNotConfiguredError: never from here -- the scope is supplied in the same call
+        that supplies the client, which is what the raise exists to demand
+    """
+    collection_registry = CollectionRegistry()
+    # ``l2_create_if_missing=False``: this process BINDS the shared collections bucket, it never
+    # declares it. The hub is the declaring identity, and the registry's own NATS grant carries
+    # ``$JS.API.STREAM.INFO.KV_{ns}-collections`` with no ``CREATE`` -- so leaving the default
+    # ``True`` would issue a create the broker never answers (a permissions refusal arrives as a
+    # deadline, not as an error) before falling through to the bind that was always going to
+    # succeed. Binding also RESTORES the config check: the declare path reconciles or falls
+    # through silently, while the bind path compares ``allow_direct`` and refuses a bucket this
+    # process must not run against.
+    collection_registry.configure(
+        l1_backend=l1_backend,
+        l2_client=nats_client,
+        kv_key_scope=kv_key_scope_for(Principal.REGISTRY),
+        l2_create_if_missing=False,
+    )
+    heartbeat_collection = HeartbeatCollection(
+        collection_registry,
+        core_config,
+        nats_client=nats_client,
+    )
+    return collection_registry, heartbeat_collection
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +363,83 @@ class RegistryServer:
         self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
 
+    async def open_collections_bucket(self, nc: "NatsClient") -> None:
+        """bind the shared L2 collections bucket before any collection is wired against it.
+
+        ``coll-task-04a`` KVC-05. Two properties, neither of which survives lazy resolution:
+
+        - **it fails at wiring time, not in a request path.** ``BaseCollection`` resolves the
+          bucket in ``_ensure_kv``, on the first read -- so a bucket running a configuration this
+          process refuses (``allow_direct`` unset, which puts every KV read back on the
+          body-carried form no key-scoped grant can constrain) would surface as a
+          ``KvConfigMismatch`` raised under load rather than at startup.
+        - **it pins the handle every later opener shares.** ``NatsClient.kv_bucket`` caches by
+          full bucket name, so the first open in a process decides the configuration for the
+          life of that process. Opening here, before either registry is configured, is what
+          makes the two registries' view of the bucket the same one.
+
+        BINDS rather than declares (``create_if_missing=False``): the hub owns this bucket's
+        canonical configuration and the registry's minted grant carries ``STREAM.INFO`` on it
+        with no ``CREATE``. A refused create is never answered, so the declaring path would cost
+        a JetStream deadline at every startup and then bind anyway -- and would skip the
+        ``allow_direct`` comparison the bind path performs.
+
+        **Two failures, told apart, and neither is handled the way the sibling bootstraps here
+        are.** :func:`retry_with_backoff` NEVER raises, so wrapping this in it would downgrade a
+        ``KvConfigMismatch`` to one log line and carry the process on into exactly the
+        silently-broken state the raise exists to prevent. So:
+
+        - ``KvConfigMismatch`` -- the live bucket carries a configuration this process refuses.
+          Retrying cannot clear it, so it propagates on the FIRST attempt and the process dies.
+        - ``KvError`` -- the bind itself failed, and the dominant cause on a cold cluster is that
+          the declaring identity has not run yet: the hub declares this bucket in its own
+          lifespan, and nothing sequences the registry behind it. That IS transient, and the
+          compose service is ``restart: on-failure:5`` -- a bounded budget a fast crash-loop
+          burns through in seconds, leaving the registry down for good. So it is retried with
+          bounded exponential backoff, and raised once the budget is spent.
+
+        :param nc: connected canonical NATS wrapper client
+        :ptype nc: NatsClient
+        :return: nothing
+        :rtype: None
+        :raises KvError: the bucket could not be bound within the attempt budget -- it does not
+            exist (nothing has declared it) or this principal is not granted it
+        :raises KvConfigMismatch: the live bucket carries a configuration this process refuses
+        """
+        backoff = _COLLECTIONS_BIND_BACKOFF_SECONDS
+        failure: KvError | None = None
+        for attempt in range(1, _COLLECTIONS_BIND_ATTEMPTS + 1):
+            try:
+                await nc.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX, create_if_missing=False)
+                failure = None
+                break
+            except KvError as exc:
+                failure = exc
+                if attempt == _COLLECTIONS_BIND_ATTEMPTS:
+                    break
+                _logger.warning(
+                    "collections KV bucket not bindable yet, retrying: bucket=%s attempt=%d/%d retry_in=%.1fs: %s",
+                    COLLECTIONS_BUCKET_SUFFIX,
+                    attempt,
+                    _COLLECTIONS_BIND_ATTEMPTS,
+                    backoff,
+                    exc,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _COLLECTIONS_BIND_MAX_BACKOFF_SECONDS)
+        if failure is not None:
+            raise KvError(
+                f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound after "
+                f"{_COLLECTIONS_BIND_ATTEMPTS} attempts. this process BINDS the bucket and never "
+                f"declares it, so either the declaring identity (the hub, in its lifespan) has not "
+                f"run, or this principal's NATS grant does not cover the bucket. last error: "
+                f"{failure}"
+            ) from failure
+        _logger.info(
+            "collections KV bucket bound",
+            extra={"extra_data": {"bucket": COLLECTIONS_BUCKET_SUFFIX, "create_if_missing": False}},
+        )
+
     async def apply_rbac_factory(
         self,
         nc: "NatsClient",
@@ -408,6 +565,13 @@ class RegistryServer:
             "connected to NATS",
             extra={"extra_data": {"nats_url": self._nats_url}},
         )
+
+        # open the shared collections bucket EAGERLY, before anything configures an L2 client
+        # against it. ``coll-task-04a`` KVC-05: a mismatch resolved lazily lands in a request
+        # path under load, and ``NatsClient.kv_bucket`` caches by full bucket name, so whichever
+        # call opens the bucket first hands its handle to every collection after it. Both
+        # registries in this process are wired downstream of this line.
+        await self.open_collections_bucket(self._nc)
 
         # swap in the production rbac authorizer now that NATS is up.
         # extracted to a method so tests can drive the same code path
@@ -552,16 +716,14 @@ class RegistryServer:
         # per-process SQLite tier; L2 is the shared NATS connection
         # that also carries the cross-pod invalidation subject.
         l1_backend = create_registry_l1_backend()
-        collection_registry = CollectionRegistry()
-        collection_registry.configure(l1_backend=l1_backend, l2_client=nc)
         core_config = DefaultCoreConfig(
             collection_flush="ALWAYS",
             collection_flush_tables="",
         )
-        heartbeat_collection = HeartbeatCollection(
-            collection_registry,
-            core_config,
+        collection_registry, heartbeat_collection = build_heartbeat_collection_registry(
             nats_client=nc,
+            l1_backend=l1_backend,
+            core_config=core_config,
         )
         self._collection_registry = collection_registry
         self._heartbeat_collection = heartbeat_collection

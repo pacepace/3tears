@@ -837,3 +837,45 @@ class TestScopedCollectionsGrant:
         two = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_1, pod_id=_POD_2)
         scopes = [[r.scope for r in perm.js_resources if r.name == _COLLECTIONS][0] for perm in (one, two)]
         assert scopes[0] == scopes[1]
+
+
+class TestDirectlyBoundBuckets:
+    """A bucket opened with ``js.key_value`` carries NO namespace prefix, and must still be granted.
+
+    ``NatsClient.kv_bucket`` layers ``{ns}-`` onto every suffix it is given; a direct
+    ``js.key_value(bucket=...)`` does not, so the name in the grant has to be the verbatim wire
+    name. Two processes take that route today and both are pinned here, because a bucket a process
+    opens without a grant is a JetStream call that blocks to its deadline and reads as an
+    unreachable broker rather than as a refusal.
+
+    ``{ns}_agent_config`` on the router is evidence-ledger bug 21: the resolver did not declare it
+    while ``agent_router/proxy.py`` bound it directly, and the hub's static-conf generator was
+    carrying a compensating entry with "reported upstream" written beside it.
+    """
+
+    def test_the_registry_declares_its_unprefixed_tool_catalog(self) -> None:
+        assert "tool_catalog" in kv_bucket_names(_build(Principal.REGISTRY))
+
+    def test_the_router_declares_its_unprefixed_catalog(self) -> None:
+        assert "agent_router_catalog" in kv_bucket_names(_build(Principal.AGENT_ROUTER))
+
+    def test_the_router_declares_the_agent_config_bucket_it_binds(self) -> None:
+        assert f"{_NS}_agent_config" in kv_bucket_names(_build(Principal.AGENT_ROUTER))
+
+    def test_the_router_holds_agent_config_read_only(self) -> None:
+        """Config Source-of-Truth: the router is a READER of cluster config, never a writer.
+
+        ``platform.agents`` is the source and this bucket is a hot cache over it, written only by
+        the hub's admin endpoints. A KV read is a ``$JS.API`` request rather than a ``$KV.``
+        publish, so withholding write authority costs the router nothing -- and a write grant it
+        does not need is a write grant a bug can use.
+        """
+        resource = [r for r in _build(Principal.AGENT_ROUTER).js_resources if r.name == f"{_NS}_agent_config"][0]
+        assert resource.writable is False
+
+    def test_no_agent_config_publish_subject_is_minted_for_the_router(self) -> None:
+        """the read-only decision, asserted on the EMITTED grant rather than on the record."""
+        emitted = [
+            r for r in _build(Principal.AGENT_ROUTER).js_resources if r.kind is JsResourceKind.KV_BUCKET and r.writable
+        ]
+        assert f"{_NS}_agent_config" not in {r.name for r in emitted}

@@ -63,7 +63,7 @@ from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.nats import IncomingMessage, NatsClient, Subjects
+from threetears.nats import IncomingMessage, NatsClient, Principal, Subjects, kv_key_scope_for
 from threetears.observe import get_logger
 
 __all__ = [
@@ -352,7 +352,29 @@ def build_registry_rbac_stack(
         default_namespace=PLATFORM_RBAC_READ_NAMESPACE,
     )
 
-    registry.configure(l1_backend=l1_backend, l3_pool=rbac_pool)
+    # THE SECOND REGISTRY IN THE REGISTRY-SERVER PROCESS, and it is L2-live even though no
+    # ``l2_client`` appears here: each of the five Collections below takes its own
+    # ``nats_client=``, which WINS over the registry default. So ``configure()``'s
+    # unscoped-L2-client refusal never fires for this registry and the failure would instead
+    # surface as ``l2_key``'s backstop, on the first cache access under load.
+    #
+    # The scope is the registry principal's, identical to the heartbeat registry's in
+    # ``registry/server.py``: one process, one NATS identity, one key scope. Replicas of the
+    # registry share it deliberately -- the scope is the SHARING boundary, so a per-connection
+    # value would orphan the cache on every reconnect.
+    #
+    # ``l2_create_if_missing=False`` because this process BINDS the shared collections bucket
+    # and never declares it: the hub is the declaring identity, and the registry's own NATS
+    # grant carries ``$JS.API.STREAM.INFO.KV_{ns}-collections`` and no ``CREATE``. Leaving the
+    # default ``True`` would issue a ``STREAM.CREATE`` the broker never answers -- a refusal
+    # arrives as a deadline, not an error -- and only then fall through to the bind that was
+    # going to succeed anyway.
+    registry.configure(
+        l1_backend=l1_backend,
+        l3_pool=rbac_pool,
+        kv_key_scope=kv_key_scope_for(Principal.REGISTRY),
+        l2_create_if_missing=False,
+    )
 
     namespace_collection = NamespaceCollection(
         registry=registry,
