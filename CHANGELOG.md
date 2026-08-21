@@ -8,6 +8,27 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `agent-memory`: **`MemoryChunkCollection.find_by_chunk_indexes`** -- fetch the
+  chunks of one memory sitting at a set of ordinals, in `chunk_index ASC` order.
+  The `memory_recall` tool's `chunk_indexes` mode issued this SELECT inline
+  against the pool, outside the Collection and outside the cache tiers; it now
+  routes through the Collection. The inline SQL had also dropped `customer_id`
+  from the auth triple every other chunk lookup enforces, so the move tightens
+  scoping as well as ownership.
+
+- `agent-wake`: **`WakeFireCollection.count_in_window` takes
+  `webhook_subscription_id`** -- narrows the window count to one webhook
+  subscription server-side. The webhook receiver's per-subscription rate-limit
+  re-rolled that COUNT against a bare pool; it now calls the Collection, and the
+  helper that did the re-rolling is reduced to the POSIX-to-datetime conversion.
+
+- `core`: **`UpstreamHttpError` chains the transport exception that caused it.**
+  A status-less exhaustion said only "no response"; a caller reporting the
+  failure onward -- an MCP tool result, a datasource imperative -- has to tell a
+  timeout apart from a refused connection. `__cause__` now carries the last
+  `httpx` transport error; a 5xx exhaustion produced responses and chains
+  nothing.
+
 - `epoch`: **`catchup_tick(listener, subjects)`** -- one catch-up pass over a
   consumer's subjects, pure-async, no internal polling. The consumer keeps its
   loop, interval and shutdown; what it stops keeping is an opinion on which
@@ -102,6 +123,52 @@ packages (bumped in lock-step).
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 
 ### Changed
+
+- `enforcement`: **`find_local_src_roots` now finds NESTED packages.** It walked
+  `packages/*/src` only, so on a repo that groups packages one level deeper -- as
+  3tears does under `packages/agent/` -- it returned nothing for them and every
+  walker built on it reported a clean tree over 233 of 702 python files. A walker
+  that scans nothing is indistinguishable, from the outside, from a walker that
+  finds nothing; that is why it survived unnoticed.
+
+  The helper now recurses to any depth under `packages/`, skipping the directories
+  in `SKIP_DIRS` and any dot-directory (a `.mypy_cache/3.14/src` is a directory
+  named `src` holding no source) and never descending into a `src/` tree it has
+  already claimed. Depth is deliberately unbounded rather than raised to two: the
+  grouping level is a naming choice, and encoding a guess about it is what
+  produced the hole.
+
+  Its own tests now assert against the live repo that the result is non-empty, is
+  of the expected order of magnitude, and covers every `[tool.uv.workspace]`
+  member carrying a `src/` -- read from the pyproject independently, so a package
+  added tomorrow is required automatically rather than quietly skipped.
+
+  **This widens what every consumer gate sees.** Consumers should expect
+  previously-unscanned trees to surface real violations on first run.
+  `discover_src_roots` is unaffected: it expands workspace members, which already
+  listed the nested globs.
+
+- `enforcement`: **`ast_helpers._SKIP_DIRS` is now public as `SKIP_DIRS`.**
+  Layout discovery and file iteration must agree on which directories are not
+  source, so the set is part of the module's api rather than a private of one
+  walker. No alias for the old name.
+
+- `agent-wake`: **`_check_rate_limit` / `_check_active_schedule_cap` are renamed
+  `check_rate_limit` / `check_active_schedule_cap`.** Both were already listed in
+  the package's `__all__`, which contradicted the underscore; the truthful
+  reading is public, and consumers integrate at exactly this level via
+  `WakeConfig`. **Breaking for any caller of the old names** -- there is no alias.
+
+- `agent-tools`: **`McpClient` routes through `TracedHttpClient`** instead of
+  owning a raw `httpx.AsyncClient`, so MCP calls get the platform's tracing,
+  per-attempt accounting, and configured egress. `http_client=` now takes a
+  `TracedHttpClient`; **breaking for any caller injecting an `httpx.AsyncClient`**.
+  The default transport uses `max_attempts=1` (`McpClient.MAX_ATTEMPTS`) because
+  `tools/call` invokes a tool whose side effects the client cannot see, and a
+  silent retry after a timeout can double-execute it. Failures now come back as a
+  named description (`timed out` / `could not be reached` / `HTTP <status>`)
+  rather than a raw exception string, and the broad `except Exception` on both
+  request paths is narrowed to the shapes a request can actually fail with.
 
 - `nats`: **agent pods no longer hold publish on the retired channel-default
   WRITE subjects.** `hub.channel.engagement.default.set` / `.clear` are dropped

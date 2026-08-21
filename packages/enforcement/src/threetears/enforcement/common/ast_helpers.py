@@ -15,6 +15,7 @@ from pathlib import Path
 from threetears.observe import get_logger
 
 __all__ = [
+    "SKIP_DIRS",
     "iter_python_files",
     "note_unscanned",
     "parse_python_file",
@@ -49,11 +50,16 @@ def note_unscanned(target: Path | str, reason: str) -> None:
     )
 
 
-# directories never walked for source-scanning passes. covers virtual
-# environments, build artefacts, IDE caches, vcs metadata, and the
-# legacy sphinx ``_build`` output dir. cookiecutter template trees are
-# detected separately because their names contain ``{{`` placeholders.
-_SKIP_DIRS: frozenset[str] = frozenset(
+#: directories never walked for source-scanning passes. covers virtual
+#: environments, build artefacts, IDE caches, vcs metadata, and the
+#: legacy sphinx ``_build`` output dir. cookiecutter template trees are
+#: detected separately because their names contain ``{{`` placeholders.
+#:
+#: public because layout discovery shares the exclusion: a tooling cache
+#: such as ``packages/registry/.mypy_cache/3.14/src`` is a directory named
+#: ``src`` that is not a source tree, and both the file iterator and the
+#: src-root finder must agree on that.
+SKIP_DIRS: frozenset[str] = frozenset(
     {
         ".venv",
         ".mypy_cache",
@@ -88,7 +94,7 @@ def _has_cookiecutter_marker(path: Path) -> bool:
 def iter_python_files(root: Path) -> Iterable[Path]:
     """yield every ``.py`` file under ``root``, deterministically ordered.
 
-    skips :data:`_SKIP_DIRS` (venv / build / cache / vcs) and any path
+    skips :data:`SKIP_DIRS` (venv / build / cache / vcs) and any path
     that lives inside a cookiecutter template tree (component contains
     ``{{``). entries within each directory are sorted so report output
     is stable across runs.
@@ -119,7 +125,7 @@ def _walk_sorted(directory: Path) -> Iterable[Path]:
         return
     for entry in entries:
         if entry.is_dir():
-            if entry.name in _SKIP_DIRS:
+            if entry.name in SKIP_DIRS:
                 continue
             if "{{" in entry.name:
                 continue

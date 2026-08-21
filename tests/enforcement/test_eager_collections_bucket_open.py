@@ -63,36 +63,6 @@ _MODE_ENV_VAR: Final[str] = "EAGER_BUCKET_OPEN_ENFORCEMENT_MODE"
 _CATEGORY: Final[str] = "eager_bucket_open.l2_wiring_without_an_eager_bind"
 
 
-def _scan_roots() -> tuple[Path, ...]:
-    """every ``src`` tree in this repo, INCLUDING the nested ``packages/agent/*`` family.
-
-    :func:`threetears.enforcement.common.find_local_src_roots` walks ``packages/*/src`` only, so on
-    this repo it silently returns nothing for ``packages/agent/acl``, ``.../audit``,
-    ``.../identity``, ``.../intention``, ``.../knowledge``, ``.../memory``, ``.../skills``,
-    ``.../tools``, ``.../wake`` and ``.../workspace`` -- ten packages, and among them the tool-pod
-    bootstrap this gate exists for. A walker that scans nothing reports exactly what a walker that
-    finds nothing reports, so the omission is invisible from the outside; that is why the
-    non-vacuity test below names a concrete file in the nested tree rather than merely counting.
-
-    Widening the shared helper is the real fix and is NOT done here: it brings ten previously
-    unscanned packages under every other gate at once, which is a landing with its own review, not
-    a side effect of a grant shard. Composing here keeps this gate honest in the meantime.
-
-    :return: the repo's src roots, deduplicated and sorted
-    :rtype: tuple[Path, ...]
-    """
-    roots = set(find_local_src_roots(_REPO_ROOT))
-    packages = _REPO_ROOT / "packages"
-    if packages.is_dir():
-        for group in packages.iterdir():
-            if not group.is_dir() or (group / "src").is_dir():
-                continue
-            for nested in group.iterdir():
-                if nested.is_dir() and (nested / "pyproject.toml").is_file() and (nested / "src").is_dir():
-                    roots.add(nested / "src")
-    return tuple(sorted(roots))
-
-
 #: the keyword whose presence makes a ``configure`` call the registry-DEFAULT L2 wiring.
 _L2_CLIENT_KEYWORD: Final[str] = "l2_client"
 
@@ -223,7 +193,7 @@ class TestEagerCollectionsBucketOpen:
     """the rule over this repo's own src trees."""
 
     def test_every_l2_wiring_module_opens_the_bucket_eagerly(self) -> None:
-        _assert_clean(find_l2_wiring_without_an_eager_bind(_scan_roots()))
+        _assert_clean(find_l2_wiring_without_an_eager_bind(find_local_src_roots(_REPO_ROOT)))
 
     def test_the_rule_is_not_vacuous(self) -> None:
         """the two real modules under this rule are both found, and both satisfy it.
@@ -231,12 +201,13 @@ class TestEagerCollectionsBucketOpen:
         A gate whose walker matches nothing reads exactly like a gate with nothing to report, and
         would keep passing if the last L2 wiring site were deleted or renamed out from under it.
         The tool-pod bootstrap is named EXPLICITLY because it lives in the nested
-        ``packages/agent/*`` tree the shared root helper does not walk -- see :func:`_scan_roots`.
-        Without this assertion the gate would report clean over the one module it was written for.
+        ``packages/agent/*`` tree, which the shared root helper walked past until the helper was
+        widened to recurse to any depth. Without this assertion the gate would report clean over
+        the one module it was written for.
         """
         matched = [
             source.relative_to(_REPO_ROOT).as_posix()
-            for root in _scan_roots()
+            for root in find_local_src_roots(_REPO_ROOT)
             for source in iter_python_files(root)
             if (tree := parse_python_file(source)) is not None and _l2_configure_calls(tree)
         ]

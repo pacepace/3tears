@@ -203,29 +203,60 @@ This landing closes one.
 `-05` must keep both at `>` rather than narrowing them, or every read on them
 dies as a broker timeout.
 
-### The enforcement blind spot `-07c` found and did not close
+### The enforcement blind spot `-07c` found — now closed
 
-`threetears.enforcement.common.find_local_src_roots` walks `packages/*/src` only.
-On this repo that silently omits the ten NESTED `packages/agent/*` packages —
-`acl`, `audit`, `identity`, `intention`, `knowledge`, `memory`, `skills`,
-`tools`, `wake`, `workspace` — so **every walker built on it has been reporting a
-clean tree over a third of the repository**: `test_kv_grant_capability`,
-`test_l2_scope_wiring`, `test_cache_primitive_usage`, `test_no_bespoke_reuse`,
-`test_underscore_access` and the rest. A walker that scans nothing reports
-exactly what a walker that finds nothing reports, which is why it survived.
+`threetears.enforcement.common.find_local_src_roots` used to walk `packages/*/src`
+only. On this repo that silently omitted the ten NESTED `packages/agent/*`
+packages — `acl`, `audit`, `identity`, `intention`, `knowledge`, `memory`,
+`skills`, `tools`, `wake`, `workspace` — **233 of 702 python files, a third of the
+src surface**. Every walker built on the helper reported a clean tree over that
+third: `test_kv_grant_capability`, `test_l2_scope_wiring`,
+`test_cache_primitive_usage`, `test_no_bespoke_reuse`, `test_underscore_access`,
+`test_kv_bucket_open_discipline`, `test_l2_scope_discipline`. A walker that scans
+nothing reports exactly what a walker that finds nothing reports, which is why it
+survived.
 
-Widening it was implemented and reverted inside `-07c`. It surfaces **10 genuine
-violations** at once — 8 `cache.missing_collection` (`identity_versions`,
-`intentions`, `memory_consolidations`, `agent_skills`,
-`agent_skill_invocations`, `agent_wake_schedules`, `wake_fires`,
-`webhook_subscriptions`), 1 `cache.pool_access` on `memory_chunks` in
-`agent/memory/tools.py`, 4 `underscore_access.E` in `agent/wake` — plus two stale
-fixtures in `packages/enforcement/tests/common/test_repo_layout.py` that create a
-`src` tree with no `pyproject.toml` beside it. Every one is real work with its own
-review; none is a grant change. It needs its own shard.
+The helper now recurses to ANY depth under `packages/`, skipping
+`SKIP_DIRS` + dot-directories (so `packages/registry/.mypy_cache/3.14/src` is not
+mistaken for a package) and never descending into a `src/` tree it has already
+claimed. Depth is unbounded on purpose: the `agent/` grouping is a naming choice,
+and encoding a guess about it is what produced the hole. `discover_src_roots` was
+NOT affected — it expands `[tool.uv.workspace].members`, which already listed
+`packages/agent/*`.
 
-`-07c`'s own gate composes the nested roots itself so it is not blind to the
-module it exists for, and it names that module explicitly in a non-vacuity test.
+**The guard that matters is the non-vacuity one.**
+`packages/enforcement/tests/common/test_repo_layout.py` now asserts against the
+LIVE repo that the result is non-empty, is at least of the expected order of
+magnitude, covers every `[tool.uv.workspace]` member carrying a `src/` (read from
+the pyproject independently, so a package added tomorrow is required
+automatically), and covers the whole nested `agent/` family. A regression that
+returns nothing fails loudly instead of reading green.
+
+What the widening surfaced, and how each landed:
+
+| Finding | Resolution |
+| --- | --- |
+| 8 × `cache.missing_collection` (`identity_versions`, `intentions`, `memory_consolidations`, `agent_skills`, `agent_skill_invocations`, `agent_wake_schedules`, `wake_fires`, `webhook_subscriptions`) | Every one already had a real Collection; the per-repo `collection_table_allowlist` simply never named them because no migration under `packages/agent/` had ever been opened. Eight allowlist entries, no new classes, no exemptions. |
+| 1 × `cache.pool_access` on `memory_chunks` (`agent/memory/tools.py`) | Fixed: new `MemoryChunkCollection.find_by_chunk_indexes`; the tool routes through it. The inline SQL had also dropped `customer_id` from the auth triple. |
+| 6 × `cache.pool_access` in `agent/wake` (second order — naming the wake tables is what turned the pool-access walker on for them) | `webhook_adapter` now routes through `WakeFireCollection.count_in_window` (extended with a `webhook_subscription_id` narrowing); the three `rate_limit.py` aggregate/JOIN counts carry `# cache-bypass:` with specific reasons, matching what the wake Collections already do for the same shapes. |
+| 4 × `underscore_access.E` in `agent/wake` | Promoted: `_check_rate_limit` → `check_rate_limit`, `_check_active_schedule_cap` → `check_active_schedule_cap`. Both were already re-exported from the package `__all__`, so public was the truthful reading. No alias. |
+| 2 × `reuse.*` in `agent/tools` (not predicted) | `McpClient` held a raw `httpx.AsyncClient` → now owns a `TracedHttpClient` (`max_attempts=1`, because `tools/call` is not idempotent). `ToolServer` is a false positive — a tool REGISTRY dict plus a heartbeat loop, nothing buffered or flushed — and carries an exemption with that rationale. |
+
+The two "stale fixtures" the earlier attempt predicted did not appear: they were
+stale only against an implementation that required a `pyproject.toml` beside
+`src/`. The landed helper keeps the original contract (a `src/` directory is
+enough), so `test_packages_monorepo` and `test_mixed_layout` still hold.
+
+`-07c`'s own gate composed the nested roots itself while the helper was narrow;
+that local workaround is retired and it now calls the shared helper directly. Its
+non-vacuity test still names `agent/tools/bootstrap.py` explicitly.
+
+**Still explicitly two-level, by choice:** `dependency_alignment`'s
+`package_globs`, `test_runtime_version_is_not_hardcoded._PACKAGE_GLOBS`, and
+`fake_parity`'s tests-dir resolver each enumerate `packages/*` and
+`packages/agent/*` in the open. They cover today's layout and a reader can SEE
+the depth they assume, which is the opposite of the failure above; a third
+grouping level would need them updated.
 
 ---
 

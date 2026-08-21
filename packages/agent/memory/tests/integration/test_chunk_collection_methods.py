@@ -4,6 +4,8 @@ Pinned in this file:
 
 - ``find_by_memory_id`` returns the chunks parented to a memory in
   ``chunk_id ASC`` order with cursor paging.
+- ``find_by_chunk_indexes`` returns exactly the requested ordinals in
+  ``chunk_index ASC`` order regardless of the order asked for.
 - ``find_by_conversation_id`` walks the chunks across all memories
   in one conversation, ordered by ``message_id_start ASC``.
 - ``hybrid_search_within_memory`` restricts the candidate pool to
@@ -393,6 +395,171 @@ class TestFindByMemoryId:
                 user_id=user_id,
                 agent_id=agent_id,
                 customer_id=uuid.uuid4(),  # different sub-scope
+            )
+            assert result == []
+        finally:
+            await pool.close()
+
+
+class TestFindByChunkIndexes:
+    async def test_returns_only_requested_indexes_in_index_order(
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        try:
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
+            user_id = uuid.uuid4()
+            mem = await _seed_memory(
+                memories,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                conversation_id=uuid.uuid4(),
+            )
+            for i in range(5):
+                await _seed_chunk(
+                    chunks,
+                    memory_id=mem,
+                    agent_id=agent_id,
+                    customer_id=customer_id,
+                    user_id=user_id,
+                    content=f"chunk {i}",
+                    chunk_index=i,
+                )
+
+            result = await chunks.find_by_chunk_indexes(
+                mem,
+                user_id=user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                chunk_indexes=[3, 1],
+            )
+            assert [row["chunk_index"] for row in result] == [1, 3]
+            assert [row["content"] for row in result] == ["chunk 1", "chunk 3"]
+        finally:
+            await pool.close()
+
+    async def test_empty_index_list_returns_empty(
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        try:
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
+            user_id = uuid.uuid4()
+            mem = await _seed_memory(
+                memories,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                conversation_id=uuid.uuid4(),
+            )
+            await _seed_chunk(
+                chunks,
+                memory_id=mem,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                content="only chunk",
+                chunk_index=0,
+            )
+
+            result = await chunks.find_by_chunk_indexes(
+                mem,
+                user_id=user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                chunk_indexes=[],
+            )
+            assert result == []
+        finally:
+            await pool.close()
+
+    async def test_mismatched_user_id_returns_empty(
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        try:
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
+            owner_user = uuid.uuid4()
+            mem = await _seed_memory(
+                memories,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=owner_user,
+                conversation_id=uuid.uuid4(),
+            )
+            await _seed_chunk(
+                chunks,
+                memory_id=mem,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=owner_user,
+                content="private",
+                chunk_index=0,
+            )
+
+            result = await chunks.find_by_chunk_indexes(
+                mem,
+                user_id=uuid.uuid4(),
+                agent_id=agent_id,
+                customer_id=customer_id,
+                chunk_indexes=[0],
+            )
+            assert result == []
+        finally:
+            await pool.close()
+
+    async def test_mismatched_customer_id_returns_empty(
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """The inline SQL this method replaced omitted customer_id entirely."""
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        try:
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
+            agent_id = uuid.uuid4()
+            owner_customer = uuid.uuid4()
+            user_id = uuid.uuid4()
+            mem = await _seed_memory(
+                memories,
+                agent_id=agent_id,
+                customer_id=owner_customer,
+                user_id=user_id,
+                conversation_id=uuid.uuid4(),
+            )
+            await _seed_chunk(
+                chunks,
+                memory_id=mem,
+                agent_id=agent_id,
+                customer_id=owner_customer,
+                user_id=user_id,
+                content="private",
+                chunk_index=0,
+            )
+
+            result = await chunks.find_by_chunk_indexes(
+                mem,
+                user_id=user_id,
+                agent_id=agent_id,
+                customer_id=uuid.uuid4(),
+                chunk_indexes=[0],
             )
             assert result == []
         finally:

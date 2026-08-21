@@ -40,8 +40,8 @@ __all__ = [
     "RATE_LIMIT_WINDOW_HOURS",
     "ScheduleCapExceeded",
     "RateLimitScope",
-    "_check_active_schedule_cap",
-    "_check_rate_limit",
+    "check_active_schedule_cap",
+    "check_rate_limit",
     "create_schedule_serialized",
     "resume_schedule_serialized",
 ]
@@ -76,7 +76,7 @@ _COUNT_ACTIVE_EXCLUDING_SQL = (
 _ADVISORY_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)"
 
 
-# Which cap was hit by :func:`_check_rate_limit`. ``None`` means
+# Which cap was hit by :func:`check_rate_limit`. ``None`` means
 # the fire may proceed; ``'conv'`` / ``'user'`` identify the per-conv
 # vs per-user cap so the caller can attach the scope to its log line
 # + Prometheus label. ``'webhook'`` is reserved for the webhook-side
@@ -97,7 +97,7 @@ log = get_logger(__name__)
 RATE_LIMIT_WINDOW_HOURS: int = 24
 
 
-async def _check_rate_limit(
+async def check_rate_limit(
     trigger: "WakeTrigger",
     pool: Any,
     config: WakeConfig,
@@ -138,6 +138,13 @@ async def _check_rate_limit(
         return None
 
     since = datetime.now(UTC) - timedelta(hours=RATE_LIMIT_WINDOW_HOURS)
+    # cache-bypass: aggregate COUNT over a rolling 24h window is not pk-addressable and must
+    # read committed state at fire time -- a cached count is a cap that silently over-fires.
+    # WakeFireCollection.count_in_window is the nearest Collection method and does not fit:
+    # it has no status predicate, and this cap counts only status='fired' rows (a
+    # rate-limited row already advanced its next_fire_at past the window, OBS-14). The
+    # helper takes a bare pool by contract -- the consumer owns the pool and no Collection
+    # reaches this call path.
     conv_count = await pool.fetchval(
         "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1 AND actual_fired_at > $2 AND status = 'fired'",
         trigger.conversation_id,
@@ -164,6 +171,12 @@ async def _check_rate_limit(
     # Per-user count covers both schedule-source and webhook-source
     # fires. The two subqueries union via ``+`` and each hits the
     # corresponding source-table's PK->wake_fires index.
+    #
+    # cache-bypass: a summed pair of JOINed aggregates spanning three tables
+    # (wake_fires x agent_wake_schedules, wake_fires x webhook_subscriptions) is exactly the
+    # JOIN shape the Collection API cannot express -- user_id lives on the two source tables,
+    # not on wake_fires, so no per-table Collection call can produce this number without
+    # fanning the join out into the application and losing the single-statement read.
     user_count = await pool.fetchval(
         "SELECT "
         "(SELECT COUNT(*) FROM wake_fires wf "
@@ -198,7 +211,7 @@ async def _check_rate_limit(
     return None
 
 
-async def _check_active_schedule_cap(
+async def check_active_schedule_cap(
     *,
     conversation_id: UUID,
     cap: int,
@@ -232,7 +245,7 @@ async def _check_active_schedule_cap(
 
     When both are supplied, ``count_func`` wins. Supplying neither
     returns ``True`` (parallels the ``pool=None`` short-circuit on
-    :func:`_check_rate_limit`).
+    :func:`check_rate_limit`).
 
     Why ``cap: int`` instead of ``config: WakeConfig``: callers that
     already have an integer cap in hand (the tool factory closes over
@@ -257,6 +270,12 @@ async def _check_active_schedule_cap(
     if count_func is not None:
         count = int(await count_func())
     elif pool is not None:
+        # cache-bypass: aggregate COUNT not pk-addressable, and a cap read from cache is a cap
+        # that lets an extra schedule through. The Collection-routed path IS the preferred one
+        # and is the ``count_func`` branch above (callers pass
+        # WakeScheduleCollection.count_active_for_conversation); this branch exists only for
+        # callers holding a bare pool and no Collection, which is why it cannot route through
+        # one.
         value = await pool.fetchval(
             "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active'",
             conversation_id,
