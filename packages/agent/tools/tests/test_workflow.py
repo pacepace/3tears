@@ -32,7 +32,8 @@ def l1_backend() -> SQLiteBackend:
 @pytest.fixture()
 def registry(l1_backend: SQLiteBackend) -> CollectionRegistry:
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1_backend)
+    # ``l2_key`` refuses to build a key on a registry with no principal scope.
+    reg.configure(l1_backend=l1_backend, kv_key_scope="test-principal")
     return reg
 
 

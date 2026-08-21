@@ -51,12 +51,13 @@ def _make_metadata() -> MetaData:
 
 
 class _StubCollection:
-    """the two attributes the invalidation listener reads off a collection.
+    """the surface the invalidation listener reads off a collection.
 
     a real :class:`BaseCollection` would drag an L3 store and a config into a
     test whose subject is the subscription lifecycle. the listener looks up
-    ``table_name`` (to register) and ``primary_key_columns`` (to check the
-    message's pk arity) and touches nothing else on the way to the eviction.
+    ``table_name`` (to register), ``primary_key_columns`` (to check the
+    message's pk arity) and ``delete_l2_entry`` (to evict this pod's own scoped
+    L2 entry), and touches nothing else on the way to the L1 eviction.
     """
 
     @property
@@ -76,6 +77,16 @@ class _StubCollection:
         :rtype: tuple[str, ...]
         """
         return ("id",)
+
+    async def delete_l2_entry(self, entity_id: object) -> bool:
+        """evict this pod's own scoped L2 entry; a no-op with no L2 wired.
+
+        :param entity_id: pk value the invalidation names
+        :ptype entity_id: object
+        :return: always ``False`` -- this stub holds no L2 tier
+        :rtype: bool
+        """
+        return False
 
 
 @pytest.fixture
@@ -114,7 +125,7 @@ def _make_pod() -> tuple[CollectionRegistry, SQLiteBackend]:
     l1 = SQLiteBackend(db_name=f"invalidation_lifecycle_{uuid.uuid4().hex[:8]}")
     l1.initialize(_make_metadata())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1)
+    registry.configure(l1_backend=l1, kv_key_scope="test-principal")
     registry.register(_StubCollection())
     return registry, l1
 

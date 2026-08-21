@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
-from threetears.nats import Subjects
+from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
 from threetears.core.collections.scan_cache import ScanCache
+from threetears.core.exceptions import InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import get_logger
 from uuid_utils import uuid7
 
@@ -115,6 +116,12 @@ class CollectionRegistry:
         self._l1_backend: Any = None
         self._l2_client: Any = None
         self._l3_pool: L3Backend | None = None
+        # The leading segment of every L2 key this registry's collections write
+        # (``{scope}.{table}.{body}``). One per registry, because a registry is
+        # the unit a principal wires: the scope is the sharing boundary, so every
+        # collection on one registry must land in one place or replicas of the
+        # same principal stop seeing each other's writes.
+        self._kv_key_scope: str | None = None
         self._collections: dict[str, Any] = {}  # table_name -> collection instance
         self._overrides: dict[str, dict[str, Any]] = {}  # table_name -> {l1_backend, l2_client, l3_pool}
         # Deliberately NOT in ``_overrides``: ``register()`` hard-resets that dict
@@ -144,8 +151,41 @@ class CollectionRegistry:
         l1_backend: Any = None,
         l2_client: Any = None,
         l3_pool: L3Backend | None = None,
+        kv_key_scope: str | None = None,
     ) -> None:
-        """Set default dependencies for all collections."""
+        """Set default dependencies for all collections.
+
+        **Every argument merges into existing state rather than replacing it** -- a ``None``
+        leaves whatever was configured before untouched. That is what makes two-pass wiring
+        (scope first and client later, or the reverse) the normal shape it already is at
+        several call sites.
+
+        The L2-scope refusal is therefore evaluated over the MERGED state at the end of the
+        call, never over this call's arguments. A per-call check would refuse the first pass
+        of every two-pass site.
+
+        :param l1_backend: default pod-local L1 backend, or ``None`` to leave it unchanged
+        :ptype l1_backend: Any
+        :param l2_client: default NATS client backing L2, or ``None`` to leave it unchanged
+        :ptype l2_client: Any
+        :param l3_pool: default durable L3 backend, or ``None`` to leave it unchanged
+        :ptype l3_pool: L3Backend | None
+        :param kv_key_scope: the leading segment of every L2 key this registry's collections
+            write, from :func:`threetears.nats.kv_key_scope_for`; ``None`` leaves it unchanged
+        :ptype kv_key_scope: str | None
+        :return: nothing
+        :rtype: None
+        :raises InvalidL2ScopeError: if ``kv_key_scope`` falls outside the scope grammar
+        :raises L2ScopeNotConfiguredError: if the merged state holds an L2 client and no scope
+        """
+        if kv_key_scope is not None:
+            if not KV_KEY_SCOPE_GRAMMAR.match(kv_key_scope):
+                raise InvalidL2ScopeError(
+                    f"kv_key_scope {kv_key_scope!r} does not match "
+                    f"{KV_KEY_SCOPE_GRAMMAR.pattern}; the scope is one NATS subject token, so a "
+                    f"'.' or '/' in it renders two and the per-principal $KV grant stops matching"
+                )
+            self._kv_key_scope = kv_key_scope
         if l1_backend is not None:
             self._l1_backend = l1_backend
             # a cache built over the previous backend would keep answering from
@@ -155,6 +195,26 @@ class CollectionRegistry:
             self._l2_client = l2_client
         if l3_pool is not None:
             self._l3_pool = _as_l3_backend(l3_pool)
+        if self._l2_client is not None and self._kv_key_scope is None:
+            raise L2ScopeNotConfiguredError(
+                "an L2 client is wired with no kv_key_scope: every collection on this registry "
+                "would write into the shared collections bucket under a key no per-principal "
+                "grant can name. pass kv_key_scope=threetears.nats.kv_key_scope_for(...)"
+            )
+
+    @property
+    def kv_key_scope(self) -> str | None:
+        """the leading segment of every L2 key this registry's collections write.
+
+        Read by :meth:`BaseCollection.l2_key` on every L2 access. ``None`` means unwired, which
+        is legitimate for an L1-only or L3-only registry and is a hard error for one holding an
+        L2 client -- :meth:`configure` refuses that combination outright, and ``l2_key`` backstops
+        the ``nats_client=``-direct construction path that never reaches ``configure``.
+
+        :return: the scope segment, or ``None`` when no scope is wired
+        :rtype: str | None
+        """
+        return self._kv_key_scope
 
     def register(
         self,
@@ -376,6 +436,47 @@ class CollectionRegistry:
                 # not). log + skip without warning.
                 return
 
+            pk_cols = collection.primary_key_columns
+            if len(message.ids) != len(pk_cols):
+                log.warning(
+                    "Invalidation pk arity mismatch",
+                    extra={
+                        "extra_data": {
+                            "table": message.table,
+                            "expected_columns": list(pk_cols),
+                            "received_values": len(message.ids),
+                        },
+                    },
+                )
+                return
+            entity_id = tuple(message.ids)
+
+            # EVICT L2 HERE, ahead of the L1 guards below, and the placement is the
+            # requirement rather than a preference.
+            #
+            # Keys are per-principal (``{scope}.{table}.{body}``), so the writer updates
+            # only ITS OWN key. A peer that drops L1 and pulls through reads L2 first --
+            # its own, still-stale key -- and re-caches the value the broadcast was sent
+            # to retract. ``max_age`` on the bucket is unlimited and no collection sets an
+            # L1 bound, so nothing heals it: a revoked grant would be enforced forever,
+            # which is worse than the exposure per-principal keys exist to close. Under
+            # the old single shared key this could not happen (the peer read the writer's
+            # fresh value), so the eviction is a scoping-induced obligation and lands with
+            # it.
+            #
+            # Behind ``l1 is None`` / ``not l1.has_table(...)`` it would skip exactly the
+            # collections whose L1 schema was never initialised -- and those are precisely
+            # the ones that would then keep the stale L2 value forever. L2 presence is
+            # independent of L1 presence.
+            #
+            # NOT ``invalidate_cache``, which looks right and RE-PUBLISHES: the origin
+            # filter above only skips SELF, so every receiver would rebroadcast under its
+            # own origin, unbounded.
+            #
+            # The arity check is hoisted above this rather than left where it was, because
+            # ``l2_key`` normalises the pk and raises on a mismatch; it touches no L1.
+            await collection.delete_l2_entry(entity_id)
+
             l1 = self.get_l1_backend(message.table)
             if l1 is None:
                 return
@@ -396,20 +497,6 @@ class CollectionRegistry:
                 # doubles) that predate this method.
                 return
 
-            pk_cols = collection.primary_key_columns
-            if len(message.ids) != len(pk_cols):
-                log.warning(
-                    "Invalidation pk arity mismatch",
-                    extra={
-                        "extra_data": {
-                            "table": message.table,
-                            "expected_columns": list(pk_cols),
-                            "received_values": len(message.ids),
-                        },
-                    },
-                )
-                return
-            entity_id = tuple(message.ids)
             l1.delete_by_id(message.table, entity_id, pk_cols)
 
         # SubscribeError propagates deliberately: cache coherence is not

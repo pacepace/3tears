@@ -59,7 +59,7 @@ class TestCollectionRegistry:
         l2 = MagicMock()
         l3 = MagicMock()
 
-        registry.configure(l1_backend=l1, l2_client=l2, l3_pool=l3)
+        registry.configure(l1_backend=l1, l2_client=l2, l3_pool=l3, kv_key_scope="hub")
 
         assert registry.get_l1_backend("any_table") is l1
         assert registry.get_l2_client("any_table") is l2
@@ -88,7 +88,7 @@ class TestCollectionRegistry:
         registry = CollectionRegistry()
         default_l2 = MagicMock()
         override_l2 = MagicMock()
-        registry.configure(l2_client=default_l2)
+        registry.configure(l2_client=default_l2, kv_key_scope="hub")
 
         coll = _make_mock_collection("cached_table")
         registry.register(coll, l2_client=override_l2)
@@ -132,6 +132,7 @@ class TestCollectionRegistry:
         l2 = MagicMock()
 
         registry.configure(l1_backend=l1)
+        registry.configure(kv_key_scope="hub")
         registry.configure(l2_client=l2)
 
         assert registry.get_l1_backend("any") is l1

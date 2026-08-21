@@ -16,9 +16,11 @@ function body. the parity tests keep the lazy table honest against
 
 from __future__ import annotations
 
+import ast
 import importlib
 import sys
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -97,12 +99,49 @@ class TestLazySurface:
         with pytest.raises(AttributeError, match="NoSuchName"):
             _ = nats_pkg.NoSuchName
 
-    def test_lazy_table_matches_type_checking_block(self) -> None:
-        """every lazily-declared name must actually live in its submodule."""
+    def test_lazy_table_matches_submodule_exports(self) -> None:
+        """every lazily-declared name must actually live in its submodule.
+
+        Named for what it checks. It was previously called
+        ``test_lazy_table_matches_type_checking_block`` and never went near that block --
+        which is the one of the three the package's own comment claims are kept in step
+        that nothing could have caught, since those names do not exist at runtime.
+        ``test_type_checking_block_matches_lazy_table`` below now covers it.
+        """
         for submod, attrs in nats_pkg._LAZY_SUBMOD_ATTRS.items():  # noqa: SLF001
             module: ModuleType = importlib.import_module(f"threetears.nats.{submod}")
             missing = [a for a in attrs if not hasattr(module, a)]
             assert not missing, f"threetears.nats.{submod} does not export {missing}"
+
+    def test_type_checking_block_matches_lazy_table(self) -> None:
+        """the ``TYPE_CHECKING`` re-imports must name exactly the lazy table's entries.
+
+        Those imports never execute, so a name that goes stale there is invisible to every
+        runtime check: a type checker simply stops resolving one public name, and the
+        package still imports and still serves it. AST-parsing the file is the only way to
+        see them.
+        """
+        source = Path(nats_pkg.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        declared: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            if not (isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING"):
+                continue
+            for statement in node.body:
+                if not isinstance(statement, ast.ImportFrom) or statement.module is None:
+                    continue
+                submod = statement.module.removeprefix("threetears.nats.")
+                declared.setdefault(submod, set()).update(alias.name for alias in statement.names)
+
+        expected = {submod: set(attrs) for submod, attrs in nats_pkg._LAZY_SUBMOD_ATTRS.items()}  # noqa: SLF001
+        assert declared == expected, (
+            f"TYPE_CHECKING block and _LAZY_SUBMOD_ATTRS disagree; "
+            f"only in the block: { {k: sorted(v - expected.get(k, set())) for k, v in declared.items() if v - expected.get(k, set())} }, "
+            f"only in the table: { {k: sorted(v - declared.get(k, set())) for k, v in expected.items() if v - declared.get(k, set())} }"
+        )
 
     def test_lazy_names_are_declared_public(self) -> None:
         """the lazy table may not smuggle in names __all__ does not promise."""

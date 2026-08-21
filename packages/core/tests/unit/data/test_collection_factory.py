@@ -166,7 +166,7 @@ class TestL2RegistryFallback:
     def test_factory_resolves_l2_from_registry(self) -> None:
         l2_client = object()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=l2_client)
+        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=l2_client, kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -178,7 +178,7 @@ class TestL2RegistryFallback:
 
     def test_explicit_none_disables_l2(self) -> None:
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=object())
+        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=object(), kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -192,7 +192,7 @@ class TestL2RegistryFallback:
     def test_explicit_client_wins_over_registry(self) -> None:
         constructor_client = object()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=object())
+        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=object(), kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -207,7 +207,7 @@ class TestL2RegistryFallback:
         default_client = object()
         table_client = object()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=default_client)
+        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=default_client, kv_key_scope="hub")
         registry.bind_table("widgets", l2_client=table_client)
 
         collection = create_dynamic_collection(
@@ -222,7 +222,7 @@ class TestL2RegistryFallback:
         """closes the §13/2 gap: DataStore collections get L2 via the registry."""
         l2_client = object()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=l2_client)
+        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=l2_client, kv_key_scope="hub")
         store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))
 
         collection = await store.create_table(_widgets_table())

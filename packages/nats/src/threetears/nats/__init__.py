@@ -130,10 +130,12 @@ from threetears.nats.result_delivery import (
 )
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
+    KV_KEY_SCOPE_GRAMMAR,
     Principal,
     PrincipalPermissions,
     build_permissions,
     inbox_prefix_for,
+    kv_key_scope_for,
 )
 from threetears.nats.subjects import (
     PipeDirection,
@@ -141,6 +143,7 @@ from threetears.nats.subjects import (
     SubjectKind,
     Subjects,
     get_default_namespace,
+    sanitize_subject_segment,
     set_default_namespace,
 )
 from threetears.nats.transport import (
@@ -154,7 +157,10 @@ from threetears.nats.transport import (
 #: ``nkeys`` (directly or transitively). everything here resolves on first
 #: attribute access rather than at package import, so an L1-only consumer never
 #: loads the client. keep in sync with the ``TYPE_CHECKING`` block above and
-#: with ``__all__``; ``test_lazy_surface.py`` asserts all three agree.
+#: with ``__all__``; ``test_lazy_surface.py`` asserts all three agree -- the
+#: submodule-export and ``__all__`` halves by import, and the ``TYPE_CHECKING``
+#: half by AST-parsing this file, since the names in that block are invisible at
+#: runtime and nothing else would notice one going stale.
 _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
     "client": (
         "DEFAULT_DRAIN_TIMEOUT",
@@ -305,6 +311,7 @@ __all__ = [
     "SubjectKind",
     "Subjects",
     "get_default_namespace",
+    "sanitize_subject_segment",
     "set_default_namespace",
     # asynchronous result delivery (answers that outlive their receiving connection)
     "RESULT_ACK_TIMEOUT_SECONDS",
@@ -319,10 +326,12 @@ __all__ = [
     "result_subject_prefix_for_pod",
     # subject permissions (decentralized-auth allow-lists)
     "CROSS_PLATFORM_CACHE_INVALIDATE",
+    "KV_KEY_SCOPE_GRAMMAR",
     "Principal",
     "PrincipalPermissions",
     "build_permissions",
     "inbox_prefix_for",
+    "kv_key_scope_for",
     # NATS v2 user-JWT minting (decentralized auth)
     "account_public_key",
     "generate_account_seed",

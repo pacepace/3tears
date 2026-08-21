@@ -29,24 +29,41 @@ cross-tenant direct-read / destroy a bare ``$JS.API.>`` would expose (see
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Final
+from uuid import UUID
 
 from threetears.nats.result_delivery import result_stream_name
-from threetears.nats.subjects import Subjects, get_default_namespace
+from threetears.nats.subjects import Subjects, get_default_namespace, sanitize_subject_segment
 
 __all__ = [
     "CROSS_PLATFORM_CACHE_INVALIDATE",
+    "KV_KEY_SCOPE_GRAMMAR",
     "Principal",
     "PrincipalPermissions",
     "build_permissions",
     "inbox_prefix_for",
+    "kv_key_scope_for",
 ]
 
 #: the ONE deliberately non-namespaced subject (every 3tears collection in every process listens on
 #: it regardless of env prefix). mirrors :meth:`Subjects.cache_invalidate`.
 CROSS_PLATFORM_CACHE_INVALIDATE = "threetears.cache.invalidate"
+
+#: grammar every L2 key-scope segment must satisfy, matched as a whole string.
+#:
+#: DELIBERATELY STRICTER than the JetStream KV key grammar
+#: (``^[-/_=.a-zA-Z0-9]+$``, ``threetears.core.collections.base._KV_KEY_GRAMMAR``), which
+#: carries ``.`` and ``/`` INSIDE its character class. a scope is the leading NATS subject
+#: TOKEN of ``$KV.{bucket}.{scope}.{table}.{body}``: a dot in it silently produces two tokens,
+#: so a per-principal grant of ``$KV.{bucket}.{scope}.>`` would stop matching the keys the
+#: principal writes -- a check that accepts a dot validates nothing about the property the
+#: scope exists to provide. reusing the key grammar here was the mistake this constant exists
+#: to make impossible.
+KV_KEY_SCOPE_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[-_=a-zA-Z0-9]+$")
 
 
 class Principal(StrEnum):
@@ -112,7 +129,141 @@ def inbox_prefix_for(principal: Principal, *, conn_id: str) -> str:
 
 def _seg(value: str) -> str:
     """subject-safe a single dynamic segment (mirror :func:`Subjects` sanitization: ``.`` -> ``-``)."""
-    return value.replace(".", "-")
+    return sanitize_subject_segment(value)
+
+
+#: the set a POD-DERIVED scope may never land on (L2S-08). infra scopes ARE these values, which
+#: is why the check lives here and not in ``CollectionRegistry.configure`` -- that call site sees
+#: a bare string and cannot tell an infra scope from a pod one, so the same rule applied there
+#: would refuse every infra principal at startup.
+_BARE_PRINCIPAL_SCOPES: Final[frozenset[str]] = frozenset(p.value for p in Principal)
+
+
+def _scope_id(value: str | UUID, *, name: str, principal: Principal) -> str:
+    """render one pod principal's identifying id into its scope token.
+
+    the token is the id's 32-character UUID hex. a uuid hex is injective (two distinct
+    principals can never render one token) and is already inside
+    :data:`KV_KEY_SCOPE_GRAMMAR`, which is what makes it usable as an isolation boundary.
+    :func:`threetears.nats.subjects.sanitize_subject_segment` is deliberately NOT used: it maps
+    ``.`` to ``-`` and is therefore non-injective, so two distinct display names collapse onto
+    one token -- two pods sharing one scope is the exact outcome key scoping exists to prevent.
+
+    :param value: the principal's identifying id
+    :ptype value: str | UUID
+    :param name: parameter name to quote in the failure message
+    :ptype name: str
+    :param principal: the connection identity class, quoted in the failure message
+    :ptype principal: Principal
+    :return: 32-character lowercase hex token
+    :rtype: str
+    :raises ValueError: if value is not a uuid
+    """
+    if isinstance(value, UUID):
+        return value.hex
+    try:
+        return UUID(str(value)).hex
+    except ValueError as exc:
+        raise ValueError(
+            f"{principal.value} kv key scope requires a uuid {name}, got {value!r}; "
+            f"a scope derived from anything non-uuid is not provably collision-free"
+        ) from exc
+
+
+def kv_key_scope_for(
+    principal: Principal,
+    *,
+    agent_id: str | UUID | None = None,
+    pod_id: str | UUID | None = None,
+) -> str:
+    """the L2 key scope one principal's collections write under.
+
+    every key in the shared ``{ns}-collections`` bucket is
+    ``{scope}.{table}.{body}``; this function is the ONLY producer of that leading
+    segment. it sits beside :func:`inbox_prefix_for` for the same reason that one does: the
+    minting side and the connecting side must derive the identical value from the identical
+    inputs, and a client keyed on anything else reads and writes keys its own grant does not
+    cover.
+
+    **the scope is the sharing boundary, not the connection.** replicas of one principal
+    resolve to one scope, or L2 stops being a cross-pod cache; so a per-connection value
+    (``conn_id``) is never an input -- every reconnect would orphan the cache.
+
+    per principal:
+
+    - :attr:`Principal.AGENT_POD` -- ``agent_id``, which the identity JWT authenticates as its
+      ``sub``. ``pod_id`` is REFUSED here rather than accepted as an alternative: for this
+      principal the auth callout derives the pod id from the connect NAME, which is
+      attacker-influenced, so a scope built from it is a scope the connecting side chooses.
+    - :attr:`Principal.TOOL_POD` -- ``pod_id``, the ``tool_pods.id`` primary key. safe where the
+      agent's is not, because ``_resolve_tool_pod`` ignores the connect name and pins
+      ``claims.sub`` from the verified key id; configured once per deployment, so replicas share.
+    - every infra principal -- the bare :class:`Principal` value. one identity per service, and
+      no per-connection id that replicas would share.
+
+    a POD principal with no identifying id RAISES. falling back to the bare enum value would
+    land every tool pod that lost its id on one shared scope, which is the failure this
+    function exists to make impossible.
+
+    :param principal: the connection identity class
+    :ptype principal: Principal
+    :param agent_id: the connecting agent's id; required for :attr:`Principal.AGENT_POD` and
+        rejected for every other principal
+    :ptype agent_id: str | UUID | None
+    :param pod_id: the connecting tool pod's ``tool_pods.id``; required for
+        :attr:`Principal.TOOL_POD` and rejected for every other principal
+    :ptype pod_id: str | UUID | None
+    :return: the scope segment, matching :data:`KV_KEY_SCOPE_GRAMMAR`
+    :rtype: str
+    :raises ValueError: if a pod principal is missing its identifying id, if an id is supplied
+        for a principal that does not take it, if an id is not a uuid, or if the rendered scope
+        would collide with a bare :class:`Principal` value
+    """
+    if principal is Principal.AGENT_POD:
+        if pod_id is not None:
+            raise ValueError(
+                "agent_pod kv key scope must be derived from agent_id, never pod_id: the auth "
+                "callout derives an agent pod's pod id from the spoofable connect name"
+            )
+        if agent_id is None:
+            raise ValueError("agent_pod kv key scope requires a non-empty agent_id")
+        return _pod_scope(principal, _scope_id(agent_id, name="agent_id", principal=principal))
+    if principal is Principal.TOOL_POD:
+        if agent_id is not None:
+            raise ValueError("tool_pod kv key scope must be derived from pod_id, not agent_id")
+        if pod_id is None:
+            raise ValueError("tool_pod kv key scope requires a non-empty pod_id")
+        return _pod_scope(principal, _scope_id(pod_id, name="pod_id", principal=principal))
+    if agent_id is not None or pod_id is not None:
+        raise ValueError(
+            f"{principal.value} kv key scope takes no id: an infra principal has one identity "
+            f"per service and its scope IS its principal value"
+        )
+    return principal.value
+
+
+def _pod_scope(principal: Principal, scope_id: str) -> str:
+    """compose and validate one pod principal's scope segment.
+
+    :param principal: the connection identity class (leads the segment, so an operator reading
+        a grant can tell which principal a subject belongs to)
+    :ptype principal: Principal
+    :param scope_id: the principal's uuid-hex identity token
+    :ptype scope_id: str
+    :return: the scope segment
+    :rtype: str
+    :raises ValueError: if the segment falls outside :data:`KV_KEY_SCOPE_GRAMMAR` or collides
+        with a bare :class:`Principal` value
+    """
+    scope = f"{principal.value}-{scope_id}"
+    if scope in _BARE_PRINCIPAL_SCOPES:
+        raise ValueError(
+            f"pod-derived kv key scope {scope!r} collides with a bare principal value; "
+            f"an infra principal would then share a scope with a pod"
+        )
+    if not KV_KEY_SCOPE_GRAMMAR.match(scope):
+        raise ValueError(f"kv key scope {scope!r} does not match {KV_KEY_SCOPE_GRAMMAR.pattern}")
+    return scope
 
 
 def _ns() -> str:

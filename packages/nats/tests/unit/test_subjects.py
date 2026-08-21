@@ -125,7 +125,7 @@ def test_tools_subjects_preserve_the_agent_composite_structural_dot() -> None:
     """a composite pod-id renders as a TWO-token subject under the agent subtree.
 
     the structural dot between ``{agent_id}`` and ``{instance}`` must survive into the subject
-    (unlike single-token tool-pod ids that :func:`_sanitize` leaves intact) so the agent-id segment
+    (unlike single-token tool-pod ids that :func:`sanitize_subject_segment` leaves intact) so the agent-id segment
     is its own NATS token and the ``tools.internal.{agent_id}.>`` grant can wildcard-match it. a
     sanitize-collapsed ``agent-A-inst-1`` single token would make the subtree grant impossible.
     """

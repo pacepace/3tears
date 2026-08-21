@@ -54,7 +54,7 @@ def _collection_without_l3() -> IdentityVersionsCollection:
     l1 = SQLiteBackend(db_name=f"identity_{uuid.uuid4().hex[:8]}")
     l1.initialize(_l1_metadata())
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1, l2_client=AsyncMock(), l3_pool=None)
+    reg.configure(l1_backend=l1, l2_client=AsyncMock(), l3_pool=None, kv_key_scope="hub")
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return IdentityVersionsCollection(registry=reg, config=cfg, nats_client=AsyncMock())
 

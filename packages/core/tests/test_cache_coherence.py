@@ -39,6 +39,12 @@ from threetears.nats.errors import PublishError
 # ---------------------------------------------------------------------------
 
 
+#: every pod in this module is a REPLICA of one principal, so they all wire one scope --
+#: which is the case where a shared L2 key is the point (a per-pod scope would make the
+#: cross-pod L2 assertions below vacuous rather than stronger).
+_TEST_SCOPE = "test-principal"
+
+
 def _make_metadata() -> MetaData:
     metadata = MetaData()
     Table(
@@ -198,7 +204,7 @@ def _make_pod(
     l1 = SQLiteBackend(db_name=f"test_pod_{uuid.uuid4().hex[:8]}")
     l1.initialize(_make_metadata())
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1, l2_client=nats)
+    reg.configure(l1_backend=l1, l2_client=nats, kv_key_scope=_TEST_SCOPE)
     coll = StubCollection(reg, config, nats_client=nats, write_buffer=write_buffer, l3_rows=l3_rows)
     return coll, reg
 
@@ -975,7 +981,7 @@ def _make_uuid_pod(
     l1 = SQLiteBackend(db_name=f"test_uuidpod_{uuid.uuid4().hex[:8]}")
     l1.initialize(_make_uuid_metadata())
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1, l2_client=nats)
+    reg.configure(l1_backend=l1, l2_client=nats, kv_key_scope=_TEST_SCOPE)
     coll = CompUuidCollection(reg, config, nats_client=nats, l3_rows=l3_rows)
     return coll, reg
 

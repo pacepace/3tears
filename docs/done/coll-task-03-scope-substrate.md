@@ -98,7 +98,26 @@ The mechanism works: a KV delete is a `js.publish` to
 the per-principal publish grant, and `deny_delete: true` gates
 `$JS.API.STREAM.MSG.DELETE` rather than the marker.
 
-Three implementation constraints, each of which would silently defeat it:
+**FOUND IN IMPLEMENTATION, and not in the requirement above: the eviction must not run
+on a collection with `L3 = None`.** As written, L2S-09 destroys data. Two ways:
+
+- *Same principal.* Replicas share a scope and therefore share a key. Replica A writes
+  and publishes; replica B evicts "its own" key, which IS the key A just refreshed. With
+  L3 present that costs a pull-through and the row comes back. With `L3 = None` the row
+  is gone — proven by `TestHeartbeatCollectionL2Coherence`, whose peer read returned
+  `None` the moment the eviction landed.
+- *Across principals.* Each principal's key under `L3 = None` is its own source of truth,
+  not a stale view of somebody else's, so there is nothing there to invalidate either.
+
+The staleness the eviction exists to prevent also cannot arise without an L3: with no
+`fetch_from_store` behind it, nothing re-caches anything. So `delete_l2_entry` returns
+early when `self.l3_pool is None`. That is the same predicate, for the same stated reason,
+that `BaseCollection.l1_max_age_seconds` already applies to L1 expiry — "a tier that is
+the source of truth is not a cache" — and the ledger's Part 2b enumerates exactly the
+collections it protects, `IdentityGenerationCollection` (fails open on a missing
+generation) foremost.
+
+Three further implementation constraints, each of which would silently defeat it:
 
 1. **Place it immediately after the `collection is None` return**, before the L1
    backend is fetched. Putting it "before the L1 delete" leaves it behind the
@@ -109,8 +128,14 @@ Three implementation constraints, each of which would silently defeat it:
 2. **Promote a public accessor.** The eviction needs `_delete_from_l2` from
    `registry.py` — cross-class private access, which `SLF` in `lint.select`
    forbids repo-wide and which the underscore contract says to fix by promoting,
-   not exempting. Add `BaseCollection.delete_l2_entry(entity_id)`, public, in
-   `__all__`, with a Sphinx docstring.
+   not exempting. Add `BaseCollection.delete_l2_entry(entity_id)`, public, with a
+   Sphinx docstring. (It is a METHOD, so "and in `__all__`" does not apply —
+   `base.py`'s `__all__` carries module-level names and already exports
+   `BaseCollection`. What the underscore contract asks for here is the absent
+   leading underscore, which is what makes the cross-class call legal.)
+   `_delete_from_l2` STAYS, private and unconditional: the write path's delete
+   must land even against a racing write, so it cannot pay for the presence probe
+   below. The two have different contracts, not parallel paths.
 3. **Gate on L2 presence.** A KV delete writes a marker **unconditionally**, so
    an ungated eviction writes markers for entities the receiver never cached,
    into a memory bucket with `history=1`, unlimited `max_age` and no `max_bytes`.
@@ -238,7 +263,7 @@ security boundaries.
 | L2S-06 | `kv_key_scope_for` raises for a **pod** principal with no identifying id, and refuses `pod_id` for `AGENT_POD` | P0 |
 | L2S-07 | Only the collections bucket is scoped; `l2_key` for other buckets is unchanged | P0 |
 | L2S-08 | A **pod-derived** scope may not collide with a bare `Principal` enum value; infra scopes *are* those values | P1 |
-| L2S-09 | Invalidation deletes the receiver's own scoped L2 entry, not only L1 | P0 |
+| L2S-09 | Invalidation deletes the receiver's own scoped L2 entry, not only L1 — and never on a collection with `L3 = None`, where L2 is the source of truth and eviction is deletion | P0 |
 
 ---
 
@@ -362,14 +387,14 @@ implementation, the tier decision has been reopened by accident.
 
 ## Success criteria
 
-- [ ] The spec test is written to the contract above and passes; no `L2Scope` enum exists
-- [ ] Invalidation evicts the receiver's own scoped L2 entry, proven by a two-principal test: hub revokes, peer refuses
-- [ ] `TestL2KeyGrammarSafe` updated and passing
-- [ ] A scope containing `.` or `/` is refused at `configure()`
-- [ ] `configure(l2_client=X)` with no scope raises, naming `kv_key_scope`; scope-then-client and client-then-scope both succeed
-- [ ] The backstop raise is not caught by `_get_from_l2` / `_save_to_l2` / `_delete_from_l2`
-- [ ] `kv_key_scope_for` importable from `threetears.nats`; `test_lazy_surface` green
-- [ ] `./scripts/check-all.sh` green; `./scripts/test-integration.sh` green
+- [x] The spec test is written to the contract above and passes; no `L2Scope` enum exists
+- [x] Invalidation evicts the receiver's own scoped L2 entry, proven by a two-principal test: hub revokes, peer refuses
+- [x] `TestL2KeyGrammarSafe` updated and passing
+- [x] A scope containing `.` or `/` is refused at `configure()`
+- [x] `configure(l2_client=X)` with no scope raises, naming `kv_key_scope`; scope-then-client and client-then-scope both succeed
+- [x] The backstop raise is not caught by `_get_from_l2` / `_save_to_l2` / `_delete_from_l2`
+- [x] `kv_key_scope_for` importable from `threetears.nats`; `test_lazy_surface` green
+- [x] `./scripts/check-all.sh` green; `./scripts/test-integration.sh` green
 
 ---
 
@@ -397,5 +422,11 @@ Build on `threetears.enforcement.common` (`Violation`, `iter_python_files`,
 is the worked example; re-rolling a walker here would break the rule this set
 enforces.
 
-- [ ] **No scope is derived from a sanitized display name.** Suggested: pin `kv_key_scope_for` as the only producer of a scope value, so a future principal cannot be added with a name-derived one. The collision is already documented in source and would otherwise be reintroduced by the next author.
-- [ ] **The backstop exception type appears in no `except` clause alongside `KvError`.** A one-rule walker; it is the specific way this decision gets silently undone later.
+- [x] **No scope is derived from a sanitized display name.** Suggested: pin `kv_key_scope_for` as the only producer of a scope value, so a future principal cannot be added with a name-derived one. The collision is already documented in source and would otherwise be reintroduced by the next author.
+- [x] **The backstop exception type appears in no `except` clause alongside `KvError`.** A one-rule walker; it is the specific way this decision gets silently undone later.
+
+Both landed in `tests/enforcement/test_l2_scope_discipline.py`, over
+`threetears.enforcement.common`, mode `L2_SCOPE_ENFORCEMENT_MODE` (default `strict`),
+exemptions in `_l2_scope_exemptions.txt` (deliberately empty). Each walker carries a
+planted-violation self-test AND a planted-NON-violation test, so neither "matches
+everything" nor "matches nothing" reads as a pass.
