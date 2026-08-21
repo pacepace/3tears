@@ -10,6 +10,7 @@ possible to rev ``nats-py`` without breaking every catch site.
 from __future__ import annotations
 
 __all__ = [
+    "KvConfigMismatch",
     "KvError",
     "NamespaceNotConfiguredError",
     "NatsClientError",
@@ -202,6 +203,32 @@ class KvError(NatsClientError):
     surface as a return-value of ``None`` from
     :meth:`threetears.nats.NatsKvBucket.update`; this exception is
     reserved for transport / bucket-existence failures.
+    """
+
+
+class KvConfigMismatch(NatsClientError):
+    """raised when an existing KV bucket's config differs from the requested one.
+
+    **deliberately NOT a :class:`KvError` subclass, and that is the whole point
+    of the type.** :class:`KvError` is what ``BaseCollection``'s L2 accessors
+    catch and degrade on -- bucket *resolution* sits inside those catches -- so a
+    mismatch raised as a ``KvError`` would be downgraded to a per-operation
+    warning and the fleet would run with L2 silently disabled. a "fail loud" the
+    caller already swallows is not fail-loud. this type sits beside
+    ``KvError`` under :class:`NatsClientError` instead, where nothing on the
+    read/write path catches it.
+
+    raised only by the BIND path (``create_if_missing=False``), which is the
+    reader's contract: a reader states the config it requires and refuses to run
+    against a bucket that does not carry it, rather than silently binding to
+    whatever exists. the DECLARING path (``create_if_missing=True``) reconciles
+    the same field set in place instead, because a declarer is authorised to fix
+    what it finds.
+
+    the compared field set is deliberately narrow -- see
+    :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS`. requested and
+    server-side stream config differ on some field on essentially every open, so
+    a full comparison would raise forever.
     """
 
 

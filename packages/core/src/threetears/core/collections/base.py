@@ -655,6 +655,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         constructed without a connected client (unit tests, L1+L3
         configurations) never touch JetStream.
 
+        whether a collection may CREATE the shared bucket is the registry's
+        :attr:`CollectionRegistry.l2_create_if_missing` decision, not this
+        method's: baking a literal in here would put one deployment's
+        bucket-ownership policy in the library, and ``False`` is only safe
+        once the declaring identity re-declares the bucket on every NATS
+        reconnect.
+
         :return: ready bucket handle, or ``None`` when no NATS client
             was supplied
         :rtype: NatsKvBucket | None
@@ -664,7 +671,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return None
         if self._kv is None:
-            self._kv = await self._nats_client.kv_bucket(name=self.L2_BUCKET_SUFFIX)
+            self._kv = await self._nats_client.kv_bucket(
+                name=self.L2_BUCKET_SUFFIX,
+                create_if_missing=self._registry.l2_create_if_missing,
+            )
         return self._kv
 
     def l2_key(self, entity_id: Any) -> str:

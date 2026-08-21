@@ -2247,6 +2247,7 @@ class NatsClient:
         storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
+        direct: bool | None = None,
     ) -> NatsKvBucket:
         """obtain (or create) a JetStream KV bucket.
 
@@ -2256,6 +2257,13 @@ class NatsClient:
         the **L2** tier (ephemeral; durability rides JetStream R3
         replication + the consumer's real L3). Pass ``"file"`` only as a
         deliberate opt-in when a bucket genuinely needs on-disk durability.
+        **This is the authority for the memory-storage default**, not any
+        retired cache wrapper's docstring.
+
+        the returned handle is CACHED by full bucket name, so the first
+        opener's config wins for the life of the process. a component that
+        needs a bucket to carry a specific configuration must declare it
+        through :meth:`ensure_kv_bucket` BEFORE anything else opens it.
 
         :param name: bucket name suffix (will be prefixed by namespace)
         :ptype name: str
@@ -2267,9 +2275,15 @@ class NatsClient:
         :ptype create_if_missing: bool
         :param history: number of historical revisions to keep per key
         :ptype history: int
+        :param direct: request ``allow_direct`` on the backing stream. ``None``
+            (the default) neither requests nor compares it, which is what an
+            ordinary consumer wants: it binds to whatever the declaring identity
+            established. see :meth:`ensure_kv_bucket`
+        :ptype direct: bool | None
         :return: ready KV bucket handle
         :rtype: NatsKvBucket
         :raises KvError: if bucket creation or binding fails
+        :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
         """
         # local import avoids circular dependency between client.py and kv.py
         from threetears.nats.kv import NatsKvBucket
@@ -2286,6 +2300,81 @@ class NatsClient:
                 storage=storage,
                 create_if_missing=create_if_missing,
                 history=history,
+                direct=direct,
+            )
+            self._buckets[full_name] = bucket
+        return bucket
+
+    async def ensure_kv_bucket(
+        self,
+        *,
+        name: str,
+        ttl: timedelta | None = None,
+        storage: str = "memory",
+        history: int = 1,
+        direct: bool = True,
+        create_if_missing: bool = True,
+    ) -> NatsKvBucket:
+        """DECLARE a KV bucket's configuration, reconciling a live one in place.
+
+        the KV counterpart of :meth:`ensure_jetstream_stream`, and the answer to
+        the create-or-BIND defect: opening a bucket that already existed used to
+        drop the caller's whole requested config with nothing above a
+        ``log.debug`` to say so. this declares instead — it creates the bucket
+        when absent and updates the live stream in place when it carries a
+        different value for one of
+        :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS`.
+
+        **call this at startup, from the identity that owns the bucket**, before
+        anything else in the process opens it. it writes through the SAME cache
+        :meth:`kv_bucket` reads, so every later consumer shares this handle and
+        cannot diverge from the declared config; running it second would find the
+        cache already populated by an undeclared open. it does not read that
+        cache first — a declaration is idempotent and re-running it after a
+        reconnect is exactly how a wiped bucket comes back.
+
+        ``direct`` defaults to ``True`` here and to ``None`` on
+        :meth:`kv_bucket`, and the asymmetry is the point: a declaration states
+        the value, an ordinary open accepts whatever the declarer established.
+        ``allow_direct`` is load-bearing for security — with it false, nats-py
+        reads a key by putting the key in the REQUEST BODY of
+        ``$JS.API.STREAM.MSG.GET.KV_{bucket}``, and NATS authorises on subjects,
+        so no key-scoped ``$KV.`` grant can constrain a read.
+
+        :param name: bucket name suffix (will be prefixed by namespace)
+        :ptype name: str
+        :param ttl: optional time-to-live for entries; ``None`` for no expiry
+        :ptype ttl: timedelta | None
+        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
+        :ptype storage: str
+        :param history: number of historical revisions to keep per key
+        :ptype history: int
+        :param direct: the ``allow_direct`` value this bucket must carry
+        :ptype direct: bool
+        :param create_if_missing: ``True`` declares (create + reconcile);
+            ``False`` binds read-only and REFUSES a bucket whose reconciled
+            config differs, which is what a process that is not the bucket's
+            owner should do
+        :ptype create_if_missing: bool
+        :return: ready KV bucket handle, also installed in the client's cache
+        :rtype: NatsKvBucket
+        :raises KvError: if bucket creation or binding fails
+        :raises KvConfigMismatch: if ``create_if_missing=False`` and the live bucket differs
+        :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
+        """
+        # local import avoids circular dependency between client.py and kv.py
+        from threetears.nats.kv import NatsKvBucket
+
+        full_name = f"{self._namespace}-{name}"
+        async with self._kv_lock:
+            bucket = await NatsKvBucket.open(
+                client=self,
+                full_name=full_name,
+                ttl=ttl,
+                storage=storage,
+                create_if_missing=create_if_missing,
+                history=history,
+                direct=direct,
             )
             self._buckets[full_name] = bucket
         return bucket

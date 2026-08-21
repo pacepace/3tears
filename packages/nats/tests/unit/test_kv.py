@@ -130,14 +130,18 @@ def _make_self_healing_bucket(broken_kv: _FakeKv, healed_kv: _FakeKv) -> NatsKvB
     )
 
 
+# parity-exempt: minimal JetStream stand-in recording the StreamConfig an open sends to add_stream; the full JetStreamContext surface is unrelated to what the opener builds
 class _CapturingJetStream:
-    """Captures the KeyValueConfig passed to create_key_value so storage can be asserted."""
+    """Captures the StreamConfig an open passes to add_stream so its shape can be asserted."""
 
     def __init__(self) -> None:
         self.config: Any = None
 
-    async def create_key_value(self, config: Any) -> _FakeKv:
+    async def add_stream(self, config: Any) -> Any:
         self.config = config
+        return MagicMock()
+
+    async def key_value(self, _name: str) -> _FakeKv:
         return _FakeKv()
 
 
@@ -527,7 +531,10 @@ class TestOpeningAnUngrantedBucket:
         async def _refused(*_args: object, **_kwargs: object) -> None:
             raise TimeoutError("nats: timeout")
 
-        js.create_key_value = _refused
+        # A refusal is never ANSWERED -- the server drops the request and the call
+        # dies on its own deadline. Both halves of the opener look like this, which
+        # is why neither can be told apart from an unreachable broker on its own.
+        js.add_stream = _refused
         js.key_value = _refused
         client = MagicMock()
         client.jetstream_context = MagicMock(return_value=js)

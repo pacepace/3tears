@@ -122,6 +122,20 @@ class CollectionRegistry:
         # collection on one registry must land in one place or replicas of the
         # same principal stop seeing each other's writes.
         self._kv_key_scope: str | None = None
+        # Whether a collection on this registry may CREATE the shared collections
+        # bucket, or must bind to one somebody else declared.
+        #
+        # ``True`` is the default and stays the default. ``NatsKvBucket._reopen``
+        # re-runs the opener with this flag, and it exists because a single-node
+        # NATS restart on ephemeral JetStream storage wiped every bucket and
+        # silenced the wake scheduler in production -- a fleet that cannot
+        # recreate the bucket runs with L2 off, at WARNING, until whoever
+        # declares it restarts. Readers-not-writers is enforced by the NATS
+        # GRANT, where a denied create is fail-closed by construction.
+        #
+        # It lives here rather than as a literal in ``base.py`` so one
+        # deployment's bucket-ownership policy is not baked into the library.
+        self._l2_create_if_missing: bool = True
         self._collections: dict[str, Any] = {}  # table_name -> collection instance
         self._overrides: dict[str, dict[str, Any]] = {}  # table_name -> {l1_backend, l2_client, l3_pool}
         # Deliberately NOT in ``_overrides``: ``register()`` hard-resets that dict
@@ -152,6 +166,7 @@ class CollectionRegistry:
         l2_client: Any = None,
         l3_pool: L3Backend | None = None,
         kv_key_scope: str | None = None,
+        l2_create_if_missing: bool | None = None,
     ) -> None:
         """Set default dependencies for all collections.
 
@@ -173,11 +188,19 @@ class CollectionRegistry:
         :param kv_key_scope: the leading segment of every L2 key this registry's collections
             write, from :func:`threetears.nats.kv_key_scope_for`; ``None`` leaves it unchanged
         :ptype kv_key_scope: str | None
+        :param l2_create_if_missing: whether this registry's collections may CREATE the
+            shared collections bucket. defaults to ``True`` and should be left there until
+            the declaring identity re-declares the bucket on every NATS reconnect --
+            otherwise a NATS restart that wipes JetStream leaves L2 off fleet-wide, at
+            WARNING, until that identity restarts. ``None`` leaves it unchanged
+        :ptype l2_create_if_missing: bool | None
         :return: nothing
         :rtype: None
         :raises InvalidL2ScopeError: if ``kv_key_scope`` falls outside the scope grammar
         :raises L2ScopeNotConfiguredError: if the merged state holds an L2 client and no scope
         """
+        if l2_create_if_missing is not None:
+            self._l2_create_if_missing = l2_create_if_missing
         if kv_key_scope is not None:
             if not KV_KEY_SCOPE_GRAMMAR.match(kv_key_scope):
                 raise InvalidL2ScopeError(
@@ -215,6 +238,21 @@ class CollectionRegistry:
         :rtype: str | None
         """
         return self._kv_key_scope
+
+    @property
+    def l2_create_if_missing(self) -> bool:
+        """whether this registry's collections may create the shared collections bucket.
+
+        Read by :meth:`BaseCollection._ensure_kv` when it resolves the bucket. ``True`` is
+        the default and the only value anything sets today: flipping it to ``False`` turns
+        off :meth:`threetears.nats.NatsKvBucket._reopen`'s restart self-heal for the
+        collections bucket, which is only safe once the declaring identity re-declares the
+        bucket on every NATS reconnect.
+
+        :return: ``True`` when a collection may create the bucket
+        :rtype: bool
+        """
+        return self._l2_create_if_missing
 
     def register(
         self,

@@ -47,7 +47,7 @@ correctly-scoped key on a bucket the principal cannot reach.
 | W3T-02 | The scope input is the authenticated identity the process presents at connect, not local config | P0 |
 | W3T-03 | The enforcement rule below exists and covers all **five** wiring shapes | P0 |
 | W3T-04 | Both registries in the registry-server process are scoped — `server.py` and `rbac_stack.py` | P0 |
-| W3T-05 | The process opens the collections bucket eagerly at startup via `ensure_kv_bucket`, before `configure(l2_client=)`, so a `KvConfigMismatch` raises at wiring rather than in a request path (`coll-task-04` KVC-05) | P0 |
+| W3T-05 | The process opens the collections bucket eagerly at startup via `ensure_kv_bucket`, before `configure(l2_client=)`, so a `KvConfigMismatch` raises at wiring rather than in a request path (`coll-task-04a` KVC-05) | P0 |
 
 ---
 

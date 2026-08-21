@@ -1,0 +1,17 @@
+# exemptions for tests/enforcement/test_kv_bucket_open_discipline.py (coll-task-04a).
+#
+# format (one entry per violation, each preceded by exactly one rationale line):
+#   # rationale: <specific reason, >= 30 chars, not a blanket phrase>
+#   relative/posix/path.py:LINE:Symbol
+#
+# LINE may be a concrete line number or '*' for a file-wide exemption of that symbol.
+#
+# An entry here says "this site opens a KV bucket without the reconcile primitive and
+# that is correct". Since the primitive is what applies (and reconciles) requested
+# config, the only honest reason is that the site requests no config AND cannot express
+# its bucket name through NatsClient.kv_bucket.
+
+# rationale: the registry tool catalog opens a BARE, unprefixed bucket name that NatsClient.kv_bucket cannot express (it always layers "{namespace}-"), and the ledger records that normalising these names renames a live bucket; the site requests no config at all, so it has none to discard
+packages/registry/src/threetears/registry/server.py:*:key_value
+# rationale: same catalog site as the bind above -- it binds first and creates only on failure, with a bare bucket name and no requested config; routing it through the primitive would have to pick a storage type for a live bucket whose current one is not this shard's to change
+packages/registry/src/threetears/registry/server.py:*:create_key_value

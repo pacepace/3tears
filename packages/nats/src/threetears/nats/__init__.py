@@ -104,6 +104,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
 
 from threetears.nats.errors import (
+    KvConfigMismatch,
     KvError,
     NamespaceNotConfiguredError,
     NatsClientError,
@@ -395,6 +396,7 @@ __all__ = [
     "RawMessageCallback",
     "StreamTransport",
     # errors
+    "KvConfigMismatch",
     "KvError",
     "NamespaceNotConfiguredError",
     "NatsClientError",

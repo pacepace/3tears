@@ -125,7 +125,7 @@ land them together.
 | TP-03 | Replicas of one tool pod share L2 keys; two tool pods do not | P0 |
 | TP-04 | The pod starts and stops the invalidation listener via `coll-task-01`'s API | P0 |
 | TP-05 | The pod constructs no `SQLiteBackend` directly | P0 |
-| TP-06 | The pod opens the collections bucket eagerly at startup via `ensure_kv_bucket`, before its registry is configured (`coll-task-04` KVC-05) | P0 |
+| TP-06 | The pod opens the collections bucket eagerly at startup via `ensure_kv_bucket`, before its registry is configured (`coll-task-04a` KVC-05) | P0 |
 | TP-07 | Proven live: a second principal is **refused** on this pod's keys | P0 |
 
 ---

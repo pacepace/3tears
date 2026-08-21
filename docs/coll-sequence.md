@@ -24,7 +24,8 @@ The `NN` suffix is execution order.
 | `coll-task-01-invalidation-lifecycle` | 3tears + SDK | subscription handle, `stop_invalidation_listener`, idempotent start |
 | `coll-task-02-hub-consumes-invalidation` | hub | hub processes subscribe and tear down |
 | `coll-task-03-scope-substrate` | 3tears | the scope segment in `l2_key`, the scope helper, wiring-time validation, **L2 eviction on invalidation** |
-| `coll-task-04-bucket-config-reconcile` | 3tears + hub + SDK | `allow_direct: true` via a real reconcile primitive; deletes a class the SDK's test conftest patches |
+| `coll-task-04a-bucket-config-reconcile` | 3tears + hub | `allow_direct: true` via a real reconcile primitive, and the reconnect self-heal |
+| `coll-task-04b-delete-nats-kv-client` | 3tears + SDK | deletes the retired `NatsKvClient`, including a patch target the SDK's shared conftest names by dotted path |
 | `coll-task-05a-grant-shape` | 3tears | the minted grant: scoped `$KV.` publish, `$KV.` off subscribe, the four JetStream bypasses |
 | `coll-task-05b-static-user-grants` | hub | the nine static NATS users — the larger half of the isolation |
 | `coll-task-06a-consumer-wiring-3tears` | 3tears | two registries in the registry server; the wiring enforcement rule |

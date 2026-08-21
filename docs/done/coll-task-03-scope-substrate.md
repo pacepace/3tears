@@ -140,7 +140,7 @@ Three further implementation constraints, each of which would silently defeat it
    an ungated eviction writes markers for entities the receiver never cached,
    into a memory bucket with `history=1`, unlimited `max_age` and no `max_bytes`.
    Check presence first. (Bounding `max_age`/`subject_delete_marker_ttl` on the
-   stream was the alternative; `coll-task-04` compares only `direct` and asserts
+   stream was the alternative; `coll-task-04a` compares only `direct` and asserts
    unlimited `max_age` throughout, so it does not carry that requirement and this
    shard must not assume it will.)
 
@@ -289,7 +289,7 @@ every one of them.
 **The backstop must not raise `KvError`.** Three of the four `l2_key` call sites
 sit inside `except KvError` handlers that degrade to a warning, so a `KvError`
 would be swallowed and the fleet would run with L2 silently off — the degradation
-this decision exists to prevent. `coll-task-04` makes the same point for its own
+this decision exists to prevent. `coll-task-04a` makes the same point for its own
 exception type.
 
 The fourth, `l2_cas_mutate`, deliberately does **not** degrade — its docstring
