@@ -31,7 +31,9 @@ This replaces a previous pattern in which the same enforcement test files were v
 >    local file deletes them silently.
 >
 > This note describes a one-time migration and should be deleted once every
-> consumer has adopted the domain (tracked as ENF-7WQ2).
+> consumer has adopted the domain. Tracked as ENF-7WQ2 in the `14-eng-ai-bot`
+> backlog, which is this family's backlog of record -- not this repo's, so do not
+> go looking for it here.
 
 | Module | Invariant enforced |
 |---|---|
