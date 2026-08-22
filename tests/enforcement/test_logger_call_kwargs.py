@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from threetears.enforcement.common import find_local_src_roots
 from threetears.enforcement.logger_coverage import (
     LoggerCoverageConfig,
     run_logger_coverage_enforcement,
@@ -30,32 +31,13 @@ from threetears.enforcement.logger_coverage import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _workspace_src_roots() -> tuple[Path, ...]:
-    """every ``src`` tree under ``packages/``, at either nesting depth.
-
-    Discovered rather than listed: a hand-maintained tuple silently stops covering the
-    next package added to the workspace, which is the same class of gap this shell exists
-    to close.
-
-    :return: every workspace package src root, sorted for stable reporting
-    :ptype: tuple[Path, ...]
-    :rtype: tuple[Path, ...]
-    """
-    packages = _REPO_ROOT / "packages"
-    return tuple(
-        sorted(
-            p
-            for p in packages.glob("*/**/src")
-            # a bare glob also matches `.venv/.../licenses/src` and `.mypy_cache/3.14/src`:
-            # harmless to scan but they bloat the report the operator has to read.
-            if p.is_dir() and not any(part.startswith(".") for part in p.relative_to(packages).parts)
-        )
-    )
-
-
+# `find_local_src_roots` is the ONE src-root discovery in this repo, and this branch
+# widened it precisely because a bespoke `packages/*/src` glob returned nothing for the ten
+# nested `packages/agent/*` packages -- which every gate built on it read as a clean tree.
+# A private glob here would be a fourth copy of that decision, and would miss `SKIP_DIRS`.
 _CONFIG = LoggerCoverageConfig(
     repo_root=_REPO_ROOT,
-    src_roots=_workspace_src_roots(),
+    src_roots=find_local_src_roots(_REPO_ROOT),
 )
 
 
@@ -69,10 +51,12 @@ class TestLoggerCallKwargs:
     def test_scan_actually_reaches_the_workspace(self) -> None:
         """a walker over zero files passes vacuously and reports nothing wrong.
 
-        The glob is the fragile part of this shell -- a layout change that stops matching
-        would turn the gate green rather than red -- so pin that it found the packages.
+        Discovery is the fragile part of this shell -- a layout change that stops matching
+        would turn the gate green rather than red -- so pin that it found the packages,
+        including the NESTED ones that the pre-widening glob missed entirely.
         """
-        roots = _workspace_src_roots()
+        roots = find_local_src_roots(_REPO_ROOT)
 
         assert len(roots) > 10, f"expected the whole workspace, found {len(roots)}: {roots}"
         assert any(r.parts[-2] == "core" for r in roots), "core package src root not discovered"
+        assert any("agent" in r.parts for r in roots), "nested packages/agent/* roots not discovered"

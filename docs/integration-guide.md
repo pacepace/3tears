@@ -342,7 +342,7 @@ import uuid
 
 from threetears.core import CollectionRegistry, DataStore, DefaultCoreConfig, TableDef, ColumnDef
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.collections.bucket import bind_collections_bucket
+from threetears.core.collections import bind_collections_bucket
 from threetears.nats import NatsClient, Principal, kv_key_scope_for
 
 
