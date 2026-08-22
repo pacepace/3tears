@@ -1,11 +1,14 @@
 """shared AST vocabulary for reasoning about ``CollectionRegistry`` wiring.
 
-Two enforcement domains ask questions about the same three facts -- which names are bound
-to a ``CollectionRegistry()``, which of those are L2-live, and what a call was handed --
-and until this module existed each carried its own copy of the AST helpers that answer
-them. The copies were near-identical: same ``_dotted`` / ``_callee_names`` / ``receiver``
-/ ``argument_spellings``, same ``_REGISTRY_CTOR`` / ``_CLIENT_KEYWORDS`` /
-``_CLIENT_SPELLINGS`` constants, differing only in which private name they hid behind.
+Two enforcement domains ask questions about the same two facts -- which names are bound to
+a ``CollectionRegistry()``, and which of those are L2-live -- and until this module existed
+each carried its own copy of the answer, along with its own ``_REGISTRY_CTOR`` /
+``_CLIENT_KEYWORDS`` / ``_CLIENT_SPELLINGS`` constants.
+
+The generic spelling helpers those answers are built from (``dotted``, ``callee_names``,
+``receiver``, ``argument_spellings``) live in :mod:`~threetears.enforcement.common.ast_helpers`
+and are imported here: they are not registry-specific, and keeping them in a
+registry-named module is what made a third copy in ``fake_parity`` look reasonable.
 
 That is the drift shape these gates exist to catch, one level up: a new wiring form
 teaches one walker to see it and leaves the other blind, and the blind one keeps

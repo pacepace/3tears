@@ -4,6 +4,20 @@ these helpers exist because every domain walker re-implemented the same
 file-iteration / parse / private-name / logger-call recognisers slightly
 differently. consolidating them here keeps the walkers focused on the
 shape they're actually checking.
+
+**The dotted-name spelling family lives here too** -- :func:`dotted`,
+:func:`callee_names`, :func:`receiver`, :func:`argument_spellings`. Look here
+before writing another one: this walk has been reimplemented three times in this
+package already, and each copy differed by one detail that turned out to be a
+parameter rather than a reason. :func:`dotted`'s ``unwrap_subscript`` is the
+surviving example.
+
+One near-relative deliberately stays separate: ``inheritance._base_name`` does
+the same unwrap but returns the LAST segment, because the class-base graph keys
+by bare name. Folding it would change that graph's keys, so it is a different
+function rather than a fifth copy -- but note the two therefore disagree on a
+dotted base (``pkg.Base`` here, ``Base`` there), which is a real difference to
+know about before comparing their outputs.
 """
 
 from __future__ import annotations
@@ -261,10 +275,13 @@ def is_logger_call(
         return False
     if func.attr not in method_names:
         return False
-    receiver = func.value
-    if isinstance(receiver, ast.Name) and receiver.id in logger_names:
+    # not `receiver`: that is a module-level function here now, and shadowing it inside
+    # a helper that does not call it is the kind of thing that reads fine until someone
+    # adds the call.
+    called_on = func.value
+    if isinstance(called_on, ast.Name) and called_on.id in logger_names:
         return True
-    if isinstance(receiver, ast.Attribute):
+    if isinstance(called_on, ast.Attribute):
         return True
     return False
 

@@ -149,8 +149,7 @@ packages (bumped in lock-step).
   what a clean repo reports.
 
 - `enforcement`: **`common.collection_registry`** -- the registry-detection AST
-  vocabulary the above shares with the L2-scope domain: `dotted`, `callee_names`,
-  `receiver`, `argument_spellings`, `names_a_live_client`,
+  vocabulary the above shares with the L2-scope domain: `names_a_live_client`,
   `constructed_registries`, `constructed_registry_lines`, `l2_live_registries`,
   plus `REGISTRY_CTOR` / `CLIENT_KEYWORDS` / `CLIENT_SPELLINGS` /
   `L2_BINDER_METHODS`. Two gates were asking the same question of the same syntax
@@ -158,6 +157,16 @@ packages (bumped in lock-step).
   list that grows and a form taught to one copy left the other blind. Public by
   intent -- a walker in another package reaching a private helper is the
   underscore violation that produced the duplicate.
+
+- `enforcement`: **`common.ast_helpers` gains the generic spelling family** --
+  `dotted`, `callee_names`, `receiver`, `argument_spellings`. They are not
+  registry-specific and now live where a reader looks for them. `dotted` takes a
+  new **`unwrap_subscript`** keyword, OFF by default, which spells `Base[Param]`
+  as `Base`: that was the only thing distinguishing a THIRD copy of the same walk
+  in `fake_parity`, which this folds away. Off by default because a subscript is
+  not a name in most contexts, and dropping it silently would make `registry[0]`
+  read as `registry` -- a different object. All four are re-exported from
+  `threetears.enforcement.common` exactly as before, so no import path moves.
 
 - `enforcement`: **`logger_coverage` gained a second walker, `call_kwargs`**, and
   the domain's `walker=` argument grew from `{"all"}` to
