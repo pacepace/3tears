@@ -286,17 +286,23 @@ arguments.** `configure()` merges -- `if l2_client is not None: self._l2_client 
 the reverse) is the normal shape at several sites. A naive per-call check breaks
 every one of them.
 
-**The backstop must not raise `KvError`.** Three of the four `l2_key` call sites
+**The backstop must not raise `KvError`.** Four of the five `l2_key` call sites
 sit inside `except KvError` handlers that degrade to a warning, so a `KvError`
 would be swallowed and the fleet would run with L2 silently off -- the degradation
 this decision exists to prevent. `coll-task-04a` makes the same point for its own
 exception type.
 
-The fourth, `l2_cas_mutate`, deliberately does **not** degrade -- its docstring
+The fifth, `l2_cas_mutate`, deliberately does **not** degrade -- its docstring
 says L2 is the source of truth there and the error must propagate. So a `KvError`
-backstop would be swallowed at three sites and propagate at the one where L2 is
+backstop would be swallowed at four sites and propagate at the one where L2 is
 authoritative: inconsistent in the worst direction. A distinct type is consistent
-at all four.
+at all five.
+
+> Corrected 2026-08-22. This read "three of the four" as written, and was already
+> wrong at this shard's own commit -- `base.py` had five call sites then too. It is
+> corrected rather than left as history because it was never true, which is the
+> line between a record and a mistake. The decision it supports is untouched: it
+> holds harder at four-of-five than at three-of-four.
 
 The degrade alternative -- warn once, serve from L1+L3 -- was considered and
 rejected: it silently loses cross-pod coherence and is found months later by a
