@@ -18,9 +18,6 @@ from typing import TYPE_CHECKING
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.bucket import (
-    COLLECTIONS_BUCKET_SUFFIX as _COLLECTIONS_BUCKET_SUFFIX,
-)
-from threetears.core.collections.bucket import (
     bind_collections_bucket,
 )
 from threetears.core.collections.registry import CollectionRegistry
@@ -64,7 +61,6 @@ if TYPE_CHECKING:
     from threetears.registry.rbac_stack import RegistryRbacStack
 
 __all__ = [
-    "COLLECTIONS_BUCKET_SUFFIX",
     "RegistryServer",
     "build_heartbeat_collection_registry",
     "nats_connect",
@@ -75,13 +71,6 @@ _logger = get_logger(__name__)
 # a pop nonce must be remembered at least as long as a proof stays valid: the iat freshness
 # window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
 _POP_NONCE_TTL_SECONDS = 120
-
-#: the shared L2 bucket every ``BaseCollection`` in every process opens. re-exported from
-#: :mod:`threetears.core.collections.bucket`, which takes it from the collection base rather than
-#: spelling it again: the name is a wire fact shared by the hub's canonical declaration, this
-#: process's eager bind, and the minted grant, and a second literal would be a second source of
-#: truth for it.
-COLLECTIONS_BUCKET_SUFFIX: str = _COLLECTIONS_BUCKET_SUFFIX
 
 
 def build_heartbeat_collection_registry(

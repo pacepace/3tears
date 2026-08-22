@@ -106,10 +106,15 @@ An earlier draft's claim that no sanitisation is needed was wrong in two ways:
 
 ## Broker grants (silent failure if missed)
 
-The new bucket needs a `kv_buckets` entry for `Principal.AGENT_POD`, `Principal.HUB` and
-`Principal.GATEWAY` in `packages/nats/src/threetears/nats/subject_permissions.py`
-(existing tuples at `:263`, `:525`, `:591`). Epoch *subjects* are already granted; the
-buckets are not.
+The new bucket needs a `js_resources` entry for `Principal.AGENT_POD`, `Principal.HUB`
+and `Principal.GATEWAY` in `packages/nats/src/threetears/nats/subject_permissions.py`.
+Epoch *subjects* are already granted; the buckets are not.
+
+> The field was `kv_buckets: tuple[str, ...]` when this shard was written.
+> `coll-task-05a` replaced it with `js_resources`, whose entries are `JsResource`
+> records carrying a `scope` and a `writable` flag rather than a bare name -- an
+> epoch counter is shared, so it takes `scope=None, writable=True`. Line numbers in
+> that file have moved; find the principals by name.
 
 `tests/enforcement/test_kv_bucket_grant_naming.py:9-16` records why this matters: a
 missing grant blocks to its deadline rather than raising, indistinguishable from an
@@ -185,7 +190,7 @@ bounds that existed when it ran, so grep `0\.26\.` after the bump.
   test double.
 - `current()` returns `0` for wildcard paths without touching KV.
 - A non-alphanumeric layer name round-trips through `bump()` without `InvalidKeyError`.
-- The bucket appears in all three principals' `kv_buckets` with a paired enforcement
+- The bucket appears in all three principals' `js_resources` with a paired enforcement
   assertion.
 - `datasource_tile_epoch` still resolves through the durable path, proven by a test, not
   by a comment.

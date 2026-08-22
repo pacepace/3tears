@@ -37,7 +37,7 @@ Declare each bucket a principal touches in
 js_resources=(
     JsResource.kv(f"{ns}-epochs", scope=None, writable=True),
     JsResource.kv(f"{ns}-collections", scope=my_scope, writable=True),
-    JsResource.stream(f"{ns}_channels_deliver"),
+    JsResource.stream(f"{ns}-channels-deliver"),   # DASHES: the name the stream is created under
 )
 ```
 

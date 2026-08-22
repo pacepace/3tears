@@ -35,7 +35,6 @@ from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.rbac_stack import build_registry_rbac_stack
 from threetears.registry.server import (
-    COLLECTIONS_BUCKET_SUFFIX,
     RegistryServer,
     build_heartbeat_collection_registry,
 )
@@ -152,7 +151,6 @@ class TestTheCollectionsBucketIsOpenedEagerly:
             name=BaseCollection.L2_BUCKET_SUFFIX,
             create_if_missing=False,
         )
-        assert COLLECTIONS_BUCKET_SUFFIX == BaseCollection.L2_BUCKET_SUFFIX
 
     @pytest.mark.asyncio
     async def test_a_config_mismatch_propagates_on_the_first_attempt(self) -> None:

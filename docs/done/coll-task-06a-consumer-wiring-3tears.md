@@ -182,9 +182,14 @@ bare `{table}.{pk}` keys reappear.
   needs the key-side id sourced from the authenticated identity -- see the pinned-pair test's
   docstring, which states that residual rather than letting the green test imply it is closed.
 
-- **Bug 20 was NOT taken.** The `{ns}_channels_deliver` misspelling in `_agent_pod`, `_hub` and
-  `_channel_adapter` is the same shape as 21 and lives in the same file, but it is a separate
-  ledger entry that this shard does not own, and correcting it has the same cross-repo coupling
-  as 21 (the hub's `_DROPPED_RESOURCES["slack"]` would go stale, and its enforcement test
-  "refuses a drop whose name the resolver no longer emits" -- so fixing it upstream would fail the
-  hub build rather than merely duplicating a grant). It stays unowned.
+- **Bug 20 was NOT taken by THIS shard, and has since been fixed.** The
+  `{ns}_channels_deliver` misspelling in `_agent_pod`, `_hub` and `_channel_adapter` is the
+  same shape as 21 and lives in the same file, but it was a separate ledger entry with the
+  same cross-repo coupling as 21 (the hub's `_DROPPED_RESOURCES["slack"]` would go stale,
+  and its enforcement test "refuses a drop whose name the resolver no longer emits" -- so
+  fixing it upstream would have failed the hub build rather than merely duplicating a
+  grant). Commit `8b822301`, later on this same branch, took it together with the hub-side
+  change the coupling required: the stream is created by
+  `ensure_jetstream_stream(name="channels-deliver")`, so `{ns}-channels-deliver` with
+  DASHES is the only name a grant can name, and `{ns}_channels_deliver` was never a stream
+  at all. Do not read this bullet as live work.

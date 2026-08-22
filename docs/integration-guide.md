@@ -629,12 +629,20 @@ id.
 
 **Step 3 — Provision NATS (L2). Only if you run more than one pod.**
 - Inputs: a NATS URL (`nats://host:4222`); **JetStream enabled**; **persistent (file)
-  storage** so the KV bucket survives restarts. You do **not** create the bucket — the
-  app creates `{namespace}-collections` on first use.
+  storage** so the KV bucket survives restarts.
+- **One process must DECLARE `{namespace}-collections`; every other process BINDS it.**
+  Pick the declaring identity deliberately -- it is whichever process starts first and
+  owns the bucket's canonical configuration (in this platform, the hub, in its own
+  lifespan). It declares with `ensure_kv_bucket(...)` and re-declares on every NATS
+  reconnect, because a bucket on memory storage is DELETED by a NATS restart. Everyone
+  else calls `bind_collections_bucket(...)`, which is `create_if_missing=False` and will
+  NOT create it -- so if nothing declares it, every pod dies at wiring, by design.
 - App counterpart: `nats = await NatsClient.connect(nats_url=URL,
-  nats_subject_namespace=NAMESPACE, client_name=NAME)`; build collections with
-  `nats_client=nats`; call `await registry.start_invalidation_listener(nats)` on **every**
-  pod (without it, pods serve stale L1 after a peer writes).
+  nats_subject_namespace=NAMESPACE, client_name=NAME)`; `await
+  bind_collections_bucket(nats, component=NAME)`; configure the registry with both
+  `l2_client=` and `kv_key_scope=`; build collections with `nats_client=nats`; call
+  `await registry.start_invalidation_listener(nats)` on **every** pod (without it, pods
+  serve stale L1 after a peer writes).
 
 **Step 4 — Supply config as environment variables. Required.**
 - Variables the app reads: your Postgres DSN variable; `THREETEARS_NATS_URL`; optionally

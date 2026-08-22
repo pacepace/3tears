@@ -274,12 +274,17 @@ reason). Step 4 IS run -- see below.
   wire an L2 registry, and the omission is silent in both directions. The rule: a module that binds
   the registry-default L2 client must also name an eager opener.
 
-- **A real blind spot in the shared enforcement helper, found and NOT fixed here.**
-  `threetears.enforcement.common.find_local_src_roots` walks `packages/*/src` only, so on this repo
-  it silently returns nothing for the ten nested `packages/agent/*` packages -- including
+- **A real blind spot in the shared enforcement helper, found here and FIXED later on this
+  same branch.** Commit `b81c0beb` ("Stop the enforcement walkers being blind to a third of
+  this repo") took the landing this bullet describes, including the ten genuine violations
+  the widening surfaces. The description below is why the shard did not take it, and it is
+  history: do not read it as live work, and do not re-derive the blind spot from it.
+
+  `threetears.enforcement.common.find_local_src_roots` walked `packages/*/src` only, so on this repo
+  it silently returned nothing for the ten nested `packages/agent/*` packages -- including
   `agent/tools`, where this shard's code lives. Every walker built on it (`test_kv_grant_capability`,
   `test_l2_scope_wiring`, `test_cache_primitive_usage`, `test_no_bespoke_reuse`,
-  `test_underscore_access`, …) has been reporting a clean tree over a third of the repository.
+  `test_underscore_access`, …) had been reporting a clean tree over a third of the repository.
   Widening it was implemented and reverted: it immediately surfaced **10 genuine violations** in
   five packages (8 `cache.missing_collection` for `identity_versions`, `intentions`,
   `memory_consolidations`, `agent_skills`, `agent_skill_invocations`, `agent_wake_schedules`,

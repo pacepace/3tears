@@ -252,6 +252,13 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- **`family_from_base.py` ships inside `threetears-base`.** Consumers previously
+  carried their own copy of the pinned-family export; it now rides in the base
+  image, at the path the hub invokes by hard-coded path, so the whole chain reads
+  one implementation. The identity targets in `docker-bake.hcl` are retagged
+  `-core` / `-edge` to match the two images they actually produce.
+
+
 - `enforcement`: **`find_local_src_roots` now finds NESTED packages.** It walked
   `packages/*/src` only, so on a repo that groups packages one level deeper -- as
   3tears does under `packages/agent/` -- it returned nothing for them and every
@@ -450,6 +457,27 @@ packages (bumped in lock-step).
   `scripts/measure-structured-result-sizes.py` rather than at either ratio.
 
 ### Fixed
+
+- `models`: **a zero cost registered as "no cost", and priced the call at
+  nothing.** `registry_loader` coalesced its cost fields with `a or b`, and
+  `Decimal("0")` is FALSY -- so every EMBEDDING model, whose output cost is
+  legitimately zero, fell through to `None` and the whole call was billed at
+  nothing. Replaced with `_first_present(row, *keys)`, which tests presence
+  rather than truthiness. The bug class is wider than this call site: any `or`
+  coalescing over a numeric or a `Decimal` treats a real zero as absent.
+
+- `nats`: **the `_hub` principal now subscribes
+  `hub_channel_engagement_default_resolve`.** The hub answers that request and
+  held no grant to receive it, so the call was refused -- and a refused JetStream
+  request is never answered, so it arrived as a deadline rather than an error.
+
+- `nats`: **the channel-delivery stream is named with DASHES in every grant.**
+  `_agent_pod`, `_hub` and `_channel_adapter` all named `{ns}_channels_deliver`,
+  which is not a stream and never was: it is created by
+  `ensure_jetstream_stream(name="channels-deliver")`, so `{ns}-channels-deliver`
+  is the only name a grant can name. Paired with the hub-side change its
+  `_DROPPED_RESOURCES` coupling required.
+
 
 - `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
   below an early return taken whenever there was no catch-up task -- which is
