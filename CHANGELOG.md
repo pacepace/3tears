@@ -234,11 +234,17 @@ packages (bumped in lock-step).
   (that tool defaults to a `0.2` threshold, half the ambient one).
 
   Recency now **ranks and never admits** — how recently something was written
-  is not evidence that it answers this query. `similarity_threshold` gates
-  `similarity >= threshold` and means what its name says; a row that matched
-  the FTS query is admitted too, so the keyword leg still recalls hits whose
-  `similarity` is the placeholder `0.0` rather than a measurement. Ranking is
-  unchanged: `hybrid_score` still orders results on all three signals.
+  is not evidence that it answers this query. In the three `hybrid_search`
+  paths, `similarity_threshold` gates `similarity >= threshold` and means what
+  its name says; a row that matched the FTS query is admitted too, so the
+  keyword leg still recalls hits whose `similarity` is the placeholder `0.0`
+  rather than a measurement. Ranking is unchanged: `hybrid_score` still orders
+  results on all three signals.
+
+  The `>=` is specific to hybrid-search admission. The single-signal siblings
+  (`search_by_semantic`, and the two paginated cosine scans) keep their existing
+  strict `>` / `<=` comparisons and are untouched here — worth knowing if you
+  read one threshold value as governing every path.
 
   **This changes what the threshold gates, not its magnitude.** No default
   moved. Callers that tuned `similarity_threshold` against the old composite

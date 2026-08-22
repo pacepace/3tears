@@ -22,6 +22,7 @@ import pytest
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import (
+    MediaContentCollection,
     MemoriesCollection,
     MemoryChunkCollection,
 )
@@ -85,6 +86,38 @@ def _memory_row(
         "content": content,
         "summary": None,
         "type_memory": "fact",
+        "date_created": date_created,
+        "embedding": "[1.0, 0.0]",
+        "similarity": similarity,
+        "fts_rank": fts_rank,
+    }
+
+
+def _media_row(
+    *,
+    similarity: float = 0.0,
+    fts_rank: float = 0.0,
+    date_created: datetime = AGED,
+) -> dict[str, Any]:
+    """Build one ``media_content`` row as either leg's SQL returns it.
+
+    :param similarity: cosine similarity from the vector leg
+    :ptype similarity: float
+    :param fts_rank: raw ts_rank_cd score from the FTS leg
+    :ptype fts_rank: float
+    :param date_created: row age driver
+    :ptype date_created: datetime
+    :return: row dict
+    :rtype: dict[str, Any]
+    """
+    return {
+        "content_id": uuid.uuid7(),
+        "content": "a map of the Severed Isle",
+        "summary": None,
+        "content_type": "image_description",
+        "media_id": uuid.uuid7(),
+        "media_category": "image",
+        "metadata_json": None,
         "date_created": date_created,
         "embedding": "[1.0, 0.0]",
         "similarity": similarity,
@@ -299,6 +332,93 @@ class TestRecencyRanksButDoesNotAdmit:
         collection = _memories(_pool(vec_rows=[row], fts_rows=[]), permissive_memory_authorizer)
 
         assert await _search(collection) == []
+
+
+class TestMediaContentAdmission:
+    """``media_content`` carries the same three-signal weights, and the same bug.
+
+    A shared helper cannot vouch for this path on its own: each collection marks
+    its own FTS-matched rows during its own merge, and that per-site line is
+    exactly what the helper cannot guarantee.
+    """
+
+    @staticmethod
+    def _collection(pool: AsyncMock) -> MediaContentCollection:
+        """Bind a ``MediaContentCollection`` to the stub pool.
+
+        :param pool: stub L3 pool
+        :ptype pool: AsyncMock
+        :return: collection under test
+        :rtype: MediaContentCollection
+        """
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=pool)
+        return MediaContentCollection(
+            registry=registry,
+            config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
+        )
+
+    @staticmethod
+    async def _search(collection: MediaContentCollection) -> list[dict[str, Any]]:
+        """Run ``hybrid_search`` with the production-default knobs.
+
+        :param collection: collection under test
+        :ptype collection: MediaContentCollection
+        :return: admitted rows
+        :rtype: list[dict[str, Any]]
+        """
+        return await collection.hybrid_search(
+            user_id=uuid.uuid7(),
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+            embedding=[1.0, 0.0],
+            user_text="what do you remember about the Severed Isle",
+            top_k=5,
+            candidate_limit=15,
+            similarity_threshold=THRESHOLD,
+            recency_half_life_hours=HALF_LIFE_HOURS,
+            signal_weights=WEIGHTS,
+        )
+
+    async def test_aged_relevant_media_is_admitted(self) -> None:
+        """30 days old, strong semantic match, no keyword hit -> admitted."""
+        row = _media_row(similarity=0.50, date_created=AGED)
+
+        results = await self._search(self._collection(_pool(vec_rows=[row], fts_rows=[])))
+
+        assert [r["content_id"] for r in results] == [row["content_id"]]
+        assert results[0]["hybrid_score"] < THRESHOLD, (
+            "guard: only meaningful while the composite sits BELOW the threshold"
+        )
+
+    async def test_aged_irrelevant_media_is_still_cut(self) -> None:
+        """The dropper still drops on this path too."""
+        row = _media_row(similarity=0.15, date_created=AGED)
+
+        assert await self._search(self._collection(_pool(vec_rows=[row], fts_rows=[]))) == []
+
+    async def test_keyword_only_media_is_admitted(self) -> None:
+        """An FTS-only row survives its placeholder 0.0 similarity."""
+        row = _media_row(similarity=0.0, fts_rank=0.9, date_created=AGED)
+
+        results = await self._search(self._collection(_pool(vec_rows=[], fts_rows=[row])))
+
+        assert [r["content_id"] for r in results] == [row["content_id"]]
+
+    async def test_vector_row_also_matching_fts_is_marked(self) -> None:
+        """A row in BOTH legs is admitted on its keyword evidence.
+
+        This is the per-site line a shared helper cannot cover: the merge marks
+        an ALREADY-merged vector row when the FTS leg returns it too. Its
+        similarity is below the floor, so only the marking can admit it.
+        """
+        row = _media_row(similarity=0.10, date_created=AGED)
+        fts_hit = dict(row, fts_rank=0.9)
+
+        results = await self._search(self._collection(_pool(vec_rows=[row], fts_rows=[fts_hit])))
+
+        assert [r["content_id"] for r in results] == [row["content_id"]]
+        assert not any(key.startswith("_") for key in results[0])
 
 
 class TestChunkAdmission:
