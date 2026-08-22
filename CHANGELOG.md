@@ -133,6 +133,24 @@ packages (bumped in lock-step).
   never declares, which is what a principal holding `STREAM.INFO` and no
   `STREAM.CREATE` must say.
 
+- `enforcement`: **`logger_coverage` gained a second walker, `call_kwargs`**, and
+  the domain's `walker=` argument grew from `{"all"}` to
+  `{"all", "missing", "call_kwargs"}`. **This widens the DEFAULT gate**: every
+  consumer calls `run_logger_coverage_enforcement(config, walker="all")`, which
+  now also flags `log.info("msg", key=value)` -- structlog shape on a stdlib
+  logger, which raises `TypeError` the moment a process raises the log level.
+  All three consumer repos pass under it today, so the upgrade is quiet; a repo
+  that does not will see a new violation class rather than a behaviour change.
+  `find_structlog_shaped_log_calls` is the walker itself, exported for direct use.
+
+- `nats`: the `kv_buckets` -> `js_resources` rename brings its own vocabulary,
+  which callers constructing grants now need: **`JsResource`**, **`JsResourceKind`**,
+  **`JsCapability`**, **`capability_declares`**, **`capability_is_scoped`**,
+  **`KV_KEY_SCOPE_GRAMMAR`**, **`js_api_grants_for_stream`** and
+  **`sanitize_subject_segment`**. A `js_resources` entry is a record carrying a
+  kind, a scope and a writable flag rather than a bare bucket name, which is what
+  lets one declaration produce both the `$KV.` grant and the `$JS.API.` pair.
+
 - `agent-acl`: **`register_rbac_l1_tables(metadata)`** -- one definition of the
   rbac L1 table shapes, returned by name. Three consumers carried their own
   hand-written copies of these `Table(...)` stacks; a column added to one drifted
