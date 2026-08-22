@@ -3,7 +3,7 @@
 Before this, a tool pod got L1 and nothing else: ``_tool_pod`` granted two KV buckets and neither
 was ``{ns}-collections``, and the pod appeared in neither direction of the cross-platform
 invalidation subject. So it could hold a ``BaseCollection`` that silently ran with L2 disabled --
-three of the four ``l2_key`` call sites catch ``KvError`` and degrade to a WARNING, with
+four of the five ``l2_key`` call sites catch ``KvError`` and degrade to a WARNING, with
 ``_ensure_kv`` deliberately INSIDE the catch, so an ungranted pod presents as a dead cache rather
 than a crash.
 

@@ -363,12 +363,13 @@ class TestBackstopRaiseInL2Key:
             collection.l2_key("e1")
 
     def test_the_backstop_is_not_a_kv_error(self) -> None:
-        """a ``KvError`` would be SWALLOWED at three of ``l2_key``'s four call sites.
+        """a ``KvError`` would be SWALLOWED at four of ``l2_key``'s five call sites.
 
-        ``_get_from_l2`` / ``_save_to_l2`` / ``_delete_from_l2`` each degrade a ``KvError``
-        to a warning, so the fleet would run with L2 silently off -- the exact degradation
-        the fail-loud decision exists to prevent. ``l2_cas_mutate`` deliberately does not
-        degrade, so a ``KvError`` would additionally be inconsistent between the four.
+        ``_get_from_l2`` / ``_save_to_l2`` / ``_delete_from_l2`` / ``delete_l2_entry`` each
+        degrade a ``KvError`` to a warning, so the fleet would run with L2 silently off --
+        the exact degradation the fail-loud decision exists to prevent. ``l2_cas_mutate``
+        deliberately does not degrade, so a ``KvError`` would additionally be inconsistent
+        between the five.
         """
         assert not issubclass(L2ScopeNotConfiguredError, KvError)
         assert not issubclass(InvalidL2ScopeError, KvError)
