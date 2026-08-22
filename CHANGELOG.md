@@ -106,10 +106,11 @@ packages (bumped in lock-step).
 
 - `nats`: **`KvConfigMismatch`** and `core`: **`InvalidL2ScopeError`** /
   **`L2ScopeNotConfiguredError`** -- deliberately OUTSIDE the `KvError` hierarchy.
-  Three of `BaseCollection`'s four KV call sites sit inside `except KvError`
-  handlers that degrade to a warning, so a config mismatch or a missing scope
-  raised as a `KvError` would leave the fleet running with L2 silently off, which
-  is the state these types exist to prevent.
+  Four of `BaseCollection`'s five KV call sites sit inside `except KvError`
+  handlers that degrade to a warning -- `_get_from_l2`, `_save_to_l2`,
+  `_delete_from_l2` and `delete_l2_entry`; only `l2_cas_mutate` propagates -- so a config
+  mismatch or a missing scope raised as a `KvError` would leave the fleet running
+  with L2 silently off, which is the state these types exist to prevent.
 
 - `nats`: **`build_kv_stream_config`**, **`open_kv_stream`**,
   **`kv_stream_differences`**, **`RECONCILED_KV_STREAM_FIELDS`**,
@@ -119,9 +120,13 @@ packages (bumped in lock-step).
   asking for a difference outside the reconcilable set has to be an error rather
   than a silent no-op.
 
-- `nats`: **`NatsClient.kv_bucket_names()`** -- lists the buckets this client has
-  open, which is what lets a process assert its own bucket surface rather than
-  trusting that a declaration ran.
+- `nats`: **`subject_permissions.kv_bucket_names(permissions)`** -- the KV bucket
+  names one principal's GRANTS declare, derived from
+  `PrincipalPermissions.js_resources` filtered by kind. It reports grant
+  configuration, NOT runtime state -- there is no client-side equivalent. What it
+  buys is a test that the bucket a process opens is a bucket its grant names,
+  since that drift otherwise surfaces as a JetStream deadline rather than an
+  error.
 
 - `core`: **`CollectionRegistry.l2_create_if_missing`** -- whether this registry's
   collections may CREATE the shared bucket. `False` says the process BINDS and
