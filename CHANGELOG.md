@@ -91,6 +91,43 @@ packages (bumped in lock-step).
   after a NATS restart deletes it is `NatsClient.add_reconnect_callback`'s job,
   which the declaring identity registers.
 
+- `agent-tools`: **`build_tool_pod_collection_stack(...)`** and
+  **`create_tool_pod_l1_backend(metadata)`** -- a tool pod's whole three-tier
+  wiring in one call, scoped by pod id. It derives the scope FIRST, before any
+  network call, because a pod id that cannot produce a collision-free scope is a
+  configuration error that should not cost a JetStream round trip to discover.
+  `ToolServerBootstrap.collection_tables` is how a pod declares the tables it
+  wants; leaving it unset is the valid "no Collections" configuration and builds
+  no stack at all.
+
+- `agent-acl`: **`unsubscribe_acl_invalidation(...)`** and
+  **`RBAC_L1_COLLECTIONS`** -- the pair to `subscribe_acl_invalidation`, which had
+  none, and the canonical list of the rbac tables an L1 backend must carry.
+
+- `nats`: **`KvConfigMismatch`** and `core`: **`InvalidL2ScopeError`** /
+  **`L2ScopeNotConfiguredError`** -- deliberately OUTSIDE the `KvError` hierarchy.
+  Three of `BaseCollection`'s four KV call sites sit inside `except KvError`
+  handlers that degrade to a warning, so a config mismatch or a missing scope
+  raised as a `KvError` would leave the fleet running with L2 silently off, which
+  is the state these types exist to prevent.
+
+- `nats`: **`build_kv_stream_config`**, **`open_kv_stream`**,
+  **`kv_stream_differences`**, **`RECONCILED_KV_STREAM_FIELDS`**,
+  **`REQUESTABLE_KV_STREAM_FIELDS`** -- the reconcile primitive `ensure_kv_bucket`
+  is built from. The two field sets are separate on purpose: a KV bucket requests
+  more configuration than JetStream will let you change on a live stream, so
+  asking for a difference outside the reconcilable set has to be an error rather
+  than a silent no-op.
+
+- `nats`: **`NatsClient.kv_bucket_names()`** -- lists the buckets this client has
+  open, which is what lets a process assert its own bucket surface rather than
+  trusting that a declaration ran.
+
+- `core`: **`CollectionRegistry.l2_create_if_missing`** -- whether this registry's
+  collections may CREATE the shared bucket. `False` says the process BINDS and
+  never declares, which is what a principal holding `STREAM.INFO` and no
+  `STREAM.CREATE` must say.
+
 - `agent-acl`: **`register_rbac_l1_tables(metadata)`** -- one definition of the
   rbac L1 table shapes, returned by name. Three consumers carried their own
   hand-written copies of these `Table(...)` stacks; a column added to one drifted
@@ -252,11 +289,20 @@ packages (bumped in lock-step).
 
 ### Changed
 
-- **`family_from_base.py` ships inside `threetears-base`.** Consumers previously
-  carried their own copy of the pinned-family export; it now rides in the base
-  image, at the path the hub invokes by hard-coded path, so the whole chain reads
-  one implementation. The identity targets in `docker-bake.hcl` are retagged
-  `-core` / `-edge` to match the two images they actually produce.
+- **`family_from_base.py` ships inside `threetears-base`**, at
+  `/opt/threetears/family_from_base.py`, which is the path consumer Dockerfiles
+  invoke. Every consumer inheriting the base needs the same check against the same
+  family, and a per-repo copy is a second source of truth that drifts silently --
+  the exact failure the script exists to prevent one layer down. Its contract is
+  `--mode {0,1} --requirements <exported file, rewritten in place> --lock
+  <uv.lock, read for the recorded family versions>`; `--mode 0` writes nothing and
+  asserts nothing, so the released-lock path is untouched. `--mode 1` is for a
+  DEVELOPMENT lock, where the family resolves to editable paths outside the build
+  context that Docker cannot read at all -- it takes the family from the inherited
+  base venv instead, and fails loudly if the base was built from a different
+  checkout than the lock resolves. Full reasoning is in the module docstring.
+  Separately, the identity targets in `docker-bake.hcl` are retagged `-core` /
+  `-edge` to match the two images they actually produce.
 
 
 - `enforcement`: **`find_local_src_roots` now finds NESTED packages.** It walked

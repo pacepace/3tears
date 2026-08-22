@@ -762,6 +762,10 @@ from threetears.core import (
     fire_and_forget,                           # submit a coroutine without awaiting it
 )
 
+# The eager L2 bucket bind. Every multi-pod process calls this once at startup,
+# after connect and BEFORE any configure() that wires an l2_client (see 8.2, 12).
+from threetears.core.collections import bind_collections_bucket
+
 # Egress -- HOW traffic leaves. A seam, not a proxy: `EgressDriver` is a
 # runtime_checkable Protocol, so a consumer may supply its own exit. Nothing
 # here polls, so wiring `EgressRegistry.health()` is the platform's job -- and

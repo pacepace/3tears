@@ -1112,7 +1112,7 @@ class Subjects:
         lifted off the inbound message) on completion; the channel adapter is a
         durable consumer that posts it to the destination thread. durable so an
         answer that completes while the adapter is restarting is redelivered,
-        never lost. backed by the ``{ns}_channels_deliver`` JetStream stream
+        never lost. backed by the ``{ns}-channels-deliver`` JetStream stream
         over ``{ns}.channels.deliver.*``.
 
         :param channel_type: channel family (e.g. ``slack``, ``discord``)
@@ -1129,7 +1129,7 @@ class Subjects:
     def channels_deliver_wildcard(cls) -> Subject:
         """wildcard subject covering every channel-delivery family.
 
-        the JetStream ``{ns}_channels_deliver`` stream is declared over this
+        the JetStream ``{ns}-channels-deliver`` stream is declared over this
         pattern; durable consumers filter to one ``channel_type``.
 
         :return: subject ``{ns}.channels.deliver.*``

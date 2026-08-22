@@ -205,7 +205,8 @@ Step 8 and `docs/DEPLOYMENT.md` §11b; both defer to the standalone runbook in t
 - [x] The pod constructs no `SQLiteBackend`; the sanctioned factory is
       `threetears.agent.tools.l1_cache.create_tool_pod_l1_backend`, declared in
       `test_cache_primitive_usage.py`'s `allowed_sqlite_construction_sites`. **Read the caveat
-      below** -- that walker's root discovery does not currently reach `packages/agent/*`
+      below** -- that walker's root discovery did not reach `packages/agent/*` when this
+      shard shipped; `b81c0beb` later widened it
 - [x] ~~The acl dependency is declared~~ -- WITHDRAWN on evidence; see "The stack builder"
 - [x] TP-02's decision is written into the ledger's Part 4 -- it already was, verbatim
 - [x] `./scripts/check-all.sh` (16030 passed, 3 skipped, 412 deselected; 139 sidecar) and
@@ -291,10 +292,13 @@ reason). Step 4 IS run -- see below.
   `wake_fires`, `webhook_subscriptions`; 1 `cache.pool_access` on `memory_chunks` in
   `agent/memory/tools.py`; 4 `underscore_access.E` in `agent/wake`) plus two stale fixtures in
   `packages/enforcement/tests/common/test_repo_layout.py`. That is a landing with its own review,
-  not a side effect of a grant shard. **This shard's own gate composes the nested roots itself**
-  (`_scan_roots`, with the reasoning in its docstring) so it is not blind to the module it exists
-  for, and `test_the_rule_is_not_vacuous` names `packages/agent/tools/.../bootstrap.py` explicitly
-  so the gate cannot silently stop covering it. The tool-pod L1 factory is declared in
+  not a side effect of a grant shard. **This shard's own gate composed the nested roots
+  itself** so it was not blind to the module it exists for, and
+  `test_the_rule_is_not_vacuous` names `packages/agent/tools/.../bootstrap.py` explicitly so
+  the gate cannot silently stop covering it. That local composition is GONE now: once
+  `b81c0beb` widened `find_local_src_roots`, the gate went back to calling it, which is the
+  point -- a private root walk beside the shared one is the duplication that produced the
+  blind spot in the first place. The tool-pod L1 factory is declared in
   `allowed_sqlite_construction_sites` anyway, so closing the blind spot will not turn a correct
   factory into a violation.
 

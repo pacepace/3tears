@@ -260,6 +260,36 @@ grouping level would need them updated.
 
 ---
 
+## What this branch carries beyond the epic
+
+Recorded because a reader reconstructing the epic from this file would otherwise
+find commits it does not explain, and conclude the file is stale rather than
+that the scope was wider.
+
+Three production fixes landed here that the clean-room bring-up surfaced while
+validating the collections work, and that are not collections work:
+
+- **`registry_loader` priced zero as absent.** `a or b` coalescing over a
+  `Decimal("0")` output cost -- every embedding model -- fell through to `None`
+  and billed the call at nothing.
+- **`_hub` held no subscribe grant for `hub_channel_engagement_default_resolve`**,
+  a request the hub itself answers.
+- **The channel-delivery stream was named with underscores in three grants**, a
+  name no stream has ever had.
+
+And one build-surface change: `docker/family_from_base.py` now ships inside
+`threetears-base` at `/opt/threetears/family_from_base.py` rather than being
+copied into each consumer's build context, with the identity bake targets
+retagged `-core` / `-edge`. That one is a precondition for testing this epic at
+all -- a development lock resolves the family to editable paths the Docker build
+context cannot read, so no consumer image could be built from this branch without
+it.
+
+Each carries its own commit and its own reasoning; the CHANGELOG records all
+four.
+
+---
+
 ## Before writing code
 
 Every shard gets an adversarial review first, and the review must demand a

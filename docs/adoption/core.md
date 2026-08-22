@@ -23,7 +23,11 @@ the first few times.
   collections by name, exposes raw `query`/`execute`, runs migrations.
 - **`CollectionRegistry`** -- the one dependency-injection seam. Configure
   L1/L2/L3 backends once; every collection resolves through it, with
-  per-table overrides available.
+  per-table overrides available. Wiring an `l2_client` REQUIRES a
+  `kv_key_scope` alongside it -- every L2 key is written as
+  `{scope}.{table}.{body}`, and the scope is the principal the process
+  authenticates to NATS as, so one process cannot read another's cached rows.
+  `configure()` and `bind_table()` both refuse the client without it.
 - **Declarative schema** (`TableDef`, `ColumnDef`, `IndexDef`,
   `ForeignKeyDef`) and the canonical `MigrationRunner` -- package-composing,
   topologically ordered, idempotent, version-tracked.
