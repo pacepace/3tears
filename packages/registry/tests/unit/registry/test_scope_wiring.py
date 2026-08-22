@@ -199,3 +199,63 @@ class TestTheCollectionsBucketIsOpenedEagerly:
             await server.open_collections_bucket(nc)
 
         assert nc.ensure_kv_bucket.await_count > 1
+
+
+class TestShutdownReleasesWhatStartupSubscribed:
+    """every subscription `startup` makes must be released by `shutdown`.
+
+    `startup` calls `start_invalidation_listener`, and `shutdown` tore down six other
+    components while skipping it -- so the listener outlived the server that owned it.
+    Nothing asserted the pairing, which is why the gap survived the shard that was
+    supposed to close it. The registry server is also the in-repo model three consumer
+    repos copy, so an unpaired lifecycle here propagates.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_the_invalidation_listener(self) -> None:
+        """the collection registry's listener is stopped, not left running.
+
+        :return: nothing
+        :rtype: None
+        """
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
+        collection_registry = MagicMock()
+        collection_registry.stop_invalidation_listener = AsyncMock()
+        server._collection_registry = collection_registry  # noqa: SLF001 - drives the teardown under test
+
+        await server.shutdown()
+
+        collection_registry.stop_invalidation_listener.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_runs_the_caller_supplied_teardown(self) -> None:
+        """the `on_shutdown` seam is what gives `RegistryRbacStack.close()` a caller.
+
+        The rbac factory builds a stack, subscribes its invalidations, and returns only the
+        authorizer -- so without this hook the stack is unreachable from the server and its
+        `close()` had zero production callers anywhere.
+
+        :return: nothing
+        :rtype: None
+        """
+        on_shutdown = AsyncMock()
+        server = RegistryServer(
+            namespace="testns",
+            authorizer=AllowAllAuthorizer(),
+            on_shutdown=on_shutdown,
+        )
+
+        await server.shutdown()
+
+        on_shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_is_safe_when_startup_never_ran(self) -> None:
+        """a server torn down before it started must not raise.
+
+        :return: nothing
+        :rtype: None
+        """
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
+
+        await server.shutdown()

@@ -14,6 +14,7 @@ import asyncio
 import os
 import signal
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.bucket import (
@@ -58,6 +59,9 @@ from threetears.registry.config import (
     get_proxy_assertion_signing_key_ref,
 )
 from threetears.registry.registration import RegistrationHandler
+
+if TYPE_CHECKING:
+    from threetears.registry.rbac_stack import RegistryRbacStack
 
 __all__ = [
     "COLLECTIONS_BUCKET_SUFFIX",
@@ -212,6 +216,7 @@ class RegistryServer:
         limit_guard_factory: ("Callable[[NatsClient], Awaitable[LimitGuard | None]] | None") = None,
         usage_emitter: "EndpointUsageEmitter | None" = None,
         usage_emitter_factory: ("Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None") = None,
+        on_shutdown: "Callable[[], Awaitable[None]] | None" = None,
     ) -> None:
         """initialize registry server.
 
@@ -354,6 +359,12 @@ class RegistryServer:
         self._discovery_handler: DiscoveryHandler | None = None
         self._call_proxy: CallProxy | None = None
         self._jwks_provider: CachedHubJwksProvider | None = None
+        # a caller-supplied teardown, awaited LAST before the connection closes. It exists
+        # because a factory can build something whose lifecycle the server never sees:
+        # `_rbac_factory` builds a `RegistryRbacStack`, subscribes its invalidations, and
+        # returns only the authorizer -- so `RegistryRbacStack.close()` had no production
+        # caller anywhere and its subscriptions outlived the server that made them.
+        self._on_shutdown = on_shutdown
         self._health_server: HealthServer | None = None
         self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
@@ -387,7 +398,10 @@ class RegistryServer:
             exist (nothing has declared it) or this principal is not granted it
         :raises KvConfigMismatch: the live bucket carries a configuration this process refuses
         """
-        await bind_collections_bucket(nc)
+        # component=: several processes bind this same bucket and the interesting failure is
+        # an ORDERING one -- which of them reached it before the declaring identity. A bind
+        # log that does not say who is speaking cannot answer that.
+        await bind_collections_bucket(nc, component="registry")
 
     async def apply_rbac_factory(
         self,
@@ -676,6 +690,19 @@ class RegistryServer:
         )
         self._collection_registry = collection_registry
         self._heartbeat_collection = heartbeat_collection
+        # log the RESOLVED scope, not just that one was supplied. A wrong-but-present scope
+        # reads nothing and writes where no grant names, and its timeout signature is
+        # identical to a missing grant -- so without this an operator is told to obtain a
+        # grant they already hold.
+        _logger.info(
+            "registry L2 wired",
+            extra={
+                "extra_data": {
+                    "kv_key_scope": kv_key_scope_for(Principal.REGISTRY),
+                    "principal": Principal.REGISTRY.value,
+                }
+            },
+        )
         await collection_registry.start_invalidation_listener(nc)
 
         heartbeat_subscriber = HeartbeatSubscriber(
@@ -835,6 +862,18 @@ class RegistryServer:
         if self._registration_handler is not None:
             await self._registration_handler.stop()
 
+        # BEFORE the connection closes, and not optional. `startup` calls
+        # `start_invalidation_listener`, and every other component it starts is stopped
+        # above -- this one was skipped, so the subscription outlived the server that owned
+        # it. `stop_invalidation_listener` is a no-op when no listener is live, so this is
+        # safe on a partial startup, which is why it is unconditional rather than guarded.
+        if self._collection_registry is not None:
+            await self._collection_registry.stop_invalidation_listener()
+        # whatever a factory built and the server never saw -- today the rbac stack's own
+        # invalidation subscriptions.
+        if self._on_shutdown is not None:
+            await self._on_shutdown()
+
         if self._nc is not None:
             await self._nc.shutdown()
 
@@ -925,6 +964,10 @@ def _run_server() -> None:
 
         authorizer = DenyAllAuthorizer()
 
+        # populated by the factory below, drained by the server's `on_shutdown`. A list
+        # rather than a scalar because the factory runs on every (re)connect.
+        built_rbac_stacks: list["RegistryRbacStack"] = []
+
         async def _rbac_factory(nc: NatsClient) -> AgentToolAuthorizer:
             from threetears.registry.l1_cache import (
                 create_registry_l1_backend,
@@ -947,6 +990,10 @@ def _run_server() -> None:
                 l1_backend=l1_backend,
             )
             await stack.subscribe_invalidations()
+            # hand the stack to the server's teardown. Without this the subscriptions this
+            # call just made outlive the server: the factory returns only the authorizer, so
+            # `RegistryRbacStack.close()` had no production caller in this package at all.
+            built_rbac_stacks.append(stack)
             _logger.info(
                 "registry running with RbacEvaluatorAuthorizer (rbac stack wired against system.platform.rbac proxy)",
                 extra={"extra_data": {"mode": "rbac"}},
@@ -958,9 +1005,22 @@ def _run_server() -> None:
 
         rbac_authorizer_factory = _rbac_factory
 
+    async def _close_rbac_stacks() -> None:
+        """release every rbac stack the factory built.
+
+        ``close`` is idempotent and empties its own handle list, so a stack closed twice
+        releases nothing the second time.
+
+        :return: nothing
+        :rtype: None
+        """
+        for stack in built_rbac_stacks:
+            await stack.close()
+
     server = RegistryServer(
         authorizer=authorizer,
         rbac_authorizer_factory=rbac_authorizer_factory,
+        on_shutdown=_close_rbac_stacks,
         pod_authenticator_factory=_resolve_pod_authenticator_factory(),
         limit_guard_factory=_resolve_limit_guard_factory(),
         usage_emitter_factory=_resolve_usage_emitter_factory(),

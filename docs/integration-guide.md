@@ -339,14 +339,16 @@ import uuid
 
 from threetears.core import CollectionRegistry, DataStore, DefaultCoreConfig, TableDef, ColumnDef
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.nats import NatsClient
+from threetears.core.collections.bucket import bind_collections_bucket
+from threetears.nats import NatsClient, Principal, kv_key_scope_for
 
 
 async def wire_with_l2(pg_pool) -> None:
     l1 = SQLiteBackend(db_name="hello_world")
 
-    # --- Connect NATS (classmethod). The namespace prefixes the KV bucket,
-    #     which collections create lazily as "{namespace}-collections". ---
+    # --- Connect NATS (classmethod). The namespace prefixes the shared KV bucket,
+    #     "{namespace}-collections". It is BOUND eagerly below, not created lazily on
+    #     first read: one identity declares it and every other process binds it. ---
     nats = await NatsClient.connect(
         nats_url=os.environ["THREETEARS_NATS_URL"],   # e.g. nats://nats:4222
         nats_subject_namespace="myapp",
@@ -355,8 +357,24 @@ async def wire_with_l2(pg_pool) -> None:
 
     # --- Configure all three tiers on the registry. Collections (including the
     #     ones DataStore builds) resolve their L2 client from here. ---
+    # --- Bind the shared collections bucket BEFORE configuring L2. The bind fails at
+    #     wiring time on a bucket this process refuses, rather than on the first read;
+    #     it also pins the handle every later opener in the process shares. ---
+    await bind_collections_bucket(nats, component="myapp-pod")
+
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l3_pool=pg_pool, l2_client=nats)
+    # `kv_key_scope` is MANDATORY alongside `l2_client` -- `configure` raises
+    # `L2ScopeNotConfiguredError` without it. Every L2 key is written as
+    # `{scope}.{table}.{body}`, and the scope is the principal this process
+    # authenticates to NATS as, so a process cannot read another principal's keys.
+    # Use `kv_key_scope_for(...)` rather than a literal: it is the single producer of
+    # that segment, and the minted NATS grant is derived from the same call.
+    registry.configure(
+        l1_backend=l1,
+        l3_pool=pg_pool,
+        l2_client=nats,
+        kv_key_scope=kv_key_scope_for(Principal.AGENT_POD),
+    )
 
     store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))
     await store.create_table(
@@ -381,7 +399,8 @@ async def wire_with_l2(pg_pool) -> None:
 ```
 
 > Need L2 on for some tables but off for others? Override per table with
-> `registry.bind_table("widgets", l2_client=nats)` before the collection is built, or
+> `registry.bind_table("widgets", l2_client=nats, kv_key_scope=...)` before the
+> collection is built -- the scope is required wherever an L2 client is, or
 > pass `nats_client=None` to a hand-built collection to force L1+L3 for it. A
 > collection with no resolvable L2 client logs a one-shot warning on its first write
 > so the wiring gap is visible.
@@ -616,7 +635,11 @@ id.
 
 **Step 6 — Wire startup and shutdown. Required.**
 - Inputs: a shutdown grace window **≥ the NATS drain timeout (~30s default)**.
-- App counterpart: on startup create the pool and (if multi-pod) the `NatsClient`; on
+- App counterpart: on startup create the pool and (if multi-pod) the `NatsClient`, then
+  `await bind_collections_bucket(nats, component="<your-pod>")` BEFORE
+  `registry.configure(...)`, and pass `kv_key_scope=` alongside any `l2_client=` --
+  `configure` refuses an L2 client without one, so a process cannot write keys no grant
+  names. On
   SIGTERM call `await registry.stop_invalidation_listener()`, then
   `await nats.shutdown()`, then `await pool.close()`. A health check can call
   `await nats.ping()` and run `SELECT 1` on the pool.

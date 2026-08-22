@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Breaking
+
+- **Every L2 key is now `{scope}.{table}.{body}`, and the scope is mandatory.**
+  `CollectionRegistry.configure` and `bind_table` RAISE `L2ScopeNotConfiguredError`
+  when given an `l2_client` without a `kv_key_scope`. Derive the value from
+  `kv_key_scope_for(principal)` -- it is the single producer of that segment, and the
+  minted NATS grant comes from the same call, so a literal that drifts from it writes
+  keys no grant names.
+
+  **Every key already in a deployed `{ns}-collections` bucket is orphaned by this.**
+  For a collection with an L3 tier that is one cache miss per key. For a collection
+  whose `L3` is `None` -- the identity fence among them -- L2 IS the source of truth
+  and an orphaned key is lost data, so those must be copied under their new prefix
+  BEFORE the new code rolls. There is no dual-read shim and none will be added.
+  `14-eng-ai-bot/scripts/copy_l2_keys_into_scope.py` performs the copy and
+  `docs/runbook-l2-key-scope-cutover.md` is the procedure.
+
+- **The shared collections bucket must run `allow_direct: true`.** One identity
+  declares it; every other process BINDS it (`bind_collections_bucket`, called before
+  `configure`) and refuses a bucket carrying a different configuration. Without
+  `allow_direct` every KV read falls back to the body-carried
+  `$JS.API.STREAM.MSG.GET` form, where the key travels in the request body and no
+  subject-scoped grant can constrain it -- which is what made per-principal isolation
+  unenforceable at the cache tier.
+
+- **`kv_buckets` is now `js_resources`** on the grant-shaping surface: a KV bucket was
+  never the only JetStream resource a principal holds, and the old name could not
+  express the others.
+
+- **`threetears.registry.l1_cache`'s re-exports are removed.** Import from the
+  owning module; per the no-shims rule there is no alias at the old path.
+
 ### Added
 
 - `agent-memory`: **`MemoryChunkCollection.find_by_chunk_indexes`** -- fetch the
@@ -342,13 +374,6 @@ packages (bumped in lock-step).
   old path. Callers import `NatsClient` from `threetears.nats` and open buckets
   through `kv_bucket`.
 
-Names the limit above the publish bound, and lets a caller ask about it before
-building something that misses it.
-
-**A minor because the surface grew, and it had to.** A refusal nobody can catch
-specifically is a refusal nobody can act on, so the new type and the new
-property are the change; `BLD-7QM3`'s ruling puts them on a minor line.
-
 ### Added
 
 - `nats`: **`PayloadTooLargeError`, for a publish the broker will not accept.**
@@ -383,6 +408,12 @@ property are the change; `BLD-7QM3`'s ruling puts them on a minor line.
   number this change exists to stop guessing. The classification is
   catch-and-retype for the same reason -- the limit has exactly one source of
   truth, and it is the connected server.
+
+  Together they name the limit above the publish bound and let a caller ask about
+  it before building something that misses it. **A minor because the surface grew,
+  and it had to:** a refusal nobody can catch specifically is a refusal nobody can
+  act on, so the new type and the new property are the change, and `BLD-7QM3`'s
+  ruling puts them on a minor line.
 
 ### Changed
 

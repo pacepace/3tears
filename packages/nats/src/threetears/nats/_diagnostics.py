@@ -163,12 +163,18 @@ def kv_timeout_remedy(bucket: str) -> str:
     :rtype: str
     """
     return (
-        f"A KV operation on {bucket!r} timed out. TWO causes look identical here, because a "
+        f"A KV operation on {bucket!r} timed out. THREE causes look identical here, because a "
         f"JetStream request the server REFUSES is never answered at all: (1) the connection's "
-        f"user JWT does not grant this bucket, and (2) the broker is unreachable. Rule out (1) "
-        f"first -- it is silent, it is per-bucket, and the rest of this connection will look "
-        f"perfectly healthy while it holds. {kv_grant_remedy(bucket)} "
-        f"Only if the grant is already present is this a broker or network problem."
+        f"user JWT does not grant this bucket; (2) on a key-SCOPED bucket the grant is present "
+        f"but this process is writing under a DIFFERENT scope than the one its grant names, so "
+        f"every operation falls outside it; and (3) the broker is unreachable. Rule out (1) and "
+        f"(2) first -- both are silent, both are per-bucket, and the rest of this connection "
+        f"will look perfectly healthy while either holds. (2) is the one a grant check does not "
+        f"catch: compare the process's configured `kv_key_scope` against the scope its granted "
+        f"`$KV.{bucket}.<scope>.>` subject names, and derive both from "
+        f"`kv_key_scope_for(principal)` rather than a literal so they cannot disagree. "
+        f"{kv_grant_remedy(bucket)} "
+        f"Only once the grant is present AND its scope matches is this a broker or network problem."
     )
 
 

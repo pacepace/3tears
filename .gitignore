@@ -213,12 +213,6 @@ __marimo__/
 .claude/
 
 # prawduct session evidence (local governance artifacts, never shipped)
-# .prawduct/change-log.md is force-tracked (git add -f) as a deliberate
-# exception, matching 14-eng-ai-bot: the release flow reads it out of the
-# branch diff, so an ignored copy is invisible to it and
-# `check-change-log-entry` can never pass. A tracked file under an ignored
-# directory is not a mistake here. Re-including it natively would take
-# `.prawduct/*` plus a negation, which widens what git walks for no gain.
 .prawduct/
 
 # macOS folder metadata
