@@ -424,6 +424,71 @@ class TestMediaContentAdmission:
 class TestChunkAdmission:
     """The chunk path carries the same split, on two-signal weights."""
 
+    @staticmethod
+    def _collection(pool: AsyncMock) -> MemoryChunkCollection:
+        """Bind a ``MemoryChunkCollection`` to the stub pool.
+
+        :param pool: stub L3 pool
+        :ptype pool: AsyncMock
+        :return: collection under test
+        :rtype: MemoryChunkCollection
+        """
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=pool)
+        return MemoryChunkCollection(
+            registry=registry,
+            config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
+        )
+
+    @staticmethod
+    async def _search(collection: MemoryChunkCollection) -> list[dict[str, Any]]:
+        """Run ``hybrid_search`` with the production-default chunk knobs.
+
+        :param collection: collection under test
+        :ptype collection: MemoryChunkCollection
+        :return: admitted rows
+        :rtype: list[dict[str, Any]]
+        """
+        return await collection.hybrid_search(
+            user_id=uuid.uuid7(),
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+            embedding=[1.0, 0.0],
+            user_text="what is the east tower made of",
+            candidate_k=15,
+            similarity_threshold=THRESHOLD,
+            chunk_signal_weights=CHUNK_WEIGHTS,
+        )
+
+    async def test_keyword_only_chunk_is_admitted(self) -> None:
+        """An FTS-only chunk survives its placeholder 0.0 similarity."""
+        row = _chunk_row(similarity=0.0, fts_rank=0.9)
+
+        results = await self._search(self._collection(_pool(vec_rows=[], fts_rows=[row])))
+
+        assert [r["chunk_id"] for r in results] == [row["chunk_id"]]
+
+    async def test_vector_chunk_also_matching_fts_is_marked(self) -> None:
+        """A chunk in BOTH legs is admitted on its keyword evidence.
+
+        Unlike the memories and media collections the marking here is shared by
+        both chunk entry points, but the both-legs case still needs its own
+        test: nothing else drives a below-floor chunk that the FTS leg rescues.
+        """
+        row = _chunk_row(similarity=0.10)
+        fts_hit = dict(row, fts_rank=0.9)
+
+        results = await self._search(self._collection(_pool(vec_rows=[row], fts_rows=[fts_hit])))
+
+        assert [r["chunk_id"] for r in results] == [row["chunk_id"]]
+        assert not any(key.startswith("_") for key in results[0])
+
+    async def test_irrelevant_chunk_is_still_cut(self) -> None:
+        """The dropper still drops on the chunk path."""
+        row = _chunk_row(similarity=0.15)
+
+        assert await self._search(self._collection(_pool(vec_rows=[row], fts_rows=[]))) == []
+
     async def test_aged_relevant_chunk_is_admitted(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
