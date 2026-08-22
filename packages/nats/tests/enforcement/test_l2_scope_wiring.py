@@ -79,7 +79,11 @@ _SCOPE_KEYWORD: Final[str] = "kv_key_scope"
 
 #: floor on the real scope. a reader that stopped matching would demand nothing of anybody while
 #: still reporting green, so the live count is asserted from below as well as from above.
-_MINIMUM_LIVE_REGISTRIES: Final[int] = 2
+#: this counts the SAME thing over the SAME roots as the invalidation-listener shell's
+#: floor, so the two numbers must agree; they are separate constants only because each
+#: gate must fail on its own. Three today: the registry server's heartbeat and rbac
+#: registries, and the tool pod's stack.
+_MINIMUM_LIVE_REGISTRIES: Final[int] = 3
 
 
 def scoped_registries(tree: ast.AST) -> frozenset[str]:
