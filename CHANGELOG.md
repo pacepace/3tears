@@ -4,14 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
-
-<!-- The heading stays `Unreleased` ON PURPOSE, even though `pyproject.toml` already
-     reads 0.27.0. The release commit is what renames this heading to the shipping
-     version, and that commit has not happened: the version bump lands with the
-     branch, the rename lands with the tag. Commit 63585f66 deleted a premature
-     `## v0.27.0` heading here and orphaned the prose under it; do not restore it
-     ahead of the release. -->
+## v0.27.0 -- 2026-08-22
 
 ### Breaking
 
