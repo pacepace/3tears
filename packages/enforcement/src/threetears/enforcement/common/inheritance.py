@@ -77,6 +77,12 @@ def extract_base_names(cls: ast.ClassDef) -> list[str]:
 def _base_name(node: ast.expr) -> str | None:
     """recursively unwrap ``node`` to its last-segment identifier or None.
 
+    **Deliberately NOT** :func:`~threetears.enforcement.common.ast_helpers.dotted`,
+    which walks the same shapes but returns the FULL dotted spelling. The class-base
+    graph this feeds keys by bare name, so folding the two would change its keys. The
+    consequence to know: on a dotted base the two disagree -- ``pkg.Base`` there,
+    ``Base`` here -- so their outputs are not interchangeable and must not be compared.
+
     :param node: base expression
     :ptype node: ast.expr
     :return: bare last-segment name, or None if the expression is not
