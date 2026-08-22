@@ -67,15 +67,12 @@ _MODE_ENV_VAR: Final[str] = "L2_SCOPE_WIRING_ENFORCEMENT_MODE"
 
 _CATEGORY: Final[str] = "l2_scope.live_registry_without_a_scope"
 
-#: the registry class whose construction sites are this gate's subjects.
-
-#: registry methods that can bind the registry-DEFAULT L2 client (shapes 1-3).
-_L2_BINDERS: Final[frozenset[str]] = frozenset({"configure", "register", "bind_table"})
-
-#: keywords that hand a Collection (or a registry) its own NATS/L2 client (shape 4).
-
-#: argument spellings that name a live NATS client when passed POSITIONALLY (shape 5).
-#: matched on the LAST segment of a dotted path, so ``self._nc`` and ``nc`` both resolve.
+#: the registry class, the binder methods, the client keywords and the positional
+#: client spellings all live in ``enforcement.common.collection_registry`` now, shared
+#: with the invalidation-listener gate. They were duplicated here, and a local copy of
+#: ``CLIENT_SPELLINGS`` in particular goes stale silently: it is a heuristic list that
+#: grows, and ruff does not flag an unused module constant, so the copy keeps compiling
+#: while the gate it feeds stops seeing a wiring form the other gate learned.
 
 #: the keyword that supplies the scope.
 _SCOPE_KEYWORD: Final[str] = "kv_key_scope"

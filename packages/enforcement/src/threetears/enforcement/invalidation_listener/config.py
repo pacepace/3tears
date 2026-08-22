@@ -37,13 +37,16 @@ class InvalidationListenerConfig:
         count from BELOW is what makes the gate fail loudly instead. Set it to
         the number the repo actually has, and raise it when that grows.
         ``0`` disables the check, which is only right for a repo that
-        genuinely wires none.
+        genuinely wires none. **REQUIRED, with no default**, and deliberately so:
+        a default of ``0`` would let a consumer adopt the minimal config and get
+        exactly the silent green-over-nothing the floor exists to prevent. Making
+        it positional forces the number to be a decision somebody made.
     :ivar skip_basenames: file basenames the walkers skip entirely.
     """
 
     repo_root: Path
+    minimum_live_registries: int
     src_roots: tuple[Path, ...] | None = None
     exemptions_path: Path | None = None
     mode_env_var: str = "INVALIDATION_LISTENER_ENFORCEMENT_MODE"
-    minimum_live_registries: int = 0
     skip_basenames: frozenset[str] = field(default_factory=frozenset)

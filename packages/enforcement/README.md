@@ -10,6 +10,15 @@ This replaces a previous pattern in which the same enforcement test files were v
 
 ## Domains
 
+> **Adopting `invalidation_listener` in a repo that already runs a local copy.**
+> The hub's pre-shared walker keyed its exemption file by BARE MODULE PATH
+> (`src/aibots/gateway/acl.py`). The shared parser wants a `path:line:symbol`
+> triple and rejects anything else with `ExemptionError`, so an unmigrated file
+> does not degrade -- it aborts the domain. Rewrite each entry as
+> `<path>:*:<registry-spelling>`, keeping the `# rationale:` line above it: `*`
+> means "any line in that file", which is what you want, because keying an
+> exemption to a line number silently stops matching when the line moves.
+
 | Module | Invariant enforced |
 |---|---|
 | `cache` | Every stateful data surface routes through `BaseCollection`; no bespoke SQLiteBackend wrappers; no direct pool access to Collection-backed tables; every migration-defined table has a Collection class. |
@@ -18,6 +27,7 @@ This replaces a previous pattern in which the same enforcement test files were v
 | `coercion_coverage` | Tool subclasses override `execute`, never `run`, preserving the `normalize_kwargs → execute` input-coercion path. |
 | `dependency_alignment` | Declared dependencies match actual imports (no undeclared module-top sibling import, no declaration nothing imports); designated contracts packages import only stdlib, their own namespace, and configured extras; a package with a pinned `DependencyFloor` declares exactly the ruled hard-dependency list, no more and no fewer. |
 | `dict_state_detection` | No raw `dict`/`OrderedDict` persistent state in `__init__`; use `SQLiteBackend` (L1) or NATS KV for shared state. |
+| `invalidation_listener` | Every L2-live `CollectionRegistry` starts the cross-pod invalidation listener, and every start is paired with a stop. Carries a REQUIRED non-vacuity floor: a scan reaching nothing reports what a clean repo reports. |
 | `logger_coverage` | Every production module declares a module-level `log = get_logger(__name__)` unless explicitly exempt. |
 | `migration_yugabyte_safety` | Migration shapes are yugabyte-safe per `threetears.core.data.migrations.enforcement`. |
 | `nats_wrapper_usage` | All `nats-py` imports route through `threetears.nats.NatsClient`; no direct `import nats`. |

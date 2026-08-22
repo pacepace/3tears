@@ -181,7 +181,7 @@ class TestViolationRecords:
             "import os\n\nregistry = CollectionRegistry()\nregistry.configure(l2_client=nc, kv_key_scope=s)\n",
         )
 
-        violations = find_unlistened_registries((src,), repo)
+        violations = find_unlistened_registries((src,))
 
         assert len(violations) == 1
         assert violations[0].line == 3
@@ -196,10 +196,13 @@ class TestViolationRecords:
         src = repo / "src"
         _write(src / "m.py", "await registry.start_invalidation_listener(nc)\n")
 
-        violations = find_starts_without_stops((src,), repo)
+        violations = find_starts_without_stops((src,))
 
         assert len(violations) == 1
         assert violations[0].category == "invalidation_listener.start_without_stop"
+        # identifier-shaped, so it can actually be exempted -- a path-shaped symbol
+        # cannot match the exemption grammar and aborts the whole domain
+        assert violations[0].symbol == "m"
         assert "outlives the connection" in violations[0].reason
 
     def test_skip_basenames_is_honoured(self, tmp_path: Path) -> None:
@@ -210,4 +213,4 @@ class TestViolationRecords:
             "registry = CollectionRegistry()\nregistry.configure(l2_client=nc, kv_key_scope=s)\n",
         )
 
-        assert find_unlistened_registries((src,), repo, frozenset({"m.py"})) == []
+        assert find_unlistened_registries((src,), frozenset({"m.py"})) == []

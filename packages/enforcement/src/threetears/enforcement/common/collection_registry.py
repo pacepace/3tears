@@ -12,6 +12,14 @@ teaches one walker to see it and leaves the other blind, and the blind one keeps
 reporting a clean tree. The client-spelling set is the sharp edge -- it is a heuristic
 list of identifiers, so it grows, and it must grow in one place.
 
+**Both gates built on this are MODULE-SCOPED, and that is a real blind spot.** A registry
+constructed in one module and handed its client in another is invisible to both: this
+module sees the construction with no client, the other sees a client reaching a name it
+never saw constructed. Neither reports anything, which reads exactly like clean wiring.
+Cross-module dataflow is out of reach for an AST gate that does not resolve imports, so
+the answer is not to widen these functions -- it is to keep the construction and the
+wiring in one module, which every current call site does.
+
 The functions here are PUBLIC by intent. A walker in another package reaching a private
 helper would be a Shape-A underscore violation, which is exactly the pressure that
 produced the second copy.

@@ -19,6 +19,11 @@ registries must subscribe both -- the registry server does exactly that. What is
 is two listeners on ONE registry: every broadcast handled twice, and a teardown that
 releases only one.
 
+**Module-scoped, with the blind spot that implies.** A registry constructed in one module
+and given its client in another is invisible to this gate and to the L2-scope gate alike --
+see :mod:`threetears.enforcement.common.collection_registry`. Keep construction and wiring
+in one module.
+
 Registry detection is shared with the L2-scope domain via
 :mod:`threetears.enforcement.common.collection_registry`, deliberately: both domains ask
 "which registries are L2-live", and two copies of that answer drift the moment a new
@@ -40,7 +45,6 @@ from threetears.enforcement.common import (
     l2_live_registries,
     parse_python_file,
     receiver,
-    relative_posix_path,
 )
 
 __all__ = [
@@ -162,15 +166,12 @@ def count_l2_live_registries(
 
 def find_unlistened_registries(
     src_roots: tuple[Path, ...],
-    repo_root: Path,
     skip_basenames: frozenset[str] = frozenset(),
 ) -> list[Violation]:
     """flag every L2-live registry that subscribes no invalidation listener.
 
     :param src_roots: src roots to scan
     :ptype src_roots: tuple[Path, ...]
-    :param repo_root: repo root used to render relative paths
-    :ptype repo_root: Path
     :param skip_basenames: file basenames to skip
     :ptype skip_basenames: frozenset[str]
     :return: violations in source order
@@ -210,15 +211,12 @@ def find_unlistened_registries(
 
 def find_starts_without_stops(
     src_roots: tuple[Path, ...],
-    repo_root: Path,
     skip_basenames: frozenset[str] = frozenset(),
 ) -> list[Violation]:
     """flag every module that starts a listener and never releases one.
 
     :param src_roots: src roots to scan
     :ptype src_roots: tuple[Path, ...]
-    :param repo_root: repo root used to render relative paths
-    :ptype repo_root: Path
     :param skip_basenames: file basenames to skip
     :ptype skip_basenames: frozenset[str]
     :return: violations in source order
@@ -234,13 +232,16 @@ def find_starts_without_stops(
                 continue
             if not starts_without_stopping(tree):
                 continue
-            rel = relative_posix_path(source, repo_root)
             violations.append(
                 Violation(
                     category=_UNPAIRED_CATEGORY,
                     file=source,
                     line=1,
-                    symbol=rel,
+                    # the module STEM, not its path: `common.exemptions` constrains a symbol
+                    # to an identifier, so a path-shaped one cannot be exempted at all -- the
+                    # entry raises `ExemptionError` and takes the whole domain down with it.
+                    # `Violation.file` already carries the path the report renders.
+                    symbol=source.stem,
                     reason=(
                         "this module starts an invalidation listener and never releases one, so "
                         "the subscription outlives the connection it was made on. stop it in the "

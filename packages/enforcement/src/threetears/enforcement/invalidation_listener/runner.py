@@ -79,9 +79,9 @@ def run_invalidation_listener_enforcement(
 
     violations: list[Violation] = []
     if walker in {"all", "unlistened"}:
-        violations.extend(find_unlistened_registries(src_roots, config.repo_root, config.skip_basenames))
+        violations.extend(find_unlistened_registries(src_roots, config.skip_basenames))
     if walker in {"all", "unpaired"}:
-        violations.extend(find_starts_without_stops(src_roots, config.repo_root, config.skip_basenames))
+        violations.extend(find_starts_without_stops(src_roots, config.skip_basenames))
 
     exemptions = _load_exemptions(config.exemptions_path)
     filtered = apply_exemptions(violations, exemptions, config.repo_root)
