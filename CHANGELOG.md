@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+<!-- The heading stays `Unreleased` ON PURPOSE, even though `pyproject.toml` already
+     reads 0.27.0. The release commit is what renames this heading to the shipping
+     version, and that commit has not happened: the version bump lands with the
+     branch, the rename lands with the tag. Commit 63585f66 deleted a premature
+     `## v0.27.0` heading here and orphaned the prose under it; do not restore it
+     ahead of the release. -->
+
 ### Breaking
 
 - **Every L2 key is now `{scope}.{table}.{body}`, and the scope is mandatory.**
@@ -39,6 +46,50 @@ packages (bumped in lock-step).
   owning module; per the no-shims rule there is no alias at the old path.
 
 ### Added
+
+- `core`: **`bind_collections_bucket(nats_client, *, component=None)`** -- the
+  one call every non-declaring process makes at startup, after connect and
+  BEFORE any `configure()` that wires an L2 client. It retries only the
+  TRANSIENT half of the failure space (the declaring identity has not reached
+  the bucket yet); a permission refusal is terminal and raises immediately,
+  because retrying a grant that will never appear turns a fixable
+  misconfiguration into an unexplained slow start. `component` names the binder
+  in the log, which is what makes an ORDERING failure readable after the fact.
+
+- `nats`: **`NatsClient.ensure_kv_bucket(...)`** -- DECLARES a KV bucket,
+  reconciling a live one in place, as `ensure_jetstream_stream` already did for
+  streams. It replaces a create-or-BIND path that silently discarded the
+  caller's entire requested config when the bucket already existed, with nothing
+  above a `log.debug` to say so. That defect is how a bucket could run without
+  `allow_direct` after code that asked for it shipped -- see `### Breaking`.
+
+- `nats`: **`KvDeclaring`** protocol, beside the existing `KvCapable`. Declaring
+  is a strictly larger capability than opening, and adding the method to
+  `KvCapable` would have un-satisfied every double that implements only
+  `kv_bucket`.
+
+- `core`: **`BaseCollection.delete_l2_entry(entity_id)`** -- the receiver half
+  of cross-pod coherence, promoted from `_delete_from_l2` because its caller
+  (the registry's invalidation listener) lives in another class, and the
+  underscore contract says to promote the api rather than exempt the caller. It
+  is presence-gated: a JetStream KV delete is an unconditional publish of a
+  delete marker, so an ungated broadcast would write one marker per receiver per
+  never-cached entity into a `history=1` memory bucket.
+
+- `core`: **`CollectionRegistry.stop_invalidation_listener()`** -- the pair to
+  `start_invalidation_listener`, which had none. Subscription state lives on the
+  REGISTRY instance, so a process holding two L2-live registries stops each
+  independently.
+
+- `agent-tools`: **`ToolServer.add_connected_callback(cb)`** -- runs `cb(nc)` on
+  every (re)connect, not only the first. A bucket on memory storage is DELETED
+  by a NATS restart, so a one-shot declaration at startup does not survive one;
+  re-declaring on reconnect is what brings it back carrying `allow_direct`.
+
+- `agent-acl`: **`register_rbac_l1_tables(metadata)`** -- one definition of the
+  rbac L1 table shapes, returned by name. Three consumers carried their own
+  hand-written copies of these `Table(...)` stacks; a column added to one drifted
+  from the other two silently.
 
 - `agent-memory`: **`MemoryChunkCollection.find_by_chunk_indexes`** -- fetch the
   chunks of one memory sitting at a set of ordinals, in `chunk_index ASC` order.
@@ -153,6 +204,46 @@ packages (bumped in lock-step).
   backends are updated. `DuckDBBackend` raises `NotImplementedError` rather than
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
+
+
+- `nats`: **`PayloadTooLargeError`, for a publish the broker will not accept.**
+  `nats-py` refuses an oversized publish client-side, against the `max_payload`
+  the server advertised in its INFO -- 1 MB on an untuned broker. That refusal
+  arrived as a generic `PublishError` carrying a stringified cause, which left
+  the two failures a caller most needs to tell apart -- the frame we built is
+  too big, versus the connection is gone -- separable only by matching on
+  message text. One of them is a bug in what we built and **must never be
+  retried**: nothing about the next attempt is smaller, so a retry is an
+  infinite loop that logs. The other is an outage, where retrying is often
+  right.
+
+  Both numbers ride the exception as attributes rather than only as prose. It
+  subclasses `PublishError`, so every existing catch site is unaffected.
+
+  Every public publish entry point reaches it, including the JetStream path,
+  where the refusal fires before the ack wait. The task this came from assumed
+  all four funnelled through `_publish_bytes`; two of them do not, so the funnel
+  callers can rely on is the classification rather than the call.
+
+- `nats`: **`NatsClient.max_payload`, so a frame builder can ask what fits.**
+  The half that makes the error more than a nicer message: a caller that can ask
+  how much fits can pick a shape that fits -- a narrower projection, a handle to
+  the part that did not, a chunked `pipe` transfer -- instead of building it
+  large, publishing it, and learning the answer as an exception.
+
+  It answers `None` before connect and `None` while disconnected, which is the
+  point of it rather than a gap in it. `nats-py` pre-fills its own attribute
+  with a 1 MB default, so reading that early returns a guess wearing the shape
+  of an answer; a default here would be a second source of truth for the one
+  number this change exists to stop guessing. The classification is
+  catch-and-retype for the same reason -- the limit has exactly one source of
+  truth, and it is the connected server.
+
+  Together they name the limit above the publish bound and let a caller ask about
+  it before building something that misses it. **A minor because the surface grew,
+  and it had to:** a refusal nobody can catch specifically is a refusal nobody can
+  act on, so the new type and the new property are the change, and `BLD-7QM3`'s
+  ruling puts them on a minor line.
 
 ### Changed
 
@@ -332,6 +423,27 @@ packages (bumped in lock-step).
   declaring a column of that name raises at `initialize()` rather than emitting
   duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
 
+
+- `channels`: **`RoomFanout.broadcast` documents what it propagates and what
+  must not be retried.** It still does not catch, which is correct -- this
+  package is not where the decision about a lost room frame is made, and its two
+  consumers each handle it differently on purpose. What it owed them was a
+  failure they can tell apart, and the docstring now names it.
+
+  The failure is silent by construction: the publishing pod's own sockets
+  already hold the content, so the person who caused an oversized frame sees
+  everything while the room sees nothing, and a single-pod test never reaches
+  the publish at all.
+
+- `langgraph`: **`DEFAULT_STRUCTURED_INLINE_MAX_CHARS` records the ceiling above
+  it.** The inline bound was a placeholder with an owner; it now has an upper
+  limit too, so the open question is answered inside a range rather than into
+  open air. Measured through the real event -> `Frame` -> `RoomFrame` nesting,
+  an untuned 1 MB broker works back to roughly 780,000 characters of artifact --
+  and the nesting cost is neither 1.0 nor stable (1.20x on a body-heavy payload,
+  1.34x on a metadata-heavy one), so the note points at
+  `scripts/measure-structured-result-sizes.py` rather than at either ratio.
+
 ### Fixed
 
 - `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
@@ -373,69 +485,6 @@ packages (bumped in lock-step).
   Per the no-shims rule there is no deprecation alias and no re-export at the
   old path. Callers import `NatsClient` from `threetears.nats` and open buckets
   through `kv_bucket`.
-
-### Added
-
-- `nats`: **`PayloadTooLargeError`, for a publish the broker will not accept.**
-  `nats-py` refuses an oversized publish client-side, against the `max_payload`
-  the server advertised in its INFO -- 1 MB on an untuned broker. That refusal
-  arrived as a generic `PublishError` carrying a stringified cause, which left
-  the two failures a caller most needs to tell apart -- the frame we built is
-  too big, versus the connection is gone -- separable only by matching on
-  message text. One of them is a bug in what we built and **must never be
-  retried**: nothing about the next attempt is smaller, so a retry is an
-  infinite loop that logs. The other is an outage, where retrying is often
-  right.
-
-  Both numbers ride the exception as attributes rather than only as prose. It
-  subclasses `PublishError`, so every existing catch site is unaffected.
-
-  Every public publish entry point reaches it, including the JetStream path,
-  where the refusal fires before the ack wait. The task this came from assumed
-  all four funnelled through `_publish_bytes`; two of them do not, so the funnel
-  callers can rely on is the classification rather than the call.
-
-- `nats`: **`NatsClient.max_payload`, so a frame builder can ask what fits.**
-  The half that makes the error more than a nicer message: a caller that can ask
-  how much fits can pick a shape that fits -- a narrower projection, a handle to
-  the part that did not, a chunked `pipe` transfer -- instead of building it
-  large, publishing it, and learning the answer as an exception.
-
-  It answers `None` before connect and `None` while disconnected, which is the
-  point of it rather than a gap in it. `nats-py` pre-fills its own attribute
-  with a 1 MB default, so reading that early returns a guess wearing the shape
-  of an answer; a default here would be a second source of truth for the one
-  number this change exists to stop guessing. The classification is
-  catch-and-retype for the same reason -- the limit has exactly one source of
-  truth, and it is the connected server.
-
-  Together they name the limit above the publish bound and let a caller ask about
-  it before building something that misses it. **A minor because the surface grew,
-  and it had to:** a refusal nobody can catch specifically is a refusal nobody can
-  act on, so the new type and the new property are the change, and `BLD-7QM3`'s
-  ruling puts them on a minor line.
-
-### Changed
-
-- `channels`: **`RoomFanout.broadcast` documents what it propagates and what
-  must not be retried.** It still does not catch, which is correct -- this
-  package is not where the decision about a lost room frame is made, and its two
-  consumers each handle it differently on purpose. What it owed them was a
-  failure they can tell apart, and the docstring now names it.
-
-  The failure is silent by construction: the publishing pod's own sockets
-  already hold the content, so the person who caused an oversized frame sees
-  everything while the room sees nothing, and a single-pod test never reaches
-  the publish at all.
-
-- `langgraph`: **`DEFAULT_STRUCTURED_INLINE_MAX_CHARS` records the ceiling above
-  it.** The inline bound was a placeholder with an owner; it now has an upper
-  limit too, so the open question is answered inside a range rather than into
-  open air. Measured through the real event -> `Frame` -> `RoomFrame` nesting,
-  an untuned 1 MB broker works back to roughly 780,000 characters of artifact --
-  and the nesting cost is neither 1.0 nor stable (1.20x on a body-heavy payload,
-  1.34x on a metadata-heavy one), so the note points at
-  `scripts/measure-structured-result-sizes.py` rather than at either ratio.
 
 ### Docs
 

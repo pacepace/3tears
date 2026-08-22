@@ -136,8 +136,9 @@ Consequences:
 Unless noted, these are exported from `threetears.core` (see §15).
 
 - **`CollectionRegistry`** — DI container + table-name lookup + cache coherence.
-  Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, l3_pool=)`
-  sets defaults, `bind_table(table_name, l1_backend=, l2_client=, l3_pool=)` pins
+  Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, kv_key_scope=,
+  l3_pool=)` sets defaults — `kv_key_scope` is required alongside any `l2_client` —
+  and `bind_table(table_name, l1_backend=, l2_client=, kv_key_scope=, l3_pool=)` pins
   per-table overrides **before** a collection is constructed (needed because a
   collection snaps its backends from the registry at `__init__`). A collection
   resolves its L2 client from the registry (`get_l2_client(table_name)`) when no
@@ -706,8 +707,11 @@ here so anyone holding the old draft knows the workarounds are no longer needed:
 - [ ] Stand up PostgreSQL; enable pgvector if using `agent-memory`.
 - [ ] Create the L3 pool at startup; close it on shutdown.
 - [ ] `CollectionRegistry().configure(l1_backend=SQLiteBackend(...), l3_pool=pool)`.
-- [ ] (Multi-pod) `await NatsClient.connect(...)`; pass it as
-      `registry.configure(..., l2_client=nats)` so collections pick up L2 (§8.2);
+- [ ] (Multi-pod) `await NatsClient.connect(...)`; then
+      `await bind_collections_bucket(nats, component="<your-pod>")` BEFORE configuring L2;
+      then `registry.configure(..., l2_client=nats, kv_key_scope=kv_key_scope_for(...))`
+      so collections pick up L2 (§8.2) — the scope is REQUIRED wherever an `l2_client` is,
+      and `configure` raises `L2ScopeNotConfiguredError` without it;
       `await registry.start_invalidation_listener(nats)` on every pod;
       `await registry.stop_invalidation_listener()` then `await nats.shutdown()` on exit.
 - [ ] Define schema with `TableDef`/`ColumnDef`/…; author migrations per

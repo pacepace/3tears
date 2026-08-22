@@ -184,7 +184,10 @@ async def build_tool_pod_collection_stack(
     scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=pod_id)
     # then the bucket, BEFORE the registry is configured: a refused or mismatched bucket must take
     # the process down at wiring, with nothing half-built behind it.
-    await bind_collections_bucket(nats_client)
+    # component=: several processes bind this same bucket, and the interesting failure is
+    # an ORDERING one -- which reached it before the declaring identity. An unnamed bind log
+    # cannot answer that.
+    await bind_collections_bucket(nats_client, component="tool-pod")
     registry = CollectionRegistry()
     registry.configure(
         l1_backend=create_tool_pod_l1_backend(l1_metadata),

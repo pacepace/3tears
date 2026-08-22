@@ -275,11 +275,21 @@ def build_registry_rbac_stack(
     # default ``True`` would issue a ``STREAM.CREATE`` the broker never answers -- a refusal
     # arrives as a deadline, not an error -- and only then fall through to the bind that was
     # going to succeed anyway.
+    rbac_key_scope = kv_key_scope_for(Principal.REGISTRY)
     registry.configure(
         l1_backend=l1_backend,
         l3_pool=rbac_pool,
-        kv_key_scope=kv_key_scope_for(Principal.REGISTRY),
+        kv_key_scope=rbac_key_scope,
         l2_create_if_missing=False,
+    )
+    # a wrong scope does not fail here -- it reads a neighbour's keys, or its own grant
+    # refuses it, both of which surface far from this line. log the resolved value at the
+    # wiring point so the first question ("which scope did this process actually take?")
+    # is answered by the boot log rather than by a bus capture.
+    log.info(
+        "registry rbac stack configured",
+        kv_key_scope=rbac_key_scope,
+        subject_namespace=subject_namespace,
     )
 
     namespace_collection = NamespaceCollection(

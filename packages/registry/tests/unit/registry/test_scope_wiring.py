@@ -21,6 +21,7 @@ than degrade.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -259,3 +260,55 @@ class TestShutdownReleasesWhatStartupSubscribed:
         server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
 
         await server.shutdown()
+
+
+class TestTheTeardownSeamIsBoundInEveryAuthorizerMode:
+    """`_run_server` builds the teardown closure whatever mode it resolves.
+
+    The list the closure drains is filled only by the rbac factory, so binding it inside
+    that arm left it unbound under `THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true` and
+    `THREETEARS_REGISTRY_FORCE_DENY_ALL=true` -- and the closure is passed
+    unconditionally, so `shutdown()` raised `NameError` before the connection drained.
+    Forced-deny is the production kill-switch, so that is the panic button failing to
+    stop cleanly. The seam's own unit test could not catch it: it injects an `AsyncMock`
+    and never reaches `_run_server`.
+    """
+
+    @pytest.mark.parametrize(
+        "mode_env",
+        ["THREETEARS_REGISTRY_ALLOW_ALL_TOOLS", "THREETEARS_REGISTRY_FORCE_DENY_ALL"],
+    )
+    def test_the_shutdown_hook_is_callable_in_a_non_rbac_mode(
+        self, mode_env: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the teardown resolves and runs, draining nothing, rather than raising.
+
+        :param mode_env: the env var selecting a non-rbac authorizer mode
+        :ptype mode_env: str
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(mode_env, "true")
+        captured: dict[str, object] = {}
+
+        class _CapturingServer:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+            async def serve(self) -> None:
+                return None
+
+        monkeypatch.setattr(server_module, "RegistryServer", _CapturingServer)
+        # `asyncio.run` is deliberately NOT patched: patching it on `server_module.asyncio`
+        # patches the one shared module object, so the assertion below would hand its
+        # coroutine to the stub and never execute it -- the test would pass against the
+        # NameError it exists to catch. `_CapturingServer.serve` is already a no-op.
+
+        server_module._run_server()  # noqa: SLF001 - the module entry point under test
+
+        on_shutdown = captured["on_shutdown"]
+        assert callable(on_shutdown)
+        # the bug was a NameError raised the moment this ran
+        asyncio.run(on_shutdown())  # type: ignore[operator]
