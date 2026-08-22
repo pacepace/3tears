@@ -2269,7 +2269,7 @@ class NatsClient:
         :ptype name: str
         :param ttl: optional time-to-live for entries; ``None`` for no expiry
         :ptype ttl: timedelta | None
-        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
+        :param storage: ``"memory"`` (default -- L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :param create_if_missing: create bucket if it does not exist
         :ptype create_if_missing: bool
@@ -2320,7 +2320,7 @@ class NatsClient:
         the KV counterpart of :meth:`ensure_jetstream_stream`, and the answer to
         the create-or-BIND defect: opening a bucket that already existed used to
         drop the caller's whole requested config with nothing above a
-        ``log.debug`` to say so. this declares instead — it creates the bucket
+        ``log.debug`` to say so. this declares instead -- it creates the bucket
         when absent and updates the live stream in place when it carries a
         different value for one of
         :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS`.
@@ -2330,13 +2330,13 @@ class NatsClient:
         :meth:`kv_bucket` reads, so every later consumer shares this handle and
         cannot diverge from the declared config; running it second would find the
         cache already populated by an undeclared open. it does not read that
-        cache first — a declaration is idempotent and re-running it after a
+        cache first -- a declaration is idempotent and re-running it after a
         reconnect is exactly how a wiped bucket comes back.
 
         ``direct`` defaults to ``True`` here and to ``None`` on
         :meth:`kv_bucket`, and the asymmetry is the point: a declaration states
         the value, an ordinary open accepts whatever the declarer established.
-        ``allow_direct`` is load-bearing for security — with it false, nats-py
+        ``allow_direct`` is load-bearing for security -- with it false, nats-py
         reads a key by putting the key in the REQUEST BODY of
         ``$JS.API.STREAM.MSG.GET.KV_{bucket}``, and NATS authorises on subjects,
         so no key-scoped ``$KV.`` grant can constrain a read.
@@ -2345,7 +2345,7 @@ class NatsClient:
         :ptype name: str
         :param ttl: optional time-to-live for entries; ``None`` for no expiry
         :ptype ttl: timedelta | None
-        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
+        :param storage: ``"memory"`` (default -- L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :param history: number of historical revisions to keep per key
         :ptype history: int
@@ -2402,7 +2402,7 @@ class NatsClient:
         :ptype name: str
         :param subjects: subject patterns the stream captures
         :ptype subjects: list[str]
-        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
+        :param storage: ``"memory"`` (default -- L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :param max_age_seconds: discard a message this long after it was published, whether or not
             anything consumed it. ``None`` (the default) retains until another limit bites. a stream

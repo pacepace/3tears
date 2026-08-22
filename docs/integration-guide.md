@@ -137,7 +137,7 @@ Unless noted, these are exported from `threetears.core` (see §15).
 
 - **`CollectionRegistry`** — DI container + table-name lookup + cache coherence.
   Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, kv_key_scope=,
-  l3_pool=)` sets defaults — `kv_key_scope` is required alongside any `l2_client` —
+  l3_pool=)` sets defaults -- `kv_key_scope` is required alongside any `l2_client` -- 
   and `bind_table(table_name, l1_backend=, l2_client=, l3_pool=)` pins
   per-table overrides **before** a collection is constructed (needed because a
   collection snaps its backends from the registry at `__init__`). A collection
@@ -147,7 +147,7 @@ Unless noted, these are exported from `threetears.core` (see §15).
   `start_invalidation_listener(nats)` / `publish_invalidation(...)` using a typed
   `CacheInvalidationMessage` on `Subjects.cache_invalidate()`.
   `stop_invalidation_listener()` is the teardown half: it unsubscribes the listener and
-  is safe to call from a `finally` — a second call, or one with nothing subscribed, is a
+  is safe to call from a `finally` -- a second call, or one with nothing subscribed, is a
   no-op, and a stop on an already-draining connection does not raise. A second
   `start_invalidation_listener` while one is live is likewise a no-op rather than a
   second consumer, so the registry is reusable across a stop/start.
@@ -400,9 +400,11 @@ async def wire_with_l2(pg_pool) -> None:
 ```
 
 > Need L2 on for some tables but off for others? Override per table with
-> `registry.bind_table("widgets", l2_client=nats, kv_key_scope=...)` before the
-> collection is built -- the scope is required wherever an L2 client is, or
-> pass `nats_client=None` to a hand-built collection to force L1+L3 for it. A
+> `registry.bind_table("widgets", l2_client=nats)` before the collection is built.
+> There is no per-table `kv_key_scope`: the scope names the PRINCIPAL, one process is
+> one principal, so it belongs on the registry -- and `bind_table` raises
+> `L2ScopeNotConfiguredError` if the registry has none yet. Or pass
+> `nats_client=None` to a hand-built collection to force L1+L3 for it. A
 > collection with no resolvable L2 client logs a one-shot warning on its first write
 > so the wiring gap is visible.
 
@@ -710,7 +712,7 @@ here so anyone holding the old draft knows the workarounds are no longer needed:
 - [ ] (Multi-pod) `await NatsClient.connect(...)`; then
       `await bind_collections_bucket(nats, component="<your-pod>")` BEFORE configuring L2;
       then `registry.configure(..., l2_client=nats, kv_key_scope=kv_key_scope_for(...))`
-      so collections pick up L2 (§8.2) — the scope is REQUIRED wherever an `l2_client` is,
+      so collections pick up L2 (§8.2) -- the scope is REQUIRED wherever an `l2_client` is,
       and `configure` raises `L2ScopeNotConfiguredError` without it;
       `await registry.start_invalidation_listener(nats)` on every pod;
       `await registry.stop_invalidation_listener()` then `await nats.shutdown()` on exit.

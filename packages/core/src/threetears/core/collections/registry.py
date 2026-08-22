@@ -172,12 +172,18 @@ class CollectionRegistry:
 
         **Every argument merges into existing state rather than replacing it** -- a ``None``
         leaves whatever was configured before untouched. That is what makes two-pass wiring
-        (scope first and client later, or the reverse) the normal shape it already is at
+        (the scope in one call, the client in a later one) the normal shape it already is at
         several call sites.
 
-        The L2-scope refusal is therefore evaluated over the MERGED state at the end of the
-        call, never over this call's arguments. A per-call check would refuse the first pass
-        of every two-pass site.
+        The L2-scope refusal is evaluated over the MERGED state at the end of the call,
+        never over this call's arguments. A per-call check would refuse the first pass of
+        every two-pass site.
+
+        **The two passes are not interchangeable.** Scope first, then client, works because
+        the first pass ends with no client and the second ends with both. CLIENT first
+        RAISES: that call ends with a client and no scope, which is exactly the state the
+        refusal exists to catch, and it cannot know a later call intends to supply one.
+        Either order the scope before the client, or pass both together.
 
         :param l1_backend: default pod-local L1 backend, or ``None`` to leave it unchanged
         :ptype l1_backend: Any
@@ -243,11 +249,16 @@ class CollectionRegistry:
     def l2_create_if_missing(self) -> bool:
         """whether this registry's collections may create the shared collections bucket.
 
-        Read by :meth:`BaseCollection._ensure_kv` when it resolves the bucket. ``True`` is
-        the default and the only value anything sets today: flipping it to ``False`` turns
-        off :meth:`threetears.nats.NatsKvBucket._reopen`'s restart self-heal for the
-        collections bucket, which is only safe once the declaring identity re-declares the
-        bucket on every NATS reconnect.
+        Read by :meth:`BaseCollection._ensure_kv` when it resolves the bucket. ``True``
+        remains the default; ``False`` says this process BINDS the bucket and never
+        declares it, which is what a principal whose grant carries ``STREAM.INFO`` and no
+        ``STREAM.CREATE`` must say -- a refused create is never answered, so leaving the
+        default would spend a JetStream deadline at every startup and then bind anyway.
+        The registry server and the agent pod both set it, and both pair it with an eager
+        :func:`~threetears.core.collections.bind_collections_bucket`. It also turns off
+        :meth:`threetears.nats.NatsKvBucket._reopen`'s restart self-heal, which is only
+        safe because the declaring identity re-declares the bucket on every NATS
+        reconnect.
 
         :return: ``True`` when a collection may create the bucket
         :rtype: bool
@@ -307,15 +318,32 @@ class CollectionRegistry:
         :param l1_backend: L1 backend override for this table, or
             ``None`` to leave any existing binding untouched
         :ptype l1_backend: Any
-        :param l2_client: L2 client override for this table
+        :param l2_client: L2 client override for this table. requires the registry to
+            already carry a ``kv_key_scope`` -- see the raise below
         :ptype l2_client: Any
         :param l3_pool: L3 pool override for this table
         :ptype l3_pool: Any
         :return: nothing
         :rtype: None
+        :raises L2ScopeNotConfiguredError: if ``l2_client`` is given while this registry
+            has no ``kv_key_scope``. this is the THIRD way an L2 client reaches a
+            collection (after :meth:`configure` and ``BaseCollection(nats_client=)``) and
+            it was the one with no gate, so a registry wired only through here reached
+            production unscoped and failed later, from ``l2_key``, in a request path.
+            there is deliberately no per-table ``kv_key_scope`` parameter: the scope
+            identifies the PRINCIPAL, and one process is one principal, so a per-table
+            value would let a single process write under two identities' scopes -- the
+            precise thing scoping exists to prevent. set it on the registry
         """
         if l1_backend is None and l2_client is None and l3_pool is None:
             return
+        if l2_client is not None and self._kv_key_scope is None:
+            raise L2ScopeNotConfiguredError(
+                f"bind_table({table_name!r}, l2_client=...) with no kv_key_scope on this "
+                f"registry: that collection would write into the shared collections bucket "
+                f"under a key no per-principal grant can name. configure the registry first "
+                f"-- registry.configure(kv_key_scope=threetears.nats.kv_key_scope_for(...))"
+            )
         existing = self._overrides.setdefault(table_name, {})
         if l1_backend is not None:
             existing["l1_backend"] = l1_backend

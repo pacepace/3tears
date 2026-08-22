@@ -1,4 +1,4 @@
-"""thin shell — walker logic in :mod:`threetears.enforcement.logger_coverage`.
+"""thin shell -- walker logic in :mod:`threetears.enforcement.logger_coverage`.
 
 Runs the ``call_kwargs`` walker over every workspace package's src tree: a
 ``log.info("msg", key=value)`` is structlog shape, and :func:`threetears.observe.get_logger`

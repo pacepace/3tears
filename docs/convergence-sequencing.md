@@ -95,7 +95,7 @@ and one of them is subtler than not-done.**
   outside.
 
   ***Discharged 2026-08-20.*** discodon carved it, as `DocumentStore` in
-  `discodon/eval/store_port.py` — seven methods, against the two the paragraph
+  `discodon/eval/store_port.py` -- seven methods, against the two the paragraph
   above measured. `EvalStorage` no longer owns a store: it is constructed with
   two `DocumentStore` instances handed in (`runtime`, `definitions`), and
   `store_adapter.py` holds the YugabyteDB implementation behind them. That
@@ -116,7 +116,7 @@ and one of them is subtler than not-done.**
   the port is called `DocumentStore`. The paragraph above reasoned from that
   absence to "untouched", and would do so again today. **A sequencing item that
   names a symbol is a search for a name the consuming repo never agreed to
-  use** — the same defect this document records at Phase 4, where consumer
+  use** -- the same defect this document records at Phase 4, where consumer
   checks written as *instructions to change two named files* had to be
   re-derived against trees that had moved. State the property; grep for the
   seam.
@@ -466,9 +466,9 @@ cycle — a three-link chain, discodon → 3tears → discodon — but one whose
 link nobody outside discodon can pull. Neither end has moved in the five days
 since this was last written.
 
-***Correction 2026-08-20 — discodon pulled the first link, and this document
+***Correction 2026-08-20 -- discodon pulled the first link, and this document
 knew it in one place while saying the opposite in two.*** The storage port is
-carved (discodon #2390 — see the Phase 1 correction, and
+carved (discodon #2390 -- see the Phase 1 correction, and
 [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)),
 so **"the storage port that is still uncarved *in discodon*" is false**, and
 with it the "hard-blocked" verdict. What remains of the chain is one link, not
@@ -477,13 +477,13 @@ port that exists rather than against an imagined consumer, which is the whole
 reason Phase 1 preceded Phase 3.
 
 **Nothing was watching, in both directions at once.** Phase 5 of this document
-already records the `DocumentStore` port as in place — added 2026-08-20, the
-same day, by whoever was reading discodon's tree for the eval extraction — while
+already records the `DocumentStore` port as in place -- added 2026-08-20, the
+same day, by whoever was reading discodon's tree for the eval extraction -- while
 this paragraph and the Phase 1 bullet went on saying it did not exist. So the
 document contradicted itself for the length of a day, and the half that was
 wrong is the half that gates a build. That is the failure mode Phase 1's own
-2026-08-19 correction named — *a status note goes stale in whichever direction
-nobody is checking* — recurring **inside one file**, which is worse than the
+2026-08-19 correction named -- *a status note goes stale in whichever direction
+nobody is checking* -- recurring **inside one file**, which is worse than the
 cross-repo version and cheaper to prevent: **a status correction should sweep
 the document it lands in.** The sweep is one grep for the item's own subject.
 

@@ -54,7 +54,7 @@ def find_local_src_roots(repo_root: Path) -> tuple[Path, ...]:
 
     depth is deliberately unbounded rather than fixed at one level.
     3tears groups ten packages under ``packages/agent/`` for visual
-    tidiness, and a ``packages/*/src`` walk returned NOTHING for them —
+    tidiness, and a ``packages/*/src`` walk returned NOTHING for them --
     which is indistinguishable, in every gate built on this helper, from
     finding nothing wrong. the layout is a naming choice; the discovery
     must not encode a guess about it, or the next grouping directory

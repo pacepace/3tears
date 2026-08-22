@@ -238,12 +238,19 @@ class TestSubscribeInvalidations:
 
         await stack.subscribe_invalidations()
 
-        assert nc.subscribe_typed.await_count == 3
+        # the ACL channel is three subjects. `subscribe_invalidations` also starts the
+        # registry's COLLECTION invalidation listener, which subscribes on this same
+        # client -- a different channel with a different publisher -- so count the ACL
+        # subjects rather than every subscribe the client saw.
         # the default-namespace prefix is set by other tests in the
         # process via :func:`set_default_namespace`; assert on the
         # invariant suffix shape rather than a fixed prefix so test
         # ordering does not flake the assertion.
-        suffixes = sorted(call.kwargs["subject"].path.split(".", 1)[1] for call in nc.subscribe_typed.await_args_list)
+        suffixes = sorted(
+            call.kwargs["subject"].path.split(".", 1)[1]
+            for call in nc.subscribe_typed.await_args_list
+            if ".acl." in call.kwargs["subject"].path
+        )
         assert suffixes == [
             "acl.assignment.invalidate",
             "acl.membership.invalidate",
@@ -419,7 +426,9 @@ class TestRegistryRbacStackClose:
         )
         await stack.subscribe_invalidations()
         await stack.close()
-        assert nc.unsubscribe.await_count == 3
+        # three ACL subjects plus the collection invalidation listener, which subscribes
+        # on the same client and must be released by the same close.
+        assert nc.unsubscribe.await_count == 4
         # the CLIENT form, handed the exact handles ``subscribe_typed`` returned.
         # ``Subscription.unsubscribe()`` would look equivalent and would leave every handle on
         # the client's own subscription list.
@@ -451,7 +460,8 @@ class TestRegistryRbacStackClose:
         await stack.subscribe_invalidations()
         await stack.close()
         await stack.close()
-        assert nc.unsubscribe.await_count == 3
+        # three ACL subjects plus the collection listener, each released exactly once
+        assert nc.unsubscribe.await_count == 4
 
 
 class TestRegistryServerPodAuthenticatorFactory:

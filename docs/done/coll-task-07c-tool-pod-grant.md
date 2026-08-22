@@ -16,7 +16,7 @@ Facts cited here live in the evidence ledger.
 
 ## The gap
 
-`_tool_pod` grants exactly two KV buckets — `{ns}-proxy_assertion_nonces` and
+`_tool_pod` grants exactly two KV buckets -- `{ns}-proxy_assertion_nonces` and
 `{ns}-leases`. **No `{ns}-collections`.**
 
 `CROSS_PLATFORM_CACHE_INVALIDATE` appears in the pub and sub tuples of the agent
@@ -26,13 +26,13 @@ pod's**. So a tool pod can neither announce a write nor learn of one.
 The tool pod is one of two principals missing the collections grant; the registry
 is the other, and `coll-task-05a` fixes it.
 
-### What a missing grant does — three cases
+### What a missing grant does -- three cases
 
 - **raw JS control-plane call on an ungranted subject**: does not raise. Blocks to
   the deadline and reads as an unreachable broker.
 - **bucket open through `KVLease`**: **raises `KvError`** after a JetStream
-  timeout, which nothing catches — a hard failure on first claim.
-- **bucket open through a `BaseCollection`** — which is what this shard is about:
+  timeout, which nothing catches -- a hard failure on first claim.
+- **bucket open through a `BaseCollection`** -- which is what this shard is about:
   the same `KvError` is **caught and degraded to a WARNING**, because
   `_get_from_l2`/`_save_to_l2`/`_delete_from_l2` deliberately put `_ensure_kv`
   inside the catch. Only `l2_cas_mutate` propagates. So an ungranted tool-pod
@@ -54,13 +54,13 @@ connect.
 
 **This needs no new plumbing.** `_resolve_tool_pod` already pins it.
 
-A namespace-derived scope was designed and rejected on evidence — worth recording
+A namespace-derived scope was designed and rejected on evidence -- worth recording
 because the reasoning generalizes:
 
-- `tool_namespace_id` mints **one row per tool** — see the ledger's Part 2 for
+- `tool_namespace_id` mints **one row per tool** -- see the ledger's Part 2 for
   the counts and their anchors. The shape is what matters, not the number.
 - It is a pure function of manifest values **the pod sends**, bounded only by an
-  `allowed_namespaces` prefix test — so a pod could mint unbounded new scopes into
+  `allowed_namespaces` prefix test -- so a pod could mint unbounded new scopes into
   a memory-backed bucket with no `max_bytes`.
 - Its docstring says platform pods deliberately **collide** on one row, which is
   the opposite of the isolation property a scope must have.
@@ -73,7 +73,7 @@ is **false for tool pods**: `tool_pods.id` is per-deployment, not per-process.
 
 ### Multi-namespace pods: answered
 
-Source answers it — every platform tool pod serves many namespaces. An earlier
+Source answers it -- every platform tool pod serves many namespaces. An earlier
 "if none does, refuse" branch would have refused the platform's own tool servers.
 Scoping by `tool_pods.id` makes the question moot; the collection does not need
 to know which namespace it belongs to.
@@ -82,16 +82,16 @@ to know which namespace it belongs to.
 
 ## The invalidation grant is a decision, not a detail
 
-Granting a partner-operated pod pub and sub on `threetears.cache.invalidate` — a
+Granting a partner-operated pod pub and sub on `threetears.cache.invalidate` -- a
 single non-namespaced global subject carrying `{table, ids, origin}` with the raw
-pk of every write — gives it:
+pk of every write -- gives it:
 
 - a **cross-customer metadata firehose**: every table name and entity id written
   by every agent, hub replica, gateway and adapter;
 - a **fleet-wide eviction primitive**: forged messages evict L1 everywhere, and
   with no L1 max age set anywhere that is an unbounded stampede onto YugabyteDB.
-  `_on_invalidation` filters only on self-asserted `origin` — trivially spoofed by
-  asserting a different one — and drops the **RBAC scan cache before** the
+  `_on_invalidation` filters only on self-asserted `origin` -- trivially spoofed by
+  asserting a different one -- and drops the **RBAC scan cache before** the
   collection, L1 and has-table guards, so a forged message naming any table drops
   a security cache on pods that hold no such collection.
 
@@ -102,8 +102,8 @@ subject, record the exposure as accepted for this landing, and defer both
 The reasoning: the static NATS users already hold this subject unprefixed, so a
 tool pod is not the widest holder and scoping it alone would buy little
 (closing that side is `coll-task-05b`'s). Both
-deferred items are publisher-side changes across three repos — a wire-protocol
-change, not a grant change — and they need their own shard with their own
+deferred items are publisher-side changes across three repos -- a wire-protocol
+change, not a grant change -- and they need their own shard with their own
 review. Carrying them as a P0 checkbox here would make the implementer the
 ratifier of a security posture.
 
@@ -111,7 +111,7 @@ ratifier of a security posture.
 the authenticated principal, and `_on_invalidation` rejecting a table the
 receiver does not hold **before** touching the scan cache. It is not written yet;
 the name exists so the deferral is findable rather than floating. Note the guard reorder overlaps
-`coll-task-03`'s L2S-09, which restructures the same function — sequence them or
+`coll-task-03`'s L2S-09, which restructures the same function -- sequence them or
 land them together.
 
 ---
@@ -133,7 +133,7 @@ land them together.
 ## The stack builder
 
 A tool pod should call one function and get its tiers, constructing no
-`SQLiteBackend` — the cache-primitive allowlist is per-repo and cannot see a
+`SQLiteBackend` -- the cache-primitive allowlist is per-repo and cannot see a
 partner-operated fourth repo, so the builder makes that question moot rather than
 exempted. `tests/enforcement/test_no_bespoke_reuse.py` already flags the
 "stores an `SQLiteBackend` + cache verbs without subclassing `BaseCollection`"
@@ -141,13 +141,13 @@ shape, which is most of TP-05.
 
 **Home: `ToolServerBootstrap` in `threetears.agent.tools.bootstrap`**, not
 `ToolServer`. Bootstrap's own docstring says it owns the canonical tool-pod
-lifecycle — it was written to end three drifted copies of start/stop scaffolding
+lifecycle -- it was written to end three drifted copies of start/stop scaffolding
 and already wires the health surface, which is where TP-04's listener start/stop
 belongs. `ToolServer` is the MCP request handler and owns no cache concern.
 
 **Dependency: `3tears-agent-acl[bus]` was NOT added, and the shard was wrong to
-ask for it.** The reasoning it gives — "`AclInvalidationSubscriber` degrades to
-plain `object` without the extra" — is about the ACL invalidation bus
+ask for it.** The reasoning it gives -- "`AclInvalidationSubscriber` degrades to
+plain `object` without the extra" -- is about the ACL invalidation bus
 (`{ns}.acl.invalidate.*`), which is an RBAC-cache concern belonging to the
 registry, the SDK and the hub. A tool pod's collection stack touches none of it:
 `CollectionRegistry.start_invalidation_listener` lives in `threetears.core` and
@@ -164,17 +164,17 @@ half. State the intended end state in the PR rather than leaving three.
 
 ## Files to Modify
 
-- `packages/nats/src/threetears/nats/subject_permissions.py` — `_tool_pod`'s buckets, scope and invalidation grant.
-- `packages/agent/tools/src/threetears/agent/tools/bootstrap.py` — the collection-stack builder and the listener start/stop.
-- ~~`packages/agent/tools/pyproject.toml` — the `3tears-agent-acl[bus]` dependency.~~ **Not needed; see above.**
-- `packages/nats/tests/integration/test_user_jwt_scoped_grant_live.py` — the refusal probe for TP-06.
+- `packages/nats/src/threetears/nats/subject_permissions.py` -- `_tool_pod`'s buckets, scope and invalidation grant.
+- `packages/agent/tools/src/threetears/agent/tools/bootstrap.py` -- the collection-stack builder and the listener start/stop.
+- ~~`packages/agent/tools/pyproject.toml` -- the `3tears-agent-acl[bus]` dependency.~~ **Not needed; see above.**
+- `packages/nats/tests/integration/test_user_jwt_scoped_grant_live.py` -- the refusal probe for TP-06.
 
 
 ---
 
 ## The proving case
 
-`dipp-tool-server` is **not in any checkout** — removed in PR #340 and named only
+`dipp-tool-server` is **not in any checkout** -- removed in PR #340 and named only
 in prose. Prove TP-06 against a tool pod in this workspace. The pentest pod's
 lifecycle is pointed at from `14-eng-ai-bot/docs/runbook-platform-cold-start.md`
 Step 8 and `docs/DEPLOYMENT.md` §11b; both defer to the standalone runbook in the
@@ -196,18 +196,18 @@ Step 8 and `docs/DEPLOYMENT.md` §11b; both defer to the standalone runbook in t
 
 ## Success criteria
 
-- [x] `_tool_pod` grants the scoped collections bucket and the recorded invalidation grant —
+- [x] `_tool_pod` grants the scoped collections bucket and the recorded invalidation grant -- 
       `JsResource.kv(f"{ns}-collections", scope=kv_key_scope_for(TOOL_POD, pod_id=p), writable=True)`,
       plus `CROSS_PLATFORM_CACHE_INVALIDATE` on BOTH directions
 - [x] Two pods with different `tool_pods.id` produce disjoint keys; two replicas of one produce
-      identical ones — `TestTheToolPodHoldsTheSharedBucket` (grant side) and
+      identical ones -- `TestTheToolPodHoldsTheSharedBucket` (grant side) and
       `TestTheStackIsScopedToTheToolPodId` (key side)
 - [x] The pod constructs no `SQLiteBackend`; the sanctioned factory is
       `threetears.agent.tools.l1_cache.create_tool_pod_l1_backend`, declared in
       `test_cache_primitive_usage.py`'s `allowed_sqlite_construction_sites`. **Read the caveat
-      below** — that walker's root discovery does not currently reach `packages/agent/*`
-- [x] ~~The acl dependency is declared~~ — WITHDRAWN on evidence; see "The stack builder"
-- [x] TP-02's decision is written into the ledger's Part 4 — it already was, verbatim
+      below** -- that walker's root discovery does not currently reach `packages/agent/*`
+- [x] ~~The acl dependency is declared~~ -- WITHDRAWN on evidence; see "The stack builder"
+- [x] TP-02's decision is written into the ledger's Part 4 -- it already was, verbatim
 - [x] `./scripts/check-all.sh` (16030 passed, 3 skipped, 412 deselected; 139 sidecar) and
       `./scripts/test-integration.sh` (393 passed, 19 skipped) green
 
@@ -217,9 +217,9 @@ Step 8 and `docs/DEPLOYMENT.md` §11b; both defer to the standalone runbook in t
 
 1. Bring up an in-workspace tool pod with a real two-tier collection.
 2. Write through replica A; read through replica B; B serves the L2 copy.
-3. Write through A again; B's L1 **and** L2 are evicted (see `coll-task-03` — L2
+3. Write through A again; B's L1 **and** L2 are evicted (see `coll-task-03` -- L2
    eviction is part of the scoping landing).
-4. From a **different principal's** credential — callout-minted **and** static —
+4. From a **different principal's** credential -- callout-minted **and** static -- 
    attempt to read this pod's keys. Refused, both direct and body-carried.
 5. `nats kv ls` shows the pod's keys under its own scope and nowhere else.
 
@@ -228,7 +228,7 @@ only that a tool pod can cache, not that it can cache safely.
 
 **Steps 1-3 and 5 are NOT run.** They need a live cluster, and the hub cannot boot until the whole
 `-03`-onward block lands together (`coll-task-06a` and `-04a` record the same gap for the same
-reason). Step 4 IS run — see below.
+reason). Step 4 IS run -- see below.
 
 ---
 
@@ -240,7 +240,7 @@ reason). Step 4 IS run — see below.
   fail differently: a MINTED peer tool pod (a second `tool_pods.id`) is stopped by an allow-list
   that never names A's scope, while the STATIC `tool_server` user is stopped by a generated DENY
   layered under a coarse `$KV.>` allow that would otherwise cover everything. The `allow_direct`
-  premise is asserted before either — with it false, every refusal would be vacuous — and both
+  premise is asserted before either -- with it false, every refusal would be vacuous -- and both
   admit-halves are asserted too: A reads and writes its own scope, and the static user reaches a
   bucket it is not denied, so "everything was refused" cannot be mistaken for a broken credential.
   The static user's deny set is GENERATED from `js_api_grants_for_stream`, never hand-typed.
@@ -257,7 +257,7 @@ reason). Step 4 IS run — see below.
   `threetears.core.collections.bucket.bind_collections_bucket` and the registry server now
   delegates to it. It lives in `core` rather than `nats` because the bucket NAME is
   `BaseCollection.L2_BUCKET_SUFFIX`, and `nats` may not depend on `core`. **The hub's copy is still
-  its own** — a hub edit this shard may not make.
+  its own** -- a hub edit this shard may not make.
 
 - **`ToolServer` gained one narrow lifecycle seam, `add_connected_callback`.** The bootstrap owns
   the stack (as the shard requires) but cannot build it without the connection, and `ToolServer`
@@ -276,7 +276,7 @@ reason). Step 4 IS run — see below.
 
 - **A real blind spot in the shared enforcement helper, found and NOT fixed here.**
   `threetears.enforcement.common.find_local_src_roots` walks `packages/*/src` only, so on this repo
-  it silently returns nothing for the ten nested `packages/agent/*` packages — including
+  it silently returns nothing for the ten nested `packages/agent/*` packages -- including
   `agent/tools`, where this shard's code lives. Every walker built on it (`test_kv_grant_capability`,
   `test_l2_scope_wiring`, `test_cache_primitive_usage`, `test_no_bespoke_reuse`,
   `test_underscore_access`, …) has been reporting a clean tree over a third of the repository.

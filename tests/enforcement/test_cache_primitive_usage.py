@@ -39,7 +39,7 @@ _CONFIG = CacheEnforcementConfig(
             # registry as the default L1 tier.
             "packages/channels/src/threetears/channels/presence/l1_cache.py",
             # coll-task-07c: the tool pod's L1 tier, same per-process factory shape.
-            # It exists precisely SO a tool pod constructs no backend of its own — a
+            # It exists precisely SO a tool pod constructs no backend of its own -- a
             # pod may live in a partner-operated fourth repository this allowlist
             # cannot see at all, so the builder makes the question moot instead of
             # leaving it to a per-repo exemption nobody there can write.
@@ -94,26 +94,26 @@ _CONFIG = CacheEnforcementConfig(
         # never opened a single migration under ``packages/agent/``. the
         # gate reported clean over ten packages. the widening that closed
         # that hole is what surfaced them, and the resolution is to name
-        # the Collection that already exists — NOT to write a class or
+        # the Collection that already exists -- NOT to write a class or
         # take an exemption.
         #
-        # identity_versions (agent-identity v001) — the per-agent signing
+        # identity_versions (agent-identity v001) -- the per-agent signing
         # key generation ledger; :class:`threetears.agent.identity.collections.IdentityVersionsCollection`.
         "identity_versions": "IdentityVersionsCollection",
-        # intentions (agent-intention v001) —
+        # intentions (agent-intention v001) --
         # :class:`threetears.agent.intention.collections.IntentionsCollection`.
         "intentions": "IntentionsCollection",
-        # memory_consolidations (agent-memory v026) — the consolidation
+        # memory_consolidations (agent-memory v026) -- the consolidation
         # provenance edge table;
         # :class:`threetears.agent.memory.collections.MemoryConsolidationsCollection`.
         "memory_consolidations": "MemoryConsolidationsCollection",
-        # agent_skills / agent_skill_invocations (agent-skills v001/v002) —
+        # agent_skills / agent_skill_invocations (agent-skills v001/v002) --
         # :class:`threetears.agent.skills.collections.AgentSkillCollection`
         # and :class:`...AgentSkillInvocationCollection`.
         "agent_skills": "AgentSkillCollection",
         "agent_skill_invocations": "AgentSkillInvocationCollection",
         # agent_wake_schedules / wake_fires / webhook_subscriptions
-        # (agent-wake v001/v002/v003) —
+        # (agent-wake v001/v002/v003) --
         # :class:`threetears.agent.wake.collections.WakeScheduleCollection`,
         # :class:`...WakeFireCollection`, :class:`...WebhookSubscriptionCollection`.
         "agent_wake_schedules": "WakeScheduleCollection",

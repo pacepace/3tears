@@ -7,7 +7,7 @@ inside the walker plus parsed-exemption-file filtering, emits the
 standardised report, and either raises ``pytest.fail`` or returns
 silently according to the configured mode.
 
-this domain carries two walkers, both about the same contract — a
+this domain carries two walkers, both about the same contract -- a
 module's logging being real. ``missing`` is the module-level logger
 declaration; ``call_kwargs`` is the stdlib-vs-structlog call shape,
 which is level-gated and therefore invisible to any suite that leaves
@@ -112,7 +112,13 @@ def run_logger_coverage_enforcement(
                 config.repo_root,
                 config.exempt_files,
                 config.expected_var_names,
-                config.skip_basenames,
+                # NOT config.skip_basenames. That default (`__init__.py`) is the `missing`
+                # walker's policy and is right there -- a package init is a re-export shim
+                # by convention, so it legitimately declares no logger. It is wrong here: a
+                # log call that raises TypeError does so wherever it lives, and package
+                # inits in this workspace really do log. Per-file escape stays available
+                # through `exempt_files`.
+                frozenset(),
             )
         )
 

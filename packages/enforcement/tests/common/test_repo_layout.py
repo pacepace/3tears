@@ -12,7 +12,7 @@ from threetears.enforcement.common.repo_layout import (
     find_repo_root,
 )
 
-#: this repo's own root — ``packages/enforcement/tests/common/`` is four levels down.
+#: this repo's own root -- ``packages/enforcement/tests/common/`` is four levels down.
 _THIS_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 #: the smallest number of src roots this repo can plausibly have. the number exists to make a
@@ -147,7 +147,7 @@ class TestFindLocalSrcRoots:
 
 
 class TestFindLocalSrcRootsOverThisRepo:
-    """non-vacuity guard — the lesson that produced the widening.
+    """non-vacuity guard -- the lesson that produced the widening.
 
     a walker that scans NOTHING reports exactly what a walker that finds nothing reports. these
     tests assert against the live repo so a discovery regression fails loudly instead of turning

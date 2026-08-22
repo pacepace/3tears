@@ -49,12 +49,12 @@ Grant the data subjects by hand and the control plane still refuses
 `scope` and `writable` are keyword-only with no defaults, because both are
 decisions and neither has a safe default. A `scope` narrows the grant to
 `$KV.{bucket}.{scope}.>` on publish and to
-`$JS.API.DIRECT.GET.KV_{bucket}.$KV.{bucket}.{scope}.>` on read — note that
+`$JS.API.DIRECT.GET.KV_{bucket}.$KV.{bucket}.{scope}.>` on read -- note that
 `$KV` and the bucket are **separate subject tokens** there. Pass one **only**
 for a bucket whose keys actually carry that leading segment: `BaseCollection`
 writes `{scope}.{table}.{body}`, and nothing else on the platform does. A scope
 on any other bucket produces a grant that matches none of its keys, and the
-resulting refusal is never answered — it arrives as the same ten-second
+resulting refusal is never answered -- it arrives as the same ten-second
 deadline described above.
 
 Note also that `$KV.` is **never** granted on subscribe. Nothing in nats-py

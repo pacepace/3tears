@@ -21,7 +21,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import pytest
+
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.exceptions import L2ScopeNotConfiguredError
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.collection_factory import create_dynamic_collection
@@ -202,6 +205,32 @@ class TestL2RegistryFallback:
         )
 
         assert collection._nats_client is constructor_client
+
+    def test_bind_table_refuses_an_l2_client_with_no_registry_scope(self) -> None:
+        """the third L2-wiring path was the ungated one.
+
+        ``configure`` and ``BaseCollection(nats_client=)`` are both covered -- the first
+        by its own raise, the second by ``l2_key``'s backstop. A registry wired ONLY
+        through ``bind_table`` had neither, so it reached production unscoped and failed
+        from ``l2_key`` in a request path rather than at wiring.
+        """
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=FakeAsyncpgPool())
+
+        with pytest.raises(L2ScopeNotConfiguredError) as excinfo:
+            registry.bind_table("widgets", l2_client=object())
+
+        assert "widgets" in str(excinfo.value)
+        assert "kv_key_scope" in str(excinfo.value)
+
+    def test_bind_table_without_an_l2_client_needs_no_scope(self) -> None:
+        """an L1/L3-only override touches no keyspace, so the guard must not fire."""
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=FakeAsyncpgPool())
+
+        registry.bind_table("widgets", l3_pool=FakeAsyncpgPool())
+
+        assert registry.get_l3_pool("widgets") is not None
 
     def test_bind_table_l2_override_wins_over_default(self) -> None:
         default_client = object()

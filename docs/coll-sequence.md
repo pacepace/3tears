@@ -1,7 +1,7 @@
-# Full collection support — shard sequence
+# Full collection support -- shard sequence
 
-**Goal:** a tool pod holds a `BaseCollection` on the tiers it needs — L1 and L2
-mandatory, L3 conditional — on the same substrate an agent pod uses, and cannot
+**Goal:** a tool pod holds a `BaseCollection` on the tiers it needs -- L1 and L2
+mandatory, L3 conditional -- on the same substrate an agent pod uses, and cannot
 reach any other principal's data.
 
 Today a non-agent pod gets L1 (pod-local SQLite, no grant involved, works for
@@ -27,7 +27,7 @@ The `NN` suffix is execution order.
 | `coll-task-04a-bucket-config-reconcile` | 3tears + hub | `allow_direct: true` via a real reconcile primitive, and the reconnect self-heal |
 | `coll-task-04b-delete-nats-kv-client` | 3tears + SDK | deletes the retired `NatsKvClient`, including a patch target the SDK's shared conftest names by dotted path |
 | `coll-task-05a-grant-shape` | 3tears | the minted grant: scoped `$KV.` publish, `$KV.` off subscribe, the four JetStream bypasses |
-| `coll-task-05b-static-user-grants` | hub | the nine static NATS users — the larger half of the isolation |
+| `coll-task-05b-static-user-grants` | hub | the nine static NATS users -- the larger half of the isolation |
 | `coll-task-06a-consumer-wiring-3tears` | 3tears | two registries in the registry server; the wiring enforcement rule |
 | `coll-task-06b-consumer-wiring-hub` | hub | every hub registry site; the identity-fence cutover |
 | `coll-task-06c-consumer-wiring-sdk` | SDK | agent pod and devx runtime, scoped by `agent_id` |
@@ -35,7 +35,7 @@ The `NN` suffix is execution order.
 | `coll-task-07c-tool-pod-grant` | 3tears | the tool-pod grant, proven by a refusal probe |
 
 There is no `-07b`. It carried `tool_namespaces` into the callout claims so a
-tool pod could derive a scope — unnecessary once the scope is `tool_pods.id`,
+tool pod could derive a scope -- unnecessary once the scope is `tool_pods.id`,
 which is already `claims.sub`. The genuine bug it found (`tool_namespaces` is
 never passed, so tool-pod HITL and pipe grants are empty tuples in production)
 belongs to `build-plan-principal-convergence.md` Chunk 11, which has the better
@@ -62,7 +62,7 @@ where no subject permission can see it.
 **`-06x` after those.** They supply the scope every process needs.
 
 **`-07x` last, in order.** `-07a` changes no grant *narrowing*, and is reviewable
-on its own — though it carries two stated behaviour changes (CON-04, CON-05) and
+on its own -- though it carries two stated behaviour changes (CON-04, CON-05) and
 depends on `-05a` GRANT-13 for the deadletter grant `subscribe_typed` needs. `-07c` grants the bucket, which must come after the grant
 surface is safe.
 
@@ -74,7 +74,7 @@ each piece alone is inert or breaking.
 
 ## Landing mechanics
 
-Three repos against a PyPI-pinned dependency. **Step 2 is now landed** — the
+Three repos against a PyPI-pinned dependency. **Step 2 is now landed** -- the
 paragraph below described the pre-step-2 state and read as if it still held.
 
 Verified state at this commit: all three consumers pin `3tears*==0.27.0` and
@@ -82,7 +82,7 @@ resolve the whole family from the local checkout, via ~30 per-package
 `[tool.uv.sources]` entries pointing through a gitignored `.3tears` symlink in
 each repo. `3tears-search==0.27.0` rides in `constraint-dependencies`. The hub
 depends on the SDK and admin as **editable path sources**, so all three resolve
-together. `0.27.0` is unreleased — no `v0.27.0` tag exists on `3tears` locally
+together. `0.27.0` is unreleased -- no `v0.27.0` tag exists on `3tears` locally
 or on `origin`. Steps 3 through 5 are outstanding.
 
 **Three symlink roots, not one.** uv canonicalizes each shared editable source
@@ -96,23 +96,23 @@ names all three. At this commit:
 | `14-eng-ai-bot/.3tears` (the hub's own) | `-enforcement`, `-geo`, `-object-store`, `-scheduled-jobs`, `-search` |
 
 Two consequences. **`uv sync` in any one repo needs all three siblings present
-and all three symlinks created** — `scripts/link-3tears.sh` only ever links its
+and all three symlinks created** -- `scripts/link-3tears.sh` only ever links its
 own repo root, so it must be run in each. And **nothing requires the three to
 point at the same checkout**: aim the hub's at one 3tears worktree and the SDK's
 at another and you install a silently mixed family, the exact failure
 `14-eng-ai-bot/CLAUDE.md` opens by forbidding, with no error at install time.
 
-There is also **no producer-side matrix gate** — `matrix-fan-out.yml` was never
+There is also **no producer-side matrix gate** -- `matrix-fan-out.yml` was never
 committed and the `override-matrix-gate` label is read by no workflow. Consumer
 CI checks out 3tears by the version in its own `uv.lock` as a tag (`v${VERSION}`),
-so it is blind to unreleased 3tears work — and while the block is in at an
+so it is blind to unreleased 3tears work -- and while the block is in at an
 unreleased version, that checkout step has no tag to resolve.
 
 1. 3tears feature branch. Pick the target version now; use it everywhere.
 2. **In hub + SDK + admin, in one commit each:** bump every `3tears*` pin *and*
    every `constraint-dependencies` entry to the target version, and add the
    per-package `[tool.uv.sources]` path entries. Do not add the override without
-   the bump — a path source pointing at 0.27.0 fails against a `==0.26.1`
+   the bump -- a path source pointing at 0.27.0 fails against a `==0.26.1`
    requirement. Do not leave admin behind; it participates in the hub's
    resolution.
    The override is ~30 per-package entries per repo, not one line, and **there
@@ -124,7 +124,7 @@ unreleased version, that checkout step has no tag to resolve.
    .3tears in every aibots repo to the 3tears checkout" step exists precisely
    because the lock canonicalizes the shared sources across all three roots.
    Recover the entries from `git show 540fcfcd -- pyproject.toml` in
-   the hub, which added 29 — **it omits `3tears-search`**, the one every consumer pins via
+   the hub, which added 29 -- **it omits `3tears-search`**, the one every consumer pins via
    `constraint-dependencies`, so add that by hand or you ship the mixed family
    this section warns about.
 3. 3tears: bump the family in lockstep with `scripts/bump-version.sh`, merge to
@@ -137,7 +137,7 @@ unreleased version, that checkout step has no tag to resolve.
    the block is gone: while it is in, `--locked` re-resolves through the path
    deps and fails naming innocent packages, which is why the Dockerfile uses
    `--frozen`.
-6. Merge consumers. Fire `matrix-nightly.yml` by hand — nothing runs on a
+6. Merge consumers. Fire `matrix-nightly.yml` by hand -- nothing runs on a
    schedule.
 
 `14-eng-ai-bot/CLAUDE.md`'s "3tears Library Dependency" section has been
@@ -151,7 +151,7 @@ commit.
 ## Relationship to `build-plan-principal-convergence.md`
 
 That plan is active and its Chunks 11-13 cover this ground. **These shards
-govern**, and the plan is reconciled to them — with two exceptions where the plan
+govern**, and the plan is reconciled to them -- with two exceptions where the plan
 is right on evidence and the shards absorb its finding:
 
 - **Chunk 11's HITL analysis.** `allowed_namespaces` holds name prefixes while
@@ -168,7 +168,7 @@ axes.
 
 **The dead-`Principal` resolution moved to `coll-task-05a` GRANT-11.** Chunk 11
 also claims it, but it sits behind ten unbuilt chunks and both `coll-task-05b`
-and `-06b` block on it, so `-05a` takes it — that shard already owns
+and `-06b` block on it, so `-05a` takes it -- that shard already owns
 `subject_permissions.py`. Chunk 11 is annotated accordingly.
 
 Playbook: `14-eng-ai-bot/docs/runbook-matrix-gate.md`.
@@ -181,7 +181,7 @@ All ratified decisions live in the ledger's Part 4, and all open questions in
 its Part 5. Two are worth repeating here because they shape the whole set:
 
 **There is no SHARED tier.** Every key is scoped to one principal. A shared tier
-was designed and dropped — see the ledger for why. Anything that proposes
+was designed and dropped -- see the ledger for why. Anything that proposes
 reintroducing it must first answer the three problems recorded there.
 
 **`$KV.` is publish-only.** Read authority is `$JS.API.DIRECT.GET`.
@@ -193,22 +193,22 @@ reintroducing it must first answer the three problems recorded there.
 The intra-bucket-isolation residual `-03` quotes names **three** shared buckets.
 This landing closes one.
 
-- **`checkpoints`** — granted to every agent pod, keyed by thread id via its own
+- **`checkpoints`** -- granted to every agent pod, keyed by thread id via its own
   separate `l2_key`, holding full conversation state, cross-agent and
   cross-customer.
-- **`{ns}_agent_config`** — granted to every agent pod, keyed by `agent_id`, so
+- **`{ns}_agent_config`** -- granted to every agent pod, keyed by `agent_id`, so
   any agent pod can read or overwrite any other agent's config. It is also the
   one bucket anything actually watches.
 
 `-05` must keep both at `>` rather than narrowing them, or every read on them
 dies as a broker timeout.
 
-### The enforcement blind spot `-07c` found — now closed
+### The enforcement blind spot `-07c` found -- now closed
 
 `threetears.enforcement.common.find_local_src_roots` used to walk `packages/*/src`
 only. On this repo that silently omitted the ten NESTED `packages/agent/*`
-packages — `acl`, `audit`, `identity`, `intention`, `knowledge`, `memory`,
-`skills`, `tools`, `wake`, `workspace` — **233 of 702 python files, a third of the
+packages -- `acl`, `audit`, `identity`, `intention`, `knowledge`, `memory`,
+`skills`, `tools`, `wake`, `workspace` -- **233 of 702 python files, a third of the
 src surface**. Every walker built on the helper reported a clean tree over that
 third: `test_kv_grant_capability`, `test_l2_scope_wiring`,
 `test_cache_primitive_usage`, `test_no_bespoke_reuse`, `test_underscore_access`,
@@ -221,7 +221,7 @@ The helper now recurses to ANY depth under `packages/`, skipping
 mistaken for a package) and never descending into a `src/` tree it has already
 claimed. Depth is unbounded on purpose: the `agent/` grouping is a naming choice,
 and encoding a guess about it is what produced the hole. `discover_src_roots` was
-NOT affected — it expands `[tool.uv.workspace].members`, which already listed
+NOT affected -- it expands `[tool.uv.workspace].members`, which already listed
 `packages/agent/*`.
 
 **The guard that matters is the non-vacuity one.**
@@ -238,9 +238,9 @@ What the widening surfaced, and how each landed:
 | --- | --- |
 | 8 × `cache.missing_collection` (`identity_versions`, `intentions`, `memory_consolidations`, `agent_skills`, `agent_skill_invocations`, `agent_wake_schedules`, `wake_fires`, `webhook_subscriptions`) | Every one already had a real Collection; the per-repo `collection_table_allowlist` simply never named them because no migration under `packages/agent/` had ever been opened. Eight allowlist entries, no new classes, no exemptions. |
 | 1 × `cache.pool_access` on `memory_chunks` (`agent/memory/tools.py`) | Fixed: new `MemoryChunkCollection.find_by_chunk_indexes`; the tool routes through it. The inline SQL had also dropped `customer_id` from the auth triple. |
-| 6 × `cache.pool_access` in `agent/wake` (second order — naming the wake tables is what turned the pool-access walker on for them) | `webhook_adapter` now routes through `WakeFireCollection.count_in_window` (extended with a `webhook_subscription_id` narrowing); the three `rate_limit.py` aggregate/JOIN counts carry `# cache-bypass:` with specific reasons, matching what the wake Collections already do for the same shapes. |
+| 6 × `cache.pool_access` in `agent/wake` (second order -- naming the wake tables is what turned the pool-access walker on for them) | `webhook_adapter` now routes through `WakeFireCollection.count_in_window` (extended with a `webhook_subscription_id` narrowing); the three `rate_limit.py` aggregate/JOIN counts carry `# cache-bypass:` with specific reasons, matching what the wake Collections already do for the same shapes. |
 | 4 × `underscore_access.E` in `agent/wake` | Promoted: `_check_rate_limit` → `check_rate_limit`, `_check_active_schedule_cap` → `check_active_schedule_cap`. Both were already re-exported from the package `__all__`, so public was the truthful reading. No alias. |
-| 2 × `reuse.*` in `agent/tools` (not predicted) | `McpClient` held a raw `httpx.AsyncClient` → now owns a `TracedHttpClient` (`max_attempts=1`, because `tools/call` is not idempotent). `ToolServer` is a false positive — a tool REGISTRY dict plus a heartbeat loop, nothing buffered or flushed — and carries an exemption with that rationale. |
+| 2 × `reuse.*` in `agent/tools` (not predicted) | `McpClient` held a raw `httpx.AsyncClient` → now owns a `TracedHttpClient` (`max_attempts=1`, because `tools/call` is not idempotent). `ToolServer` is a false positive -- a tool REGISTRY dict plus a heartbeat loop, nothing buffered or flushed -- and carries an exemption with that rationale. |
 
 The two "stale fixtures" the earlier attempt predicted did not appear: they were
 stale only against an implementation that required a `pyproject.toml` beside
@@ -267,6 +267,6 @@ Every shard gets an adversarial review first, and the review must demand a
 
 Successive rounds of independent review over this set have each found bypasses
 of the same class as the one the work started from, plus claims whose cited
-evidence did not hold — including counts stated with confidence and no source. Reasoning over a partial read is the recurring failure mode here. Running
+evidence did not hold -- including counts stated with confidence and no source. Reasoning over a partial read is the recurring failure mode here. Running
 the thing is what catches it, and a probe that is collected but skipped is not a
-probe — the 3tears integration suite does not run under `check-all.sh`.
+probe -- the 3tears integration suite does not run under `check-all.sh`.

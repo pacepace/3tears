@@ -36,7 +36,7 @@ leaving:
 - **A fail-open swallow.** `NatsKvClient.connect` wraps its open in
   `except Exception: log.warning(...)`, commented "fail-open". `coll-task-04a`
   deliberately leaves it alone on the grounds that this shard deletes the whole
-  class. If this shard is ever dropped, that catch must instead be narrowed —
+  class. If this shard is ever dropped, that catch must instead be narrowed -- 
   do not leave it as-is on the assumption the deletion is coming.
 - **The 7200 s TTL** that `coll-task-04a` warns against citing as evidence of
   config drift. Deleting the class removes the misleading exhibit.
@@ -48,7 +48,7 @@ leaving:
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | KVD-01 | `NatsKvClient` is deleted; no import, reference or patch target remains in any repo | P0 |
-| KVD-02 | `BucketConfig`'s fate is decided explicitly — deleted with it, or kept with a recorded reason and its stale storage docstring corrected | P0 |
+| KVD-02 | `BucketConfig`'s fate is decided explicitly -- deleted with it, or kept with a recorded reason and its stale storage docstring corrected | P0 |
 | KVD-03 | The SDK's shared conftest no longer patches the deleted path | P0 |
 | KVD-04 | The enforcement catalog entry naming it is removed | P1 |
 
@@ -57,14 +57,14 @@ leaving:
 ## Decision: `BucketConfig` is deleted with the class
 
 Checked before deciding. Outside `cache/kv.py` itself and its own unit test,
-`BucketConfig` had no consumer in any of the seven repos — the only other hits
+`BucketConfig` had no consumer in any of the seven repos -- the only other hits
 were prose in the CHANGELOG, these shards, and `14-eng-ai-bot-agent-map`'s
 `docs/geo-tile-caching-design.md`. The three `TestBucketConfiguration` classes
 under `packages/core/tests/unit/coordination/` are unrelated: they name a test
 class, not this type.
 
 It existed solely to describe a bucket for `NatsKvClient.connect`, and the whole
-of what it described — suffix, TTL, storage — is now expressed as keyword
+of what it described -- suffix, TTL, storage -- is now expressed as keyword
 arguments to `NatsClient.kv_bucket`. Keeping it would have left an orphan
 dataclass no code constructs, which is the same "reader follows a citation and
 finds no live code path" failure the stale storage docstring already caused. So
@@ -77,16 +77,16 @@ and `packages/core/src/threetears/core/cache/kv.py` itself.
 
 ## Files to Modify
 
-- `packages/core/src/threetears/core/cache/kv.py` — delete `NatsKvClient`; decide `BucketConfig`.
-- `packages/core/tests/test_kv_client.py` — deleted with it (24 tests).
+- `packages/core/src/threetears/core/cache/kv.py` -- delete `NatsKvClient`; decide `BucketConfig`.
+- `packages/core/tests/test_kv_client.py` -- deleted with it (24 tests).
 - `packages/core/src/threetears/core/coordination/replay_guard.py` and
-  `packages/nats/src/threetears/nats/client.py` — module docstrings name the
+  `packages/nats/src/threetears/nats/client.py` -- module docstrings name the
   class as the fail-open counterexample / migration ancestor.
-- `3tears/tests/enforcement/test_dict_state_detection.py` — a catalog entry names `NatsKvClient`.
+- `3tears/tests/enforcement/test_dict_state_detection.py` -- a catalog entry names `NatsKvClient`.
 - `14-eng-ai-bot-agents/src/aibots_agents/bootstrap/phases/backend.py` and
-  `devx/workspace_runtime.py` — the comments marking it retired now name a class
+  `devx/workspace_runtime.py` -- the comments marking it retired now name a class
   that does not exist. Correct or remove them.
-- `14-eng-ai-bot-agents/tests/unit/runtime/conftest.py` — **the sharp edge.** It
+- `14-eng-ai-bot-agents/tests/unit/runtime/conftest.py` -- **the sharp edge.** It
   patches `threetears.core.cache.kv.NatsKvClient` *by path*, and
   `mock.patch` raises on a target that no longer exists. This is a SHARED
   fixture, so getting it wrong fails a broad swathe of the SDK suite rather
@@ -105,9 +105,9 @@ and `packages/core/src/threetears/core/cache/kv.py` itself.
 ## Success criteria
 
 - [x] `NatsKvClient` appears nowhere in any of the seven repos, as symbol or as a dotted-path string. The symbol is gone entirely; the surviving hits are past-tense prose in records of the deletion itself (this shard, `coll-task-04a`, `coll-sequence.md`, the CHANGELOG, `14-eng-ai-bot/docs/done/*` and the evidence ledger), which are history and stay
-- [x] `BucketConfig`'s fate is decided and the decision is recorded — deleted with the class; see **Decision** above
-- [x] `./scripts/check-all.sh` green — **15843 -> 15811 passed, 3 skipped, 410 deselected**, plus 139 sidecar unchanged
-- [x] SDK unit suite green — **2984 -> 2983 passed**, the delta being `test_bootstrap_does_not_construct_nats_kv_client`, which asserted the absence of a class that can no longer exist
+- [x] `BucketConfig`'s fate is decided and the decision is recorded -- deleted with the class; see **Decision** above
+- [x] `./scripts/check-all.sh` green -- **15843 -> 15811 passed, 3 skipped, 410 deselected**, plus 139 sidecar unchanged
+- [x] SDK unit suite green -- **2984 -> 2983 passed**, the delta being `test_bootstrap_does_not_construct_nats_kv_client`, which asserted the absence of a class that can no longer exist
 - [x] The hub CLAUDE.md carve-out no longer cites the deleted class as its authority (04a does this; confirmed at `14-eng-ai-bot/CLAUDE.md:375`, which now cites `NatsClient.kv_bucket`)
 
 ### The drop is 32, not 24
@@ -122,7 +122,7 @@ three in `packages/core/tests/enforcement/test_docstring_conventions.py`, two in
 accounted for and nothing else moved.
 
 Removing the `NatsKvClient` entry from the dict-state allowlist changes no
-count — that catalog is not parametrized — but it is not optional either:
+count -- that catalog is not parametrized -- but it is not optional either:
 `TestDictStateDetection.test_no_stale_allowlist_entries` fails on an entry
 naming a file that no longer exists.
 

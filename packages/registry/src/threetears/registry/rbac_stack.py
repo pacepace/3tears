@@ -166,6 +166,14 @@ class RegistryRbacStack:
             self.nats_client,
             self.acl_cache,
         )
+        # TWO channels, and subscribing one of them looks like subscribing both. the
+        # loop above carries ACL mutations into the AclCache; this carries COLLECTION
+        # writes into the five rbac Collections' L1. they are separate subjects with
+        # separate publishers, and this registry is L2-live -- every collection on it
+        # takes ``nats_client=`` directly -- so without this its L1 serves rows a peer
+        # replica has already replaced, for the life of the process. the heartbeat
+        # registry in ``server.py`` is the same shape and gained the same call.
+        await self.registry.start_invalidation_listener(self.nats_client)
         log.info(
             "registry rbac stack subscribed to invalidations",
             extra={"extra_data": {"subjects": [sub.subject.path for sub in self._subscriptions]}},
@@ -184,6 +192,10 @@ class RegistryRbacStack:
         """
         await unsubscribe_acl_invalidation(self.nats_client, self._subscriptions)
         self._subscriptions = []
+        # paired with the start in :meth:`subscribe_invalidations`. released BEFORE the
+        # L1 reset below, so no handler can be mid-evict against a backend being torn
+        # out from under it.
+        await self.registry.stop_invalidation_listener()
         self.l1_backend.reset()
         log.info("registry rbac stack closed")
 

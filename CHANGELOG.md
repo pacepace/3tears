@@ -81,10 +81,15 @@ packages (bumped in lock-step).
   REGISTRY instance, so a process holding two L2-live registries stops each
   independently.
 
-- `agent-tools`: **`ToolServer.add_connected_callback(cb)`** -- runs `cb(nc)` on
-  every (re)connect, not only the first. A bucket on memory storage is DELETED
-  by a NATS restart, so a one-shot declaration at startup does not survive one;
-  re-declaring on reconnect is what brings it back carrying `allow_direct`.
+- `agent-tools`: **`ToolServer.add_connected_callback(cb)`** -- the one seam
+  through which the connection reaches the server's OWNER. Hooks run inside
+  `serve()`, in registration order, AFTER the connection exists and BEFORE the
+  server subscribes its call subject or publishes its registration manifest, so
+  state a hook wires cannot lose the race with the first call; a raise aborts
+  startup deliberately. `ToolServerBootstrap` builds the pod's three-tier stack
+  here. It is a STARTUP hook, not a reconnect hook -- re-declaring the bucket
+  after a NATS restart deletes it is `NatsClient.add_reconnect_callback`'s job,
+  which the declaring identity registers.
 
 - `agent-acl`: **`register_rbac_l1_tables(metadata)`** -- one definition of the
   rbac L1 table shapes, returned by name. Three consumers carried their own

@@ -12,7 +12,7 @@ document left open:
   `agent_<hex>` stays and no live schema is renamed.
 - **The isolation bar is a deliverable, not a test note:** a non-agent
   namespace's `schema_name` must never name an `agent_*` schema, enforced at the
-  **write**, in the declaration handler where the value is derived — not at the
+  **write**, in the declaration handler where the value is derived -- not at the
   read.
 - The `workspace` type deliberately points at the owner agent's schema, so the
   new shape is explicitly barred from that behaviour rather than inheriting it.
@@ -20,7 +20,7 @@ document left open:
   `schema_name` unique; the new bar must compose with it.
 - Only `namespace_provisioner.py` and `datasources/data_sync.py` carry the narrow
   `^agent_[0-9a-f]{32}$` pin. `broker/proxy.py`'s regex is already
-  `^[a-z][a-z0-9_]*$` — which is also why it is **not** the isolation boundary an
+  `^[a-z][a-z0-9_]*$` -- which is also why it is **not** the isolation boundary an
   earlier design doc claimed.
 
 What this document still contributes, and Chunk 13 does not address, is the
@@ -65,7 +65,7 @@ behaviour nobody should reimplement.
 **Parameterize `(schema_prefix, namespace_type, owner column)` on the existing
 function.** `run_migrations_for_schema(db_url, schema_name)` in
 `broker/migrations.py` has a schema-generic *signature* but an agent-scoped
-*body* — its docstring opens "apply agent-scope migrations" and it hard-codes
+*body* -- its docstring opens "apply agent-scope migrations" and it hard-codes
 the agent runner. So migration support is a runner-registration change plus a
 body change, not a new path.
 
@@ -79,7 +79,7 @@ The provisioner correctly stays in the **hub**, not 3tears: it writes
 There is an existing precedent that contradicts the obvious instinct, and it must
 be addressed rather than silently overruled.
 
-The instinct — and an earlier draft's anti-pattern — is "do not give a non-agent
+The instinct -- and an earlier draft's anti-pattern -- is "do not give a non-agent
 an `agent_id` so it fits the existing path; that collapses two identities and
 every downstream RBAC decision inherits the confusion."
 
@@ -92,7 +92,7 @@ a non-agent principal. And all seven broker request models in
 Two coherent answers:
 
 1. **Generalize `NatsProxyL3Backend` and the broker envelope to a principal.**
-   The right answer, and large — it touches seven request models and the broker's
+   The right answer, and large -- it touches seven request models and the broker's
    resolution path.
 2. **Keep the sentinel pattern** and state why it stands for the registry and for
    tool pods alike.
@@ -112,7 +112,7 @@ The platform already has the shape: a **namespace**. `namespace_type` includes
 So the candidate is: the tool namespace owns the schema, as the agent owns
 `agent_{hex}`. One schema per tool namespace, shared by every replica.
 
-Derive from a **UUID**, never from the human-readable namespace string — the
+Derive from a **UUID**, never from the human-readable namespace string -- the
 hex-of-UUID choice exists to eliminate collisions and stay inside PostgreSQL's
 63-char limit, and a name-derived schema reintroduces both. Note the version
 question here differs from the L2 one: an L2 cache may cold-start on a version
@@ -127,7 +127,7 @@ The user's condition, verbatim: *"as long as we can secure this so that some app
 that is using us for its collections can't read and write platform objects."*
 That is the whole gate.
 
-`validate_platform_writes` in `hub/broker/proxy.py` is the existing enforcement —
+`validate_platform_writes` in `hub/broker/proxy.py` is the existing enforcement -- 
 sqlglot AST-based, and **write-only**. Its own docstring says SELECT targets are
 "informational"; read isolation rests on the upstream ACL system-namespace
 short-circuit, not on the gate.
@@ -139,7 +139,7 @@ does.
 
 And: a `schema_name` reaching `SET search_path` from an untrusted field was a
 live hole fixed earlier in this work, with the fix pinning `schema_name` as a
-derived, agent-immutable column. Same discipline applies — **derived by the hub,
+derived, agent-immutable column. Same discipline applies -- **derived by the hub,
 never accepted from the caller.**
 
 Non-negotiable: a non-agent principal must be **refused** on both a qualified

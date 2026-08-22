@@ -40,7 +40,7 @@ public surface — persistence:
   :class:`AssignmentInvalidatePayload`,
   :class:`RoleInvalidatePayload` — typed NATS payloads for
   cross-process cache invalidation.
-- :func:`register_rbac_l1_tables` — the L1 SQLite mirror of the five
+- :func:`register_rbac_l1_tables` -- the L1 SQLite mirror of the five
   rbac tables, GENERATED from the Collection schemas above. every
   process that evaluates locally needs it, and the hand-written
   copies drifted; see :mod:`threetears.agent.acl.tables`.

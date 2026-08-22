@@ -24,7 +24,7 @@ residual and names the blocker:
 > Tightening to ``$KV.{bucket}.{prefix}.>`` is impossible without a key-prefix
 > the data layer does not write; it would break every read.
 
-**This shard supplies that prefix — for the collections bucket only.** The
+**This shard supplies that prefix -- for the collections bucket only.** The
 comment names three buckets; the other two are recorded as out of scope in
 `coll-sequence.md`.
 
@@ -48,31 +48,31 @@ answering all three.
 
 ## Design context
 
-**L2 is read-through** — a miss falls to `fetch_from_store` — so for a collection
+**L2 is read-through** -- a miss falls to `fetch_from_store` -- so for a collection
 with an L3 tier a key that no longer resolves costs a fetch, not an answer.
 
 That is the only safety property scoping gets for free. An earlier draft claimed
-a second one — *"invalidation does not key on the KV key, so re-scoping cannot
-break cross-pod eviction"* — which is true of the **message** and false as a
+a second one -- *"invalidation does not key on the KV key, so re-scoping cannot
+break cross-pod eviction"* -- which is true of the **message** and false as a
 safety argument. See below.
 
 **Neither holds for a collection with `L3 = None`**, where L2 *is* the source of
 truth and a key that no longer resolves is data that no longer exists. The
 ledger's Part 2b enumerates them. The dangerous one is
-`IdentityGenerationCollection`: the identity fence **fails open** — no known
-generation grants — so a lost key admits a superseded connection rather than
+`IdentityGenerationCollection`: the identity fence **fails open** -- no known
+generation grants -- so a lost key admits a superseded connection rather than
 refusing it.
 
 That collection is **PRIVATE**, decided here rather than deferred: writer and
-reader are both the hub across replicas — the class docstring says a handshake
+reader are both the hub across replicas -- the class docstring says a handshake
 completed on one replica must fence a connection whose callout resolves on a
 sibling, and the `hub/app.py` call site reinforces it with "ONE instance shared
 by both".
 
 **The cutover is `coll-task-06b`'s, and it is not a free cache miss.** Re-keying
 disarms the fence for every in-flight reauth. Do **not** improvise a remedy here:
-the two obvious ones — draining connections, or flipping the fence to
-fail-closed-on-unknown — are both unsafe, for reasons `-06b` sets out. Follow
+the two obvious ones -- draining connections, or flipping the fence to
+fail-closed-on-unknown -- are both unsafe, for reasons `-06b` sets out. Follow
 that shard.
 
 ### Scoping breaks L2 coherence unless invalidation also evicts L2
@@ -81,7 +81,7 @@ This is the defect scoping introduces, and it must land in the same commit.
 
 `_on_invalidation` drops the RBAC scan cache and calls `l1.delete_by_id`. **It
 never deletes L2.** Today that is fine because every principal shares one key:
-the hub writes it, and a peer's `_pull_through` — which reads L2 before L3 —
+the hub writes it, and a peer's `_pull_through` -- which reads L2 before L3 -- 
 reads the writer's fresh value.
 
 After scoping, each principal has its own key. The hub revokes a role, updates
@@ -104,7 +104,7 @@ on a collection with `L3 = None`.** As written, L2S-09 destroys data. Two ways:
 - *Same principal.* Replicas share a scope and therefore share a key. Replica A writes
   and publishes; replica B evicts "its own" key, which IS the key A just refreshed. With
   L3 present that costs a pull-through and the row comes back. With `L3 = None` the row
-  is gone — proven by `TestHeartbeatCollectionL2Coherence`, whose peer read returned
+  is gone -- proven by `TestHeartbeatCollectionL2Coherence`, whose peer read returned
   `None` the moment the eviction landed.
 - *Across principals.* Each principal's key under `L3 = None` is its own source of truth,
   not a stale view of somebody else's, so there is nothing there to invalidate either.
@@ -112,8 +112,8 @@ on a collection with `L3 = None`.** As written, L2S-09 destroys data. Two ways:
 The staleness the eviction exists to prevent also cannot arise without an L3: with no
 `fetch_from_store` behind it, nothing re-caches anything. So `delete_l2_entry` returns
 early when `self.l3_pool is None`. That is the same predicate, for the same stated reason,
-that `BaseCollection.l1_max_age_seconds` already applies to L1 expiry — "a tier that is
-the source of truth is not a cache" — and the ledger's Part 2b enumerates exactly the
+that `BaseCollection.l1_max_age_seconds` already applies to L1 expiry -- "a tier that is
+the source of truth is not a cache" -- and the ledger's Part 2b enumerates exactly the
 collections it protects, `IdentityGenerationCollection` (fails open on a missing
 generation) foremost.
 
@@ -121,15 +121,15 @@ Three further implementation constraints, each of which would silently defeat it
 
 1. **Place it immediately after the `collection is None` return**, before the L1
    backend is fetched. Putting it "before the L1 delete" leaves it behind the
-   `l1 is None` and `not l1.has_table(...)` guards — and that `has_table` guard
+   `l1 is None` and `not l1.has_table(...)` guards -- and that `has_table` guard
    exists precisely for tables whose L1 schema was never initialized, so those
    collections would skip the L2 delete and keep the revoked grant forever. L2
    presence is independent of L1 presence.
 2. **Promote a public accessor.** The eviction needs `_delete_from_l2` from
-   `registry.py` — cross-class private access, which `SLF` in `lint.select`
+   `registry.py` -- cross-class private access, which `SLF` in `lint.select`
    forbids repo-wide and which the underscore contract says to fix by promoting,
    not exempting. Add `BaseCollection.delete_l2_entry(entity_id)`, public, with a
-   Sphinx docstring. (It is a METHOD, so "and in `__all__`" does not apply —
+   Sphinx docstring. (It is a METHOD, so "and in `__all__`" does not apply -- 
    `base.py`'s `__all__` carries module-level names and already exports
    `BaseCollection`. What the underscore contract asks for here is the absent
    leading underscore, which is what makes the cross-class call legal.)
@@ -155,10 +155,10 @@ cache.
 | tool pod | `tool_pods.id` | its authenticated `claims.sub`; configured once per deployment, shared by replicas |
 | infra services | the `Principal` enum value | one identity per service; there is no per-connection id to use |
 
-**Never `conn_id`** — it is per-connection, so every reconnect orphans the cache.
+**Never `conn_id`** -- it is per-connection, so every reconnect orphans the cache.
 
 **And never `pod_id` for an agent pod.** For `AGENT_POD` the callout sets
-`_CLAIM_POD_ID` to `_safe_segment(connect_name) or agent_id` — the connect name
+`_CLAIM_POD_ID` to `_safe_segment(connect_name) or agent_id` -- the connect name
 is **attacker-influenced**. `kv_key_scope_for` must therefore refuse `pod_id`
 for `AGENT_POD` and accept only `agent_id`. A helper that takes a spoofable
 input for one principal and an authenticated one for another is the shape this
@@ -173,7 +173,7 @@ The bucket is memory storage with no durable data. A NATS restart already
 discards every entry and the platform survives. No migration, no dual-read, no
 shim.
 
-**Do not plan around TTL expiry** — `max_age` is unlimited, so old-shape keys do
+**Do not plan around TTL expiry** -- `max_age` is unlimited, so old-shape keys do
 not age out while the process lives.
 
 ---
@@ -200,9 +200,9 @@ beside `inbox_prefix_for`, and `base.py` imports it.
 
 `subject_permissions` is in the **eager** import block of
 `threetears/nats/__init__.py`, so new constants there stay importable without
-pulling nats-py — the L1-only install property survives.
+pulling nats-py -- the L1-only install property survives.
 
-**An infra principal's identifying id is the enum value itself** — `HUB`,
+**An infra principal's identifying id is the enum value itself** -- `HUB`,
 `REGISTRY`, `GATEWAY`, `CHANNEL_ADAPTER`, and the two `coll-task-05a` adds. So
 `kv_key_scope_for(Principal.REGISTRY)` with no further argument is legal and
 returns a stable literal. L2S-08's "may not collide with a bare `Principal`
@@ -234,12 +234,12 @@ Two constraints fix the home and the name:
   module load.
 - **It must not be called `sanitize_segment`.** A fourth copy of this rule
   already exists as public `threetears.media.contracts.keys.sanitize_segment`,
-  with *different* semantics — it slugifies. Three public symbols of one name
+  with *different* semantics -- it slugifies. Three public symbols of one name
   with three behaviours across three packages is worse than the duplication.
 
 The signature must accept UUIDs: `_sanitize` has ~40 references across ~30 lines
-in `subjects.py` — 34 call sites across 24 lines — several passing UUIDs, which would fail mypy under `str`-only.
-Widening `core.namespaces.sanitize_segment` the same way breaks nothing — its
+in `subjects.py` -- 34 call sites across 24 lines -- several passing UUIDs, which would fail mypy under `str`-only.
+Widening `core.namespaces.sanitize_segment` the same way breaks nothing -- its
 only non-test caller is `build_namespace_name`.
 
 **But do not derive a scope from a sanitized name.** `sanitize_segment` is
@@ -258,47 +258,47 @@ security boundaries.
 | L2S-01 | `l2_key` emits `{scope}.{table}.{body}`; the body grammar check and SHA-256 fallback are unchanged | P0 |
 | L2S-02 | `configure()` raises when registry state holds an L2 client and no `kv_key_scope` | P0 |
 | L2S-03 | Two principals never collide on a key; two replicas of one principal always do | P0 |
-| L2S-04 | The scope segment is validated against `^[-_=a-zA-Z0-9]+$` — stricter than the key body grammar | P0 |
+| L2S-04 | The scope segment is validated against `^[-_=a-zA-Z0-9]+$` -- stricter than the key body grammar | P0 |
 | L2S-05 | A backstop raise in `l2_key` covers the `nats_client=`-direct path, and is **not** a `KvError` subclass | P0 |
 | L2S-06 | `kv_key_scope_for` raises for a **pod** principal with no identifying id, and refuses `pod_id` for `AGENT_POD` | P0 |
 | L2S-07 | Only the collections bucket is scoped; `l2_key` for other buckets is unchanged | P0 |
 | L2S-08 | A **pod-derived** scope may not collide with a bare `Principal` enum value; infra scopes *are* those values | P1 |
-| L2S-09 | Invalidation deletes the receiver's own scoped L2 entry, not only L1 — and never on a collection with `L3 = None`, where L2 is the source of truth and eviction is deletion | P0 |
+| L2S-09 | Invalidation deletes the receiver's own scoped L2 entry, not only L1 -- and never on a collection with `L3 = None`, where L2 is the source of truth and eviction is deletion | P0 |
 
 ---
 
 ## Fail at wiring time
 
 `l2_key` is called only from `_get_from_l2`, `_save_to_l2`, `_delete_from_l2`
-and `l2_cas_mutate` — all first-read/first-write paths. A raise there does not
+and `l2_cas_mutate` -- all first-read/first-write paths. A raise there does not
 make a process "fail at startup"; it makes it die on the first cache access under
 load, which for the agent router's sticky routing is a production outage.
 
 So the check is at `configure()` (L2S-02), with `l2_key` as the backstop for the
-construction path that never calls it. After this change `l2_key` reads the scope off `self._registry` — a required
-positional on `BaseCollection.__init__` — which is also why the backstop only
+construction path that never calls it. After this change `l2_key` reads the scope off `self._registry` -- a required
+positional on `BaseCollection.__init__` -- which is also why the backstop only
 fires when the registry itself is unscoped. (Today it touches `_registry` not at
 all.) Do not add a constructor parameter.
 
 **L2S-02 is evaluated over registry state after the merge, not over this call's
-arguments.** `configure()` merges — `if l2_client is not None: self._l2_client = ...`.
+arguments.** `configure()` merges -- `if l2_client is not None: self._l2_client = ...`.
 `coll-task-02` establishes that two-pass wiring (scope first, client later, or
 the reverse) is the normal shape at several sites. A naive per-call check breaks
 every one of them.
 
 **The backstop must not raise `KvError`.** Three of the four `l2_key` call sites
 sit inside `except KvError` handlers that degrade to a warning, so a `KvError`
-would be swallowed and the fleet would run with L2 silently off — the degradation
+would be swallowed and the fleet would run with L2 silently off -- the degradation
 this decision exists to prevent. `coll-task-04a` makes the same point for its own
 exception type.
 
-The fourth, `l2_cas_mutate`, deliberately does **not** degrade — its docstring
+The fourth, `l2_cas_mutate`, deliberately does **not** degrade -- its docstring
 says L2 is the source of truth there and the error must propagate. So a `KvError`
 backstop would be swallowed at three sites and propagate at the one where L2 is
 authoritative: inconsistent in the worst direction. A distinct type is consistent
 at all four.
 
-The degrade alternative — warn once, serve from L1+L3 — was considered and
+The degrade alternative -- warn once, serve from L1+L3 -- was considered and
 rejected: it silently loses cross-pod coherence and is found months later by a
 stale-read bug that reproduces on nothing.
 
@@ -306,7 +306,7 @@ stale-read bug that reproduces on nothing.
 
 ## The scope grammar is stricter than the key grammar
 
-`_KV_KEY_GRAMMAR` at `base.py:55` is `^[-/_=.a-zA-Z0-9]+$` — **`.` is inside the
+`_KV_KEY_GRAMMAR` at `base.py:55` is `^[-/_=.a-zA-Z0-9]+$` -- **`.` is inside the
 character class.** Reusing it for a scope validates nothing about dots and would
 ship a check that accepts a value producing two subject tokens, silently
 defeating the grant. It also permits `/`, and leading, trailing and doubled dots.
@@ -315,17 +315,17 @@ defeating the grant. It also permits `/`, and leading, trailing and doubled dots
 
 ## Files to Modify
 
-- `packages/nats/src/threetears/nats/subjects.py` — promote `_sanitize` to public `sanitize_subject_segment`; rewire its 34 in-file call sites.
-- `packages/nats/src/threetears/nats/subject_permissions.py` — `kv_key_scope_for`, the scope grammar; `_seg` delegates to the promoted sanitizer.
-- `packages/nats/src/threetears/nats/__init__.py` — add the new names to the eager re-export block **and** `__all__`. While here: its comment claims `test_lazy_surface` checks the TYPE_CHECKING block; it does not (see below).
-- `packages/nats/tests/unit/test_lazy_surface.py` — it asserts lazy-map ↔ submodule exports and lazy-map ⊆ `__all__`. It never parses the TYPE_CHECKING block, despite the test named for it.
-- `packages/core/src/threetears/core/collections/base.py` — the scope segment in `l2_key`, the backstop raise, and the promoted public `delete_l2_entry`.
-- `packages/core/src/threetears/core/collections/registry.py` — `kv_key_scope` on `configure()`, the state-based refusal, and L2S-09's L2 eviction in `_on_invalidation`.
-- `packages/core/src/threetears/core/namespaces.py` — `sanitize_segment` delegates.
-- `packages/core/tests/test_base_collection.py` — `TestL2KeyGrammarSafe` updated for the prefix; it also holds most `set_l1_max_age` calls.
+- `packages/nats/src/threetears/nats/subjects.py` -- promote `_sanitize` to public `sanitize_subject_segment`; rewire its 34 in-file call sites.
+- `packages/nats/src/threetears/nats/subject_permissions.py` -- `kv_key_scope_for`, the scope grammar; `_seg` delegates to the promoted sanitizer.
+- `packages/nats/src/threetears/nats/__init__.py` -- add the new names to the eager re-export block **and** `__all__`. While here: its comment claims `test_lazy_surface` checks the TYPE_CHECKING block; it does not (see below).
+- `packages/nats/tests/unit/test_lazy_surface.py` -- it asserts lazy-map ↔ submodule exports and lazy-map ⊆ `__all__`. It never parses the TYPE_CHECKING block, despite the test named for it.
+- `packages/core/src/threetears/core/collections/base.py` -- the scope segment in `l2_key`, the backstop raise, and the promoted public `delete_l2_entry`.
+- `packages/core/src/threetears/core/collections/registry.py` -- `kv_key_scope` on `configure()`, the state-based refusal, and L2S-09's L2 eviction in `_on_invalidation`.
+- `packages/core/src/threetears/core/namespaces.py` -- `sanitize_segment` delegates.
+- `packages/core/tests/test_base_collection.py` -- `TestL2KeyGrammarSafe` updated for the prefix; it also holds most `set_l1_max_age` calls.
 
 ### Create
-- `packages/core/tests/test_l2_key_scoping.py` — the spec test, per the contract below.
+- `packages/core/tests/test_l2_key_scoping.py` -- the spec test, per the contract below.
 
 ---
 
@@ -345,12 +345,12 @@ Write it fresh. The contract:
 - scope-then-client and client-then-scope both succeed (the two-pass wiring
   above), because the check is over merged registry state;
 - a scope containing `.` or `/` is refused at `configure()`;
-- a **pod-derived** scope colliding with a bare `Principal` value is refused —
+- a **pod-derived** scope colliding with a bare `Principal` value is refused -- 
   and, in the same test, `kv_key_scope_for(Principal.REGISTRY)` is **accepted**,
   because an infra scope *is* that value. `configure()` cannot tell the two apart
   on its own, so the check belongs in `kv_key_scope_for`, not in `configure()`;
 - the backstop raise from `l2_key` is not a `KvError` subclass;
-- the scope segment survives body hashing — assert only that delta; the SHA-256
+- the scope segment survives body hashing -- assert only that delta; the SHA-256
   fallback invariant belongs to `test_base_collection.py`;
 - invalidation evicts the receiver's own scoped L2 entry (L2S-09).
 
@@ -378,9 +378,9 @@ implementation, the tier decision has been reopened by accident.
 - DO NOT derive a scope from `sanitize_segment`. It is non-injective and source already records the collision.
 - DO NOT let the backstop raise a `KvError`. It would be swallowed.
 - DO NOT check L2S-02 against one call's arguments. Two-pass wiring is normal.
-- DO NOT scope buckets other than collections. Nothing else writes a prefix, and a missing `$KV.` match does not raise — it blocks to the deadline and reads as an unreachable broker.
+- DO NOT scope buckets other than collections. Nothing else writes a prefix, and a missing `$KV.` match does not raise -- it blocks to the deadline and reads as an unreachable broker.
 - DO NOT reintroduce a shared tier. Three problems, all in the ledger.
-- DO NOT implement L2S-09 by calling `invalidate_cache` from `_on_invalidation`. It is public, it does look exactly right — and it **re-publishes**. Since the `origin` filter only skips *self*, every receiver would rebroadcast under its own origin: an unbounded eviction storm. Use the promoted `delete_l2_entry`.
+- DO NOT implement L2S-09 by calling `invalidate_cache` from `_on_invalidation`. It is public, it does look exactly right -- and it **re-publishes**. Since the `origin` filter only skips *self*, every receiver would rebroadcast under its own origin: an unbounded eviction storm. Use the promoted `delete_l2_entry`.
 - DO NOT put the blanket `Principal`-collision ban in `configure()`. It cannot distinguish a pod-derived scope from an infra one, and would refuse every infra principal at startup.
 
 ---
@@ -407,7 +407,7 @@ cd 3tears
 ./scripts/test-integration.sh
 ```
 
-Use the scripts — `3tears/CLAUDE.md` forbids running pytest, ruff or mypy
+Use the scripts -- `3tears/CLAUDE.md` forbids running pytest, ruff or mypy
 directly. `check-all.sh` excludes integration tests, which is where cross-pod
 behaviour lives.
 
