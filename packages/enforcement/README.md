@@ -11,13 +11,27 @@ This replaces a previous pattern in which the same enforcement test files were v
 ## Domains
 
 > **Adopting `invalidation_listener` in a repo that already runs a local copy.**
-> The hub's pre-shared walker keyed its exemption file by BARE MODULE PATH
-> (`src/aibots/gateway/acl.py`). The shared parser wants a `path:line:symbol`
-> triple and rejects anything else with `ExemptionError`, so an unmigrated file
-> does not degrade -- it aborts the domain. Rewrite each entry as
-> `<path>:*:<registry-spelling>`, keeping the `# rationale:` line above it: `*`
-> means "any line in that file", which is what you want, because keying an
-> exemption to a line number silently stops matching when the line moves.
+> Three things change, and only the first is obvious.
+>
+> 1. **The exemption format.** The hub's pre-shared walker keyed by BARE MODULE
+>    PATH (`src/aibots/gateway/acl.py`). The shared parser wants a
+>    `path:line:symbol` triple and rejects anything else with `ExemptionError`, so
+>    an unmigrated file does not degrade -- it aborts the domain. Rewrite each
+>    entry as `<path>:*:<registry-spelling>`, keeping its `# rationale:` line. `*`
+>    means "any line in that file", which is what you want: keying an exemption to
+>    a line number silently stops matching when the line moves.
+> 2. **`minimum_live_registries` is yours to supply**, and it is REQUIRED with no
+>    default. Count the L2-live registries your repo actually wires and put that
+>    number in the shell. It is the floor that makes a green report mean anything.
+> 3. **Repo-specific shell assertions do not come across.** A local walker
+>    typically carries checks the shared domain has no equivalent for -- which
+>    processes must be in scope, that an L1-only registry is not dragged in,
+>    detector positive/negative cases. Those are yours to keep: port them into the
+>    thin shell rather than assuming the domain replaced them, because deleting the
+>    local file deletes them silently.
+>
+> This note describes a one-time migration and should be deleted once every
+> consumer has adopted the domain (tracked as ENF-7WQ2).
 
 | Module | Invariant enforced |
 |---|---|
