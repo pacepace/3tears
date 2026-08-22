@@ -307,6 +307,13 @@ def client_before_scope_registries(tree: ast.AST) -> dict[str, int]:
     client-first passes that gate green and dies at startup, which is the failure this gate
     exists to move earlier.
 
+    **Ordering is by ``lineno`` across the whole module, ignoring function boundaries.**
+    A registry whose scope call lives in a helper DEFINED below its client-wiring call
+    site would read as client-first and be a false positive. Every ``configure(`` site in
+    this repo today supplies the scope in the same call, so nothing hits it; the day one
+    does, narrow the comparison to a shared enclosing scope rather than exempting the
+    file -- an exemption here silences the real check too.
+
     :param tree: parsed module
     :ptype tree: ast.AST
     :return: registry spelling -> line of the offending client-first call
@@ -565,6 +572,24 @@ class TestTheReaderLeavesSanctionedWiringAlone:
         assert unscoped_live_registries(tree) == []
         assert client_before_scope_registries(tree) == {}
 
+    def test_an_l1_only_registry_is_left_alone(self) -> None:
+        """a process with no L2 tier at all is a valid configuration."""
+        tree = ast.parse(
+            "registry = CollectionRegistry()\n"
+            "registry.configure(l1_backend=backend)\n"
+            "coll = PodAffinityCollection(registry=registry, config=cfg, nats_client=None)\n"
+        )
+        assert unscoped_live_registries(tree) == []
+
+    def test_an_l3_only_registry_is_left_alone(self) -> None:
+        """the wake / scrape shape: an L3 pool and nothing else."""
+        tree = ast.parse(
+            "registry = CollectionRegistry()\n"
+            "registry.configure(l3_pool=pool)\n"
+            "fires = WakeFireCollection(registry=registry, config=cfg)\n"
+        )
+        assert unscoped_live_registries(tree) == []
+
 
 class TestTwoPassWiringHasOnlyOneWorkingOrder:
     """``configure()`` refuses over the MERGED state at the end of each call."""
@@ -613,24 +638,6 @@ class TestTwoPassWiringHasOnlyOneWorkingOrder:
         )
 
         assert client_before_scope_registries(tree) == {}
-
-    def test_an_l1_only_registry_is_left_alone(self) -> None:
-        """a process with no L2 tier at all is a valid configuration."""
-        tree = ast.parse(
-            "registry = CollectionRegistry()\n"
-            "registry.configure(l1_backend=backend)\n"
-            "coll = PodAffinityCollection(registry=registry, config=cfg, nats_client=None)\n"
-        )
-        assert unscoped_live_registries(tree) == []
-
-    def test_an_l3_only_registry_is_left_alone(self) -> None:
-        """the wake / scrape shape: an L3 pool and nothing else."""
-        tree = ast.parse(
-            "registry = CollectionRegistry()\n"
-            "registry.configure(l3_pool=pool)\n"
-            "fires = WakeFireCollection(registry=registry, config=cfg)\n"
-        )
-        assert unscoped_live_registries(tree) == []
 
 
 class TestTheExemptionFileIsDisciplined:

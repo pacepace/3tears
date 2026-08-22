@@ -279,32 +279,52 @@ class TestTheCallKwargsWalkerReachesPackageInits:
     workspace is clean.
     """
 
-    def test_a_bad_call_in_a_package_init_is_reported(self, tmp_path: Path) -> None:
+    def test_a_bad_call_in_a_package_init_is_reported(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(src / "pkg" / "__init__.py", 'log.info("wired", kv_key_scope="registry")\n')
-        config = LoggerCoverageConfig(repo_root=repo, src_roots=(src,))
+        # pinned to a test-only env var like every sibling in this file. the two no-raise
+        # tests below would pass VACUOUSLY under an ambient
+        # LOGGER_COVERAGE_ENFORCEMENT_MODE=report, which is the whole reason the file
+        # already does this.
+        monkeypatch.setenv("LC_TEST_MODE", "strict")
+        config = LoggerCoverageConfig(repo_root=repo, src_roots=(src,), mode_env_var="LC_TEST_MODE")
 
         with pytest.raises(pytest.fail.Exception, match="logger-coverage enforcement found 1 violation"):
             run_logger_coverage_enforcement(config, walker="call_kwargs")
 
-    def test_the_missing_walker_still_skips_package_inits(self, tmp_path: Path) -> None:
+    def test_the_missing_walker_still_skips_package_inits(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """the sibling's convention is untouched -- widening one must not widen both."""
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(src / "pkg" / "__init__.py", "from pkg.mod import thing\n")
-        config = LoggerCoverageConfig(repo_root=repo, src_roots=(src,))
+        monkeypatch.setenv("LC_TEST_MODE", "strict")
+        config = LoggerCoverageConfig(repo_root=repo, src_roots=(src,), mode_env_var="LC_TEST_MODE")
 
         run_logger_coverage_enforcement(config, walker="missing")
 
-    def test_a_package_init_can_still_be_exempted_by_path(self, tmp_path: Path) -> None:
+    def test_a_package_init_can_still_be_exempted_by_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """widening the walker must not remove the per-file escape."""
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(src / "pkg" / "__init__.py", 'log.info("wired", kv_key_scope="registry")\n')
+        monkeypatch.setenv("LC_TEST_MODE", "strict")
         config = LoggerCoverageConfig(
             repo_root=repo,
             src_roots=(src,),
+            mode_env_var="LC_TEST_MODE",
             exempt_files={"src/pkg/__init__.py": _VALID_RATIONALE},
         )
 
