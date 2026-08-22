@@ -8,6 +8,16 @@ packages (bumped in lock-step).
 
 ### Breaking
 
+- **`3tears-nats[client]` now requires `nats-py>=2.15`** (was `>=2.10`). The KV
+  create-or-reconcile path passes `StreamConfig(subject_delete_marker_ttl=...)`,
+  a field 2.14 does not have. The floor sat at 2.10 while that call landed, so a
+  consumer resolving anything in 2.10..2.14 built clean and died at RUNTIME with
+  an unexpected keyword -- the mixed-install failure mode this project already
+  warns about, arriving through an undeclared floor rather than an unbounded
+  sibling. A consumer pinned below 2.15 will now fail to resolve, which is the
+  intended outcome: failing at install beats failing at the first bucket
+  reconcile.
+
 - **Every L2 key is now `{scope}.{table}.{body}`, and the scope is mandatory.**
   `CollectionRegistry.configure` and `bind_table` RAISE `L2ScopeNotConfiguredError`
   when given an `l2_client` without a `kv_key_scope`. Derive the value from
