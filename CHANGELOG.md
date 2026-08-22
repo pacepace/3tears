@@ -527,6 +527,39 @@ packages (bumped in lock-step).
 
 ### Fixed
 
+- `agent-memory`: ambient retrieval admits candidates on **semantic
+  similarity**, not on the composite `hybrid_score`. Gating admission on the
+  composite let an *absent* signal lower the attainable ceiling: a query whose
+  lexemes match no row contributes a keyword term of exactly 0, and a memory
+  older than a few multiples of the recency half-life contributes a recency
+  term indistinguishable from 0. Only the semantic weight was left to clear a
+  threshold calibrated as though all three could fire, so a perfectly relevant
+  month-old memory was unreachable at *any* similarity — `0.55 * 0.50 = 0.275`
+  against a `0.4` gate, for weights and a cosine range that are both ordinary.
+  In practice ambient recall reached nothing older than about a day, and agents
+  appeared to remember only because the model called `memory_search` explicitly
+  (that tool defaults to a `0.2` threshold, half the ambient one).
+
+  Recency now **ranks and never admits** — how recently something was written
+  is not evidence that it answers this query. In the three `hybrid_search`
+  paths, `similarity_threshold` gates `similarity >= threshold` and means what
+  its name says; a row that matched the FTS query is admitted too, so the
+  keyword leg still recalls hits whose `similarity` is the placeholder `0.0`
+  rather than a measurement. Ranking is unchanged: `hybrid_score` still orders
+  results on all three signals.
+
+  The `>=` is specific to hybrid-search admission. The single-signal siblings
+  (`search_by_semantic`, and the two paginated cosine scans) keep their existing
+  strict `>` / `<=` comparisons and are untouched here — worth knowing if you
+  read one threshold value as governing every path.
+
+  **This changes what the threshold gates, not its magnitude.** No default
+  moved. Callers that tuned `similarity_threshold` against the old composite
+  should re-read it as a cosine floor — under the old rule a brand-new row
+  needed only `similarity > 0.18` to clear `0.4` on its recency term, and such
+  rows are no longer admitted. Applies to `MemoriesCollection`,
+  `MediaContentCollection` and both `MemoryChunkCollection` search paths.
+
 - `models`: **a zero cost registered as "no cost", and priced the call at
   nothing.** `registry_loader` coalesced its cost fields with `a or b`, and
   `Decimal("0")` is FALSY -- so every EMBEDDING model, whose output cost is

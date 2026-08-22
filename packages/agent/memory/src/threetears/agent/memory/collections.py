@@ -349,6 +349,62 @@ def _recency_weight(created: datetime, half_life_hours: float) -> float:
     return math.exp(-hours_ago / half_life_hours)
 
 
+# Set on a merged candidate that reached the pool through the FTS leg. Private to
+# this module: stripped in :func:`_admit_and_rank` before rows reach a caller.
+_FTS_MATCHED_KEY = "_fts_matched"
+
+
+def _admit_and_rank(
+    candidates: list[dict[str, Any]],
+    *,
+    similarity_threshold: float,
+) -> list[dict[str, Any]]:
+    """Admit candidates on evidence of relevance, then order them by the composite.
+
+    Admission and ranking answer different questions, and conflating them
+    silently un-recalls old memories.
+
+    ``hybrid_score`` is a weighted sum over semantic / keyword / recency. Gating
+    admission on that sum means **a signal that is absent lowers the attainable
+    ceiling**: a query whose lexemes match no row contributes a keyword term of
+    exactly 0, and a memory older than a few multiples of the recency half-life
+    contributes a recency term indistinguishable from 0. Only the semantic weight
+    is left to clear a threshold calibrated as though all three could fire, so a
+    perfectly relevant month-old memory is unreachable at any similarity —
+    ``0.55 x 0.50 = 0.275`` against a 0.4 gate, for weights and a cosine range
+    that are both ordinary.
+
+    Recency is the sharper half of the error: how recently something was written
+    is not evidence that it answers *this* query. It is a tiebreaker among
+    relevant candidates, so it ranks here and never admits.
+
+    Admission therefore consults only per-query evidence:
+
+    - semantic — ``similarity >= similarity_threshold``
+    - keyword — the row actually matched the FTS query
+
+    The keyword arm matters because an FTS-only row carries ``similarity`` 0.0 as
+    a *placeholder* rather than a measurement (it never entered the vector
+    query's top-N, so no distance was computed for it). Admitting on similarity
+    alone would drop every keyword-only hit.
+
+    :param candidates: merged candidate rows, each carrying ``similarity`` and a
+        precomputed ``hybrid_score``; mutated to strip the private FTS marker
+    :ptype candidates: list[dict[str, Any]]
+    :param similarity_threshold: floor on semantic similarity for admission
+    :ptype similarity_threshold: float
+    :return: admitted rows, sorted by ``hybrid_score`` DESC
+    :rtype: list[dict[str, Any]]
+    """
+    admitted = [c for c in candidates if c["similarity"] >= similarity_threshold or c.get(_FTS_MATCHED_KEY, False)]
+    # Strip from every candidate, not just the admitted ones: `or` short-circuits,
+    # so a row admitted on similarity never evaluates the second arm.
+    for c in candidates:
+        c.pop(_FTS_MATCHED_KEY, None)
+    admitted.sort(key=lambda c: c["hybrid_score"], reverse=True)
+    return admitted
+
+
 def _chunk_row_to_dict(row: Any, score_key: str, score_value: float) -> dict[str, Any]:
     """shape a single chunk SQL row into the canonical result dict.
 
@@ -417,10 +473,11 @@ def _merge_chunk_search_rows(
     :param chunk_signal_weights: mapping ``{"semantic", "keyword"}``
         to combination weights
     :ptype chunk_signal_weights: dict[str, float]
-    :param similarity_threshold: floor on ``hybrid_score`` for the
-        final list
+    :param similarity_threshold: floor on semantic similarity for
+        admission; see :func:`_admit_and_rank` for why the composite
+        does not gate
     :ptype similarity_threshold: float
-    :return: ranked list of chunk dicts, threshold-filtered, sorted
+    :return: ranked list of chunk dicts, admission-filtered, sorted
         by hybrid_score DESC
     :rtype: list[dict[str, Any]]
     """
@@ -433,6 +490,7 @@ def _merge_chunk_search_rows(
             merged[ckid]["fts_rank"] = float(row["fts_rank"])
         else:
             merged[ckid] = _chunk_row_to_dict(row, score_key="fts_rank", score_value=float(row["fts_rank"]))
+        merged[ckid][_FTS_MATCHED_KEY] = True
 
     candidates = list(merged.values())
     if not candidates:
@@ -446,9 +504,7 @@ def _merge_chunk_search_rows(
             4,
         )
 
-    filtered = [c for c in candidates if c["hybrid_score"] > similarity_threshold]
-    filtered.sort(key=lambda c: c["hybrid_score"], reverse=True)
-    return filtered
+    return _admit_and_rank(candidates, similarity_threshold=similarity_threshold)
 
 
 # explicit column list for raw SELECTs over the ``memories`` table. the
@@ -1154,7 +1210,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype top_k: int
         :param candidate_limit: per-query candidate pool size
         :ptype candidate_limit: int
-        :param similarity_threshold: floor on hybrid score
+        :param similarity_threshold: floor on semantic similarity for admission
         :ptype similarity_threshold: float
         :param recency_half_life_hours: exponential decay half-life
         :ptype recency_half_life_hours: float
@@ -1333,6 +1389,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                     "fts_rank": float(row["fts_rank"]),
                     "embedding": emb,
                 }
+            merged[mid][_FTS_MATCHED_KEY] = True
 
         candidates = list(merged.values())
         if not candidates:
@@ -1350,9 +1407,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 4,
             )
 
-        filtered = [c for c in candidates if c["hybrid_score"] > similarity_threshold]
-        filtered.sort(key=lambda m: m["hybrid_score"], reverse=True)
-        return filtered[:top_k]
+        return _admit_and_rank(candidates, similarity_threshold=similarity_threshold)[:top_k]
 
     async def search_by_ids(
         self,
@@ -2273,7 +2328,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         :ptype top_k: int
         :param candidate_limit: per-query candidate pool size
         :ptype candidate_limit: int
-        :param similarity_threshold: floor on hybrid score
+        :param similarity_threshold: floor on semantic similarity for admission
         :ptype similarity_threshold: float
         :param recency_half_life_hours: exponential decay half-life
         :ptype recency_half_life_hours: float
@@ -2414,6 +2469,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                     "fts_rank": float(row["fts_rank"]),
                     "embedding": emb,
                 }
+            merged[cid][_FTS_MATCHED_KEY] = True
 
         candidates = list(merged.values())
         if not candidates:
@@ -2431,9 +2487,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                 4,
             )
 
-        filtered = [c for c in candidates if c["hybrid_score"] > similarity_threshold]
-        filtered.sort(key=lambda c: c["hybrid_score"], reverse=True)
-        return filtered[:top_k]
+        return _admit_and_rank(candidates, similarity_threshold=similarity_threshold)[:top_k]
 
     async def search_by_ids(
         self,
@@ -2824,7 +2878,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype user_text: str
         :param candidate_k: per-query candidate pool size
         :ptype candidate_k: int
-        :param similarity_threshold: floor on hybrid score
+        :param similarity_threshold: floor on semantic similarity for admission
         :ptype similarity_threshold: float
         :param chunk_signal_weights: mapping ``{"semantic",
             "keyword"}`` to weights
@@ -3408,7 +3462,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype user_text: str
         :param candidate_k: per-query candidate pool size
         :ptype candidate_k: int
-        :param similarity_threshold: floor on hybrid score
+        :param similarity_threshold: floor on semantic similarity for admission
         :ptype similarity_threshold: float
         :param chunk_signal_weights: mapping ``{"semantic", "keyword"}``
         :ptype chunk_signal_weights: dict[str, float]

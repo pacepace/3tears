@@ -835,8 +835,8 @@ async def load_memory_recall_tool(
         ``chunk_query`` mode. When omitted, ``chunk_query`` requests
         gracefully degrade to default-mode output with a warning
     :ptype embedding_provider: Embeddings | None
-    :param similarity_threshold: floor on hybrid score for
-        ``chunk_query`` mode
+    :param similarity_threshold: floor on semantic similarity for
+        admission in ``chunk_query`` mode
     :ptype similarity_threshold: float
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
@@ -1509,7 +1509,7 @@ async def load_chunk_search_tool(
         within the current conversation so subsequent invocations can
         exclude them
     :ptype ledger_callback: LedgerCallback | None
-    :param similarity_threshold: floor on hybrid score
+    :param similarity_threshold: floor on semantic similarity for admission
     :ptype similarity_threshold: float
     :return: list with one LangChain tool
     :rtype: list[BaseTool]

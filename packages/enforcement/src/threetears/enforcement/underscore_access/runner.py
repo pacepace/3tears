@@ -117,6 +117,16 @@ def run_underscore_enforcement(
     :raises ValueError: ``walker`` is not in the accepted set
     :raises pytest.fail.Exception: in strict mode with violations
     """
+    # Run-scoped, not process-scoped. The cache key is (path, st_mtime_ns),
+    # which cannot distinguish two versions of a file on a filesystem whose
+    # mtime granularity is coarser than the gap between writes -- and several
+    # are: five successive writes here can report one identical st_mtime_ns.
+    # A test session that enforces a tree, rewrites it and enforces again then
+    # reads the FIRST parse back, which is exactly the staleness the key was
+    # meant to prevent. Clearing per run removes the class instead of narrowing
+    # it, and costs nothing the cache was buying: its stated purpose is to
+    # parse each exempted file once per RUN, not once per process.
+    _SCOPE_CACHE.clear()
     if walker not in _VALID_WALKERS:
         raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
