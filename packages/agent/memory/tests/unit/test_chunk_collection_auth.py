@@ -3,6 +3,7 @@
 Cross-tenant data leaks happen when a method's SQL drops one of the
 three scoping predicates ``(user_id, agent_id, customer_id)``. The new
 methods added in transcript-chunks-task-A (``find_by_memory_id``,
+``find_by_chunk_indexes``,
 ``find_by_conversation_id``, ``hybrid_search_within_memory``, and the
 cursor-extended ``hybrid_search``) each carry the full triple; this
 test fails the build if a future refactor accidentally weakens one of
@@ -31,6 +32,7 @@ _METHODS_REQUIRING_AUTH_TRIPLE = [
     "hybrid_search",
     "hybrid_search_within_memory",
     "find_by_memory_id",
+    "find_by_chunk_indexes",
     "find_by_conversation_id",
     "search_by_ids",
     "search_by_semantic",
@@ -59,6 +61,7 @@ class TestChunkCollectionAuthScoping:
             "hybrid_search",
             "hybrid_search_within_memory",
             "find_by_memory_id",
+            "find_by_chunk_indexes",
             "find_by_conversation_id",
         ],
     )
@@ -100,6 +103,7 @@ class TestChunkCollectionAuthScoping:
             "hybrid_search",
             "hybrid_search_within_memory",
             "find_by_memory_id",
+            "find_by_chunk_indexes",
             "find_by_conversation_id",
         ],
     )

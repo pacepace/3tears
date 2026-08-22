@@ -19,23 +19,53 @@ import pytest
 
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
+    JsCapability,
+    JsResourceKind,
     Principal,
     PrincipalPermissions,
     build_permissions,
+    capability_declares,
+    kv_bucket_names,
+    kv_key_scope_for,
 )
 from threetears.nats.subjects import Subjects, set_default_namespace
 
 _NS = "3tears"
 
+#: Pod identities are UUIDs, and that is a CONTRACT rather than a test convenience. A pod
+#: principal's L2 key scope is derived from its identifying id by ``kv_key_scope_for``, which
+#: refuses anything that is not a uuid: the scope is an isolation boundary, and a boundary derived
+#: from an arbitrary display name is not provably collision-free. So a resolver can no longer be
+#: built for a pod whose id is a slug -- it raises, at mint, which is the fail-closed direction.
+_AGENT_1 = "019470a8-b5c3-7def-8123-000000000001"
+_AGENT_2 = "019470a8-b5c3-7def-8123-000000000002"
+_AGENT_A = "019470a8-b5c3-7def-8123-0000000000aa"
+_AGENT_B = "019470a8-b5c3-7def-8123-0000000000bb"
+_POD_1 = "01947100-0000-7000-8000-000000000001"
+_POD_2 = "01947100-0000-7000-8000-000000000002"
+_POD_A = "01947100-0000-7000-8000-0000000000aa"
+_POD_B = "01947100-0000-7000-8000-0000000000bb"
+_POD_X = "01947100-0000-7000-8000-0000000000cc"
+_POD_VICTIM = "01947100-0000-7000-8000-0000000000dd"
+
 #: representative ids so every principal resolves to a concrete allow-list.
 _IDS: dict[Principal, dict[str, str]] = {
-    Principal.AGENT_POD: {"agent_id": "agent-1", "pod_id": "pod-1"},
-    Principal.TOOL_POD: {"pod_id": "pod-1"},
+    Principal.AGENT_POD: {"agent_id": _AGENT_1, "pod_id": _POD_1},
+    Principal.TOOL_POD: {"pod_id": _POD_1},
     Principal.REGISTRY: {"conn_id": "reg-1"},
     Principal.HUB: {"conn_id": "hub-1"},
     Principal.GATEWAY: {"conn_id": "gw-1"},
     Principal.CHANNEL_ADAPTER: {"conn_id": "chan-1"},
+    Principal.AGENT_ROUTER: {"conn_id": "router-1"},
+    Principal.DATASET_EXECUTOR: {"conn_id": "dsx-1"},
 }
+
+#: the ONE bucket every principal shares, and therefore the only one a per-principal grant can be
+#: expressed on at all.
+_COLLECTIONS = f"{_NS}-collections"
+
+#: the two principals whose identity is a POD rather than a service.
+_POD_PRINCIPALS = (Principal.AGENT_POD, Principal.TOOL_POD)
 
 
 @pytest.fixture(autouse=True)
@@ -89,28 +119,28 @@ class TestLeastPrivilege:
 
 class TestIdentityIsolation:
     def test_agent_internal_subject_is_own_identity(self) -> None:
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
         a_internal = [s for s in a.subscribe if ".agents.internal." in s]
-        assert a_internal == [f"{_NS}.agents.internal.agent-A.pod-A"]
+        assert a_internal == [f"{_NS}.agents.internal.{_AGENT_A}.{_POD_A}"]
         # a different agent's routed inbox is a DIFFERENT subject -> no cross-subscribe
-        b = build_permissions(Principal.AGENT_POD, agent_id="agent-B", pod_id="pod-B")
-        assert f"{_NS}.agents.internal.agent-B.pod-B" not in a.subscribe
+        b = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_B, pod_id=_POD_B)
+        assert f"{_NS}.agents.internal.{_AGENT_B}.{_POD_B}" not in a.subscribe
         assert [s for s in b.subscribe if ".agents.internal." in s] != a_internal
 
     def test_tool_internal_subject_is_own_pod(self) -> None:
-        a = build_permissions(Principal.TOOL_POD, pod_id="pod-A")
-        b = build_permissions(Principal.TOOL_POD, pod_id="pod-B")
-        assert f"{_NS}.tools.internal.pod-A" in a.subscribe
-        assert f"{_NS}.tools.internal.pod-A" not in b.subscribe
+        a = build_permissions(Principal.TOOL_POD, pod_id=_POD_A)
+        b = build_permissions(Principal.TOOL_POD, pod_id=_POD_B)
+        assert f"{_NS}.tools.internal.{_POD_A}" in a.subscribe
+        assert f"{_NS}.tools.internal.{_POD_A}" not in b.subscribe
 
     def test_pod_inbox_is_identity_scoped(self) -> None:
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
-        b = build_permissions(Principal.AGENT_POD, agent_id="agent-B", pod_id="pod-B")
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
+        b = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_B, pod_id=_POD_B)
         assert a.inbox_prefix != b.inbox_prefix
 
     def test_pod_may_publish_only_its_own_heartbeat(self) -> None:
-        a = build_permissions(Principal.TOOL_POD, pod_id="pod-A")
-        assert f"{_NS}.tools.heartbeat.pod-A" in a.publish
+        a = build_permissions(Principal.TOOL_POD, pod_id=_POD_A)
+        assert f"{_NS}.tools.heartbeat.{_POD_A}" in a.publish
         # no wildcard heartbeat publish -> a pod cannot forge another pod's heartbeat
         assert f"{_NS}.tools.heartbeat.*" not in a.publish
         assert f"{_NS}.tools.heartbeat.>" not in a.publish
@@ -121,7 +151,7 @@ class TestIdentityIsolation:
         # turn / re-route). the subject is keyed by correlation id (no agent segment), so the grant is
         # the wildcard ``agents.complete.*`` -- without it the completion publish is a NATS permissions
         # violation and every turn hangs to the caller's finalize timeout.
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
         assert f"{_NS}.agents.complete.*" in a.publish
 
     def test_agent_pod_may_serve_only_its_own_in_process_tools(self) -> None:
@@ -133,18 +163,18 @@ class TestIdentityIsolation:
         # the in-process server runs under the ``{agent_id}.{instance}`` composite pod-id, so its
         # ``tools.internal.{agent_id}.{instance}`` subscription nests under the granted subtree while
         # a peer agent can NEVER be granted a subject under this agent's identity.
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
         # its own in-process tool server: register (point) + heartbeat scoped to its own agent subtree.
         assert f"{_NS}.tools.register" in a.publish
-        assert f"{_NS}.tools.heartbeat.agent-A.>" in a.publish
+        assert f"{_NS}.tools.heartbeat.{_AGENT_A}.>" in a.publish
         # receives the registry's proxied calls + reachability probes for its OWN agent subtree only.
-        assert f"{_NS}.tools.internal.agent-A.>" in a.subscribe
-        assert f"{_NS}.tools.probe.agent-A.>" in a.subscribe
+        assert f"{_NS}.tools.internal.{_AGENT_A}.>" in a.subscribe
+        assert f"{_NS}.tools.probe.{_AGENT_A}.>" in a.subscribe
         # the grant is scoped on the AUTHENTICATED agent id, never the spoofable connect-name pod id:
         # the legacy single-token pod-scoped grants are GONE (closing the connect-name wiretap).
-        assert f"{_NS}.tools.internal.pod-A" not in a.subscribe
-        assert f"{_NS}.tools.probe.pod-A" not in a.subscribe
-        assert f"{_NS}.tools.heartbeat.pod-A" not in a.publish
+        assert f"{_NS}.tools.internal.{_POD_A}" not in a.subscribe
+        assert f"{_NS}.tools.probe.{_POD_A}" not in a.subscribe
+        assert f"{_NS}.tools.heartbeat.{_POD_A}" not in a.publish
         # and never the registry's router-wide ``>`` (that belongs to the trusted router alone) nor
         # the single-token ``.*``.
         assert f"{_NS}.tools.internal.>" not in a.subscribe
@@ -155,21 +185,21 @@ class TestIdentityIsolation:
         assert f"{_NS}.tools.heartbeat.*" not in a.publish
         # a PEER agent's subtree is a DIFFERENT subject -> never granted in either direction, so one
         # tenant can never be granted a subject under a peer agent's identity (the core invariant).
-        b = build_permissions(Principal.AGENT_POD, agent_id="agent-B", pod_id="pod-B")
-        assert f"{_NS}.tools.internal.agent-B.>" not in a.subscribe
-        assert f"{_NS}.tools.probe.agent-B.>" not in a.subscribe
-        assert f"{_NS}.tools.heartbeat.agent-B.>" not in a.publish
-        assert f"{_NS}.tools.internal.agent-A.>" not in b.subscribe
-        assert f"{_NS}.tools.probe.agent-A.>" not in b.subscribe
-        assert f"{_NS}.tools.heartbeat.agent-A.>" not in b.publish
+        b = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_B, pod_id=_POD_B)
+        assert f"{_NS}.tools.internal.{_AGENT_B}.>" not in a.subscribe
+        assert f"{_NS}.tools.probe.{_AGENT_B}.>" not in a.subscribe
+        assert f"{_NS}.tools.heartbeat.{_AGENT_B}.>" not in a.publish
+        assert f"{_NS}.tools.internal.{_AGENT_A}.>" not in b.subscribe
+        assert f"{_NS}.tools.probe.{_AGENT_A}.>" not in b.subscribe
+        assert f"{_NS}.tools.heartbeat.{_AGENT_A}.>" not in b.publish
 
     def test_agent_in_process_tool_subjects_are_independent_of_the_connect_name(self) -> None:
         # SAME authenticated agent, DIFFERENT connect-name pod ids (replicas): the in-process tool
         # grants are identical because they are scoped on the agent subtree, NOT the pod id. this is
         # what lets a tenant set any connect ``name`` (even a peer pod's) without ever shifting its
         # tool grant onto a peer agent's identity -- the connect name simply does not feed these.
-        p1 = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-1")
-        p2 = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="victim-pod-id")
+        p1 = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_1)
+        p2 = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_VICTIM)
         tool_subjects = lambda perm: sorted(  # noqa: E731 -- terse local for the assertion
             s
             for s in _all_subjects(perm)
@@ -179,9 +209,9 @@ class TestIdentityIsolation:
             tool_subjects(p1)
             == tool_subjects(p2)
             == [
-                f"{_NS}.tools.heartbeat.agent-A.>",
-                f"{_NS}.tools.internal.agent-A.>",
-                f"{_NS}.tools.probe.agent-A.>",
+                f"{_NS}.tools.heartbeat.{_AGENT_A}.>",
+                f"{_NS}.tools.internal.{_AGENT_A}.>",
+                f"{_NS}.tools.probe.{_AGENT_A}.>",
             ]
         )
 
@@ -190,26 +220,53 @@ class TestIdentityIsolation:
         # ``tool.call`` audit envelope on every dispatch (mirrors ``_tool_pod``). audit
         # non-repudiation is REQUIRED on this platform, so the grant is mandatory -- without
         # it the actor/audit row for an agent-served tool call would be silently dropped.
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
         assert f"{_NS}.audit.tool.call" in a.publish
 
-    def test_agent_pod_may_publish_the_channel_default_engagement_rail(self) -> None:
+    def test_agent_pod_may_publish_the_channel_default_engagement_resolve(self) -> None:
         # the runtime resolves the conversation channel's default engagement at the tool-call stamp
-        # seam, and an operator binds/clears that default over the same rail. the resolve SOFT-FAILS
-        # to "unbound" on any transport error, so a missing grant does not surface as a refused
-        # publish -- it surfaces later, and elsewhere, as a scan refused for a missing engagement
-        # that was in fact configured. that silence is why the grant is pinned here.
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        # seam. the resolve SOFT-FAILS to "unbound" on any transport error, so a missing grant does
+        # not surface as a refused publish -- it surfaces later, and elsewhere, as a scan refused for
+        # a missing engagement that was in fact configured. that silence is why the grant is pinned
+        # here. READ only: the write half of the rail is asserted absent directly below.
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
         assert f"{_NS}.hub.channel.engagement.default.resolve" in a.publish
-        assert f"{_NS}.hub.channel.engagement.default.set" in a.publish
-        assert f"{_NS}.hub.channel.engagement.default.clear" in a.publish
+
+    def test_agent_pod_may_not_publish_the_retired_channel_default_write_subjects(self) -> None:
+        # this assertion is INVERTED from what it once was, deliberately. the ``.set`` / ``.clear``
+        # NATS write rail was retired: binding and clearing a channel's default engagement is an
+        # OPERATOR action and now rides the hub's authenticated admin HTTP surface, so no responder
+        # subscribes to either subject anywhere on the platform. the grants outlived the rail and
+        # were left overstating what an agent pod may do -- a least-privilege gap, closed here.
+        # an agent NEVER writes a channel's engagement binding; it only reads it. if a future
+        # feature needs an agent-driven write, it gets its OWN subject and its own justification,
+        # never these back.
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
+        assert f"{_NS}.hub.channel.engagement.default.set" not in a.publish
+        assert f"{_NS}.hub.channel.engagement.default.clear" not in a.publish
+        # and not smuggled in under any other principal or verb either.
+        for principal in Principal:
+            granted = _all_subjects(_build(principal))
+            assert f"{_NS}.hub.channel.engagement.default.set" not in granted, principal
+            assert f"{_NS}.hub.channel.engagement.default.clear" not in granted, principal
+
+    def test_retired_channel_default_write_subject_constructors_are_gone(self) -> None:
+        # the grant and the constructor are removed TOGETHER: a surviving ``Subjects`` constructor is
+        # a standing invitation to re-add the grant (or to publish on a dead subject from elsewhere).
+        # no back-compat alias -- when the rail went, the API went with it.
+        assert not hasattr(Subjects, "hub_channel_engagement_default_set")
+        assert not hasattr(Subjects, "hub_channel_engagement_default_clear")
+        # the READ half stays: the runtime genuinely calls it.
+        assert Subjects.hub_channel_engagement_default_resolve().path == (
+            f"{_NS}.hub.channel.engagement.default.resolve"
+        )
 
     def test_agent_pod_holds_proxy_assertion_nonce_bucket(self) -> None:
         # the in-process tool server verifies the proxy's body-bound assertion under enforce
         # and records single-use nonces in this KV bucket (mirrors ``_tool_pod``); without the
         # grant the agent could not serve its own builtins under enforced connection-auth.
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
-        assert f"{_NS}-proxy_assertion_nonces" in a.kv_buckets
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
+        assert f"{_NS}-proxy_assertion_nonces" in kv_bucket_names(a)
 
     def test_agent_pod_heartbeat_and_reregister_are_agent_scoped(self) -> None:
         # the agent_id leads heartbeat / reregister subjects as the
@@ -217,20 +274,20 @@ class TestIdentityIsolation:
         # heartbeats and receive reregister nudges only under its OWN
         # agent -- it cannot forge a peer agent's heartbeat (B2) nor hold
         # a peer agent's reregister grant.
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
-        assert f"{_NS}.agents.heartbeat.agent-A.pod-A" in a.publish
-        assert f"{_NS}.agents.reregister_request.agent-A.pod-A" in a.subscribe
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
+        assert f"{_NS}.agents.heartbeat.{_AGENT_A}.{_POD_A}" in a.publish
+        assert f"{_NS}.agents.reregister_request.{_AGENT_A}.{_POD_A}" in a.subscribe
         # a peer agent's heartbeat / reregister subjects are NOT granted.
-        b = build_permissions(Principal.AGENT_POD, agent_id="agent-B", pod_id="pod-B")
-        assert f"{_NS}.agents.heartbeat.agent-B.pod-B" not in a.publish
-        assert f"{_NS}.agents.reregister_request.agent-B.pod-B" not in a.subscribe
-        assert f"{_NS}.agents.heartbeat.agent-A.pod-A" not in b.publish
+        b = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_B, pod_id=_POD_B)
+        assert f"{_NS}.agents.heartbeat.{_AGENT_B}.{_POD_B}" not in a.publish
+        assert f"{_NS}.agents.reregister_request.{_AGENT_B}.{_POD_B}" not in a.subscribe
+        assert f"{_NS}.agents.heartbeat.{_AGENT_A}.{_POD_A}" not in b.publish
         # the spoofable-pod-only legacy single-segment grant is gone, and no
         # wildcard heartbeat publish exists.
-        assert f"{_NS}.agents.heartbeat.pod-A" not in a.publish
+        assert f"{_NS}.agents.heartbeat.{_POD_A}" not in a.publish
         assert f"{_NS}.agents.heartbeat.*" not in a.publish
         assert f"{_NS}.agents.heartbeat.>" not in a.publish
-        assert f"{_NS}.agents.reregister_request.pod-A" not in a.subscribe
+        assert f"{_NS}.agents.reregister_request.{_POD_A}" not in a.subscribe
 
 
 class TestBootCompleteness:
@@ -269,20 +326,37 @@ class TestBootCompleteness:
 
     def test_tool_pod_subscribes_its_internal_call_subject(self) -> None:
         # without this the tool pod registers but never RECEIVES a proxied call.
-        perm = build_permissions(Principal.TOOL_POD, pod_id="pod-X")
-        assert f"{_NS}.tools.internal.pod-X" in perm.subscribe
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert f"{_NS}.tools.internal.{_POD_X}" in perm.subscribe
 
     def test_engagement_scope_resolve_grant_is_pod_publish_hub_subscribe(self) -> None:
         # engagement scope (consumer A of the §2 keystone): the consuming tool pod
         # PUBLISHES the resolve (forwarding the invoking agent's identity token);
         # the hub SUBSCRIBES to answer. mirrors the hub_object_resolve split.
-        pod = build_permissions(Principal.TOOL_POD, pod_id="pod-X")
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert f"{_NS}.hub.engagement.scope" in pod.publish
         hub = _build(Principal.HUB)
         assert f"{_NS}.hub.engagement.scope" in hub.subscribe
         # it is read-only for the pod: no agent-side commit twin exists (unlike
         # objects), and the pod never subscribes the scope subject.
         assert f"{_NS}.hub.engagement.scope" not in pod.subscribe
+
+    def test_channel_engagement_default_resolve_is_agent_publish_hub_subscribe(self) -> None:
+        # the agent runtime PUBLISHES this at the tool-call stamp seam to resolve the
+        # conversation channel's default engagement; ChannelDefaultResponder, in the hub,
+        # SUBSCRIBES to answer it. The hub half was missing: latent only because the hub
+        # connects as a static nats.conf user holding `>`, so this table is never consulted
+        # for it. The moment the hub moves onto callout-minted permissions -- the path
+        # agents already use -- the subscription is refused and the responder goes dark,
+        # and the symptom is a scan refused for a "missing" engagement that IS configured.
+        agent = _build(Principal.AGENT_POD)
+        assert f"{_NS}.hub.channel.engagement.default.resolve" in agent.publish
+        hub = _build(Principal.HUB)
+        assert f"{_NS}.hub.channel.engagement.default.resolve" in hub.subscribe
+        # read-only for the agent: `.set` / `.clear` are operator actions on the hub's
+        # authenticated admin HTTP surface, so no responder serves them over NATS.
+        assert f"{_NS}.hub.channel.engagement.default.resolve" not in agent.subscribe
+        assert f"{_NS}.hub.channel.engagement.default.set" not in agent.publish
 
     def test_agent_can_reach_l3_and_gateway(self) -> None:
         perm = _build(Principal.AGENT_POD)
@@ -292,12 +366,12 @@ class TestBootCompleteness:
         # receives its streamed tokens on its OWN agent-scoped subject (W1);
         # a bare `gateway.stream.*` wildcard would let it sniff every other
         # customer's in-flight token stream.
-        assert f"{_NS}.gateway.stream.agent-1.*" in perm.subscribe
+        assert f"{_NS}.gateway.stream.{_AGENT_1}.*" in perm.subscribe
         assert f"{_NS}.gateway.stream.*" not in perm.subscribe
         # and it publishes its hub token stream only under its own agent id
         # (hub.stream W1): a bare `hub.stream.*` publish grant would let it
         # forge/inject tokens onto a peer's in-flight request.
-        assert f"{_NS}.hub.stream.agent-1.*" in perm.publish
+        assert f"{_NS}.hub.stream.{_AGENT_1}.*" in perm.publish
         assert f"{_NS}.hub.stream.*" not in perm.publish
 
     def test_infra_stream_wildcards_are_two_segment(self) -> None:
@@ -351,8 +425,8 @@ class TestFailClosed:
 class TestNamespaceBinding:
     def test_subjects_follow_the_bound_namespace(self) -> None:
         set_default_namespace("prod7")
-        perm = build_permissions(Principal.TOOL_POD, pod_id="pod-1")
-        assert f"{'prod7'}.tools.internal.pod-1" in perm.subscribe
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
+        assert f"{'prod7'}.tools.internal.{_POD_1}" in perm.subscribe
         assert all(
             s.startswith("prod7.") or s == CROSS_PLATFORM_CACHE_INVALIDATE or s.startswith("_INBOX_")
             for s in _all_subjects(perm)
@@ -364,7 +438,7 @@ class TestHitlApprovalBrokerGrants:
 
     def test_agent_pod_may_publish_approval_record(self) -> None:
         """an agent pausing on a gated tool records the pending marker with the hub."""
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
         assert f"{_NS}.hub.approval.record" in a.publish
 
     def test_hub_subscribes_both_approval_subjects(self) -> None:
@@ -380,7 +454,7 @@ class TestHitlApprovalBrokerGrants:
 
     def test_agent_pod_cannot_publish_resolve_nor_adapter_record(self) -> None:
         """least-privilege: neither principal holds the OTHER's approval grant."""
-        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        a = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A)
         c = build_permissions(Principal.CHANNEL_ADAPTER, conn_id="chan-1")
         assert f"{_NS}.hub.approval.resolve" not in a.publish
         assert f"{_NS}.hub.approval.record" not in c.publish
@@ -393,7 +467,7 @@ class TestHitlSessionControlGrants:
     BETA = "tools.scrape-zone_beta.1-0-0"
 
     def _pod(self, *namespaces: str) -> PrincipalPermissions:
-        return build_permissions(Principal.TOOL_POD, pod_id="pod-X", tool_namespaces=namespaces)
+        return build_permissions(Principal.TOOL_POD, pod_id=_POD_X, tool_namespaces=namespaces)
 
     def test_pod_subscribes_an_exact_family_literal_per_authorized_tool(self) -> None:
         """each ``allowed_namespaces`` entry becomes one grant, and only the key is wildcarded."""
@@ -442,7 +516,7 @@ class TestHitlSessionControlGrants:
 
     def test_pod_without_authorized_tools_gets_no_session_grant(self) -> None:
         """fail closed: a pod serving no human session holds nothing on this family."""
-        perm = build_permissions(Principal.TOOL_POD, pod_id="pod-X")
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert not [s for s in _all_subjects(perm) if s.startswith(f"{_NS}.forward.")]
 
     def test_pod_holds_neither_the_coarse_subtree_nor_a_peer_family(self) -> None:
@@ -507,7 +581,7 @@ class TestHitlSessionControlGrants:
         reviewer can read.
         """
         perm = self._pod(self.ALPHA)
-        assert f"{_NS}-leases" in perm.kv_buckets
+        assert f"{_NS}-leases" in kv_bucket_names(perm)
 
     def test_hub_may_call_every_family_and_serve_none(self) -> None:
         """one hub connection fronts every tool, so its family segment is a wildcard.
@@ -549,9 +623,9 @@ class TestDurableAnswerGrants:
     """
 
     def test_tool_pod_may_deliver_only_under_its_own_pod_id(self) -> None:
-        perm = build_permissions(Principal.TOOL_POD, pod_id="pod-1")
-        assert str(Subjects.tools_result_pod_wildcard("pod-1")) in perm.publish
-        assert str(Subjects.tools_result_pod_wildcard("pod-2")) not in perm.publish
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
+        assert str(Subjects.tools_result_pod_wildcard(_POD_1)) in perm.publish
+        assert str(Subjects.tools_result_pod_wildcard(_POD_2)) not in perm.publish
 
     def test_no_principal_may_publish_the_whole_result_family(self) -> None:
         """the forgery hole this design exists to avoid, checked across every principal.
@@ -571,9 +645,9 @@ class TestDurableAnswerGrants:
         is the agent subtree -- the same shape ``tools.internal.{agent_id}.>`` already uses, and for
         the same reason: a connect-name-scoped grant would be spoofable.
         """
-        perm = build_permissions(Principal.AGENT_POD, agent_id="agent-1", pod_id="pod-1")
-        assert str(Subjects.tools_result_agent_subtree("agent-1")) in perm.publish
-        assert str(Subjects.tools_result_agent_subtree("agent-2")) not in perm.publish
+        perm = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_1, pod_id=_POD_1)
+        assert str(Subjects.tools_result_agent_subtree(_AGENT_1)) in perm.publish
+        assert str(Subjects.tools_result_agent_subtree(_AGENT_2)) not in perm.publish
 
     def test_only_the_registry_may_answer_agents(self) -> None:
         """the reply family is the router's to publish and nobody else's.
@@ -601,7 +675,8 @@ class TestDurableAnswerGrants:
 
         stream = result_stream_name()
         for principal in (Principal.TOOL_POD, Principal.AGENT_POD, Principal.REGISTRY):
-            assert stream in _build(principal).streams, principal
+            declared = [r.name for r in _build(principal).js_resources if r.kind is JsResourceKind.STREAM]
+            assert stream in declared, principal
 
     def test_the_result_grant_survives_a_refresh_because_it_is_derived(self) -> None:
         """re-minting for the same principal yields byte-identical grants.
@@ -611,8 +686,279 @@ class TestDurableAnswerGrants:
         performs cannot invalidate it. if a future edit made any of these depend on connection state,
         the answer would start dying at the refresh again -- silently, and only for long calls.
         """
-        first = build_permissions(Principal.TOOL_POD, pod_id="pod-1")
-        second = build_permissions(Principal.TOOL_POD, pod_id="pod-1", conn_id="a-different-connection")
-        result_grants = str(Subjects.tools_result_pod_wildcard("pod-1"))
+        first = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
+        second = build_permissions(Principal.TOOL_POD, pod_id=_POD_1, conn_id="a-different-connection")
+        result_grants = str(Subjects.tools_result_pod_wildcard(_POD_1))
         assert result_grants in first.publish
         assert result_grants in second.publish
+
+
+class TestPrincipalRoster:
+    """Every :class:`Principal` member is REFERENCED, and the roster covers every L2 process.
+
+    Two processes that run L2 collections had no member at all -- ``agent_router``, which owns
+    ``PodAffinityCollection`` (sticky conversation-to-pod routing, ``L3 = None``), and
+    ``dataset_executor``. With no member there is no legal ``kv_key_scope_for`` value for them, so
+    no scope can be wired and no grant can be expressed: two downstream shards blocked on it.
+    """
+
+    def test_the_two_missing_l2_processes_have_members(self) -> None:
+        assert Principal.AGENT_ROUTER.value == "agent_router"
+        assert Principal.DATASET_EXECUTOR.value == "dataset_executor"
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_every_member_resolves_to_a_permission_set(self, principal: Principal) -> None:
+        # four members (HUB, REGISTRY, GATEWAY, CHANNEL_ADAPTER) were referenced nowhere outside
+        # this module because those processes connect as static users. adoption means each is
+        # exercised here and each answers a scope -- a grant-surface change, not a migration.
+        assert _build(principal).publish
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_every_member_answers_a_legal_scope(self, principal: Principal) -> None:
+        ids = {k: v for k, v in _IDS[principal].items() if k in {"agent_id", "pod_id"}}
+        if principal is Principal.AGENT_POD:
+            ids.pop("pod_id")  # refused for this principal: the pod id is spoofable here
+        scope = kv_key_scope_for(principal, **ids)
+        assert scope
+
+
+class TestDeadletterGrant:
+    """``subscribe`` and ``subscribe_typed`` both deadletter by default, and nobody was granted it.
+
+    A callback that raises -- and, on the typed path, a payload that fails validation -- republishes
+    to ``{ns}.deadletter.{original_subject}``. Grepping this module for ``deadletter`` used to
+    return nothing: the registry was incidentally covered by its static ``aibots.>``, and a
+    callout-minted agent pod was not, so the one diagnostic a failing handler leaves behind was
+    itself refused and dropped at WARNING inside that same failing handler.
+    """
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_every_principal_may_publish_the_deadletter_subtree(self, principal: Principal) -> None:
+        assert f"{_NS}.deadletter.>" in _build(principal).publish, principal
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_no_principal_subscribes_the_deadletter_subtree(self, principal: Principal) -> None:
+        # producing a deadletter is not authority to READ everyone else's failed payloads, which
+        # carry the full body of whatever was rejected.
+        assert f"{_NS}.deadletter.>" not in _build(principal).subscribe, principal
+
+
+class TestScopedCollectionsGrant:
+    """The shared bucket is granted per-principal, and every other bucket is left alone.
+
+    ``{ns}-collections`` is held by six principals at once, and ``BaseCollection.l2_key`` writes
+    ``{scope}.{table}.{body}`` into it. Nothing else on the platform writes a scope prefix, so the
+    narrowing is per-resource opt-in: applied uniformly it would deny every read on ``checkpoints``
+    (its own separate ``l2_key``, keyed by thread id), ``{ns}_agent_config``, ``{ns}-epochs`` and
+    the rest -- and a refused JetStream request is never answered, so that failure arrives as a
+    ten-second deadline rather than as an error anyone can read.
+    """
+
+    def _collections(self, principal: Principal) -> object:
+        resources = [r for r in _build(principal).js_resources if r.name == _COLLECTIONS]
+        assert len(resources) == 1, f"{principal} declares {len(resources)} collections resources"
+        return resources[0]
+
+    @pytest.mark.parametrize(
+        "principal",
+        [
+            Principal.AGENT_POD,
+            Principal.TOOL_POD,
+            Principal.REGISTRY,
+            Principal.HUB,
+            Principal.GATEWAY,
+            Principal.CHANNEL_ADAPTER,
+            Principal.AGENT_ROUTER,
+            Principal.DATASET_EXECUTOR,
+        ],
+    )
+    def test_the_collections_grant_carries_the_scope_the_process_writes(self, principal: Principal) -> None:
+        resource = self._collections(principal)
+        ids = {k: v for k, v in _IDS[principal].items() if k in {"agent_id", "pod_id"}}
+        if principal is Principal.AGENT_POD:
+            ids.pop("pod_id")
+        # pinned as a PAIR: the mint and the writing process must derive the identical value from
+        # the identical inputs, or the principal reads and writes keys its own grant does not cover
+        # -- and that failure is a deadline, not a refusal anyone sees.
+        assert resource.scope == kv_key_scope_for(principal, **ids)  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_no_other_bucket_is_scoped(self, principal: Principal) -> None:
+        for resource in _build(principal).js_resources:
+            if resource.kind is not JsResourceKind.KV_BUCKET or resource.name == _COLLECTIONS:
+                continue
+            assert resource.scope is None, f"{principal}: {resource.name} would deny its own reads"
+            assert resource.capability is JsCapability.FULL, f"{principal}: {resource.name}"
+
+    def test_the_registry_holds_the_bucket_its_own_source_of_truth_collection_runs_on(self) -> None:
+        """``HeartbeatCollection`` is ``L3 = None``, so an ungranted bucket is DATA LOSS.
+
+        ``registry/server.py`` calls ``collection_registry.configure(l2_client=nc)`` and then builds
+        a ``HeartbeatCollection``. That collection has no L3 tier, so L2 *is* its store: a key the
+        grant does not cover is not a cache miss that falls through to a database, it is a
+        heartbeat that was never written. It worked only because the static ``registry`` NATS user
+        carries ``$KV.>``, which ``coll-task-05b`` removes.
+        """
+        assert _COLLECTIONS in kv_bucket_names(_build(Principal.REGISTRY))
+
+    def test_only_the_hub_declares_and_no_pod_ever_does(self) -> None:
+        """``declare`` is CREATE + UPDATE, and ``UPDATE`` is a read-all primitive here.
+
+        ``coll-task-04a`` makes hub bootstrap the canonical declarer, so it needs both verbs to
+        reconcile ``allow_direct: true``. On a SHARED stream ``UPDATE`` also sets ``republish`` and
+        ``sources``, which mirror every key -- every principal's -- onto a subject the caller names.
+        So it is bound to the declaring identity alone rather than folded into the read capability.
+        """
+        declaring = [
+            (principal, r.name)
+            for principal in Principal
+            for r in _build(principal).js_resources
+            if capability_declares(r.capability)
+        ]
+        assert declaring == [(Principal.HUB, _COLLECTIONS)], declaring
+        for principal in _POD_PRINCIPALS:
+            for resource in _build(principal).js_resources:
+                assert not capability_declares(resource.capability), f"{principal}: {resource.name}"
+
+    def test_a_pod_whose_id_is_not_a_uuid_cannot_be_granted_at_all(self) -> None:
+        """GRANT-10, at the resolver rather than at the wire.
+
+        The scope is the isolation boundary, so it is derived only from an authenticated uuid. A
+        pod that cannot produce one gets no permission set -- fail closed -- rather than a grant
+        narrowed to a scope it will never write.
+
+        BOTH pod principals reach this now. The agent pod was the only one while a tool pod held no
+        collections grant; ``coll-task-07c`` gives it one, so it derives a scope and inherits the
+        same fence -- exactly as the note that used to stand here predicted.
+        """
+        with pytest.raises(ValueError, match="uuid"):
+            build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id=_POD_A)
+        with pytest.raises(ValueError, match="uuid"):
+            build_permissions(Principal.TOOL_POD, pod_id="pod-A")
+        with pytest.raises(ValueError, match="uuid"):
+            kv_key_scope_for(Principal.TOOL_POD, pod_id="pod-A")
+
+    def test_two_agent_pods_never_share_a_collections_scope(self) -> None:
+        a = self._collections(Principal.AGENT_POD)
+        b = [
+            r
+            for r in build_permissions(Principal.AGENT_POD, agent_id=_AGENT_2, pod_id=_POD_2).js_resources
+            if r.name == _COLLECTIONS
+        ][0]
+        assert a.scope != b.scope  # type: ignore[attr-defined]
+
+    def test_replicas_of_one_agent_share_one_scope(self) -> None:
+        # the scope is the SHARING boundary, not the connection: replicas of one principal must
+        # resolve to one scope or L2 stops being a cross-pod cache.
+        one = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_1, pod_id=_POD_1)
+        two = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_1, pod_id=_POD_2)
+        scopes = [[r.scope for r in perm.js_resources if r.name == _COLLECTIONS][0] for perm in (one, two)]
+        assert scopes[0] == scopes[1]
+
+
+class TestTheToolPodHoldsTheSharedBucket:
+    """``coll-task-07c``: a tool pod runs an L1+L2 collection, so it needs the bucket and the bus.
+
+    Two grants, and neither is a detail. The bucket is scoped to ``tool_pods.id`` -- the pod's
+    registry primary key, which is already its authenticated ``claims.sub``, configured once per
+    deployment and therefore shared by every replica. A namespace-derived scope was designed and
+    rejected: ``tool_namespace_id`` mints one row PER TOOL, is a pure function of manifest values
+    the pod itself sends, is deliberately collision-inducing across pods, and no such row exists at
+    connect time.
+
+    The invalidation subject is the GLOBAL, deliberately un-namespaced one, and the exposure that
+    buys (a cross-customer metadata firehose of table names + entity ids, and a fleet-wide eviction
+    primitive whose ``origin`` is self-asserted) is RECORDED AS ACCEPTED for this landing rather
+    than closed here -- ``origin`` authentication is a wire-protocol change across three repos and
+    belongs to ``coll-task-08-invalidation-origin-auth``.
+    """
+
+    def _collections(self, pod_id: str) -> object:
+        resources = [
+            r for r in build_permissions(Principal.TOOL_POD, pod_id=pod_id).js_resources if r.name == _COLLECTIONS
+        ]
+        assert len(resources) == 1, f"tool pod declares {len(resources)} collections resources"
+        return resources[0]
+
+    def test_it_declares_the_collections_bucket_scoped_to_its_pod_id(self) -> None:
+        resource = self._collections(_POD_1)
+        assert resource.scope == kv_key_scope_for(Principal.TOOL_POD, pod_id=_POD_1)  # type: ignore[attr-defined]
+        assert resource.capability is JsCapability.KV_SCOPED  # type: ignore[attr-defined]
+
+    def test_the_bucket_is_writable_and_the_read_rides_the_scoped_direct_get(self) -> None:
+        """TP-01: ``$KV.`` is PUBLISH authority only; the read is the scoped ``DIRECT.GET`` tail.
+
+        Nothing in nats-py ever SUBSCRIBES a ``$KV.`` subject, so a subscribe grant there confers
+        no read and hands the holder every write's full value.
+        """
+        assert self._collections(_POD_1).writable is True  # type: ignore[attr-defined]
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
+        assert not [s for s in perm.subscribe if s.startswith("$KV")], perm.subscribe
+
+    def test_two_tool_pods_never_share_a_scope(self) -> None:
+        """TP-03, the isolation half."""
+        assert self._collections(_POD_A).scope != self._collections(_POD_B).scope  # type: ignore[attr-defined]
+
+    def test_replicas_of_one_tool_pod_share_one_scope(self) -> None:
+        """TP-03, the sharing half: the scope is the sharing boundary, not the connection.
+
+        ``tool_pods.id`` is configured once per DEPLOYMENT, so two connections presenting it are
+        two replicas of one pod and must land on one scope -- otherwise L2 stops being a cross-pod
+        cache at all. A different ``conn_id`` must not move the scope.
+        """
+        one = self._collections(_POD_1)
+        two = [
+            r
+            for r in build_permissions(Principal.TOOL_POD, pod_id=_POD_1, conn_id="a-second-replica").js_resources
+            if r.name == _COLLECTIONS
+        ][0]
+        assert one.scope == two.scope  # type: ignore[attr-defined]
+
+    def test_it_holds_the_global_invalidation_subject_on_both_directions(self) -> None:
+        """TP-02. Without the publish it cannot announce a write; without the subscribe it never
+        learns of one, and its L1 serves a value another replica has already replaced."""
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
+        assert CROSS_PLATFORM_CACHE_INVALIDATE in perm.publish
+        assert CROSS_PLATFORM_CACHE_INVALIDATE in perm.subscribe
+
+
+class TestDirectlyBoundBuckets:
+    """A bucket opened with ``js.key_value`` carries NO namespace prefix, and must still be granted.
+
+    ``NatsClient.kv_bucket`` layers ``{ns}-`` onto every suffix it is given; a direct
+    ``js.key_value(bucket=...)`` does not, so the name in the grant has to be the verbatim wire
+    name. Two processes take that route today and both are pinned here, because a bucket a process
+    opens without a grant is a JetStream call that blocks to its deadline and reads as an
+    unreachable broker rather than as a refusal.
+
+    ``{ns}_agent_config`` on the router is evidence-ledger bug 21: the resolver did not declare it
+    while ``agent_router/proxy.py`` bound it directly, and the hub's static-conf generator was
+    carrying a compensating entry with "reported upstream" written beside it.
+    """
+
+    def test_the_registry_declares_its_unprefixed_tool_catalog(self) -> None:
+        assert "tool_catalog" in kv_bucket_names(_build(Principal.REGISTRY))
+
+    def test_the_router_declares_its_unprefixed_catalog(self) -> None:
+        assert "agent_router_catalog" in kv_bucket_names(_build(Principal.AGENT_ROUTER))
+
+    def test_the_router_declares_the_agent_config_bucket_it_binds(self) -> None:
+        assert f"{_NS}_agent_config" in kv_bucket_names(_build(Principal.AGENT_ROUTER))
+
+    def test_the_router_holds_agent_config_read_only(self) -> None:
+        """Config Source-of-Truth: the router is a READER of cluster config, never a writer.
+
+        ``platform.agents`` is the source and this bucket is a hot cache over it, written only by
+        the hub's admin endpoints. A KV read is a ``$JS.API`` request rather than a ``$KV.``
+        publish, so withholding write authority costs the router nothing -- and a write grant it
+        does not need is a write grant a bug can use.
+        """
+        resource = [r for r in _build(Principal.AGENT_ROUTER).js_resources if r.name == f"{_NS}_agent_config"][0]
+        assert resource.writable is False
+
+    def test_no_agent_config_publish_subject_is_minted_for_the_router(self) -> None:
+        """the read-only decision, asserted on the EMITTED grant rather than on the record."""
+        emitted = [
+            r for r in _build(Principal.AGENT_ROUTER).js_resources if r.kind is JsResourceKind.KV_BUCKET and r.writable
+        ]
+        assert f"{_NS}_agent_config" not in {r.name for r in emitted}

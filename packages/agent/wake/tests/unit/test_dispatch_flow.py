@@ -395,7 +395,7 @@ class TestRateLimitWiring:
     Pins the BLOCKING Critic finding: the rate-limit helper, the
     counter, and the event constant existed in shard-05 but had no
     production call site. dispatch_wake now invokes
-    ``_check_rate_limit`` BEFORE any handler work; on rejection the
+    ``check_rate_limit`` BEFORE any handler work; on rejection the
     handler is NEVER invoked, the matching Prometheus counter
     increments, and the result carries ``status='skipped_rate_limit'``
     so the caller can finalize the ``wake_fires`` row with the

@@ -312,7 +312,6 @@ async def webhook_receive(
             subscription_id=subscription_id,
             conversation_id=sub.conversation_id,
             since=receive_at.timestamp() - rate_window_seconds,
-            pool=pool,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning(
@@ -545,23 +544,16 @@ async def _count_recent_fires_for_subscription(
     subscription_id: UUID,
     conversation_id: UUID,
     since: float,
-    pool: Any,
 ) -> int:
     """Count fires for ``subscription_id`` in the given window.
 
-    The :class:`WakeFireCollection` ``count_in_window`` method is
-    conversation-scoped, not subscription-scoped, so we issue a
-    targeted COUNT here. Kept as a module-level helper rather than
-    folded into the Collection because the per-subscription
-    rate-limit query is a webhook-receiver concern, not part of the
-    fire collection's general API.
+    Delegates to :meth:`WakeFireCollection.count_in_window` with the
+    subscription narrowing. The helper survives as the seam that
+    converts the receiver's POSIX ``since`` into the aware datetime the
+    Collection takes; the SQL itself belongs to the Collection, which is
+    the single entry point for ``wake_fires`` reads.
 
-    Implementation note: we hit the ``idx_wake_fires_conv_time`` index
-    via the ``conversation_id`` predicate + filter on
-    ``webhook_subscription_id`` server-side.
-
-    :param fires_collection: only used to suppress lint warnings about
-        unused params; reserved for future cache-aware paths
+    :param fires_collection: three-tier fires collection issuing the count
     :ptype fires_collection: WakeFireCollection
     :param subscription_id: target subscription
     :ptype subscription_id: UUID
@@ -571,21 +563,11 @@ async def _count_recent_fires_for_subscription(
     :param since: lower bound on ``actual_fired_at`` as a POSIX
         timestamp
     :ptype since: float
-    :param pool: asyncpg-compatible pool
-    :ptype pool: Any
     :return: number of fires in the window
     :rtype: int
     """
-    del fires_collection  # reserved for future cache integration
-    if pool is None:
-        return 0
-    since_dt = datetime.fromtimestamp(since, tz=UTC)
-    value = await pool.fetchval(
-        "SELECT COUNT(*) FROM wake_fires "
-        "WHERE conversation_id = $1 AND webhook_subscription_id = $2 "
-        "AND actual_fired_at >= $3",
+    return await fires_collection.count_in_window(
         conversation_id,
-        subscription_id,
-        since_dt,
+        since=datetime.fromtimestamp(since, tz=UTC),
+        webhook_subscription_id=subscription_id,
     )
-    return int(value or 0)

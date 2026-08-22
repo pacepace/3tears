@@ -130,14 +130,18 @@ def _make_self_healing_bucket(broken_kv: _FakeKv, healed_kv: _FakeKv) -> NatsKvB
     )
 
 
+# parity-exempt: minimal JetStream stand-in recording the StreamConfig an open sends to add_stream; the full JetStreamContext surface is unrelated to what the opener builds
 class _CapturingJetStream:
-    """Captures the KeyValueConfig passed to create_key_value so storage can be asserted."""
+    """Captures the StreamConfig an open passes to add_stream so its shape can be asserted."""
 
     def __init__(self) -> None:
         self.config: Any = None
 
-    async def create_key_value(self, config: Any) -> _FakeKv:
+    async def add_stream(self, config: Any) -> Any:
         self.config = config
+        return MagicMock()
+
+    async def key_value(self, _name: str) -> _FakeKv:
         return _FakeKv()
 
 
@@ -471,7 +475,7 @@ class TestAKvOperationThatNeverAnswers:
                 await bucket.put(key="k", value=b"v")
 
         messages = [record.getMessage() for record in caplog.records]
-        assert any("'prod-epochs'" in message and "kv_buckets" in message for message in messages), messages
+        assert any("'prod-epochs'" in message and "js_resources" in message for message in messages), messages
 
     @pytest.mark.asyncio
     async def test_the_remedy_is_not_repeated_for_every_wedged_operation(
@@ -502,7 +506,9 @@ class TestAKvOperationThatNeverAnswers:
                 with pytest.raises((PublishTimeoutError, KvError)):
                     await bucket.put(key="k", value=b"v")
 
-        remedies = [r for r in caplog.records if "throttle-probe" in r.getMessage() and "kv_buckets" in r.getMessage()]
+        remedies = [
+            r for r in caplog.records if "throttle-probe" in r.getMessage() and "js_resources" in r.getMessage()
+        ]
         assert len(remedies) == 1, f"remedy logged {len(remedies)} times across 3 wedged operations"
 
 
@@ -527,7 +533,10 @@ class TestOpeningAnUngrantedBucket:
         async def _refused(*_args: object, **_kwargs: object) -> None:
             raise TimeoutError("nats: timeout")
 
-        js.create_key_value = _refused
+        # A refusal is never ANSWERED -- the server drops the request and the call
+        # dies on its own deadline. Both halves of the opener look like this, which
+        # is why neither can be told apart from an unreachable broker on its own.
+        js.add_stream = _refused
         js.key_value = _refused
         client = MagicMock()
         client.jetstream_context = MagicMock(return_value=js)
@@ -542,7 +551,7 @@ class TestOpeningAnUngrantedBucket:
                 history=1,
             )
 
-        assert "kv_buckets" in str(caught.value)
+        assert "js_resources" in str(caught.value)
         assert '"$KV.prod-epochs.>"' in str(caught.value)
         # Unhedged: create_if_missing was asked for, so a merely-absent bucket would
         # have been created. Reaching the bind at all rules that cause out.
@@ -579,7 +588,7 @@ class TestOpeningAnUngrantedBucket:
                 history=1,
             )
 
-        assert "kv_buckets" in str(caught.value)
+        assert "js_resources" in str(caught.value)
         assert "never created" in str(caught.value)
 
 
@@ -627,6 +636,6 @@ class TestTheRemedyIsNotSuppressedOnAFreshlyBootedMachine:
             with pytest.raises((PublishTimeoutError, KvError)):
                 await bucket.put(key="k", value=b"v")
 
-        assert any("'fresh-boot'" in r.getMessage() and "kv_buckets" in r.getMessage() for r in caplog.records), (
+        assert any("'fresh-boot'" in r.getMessage() and "js_resources" in r.getMessage() for r in caplog.records), (
             "the first remedy was suppressed because the machine had not been up long enough"
         )

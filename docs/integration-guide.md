@@ -74,9 +74,10 @@ PostgreSQL pool, optionally a `NatsClient`), hand them to 3tears, and **you own
 their lifecycle** (create on startup, close on shutdown).
 
 All three tiers funnel through one dependency-injection seam — the
-**`CollectionRegistry`**. You `configure(l1_backend=, l2_client=, l3_pool=)` once;
-every collection (including those `DataStore` builds for you) resolves all three
-tiers from the registry. A collection's L2 client can still be overridden per
+**`CollectionRegistry`**. You `configure(l1_backend=, l2_client=, kv_key_scope=,
+l3_pool=)` once; every collection (including those `DataStore` builds for you)
+resolves all three tiers from the registry. `kv_key_scope` is required wherever an
+`l2_client` is -- see §8.2. A collection's L2 client can still be overridden per
 construction (an explicit `nats_client=` argument wins, and an explicit `None`
 disables L2 for that collection regardless of the registry), but the registry is
 the default wiring path — see §4.
@@ -87,7 +88,8 @@ the default wiring path — see §4.
         │   you create:   SQLiteBackend       asyncpg pool      NatsClient*    │
         │                      │                   │                 │         │
         │                      ▼                   ▼                 ▼         │
-        │   CollectionRegistry.configure(l1_backend=, l3_pool=, l2_client=)    │
+        │  CollectionRegistry.configure(l1_backend=, l3_pool=,                 │
+        │                               l2_client=, kv_key_scope=)             │
         │                      │                                               │
         │                      ▼                                               │
         │   DataStore(namespace_id, registry) ─► collections ─► entities       │
@@ -136,8 +138,9 @@ Consequences:
 Unless noted, these are exported from `threetears.core` (see §15).
 
 - **`CollectionRegistry`** — DI container + table-name lookup + cache coherence.
-  Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, l3_pool=)`
-  sets defaults, `bind_table(table_name, l1_backend=, l2_client=, l3_pool=)` pins
+  Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, kv_key_scope=,
+  l3_pool=)` sets defaults -- `kv_key_scope` is required alongside any `l2_client` -- 
+  and `bind_table(table_name, l1_backend=, l2_client=, l3_pool=)` pins
   per-table overrides **before** a collection is constructed (needed because a
   collection snaps its backends from the registry at `__init__`). A collection
   resolves its L2 client from the registry (`get_l2_client(table_name)`) when no
@@ -145,6 +148,11 @@ Unless noted, these are exported from `threetears.core` (see §15).
   explicit `None` disables L2 for that collection. Drives cross-pod invalidation via
   `start_invalidation_listener(nats)` / `publish_invalidation(...)` using a typed
   `CacheInvalidationMessage` on `Subjects.cache_invalidate()`.
+  `stop_invalidation_listener()` is the teardown half: it unsubscribes the listener and
+  is safe to call from a `finally` -- a second call, or one with nothing subscribed, is a
+  no-op, and a stop on an already-draining connection does not raise. A second
+  `start_invalidation_listener` while one is live is likewise a no-op rather than a
+  second consumer, so the registry is reusable across a stop/start.
 - **`DataStore`** — the ergonomic front door. Wraps a registry, creates tables from
   declarative definitions, hands you collections by name (`store["my_table"]`),
   exposes raw `query` / `execute`, and `run_migrations(runner)`.
@@ -334,14 +342,20 @@ import uuid
 
 from threetears.core import CollectionRegistry, DataStore, DefaultCoreConfig, TableDef, ColumnDef
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.nats import NatsClient
+from threetears.core.collections import bind_collections_bucket
+from threetears.nats import NatsClient, Principal, kv_key_scope_for
 
 
 async def wire_with_l2(pg_pool) -> None:
     l1 = SQLiteBackend(db_name="hello_world")
+    # the agent this pod serves, from its own env. NOT a fresh uuid per process:
+    # the key scope is the SHARING boundary, so replicas of one agent must derive
+    # the same value or each replica caches into a keyspace of its own.
+    AGENT_ID = uuid.UUID(os.environ["THREETEARS_AGENT_ID"])
 
-    # --- Connect NATS (classmethod). The namespace prefixes the KV bucket,
-    #     which collections create lazily as "{namespace}-collections". ---
+    # --- Connect NATS (classmethod). The namespace prefixes the shared KV bucket,
+    #     "{namespace}-collections". It is BOUND eagerly below, not created lazily on
+    #     first read: one identity declares it and every other process binds it. ---
     nats = await NatsClient.connect(
         nats_url=os.environ["THREETEARS_NATS_URL"],   # e.g. nats://nats:4222
         nats_subject_namespace="myapp",
@@ -350,8 +364,29 @@ async def wire_with_l2(pg_pool) -> None:
 
     # --- Configure all three tiers on the registry. Collections (including the
     #     ones DataStore builds) resolve their L2 client from here. ---
+    # --- Bind the shared collections bucket BEFORE configuring L2. The bind fails at
+    #     wiring time on a bucket this process refuses, rather than on the first read;
+    #     it also pins the handle every later opener in the process shares. ---
+    await bind_collections_bucket(nats, component="myapp-pod")
+
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l3_pool=pg_pool, l2_client=nats)
+    # `kv_key_scope` is MANDATORY alongside `l2_client` -- `configure` raises
+    # `L2ScopeNotConfiguredError` without it. Every L2 key is written as
+    # `{scope}.{table}.{body}`, and the scope is the principal this process
+    # authenticates to NATS as, so a process cannot read another principal's keys.
+    # Use `kv_key_scope_for(...)` rather than a literal: it is the single producer of
+    # that segment, and the minted NATS grant is derived from the same call.
+    registry.configure(
+        l1_backend=l1,
+        l3_pool=pg_pool,
+        l2_client=nats,
+        # AGENT_POD REQUIRES `agent_id=`: `kv_key_scope_for` refuses to derive a scope
+        # it cannot prove collision-free. Note it takes the AGENT id, never `pod_id` --
+        # replicas of one agent must land on one scope or L2 stops being a cross-pod
+        # cache. Principals with no per-instance identity (`Principal.HUB`,
+        # `Principal.REGISTRY`) take no id at all.
+        kv_key_scope=kv_key_scope_for(Principal.AGENT_POD, agent_id=AGENT_ID),
+    )
 
     store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))
     await store.create_table(
@@ -371,12 +406,16 @@ async def wire_with_l2(pg_pool) -> None:
 
     # ... use `widgets` exactly as in §8.1 ...
 
-    await nats.shutdown()   # graceful drain on shutdown
+    await registry.stop_invalidation_listener()   # release the subscription first
+    await nats.shutdown()                         # graceful drain on shutdown
 ```
 
 > Need L2 on for some tables but off for others? Override per table with
-> `registry.bind_table("widgets", l2_client=nats)` before the collection is built, or
-> pass `nats_client=None` to a hand-built collection to force L1+L3 for it. A
+> `registry.bind_table("widgets", l2_client=nats)` before the collection is built.
+> There is no per-table `kv_key_scope`: the scope names the PRINCIPAL, one process is
+> one principal, so it belongs on the registry -- and `bind_table` raises
+> `L2ScopeNotConfiguredError` if the registry has none yet. Or pass
+> `nats_client=None` to a hand-built collection to force L1+L3 for it. A
 > collection with no resolvable L2 client logs a one-shot warning on its first write
 > so the wiring gap is visible.
 
@@ -590,12 +629,20 @@ id.
 
 **Step 3 — Provision NATS (L2). Only if you run more than one pod.**
 - Inputs: a NATS URL (`nats://host:4222`); **JetStream enabled**; **persistent (file)
-  storage** so the KV bucket survives restarts. You do **not** create the bucket — the
-  app creates `{namespace}-collections` on first use.
+  storage** so the KV bucket survives restarts.
+- **One process must DECLARE `{namespace}-collections`; every other process BINDS it.**
+  Pick the declaring identity deliberately -- it is whichever process starts first and
+  owns the bucket's canonical configuration (in this platform, the hub, in its own
+  lifespan). It declares with `ensure_kv_bucket(...)` and re-declares on every NATS
+  reconnect, because a bucket on memory storage is DELETED by a NATS restart. Everyone
+  else calls `bind_collections_bucket(...)`, which is `create_if_missing=False` and will
+  NOT create it -- so if nothing declares it, every pod dies at wiring, by design.
 - App counterpart: `nats = await NatsClient.connect(nats_url=URL,
-  nats_subject_namespace=NAMESPACE, client_name=NAME)`; build collections with
-  `nats_client=nats`; call `await registry.start_invalidation_listener(nats)` on **every**
-  pod (without it, pods serve stale L1 after a peer writes).
+  nats_subject_namespace=NAMESPACE, client_name=NAME)`; `await
+  bind_collections_bucket(nats, component=NAME)`; configure the registry with both
+  `l2_client=` and `kv_key_scope=`; build collections with `nats_client=nats`; call
+  `await registry.start_invalidation_listener(nats)` on **every** pod (without it, pods
+  serve stale L1 after a peer writes).
 
 **Step 4 — Supply config as environment variables. Required.**
 - Variables the app reads: your Postgres DSN variable; `THREETEARS_NATS_URL`; optionally
@@ -610,8 +657,13 @@ id.
 
 **Step 6 — Wire startup and shutdown. Required.**
 - Inputs: a shutdown grace window **≥ the NATS drain timeout (~30s default)**.
-- App counterpart: on startup create the pool and (if multi-pod) the `NatsClient`; on
-  SIGTERM call `await nats.shutdown()` then `await pool.close()`. A health check can call
+- App counterpart: on startup create the pool and (if multi-pod) the `NatsClient`, then
+  `await bind_collections_bucket(nats, component="<your-pod>")` BEFORE
+  `registry.configure(...)`, and pass `kv_key_scope=` alongside any `l2_client=` --
+  `configure` refuses an L2 client without one, so a process cannot write keys no grant
+  names. On
+  SIGTERM call `await registry.stop_invalidation_listener()`, then
+  `await nats.shutdown()`, then `await pool.close()`. A health check can call
   `await nats.ping()` and run `SELECT 1` on the pool.
 
 **Variant — sandboxed pods (no DB credentials).** Don't give these pods the DSN. Give
@@ -676,10 +728,13 @@ here so anyone holding the old draft knows the workarounds are no longer needed:
 - [ ] Stand up PostgreSQL; enable pgvector if using `agent-memory`.
 - [ ] Create the L3 pool at startup; close it on shutdown.
 - [ ] `CollectionRegistry().configure(l1_backend=SQLiteBackend(...), l3_pool=pool)`.
-- [ ] (Multi-pod) `await NatsClient.connect(...)`; pass it as
-      `registry.configure(..., l2_client=nats)` so collections pick up L2 (§8.2);
+- [ ] (Multi-pod) `await NatsClient.connect(...)`; then
+      `await bind_collections_bucket(nats, component="<your-pod>")` BEFORE configuring L2;
+      then `registry.configure(..., l2_client=nats, kv_key_scope=kv_key_scope_for(...))`
+      so collections pick up L2 (§8.2) -- the scope is REQUIRED wherever an `l2_client` is,
+      and `configure` raises `L2ScopeNotConfiguredError` without it;
       `await registry.start_invalidation_listener(nats)` on every pod;
-      `await nats.shutdown()` on exit.
+      `await registry.stop_invalidation_listener()` then `await nats.shutdown()` on exit.
 - [ ] Define schema with `TableDef`/`ColumnDef`/…; author migrations per
       [`how-to-add-a-migration.md`](./how-to-add-a-migration.md); apply at startup.
 - [ ] Choose `collection_flush` (start with `ALWAYS`).
@@ -706,6 +761,10 @@ from threetears.core import (
     Keyset, Page, decode_cursor, encode_cursor, CursorError,   # cursor pagination
     fire_and_forget,                           # submit a coroutine without awaiting it
 )
+
+# The eager L2 bucket bind. Every multi-pod process calls this once at startup,
+# after connect and BEFORE any configure() that wires an l2_client (see 8.2, 12).
+from threetears.core.collections import bind_collections_bucket
 
 # Egress -- HOW traffic leaves. A seam, not a proxy: `EgressDriver` is a
 # runtime_checkable Protocol, so a consumer may supply its own exit. Nothing

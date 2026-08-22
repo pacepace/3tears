@@ -46,7 +46,8 @@ def l1_backend() -> SQLiteBackend:
 @pytest.fixture()
 def registry(l1_backend: SQLiteBackend) -> CollectionRegistry:
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1_backend)
+    # ``l2_key`` refuses to build a key on a registry with no principal scope.
+    reg.configure(l1_backend=l1_backend, kv_key_scope="test-principal")
     return reg
 
 
@@ -221,9 +222,9 @@ async def test_offload_recall_round_trips_across_registries() -> None:
     backend_b.initialize(make_context_metadata())
     try:
         reg_a = CollectionRegistry()
-        reg_a.configure(l1_backend=backend_a)
+        reg_a.configure(l1_backend=backend_a, kv_key_scope="test-principal")
         reg_b = CollectionRegistry()
-        reg_b.configure(l1_backend=backend_b)
+        reg_b.configure(l1_backend=backend_b, kv_key_scope="test-principal")
 
         coll_a = ContextItemCollection(reg_a, cfg, nats_client=make_nats_mock())
         coll_a.l3_pool = shared_l3

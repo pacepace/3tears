@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -3265,6 +3265,73 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         if order_dir == "DESC":
             result.reverse()
         return result
+
+    async def find_by_chunk_indexes(
+        self,
+        memory_id: UUID,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        customer_id: UUID,
+        chunk_indexes: Sequence[int],
+    ) -> list[dict[str, Any]]:
+        """fetch the chunks of ``memory_id`` sitting at ``chunk_indexes``.
+
+        ``chunk_index`` is the stable ordinal a caller reads off an
+        earlier chunk listing, so a re-read of "chunks 3 and 7" is
+        addressable without carrying chunk ids around. rows come back
+        in ``chunk_index ASC`` order whatever order they were asked
+        for, and indexes with no row are simply absent.
+
+        Auth scoping: the SQL carries the full ``(user_id, agent_id,
+        customer_id)`` triple, matching every other chunk lookup.
+        ``chunk_indexes`` is the only caller-supplied filter and binds
+        as one array parameter.
+
+        :param memory_id: parent memory UUID
+        :ptype memory_id: UUID
+        :param user_id: owning user UUID
+        :ptype user_id: UUID
+        :param agent_id: partition column on memory_chunks; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
+        :param chunk_indexes: ordinals to fetch; empty returns empty
+        :ptype chunk_indexes: Sequence[int]
+        :return: chunk row dicts in chunk_index ASC order
+        :rtype: list[dict[str, Any]]
+        """
+        wanted = list(chunk_indexes)
+        if not wanted:
+            return []
+        if self.l3_pool is None:
+            return []
+
+        # cache-bypass: a multi-row scan selecting an arbitrary SET of
+        # ordinals within one memory is not primary-key addressable
+        # (the pk is ``(agent_id, chunk_id)``). index
+        # ix_memory_chunks_memory backs (memory_id, chunk_index); the
+        # auth triple is enforced on every row.
+        rows = await self.l3_pool.fetch(
+            """
+            SELECT mc.chunk_id, mc.chunk_index, mc.content, mc.summary,
+                   mc.message_id_start, mc.message_id_end,
+                   mc.token_count, mc.date_created
+            FROM memory_chunks mc
+            WHERE mc.agent_id = $1
+              AND mc.memory_id = $2
+              AND mc.user_id = $3
+              AND mc.customer_id = $4
+              AND mc.chunk_index = ANY($5)
+            ORDER BY mc.chunk_index ASC
+            """,
+            agent_id,
+            memory_id,
+            user_id,
+            customer_id,
+            wanted,
+        )
+        return [dict(row) for row in rows]
 
     async def find_by_conversation_id(
         self,

@@ -89,7 +89,10 @@ class UpstreamHttpError(RuntimeError):
     carries the last upstream HTTP status + response body so callers can
     pattern-match on error shape without re-issuing the request.
     ``status_code`` is ``None`` when the failure never produced a response
-    (connect error / timeout on every attempt).
+    (connect error / timeout on every attempt); in that case ``__cause__``
+    carries the last transport exception, so a caller reporting the failure
+    onward can tell a timeout from a refused connection. a 5xx exhaustion
+    produced responses and therefore chains nothing.
 
     :ivar status_code: last upstream HTTP status, or ``None`` when no
         response was ever received
@@ -292,7 +295,9 @@ class TracedHttpClient:
         :rtype: httpx.Response
         :raises CircuitOpenError: when the injected breaker is OPEN
         :raises UpstreamHttpError: when every attempt fails (5xx /
-            connect / timeout) up to ``max_attempts``
+            connect / timeout) up to ``max_attempts``; chains the last
+            transport exception as ``__cause__`` when no response was
+            ever received
         """
         if self._circuit_breaker is not None:
             # a tripped breaker fast-fails; CircuitOpenError escapes untouched
@@ -301,9 +306,14 @@ class TracedHttpClient:
 
         captured: httpx.Response | None = None
         attempts = 0
+        # the last TRANSPORT failure, kept so exhaustion can chain it. ``retry_with_backoff``
+        # collapses every attempt into a bool, so without this the caller is handed a
+        # status-less UpstreamHttpError that cannot say whether the upstream timed out or
+        # refused the connection -- two failures that call for different operator action.
+        transport_error: BaseException | None = None
 
         async def _attempt_once() -> None:
-            nonlocal captured, attempts
+            nonlocal captured, attempts, transport_error
             attempts += 1
             try:
                 response = await self._client.request(
@@ -318,7 +328,8 @@ class TracedHttpClient:
                     # would turn an unstated timeout into no timeout at all.
                     timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
                 )
-            except httpx.ConnectError, httpx.TimeoutException:
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                transport_error = exc
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
                 raise
@@ -352,7 +363,7 @@ class TracedHttpClient:
                 f"upstream request to {self._host} failed after {self._max_attempts} attempts",
                 status_code=status,
                 body=body,
-            )
+            ) from transport_error
 
         captured.extensions[ATTEMPTS_EXTENSION] = attempts
         result = captured

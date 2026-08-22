@@ -52,6 +52,7 @@ __all__ = [
     "SubjectKind",
     "Subjects",
     "get_default_namespace",
+    "sanitize_subject_segment",
     "set_default_namespace",
 ]
 
@@ -157,11 +158,25 @@ def get_default_namespace() -> str:
     )
 
 
-def _sanitize(segment: str | UUID) -> str:
+def sanitize_subject_segment(segment: str | UUID) -> str:
     """coerce a raw segment value to a subject-safe token.
 
     replaces ``.`` with ``-`` so the dot separator is never
     overloaded. UUID values render as their 36-char canonical string.
+
+    the ONE implementation of the dots-to-dash rule. it lives here rather
+    than in :mod:`threetears.nats.subject_permissions` because that module
+    already imports this one, so the reverse direction would be an import
+    cycle at module load; and it is NOT named ``sanitize_segment`` because
+    :func:`threetears.media.contracts.keys.sanitize_segment` already owns
+    that name with slugifying (not dot-mapping) semantics.
+    :func:`threetears.core.namespaces.sanitize_segment` delegates here.
+
+    **not injective, and therefore never a security boundary.** ``a.b`` and
+    ``a-b`` both render ``a-b``, so two distinct raw values can collapse onto
+    one token. use it for display-ish segments; derive an isolation scope from
+    a uuid hex (:func:`threetears.nats.subject_permissions.kv_key_scope_for`)
+    instead.
 
     :param segment: raw segment value
     :ptype segment: str | UUID
@@ -197,13 +212,13 @@ def _digest_token(value: str) -> str:
 def _routing_token(pod_id: str | UUID) -> str:
     """render a pod-id into its tool-subject routing token(s), preserving structural dots.
 
-    a Tool Pod's id is a single UUID token (no dots) -- :func:`_sanitize` is a no-op for it. an
+    a Tool Pod's id is a single UUID token (no dots) -- :func:`sanitize_subject_segment` is a no-op for it. an
     agent's IN-PROCESS tool pod-id is the composite ``{agent_id}.{instance}`` (built by
     :meth:`Subjects.agent_inprocess_pod_id`) whose structural dot MUST survive so the subject nests
     as ``tools.internal.{agent_id}.{instance}`` under the authenticated-agent subtree the AGENT_POD
     JWT grants (``tools.internal.{agent_id}.>``). each dot-delimited token is sanitized
     independently (so a token's own characters never overload the separator) while the structural
-    dot between tokens is preserved -- unlike :func:`_sanitize`, which would collapse the composite
+    dot between tokens is preserved -- unlike :func:`sanitize_subject_segment`, which would collapse the composite
     to a single token and make the agent-id segment un-wildcard-matchable.
 
     :param pod_id: tool routing pod-id (single UUID token, or the agent composite)
@@ -214,7 +229,7 @@ def _routing_token(pod_id: str | UUID) -> str:
     # the pod_id is rendered into its NATS-subject routing token(s) here; a single UUID token or the
     # agent composite is split on its structural dots and each token is subject-sanitized.
     # convert at border: pod_id -> published NATS subject string
-    return ".".join(_sanitize(token) for token in str(pod_id).split("."))
+    return ".".join(sanitize_subject_segment(token) for token in str(pod_id).split("."))
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,7 +354,7 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.agents.heartbeat.{_sanitize(agent_id)}.{_sanitize(pod_id)}",
+            path=f"{_ns()}.agents.heartbeat.{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(pod_id)}",
             kind="point",
         )
 
@@ -379,7 +394,7 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.agents.reregister_request.{_sanitize(agent_id)}.{_sanitize(pod_id)}",
+            path=f"{_ns()}.agents.reregister_request.{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(pod_id)}",
             kind="point",
         )
 
@@ -392,7 +407,7 @@ class Subjects:
         :return: subject ``{ns}.agents.route.{agent_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.agents.route.{_sanitize(agent_id)}", kind="point")
+        return Subject(path=f"{_ns()}.agents.route.{sanitize_subject_segment(agent_id)}", kind="point")
 
     @classmethod
     def agent_route_wildcard(cls) -> Subject:
@@ -415,7 +430,7 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.agents.internal.{_sanitize(agent_id)}.{_sanitize(pod_id)}",
+            path=f"{_ns()}.agents.internal.{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(pod_id)}",
             kind="point",
         )
 
@@ -436,7 +451,7 @@ class Subjects:
         :return: subject ``{ns}.agents.turn.{agent_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.agents.turn.{_sanitize(agent_id)}", kind="point")
+        return Subject(path=f"{_ns()}.agents.turn.{sanitize_subject_segment(agent_id)}", kind="point")
 
     @classmethod
     def agent_turn_wildcard(cls) -> Subject:
@@ -484,7 +499,7 @@ class Subjects:
         :return: subject ``{ns}.agents.complete.{correlation_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.agents.complete.{_sanitize(correlation_id)}", kind="point")
+        return Subject(path=f"{_ns()}.agents.complete.{sanitize_subject_segment(correlation_id)}", kind="point")
 
     @classmethod
     def agent_reply(cls, correlation_id: str | UUID) -> Subject:
@@ -501,7 +516,7 @@ class Subjects:
         :return: subject ``{ns}.agents.reply.{correlation_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.agents.reply.{_sanitize(correlation_id)}", kind="point")
+        return Subject(path=f"{_ns()}.agents.reply.{sanitize_subject_segment(correlation_id)}", kind="point")
 
     # ------------------------------------------------------------------
     # tools (registry / tool pods)
@@ -565,7 +580,7 @@ class Subjects:
         :return: subject ``{ns}.tools.heartbeat.{agent_id}.>``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.heartbeat.{_sanitize(agent_id)}.>", kind="pattern")
+        return Subject(path=f"{_ns()}.tools.heartbeat.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
 
     @classmethod
     def tools_discover(cls) -> Subject:
@@ -637,7 +652,7 @@ class Subjects:
         :return: subject ``{ns}.tools.internal.{agent_id}.>``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.internal.{_sanitize(agent_id)}.>", kind="pattern")
+        return Subject(path=f"{_ns()}.tools.internal.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
 
     @classmethod
     def tools_probe(cls, pod_id: str | UUID) -> Subject:
@@ -682,7 +697,7 @@ class Subjects:
         :return: subject ``{ns}.tools.probe.{agent_id}.>``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.probe.{_sanitize(agent_id)}.>", kind="pattern")
+        return Subject(path=f"{_ns()}.tools.probe.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
 
     @classmethod
     def agent_inprocess_pod_id(cls, agent_id: str | UUID, instance_id: str | UUID) -> str:
@@ -714,7 +729,7 @@ class Subjects:
         :return: routing pod-id string ``{agent_id}.{instance_id}``
         :rtype: str
         """
-        return f"{_sanitize(agent_id)}.{_sanitize(instance_id)}"
+        return f"{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(instance_id)}"
 
     # ------------------------------------------------------------------
     # tools -- asynchronous result delivery
@@ -775,7 +790,7 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.tools.result.{_routing_token(pod_id)}.{_sanitize(call_id)}",
+            path=f"{_ns()}.tools.result.{_routing_token(pod_id)}.{sanitize_subject_segment(call_id)}",
             kind="point",
         )
 
@@ -809,7 +824,7 @@ class Subjects:
         :return: subject ``{ns}.tools.result.{agent_id}.>``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.result.{_sanitize(agent_id)}.>", kind="pattern")
+        return Subject(path=f"{_ns()}.tools.result.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
 
     @classmethod
     def tools_result_wildcard(cls) -> Subject:
@@ -845,7 +860,7 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.tools.reply.{_sanitize(agent_id)}.{_sanitize(call_id)}",
+            path=f"{_ns()}.tools.reply.{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(call_id)}",
             kind="point",
         )
 
@@ -863,7 +878,7 @@ class Subjects:
         :return: subject ``{ns}.tools.reply.{agent_id}.*``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.reply.{_sanitize(agent_id)}.*", kind="pattern")
+        return Subject(path=f"{_ns()}.tools.reply.{sanitize_subject_segment(agent_id)}.*", kind="pattern")
 
     @classmethod
     def tools_reply_wildcard(cls) -> Subject:
@@ -932,7 +947,7 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.gateway.stream.{_sanitize(agent_id)}.{_sanitize(correlation_id)}",
+            path=f"{_ns()}.gateway.stream.{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(correlation_id)}",
             kind="point",
         )
 
@@ -1033,36 +1048,14 @@ class Subjects:
         customer's unattributed default scope. The agent forwards its
         ``identity_token``; the hub verifies it, derives the owning customer,
         and returns the bound engagement id (or none) for that channel.
-        The read side of :meth:`hub_channel_engagement_default_set`.
+        READ ONLY: there is no NATS write twin. An operator binds or clears a
+        channel's default over the hub's authenticated admin HTTP surface, so
+        an agent reads the binding it can never write.
 
         :return: subject ``{ns}.hub.channel.engagement.default.resolve``
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.hub.channel.engagement.default.resolve", kind="point")
-
-    @classmethod
-    def hub_channel_engagement_default_set(cls) -> Subject:
-        """request/reply subject for binding a channel to a default engagement.
-
-        The write twin of :meth:`hub_channel_engagement_default_resolve`: an
-        operator binds a channel ONCE so every scan in it authorizes against
-        that engagement without re-selecting per conversation.
-
-        :return: subject ``{ns}.hub.channel.engagement.default.set``
-        :rtype: Subject
-        """
-        return Subject(path=f"{_ns()}.hub.channel.engagement.default.set", kind="point")
-
-    @classmethod
-    def hub_channel_engagement_default_clear(cls) -> Subject:
-        """request/reply subject for removing a channel's default engagement.
-
-        Idempotent counterpart to :meth:`hub_channel_engagement_default_set`.
-
-        :return: subject ``{ns}.hub.channel.engagement.default.clear``
-        :rtype: Subject
-        """
-        return Subject(path=f"{_ns()}.hub.channel.engagement.default.clear", kind="point")
 
     @classmethod
     def hub_approval_record(cls) -> Subject:
@@ -1119,7 +1112,7 @@ class Subjects:
         lifted off the inbound message) on completion; the channel adapter is a
         durable consumer that posts it to the destination thread. durable so an
         answer that completes while the adapter is restarting is redelivered,
-        never lost. backed by the ``{ns}_channels_deliver`` JetStream stream
+        never lost. backed by the ``{ns}-channels-deliver`` JetStream stream
         over ``{ns}.channels.deliver.*``.
 
         :param channel_type: channel family (e.g. ``slack``, ``discord``)
@@ -1128,7 +1121,7 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.channels.deliver.{_sanitize(channel_type)}",
+            path=f"{_ns()}.channels.deliver.{sanitize_subject_segment(channel_type)}",
             kind="point",
         )
 
@@ -1136,7 +1129,7 @@ class Subjects:
     def channels_deliver_wildcard(cls) -> Subject:
         """wildcard subject covering every channel-delivery family.
 
-        the JetStream ``{ns}_channels_deliver`` stream is declared over this
+        the JetStream ``{ns}-channels-deliver`` stream is declared over this
         pattern; durable consumers filter to one ``channel_type``.
 
         :return: subject ``{ns}.channels.deliver.*``
@@ -1184,7 +1177,7 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.hub.stream.{_sanitize(agent_id)}.{_sanitize(correlation_id)}",
+            path=f"{_ns()}.hub.stream.{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(correlation_id)}",
             kind="point",
         )
 
@@ -1296,7 +1289,7 @@ class Subjects:
         if not branch:
             raise ValueError("branch must be non-empty")
         return Subject(
-            path=f"{_ns()}.oplog.{_sanitize(repo)}.{_sanitize(branch)}",
+            path=f"{_ns()}.oplog.{sanitize_subject_segment(repo)}.{sanitize_subject_segment(branch)}",
             kind="point",
         )
 
@@ -1315,7 +1308,7 @@ class Subjects:
         the room id is ``{customer}:{story}:{branch}:{file}`` — arbitrary
         app-supplied segments may carry ``.``, spaces, ``*``, ``>`` (all
         illegal or ambiguous in a NATS subject token), so the room id is
-        NOT :func:`_sanitize`-mapped (a colon/space room id would still
+        NOT :func:`sanitize_subject_segment`-mapped (a colon/space room id would still
         leave illegal characters or collide across distinct ids). instead
         the token is the **SHA-256 hex digest** of the room id: a
         subject-safe (``[0-9a-f]`` only), collision-resistant,
@@ -1351,7 +1344,7 @@ class Subjects:
         the ``key`` is arbitrary, app-supplied, and may carry ``.``,
         spaces, ``*`` or ``>`` — all illegal or ambiguous in a NATS
         subject token. as with :meth:`room`, the key is therefore NOT
-        :func:`_sanitize`-mapped (which only handles ``.``); instead the
+        :func:`sanitize_subject_segment`-mapped (which only handles ``.``); instead the
         token is the **SHA-256 hex digest** of the key: subject-safe
         (``[0-9a-f]`` only), collision-resistant, and deterministic, so
         every pod derives the same subject for the same key. the digest
@@ -1559,7 +1552,7 @@ class Subjects:
         ``tool_namespace_name`` is hashed for the reason :meth:`forward_scoped`
         hashes its family: a registered tool name is unvalidated, so a name
         carrying a space, a ``*`` or a ``>`` would otherwise reach the subject.
-        ``pod_id`` takes :func:`_sanitize` rather than :func:`_routing_token`
+        ``pod_id`` takes :func:`sanitize_subject_segment` rather than :func:`_routing_token`
         because ``direction`` sits AFTER it: a composite pod-id would spend two
         tokens and shift every following segment, so this family requires the
         pod id to be exactly one token.
@@ -1582,7 +1575,7 @@ class Subjects:
             raise ValueError("nonce must be non-empty")
         return Subject(
             path=(
-                f"{_ns()}.pipe.{_digest_token(tool_namespace_name)}.{_sanitize(pod_id)}.{_sanitize(nonce)}.{direction}"
+                f"{_ns()}.pipe.{_digest_token(tool_namespace_name)}.{sanitize_subject_segment(pod_id)}.{sanitize_subject_segment(nonce)}.{direction}"
             ),
             kind="point",
         )
@@ -1619,7 +1612,7 @@ class Subjects:
         if not tool_namespace_name:
             raise ValueError("tool_namespace_name must be non-empty")
         return Subject(
-            path=f"{_ns()}.pipe.{_digest_token(tool_namespace_name)}.{_sanitize(pod_id)}.*.{direction}",
+            path=f"{_ns()}.pipe.{_digest_token(tool_namespace_name)}.{sanitize_subject_segment(pod_id)}.*.{direction}",
             kind="pattern",
         )
 
@@ -1759,7 +1752,7 @@ class Subjects:
         """
         if not name:
             raise ValueError("datasource name must be non-empty")
-        return Subject(path=f"{_ns()}.datasource.{_sanitize(name)}.query", kind="point")
+        return Subject(path=f"{_ns()}.datasource.{sanitize_subject_segment(name)}.query", kind="point")
 
     # ------------------------------------------------------------------
     # cache invalidation
@@ -1887,7 +1880,7 @@ class Subjects:
         if not layer:
             raise ValueError("layer must be non-empty")
         return Subject(
-            path=f"{_ns()}.datasource.{_sanitize(datasource_id)}.tiles.{_sanitize(layer)}.epoch",
+            path=f"{_ns()}.datasource.{sanitize_subject_segment(datasource_id)}.tiles.{sanitize_subject_segment(layer)}.epoch",
             kind="point",
         )
 

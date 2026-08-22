@@ -54,7 +54,7 @@ class TestReadingTheServersRefusal:
 
         assert remedy is not None
         assert "'prod-epochs'" in remedy
-        assert "kv_buckets" in remedy
+        assert "js_resources" in remedy
         assert '"$KV.prod-epochs.>"' in remedy
         assert '"KV_prod-epochs"' in remedy
 
@@ -133,7 +133,7 @@ class TestTheRemedyText:
     def test_the_grant_remedy_names_the_declaration_not_only_the_wire_subjects(self) -> None:
         """A reader who patches only the subjects leaves the declaration wrong.
 
-        ``mint_user_jwt`` derives both wire grants from one ``kv_buckets`` entry, so
+        ``mint_user_jwt`` derives both wire grants from one ``JsResource`` entry, so
         the entry is the fix and the subjects are the explanation.
 
         :return: nothing
@@ -141,8 +141,25 @@ class TestTheRemedyText:
         """
         remedy = kv_grant_remedy("prod-epochs")
 
-        assert "kv_buckets" in remedy
+        assert "js_resources" in remedy
         assert "threetears.nats.subject_permissions" in remedy
+
+    def test_the_remedy_does_not_instruct_the_reader_to_reopen_the_hole(self) -> None:
+        """The old text told operators to add ``$KV`` on pub AND sub. That is now a hole.
+
+        Nothing in nats-py subscribes a ``$KV.`` subject -- a read is a ``$JS.API`` request and a
+        watch delivers to an inbox -- so the subscribe half conferred no capability and handed the
+        holder every write's full value. A remediation string that is actionable and WRONG is worse
+        than none: it is followed, and it is followed by whoever is already lost.
+
+        :return: nothing
+        :rtype: None
+        """
+        remedy = kv_grant_remedy("prod-epochs")
+
+        assert "pub+sub" not in remedy
+        assert "PUBLISH-ONLY" in remedy
+        assert "<scope>" in remedy  # the scoped shape is named, not only the whole subtree
 
     def test_an_uncertain_remedy_does_not_assert_the_cause(self) -> None:
         """Where a grant is only the leading candidate, the text must say so.
@@ -160,7 +177,7 @@ class TestTheRemedyText:
         assert certain.startswith("FIX:")
         assert hedged.startswith("MOST LIKELY FIX")
         assert "never created" in hedged
-        assert "kv_buckets" in hedged
+        assert "js_resources" in hedged
 
     def test_the_timeout_remedy_puts_the_grant_ahead_of_the_network(self) -> None:
         """Both causes are named, and the silent one comes first.
@@ -198,7 +215,7 @@ class TestTheClientErrorCallback:
             await client_module._on_error(exc)  # noqa: SLF001 - the callback under test
 
         assert any("PERMISSIONS VIOLATION" in record.getMessage() for record in caplog.records)
-        assert any("kv_buckets" in record.getMessage() for record in caplog.records)
+        assert any("js_resources" in record.getMessage() for record in caplog.records)
 
     @pytest.mark.asyncio
     async def test_an_ordinary_error_keeps_the_ordinary_line(self, caplog: pytest.LogCaptureFixture) -> None:

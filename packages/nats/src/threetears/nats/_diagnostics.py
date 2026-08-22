@@ -69,9 +69,16 @@ def kv_grant_remedy(bucket: str, *, certain: bool = True) -> str:
     """The grant a principal needs for ``bucket``, as an actionable sentence.
 
     Names the declaration site rather than only the wire subjects, because the
-    wire subjects are derived: ``mint_user_jwt`` turns one ``kv_buckets`` entry
-    into both, and hand-adding the subjects leaves the declaration -- the thing
-    the next person reads -- still wrong.
+    wire subjects are derived: ``mint_user_jwt`` turns one ``JsResource`` record
+    into all of them, and hand-adding the subjects leaves the declaration -- the
+    thing the next person reads -- still wrong.
+
+    **The old text told the reader to reopen a hole.** It said one entry expands
+    into "pub+sub on ``$KV.{bucket}.>``". Both halves of that are now wrong, and
+    following it would undo the fix: ``$KV.`` is PUBLISH-ONLY (a subscribe grant
+    confers no read at all and leaks every write's full value), and a bucket
+    whose keys carry a principal scope gets ``$KV.{bucket}.{scope}.>`` rather
+    than the whole subtree.
 
     :param bucket: fully-qualified bucket name, prefix included
     :ptype bucket: str
@@ -91,11 +98,14 @@ def kv_grant_remedy(bucket: str, *, certain: bool = True) -> str:
         f"this principal the KV bucket {bucket!r}."
     )
     return (
-        f"{opening} Add it to the principal's "
-        f"`kv_buckets` in `threetears.nats.subject_permissions`, then re-mint the user JWT "
-        f"and reconnect -- `mint_user_jwt` expands one entry into pub+sub on "
-        f'"$KV.{bucket}.>" and JetStream control over stream "KV_{bucket}". '
-        f"If this deployment declares grants anywhere else as well, add it there too."
+        f"{opening} Add a `JsResource.kv(...)` entry for it to the principal's "
+        f"`js_resources` in `threetears.nats.subject_permissions`, deciding its key scope and its "
+        f"write intent, then re-mint the user JWT and reconnect. `mint_user_jwt` expands that one "
+        f'entry into a PUBLISH-ONLY data grant ("$KV.{bucket}.>", or "$KV.{bucket}.<scope>.>" for a '
+        f'scoped bucket) plus JetStream control over stream "KV_{bucket}" at the capability the '
+        f"entry declares. Do NOT hand-add `$KV` to the subscribe list: nothing subscribes it, and "
+        f"it leaks every write's full value. If this deployment declares grants anywhere else as "
+        f"well (the static NATS users in `nats.conf`), add it there too."
     )
 
 
@@ -153,12 +163,18 @@ def kv_timeout_remedy(bucket: str) -> str:
     :rtype: str
     """
     return (
-        f"A KV operation on {bucket!r} timed out. TWO causes look identical here, because a "
+        f"A KV operation on {bucket!r} timed out. THREE causes look identical here, because a "
         f"JetStream request the server REFUSES is never answered at all: (1) the connection's "
-        f"user JWT does not grant this bucket, and (2) the broker is unreachable. Rule out (1) "
-        f"first -- it is silent, it is per-bucket, and the rest of this connection will look "
-        f"perfectly healthy while it holds. {kv_grant_remedy(bucket)} "
-        f"Only if the grant is already present is this a broker or network problem."
+        f"user JWT does not grant this bucket; (2) on a key-SCOPED bucket the grant is present "
+        f"but this process is writing under a DIFFERENT scope than the one its grant names, so "
+        f"every operation falls outside it; and (3) the broker is unreachable. Rule out (1) and "
+        f"(2) first -- both are silent, both are per-bucket, and the rest of this connection "
+        f"will look perfectly healthy while either holds. (2) is the one a grant check does not "
+        f"catch: compare the process's configured `kv_key_scope` against the scope its granted "
+        f"`$KV.{bucket}.<scope>.>` subject names, and derive both from "
+        f"`kv_key_scope_for(principal)` rather than a literal so they cannot disagree. "
+        f"{kv_grant_remedy(bucket)} "
+        f"Only once the grant is present AND its scope matches is this a broker or network problem."
     )
 
 

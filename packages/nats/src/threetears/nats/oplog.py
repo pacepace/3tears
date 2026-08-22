@@ -35,7 +35,7 @@ design notes
   on a live subscription. A ``from_seq`` past the end yields nothing.
 - Stream names cannot contain dots; the ``(repo, branch)`` segments are
   sanitized (``.`` -> ``-``) and namespace-prefixed, mirroring
-  :func:`threetears.nats.subjects._sanitize`.
+  :func:`threetears.nats.subjects.sanitize_subject_segment`.
 """
 
 from __future__ import annotations

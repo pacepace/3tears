@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import MagicMock
 
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.registry import DEFAULT_L1_MAX_AGE_SECONDS, CollectionRegistry
+from threetears.nats import NatsClient
 
 
 def _make_mock_collection(table_name: str) -> MagicMock:
@@ -56,7 +59,7 @@ class TestCollectionRegistry:
         l2 = MagicMock()
         l3 = MagicMock()
 
-        registry.configure(l1_backend=l1, l2_client=l2, l3_pool=l3)
+        registry.configure(l1_backend=l1, l2_client=l2, l3_pool=l3, kv_key_scope="hub")
 
         assert registry.get_l1_backend("any_table") is l1
         assert registry.get_l2_client("any_table") is l2
@@ -85,7 +88,7 @@ class TestCollectionRegistry:
         registry = CollectionRegistry()
         default_l2 = MagicMock()
         override_l2 = MagicMock()
-        registry.configure(l2_client=default_l2)
+        registry.configure(l2_client=default_l2, kv_key_scope="hub")
 
         coll = _make_mock_collection("cached_table")
         registry.register(coll, l2_client=override_l2)
@@ -129,6 +132,7 @@ class TestCollectionRegistry:
         l2 = MagicMock()
 
         registry.configure(l1_backend=l1)
+        registry.configure(kv_key_scope="hub")
         registry.configure(l2_client=l2)
 
         assert registry.get_l1_backend("any") is l1
@@ -289,3 +293,196 @@ class TestL1MaxAgeConfiguration:
             l3_pool=MagicMock(),
         )
         assert registry.get_l1_max_age("widgets") == 30.0
+
+
+# ---------------------------------------------------------------------------
+# Invalidation-listener lifecycle
+#
+# These drive the REAL :class:`threetears.nats.NatsClient` over a fake nats-py
+# client rather than a hand-written double of our own wrapper. The lifecycle
+# contract under test is a contract WITH that wrapper -- "a second stop is a
+# no-op", "a stop on a draining connection does not raise" are guarantees the
+# wrapper makes, and a double of the wrapper would be asserting our own
+# assumptions back at us. Only nats-py itself is faked.
+# ---------------------------------------------------------------------------
+
+
+# parity-exempt: subset shim for the nats-py Subscription the wrapper holds; only unsubscribe and the messages iterator are driven, and nats-py's own class is library-internal with no importable protocol
+class _FakeRawSubscription:
+    """fake nats-py subscription with a never-yielding message stream.
+
+    the wrapper's dispatch task iterates :attr:`messages`, so the stream
+    parks on an empty queue for the subscription's lifetime -- exactly
+    like a live subscription with no traffic. cancelling the dispatch
+    task (what ``unsubscribe`` does) is what ends it.
+    """
+
+    def __init__(self, unsubscribe_error: Exception | None = None) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.unsubscribe_calls = 0
+        self.unsubscribe_error = unsubscribe_error
+
+    async def unsubscribe(self) -> None:
+        self.unsubscribe_calls += 1
+        if self.unsubscribe_error is not None:
+            raise self.unsubscribe_error
+
+    @property
+    def messages(self) -> AsyncIterator[Any]:
+        async def _gen() -> AsyncIterator[Any]:
+            while True:
+                msg = await self.queue.get()
+                if msg is None:
+                    return
+                yield msg
+
+        return _gen()
+
+
+# parity-exempt: subset shim for nats.aio.client.Client implementing subscribe only; that is the whole surface the wrapper drives on this path and nats-py's full Client surface is enormous
+class _FakeNatsPyClient:
+    """minimal fake of ``nats.aio.client.Client`` recording every subscribe."""
+
+    def __init__(self, unsubscribe_error: Exception | None = None) -> None:
+        self.subscriptions: list[_FakeRawSubscription] = []
+        self.subscribed_subjects: list[str] = []
+        self.unsubscribe_error = unsubscribe_error
+
+    async def subscribe(self, subject: str, queue: str = "") -> _FakeRawSubscription:
+        del queue
+        sub = _FakeRawSubscription(unsubscribe_error=self.unsubscribe_error)
+        self.subscriptions.append(sub)
+        self.subscribed_subjects.append(subject)
+        return sub
+
+
+def _make_nats_client(unsubscribe_error: Exception | None = None) -> tuple[NatsClient, _FakeNatsPyClient]:
+    """build the real wrapper over a fake nats-py client.
+
+    :param unsubscribe_error: exception every raw subscription raises from
+        ``unsubscribe()``, modelling a connection already draining; ``None``
+        for the healthy path
+    :ptype unsubscribe_error: Exception | None
+    :return: the wrapper and the fake transport underneath it
+    :rtype: tuple[NatsClient, _FakeNatsPyClient]
+    """
+    raw = _FakeNatsPyClient(unsubscribe_error=unsubscribe_error)
+    client = NatsClient(raw=raw, namespace="aibots", client_name="registry-lifecycle-test")  # type: ignore[arg-type]
+    return client, raw
+
+
+class TestInvalidationListenerLifecycle:
+    """start / stop lifecycle for the cross-pod invalidation subscription.
+
+    Consumers need teardown to be expressible: a process that subscribes on
+    startup has to unsubscribe on shutdown, and before this existed the handle
+    was discarded so nothing could.
+    """
+
+    async def test_start_subscribes_the_invalidation_subject(self) -> None:
+        """The subject is the cross-platform constant, spelled out rather than derived.
+
+        This shard is lifecycle only; the wire subject is untouched. Asserting
+        the literal is what makes a change to it visible here.
+        """
+        registry = CollectionRegistry()
+        client, raw = _make_nats_client()
+
+        await registry.start_invalidation_listener(client)
+
+        assert raw.subscribed_subjects == ["threetears.cache.invalidate"]
+
+        await registry.stop_invalidation_listener()
+
+    async def test_a_second_start_while_one_is_live_creates_no_second_consumer(self) -> None:
+        """SUB-03. Asserted on the subscribe COUNT, not on a boolean.
+
+        A guard that flips a flag but still subscribes leaves two consumers on
+        one subject, so every invalidation is handled twice and teardown
+        releases one of them. Only the count can tell those apart.
+        """
+        registry = CollectionRegistry()
+        client, raw = _make_nats_client()
+
+        await registry.start_invalidation_listener(client)
+        await registry.start_invalidation_listener(client)
+
+        assert len(raw.subscriptions) == 1
+
+        await registry.stop_invalidation_listener()
+
+    async def test_stop_unsubscribes_the_live_subscription(self) -> None:
+        registry = CollectionRegistry()
+        client, raw = _make_nats_client()
+        await registry.start_invalidation_listener(client)
+
+        await registry.stop_invalidation_listener()
+
+        assert raw.subscriptions[0].unsubscribe_calls == 1
+
+    async def test_a_second_stop_is_a_no_op(self) -> None:
+        """SUB-04. Callers run stop from a ``finally``, so it cannot double-fire."""
+        registry = CollectionRegistry()
+        client, raw = _make_nats_client()
+        await registry.start_invalidation_listener(client)
+        await registry.stop_invalidation_listener()
+
+        await registry.stop_invalidation_listener()
+
+        assert raw.subscriptions[0].unsubscribe_calls == 1
+
+    async def test_stop_without_a_start_is_a_no_op(self) -> None:
+        """SUB-04, the never-started case: a ``finally`` runs whether start reached or not."""
+        registry = CollectionRegistry()
+
+        await registry.stop_invalidation_listener()
+
+    async def test_start_after_stop_subscribes_again(self) -> None:
+        """SUB-05. The registry is reusable, not one-shot."""
+        registry = CollectionRegistry()
+        client, raw = _make_nats_client()
+
+        await registry.start_invalidation_listener(client)
+        await registry.stop_invalidation_listener()
+        await registry.start_invalidation_listener(client)
+
+        assert len(raw.subscriptions) == 2
+        assert raw.subscriptions[0].unsubscribe_calls == 1
+        assert raw.subscriptions[1].unsubscribe_calls == 0
+
+        await registry.stop_invalidation_listener()
+
+    async def test_stop_on_a_draining_connection_does_not_raise(self) -> None:
+        """The shutdown-ordering case: the connection is already going away.
+
+        ``NatsClient.unsubscribe`` absorbs the transport failure itself (it
+        wraps both the raw unsubscribe and the dispatch-task join), which is
+        why the registry adds no catch of its own. This is the test that keeps
+        that reasoning true: if the wrapper ever stopped absorbing it, a
+        ``close()`` path would start raising and this fails.
+        """
+        registry = CollectionRegistry()
+        client, raw = _make_nats_client(unsubscribe_error=RuntimeError("nats: connection closed"))
+        await registry.start_invalidation_listener(client)
+
+        await registry.stop_invalidation_listener()
+
+        assert raw.subscriptions[0].unsubscribe_calls == 1
+
+    async def test_a_failed_stop_still_leaves_the_registry_restartable(self) -> None:
+        """A draining-connection stop must not strand the handle.
+
+        If the failed teardown left the old subscription in place, the next
+        start would be swallowed by the re-entry guard and the process would
+        come back up deaf to invalidations.
+        """
+        registry = CollectionRegistry()
+        client, raw = _make_nats_client(unsubscribe_error=RuntimeError("nats: connection closed"))
+        await registry.start_invalidation_listener(client)
+        await registry.stop_invalidation_listener()
+
+        await registry.start_invalidation_listener(client)
+
+        assert len(raw.subscriptions) == 2
+
+        await registry.stop_invalidation_listener()

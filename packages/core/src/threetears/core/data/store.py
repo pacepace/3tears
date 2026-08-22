@@ -71,7 +71,8 @@ class DataStore:
 
         the collection resolves its L2 (NATS) client from the registry:
         wire it via ``registry.configure(l2_client=...)`` or
-        ``registry.bind_table(table_name, l2_client=...)`` before calling
+        ``registry.bind_table(table_name, l2_client=...)`` -- which requires the registry
+        to already carry a ``kv_key_scope``, and raises without one -- before calling
         this method.
 
         :param table_def: complete table definition with columns, indexes, and foreign keys
