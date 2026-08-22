@@ -1,0 +1,10 @@
+# invalidation-listener exemptions.
+#
+# One `path:*:symbol` entry per exempted registry, each preceded by a specific
+# "# rationale:" line. An exemption here means "this module builds an L2-live
+# CollectionRegistry that something ELSE subscribes" -- name that something, so the
+# claim is checkable rather than asserted. "internal wiring" and "handled elsewhere"
+# are not rationales.
+
+# rationale: build_registry_rbac_stack constructs the registry as a LOCAL and hands it to RegistryRbacStack(registry=...); the listener is started three lines into that class's subscribe_invalidations and stopped in its close, both in this same module. The walker keys on name SPELLING, and the construction (`registry`) and the start (`self.registry`) are different spellings across an object boundary it cannot follow. Proven live: the process logs two `Invalidation listener stopped` lines on shutdown, and stop_invalidation_listener returns early WITHOUT logging when no subscription exists, so two lines means two live subscriptions.
+packages/registry/src/threetears/registry/rbac_stack.py:*:registry

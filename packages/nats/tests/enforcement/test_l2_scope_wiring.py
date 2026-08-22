@@ -44,15 +44,20 @@ from typing import Final
 import pytest
 
 from threetears.enforcement.common import (
+    CLIENT_KEYWORDS,
     MODE_REPORT,
     MODE_STRICT,
     Violation,
     apply_exemptions,
+    argument_spellings,
+    constructed_registry_lines,
     emit_report,
     find_local_src_roots,
     iter_python_files,
+    l2_live_registries,
     parse_exemptions_with_rationale,
     parse_python_file,
+    receiver,
     resolve_mode,
 )
 
@@ -62,190 +67,23 @@ _MODE_ENV_VAR: Final[str] = "L2_SCOPE_WIRING_ENFORCEMENT_MODE"
 
 _CATEGORY: Final[str] = "l2_scope.live_registry_without_a_scope"
 
-#: the registry class whose construction sites are this gate's subjects.
-_REGISTRY_CTOR: Final[str] = "CollectionRegistry"
-
-#: registry methods that can bind the registry-DEFAULT L2 client (shapes 1-3).
-_L2_BINDERS: Final[frozenset[str]] = frozenset({"configure", "register", "bind_table"})
-
-#: keywords that hand a Collection (or a registry) its own NATS/L2 client (shape 4).
-_CLIENT_KEYWORDS: Final[frozenset[str]] = frozenset({"l2_client", "nats_client"})
-
-#: argument spellings that name a live NATS client when passed POSITIONALLY (shape 5).
-#: matched on the LAST segment of a dotted path, so ``self._nc`` and ``nc`` both resolve.
-_CLIENT_SPELLINGS: Final[frozenset[str]] = frozenset({"nc", "nats_client", "l2_client", "_nc", "_nats_client"})
+#: the registry class, the binder methods, the client keywords and the positional
+#: client spellings all live in ``enforcement.common.collection_registry`` now, shared
+#: with the invalidation-listener gate. They were duplicated here, and a local copy of
+#: ``CLIENT_SPELLINGS`` in particular goes stale silently: it is a heuristic list that
+#: grows, and ruff does not flag an unused module constant, so the copy keeps compiling
+#: while the gate it feeds stops seeing a wiring form the other gate learned.
 
 #: the keyword that supplies the scope.
 _SCOPE_KEYWORD: Final[str] = "kv_key_scope"
 
 #: floor on the real scope. a reader that stopped matching would demand nothing of anybody while
 #: still reporting green, so the live count is asserted from below as well as from above.
-_MINIMUM_LIVE_REGISTRIES: Final[int] = 2
-
-
-def _dotted(node: ast.expr) -> str | None:
-    """return the dotted spelling of a Name-rooted expression.
-
-    ``registry`` and ``self._registry`` resolve; ``build()[0]`` does not, because there is no
-    static name for it.
-
-    :param node: expression to spell
-    :ptype node: ast.expr
-    :return: dotted spelling, or ``None`` when the expression is not name-rooted
-    :rtype: str | None
-    """
-    parts: list[str] = []
-    current: ast.expr = node
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    spelled: str | None = None
-    if isinstance(current, ast.Name):
-        parts.append(current.id)
-        spelled = ".".join(reversed(parts))
-    return spelled
-
-
-def _callee_names(call: ast.Call) -> frozenset[str]:
-    """return the bare and attribute spellings of a call's callee.
-
-    :param call: call to inspect
-    :ptype call: ast.Call
-    :return: callee names
-    :rtype: frozenset[str]
-    """
-    callee = call.func
-    names: set[str] = set()
-    if isinstance(callee, ast.Name):
-        names.add(callee.id)
-    elif isinstance(callee, ast.Attribute):
-        names.add(callee.attr)
-    return frozenset(names)
-
-
-def _receiver(call: ast.Call) -> str | None:
-    """return the dotted spelling of a method call's receiver.
-
-    :param call: call to inspect
-    :ptype call: ast.Call
-    :return: receiver spelling, or ``None`` when the call is not a method call
-    :rtype: str | None
-    """
-    callee = call.func
-    spelled: str | None = None
-    if isinstance(callee, ast.Attribute):
-        spelled = _dotted(callee.value)
-    return spelled
-
-
-def _argument_spellings(call: ast.Call) -> frozenset[str]:
-    """return the dotted spelling of every positional and keyword argument value.
-
-    :param call: call to inspect
-    :ptype call: ast.Call
-    :return: argument spellings
-    :rtype: frozenset[str]
-    """
-    spellings: set[str] = set()
-    for argument in [*call.args, *(keyword.value for keyword in call.keywords)]:
-        spelled = _dotted(argument)
-        if spelled is not None:
-            spellings.add(spelled)
-    return frozenset(spellings)
-
-
-def _names_a_live_client(call: ast.Call) -> bool:
-    """report whether a call is handed a live NATS/L2 client.
-
-    Two shapes: an ``l2_client=`` / ``nats_client=`` keyword whose value is not the ``None``
-    literal, and an argument -- positional or keyword -- whose dotted spelling ends in a known
-    client name. the second is what covers the positional wiring shape.
-
-    :param call: call to inspect
-    :ptype call: ast.Call
-    :return: whether a live client reaches the call
-    :rtype: bool
-    """
-    live = False
-    for keyword in call.keywords:
-        if keyword.arg not in _CLIENT_KEYWORDS:
-            continue
-        explicit_none = isinstance(keyword.value, ast.Constant) and keyword.value.value is None
-        if not explicit_none:
-            live = True
-    if not live:
-        live = any(spelled.rsplit(".", 1)[-1] in _CLIENT_SPELLINGS for spelled in _argument_spellings(call))
-    return live
-
-
-def constructed_registry_lines(tree: ast.AST) -> dict[str, int]:
-    """return every name bound to a ``CollectionRegistry()``, mapped to its construction line.
-
-    The construction site is what a violation is reported against: it is the one line that stays
-    put while the ``configure()`` call moves, which matters because an exemption entry keyed on a
-    line silently stops matching when the line above it changes.
-
-    :param tree: parsed module
-    :ptype tree: ast.AST
-    :return: registry spelling -> first construction line
-    :rtype: dict[str, int]
-    """
-    lines: dict[str, int] = {}
-    for node in ast.walk(tree):
-        targets: list[ast.expr] = []
-        if isinstance(node, ast.Assign):
-            targets = list(node.targets)
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        else:
-            continue
-        if node.value is None or not isinstance(node.value, ast.Call):
-            continue
-        if _REGISTRY_CTOR not in _callee_names(node.value):
-            continue
-        for target in targets:
-            spelled = _dotted(target)
-            if spelled is not None:
-                lines.setdefault(spelled, node.lineno)
-    return lines
-
-
-def constructed_registries(tree: ast.AST) -> frozenset[str]:
-    """return the spelling of every name bound to a ``CollectionRegistry()``.
-
-    :param tree: parsed module
-    :ptype tree: ast.AST
-    :return: registry spellings, e.g. ``registry`` / ``self._registry``
-    :rtype: frozenset[str]
-    """
-    return frozenset(constructed_registry_lines(tree))
-
-
-def l2_live_registries(tree: ast.AST) -> frozenset[str]:
-    """return every constructed registry that holds an L2-live collection.
-
-    All five wiring shapes: the three registry-default binders, the per-collection
-    ``nats_client=`` keyword, and a positionally-passed client.
-
-    :param tree: parsed module
-    :ptype tree: ast.AST
-    :return: spellings of the L2-live registries
-    :rtype: frozenset[str]
-    """
-    constructed = constructed_registries(tree)
-    live: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        receiver = _receiver(node)
-        names = _callee_names(node)
-        if receiver in constructed and names & _L2_BINDERS and _names_a_live_client(node):
-            live.add(receiver)
-            continue
-        if not _names_a_live_client(node):
-            continue
-        live.update(spelled for spelled in _argument_spellings(node) if spelled in constructed)
-    return frozenset(live)
+#: this counts the SAME thing over the SAME roots as the invalidation-listener shell's
+#: floor, so the two numbers must agree; they are separate constants only because each
+#: gate must fail on its own. Three today: the registry server's heartbeat and rbac
+#: registries, and the tool pod's stack.
+_MINIMUM_LIVE_REGISTRIES: Final[int] = 3
 
 
 def scoped_registries(tree: ast.AST) -> frozenset[str]:
@@ -272,10 +110,10 @@ def scoped_registries(tree: ast.AST) -> frozenset[str]:
             supplies = True
         if not supplies:
             continue
-        receiver = _receiver(node)
-        if receiver is not None:
-            scoped.add(receiver)
-        scoped.update(_argument_spellings(node))
+        call_receiver = receiver(node)
+        if call_receiver is not None:
+            scoped.add(call_receiver)
+        scoped.update(argument_spellings(node))
     return frozenset(scoped)
 
 
@@ -324,34 +162,34 @@ def client_before_scope_registries(tree: ast.AST) -> dict[str, int]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        receiver = _receiver(node)
-        if receiver is None:
+        call_receiver = receiver(node)
+        if call_receiver is None:
             continue
         supplies_scope = any(
             kw.arg == _SCOPE_KEYWORD and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
             for kw in node.keywords
         )
         supplies_client = any(
-            kw.arg in _CLIENT_KEYWORDS and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+            kw.arg in CLIENT_KEYWORDS and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
             for kw in node.keywords
         )
         if supplies_scope:
-            prior = first_scope.get(receiver)
+            prior = first_scope.get(call_receiver)
             if prior is None or node.lineno < prior:
-                first_scope[receiver] = node.lineno
+                first_scope[call_receiver] = node.lineno
         elif supplies_client:
-            client_only.setdefault(receiver, []).append(node.lineno)
+            client_only.setdefault(call_receiver, []).append(node.lineno)
 
     offenders: dict[str, int] = {}
-    for receiver, lines in client_only.items():
-        scope_line = first_scope.get(receiver)
+    for offender, lines in client_only.items():
+        scope_line = first_scope.get(offender)
         # no scope call at all is `unscoped_live_registries`' finding, not this one --
         # reporting both would double-count one defect under two categories.
         if scope_line is None:
             continue
         earlier = [line for line in lines if line < scope_line]
         if earlier:
-            offenders[receiver] = min(earlier)
+            offenders[offender] = min(earlier)
     return offenders
 
 
@@ -376,7 +214,7 @@ def find_client_before_scope(scan_roots: tuple[Path, ...]) -> list[Violation]:
                     line=line,
                     symbol=name,
                     reason=(
-                        f"'{name}' is given an {'/'.join(sorted(_CLIENT_KEYWORDS))} here, before any "
+                        f"'{name}' is given an {'/'.join(sorted(CLIENT_KEYWORDS))} here, before any "
                         f"call supplies its {_SCOPE_KEYWORD}. configure() evaluates its refusal over "
                         f"the merged state at the END of each call, so this one raises "
                         f"L2ScopeNotConfiguredError at startup -- it cannot know a later call intends "
