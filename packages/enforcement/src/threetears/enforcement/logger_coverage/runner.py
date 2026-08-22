@@ -7,10 +7,12 @@ inside the walker plus parsed-exemption-file filtering, emits the
 standardised report, and either raises ``pytest.fail`` or returns
 silently according to the configured mode.
 
-this domain is single-walker; the ``walker`` parameter exists for
-symmetry with multi-walker domains. accepted values are ``"all"``
-(the only walker, the default) — anything else raises
-:class:`ValueError`.
+this domain carries two walkers, both about the same contract — a
+module's logging being real. ``missing`` is the module-level logger
+declaration; ``call_kwargs`` is the stdlib-vs-structlog call shape,
+which is level-gated and therefore invisible to any suite that leaves
+logging at WARNING. ``"all"`` (the default) runs both; anything
+outside the accepted set raises :class:`ValueError`.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import pytest
 
 from threetears.enforcement.common import (
     Exemption,
+    Violation,
     MODE_REPORT,
     MODE_STRICT,
     apply_exemptions,
@@ -36,12 +39,13 @@ from threetears.enforcement.logger_coverage.config import (
 )
 from threetears.enforcement.logger_coverage.walkers import (
     find_modules_without_logger,
+    find_structlog_shaped_log_calls,
 )
 
 __all__ = ["run_logger_coverage_enforcement"]
 
 
-_VALID_WALKERS: frozenset[str] = frozenset({"all"})
+_VALID_WALKERS: frozenset[str] = frozenset({"all", "missing", "call_kwargs"})
 
 
 def run_logger_coverage_enforcement(
@@ -50,9 +54,11 @@ def run_logger_coverage_enforcement(
 ) -> None:
     """run the walker, apply exemptions, emit report, fail if strict.
 
-    accepted ``walker`` values: ``"all"`` (the only walker today).
-    raises :class:`ValueError` for any other value so a typo doesn't
-    silently no-op a future multi-walker expansion.
+    accepted ``walker`` values: ``"all"`` (both walkers, the default),
+    ``"missing"`` (module-level logger declaration only) and
+    ``"call_kwargs"`` (stdlib-vs-structlog call shape only). raises
+    :class:`ValueError` for any other value so a typo does not silently
+    no-op a walker.
 
     src roots come from :attr:`LoggerCoverageConfig.src_roots` when
     set, else from :func:`discover_src_roots
@@ -78,7 +84,7 @@ def run_logger_coverage_enforcement(
 
     :param config: per-repo enforcement config
     :ptype config: LoggerCoverageConfig
-    :param walker: which walker to invoke (``"all"``)
+    :param walker: which walker to invoke (``"all"``, ``"missing"``, ``"call_kwargs"``)
     :ptype walker: str
     :raises ValueError: ``walker`` is not in the accepted set
     :raises pytest.fail.Exception: in strict mode with violations
@@ -87,14 +93,28 @@ def run_logger_coverage_enforcement(
         raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     src_roots = _resolve_src_roots(config)
-    violations = find_modules_without_logger(
-        src_roots,
-        config.repo_root,
-        config.exempt_files,
-        config.logger_factory_names,
-        config.expected_var_names,
-        config.skip_basenames,
-    )
+    violations: list[Violation] = []
+    if walker in {"all", "missing"}:
+        violations.extend(
+            find_modules_without_logger(
+                src_roots,
+                config.repo_root,
+                config.exempt_files,
+                config.logger_factory_names,
+                config.expected_var_names,
+                config.skip_basenames,
+            )
+        )
+    if walker in {"all", "call_kwargs"}:
+        violations.extend(
+            find_structlog_shaped_log_calls(
+                src_roots,
+                config.repo_root,
+                config.exempt_files,
+                config.expected_var_names,
+                config.skip_basenames,
+            )
+        )
 
     exemptions = _load_exemptions(config.exemptions_path)
     filtered = apply_exemptions(violations, exemptions, config.repo_root)

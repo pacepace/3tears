@@ -942,12 +942,6 @@ def _run_server() -> None:
     # kill-switch, so the panic button stopped draining cleanly. Empty in those modes, which
     # is exactly right: no factory ran, so there is nothing to close.
     built_rbac_stacks: list["RegistryRbacStack"] = []
-    # Bound HERE, above the mode branch, and not inside the rbac arm that fills it. The
-    # teardown closure below reads it unconditionally, so binding it in one arm made
-    # `shutdown()` raise `NameError` under `THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true` and
-    # under `THREETEARS_REGISTRY_FORCE_DENY_ALL=true` -- and forced-deny is the production
-    # kill-switch, so the panic button stopped draining cleanly. Empty in those modes, which
-    # is exactly right: no factory ran, so there is nothing to close.
 
     if allow_all:
         from threetears.registry.auth import AllowAllAuthorizer

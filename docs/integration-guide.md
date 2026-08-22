@@ -138,7 +138,7 @@ Unless noted, these are exported from `threetears.core` (see §15).
 - **`CollectionRegistry`** — DI container + table-name lookup + cache coherence.
   Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, kv_key_scope=,
   l3_pool=)` sets defaults — `kv_key_scope` is required alongside any `l2_client` —
-  and `bind_table(table_name, l1_backend=, l2_client=, kv_key_scope=, l3_pool=)` pins
+  and `bind_table(table_name, l1_backend=, l2_client=, l3_pool=)` pins
   per-table overrides **before** a collection is constructed (needed because a
   collection snaps its backends from the registry at `__init__`). A collection
   resolves its L2 client from the registry (`get_l2_client(table_name)`) when no

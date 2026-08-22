@@ -288,8 +288,7 @@ def build_registry_rbac_stack(
     # is answered by the boot log rather than by a bus capture.
     log.info(
         "registry rbac stack configured",
-        kv_key_scope=rbac_key_scope,
-        subject_namespace=subject_namespace,
+        extra={"extra_data": {"kv_key_scope": rbac_key_scope, "subject_namespace": subject_namespace}},
     )
 
     namespace_collection = NamespaceCollection(
