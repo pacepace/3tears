@@ -23,10 +23,12 @@ from threetears.enforcement.logger_coverage.runner import (
 )
 from threetears.enforcement.logger_coverage.walkers import (
     find_modules_without_logger,
+    find_structlog_shaped_log_calls,
 )
 
 __all__ = [
     "LoggerCoverageConfig",
     "find_modules_without_logger",
+    "find_structlog_shaped_log_calls",
     "run_logger_coverage_enforcement",
 ]

@@ -226,9 +226,25 @@ target "identity" {
   inherits   = ["common"]
   context    = "../14-eng-ai-bot-identity"
   dockerfile = "Dockerfile"
+  contexts = {
+    # Same wiring as aibots-base: identity inherits threetears-base, so a local
+    # `bake` builds the framework base from source and consumes it with no
+    # registry round-trip. The key MUST equal the THREETEARS_BASE arg verbatim.
+    "${REGISTRY}/threetears-base:${VERSION}" = "target:threetears-base"
+  }
+  args = {
+    THREETEARS_BASE = "${REGISTRY}/threetears-base:${VERSION}"
+  }
+  # ONE image, FOUR tags. identity-core and identity-edge are the same artifact
+  # differing only in CMD (the Dockerfile says so), and the compose files consume
+  # them under those two names -- so tagging only `aibots-identity` left compose
+  # asking for a tag nothing ever wrote, which surfaces as "pull access denied"
+  # and reads like an auth problem. Both names are produced here.
   tags = [
-    "${REGISTRY}/aibots-identity:${VERSION}",
-    "${REGISTRY}/aibots-identity:latest",
+    "${REGISTRY}/aibots-identity-core:${VERSION}",
+    "${REGISTRY}/aibots-identity-core:latest",
+    "${REGISTRY}/aibots-identity-edge:${VERSION}",
+    "${REGISTRY}/aibots-identity-edge:latest",
   ]
 }
 

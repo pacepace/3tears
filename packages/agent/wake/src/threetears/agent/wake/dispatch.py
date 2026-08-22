@@ -54,7 +54,7 @@ from threetears.agent.wake.events import (
     EVENT_FIRE_SILENT,
 )
 from threetears.agent.wake.metrics import get_wake_emitter
-from threetears.agent.wake.rate_limit import _check_rate_limit
+from threetears.agent.wake.rate_limit import check_rate_limit
 from threetears.agent.wake.types import (
     FireStatus,
     HandlerCallback,
@@ -134,7 +134,7 @@ async def dispatch_wake(
     This function:
 
     1. Runs the rate-limit check via
-       :func:`threetears.agent.wake.rate_limit._check_rate_limit`.
+       :func:`threetears.agent.wake.rate_limit.check_rate_limit`.
        When either the per-conv or per-user cap is exceeded, emits
        :data:`EVENT_FIRE_RATE_LIMITED`, increments the matching
        Prometheus rejection counter, and returns
@@ -187,7 +187,7 @@ async def dispatch_wake(
     # onto the ``wake_fires`` row via the usual finalize path. With
     # ``pool=None`` (unit tests without a DB) the helper returns
     # ``None`` so existing handler-flow tests are unchanged.
-    rate_limit_scope = await _check_rate_limit(trigger, pool, wake_config)
+    rate_limit_scope = await check_rate_limit(trigger, pool, wake_config)
     if rate_limit_scope is not None:
         cap = (
             wake_config.max_fires_per_conv_per_day

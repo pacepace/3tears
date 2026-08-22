@@ -1240,27 +1240,46 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         conversation_id: UUID,
         *,
         since: datetime,
+        webhook_subscription_id: UUID | None = None,
     ) -> int:
         """Count fires for a conversation since ``since``.
 
         Used by the per-conv rate-limit primitive in shard 05. Hits
-        ``idx_wake_fires_conv_time``.
+        ``idx_wake_fires_conv_time`` via the ``conversation_id``
+        predicate; ``webhook_subscription_id``, when supplied, narrows
+        the same scan to one webhook subscription server-side. That
+        narrowing is the webhook receiver's per-subscription cap, which
+        previously re-rolled this COUNT against a bare pool outside the
+        Collection.
 
         :param conversation_id: partition column
         :ptype conversation_id: UUID
         :param since: lower bound on ``actual_fired_at``
         :ptype since: datetime
+        :param webhook_subscription_id: when set, count only fires this
+            webhook subscription produced
+        :ptype webhook_subscription_id: UUID | None
         :return: count of fires in the window
         :rtype: int
         """
         if self.l3_pool is None:
             return 0
         # cache-bypass: aggregate COUNT not pk-addressable.
-        value = await self.l3_pool.fetchval(
-            "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1 AND actual_fired_at >= $2",
-            conversation_id,
-            since,
-        )
+        if webhook_subscription_id is None:
+            value = await self.l3_pool.fetchval(
+                "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1 AND actual_fired_at >= $2",
+                conversation_id,
+                since,
+            )
+        else:
+            value = await self.l3_pool.fetchval(
+                "SELECT COUNT(*) FROM wake_fires "
+                "WHERE conversation_id = $1 AND actual_fired_at >= $2 "
+                "AND webhook_subscription_id = $3",
+                conversation_id,
+                since,
+                webhook_subscription_id,
+            )
         return int(value or 0)
 
 

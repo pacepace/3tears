@@ -117,7 +117,7 @@ def _make_pod(
     backend = SQLiteBackend(f"geo_tiles_{isolation}_{name}")
     backend.initialize(_metadata())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=backend, l2_client=nats_client, l3_pool=None)
+    registry.configure(l1_backend=backend, l2_client=nats_client, l3_pool=None, kv_key_scope="test-principal")
     return TileCollection(
         registry,
         DefaultCoreConfig(),

@@ -28,7 +28,7 @@ its deadline and returns a timeout, indistinguishable by shape from an unreachab
 
 The log tells them apart. `threetears.nats` reads the server's `permissions violation` frame
 (which leaves the connection open, so nothing else reports it), names the bucket, and states
-the `kv_buckets` entry to add; the deadline path and a failed bucket open say the same.
+the `js_resources` entry to add; the deadline path and a failed bucket open say the same.
 `tests/enforcement/test_kv_bucket_grant_naming.py` pins the grant against the bucket the
 client actually opens, which catches a wrong name before a deploy rather than in a log.
 

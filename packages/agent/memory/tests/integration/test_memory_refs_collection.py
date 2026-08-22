@@ -204,7 +204,7 @@ def _build_pod(
     l1 = SQLiteBackend(db_name=f"mem_refs_{uuid.uuid4().hex[:8]}")
     l1.initialize(_l1_metadata())
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1, l2_client=nats, l3_pool=pool)
+    reg.configure(l1_backend=l1, l2_client=nats, l3_pool=pool, kv_key_scope="test-principal")
     cfg = DefaultCoreConfig(
         collection_flush="ALWAYS",
         collection_flush_tables="",
@@ -263,7 +263,7 @@ class TestMemoryRefsCollectionThreeTier:
             assert l1_row is not None
 
             # L2 KV entry under composite-form key
-            assert f"conversation_memory_refs.{conv_id}_{item_id}" in nats.kv
+            assert f"test-principal.conversation_memory_refs.{conv_id}_{item_id}" in nats.kv
         finally:
             await pool.close()
 

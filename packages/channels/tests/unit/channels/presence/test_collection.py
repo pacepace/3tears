@@ -184,9 +184,10 @@ class TestRoomKeySanitization:
         rooms = collection.rooms
         key = rooms.l2_key("cust:story-7:main:chapter/scene.md")
 
-        # SHA-256 hex key: no colon, grammar-valid (hex), scoped by table.
-        prefix, _, digest = key.partition(".")
-        assert prefix == "presence_rooms"
+        # SHA-256 hex key: no colon, grammar-valid (hex), scoped by principal + table.
+        scope, table, digest = key.split(".", 2)
+        assert scope == "test-principal"
+        assert table == "presence_rooms"
         assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
         assert ":" not in key
 
@@ -198,13 +199,13 @@ class TestRoomKeySanitization:
         assert rooms.l2_key("x=y:z") != rooms.l2_key("x:y=z")
 
         # out-of-grammar characters (a space) still produce a valid key (no KvError).
-        space_digest = rooms.l2_key("cust:s:main:my file.md").partition(".")[2]
+        space_digest = rooms.l2_key("cust:s:main:my file.md").split(".", 2)[2]
         assert len(space_digest) == 64 and all(c in "0123456789abcdef" for c in space_digest)
 
     async def test_connection_l2_key_is_plain(self, bus: InMemoryNatsBus) -> None:
         collection, _ = make_pod(bus)
         key = collection.connections.l2_key("conn-1")
-        assert key == "presence_connections.conn-1"
+        assert key == "test-principal.presence_connections.conn-1"
 
 
 # ---------------------------------------------------------------------------

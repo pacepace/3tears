@@ -97,6 +97,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     from threetears.nats.user_jwt import (
         account_public_key,
         generate_account_seed,
+        js_api_grants_for_stream,
         mint_user_jwt,
     )
 
@@ -104,6 +105,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
 
 from threetears.nats.errors import (
+    KvConfigMismatch,
     KvError,
     NamespaceNotConfiguredError,
     NatsClientError,
@@ -130,10 +132,18 @@ from threetears.nats.result_delivery import (
 )
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
+    KV_KEY_SCOPE_GRAMMAR,
+    JsCapability,
+    JsResource,
+    JsResourceKind,
     Principal,
     PrincipalPermissions,
     build_permissions,
+    capability_declares,
+    capability_is_scoped,
     inbox_prefix_for,
+    kv_bucket_names,
+    kv_key_scope_for,
 )
 from threetears.nats.subjects import (
     PipeDirection,
@@ -141,6 +151,7 @@ from threetears.nats.subjects import (
     SubjectKind,
     Subjects,
     get_default_namespace,
+    sanitize_subject_segment,
     set_default_namespace,
 )
 from threetears.nats.transport import (
@@ -154,7 +165,10 @@ from threetears.nats.transport import (
 #: ``nkeys`` (directly or transitively). everything here resolves on first
 #: attribute access rather than at package import, so an L1-only consumer never
 #: loads the client. keep in sync with the ``TYPE_CHECKING`` block above and
-#: with ``__all__``; ``test_lazy_surface.py`` asserts all three agree.
+#: with ``__all__``; ``test_lazy_surface.py`` asserts all three agree -- the
+#: submodule-export and ``__all__`` halves by import, and the ``TYPE_CHECKING``
+#: half by AST-parsing this file, since the names in that block are invisible at
+#: runtime and nothing else would notice one going stale.
 _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
     "client": (
         "DEFAULT_DRAIN_TIMEOUT",
@@ -214,7 +228,12 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
     ),
     "kv": ("NatsKvBucket",),
     "oplog": ("AppendResult", "OpLog", "OpRecord"),
-    "user_jwt": ("account_public_key", "generate_account_seed", "mint_user_jwt"),
+    "user_jwt": (
+        "account_public_key",
+        "generate_account_seed",
+        "js_api_grants_for_stream",
+        "mint_user_jwt",
+    ),
 }
 
 _LAZY_ATTR_TO_SUBMOD: Final[dict[str, str]] = {
@@ -305,6 +324,7 @@ __all__ = [
     "SubjectKind",
     "Subjects",
     "get_default_namespace",
+    "sanitize_subject_segment",
     "set_default_namespace",
     # asynchronous result delivery (answers that outlive their receiving connection)
     "RESULT_ACK_TIMEOUT_SECONDS",
@@ -319,13 +339,22 @@ __all__ = [
     "result_subject_prefix_for_pod",
     # subject permissions (decentralized-auth allow-lists)
     "CROSS_PLATFORM_CACHE_INVALIDATE",
+    "KV_KEY_SCOPE_GRAMMAR",
+    "JsCapability",
+    "JsResource",
+    "JsResourceKind",
     "Principal",
     "PrincipalPermissions",
     "build_permissions",
+    "capability_declares",
+    "capability_is_scoped",
     "inbox_prefix_for",
+    "kv_bucket_names",
+    "kv_key_scope_for",
     # NATS v2 user-JWT minting (decentralized auth)
     "account_public_key",
     "generate_account_seed",
+    "js_api_grants_for_stream",
     "mint_user_jwt",
     # NATS auth-callout request/response codecs
     "AuthCalloutRequest",
@@ -386,6 +415,7 @@ __all__ = [
     "RawMessageCallback",
     "StreamTransport",
     # errors
+    "KvConfigMismatch",
     "KvError",
     "NamespaceNotConfiguredError",
     "NatsClientError",

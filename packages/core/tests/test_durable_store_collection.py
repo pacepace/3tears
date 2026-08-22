@@ -130,10 +130,14 @@ def l1_backend() -> SQLiteBackend:
     shutdown()
 
 
+#: the principal scope this module's registries wire. every L2 key leads with one.
+_TEST_SCOPE = "test-principal"
+
+
 @pytest.fixture()
 def registry(l1_backend: SQLiteBackend) -> CollectionRegistry:
     r = CollectionRegistry()
-    r.configure(l1_backend=l1_backend)
+    r.configure(l1_backend=l1_backend, kv_key_scope=_TEST_SCOPE)
     return r
 
 
@@ -154,7 +158,7 @@ async def test_durable_store_collection_full_three_tier_roundtrip(registry: Coll
     got = await coll.get("scn-1")
     assert got is not None and got.text == "alpha"
     assert coll.get_row_sync("scn-1") is not None  # promoted back to L1
-    assert "scenes.scn-1" in nats.store  # promoted to L2
+    assert f"{_TEST_SCOPE}.scenes.scn-1" in nats.store  # promoted to L2
 
     # delete → DurableStore.delete removes it from the non-SQL durable tier
     await coll.delete("scn-1")
@@ -173,12 +177,12 @@ async def test_l2_resolves_from_registry_when_nats_client_not_passed(l1_backend:
     """
     nats = _make_nats_mock()
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1_backend, l2_client=nats)
+    reg.configure(l1_backend=l1_backend, l2_client=nats, kv_key_scope=_TEST_SCOPE)
     # NB: nats_client is NOT passed — it must default to the registry sentinel.
     coll = _SceneCollection(reg, DefaultCoreConfig(), _InMemoryDurableStore())
 
     await coll.save_entity(_SceneEntity({"id": "scn-2", "text": "beta"}, is_new=True))
-    assert "scenes.scn-2" in nats.store  # L2 written ⇒ cross-pod path is live, not disabled
+    assert f"{_TEST_SCOPE}.scenes.scn-2" in nats.store  # L2 written ⇒ cross-pod path is live, not disabled
 
 
 class _TransactionalDurableStore(_InMemoryDurableStore):

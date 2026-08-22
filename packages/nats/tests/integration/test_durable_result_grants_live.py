@@ -51,8 +51,12 @@ from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 pytestmark = pytest.mark.integration
 
 _NS = "livegrant"
-_POD = "pod-A"
-_PEER_POD = "pod-B"
+# uuids, and that is a CONTRACT rather than a test convenience: ``coll-task-07c`` gives a tool pod
+# the scoped collections bucket, and the scope is derived from ``tool_pods.id`` by
+# ``kv_key_scope_for``, which refuses anything non-uuid because a boundary derived from a display
+# name is not provably collision-free. A slug pod id can no longer be granted at all.
+_POD = "01947100-0000-7000-8000-0000000000aa"
+_PEER_POD = "01947100-0000-7000-8000-0000000000bb"
 _REGISTRY_CONN = "reg-1"
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
