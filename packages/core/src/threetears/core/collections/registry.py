@@ -237,8 +237,9 @@ class CollectionRegistry:
 
         Read by :meth:`BaseCollection.l2_key` on every L2 access. ``None`` means unwired, which
         is legitimate for an L1-only or L3-only registry and is a hard error for one holding an
-        L2 client -- :meth:`configure` refuses that combination outright, and ``l2_key`` backstops
-        the ``nats_client=``-direct construction path that never reaches ``configure``.
+        L2 client. All three wiring paths are gated: :meth:`configure` and :meth:`bind_table`
+        each refuse an L2 client with no scope, and ``l2_key`` backstops the
+        ``nats_client=``-direct construction path, which reaches neither.
 
         :return: the scope segment, or ``None`` when no scope is wired
         :rtype: str | None
@@ -254,11 +255,14 @@ class CollectionRegistry:
         declares it, which is what a principal whose grant carries ``STREAM.INFO`` and no
         ``STREAM.CREATE`` must say -- a refused create is never answered, so leaving the
         default would spend a JetStream deadline at every startup and then bind anyway.
-        The registry server and the agent pod both set it, and both pair it with an eager
+        Three processes in THIS repo set it -- the registry server's heartbeat registry,
+        its rbac registry, and the tool pod -- and the agent pod does too, from the SDK.
+        Each pairs it with an eager
         :func:`~threetears.core.collections.bind_collections_bucket`. It also turns off
-        :meth:`threetears.nats.NatsKvBucket._reopen`'s restart self-heal, which is only
-        safe because the declaring identity re-declares the bucket on every NATS
-        reconnect.
+        :meth:`threetears.nats.NatsKvBucket._reopen`'s restart self-heal, which is safe
+        only because the DECLARING IDENTITY -- the hub, in its own lifespan, via
+        ``ensure_kv_bucket`` registered on ``NatsClient.add_reconnect_callback`` --
+        re-declares the bucket on every NATS reconnect. Nothing else may.
 
         :return: ``True`` when a collection may create the bucket
         :rtype: bool

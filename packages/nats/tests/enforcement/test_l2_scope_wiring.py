@@ -290,6 +290,97 @@ def unscoped_live_registries(tree: ast.AST) -> list[str]:
     return sorted(l2_live_registries(tree) - scoped_registries(tree))
 
 
+_ORDER_CATEGORY: Final[str] = "l2_scope.client_configured_before_scope"
+
+
+def client_before_scope_registries(tree: ast.AST) -> dict[str, int]:
+    """return every registry given an L2 client by a call that precedes its scope.
+
+    ``configure()`` MERGES, and evaluates its refusal over the merged state at the end of
+    each call -- so two-pass wiring works in one order only. Scope first is fine: that call
+    ends with a scope and no client, the next ends with both. Client first RAISES, because
+    that call ends with a client and no scope and cannot know a later call intends to
+    supply one.
+
+    :func:`unscoped_live_registries` cannot see this: it is a set difference over the whole
+    module, so a registry that is scoped ANYWHERE counts as scoped. A module wired
+    client-first passes that gate green and dies at startup, which is the failure this gate
+    exists to move earlier.
+
+    :param tree: parsed module
+    :ptype tree: ast.AST
+    :return: registry spelling -> line of the offending client-first call
+    :rtype: dict[str, int]
+    """
+    first_scope: dict[str, int] = {}
+    client_only: dict[str, list[int]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        receiver = _receiver(node)
+        if receiver is None:
+            continue
+        supplies_scope = any(
+            kw.arg == _SCOPE_KEYWORD and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+            for kw in node.keywords
+        )
+        supplies_client = any(
+            kw.arg in _CLIENT_KEYWORDS and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+            for kw in node.keywords
+        )
+        if supplies_scope:
+            prior = first_scope.get(receiver)
+            if prior is None or node.lineno < prior:
+                first_scope[receiver] = node.lineno
+        elif supplies_client:
+            client_only.setdefault(receiver, []).append(node.lineno)
+
+    offenders: dict[str, int] = {}
+    for receiver, lines in client_only.items():
+        scope_line = first_scope.get(receiver)
+        # no scope call at all is `unscoped_live_registries`' finding, not this one --
+        # reporting both would double-count one defect under two categories.
+        if scope_line is None:
+            continue
+        earlier = [line for line in lines if line < scope_line]
+        if earlier:
+            offenders[receiver] = min(earlier)
+    return offenders
+
+
+def find_client_before_scope(scan_roots: tuple[Path, ...]) -> list[Violation]:
+    """flag every registry handed an L2 client before it is given a scope.
+
+    :param scan_roots: src roots to scan
+    :ptype scan_roots: tuple[Path, ...]
+    :return: violations in source order
+    :rtype: list[Violation]
+    """
+    violations: list[Violation] = []
+    for root in scan_roots:
+        for source in iter_python_files(root):
+            tree = parse_python_file(source)
+            if tree is None:
+                continue
+            violations.extend(
+                Violation(
+                    category=_ORDER_CATEGORY,
+                    file=source,
+                    line=line,
+                    symbol=name,
+                    reason=(
+                        f"'{name}' is given an {'/'.join(sorted(_CLIENT_KEYWORDS))} here, before any "
+                        f"call supplies its {_SCOPE_KEYWORD}. configure() evaluates its refusal over "
+                        f"the merged state at the END of each call, so this one raises "
+                        f"L2ScopeNotConfiguredError at startup -- it cannot know a later call intends "
+                        f"to supply a scope. order the scope first, or pass both together"
+                    ),
+                )
+                for name, line in sorted(client_before_scope_registries(tree).items())
+            )
+    return violations
+
+
 def find_unscoped_registries(scan_roots: tuple[Path, ...]) -> list[Violation]:
     """flag every L2-live registry that is never given a ``kv_key_scope``.
 
@@ -355,6 +446,10 @@ class TestEveryLiveRegistryCarriesAScope:
     def test_every_l2_live_registry_is_scoped(self) -> None:
         """an unscoped live registry writes keys no grant can name."""
         _assert_clean(find_unscoped_registries(find_local_src_roots(_REPO_ROOT)), _CATEGORY)
+
+    def test_no_registry_is_given_a_client_before_its_scope(self) -> None:
+        """client-first two-pass wiring raises at startup; being scoped later is too late."""
+        _assert_clean(find_client_before_scope(find_local_src_roots(_REPO_ROOT)), _ORDER_CATEGORY)
 
 
 class TestTheReaderIsNotVacuous:
@@ -468,6 +563,56 @@ class TestTheReaderLeavesSanctionedWiringAlone:
             "registry.configure(l2_client=nc)\n"
         )
         assert unscoped_live_registries(tree) == []
+        assert client_before_scope_registries(tree) == {}
+
+
+class TestTwoPassWiringHasOnlyOneWorkingOrder:
+    """``configure()`` refuses over the MERGED state at the end of each call."""
+
+    def test_client_before_scope_is_flagged(self) -> None:
+        """that first call ends with a client and no scope, so it raises at startup."""
+        tree = ast.parse(
+            "registry = CollectionRegistry()\n"
+            "registry.configure(l2_client=nc)\n"
+            "registry.configure(kv_key_scope=scope)\n"
+        )
+
+        assert client_before_scope_registries(tree) == {"registry": 2}
+
+    def test_the_presence_gate_cannot_see_it(self) -> None:
+        """the reason this walker exists: a set difference has no order.
+
+        Without this assertion the new walker looks redundant, and the next reader
+        deletes it.
+        """
+        tree = ast.parse(
+            "registry = CollectionRegistry()\n"
+            "registry.configure(l2_client=nc)\n"
+            "registry.configure(kv_key_scope=scope)\n"
+        )
+
+        assert unscoped_live_registries(tree) == []
+
+    def test_both_in_one_call_is_left_alone(self) -> None:
+        """the single-call shape ends with both, so it never sees the refusal."""
+        tree = ast.parse("registry = CollectionRegistry()\nregistry.configure(l2_client=nc, kv_key_scope=scope)\n")
+
+        assert client_before_scope_registries(tree) == {}
+
+    def test_a_registry_with_no_scope_at_all_is_the_other_gate(self) -> None:
+        """one defect, one category -- reporting both would double-count it."""
+        tree = ast.parse("registry = CollectionRegistry()\nregistry.configure(l2_client=nc)\n")
+
+        assert client_before_scope_registries(tree) == {}
+        assert unscoped_live_registries(tree) == ["registry"]
+
+    def test_an_explicit_none_scope_does_not_count_as_supplying_one(self) -> None:
+        """``kv_key_scope=None`` is the leave-unchanged argument and changes no state."""
+        tree = ast.parse(
+            "registry = CollectionRegistry()\nregistry.configure(l2_client=nc)\nregistry.configure(kv_key_scope=None)\n"
+        )
+
+        assert client_before_scope_registries(tree) == {}
 
     def test_an_l1_only_registry_is_left_alone(self) -> None:
         """a process with no L2 tier at all is a valid configuration."""

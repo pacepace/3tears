@@ -74,9 +74,10 @@ PostgreSQL pool, optionally a `NatsClient`), hand them to 3tears, and **you own
 their lifecycle** (create on startup, close on shutdown).
 
 All three tiers funnel through one dependency-injection seam — the
-**`CollectionRegistry`**. You `configure(l1_backend=, l2_client=, l3_pool=)` once;
-every collection (including those `DataStore` builds for you) resolves all three
-tiers from the registry. A collection's L2 client can still be overridden per
+**`CollectionRegistry`**. You `configure(l1_backend=, l2_client=, kv_key_scope=,
+l3_pool=)` once; every collection (including those `DataStore` builds for you)
+resolves all three tiers from the registry. `kv_key_scope` is required wherever an
+`l2_client` is -- see §8.2. A collection's L2 client can still be overridden per
 construction (an explicit `nats_client=` argument wins, and an explicit `None`
 disables L2 for that collection regardless of the registry), but the registry is
 the default wiring path — see §4.
@@ -87,7 +88,8 @@ the default wiring path — see §4.
         │   you create:   SQLiteBackend       asyncpg pool      NatsClient*    │
         │                      │                   │                 │         │
         │                      ▼                   ▼                 ▼         │
-        │   CollectionRegistry.configure(l1_backend=, l3_pool=, l2_client=)    │
+        │  CollectionRegistry.configure(l1_backend=, l3_pool=,                 │
+        │                               l2_client=, kv_key_scope=)             │
         │                      │                                               │
         │                      ▼                                               │
         │   DataStore(namespace_id, registry) ─► collections ─► entities       │
@@ -346,6 +348,10 @@ from threetears.nats import NatsClient, Principal, kv_key_scope_for
 
 async def wire_with_l2(pg_pool) -> None:
     l1 = SQLiteBackend(db_name="hello_world")
+    # the agent this pod serves, from its own env. NOT a fresh uuid per process:
+    # the key scope is the SHARING boundary, so replicas of one agent must derive
+    # the same value or each replica caches into a keyspace of its own.
+    AGENT_ID = uuid.UUID(os.environ["THREETEARS_AGENT_ID"])
 
     # --- Connect NATS (classmethod). The namespace prefixes the shared KV bucket,
     #     "{namespace}-collections". It is BOUND eagerly below, not created lazily on
@@ -374,7 +380,12 @@ async def wire_with_l2(pg_pool) -> None:
         l1_backend=l1,
         l3_pool=pg_pool,
         l2_client=nats,
-        kv_key_scope=kv_key_scope_for(Principal.AGENT_POD),
+        # AGENT_POD REQUIRES `agent_id=`: `kv_key_scope_for` refuses to derive a scope
+        # it cannot prove collision-free. Note it takes the AGENT id, never `pod_id` --
+        # replicas of one agent must land on one scope or L2 stops being a cross-pod
+        # cache. Principals with no per-instance identity (`Principal.HUB`,
+        # `Principal.REGISTRY`) take no id at all.
+        kv_key_scope=kv_key_scope_for(Principal.AGENT_POD, agent_id=AGENT_ID),
     )
 
     store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))

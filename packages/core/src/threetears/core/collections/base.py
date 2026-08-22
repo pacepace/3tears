@@ -743,12 +743,14 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: str
         :raises L2ScopeNotConfiguredError: if this collection's registry
             carries no ``kv_key_scope``. the BACKSTOP raise, not the
-            primary one: :meth:`CollectionRegistry.configure` refuses an
-            L2 client with no scope at wiring time, which is where a
+            primary one: :meth:`CollectionRegistry.configure` and
+            :meth:`CollectionRegistry.bind_table` both refuse an L2
+            client with no scope at wiring time, which is where a
             process can still fail its startup rather than dying on the
-            first cache access under load. this covers only the
-            ``nats_client=``-direct construction path, which never calls
-            ``configure``. deliberately NOT a :class:`KvError` -- three
+            first cache access under load. this covers the ONE path
+            neither of them sees -- ``nats_client=`` passed straight to
+            the constructor, which wins over the registry default and
+            never calls either. deliberately NOT a :class:`KvError` -- three
             of this method's four call sites sit inside ``except
             KvError`` handlers that degrade to a warning, so a
             ``KvError`` here would leave the fleet running with L2

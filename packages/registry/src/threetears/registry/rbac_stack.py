@@ -139,7 +139,14 @@ class RegistryRbacStack:
     _subscriptions: list[Subscription] = field(default_factory=list)
 
     async def subscribe_invalidations(self) -> None:
-        """bind the three rbac invalidation subjects to the shared cache.
+        """bind the rbac invalidation subjects, and start the collection listener.
+
+        Two channels, despite the name: the three ACL subjects below feed the
+        :class:`AclCache`, and :meth:`CollectionRegistry.start_invalidation_listener`
+        feeds this registry's five Collections' L1. Different subjects, different
+        publishers, one call because they share a lifecycle -- :meth:`close` releases
+        both.
+
 
         cross-process rbac mutations (admin tools rewriting
         ``role_assignments`` / ``group_members`` / ``roles``)
