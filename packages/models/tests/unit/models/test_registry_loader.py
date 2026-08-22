@@ -94,9 +94,7 @@ class TestAZeroCostSurvivesTheMapping:
         :return: nothing
         :rtype: None
         """
-        register_model_capabilities_bulk(
-            [{"model_name": "test-zero-context", "context_window": 0}]
-        )
+        register_model_capabilities_bulk([{"model_name": "test-zero-context", "context_window": 0}])
 
         caps = get_capabilities("test-zero-context")
         assert caps is not None
