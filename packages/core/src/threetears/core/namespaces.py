@@ -166,6 +166,17 @@ def sanitize_segment(value: str | UUID) -> str:
     being three, and the grant side could reach neither this one nor
     each other's without a Shape-A underscore violation.
 
+    **the delegation is a coincidence of rules, not one rule.** the callee's
+    contract is "safe as a NATS subject token"; this function's is "safe as a
+    ``platform.namespaces.name`` segment", and those values are PERSISTED, so a
+    change to the sanitizer rewrites what new rows key on while old rows keep the
+    old shape. the two rules agree on every character today, which is why sharing
+    the implementation is right. if the subject rule ever widens -- a new NATS
+    token restriction, or a relaxation -- do NOT follow it here by inheritance:
+    fork this function, keep the persisted shape, and say why. the dedup exists to
+    stop three copies drifting silently, not to make a storage-key rule track a
+    wire-format rule automatically.
+
     :param value: raw segment value (may contain dots); a UUID renders
         as its 36-character canonical string
     :ptype value: str | UUID
