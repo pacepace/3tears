@@ -1,4 +1,7 @@
-"""tests for the shared registry-detection AST vocabulary.
+"""tests for the registry-specific half of the shared AST vocabulary.
+
+The generic spelling helpers (``dotted`` and friends) moved to ``ast_helpers`` and are
+tested there; what stays here is the part that knows what a ``CollectionRegistry`` is.
 
 These helpers back two gates (L2 scope, invalidation listener), so a change here moves
 both. That is the point of sharing them, and the reason they need coverage of their own
@@ -11,14 +14,10 @@ import ast
 
 from threetears.enforcement.common import (
     CLIENT_SPELLINGS,
-    argument_spellings,
-    callee_names,
     constructed_registries,
     constructed_registry_lines,
-    dotted,
     l2_live_registries,
     names_a_live_client,
-    receiver,
 )
 
 
@@ -27,49 +26,6 @@ def _call(source: str) -> ast.Call:
     assert isinstance(node, ast.Expr)
     assert isinstance(node.value, ast.Call)
     return node.value
-
-
-class TestDotted:
-    """the spelling function every other helper is built on."""
-
-    def test_a_bare_name_resolves(self) -> None:
-        assert dotted(ast.parse("registry").body[0].value) == "registry"  # type: ignore[attr-defined]
-
-    def test_an_attribute_chain_resolves(self) -> None:
-        assert dotted(ast.parse("self._registry").body[0].value) == "self._registry"  # type: ignore[attr-defined]
-
-    def test_a_deep_chain_resolves(self) -> None:
-        assert dotted(ast.parse("a.b.c.d").body[0].value) == "a.b.c.d"  # type: ignore[attr-defined]
-
-    def test_a_non_name_rooted_expression_does_not(self) -> None:
-        """``build()[0]`` has no static name, and guessing one would be worse than None."""
-        assert dotted(ast.parse("build()[0]").body[0].value) is None  # type: ignore[attr-defined]
-
-
-class TestCalleeAndReceiver:
-    def test_a_bare_call_has_a_callee_and_no_receiver(self) -> None:
-        call = _call("configure(x)")
-
-        assert callee_names(call) == frozenset({"configure"})
-        assert receiver(call) is None
-
-    def test_a_method_call_has_both(self) -> None:
-        call = _call("self._registry.configure(x)")
-
-        assert callee_names(call) == frozenset({"configure"})
-        assert receiver(call) == "self._registry"
-
-
-class TestArgumentSpellings:
-    def test_positional_and_keyword_values_are_both_collected(self) -> None:
-        call = _call("configure(nc, l3_pool=pool)")
-
-        assert argument_spellings(call) == frozenset({"nc", "pool"})
-
-    def test_unspellable_arguments_are_dropped_rather_than_guessed(self) -> None:
-        call = _call("configure(build()[0], nc)")
-
-        assert argument_spellings(call) == frozenset({"nc"})
 
 
 class TestNamesALiveClient:

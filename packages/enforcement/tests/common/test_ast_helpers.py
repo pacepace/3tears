@@ -6,11 +6,15 @@ import ast
 from pathlib import Path
 
 from threetears.enforcement.common.ast_helpers import (
+    argument_spellings,
+    callee_names,
+    dotted,
     is_logger_call,
     is_private_name,
     is_suppress_call,
     iter_python_files,
     parse_python_file,
+    receiver,
     relative_posix_path,
 )
 
@@ -195,3 +199,90 @@ class TestIsSuppressCall:
     def test_non_call_rejected(self) -> None:
         node = ast.parse("x", mode="eval").body
         assert is_suppress_call(node) is False
+
+
+def _call(source: str) -> ast.Call:
+    """parse a single call expression out of one line of source."""
+    node = ast.parse(source).body[0]
+    assert isinstance(node, ast.Expr)
+    assert isinstance(node.value, ast.Call)
+    return node.value
+
+
+class TestDotted:
+    """the spelling function every other helper is built on."""
+
+    def test_a_bare_name_resolves(self) -> None:
+        assert dotted(ast.parse("registry").body[0].value) == "registry"  # type: ignore[attr-defined]
+
+    def test_an_attribute_chain_resolves(self) -> None:
+        assert dotted(ast.parse("self._registry").body[0].value) == "self._registry"  # type: ignore[attr-defined]
+
+    def test_a_deep_chain_resolves(self) -> None:
+        assert dotted(ast.parse("a.b.c.d").body[0].value) == "a.b.c.d"  # type: ignore[attr-defined]
+
+    def test_a_non_name_rooted_expression_does_not(self) -> None:
+        """``build()[0]`` has no static name, and guessing one would be worse than None."""
+        assert dotted(ast.parse("build()[0]").body[0].value) is None  # type: ignore[attr-defined]
+
+
+class TestCalleeAndReceiver:
+    def test_a_bare_call_has_a_callee_and_no_receiver(self) -> None:
+        call = _call("configure(x)")
+
+        assert callee_names(call) == frozenset({"configure"})
+        assert receiver(call) is None
+
+    def test_a_method_call_has_both(self) -> None:
+        call = _call("self._registry.configure(x)")
+
+        assert callee_names(call) == frozenset({"configure"})
+        assert receiver(call) == "self._registry"
+
+
+class TestArgumentSpellings:
+    def test_positional_and_keyword_values_are_both_collected(self) -> None:
+        call = _call("configure(nc, l3_pool=pool)")
+
+        assert argument_spellings(call) == frozenset({"nc", "pool"})
+
+    def test_unspellable_arguments_are_dropped_rather_than_guessed(self) -> None:
+        call = _call("configure(build()[0], nc)")
+
+        assert argument_spellings(call) == frozenset({"nc"})
+
+
+class TestDottedUnwrapsGenericBases:
+    """the fold: `fake_parity` carried a third copy of this walk for base-class lists.
+
+    Its only difference was unwrapping `ast.Subscript`, so that
+    ``BaseCollection[FakeRefEntity]`` spells as ``BaseCollection``. That is now a
+    parameter rather than a copy.
+    """
+
+    def test_a_generic_base_spells_as_its_origin(self) -> None:
+        node = ast.parse("BaseCollection[FakeRefEntity]").body[0].value  # type: ignore[attr-defined]
+
+        assert dotted(node, unwrap_subscript=True) == "BaseCollection"
+
+    def test_a_dotted_generic_base_spells_as_its_dotted_origin(self) -> None:
+        node = ast.parse("mod.BaseCollection[FakeRefEntity]").body[0].value  # type: ignore[attr-defined]
+
+        assert dotted(node, unwrap_subscript=True) == "mod.BaseCollection"
+
+    def test_a_nested_generic_unwraps_to_the_outermost_origin(self) -> None:
+        node = ast.parse("Outer[Inner[X]]").body[0].value  # type: ignore[attr-defined]
+
+        assert dotted(node, unwrap_subscript=True) == "Outer"
+
+    def test_it_is_off_by_default(self) -> None:
+        """a subscript is not a name in most contexts; dropping the parameter silently
+        would make `registry[0]` read as `registry`, which is a different object."""
+        node = ast.parse("registry[0]").body[0].value  # type: ignore[attr-defined]
+
+        assert dotted(node) is None
+
+    def test_a_plain_name_is_unaffected_by_the_flag(self) -> None:
+        node = ast.parse("BaseCollection").body[0].value  # type: ignore[attr-defined]
+
+        assert dotted(node, unwrap_subscript=True) == "BaseCollection"

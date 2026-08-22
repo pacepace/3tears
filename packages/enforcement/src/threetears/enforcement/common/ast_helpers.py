@@ -23,6 +23,10 @@ __all__ = [
     "is_private_name",
     "is_logger_call",
     "is_suppress_call",
+    "dotted",
+    "callee_names",
+    "receiver",
+    "argument_spellings",
 ]
 
 log = get_logger(__name__)
@@ -287,3 +291,81 @@ def is_suppress_call(node: ast.AST) -> bool:
     if isinstance(func, ast.Attribute) and func.attr == "suppress":
         return True
     return False
+
+
+def dotted(node: ast.expr, *, unwrap_subscript: bool = False) -> str | None:
+    """return the dotted spelling of a Name-rooted expression.
+
+    ``registry`` and ``self._registry`` resolve; ``build()[0]`` does not, because there is
+    no static name for it.
+
+    :param node: expression to spell
+    :ptype node: ast.expr
+    :param unwrap_subscript: spell ``Base[Param]`` as ``Base``. OFF by default, because a
+        subscript is not a name in most contexts and silently dropping the parameter
+        would be a lie; ON for base-class lists, where ``BaseCollection[FakeEntity]``
+        genuinely names ``BaseCollection``
+    :ptype unwrap_subscript: bool
+    :return: dotted spelling, or ``None`` when the expression is not name-rooted
+    :rtype: str | None
+    """
+    parts: list[str] = []
+    current: ast.expr = node
+    while unwrap_subscript and isinstance(current, ast.Subscript):
+        current = current.value
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    spelled: str | None = None
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        spelled = ".".join(reversed(parts))
+    return spelled
+
+
+def callee_names(call: ast.Call) -> frozenset[str]:
+    """return the bare and attribute spellings of a call's callee.
+
+    :param call: call to inspect
+    :ptype call: ast.Call
+    :return: callee names
+    :rtype: frozenset[str]
+    """
+    callee = call.func
+    names: set[str] = set()
+    if isinstance(callee, ast.Name):
+        names.add(callee.id)
+    elif isinstance(callee, ast.Attribute):
+        names.add(callee.attr)
+    return frozenset(names)
+
+
+def receiver(call: ast.Call) -> str | None:
+    """return the dotted spelling of a method call's receiver.
+
+    :param call: call to inspect
+    :ptype call: ast.Call
+    :return: receiver spelling, or ``None`` when the call is not a method call
+    :rtype: str | None
+    """
+    callee = call.func
+    spelled: str | None = None
+    if isinstance(callee, ast.Attribute):
+        spelled = dotted(callee.value)
+    return spelled
+
+
+def argument_spellings(call: ast.Call) -> frozenset[str]:
+    """return the dotted spelling of every positional and keyword argument value.
+
+    :param call: call to inspect
+    :ptype call: ast.Call
+    :return: argument spellings
+    :rtype: frozenset[str]
+    """
+    spellings: set[str] = set()
+    for argument in [*call.args, *(keyword.value for keyword in call.keywords)]:
+        spelled = dotted(argument)
+        if spelled is not None:
+            spellings.add(spelled)
+    return frozenset(spellings)

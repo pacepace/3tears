@@ -68,7 +68,7 @@ import inspect
 from dataclasses import dataclass
 from pathlib import Path
 
-from threetears.enforcement.common.ast_helpers import note_unscanned
+from threetears.enforcement.common.ast_helpers import dotted, note_unscanned
 from threetears.enforcement.common.exemptions import rationale_defect
 from threetears.enforcement.common.violations import Violation
 
@@ -146,7 +146,9 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
                 continue
             if not any(node.name.startswith(p) for p in _FAKE_NAME_PREFIXES):
                 continue
-            rendered_bases = [_format_base(b) for b in node.bases]
+            # unwrap_subscript: a generic base such as ``BaseCollection[FakeRefEntity]``
+            # genuinely names ``BaseCollection``, which is the parity declaration we want
+            rendered_bases = [dotted(b, unwrap_subscript=True) for b in node.bases]
             bases = [b for b in rendered_bases if b is not None and b != "object"]
             marker_target, exempt_rationale = _read_markers(source_lines, node.lineno)
             methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
@@ -165,36 +167,6 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
                 ),
             )
     return fakes
-
-
-def _format_base(node: ast.expr) -> str | None:
-    """render an AST base-class expression as its dotted name.
-
-    handles bare names (``Foo``), attribute access (``mod.Foo``,
-    ``a.b.Foo``), and subscript expressions used for generics
-    (``BaseCollection[FakeRefEntity]``). returns ``None`` for shapes
-    we don't try to interpret (call expressions, complex generics).
-
-    :param node: AST node from a class def's ``bases`` list
-    :ptype node: ast.expr
-    :return: dotted base name, or ``None``
-    :rtype: str | None
-    """
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parts: list[str] = []
-        cur: ast.expr = node
-        while isinstance(cur, ast.Attribute):
-            parts.append(cur.attr)
-            cur = cur.value
-        if isinstance(cur, ast.Name):
-            parts.append(cur.id)
-            return ".".join(reversed(parts))
-        return None
-    if isinstance(node, ast.Subscript):
-        return _format_base(node.value)
-    return None
 
 
 def _read_markers(source_lines: list[str], class_lineno: int) -> tuple[str | None, str | None]:
