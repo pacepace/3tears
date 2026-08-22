@@ -991,6 +991,14 @@ def _hub(
         str(Subjects.hub_object_commit()),  # Path-2: responds to object catalog commits
         str(Subjects.hub_object_resolve()),  # Path-2: responds to object id -> key resolves
         str(Subjects.hub_engagement_scope()),  # engagement scope: responds to engagement_id -> targets resolves
+        # ChannelDefaultResponder answers this: the agent runtime resolves a conversation
+        # channel's default engagement at the tool-call stamp seam. The agent's publish half
+        # was granted and this subscribe half was not -- latent only because the hub connects
+        # as a static nats.conf user holding `>`, so this table is never consulted for it.
+        # On callout-minted permissions the subscription is refused, the resolve soft-fails
+        # to "unbound", and a scan that SHOULD have authorized against a configured
+        # engagement is refused for a missing one.
+        str(Subjects.hub_channel_engagement_default_resolve()),
         # HITL approval broker: record a pending marker (agent-forwarded) + resolve an operator reply
         # (channel-router-forwarded) into an authorized approve/deny verdict on the resume rail.
         str(Subjects.hub_approval_record()),

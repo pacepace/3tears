@@ -341,6 +341,23 @@ class TestBootCompleteness:
         # objects), and the pod never subscribes the scope subject.
         assert f"{_NS}.hub.engagement.scope" not in pod.subscribe
 
+    def test_channel_engagement_default_resolve_is_agent_publish_hub_subscribe(self) -> None:
+        # the agent runtime PUBLISHES this at the tool-call stamp seam to resolve the
+        # conversation channel's default engagement; ChannelDefaultResponder, in the hub,
+        # SUBSCRIBES to answer it. The hub half was missing: latent only because the hub
+        # connects as a static nats.conf user holding `>`, so this table is never consulted
+        # for it. The moment the hub moves onto callout-minted permissions -- the path
+        # agents already use -- the subscription is refused and the responder goes dark,
+        # and the symptom is a scan refused for a "missing" engagement that IS configured.
+        agent = _build(Principal.AGENT_POD)
+        assert f"{_NS}.hub.channel.engagement.default.resolve" in agent.publish
+        hub = _build(Principal.HUB)
+        assert f"{_NS}.hub.channel.engagement.default.resolve" in hub.subscribe
+        # read-only for the agent: `.set` / `.clear` are operator actions on the hub's
+        # authenticated admin HTTP surface, so no responder serves them over NATS.
+        assert f"{_NS}.hub.channel.engagement.default.resolve" not in agent.subscribe
+        assert f"{_NS}.hub.channel.engagement.default.set" not in agent.publish
+
     def test_agent_can_reach_l3_and_gateway(self) -> None:
         perm = _build(Principal.AGENT_POD)
         assert f"{_NS}.l3.query" in perm.publish

@@ -34,6 +34,11 @@ silently-broken state the raise exists to prevent.
   bounded restart budgets a fast crash-loop burns through in seconds. So it is retried with bounded
   exponential backoff, and raised once the budget is spent.
 
+The client parameter is typed :class:`~threetears.nats.kv.KvDeclaring`, the narrow "can declare
+or bind a bucket" slice, rather than the whole ``NatsClient``. That is what lets an in-memory
+double satisfy it by construction, and it is why every consumer shares THIS function instead of
+keeping a copy whose only real difference was a looser annotation.
+
 This lives in ``threetears.core`` rather than in ``threetears.nats`` because the bucket NAME is
 :attr:`~threetears.core.collections.base.BaseCollection.L2_BUCKET_SUFFIX` -- a wire fact owned by
 the collection base, shared by the hub's canonical declaration, every consumer's eager bind and the
@@ -50,8 +55,7 @@ from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient
-    from threetears.nats.kv import NatsKvBucket
+    from threetears.nats.kv import KvBucketLike, KvDeclaring
 
 __all__ = [
     "COLLECTIONS_BIND_ATTEMPTS",
@@ -79,12 +83,13 @@ COLLECTIONS_BIND_MAX_BACKOFF_SECONDS: Final[float] = 30.0
 
 
 async def bind_collections_bucket(
-    nats_client: NatsClient,
+    nats_client: KvDeclaring,
     *,
+    component: str | None = None,
     attempts: int = COLLECTIONS_BIND_ATTEMPTS,
     backoff_seconds: float = COLLECTIONS_BIND_BACKOFF_SECONDS,
     max_backoff_seconds: float = COLLECTIONS_BIND_MAX_BACKOFF_SECONDS,
-) -> NatsKvBucket:
+) -> KvBucketLike:
     """bind the shared L2 collections bucket, retrying only the transient half.
 
     Call once at startup, immediately after connect and BEFORE any
@@ -92,7 +97,12 @@ async def bind_collections_bucket(
     client. See the module docstring for why both properties are load-bearing.
 
     :param nats_client: connected canonical NATS wrapper client
-    :ptype nats_client: NatsClient
+    :ptype nats_client: KvDeclaring
+    :param component: name of the binding process, carried on every log line. Several
+        processes bind this same bucket and the interesting failure is an ORDERING one --
+        which of them reached it before the hub declared it -- so a log that does not say
+        who is speaking cannot answer the question it is there for
+    :ptype component: str | None
     :param attempts: how many bind attempts the process spends before giving up
     :ptype attempts: int
     :param backoff_seconds: delay before the second attempt; doubles thereafter
@@ -100,7 +110,7 @@ async def bind_collections_bucket(
     :param max_backoff_seconds: ceiling the doubling delay is clamped to
     :ptype max_backoff_seconds: float
     :return: the bound bucket handle, also installed in the client's bucket cache
-    :rtype: NatsKvBucket
+    :rtype: KvBucketLike
     :raises KvError: the bucket could not be bound within the attempt budget -- it does not exist
         (nothing has declared it) or this principal is not granted it
     :raises KvConfigMismatch: the live bucket carries a configuration this process refuses; raised
@@ -108,7 +118,7 @@ async def bind_collections_bucket(
     """
     backoff = backoff_seconds
     failure: KvError | None = None
-    bucket: NatsKvBucket | None = None
+    bucket: KvBucketLike | None = None
     for attempt in range(1, attempts + 1):
         try:
             bucket = await nats_client.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX, create_if_missing=False)
@@ -119,7 +129,9 @@ async def bind_collections_bucket(
             if attempt == attempts:
                 break
             log.warning(
-                "collections KV bucket not bindable yet, retrying: bucket=%s attempt=%d/%d retry_in=%.1fs: %s",
+                "collections KV bucket not bindable yet, retrying: component=%s bucket=%s "
+                "attempt=%d/%d retry_in=%.1fs: %s",
+                component or "unnamed",
                 COLLECTIONS_BUCKET_SUFFIX,
                 attempt,
                 attempts,
@@ -130,13 +142,20 @@ async def bind_collections_bucket(
             backoff = min(backoff * 2, max_backoff_seconds)
     if failure is not None or bucket is None:
         raise KvError(
-            f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound after "
+            f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound by "
+            f"{component or 'unnamed'} after "
             f"{attempts} attempts. this process BINDS the bucket and never declares it, so either "
             f"the declaring identity (the hub, in its lifespan) has not run, or this principal's "
             f"NATS grant does not cover the bucket. last error: {failure}"
         ) from failure
     log.info(
         "collections KV bucket bound",
-        extra={"extra_data": {"bucket": COLLECTIONS_BUCKET_SUFFIX, "create_if_missing": False}},
+        extra={
+            "extra_data": {
+                "component": component,
+                "bucket": COLLECTIONS_BUCKET_SUFFIX,
+                "create_if_missing": False,
+            }
+        },
     )
     return bucket

@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RECONCILED_KV_STREAM_FIELDS",
     "REQUESTABLE_KV_STREAM_FIELDS",
+    "KvDeclaring",
     "NatsKvBucket",
     "build_kv_stream_config",
     "kv_stream_differences",
@@ -967,6 +968,54 @@ class KvCapable(Protocol):
         create_if_missing: bool = True,
         history: int = 1,
     ) -> KvBucketLike: ...
+
+
+@runtime_checkable
+class KvDeclaring(Protocol):
+    """A client that can DECLARE or BIND a KV bucket -- the other half of the KV slice.
+
+    Sits beside :class:`KvCapable` and exists for the same stated reason: naming the slice a
+    consumer actually requires, rather than the whole :class:`NatsClient`, is what lets an
+    in-memory double satisfy the signature by construction instead of by exemption.
+
+    SEPARATE from :class:`KvCapable` rather than folded into it. ``KvCapable`` declares
+    ``kv_bucket`` only -- the ordinary open -- and its own docstring rests on that ("most
+    consumers of a NATS client only ever call ``kv_bucket``"). Adding a second required method
+    there would un-satisfy every double that implements the one method it advertises, across
+    every consuming repo, to serve the few callers whose subject is the declaration.
+    """
+
+    async def ensure_kv_bucket(
+        self,
+        *,
+        name: str,
+        ttl: timedelta | None = None,
+        storage: str = "memory",
+        history: int = 1,
+        direct: bool = True,
+        create_if_missing: bool = True,
+    ) -> KvBucketLike:
+        """declare a KV bucket's configuration, or bind to one somebody else declared.
+
+        :param name: bucket name suffix, namespace-prefixed by the implementation
+        :ptype name: str
+        :param ttl: time-to-live for entries, or ``None`` for no expiry
+        :ptype ttl: timedelta | None
+        :param storage: ``"memory"`` or ``"file"``
+        :ptype storage: str
+        :param history: historical revisions kept per key
+        :ptype history: int
+        :param direct: the ``allow_direct`` value the bucket must carry
+        :ptype direct: bool
+        :param create_if_missing: ``True`` declares (create + reconcile); ``False`` binds and
+            REFUSES a bucket whose reconciled config differs
+        :ptype create_if_missing: bool
+        :return: ready bucket handle
+        :rtype: KvBucketLike
+        :raises KvError: if bucket creation or binding fails
+        :raises KvConfigMismatch: if ``create_if_missing`` is ``False`` and the live bucket differs
+        """
+        ...
 
 
 @runtime_checkable
