@@ -136,6 +136,29 @@ packages (bumped in lock-step).
   never declares, which is what a principal holding `STREAM.INFO` and no
   `STREAM.CREATE` must say.
 
+- `enforcement`: **new `invalidation_listener` domain** -- every L2-live
+  `CollectionRegistry` must consume the cross-pod invalidation stream, and every
+  start must be paired with a stop. Publishing an invalidation is automatic on
+  each write; CONSUMING it is a separate step, and forgetting it is silent: the
+  pod serves its own stale L1 copy and nothing reports it. Scoping the keyspace
+  per principal made that worse, not better -- a peer used to refresh a SHARED
+  key underneath a forgetful pod, and now nothing else writes those keys at all.
+  Two walkers (`unlistened`, `unpaired`), a per-repo exemption file whose
+  rationales must NAME the subscriber, and a non-vacuity floor checked before the
+  findings and not exemptable, because a scan reaching nothing reports exactly
+  what a clean repo reports.
+
+- `enforcement`: **`common.collection_registry`** -- the registry-detection AST
+  vocabulary the above shares with the L2-scope domain: `dotted`, `callee_names`,
+  `receiver`, `argument_spellings`, `names_a_live_client`,
+  `constructed_registries`, `constructed_registry_lines`, `l2_live_registries`,
+  plus `REGISTRY_CTOR` / `CLIENT_KEYWORDS` / `CLIENT_SPELLINGS` /
+  `L2_BINDER_METHODS`. Two gates were asking the same question of the same syntax
+  from two copies; `CLIENT_SPELLINGS` is the sharp edge, since it is a heuristic
+  list that grows and a form taught to one copy left the other blind. Public by
+  intent -- a walker in another package reaching a private helper is the
+  underscore violation that produced the duplicate.
+
 - `enforcement`: **`logger_coverage` gained a second walker, `call_kwargs`**, and
   the domain's `walker=` argument grew from `{"all"}` to
   `{"all", "missing", "call_kwargs"}`. **This widens the DEFAULT gate**: every
