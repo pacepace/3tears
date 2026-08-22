@@ -750,8 +750,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             first cache access under load. this covers the ONE path
             neither of them sees -- ``nats_client=`` passed straight to
             the constructor, which wins over the registry default and
-            never calls either. deliberately NOT a :class:`KvError` -- three
-            of this method's four call sites sit inside ``except
+            never calls either. deliberately NOT a :class:`KvError` -- four
+            of this method's five call sites sit inside ``except
             KvError`` handlers that degrade to a warning, so a
             ``KvError`` here would leave the fleet running with L2
             silently off

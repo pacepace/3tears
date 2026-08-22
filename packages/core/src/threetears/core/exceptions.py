@@ -37,14 +37,14 @@ class L2ScopeError(RuntimeError):
     """Base for the two ways a registry's L2 key scope can be wrong.
 
     **Deliberately not a subclass of** :class:`threetears.nats.errors.KvError`, and that is the
-    whole reason it is its own hierarchy. Three of the four :meth:`BaseCollection.l2_key` call
-    sites (``_get_from_l2`` / ``_save_to_l2`` / ``_delete_from_l2``) sit inside ``except
-    KvError`` handlers that degrade to a warning, so a ``KvError`` raised here would be
-    swallowed and the fleet would run with L2 silently off -- the exact degradation the
-    fail-loud decision exists to prevent. The fourth (``l2_cas_mutate``) deliberately does NOT
-    degrade, because L2 is the source of truth there, so a ``KvError`` would additionally be
-    inconsistent between the four: swallowed at three sites and propagating at the one where a
-    missing scope matters most. A distinct type behaves identically at all four.
+    whole reason it is its own hierarchy. Four of the five :meth:`BaseCollection.l2_key` call
+    sites (``_get_from_l2`` / ``_save_to_l2`` / ``_delete_from_l2`` / ``delete_l2_entry``) sit
+    inside ``except KvError`` handlers that degrade to a warning, so a ``KvError`` raised here
+    would be swallowed and the fleet would run with L2 silently off -- the exact degradation
+    the fail-loud decision exists to prevent. The fifth (``l2_cas_mutate``) deliberately does
+    NOT degrade, because L2 is the source of truth there, so a ``KvError`` would additionally
+    be inconsistent between the five: swallowed at four sites and propagating at the one where
+    a missing scope matters most. A distinct type behaves identically at all five.
     """
 
 
