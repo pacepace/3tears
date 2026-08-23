@@ -157,6 +157,12 @@ packages (bumped in lock-step).
   never declares, which is what a principal holding `STREAM.INFO` and no
   `STREAM.CREATE` must say.
 
+- `registry`: **`build_heartbeat_collection_registry(...)`** -- the registry
+  server's own L2-live registry and the `HeartbeatCollection` snapped onto it,
+  returned as a pair. That collection has **no L3**, so this process's L2 is a
+  SOURCE OF TRUTH rather than a cache -- which is why the registry server is one
+  of the processes that must not lose its invalidation listener.
+
 - `enforcement`: **new `invalidation_listener` domain** -- every L2-live
   `CollectionRegistry` must consume the cross-pod invalidation stream, and every
   start must be paired with a stop. Publishing an invalidation is automatic on
@@ -167,7 +173,10 @@ packages (bumped in lock-step).
   Two walkers (`unlistened`, `unpaired`), a per-repo exemption file whose
   rationales must NAME the subscriber, and a non-vacuity floor checked before the
   findings and not exemptable, because a scan reaching nothing reports exactly
-  what a clean repo reports.
+  what a clean repo reports. A consumer adopts it with
+  `InvalidationListenerConfig` + `run_invalidation_listener_enforcement`, the
+  same shape as every sibling domain; `minimum_live_registries` is required with
+  no default, so the floor is a number somebody decided rather than inherited.
 
 - `enforcement`: **`common.collection_registry`** -- the registry-detection AST
   vocabulary the above shares with the L2-scope domain: `names_a_live_client`,
