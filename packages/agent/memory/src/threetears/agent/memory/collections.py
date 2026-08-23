@@ -4,12 +4,12 @@ Also wires the sibling collections for tables the memory package owns
 but previously lacked Collection coverage: :class:`MediaCollection`,
 :class:`MediaContentCollection`, :class:`MemoryChunkCollection` (adopted
 under namespace-task-01 phase 8.5b). Each Collection resolves its L3
-pool via the registry (``self.l3_pool``) — the bespoke
+pool via the registry (``self.l3_pool``) -- the bespoke
 ``_postgres_pool`` field is retired in favour of the registry pattern
 :class:`ConversationCollection` already uses.
 
 Complex hybrid-search queries (vector + FTS + MMR) live as methods on
-these Collections with documented ``# cache-bypass:`` comments — the
+these Collections with documented ``# cache-bypass:`` comments -- the
 Collection stays the single entry point for memory-table SQL even when
 the query shape is not primary-key addressable and therefore cannot
 benefit from L1 row caching.
@@ -135,7 +135,7 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
 #
 # Before v0.8.0, each factory hand-wrote the SQLAlchemy
 # ``Table(...)`` declaration alongside the Collection's
-# ``TableSchema`` — two declarations of the same shape inside one
+# ``TableSchema`` -- two declarations of the same shape inside one
 # file. v0.8.0 enriched ``TableSchema`` (shards 01-03) so the factory
 # bodies can delegate to ``to_sqlalchemy_table`` (shard 04), closing
 # the duplication trap that the v0.7.5 factories themselves were
@@ -370,7 +370,7 @@ def _admit_and_rank(
     exactly 0, and a memory older than a few multiples of the recency half-life
     contributes a recency term indistinguishable from 0. Only the semantic weight
     is left to clear a threshold calibrated as though all three could fire, so a
-    perfectly relevant month-old memory is unreachable at any similarity —
+    perfectly relevant month-old memory is unreachable at any similarity --
     ``0.55 x 0.50 = 0.275`` against a 0.4 gate, for weights and a cosine range
     that are both ordinary.
 
@@ -380,8 +380,8 @@ def _admit_and_rank(
 
     Admission therefore consults only per-query evidence:
 
-    - semantic — ``similarity >= similarity_threshold``
-    - keyword — the row actually matched the FTS query
+    - semantic -- ``similarity >= similarity_threshold``
+    - keyword -- the row actually matched the FTS query
 
     The keyword arm matters because an FTS-only row carries ``similarity`` 0.0 as
     a *placeholder* rather than a measurement (it never entered the vector
@@ -518,7 +518,7 @@ _MEMORIES_SELECT_COLUMNS = (
     "memory_id, agent_id, customer_id, user_id, type_memory, content, "
     "date_created, date_updated, embedding::text AS embedding, "
     "conversation_id, message_id_source, summary, search_vector, alias, "
-    # v024 salience substrate — keep in sync with the memories migration
+    # v024 salience substrate -- keep in sync with the memories migration
     # column set so raw-SQL read paths hydrate the full entity.
     "salience, last_decayed_at, last_accessed, evergreen, superseded_by, "
     # v025 tags JSONB label set. No codec is registered on the raw fetch
@@ -538,7 +538,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     vector + FTS + MMR queries that used to live raw on the pool; they
     carry ``# cache-bypass:`` justification because the query shape is
     not primary-key-addressable and therefore cannot benefit from the
-    L1 row cache — but keeping them on the Collection preserves the
+    L1 row cache -- but keeping them on the Collection preserves the
     single-entry-point contract enforcement test walker #3 relies on.
 
     CRUD is generated from :attr:`schema`: embedding is ``VECTOR_TYPE``
@@ -893,7 +893,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         when ``caller_user_id`` is provided the rbac evaluator
         decides ``memory.read`` on the ``(agent_id, customer_id)``
         memory namespace before the SQL runs. ``customer_id`` is
-        required for evaluator invocation — single-argument
+        required for evaluator invocation -- single-argument
         ``find_by_scope(agent_id)`` is an agent-internal row-scan
         path (no user dimension) and runs without evaluation.
 
@@ -1001,7 +1001,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :param customer_id: owning customer UUID
         :ptype customer_id: UUID
         :param caller_user_id: invoking user UUID (``None`` for
-            agent-internal writes — owner short-circuit path)
+            agent-internal writes -- owner short-circuit path)
         :ptype caller_user_id: UUID | None
         :param caller_agent_id: invoking agent UUID
         :ptype caller_agent_id: UUID | None
@@ -1032,7 +1032,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     async def count_by_user(self, user_id: UUID, *, agent_id: UUID) -> bool:
         """check whether any memory row exists for ``(agent_id, user_id)``.
 
-        returns a boolean rather than an exact count — every caller
+        returns a boolean rather than an exact count -- every caller
         today uses the existence flag (tools.py first-write ensure
         gate). keeps the query cheap (``SELECT EXISTS(...)``) and
         side-steps full row-count pagination concerns. ``agent_id`` is
@@ -1570,12 +1570,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     ) -> list[dict[str, Any]]:
         """FTS keyword search for the add/search memory tools.
 
-        complements :meth:`search_by_semantic` — run both in parallel
+        complements :meth:`search_by_semantic` -- run both in parallel
         and merge on ``memory_id``. ``agent_id`` is the partition
         column on memories and is required.
 
         v0.7.5: ``date_after`` / ``date_before`` (inclusive) narrow by
-        ``date_created`` — mirrors the equivalent filter on
+        ``date_created`` -- mirrors the equivalent filter on
         :meth:`search_by_semantic` so the two legs return a consistent
         window when run in parallel.
 
@@ -1781,7 +1781,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         Cache coherence: the raw L3 decay leaves L1/L2 holding the
         pre-decay salience, so each decayed pk is invalidated (via
-        :meth:`invalidate_cache`) — otherwise a later full-entity save
+        :meth:`invalidate_cache`) -- otherwise a later full-entity save
         from the stale cache could write the old salience back. The
         ``salience``/``last_decayed_at`` columns are also ``immutable`` to
         the entity-UPDATE generator, so the two defenses compose: the
@@ -1862,7 +1862,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         )
         # cache coherence: invalidate each bumped row so a subsequent get()
         # re-reads the fresh salience from L3 rather than serving a stale
-        # cached row (a bounded set — the ids surfaced this retrieval).
+        # cached row (a bounded set -- the ids surfaced this retrieval).
         for memory_id in memory_ids:
             await self.invalidate_cache((agent_id, memory_id))
         return None
@@ -1878,7 +1878,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         Dream consolidation clusters memories WITHIN a pinned scope grain
         and the gist inherits that grain's identity, so the scope filter
-        is EXACT — a ``None`` grain matches ``IS NULL`` (not "any"). That
+        is EXACT -- a ``None`` grain matches ``IS NULL`` (not "any"). That
         is the isolation boundary: a user-scoped run
         (``customer_id``+``user_id`` set) sees only that user's rows; an
         agent-scoped run (both ``None``) sees only agent-scoped rows. This
@@ -1887,7 +1887,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         Excludes ``evergreen`` rows (pinned, never consolidated) and rows
         with no ``embedding`` (clustering needs a vector). Excludes
-        already-superseded rows — BUT only when their gist still exists:
+        already-superseded rows -- BUT only when their gist still exists:
         a source whose ``superseded_by`` points at a memory that no longer
         exists (e.g. the gist was bulk-deleted with its anchor
         conversation) becomes eligible again, so a fresh gist regenerates
@@ -1969,7 +1969,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         Sets ``superseded_by = gist_id`` on each source so ambient
         retrieval drops them (a gist now represents them) while direct
-        recall by id / alias still finds them — dormant, not gone, and
+        recall by id / alias still finds them -- dormant, not gone, and
         non-destructive (the source's own ``salience`` / ``content`` are
         untouched). Partition-scoped by ``agent_id``.
 
@@ -2009,7 +2009,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
     the media parent record carries a category discriminator and a
     JSONB metadata blob; child rows live in
     :class:`MediaContentCollection` and :class:`MemoryChunkCollection`.
-    adopted under namespace-task-01 phase 8.5b — the v006 migration
+    adopted under namespace-task-01 phase 8.5b -- the v006 migration
     had no Collection before now. CRUD is generated from
     :attr:`schema` via :class:`SchemaBackedCollection`; no CAS path
     because the table has no ``date_updated`` fence column distinct
@@ -2682,7 +2682,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
+        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) --
         # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
             "SELECT content FROM media_content WHERE agent_id = $1 AND content_id = $2 AND user_id = $3",
@@ -2862,7 +2862,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         ``chunk_id_after`` to restrict the candidate pool to chunks
         whose ``chunk_id`` is strictly greater than the cursor, or
         ``chunk_id_before`` for the symmetric backward direction.
-        The cursor predicate is applied AFTER the auth filter — auth
+        The cursor predicate is applied AFTER the auth filter -- auth
         scoping is non-negotiable, cursor is just for ordering within
         the auth-scoped result set. Passing both raises ValueError.
 
@@ -2887,10 +2887,10 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype fts_min_len: int
         :param fts_max_len: truncation length for FTS queries
         :ptype fts_max_len: int
-        :param chunk_id_after: optional cursor — restrict candidate
+        :param chunk_id_after: optional cursor -- restrict candidate
             pool to chunks with chunk_id strictly greater
         :ptype chunk_id_after: UUID | None
-        :param chunk_id_before: optional cursor — restrict to chunks
+        :param chunk_id_before: optional cursor -- restrict to chunks
             with chunk_id strictly less. Mutually exclusive with
             ``chunk_id_after``
         :ptype chunk_id_before: UUID | None
@@ -2926,7 +2926,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         # media (through the new memory parent FK). not primary-key-
         # addressable; L1 row cache cannot help. method on Collection
         # preserves single entry point. The LEFT JOIN matches media
-        # rows whose ``memory_id`` equals the chunk's ``memory_id`` —
+        # rows whose ``memory_id`` equals the chunk's ``memory_id`` --
         # i.e. the chunk's parent memory IS the media's parent memory.
         # Transcript chunks naturally LEFT JOIN to NULL because their
         # parent memory has no media child.
@@ -3155,7 +3155,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
+        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) --
         # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
             "SELECT content, memory_id FROM memory_chunks WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
@@ -3195,7 +3195,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         Auth scoping: every query carries the full ``(user_id,
         agent_id, customer_id)`` triple. The triple matches the
         partition + sub-scope + row-owner triple every other memory
-        SQL site enforces — skipping any one is a cross-tenant data
+        SQL site enforces -- skipping any one is a cross-tenant data
         leak.
 
         :param memory_id: parent memory UUID
@@ -3208,10 +3208,10 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype customer_id: UUID
         :param limit: max chunks to return
         :ptype limit: int
-        :param chunk_id_after: cursor — return chunks with chunk_id
+        :param chunk_id_after: cursor -- return chunks with chunk_id
             strictly greater
         :ptype chunk_id_after: UUID | None
-        :param chunk_id_before: cursor — return chunks with chunk_id
+        :param chunk_id_before: cursor -- return chunks with chunk_id
             strictly less. Mutually exclusive with ``chunk_id_after``
         :ptype chunk_id_before: UUID | None
         :return: chunk row dicts in chunk_id ASC order
@@ -3365,9 +3365,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype customer_id: UUID
         :param limit: max chunks to return
         :ptype limit: int
-        :param chunk_id_after: cursor — chunks with chunk_id > cursor
+        :param chunk_id_after: cursor -- chunks with chunk_id > cursor
         :ptype chunk_id_after: UUID | None
-        :param chunk_id_before: cursor — chunks with chunk_id < cursor
+        :param chunk_id_before: cursor -- chunks with chunk_id < cursor
             (returned DESC then reversed)
         :ptype chunk_id_before: UUID | None
         :return: chunk row dicts in narrative order
@@ -3445,7 +3445,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         the only addition is a ``WHERE mc.memory_id = :memory_id``
         predicate that narrows the candidate pool to chunks under
         one parent memory. Auth scoping is enforced verbatim from
-        the cross-memory path — the memory_id filter is purely
+        the cross-memory path -- the memory_id filter is purely
         additive, never a replacement for the auth triple.
 
         :param memory_id: parent memory UUID to scope the search to
@@ -3567,7 +3567,7 @@ _MEMORY_REF_SHORT_DESC_MAX = 150
 class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     """three-tier collection for :class:`MemoryRefEntity`.
 
-    namespace-task-01 phase 8.5l-2: retires :class:`MemoryLedger` — the
+    namespace-task-01 phase 8.5l-2: retires :class:`MemoryLedger` -- the
     bespoke wrapper that sat on top of ``SQLiteBackend`` with hand-rolled
     pool.fetch / pool.execute against ``conversation_memory_refs``. on
     top of 8.5l-1's composite-pk :class:`BaseCollection` support, the
@@ -3775,7 +3775,7 @@ async def assert_no_consolidation_cycle(
     provenance chain leads back to the gist).
 
     A ``visited`` set makes the walk loop-safe and keeps a legitimate
-    diamond DAG — two sources that share a common ancestor — from
+    diamond DAG -- two sources that share a common ancestor -- from
     false-positiving: only the target gist is treated as a cycle, never a
     merely-revisited node. Read-only over the edge graph; the source
     rows are never mutated.

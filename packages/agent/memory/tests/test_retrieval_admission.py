@@ -220,7 +220,7 @@ class TestAgedMemoryAdmission:
         assert results[0]["memory_id"] == row["memory_id"]
         assert results[0]["hybrid_score"] < THRESHOLD, (
             "guard: this test is only meaningful while the composite sits BELOW "
-            "the threshold — otherwise it would pass under the old gate too"
+            "the threshold -- otherwise it would pass under the old gate too"
         )
 
     async def test_aged_irrelevant_memory_is_still_cut(
@@ -248,7 +248,7 @@ class TestAgedMemoryAdmission:
 
 
 class TestKeywordOnlyAdmission:
-    """A keyword hit is evidence too — admitting on similarity alone loses it."""
+    """A keyword hit is evidence too -- admitting on similarity alone loses it."""
 
     async def test_keyword_only_match_is_admitted(
         self,
