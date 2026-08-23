@@ -46,6 +46,8 @@ def _reference_identity_versions_table(metadata: sa.MetaData) -> sa.Table:
                 "anti_sycophant",
                 "self_improvement",
                 "presence",
+                "wants",
+                "needs",
                 name="identity_block_key",
                 create_constraint=True,
             ),

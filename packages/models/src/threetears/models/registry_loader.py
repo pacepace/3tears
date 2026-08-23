@@ -60,6 +60,38 @@ __all__ = [
 _PER_MILLION = Decimal(1_000_000)
 
 
+def _first_present(row: Mapping[str, Any], *keys: str) -> Any:
+    """return the first key PRESENT and non-None, in the order given.
+
+    Not ``a or b``. A cost of ``Decimal("0")`` and a ``context_window`` of ``0``
+    are falsy but entirely real, and the ``or`` form silently discarded them:
+    it fell through to the alternate column name, found nothing, and produced
+    ``None``. Every EMBEDDING model tripped it, because an embedding has no
+    output tokens and therefore a genuinely zero output cost -- so the registry
+    recorded no output price, the cost calculator took its "capability row
+    missing cost rates" branch, and the call was priced at nothing while the
+    admin-entered price sat unread in the product's own table.
+
+    Absent stays absent: a key that is missing from every alternative returns
+    ``None``, because inventing a zero would be a fabricated price rather than
+    a recovered one.
+
+    :param row: the source row
+    :ptype row: Mapping[str, Any]
+    :param keys: candidate column names, most-canonical first
+    :ptype keys: str
+    :return: the first non-None value, or None when no candidate is present
+    :rtype: Any
+    """
+    result: Any = None
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            result = value
+            break
+    return result
+
+
 def _per_token(per_million: Any) -> Decimal | None:
     """convert a per-1M-tokens cost (admin-friendly) to per-token Decimal.
 
@@ -191,16 +223,16 @@ def register_model_capabilities_bulk(
                 default_model_status,
             ),
             provider_name=row.get("provider_name"),
-            context_window=(row.get("context_window") or row.get("context_window_tokens")),
+            context_window=_first_present(row, "context_window", "context_window_tokens"),
             max_output_tokens=row.get("max_output_tokens"),
             supports_streaming=row.get("supports_streaming"),
             supports_tools=row.get("supports_tools"),
             supports_vision=row.get("supports_vision"),
             cost_per_input_token=_per_token(
-                row.get("cost_per_1m_input_tokens") or row.get("cost_per_1m_prompt_tokens"),
+                _first_present(row, "cost_per_1m_input_tokens", "cost_per_1m_prompt_tokens"),
             ),
             cost_per_output_token=_per_token(
-                row.get("cost_per_1m_output_tokens") or row.get("cost_per_1m_completion_tokens"),
+                _first_present(row, "cost_per_1m_output_tokens", "cost_per_1m_completion_tokens"),
             ),
             cost_per_cache_read_token=_per_token(row.get("cost_per_1m_cache_read_tokens")),
             cost_per_cache_write_token=_per_token(row.get("cost_per_1m_cache_write_tokens")),

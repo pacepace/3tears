@@ -10,12 +10,14 @@ possible to rev ``nats-py`` without breaking every catch site.
 from __future__ import annotations
 
 __all__ = [
+    "KvConfigMismatch",
     "KvError",
     "NamespaceNotConfiguredError",
     "NatsClientError",
     "NoRespondersError",
     "OpLogError",
     "OpLogSequenceConflict",
+    "PayloadTooLargeError",
     "PublishError",
     "PublishTimeoutError",
     "RequestError",
@@ -89,6 +91,63 @@ class PublishTimeoutError(PublishError):
     """
 
 
+class PayloadTooLargeError(PublishError):
+    """raised when a publish is bigger than the broker will accept.
+
+    ``nats-py`` refuses an oversized publish **client-side**, before anything
+    leaves the process, by comparing the payload against the ``max_payload`` the
+    server advertised in its INFO -- 1 MB on an untuned broker. That refusal
+    arrived here as a generic :class:`PublishError` carrying a stringified
+    cause, which is the one classification a caller most needs to tell apart:
+    "the frame we built is too big" is a bug in what we built, and "the broker
+    went away" is an outage. They deserve different log lines, and only one of
+    them is worth retrying -- **retrying an oversized publish is an infinite
+    loop that logs**, because nothing about the next attempt is smaller.
+
+    The failure is quiet in exactly the deployments that produce it. A room
+    frame crossing NATS is published once and fanned out; the publisher's own
+    socket already has the content, so the person who caused the frame sees
+    everything and the room sees nothing. Single-pod tests never reach the
+    publish at all.
+
+    Both numbers are attributes rather than only message text, so a caller can
+    act on them -- pick a smaller shape, or say by how much it missed --
+    without parsing prose. :attr:`max_payload` is ``None`` when the client
+    could not say what the broker advertised.
+
+    :ivar subject: the subject the publish targeted
+    :ivar size_bytes: the size of the payload that was refused
+    :ivar max_payload: the broker's advertised limit, when known
+    """
+
+    def __init__(
+        self,
+        *,
+        subject: str,
+        size_bytes: int,
+        max_payload: int | None,
+    ) -> None:
+        """build the error, naming both numbers in the message and on the instance.
+
+        :param subject: the subject the publish targeted
+        :ptype subject: str
+        :param size_bytes: size of the refused payload
+        :ptype size_bytes: int
+        :param max_payload: the broker's advertised limit, when known
+        :ptype max_payload: int | None
+        :return: nothing
+        :rtype: None
+        """
+        limit = f"{max_payload} bytes" if max_payload is not None else "unknown (not connected)"
+        super().__init__(
+            f"publish refused as too large: subject={subject}: "
+            f"payload is {size_bytes} bytes, broker max_payload is {limit}"
+        )
+        self.subject = subject
+        self.size_bytes = size_bytes
+        self.max_payload = max_payload
+
+
 class SubscribeError(NatsClientError):
     """raised when a subscription operation fails to register.
 
@@ -144,6 +203,32 @@ class KvError(NatsClientError):
     surface as a return-value of ``None`` from
     :meth:`threetears.nats.NatsKvBucket.update`; this exception is
     reserved for transport / bucket-existence failures.
+    """
+
+
+class KvConfigMismatch(NatsClientError):
+    """raised when an existing KV bucket's config differs from the requested one.
+
+    **deliberately NOT a :class:`KvError` subclass, and that is the whole point
+    of the type.** :class:`KvError` is what ``BaseCollection``'s L2 accessors
+    catch and degrade on -- bucket *resolution* sits inside those catches -- so a
+    mismatch raised as a ``KvError`` would be downgraded to a per-operation
+    warning and the fleet would run with L2 silently disabled. a "fail loud" the
+    caller already swallows is not fail-loud. this type sits beside
+    ``KvError`` under :class:`NatsClientError` instead, where nothing on the
+    read/write path catches it.
+
+    raised only by the BIND path (``create_if_missing=False``), which is the
+    reader's contract: a reader states the config it requires and refuses to run
+    against a bucket that does not carry it, rather than silently binding to
+    whatever exists. the DECLARING path (``create_if_missing=True``) reconciles
+    the same field set in place instead, because a declarer is authorised to fix
+    what it finds.
+
+    the compared field set is deliberately narrow -- see
+    :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS`. requested and
+    server-side stream config differ on some field on essentially every open, so
+    a full comparison would raise forever.
     """
 
 

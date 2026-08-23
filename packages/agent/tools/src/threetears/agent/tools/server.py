@@ -997,6 +997,34 @@ class ToolServer:
         self._calls_idle.set()
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
+        # lifecycle hooks the OWNER of this server registers before ``serve()``, run once the
+        # connection exists and before anything is subscribed or registered. see
+        # :meth:`add_connected_callback`.
+        self._connected_callbacks: list[Callable[["NatsClient"], Awaitable[None]]] = []
+
+    def add_connected_callback(self, callback: Callable[["NatsClient"], Awaitable[None]]) -> None:
+        """register a hook run once this server's NATS connection is established.
+
+        Callbacks run inside :meth:`serve`, in registration order, AFTER the connection exists and
+        the subject namespace is bound, and BEFORE the server subscribes its call subject or
+        publishes its registration manifest -- so a hook that wires process state the pod needs to
+        answer a call cannot lose the race with the first call. A callback that raises takes the
+        startup down with it, deliberately: this is wiring, and a half-wired pod that registers
+        anyway is the failure mode the ordering above exists to prevent.
+
+        This is the one seam through which the connection reaches its OWNER, and it is narrow on
+        purpose. :attr:`is_connected` remains the only public view on connection STATE; the client
+        object is still not exposed as an attribute, because a tool caller has no legitimate need
+        to subscribe / request / publish on the server's connection (those flows go through the
+        NATS proxies or a client of their own). A lifecycle owner does -- ``ToolServerBootstrap``
+        builds the pod's three-tier collection stack here (``coll-task-07c``).
+
+        :param callback: a coroutine function taking the connected canonical NATS client
+        :ptype callback: Callable[[NatsClient], Awaitable[None]]
+        :return: nothing
+        :rtype: None
+        """
+        self._connected_callbacks.append(callback)
 
     @property
     def pod_id(self) -> str:
@@ -1070,11 +1098,15 @@ class ToolServer:
         ``close()``; ``False`` otherwise. callers that need to gate
         publish work on the server's connectivity state should use this
         property rather than reaching into ``_nc``. this is the only
-        public view on the NATS client — the client itself is NOT
-        exposed because tool callers have no legitimate need to
-        ``subscribe``/``request``/``publish`` on the server's
-        connection (those flows happen via NATS proxies or their own
-        clients).
+        public view on connection STATE, and the client itself is still
+        not exposed as an attribute, because tool callers have no
+        legitimate need to ``subscribe``/``request``/``publish`` on the
+        server's connection (those flows happen via NATS proxies or
+        their own clients). the one narrow seam that DOES hand the
+        client out is :meth:`add_connected_callback`, and it is for the
+        server's lifecycle OWNER rather than for a caller: a hook
+        registered there runs once, at startup, before anything is
+        subscribed.
 
         :return: true iff ``serve()`` has connected and ``shutdown()``
             has not yet closed the client
@@ -1336,6 +1368,15 @@ class ToolServer:
         # (single-use proxy-assertion nonces). always provisioned under enforce-only; fail-closed
         # until the first JWKS fetch.
         assert self._nc is not None  # connected or injected above
+
+        # OWNER lifecycle hooks, before anything is subscribed or registered: whatever a hook
+        # wires (the pod's three-tier collection stack, in ``ToolServerBootstrap``'s case) must be
+        # in place before this pod is reachable or discoverable. a raise here aborts startup, and
+        # that is the intent -- a half-wired pod that registers anyway is the race this ordering
+        # exists to close.
+        for connected_callback in self._connected_callbacks:
+            await connected_callback(self._nc)
+
         if self._jwks_provider is None:
             owned = CachedHubJwksProvider(self._nc, request_timeout_seconds=get_jwks_request_timeout())
             await owned.start()

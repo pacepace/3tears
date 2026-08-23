@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 
+# parity-exempt: subset shim for nats.js.KeyValue exposing only the get/put/create/update/delete surface KVLease + workspace tests exercise; full nats-py KeyValue carries history/watch/purge methods unrelated to KVLease
 class FakeDataStore:
     """
     in-memory DataStore stub capturing executed SQL and emulating the

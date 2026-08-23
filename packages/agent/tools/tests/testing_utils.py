@@ -63,6 +63,7 @@ def make_nats_mock() -> AsyncMock:
     return nats
 
 
+# parity-exempt: asyncpg Pool subset shim used by the agent-tools test_helpers module; the test_helpers shim returns rows from a dict the agent-tools collection tests share
 class FakePool:
     """In-memory mock of asyncpg.Pool for testing."""
 

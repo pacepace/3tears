@@ -1,10 +1,11 @@
 """
 enforcement: a KV grant must name the bucket its opener actually creates.
 
-A ``kv_buckets`` entry in :mod:`threetears.nats.subject_permissions` is not a
-description -- :func:`threetears.nats.user_jwt.mint_user_jwt` turns each one into
-``$KV.{bucket}.>`` data grants and ``KV_{bucket}`` JetStream control grants. The
-string has to be the bucket's REAL, materialised name.
+A ``JsResource.kv(...)`` entry in :mod:`threetears.nats.subject_permissions` is not
+a description -- :func:`threetears.nats.user_jwt.mint_user_jwt` turns each one into
+a ``$KV.{bucket}`` publish grant (whole-subtree, or narrowed to the principal's key
+scope) and ``KV_{bucket}`` JetStream control grants. The string has to be the
+bucket's REAL, materialised name.
 
 **The failure is silent in both directions, which is why it needs a guard.** Grant a
 name nothing creates and the principal is authorised against a bucket that does not
@@ -12,6 +13,12 @@ exist while the one it opens is ungranted; the op then blocks to its deadline ra
 than raising, indistinguishable from an unreachable broker.
 ``test_user_jwt_scoped_grant_live.py`` exists for that shape. Remove a grant something
 does need and you get the same silence.
+
+:mod:`threetears.nats._diagnostics` now names this cause in the log -- from the
+server's own refusal frame, and again at the deadline -- so the diagnosis is no
+longer only in a reader's head. It does not make the grant correct, which is what
+this guard is for: a log line an operator must read at the right moment is a worse
+place to catch a wrong name than a test that fails before the deploy.
 
 **Three naming conventions are live here, and all three are legitimate.** This was
 learned the expensive way: an earlier version of this guard rejected the third as
@@ -37,11 +44,16 @@ in this repository and can therefore be compared to each other.
 from __future__ import annotations
 
 import pytest
-from threetears.nats.subject_permissions import Principal, build_permissions
+from threetears.nats.subject_permissions import Principal, build_permissions, kv_bucket_names
 
 #: Stand-in namespace, visually distinct from any bucket suffix so a mis-slice reads
 #: as wrong in the failure message rather than as plausible.
 _NAMESPACE = "nsprobe"
+
+#: Pod ids are UUIDs because the L2 key scope is derived from them, and a scope derived from
+#: anything else is not provably collision-free -- ``kv_key_scope_for`` refuses a slug outright.
+_AGENT_ID = "019470a8-b5c3-7def-8123-0000000000a1"
+_POD_ID = "01947100-0000-7000-8000-0000000000b1"
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +93,7 @@ def test_the_lease_bucket_a_tool_pod_is_granted_is_the_one_kvlease_opens() -> No
         f"KVLease's default is a SUFFIX that kv_bucket prefixes; {suffix!r} looks like it has "
         f"baked in a namespace of its own, which is how the name gained one twice."
     )
-    granted = build_permissions(Principal.TOOL_POD, pod_id="pod-1", conn_id="conn-1").kv_buckets
+    granted = kv_bucket_names(build_permissions(Principal.TOOL_POD, pod_id=_POD_ID, conn_id="conn-1"))
     assert f"{_NAMESPACE}-{suffix}" in granted, (
         f"a tool pod is not granted the bucket KVLease actually opens ('{_NAMESPACE}-{suffix}'); "
         f"it holds {list(granted)}."
@@ -104,7 +116,7 @@ def test_the_registry_catalog_grant_matches_the_bucket_the_registry_opens() -> N
     from threetears.registry.server import RegistryServer
 
     default = inspect.signature(RegistryServer.__init__).parameters["kv_bucket"].default
-    granted = build_permissions(Principal.REGISTRY, conn_id="conn-1").kv_buckets
+    granted = kv_bucket_names(build_permissions(Principal.REGISTRY, conn_id="conn-1"))
     assert default in granted, (
         f"the registry opens bucket {default!r} with a direct js.key_value (no namespace prefix), "
         f"but its grants are {list(granted)}."
@@ -113,3 +125,32 @@ def test_the_registry_catalog_grant_matches_the_bucket_the_registry_opens() -> N
         f"the catalog grant has been prefixed to '{_NAMESPACE}-{default}', which names a bucket "
         f"the registry never opens."
     )
+
+
+def test_the_epoch_bucket_the_pods_are_granted_is_the_one_epochclient_opens() -> None:
+    """The epoch grant and the bucket the client actually opens must agree.
+
+    Pinned as a PAIR for the reason this file exists: a missing or misspelled
+    KV grant does not raise. The JetStream call blocks to its deadline and
+    surfaces as an unreachable broker, so the symptom points at the network
+    rather than at a permission the grant never carried. Asserting either side
+    alone passes throughout that.
+
+    Both halves live in this repository, which is what makes them comparable
+    here: ``EpochClient`` names the bucket suffix, and ``subject_permissions``
+    grants it to the three principals that bump or read an epoch.
+    """
+    from threetears.epoch.client import _EPOCH_BUCKET
+
+    for principal, kwargs in (
+        (Principal.AGENT_POD, {"agent_id": _AGENT_ID, "pod_id": "pod-1", "conn_id": "conn-1"}),
+        (Principal.HUB, {"conn_id": "conn-1"}),
+        (Principal.GATEWAY, {"conn_id": "conn-1"}),
+    ):
+        granted = kv_bucket_names(build_permissions(principal, **kwargs))
+        assert f"{_NAMESPACE}-{_EPOCH_BUCKET}" in granted, (
+            f"{principal} is not granted the epoch bucket "
+            f"('{_NAMESPACE}-{_EPOCH_BUCKET}'); it holds {list(granted)}. Every epoch read "
+            f"and bump from this principal would block to its deadline and read as an "
+            f"unreachable broker."
+        )

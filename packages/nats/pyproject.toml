@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-nats"
-version = "0.26.1"
+version = "0.27.0"
 description = "Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.26.0,<0.27.0",
+    "3tears-observe>=0.27.0,<0.28.0",
     "pydantic>=2.10",
 ]
 
@@ -37,7 +37,13 @@ dependencies = [
 # every install — including aarch64 targets that have prebuilt wheels for
 # everything else in the tree.
 client = [
-    "nats-py>=2.10",
+    # >=2.15 because kv.py's create-or-reconcile passes
+    # StreamConfig(subject_delete_marker_ttl=...), a field 2.14 does not have.
+    # The floor sat at 2.10 while that call landed, so a consumer resolving
+    # anything in 2.10..2.14 built clean and died at runtime with an unexpected
+    # keyword -- the mixed-install failure mode this repo already warns about,
+    # arriving through an undeclared floor instead of an unbounded sibling.
+    "nats-py>=2.15",
     "nkeys>=0.2",
 ]
 

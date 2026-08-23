@@ -1,0 +1,13 @@
+# exemptions for tests/enforcement/test_l2_scope_discipline.py (coll-task-03).
+#
+# format (one entry per violation, each preceded by exactly one rationale line):
+#   # rationale: <specific reason, >= 30 chars, not a blanket phrase>
+#   relative/posix/path.py:LINE:Symbol
+#
+# LINE may be a concrete line number or '*' for a file-wide exemption of that symbol.
+#
+# Deliberately empty. Both rules pin a decision that was reached on evidence and whose
+# violation is invisible at runtime: a hand-derived scope presents as a cache that
+# occasionally serves another principal's row, and a widened except clause presents as
+# nothing at all. "This one call site is fine" is the shape both failures take, so an
+# entry here needs a reason that survives being read back in a year.

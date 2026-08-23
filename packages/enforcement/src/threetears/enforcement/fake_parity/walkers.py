@@ -6,11 +6,14 @@ declare what production protocol it stands in for, via one of:
 1. **subclass declaration** -- ``class _FakeKvBucket(NatsKvBucket):``
    the walker reads the AST class bases and skips parity checks for
    any fake that has at least one base other than ``object``. the
-   subclass declaration is the parity declaration; mypy's structural
-   typing already enforces method-surface compatibility on imported
-   bases. the walker accepts ``object`` literally (no parity declared)
-   as a violation, every other base name as "parity declared via
-   subclass".
+   subclass declaration IS the parity declaration, on the assumption
+   that a type checker covers the surface. **check that assumption in
+   your repo before relying on it**: a consumer that excludes its test
+   trees from mypy (3tears does -- it type-checks ``packages/*/src``
+   only) leaves a subclassed fake verified by nothing at all. route 2
+   is the one that compares surfaces here. the walker accepts
+   ``object`` literally (no parity declared) as a violation, every
+   other base name as "parity declared via subclass".
 
 2. **marker comment** -- ``# parity-with: <fully.qualified.name>``
    on the line immediately preceding the class definition. the
@@ -24,10 +27,25 @@ declare what production protocol it stands in for, via one of:
    line immediately preceding the class definition. a fake that
    genuinely cannot declare one production protocol (a hand-rolled
    subset stub) carries the rationale ON THE CLASS instead of in a
-   central exemptions file. the marker travels with the class, so a
-   reformat that shifts line numbers can never orphan it (the failure
-   mode line-keyed file exemptions have). the rationale must be
-   non-blank; a bare ``# parity-exempt:`` does not exempt.
+   central exemptions file. **this is the route to use.** the marker
+   travels with the class through every rename, move and reformat,
+   where a line-keyed file entry is pinned to a layout: insert one
+   import above a fake and its exemption stops matching, reporting
+   ``no_declaration`` for a fake nobody touched. a file entry also
+   cannot notice that the module it names was deleted.
+
+   the rationale clears the same bar as an exemption-file one, via
+   :func:`~threetears.enforcement.common.exemptions.rationale_defect`,
+   so the route that survives a reformat is not also the one that
+   admits ``# parity-exempt: wip``. a bare ``# parity-exempt:`` does
+   not exempt. **the rationale must be ONE comment line**, however
+   long: :func:`_read_markers` takes the first non-blank line above
+   the class and stops, so a wrapped rationale exempts nothing.
+
+   (``rationale_defect`` is shared by this domain and the common
+   exemption-file parser, not by every domain: ``nats_wrapper_usage``
+   and ``dict_state_detection`` carry their own copies, and those two
+   have already drifted from it and from each other.)
 
 fakes that have NEITHER a subclass, a ``# parity-with:`` marker, nor a
 ``# parity-exempt:`` marker raise ``fake_parity.no_declaration`` so the
@@ -36,8 +54,10 @@ by name and then forget to say what it claims to mock.
 
 return-type and parameter-type annotations are NOT compared. the
 walker enforces *callability* (the fake must accept every required
-production parameter); type compatibility is mypy's job for
-subclassed fakes and is best-effort for marker fakes.
+production parameter); type compatibility is left to a type checker
+for subclassed fakes -- see the caveat on route 1 above about whether
+one actually runs over your test tree -- and is best-effort for
+marker fakes.
 """
 
 from __future__ import annotations
@@ -48,7 +68,8 @@ import inspect
 from dataclasses import dataclass
 from pathlib import Path
 
-from threetears.enforcement.common.ast_helpers import note_unscanned
+from threetears.enforcement.common.ast_helpers import dotted, note_unscanned
+from threetears.enforcement.common.exemptions import rationale_defect
 from threetears.enforcement.common.violations import Violation
 
 __all__ = [
@@ -125,7 +146,9 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
                 continue
             if not any(node.name.startswith(p) for p in _FAKE_NAME_PREFIXES):
                 continue
-            rendered_bases = [_format_base(b) for b in node.bases]
+            # unwrap_subscript: a generic base such as ``BaseCollection[FakeRefEntity]``
+            # genuinely names ``BaseCollection``, which is the parity declaration we want
+            rendered_bases = [dotted(b, unwrap_subscript=True) for b in node.bases]
             bases = [b for b in rendered_bases if b is not None and b != "object"]
             marker_target, exempt_rationale = _read_markers(source_lines, node.lineno)
             methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
@@ -144,36 +167,6 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
                 ),
             )
     return fakes
-
-
-def _format_base(node: ast.expr) -> str | None:
-    """render an AST base-class expression as its dotted name.
-
-    handles bare names (``Foo``), attribute access (``mod.Foo``,
-    ``a.b.Foo``), and subscript expressions used for generics
-    (``BaseCollection[FakeRefEntity]``). returns ``None`` for shapes
-    we don't try to interpret (call expressions, complex generics).
-
-    :param node: AST node from a class def's ``bases`` list
-    :ptype node: ast.expr
-    :return: dotted base name, or ``None``
-    :rtype: str | None
-    """
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parts: list[str] = []
-        cur: ast.expr = node
-        while isinstance(cur, ast.Attribute):
-            parts.append(cur.attr)
-            cur = cur.value
-        if isinstance(cur, ast.Name):
-            parts.append(cur.id)
-            return ".".join(reversed(parts))
-        return None
-    if isinstance(node, ast.Subscript):
-        return _format_base(node.value)
-    return None
 
 
 def _read_markers(source_lines: list[str], class_lineno: int) -> tuple[str | None, str | None]:
@@ -224,6 +217,11 @@ def fake_parity_violations(
       surfaced as ``add a subclass declaration or
       ``# parity-with:`` marker, or exempt with rationale``.
 
+    - ``fake_parity.weak_exempt_rationale`` -- a ``# parity-exempt:``
+      marker whose reason is too short or is a blanket phrase. the
+      marker is the preferred exemption route, so it carries the same
+      rationale bar the exemption file does.
+
     - ``fake_parity.method_missing`` -- a marker fake is missing a
       public method declared on its production target.
 
@@ -256,8 +254,9 @@ def _check_fake(fake: _FakeDecl) -> list[Violation]:
 
     routing:
 
-    1. fake has at least one non-object base -> SKIP. mypy enforces
-       structural parity on imported bases.
+    1. fake has at least one non-object base -> SKIP, deferring to a
+       type checker on the base (which may or may not run over this
+       tree; see the module docstring's route 1).
     2. fake has a ``# parity-exempt:`` rationale -> SKIP. the rationale
        on the class is the exemption (it travels with the code).
     3. fake has a ``# parity-with:`` marker -> import the target, compare
@@ -273,7 +272,21 @@ def _check_fake(fake: _FakeDecl) -> list[Violation]:
     if fake.bases:
         return []
     if fake.exempt_rationale is not None:
-        return []
+        defect = rationale_defect(fake.exempt_rationale)
+        if defect is None:
+            return []
+        # The in-place marker is the PREFERRED exemption route, so it has to clear the
+        # same bar the exemption file does -- otherwise the route that survives a
+        # reformat is also the one where "# parity-exempt: wip" gets through.
+        return [
+            Violation(
+                category="fake_parity.weak_exempt_rationale",
+                file=fake.file,
+                line=fake.line,
+                symbol=fake.name,
+                reason=f"`# parity-exempt:` rationale {defect}",
+            ),
+        ]
     if fake.marker_target is None:
         return [
             Violation(

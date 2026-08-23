@@ -1,0 +1,14 @@
+# exemptions for tests/enforcement/test_kv_grant_capability.py (coll-task-05a).
+#
+# format (one entry per violation, each preceded by exactly one rationale line):
+#   # rationale: <specific reason, >= 30 chars, not a blanket phrase>
+#   relative/posix/path.py:LINE:Symbol
+#
+# LINE may be a concrete line number or '*' for a file-wide exemption of that symbol.
+#
+# Deliberately empty, and the bar for the first entry is high. Every rule here guards a
+# grant, and a grant is wrong in exactly two ways, both silent: too wide and nothing
+# fails, or too narrow and a refused JetStream request is never answered, so the caller
+# blames the network ten seconds later. "This principal needs it" is the shape both
+# mistakes take -- an entry must say WHICH operation needs the widening, at which call
+# site, and why the narrow capability cannot express it.

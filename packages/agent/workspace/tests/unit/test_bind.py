@@ -597,6 +597,7 @@ async def test_recover_unknown_workspace_raises(tmp_path: Path) -> None:
 
 
 @dataclass
+# parity-exempt: NatsClient subset for the audit-publish unit covering bind in test_bind; the bind audit emitter calls publish so the test only models that surface
 class _FakeNats:
     """records ``publish`` calls for audit envelope assertions.
 

@@ -132,6 +132,7 @@ def _make_workspace_file_version_row() -> dict[str, Any]:
     }
 
 
+# parity-exempt: NatsClient subset for the workspace-collection unit test exercising namespace-emit publish flows; the production NatsClient surface is huge and out of scope
 class _FakeNatsBus:
     """in-process fake NATS client matching typed NatsClient surface.
 
@@ -223,6 +224,62 @@ class _FakeNatsBus:
         """remove key from bucket."""
         self._kv.get(bucket, {}).pop(key, None)
         return True
+
+    async def kv_bucket(self, *, name: str, **_: Any) -> _InMemoryBucket:
+        """resolve the wrapper-style bucket handle a Collection's L2 tier opens.
+
+        needed since the invalidation listener evicts the receiver's own scoped L2 entry,
+        not only its L1 row -- so a receiving pod now reaches L2 on every broadcast.
+
+        :param name: bucket suffix the Collection asks for
+        :ptype name: str
+        :return: the in-memory bucket handle backing that suffix
+        :rtype: _InMemoryBucket
+        """
+        return _InMemoryBucket(self._kv.setdefault(self.bucket_name(name), {}))
+
+
+class _InMemoryBucket:
+    """kw-only in-memory stand-in for :class:`threetears.nats.NatsKvBucket`."""
+
+    def __init__(self, store: dict[str, bytes]) -> None:
+        self._store = store
+
+    async def get(self, *, key: str) -> bytes | None:
+        """read one value.
+
+        :param key: the KV key
+        :ptype key: str
+        :return: the stored bytes, or ``None`` when absent
+        :rtype: bytes | None
+        """
+        return self._store.get(key)
+
+    async def put(self, *, key: str, value: bytes) -> int:
+        """write one value.
+
+        :param key: the KV key
+        :ptype key: str
+        :param value: serialized row
+        :ptype value: bytes
+        :return: the store's size, standing in for a revision
+        :rtype: int
+        """
+        self._store[key] = value
+        return len(self._store)
+
+    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+        """remove one value.
+
+        :param key: the KV key
+        :ptype key: str
+        :param revision: ignored, present for api parity
+        :ptype revision: int | None
+        :return: whether the key existed
+        :rtype: bool
+        """
+        del revision
+        return self._store.pop(key, None) is not None
 
 
 def _make_pool_mock() -> AsyncMock:
@@ -502,11 +559,11 @@ class TestCrossPodInvalidation:
         l1_b.initialize(_workspaces_metadata())
 
         registry_a = CollectionRegistry()
-        registry_a.configure(l1_backend=l1_a)
+        registry_a.configure(l1_backend=l1_a, kv_key_scope="test-principal")
         coll_a = WorkspaceCollection(registry_a, config_always, postgres_pool=pool_a, nats_client=bus)
 
         registry_b = CollectionRegistry()
-        registry_b.configure(l1_backend=l1_b)
+        registry_b.configure(l1_backend=l1_b, kv_key_scope="test-principal")
         # construction registers the collection with registry_b so the
         # invalidation subscriber can resolve the table back to a collection
         WorkspaceCollection(registry_b, config_always, postgres_pool=pool_b, nats_client=bus)

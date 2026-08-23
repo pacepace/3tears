@@ -56,7 +56,7 @@ async def _make_pod(nats_url: str, pod_id: str) -> Pod:
     )
     l1 = create_presence_l1_backend()
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=client)
+    registry.configure(l1_backend=l1, l2_client=client, kv_key_scope="test-principal")
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     collection = PresenceCollection(registry, config, nats_client=client)
     await registry.start_invalidation_listener(client)

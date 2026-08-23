@@ -130,6 +130,13 @@ RUN uv pip install --no-cache hatchling build
 
 RUN uv pip install --no-cache /threetears-wheels/*.whl
 
+# The family-from-base helper ships WITH the base, because every consumer that
+# inherits this image runs the same check against the same family. Copied per
+# repo it becomes N copies that drift apart silently -- the same second-source-
+# of-truth failure the helper itself exists to catch one layer down. Consumers
+# invoke it at this path; nothing copies it into a build context.
+COPY docker/family_from_base.py /opt/threetears/family_from_base.py
+
 # /app is the canonical working directory for every consumer. Owned by
 # appuser so consumer COPY operations land with the right owner.
 WORKDIR /app

@@ -835,8 +835,8 @@ async def load_memory_recall_tool(
         ``chunk_query`` mode. When omitted, ``chunk_query`` requests
         gracefully degrade to default-mode output with a warning
     :ptype embedding_provider: Embeddings | None
-    :param similarity_threshold: floor on hybrid score for
-        ``chunk_query`` mode
+    :param similarity_threshold: floor on semantic similarity for
+        admission in ``chunk_query`` mode
     :ptype similarity_threshold: float
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
@@ -941,30 +941,13 @@ async def load_memory_recall_tool(
 
             elif chunk_indexes is not None and chunk_indexes:
                 mode_name = "chunk_indexes"
-                # Inline cache-bypass fetch: the by-index access
-                # pattern isn't exposed on the Collection today, so
-                # the SELECT lives here. Auth triple (agent_id,
-                # user_id) pinned at the SQL boundary; chunk_indexes
-                # is the only caller-supplied filter.
-                l3_pool = getattr(memory_chunk_collection, "l3_pool", None)
-                if l3_pool is None:
-                    chunks = []
-                else:
-                    rows = await l3_pool.fetch(
-                        "SELECT chunk_id, chunk_index, content, summary, "
-                        "       message_id_start, message_id_end, "
-                        "       token_count, date_created "
-                        "FROM memory_chunks "
-                        "WHERE agent_id = $1 AND memory_id = $2 "
-                        "  AND user_id = $3 "
-                        "  AND chunk_index = ANY($4) "
-                        "ORDER BY chunk_index ASC",
-                        agent_id,
-                        mem_uuid,
-                        user_id,
-                        list(chunk_indexes),
-                    )
-                    chunks = [dict(r) for r in rows]
+                chunks = await memory_chunk_collection.find_by_chunk_indexes(
+                    mem_uuid,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    customer_id=customer_id,
+                    chunk_indexes=chunk_indexes,
+                )
 
             elif chunk_id_after is not None and chunk_id_after.strip():
                 mode_name = "chunk_id_after"
@@ -1526,7 +1509,7 @@ async def load_chunk_search_tool(
         within the current conversation so subsequent invocations can
         exclude them
     :ptype ledger_callback: LedgerCallback | None
-    :param similarity_threshold: floor on hybrid score
+    :param similarity_threshold: floor on semantic similarity for admission
     :ptype similarity_threshold: float
     :return: list with one LangChain tool
     :rtype: list[BaseTool]

@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
-from threetears.nats import Subjects
-from threetears.nats.errors import PublishError, SubscribeError
+from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
+from threetears.nats.errors import PublishError
 from threetears.core.collections.scan_cache import ScanCache
+from threetears.core.exceptions import InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import get_logger
 from uuid_utils import uuid7
 
@@ -16,14 +17,27 @@ if TYPE_CHECKING:
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
-    from threetears.nats import NatsClient
+    from threetears.nats import NatsClient, Subscription
 
 __all__ = [
+    "DEFAULT_L1_MAX_AGE_SECONDS",
     "CacheInvalidationMessage",
     "CollectionRegistry",
 ]
 
 log = get_logger(__name__)
+
+#: Default bound applied when a collection opts into L1 expiry without naming a
+#: number. Not a fleet-wide default: nothing is bounded until a collection asks,
+#: because the collections here differ by orders of magnitude in read volume and
+#: in the staleness they tolerate, and one number would be tuned for the worst.
+#:
+#: Chosen against the L2 bucket TTL rather than measured. L2 self-expires at
+#: 7200s, so a bound below it means a refetch usually resolves at L2 rather than
+#: L3, and a bound above it is largely inert. This sits under that with room.
+#: Revisit against real read volume; it moves without structural change, which
+#: is why the per-collection knob was the design decision and this value was not.
+DEFAULT_L1_MAX_AGE_SECONDS: float = 3600.0
 
 
 def _as_l3_backend(l3_pool: Any) -> Any:
@@ -102,22 +116,105 @@ class CollectionRegistry:
         self._l1_backend: Any = None
         self._l2_client: Any = None
         self._l3_pool: L3Backend | None = None
+        # The leading segment of every L2 key this registry's collections write
+        # (``{scope}.{table}.{body}``). One per registry, because a registry is
+        # the unit a principal wires: the scope is the sharing boundary, so every
+        # collection on one registry must land in one place or replicas of the
+        # same principal stop seeing each other's writes.
+        self._kv_key_scope: str | None = None
+        # Whether a collection on this registry may CREATE the shared collections
+        # bucket, or must bind to one somebody else declared.
+        #
+        # ``True`` is the default and stays the default. ``NatsKvBucket._reopen``
+        # re-runs the opener with this flag, and it exists because a single-node
+        # NATS restart on ephemeral JetStream storage wiped every bucket and
+        # silenced the wake scheduler in production -- a fleet that cannot
+        # recreate the bucket runs with L2 off, at WARNING, until whoever
+        # declares it restarts. Readers-not-writers is enforced by the NATS
+        # GRANT, where a denied create is fail-closed by construction.
+        #
+        # It lives here rather than as a literal in ``base.py`` so one
+        # deployment's bucket-ownership policy is not baked into the library.
+        self._l2_create_if_missing: bool = True
         self._collections: dict[str, Any] = {}  # table_name -> collection instance
         self._overrides: dict[str, dict[str, Any]] = {}  # table_name -> {l1_backend, l2_client, l3_pool}
+        # Deliberately NOT in ``_overrides``: ``register()`` hard-resets that dict
+        # when given any tier override, and wiring commonly configures before
+        # registering, so a bound stored there would be silently dropped by a
+        # later ``register()`` call. Separate dict, separate lifetime.
+        self._l1_max_ages: dict[str, float | None] = {}
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
         # wrote. An opaque token, never used as a UUID.
         self._origin_id: str = str(uuid7())  # convert at border: invalidation wire-envelope origin token
         self._scan_cache: ScanCache | None = None
+        # The invalidation listener's lifecycle state, set together by
+        # :meth:`start_invalidation_listener` and cleared together by
+        # :meth:`stop_invalidation_listener`. The subscription being non-``None``
+        # IS the "a listener is live" answer -- deliberately not a separate
+        # boolean, which would be one more thing to drift out of step with the
+        # handle it describes. The client is retained solely so ``stop`` can
+        # route the unsubscribe back through it, keeping the client's own
+        # subscription bookkeeping correct.
+        self._nats_client: NatsClient | None = None
+        self._invalidation_subscription: Subscription | None = None
 
     def configure(
         self,
         l1_backend: Any = None,
         l2_client: Any = None,
         l3_pool: L3Backend | None = None,
+        kv_key_scope: str | None = None,
+        l2_create_if_missing: bool | None = None,
     ) -> None:
-        """Set default dependencies for all collections."""
+        """Set default dependencies for all collections.
+
+        **Every argument merges into existing state rather than replacing it** -- a ``None``
+        leaves whatever was configured before untouched. That is what makes two-pass wiring
+        (the scope in one call, the client in a later one) the normal shape it already is at
+        several call sites.
+
+        The L2-scope refusal is evaluated over the MERGED state at the end of the call,
+        never over this call's arguments. A per-call check would refuse the first pass of
+        every two-pass site.
+
+        **The two passes are not interchangeable.** Scope first, then client, works because
+        the first pass ends with no client and the second ends with both. CLIENT first
+        RAISES: that call ends with a client and no scope, which is exactly the state the
+        refusal exists to catch, and it cannot know a later call intends to supply one.
+        Either order the scope before the client, or pass both together.
+
+        :param l1_backend: default pod-local L1 backend, or ``None`` to leave it unchanged
+        :ptype l1_backend: Any
+        :param l2_client: default NATS client backing L2, or ``None`` to leave it unchanged
+        :ptype l2_client: Any
+        :param l3_pool: default durable L3 backend, or ``None`` to leave it unchanged
+        :ptype l3_pool: L3Backend | None
+        :param kv_key_scope: the leading segment of every L2 key this registry's collections
+            write, from :func:`threetears.nats.kv_key_scope_for`; ``None`` leaves it unchanged
+        :ptype kv_key_scope: str | None
+        :param l2_create_if_missing: whether this registry's collections may CREATE the
+            shared collections bucket. defaults to ``True`` and should be left there until
+            the declaring identity re-declares the bucket on every NATS reconnect --
+            otherwise a NATS restart that wipes JetStream leaves L2 off fleet-wide, at
+            WARNING, until that identity restarts. ``None`` leaves it unchanged
+        :ptype l2_create_if_missing: bool | None
+        :return: nothing
+        :rtype: None
+        :raises InvalidL2ScopeError: if ``kv_key_scope`` falls outside the scope grammar
+        :raises L2ScopeNotConfiguredError: if the merged state holds an L2 client and no scope
+        """
+        if l2_create_if_missing is not None:
+            self._l2_create_if_missing = l2_create_if_missing
+        if kv_key_scope is not None:
+            if not KV_KEY_SCOPE_GRAMMAR.match(kv_key_scope):
+                raise InvalidL2ScopeError(
+                    f"kv_key_scope {kv_key_scope!r} does not match "
+                    f"{KV_KEY_SCOPE_GRAMMAR.pattern}; the scope is one NATS subject token, so a "
+                    f"'.' or '/' in it renders two and the per-principal $KV grant stops matching"
+                )
+            self._kv_key_scope = kv_key_scope
         if l1_backend is not None:
             self._l1_backend = l1_backend
             # a cache built over the previous backend would keep answering from
@@ -127,6 +224,50 @@ class CollectionRegistry:
             self._l2_client = l2_client
         if l3_pool is not None:
             self._l3_pool = _as_l3_backend(l3_pool)
+        if self._l2_client is not None and self._kv_key_scope is None:
+            raise L2ScopeNotConfiguredError(
+                "an L2 client is wired with no kv_key_scope: every collection on this registry "
+                "would write into the shared collections bucket under a key no per-principal "
+                "grant can name. pass kv_key_scope=threetears.nats.kv_key_scope_for(...)"
+            )
+
+    @property
+    def kv_key_scope(self) -> str | None:
+        """the leading segment of every L2 key this registry's collections write.
+
+        Read by :meth:`BaseCollection.l2_key` on every L2 access. ``None`` means unwired, which
+        is legitimate for an L1-only or L3-only registry and is a hard error for one holding an
+        L2 client. All three wiring paths are gated: :meth:`configure` and :meth:`bind_table`
+        each refuse an L2 client with no scope, and ``l2_key`` backstops the
+        ``nats_client=``-direct construction path, which reaches neither.
+
+        :return: the scope segment, or ``None`` when no scope is wired
+        :rtype: str | None
+        """
+        return self._kv_key_scope
+
+    @property
+    def l2_create_if_missing(self) -> bool:
+        """whether this registry's collections may create the shared collections bucket.
+
+        Read by :meth:`BaseCollection._ensure_kv` when it resolves the bucket. ``True``
+        remains the default; ``False`` says this process BINDS the bucket and never
+        declares it, which is what a principal whose grant carries ``STREAM.INFO`` and no
+        ``STREAM.CREATE`` must say -- a refused create is never answered, so leaving the
+        default would spend a JetStream deadline at every startup and then bind anyway.
+        Three processes in THIS repo set it -- the registry server's heartbeat registry,
+        its rbac registry, and the tool pod -- and the agent pod does too, from the SDK.
+        Each pairs it with an eager
+        :func:`~threetears.core.collections.bind_collections_bucket`. It also turns off
+        :meth:`threetears.nats.NatsKvBucket._reopen`'s restart self-heal, which is safe
+        only because the DECLARING IDENTITY -- the hub, in its own lifespan, via
+        ``ensure_kv_bucket`` registered on ``NatsClient.add_reconnect_callback`` --
+        re-declares the bucket on every NATS reconnect. Nothing else may.
+
+        :return: ``True`` when a collection may create the bucket
+        :rtype: bool
+        """
+        return self._l2_create_if_missing
 
     def register(
         self,
@@ -181,15 +322,32 @@ class CollectionRegistry:
         :param l1_backend: L1 backend override for this table, or
             ``None`` to leave any existing binding untouched
         :ptype l1_backend: Any
-        :param l2_client: L2 client override for this table
+        :param l2_client: L2 client override for this table. requires the registry to
+            already carry a ``kv_key_scope`` -- see the raise below
         :ptype l2_client: Any
         :param l3_pool: L3 pool override for this table
         :ptype l3_pool: Any
         :return: nothing
         :rtype: None
+        :raises L2ScopeNotConfiguredError: if ``l2_client`` is given while this registry
+            has no ``kv_key_scope``. this is the THIRD way an L2 client reaches a
+            collection (after :meth:`configure` and ``BaseCollection(nats_client=)``) and
+            it was the one with no gate, so a registry wired only through here reached
+            production unscoped and failed later, from ``l2_key``, in a request path.
+            there is deliberately no per-table ``kv_key_scope`` parameter: the scope
+            identifies the PRINCIPAL, and one process is one principal, so a per-table
+            value would let a single process write under two identities' scopes -- the
+            precise thing scoping exists to prevent. set it on the registry
         """
         if l1_backend is None and l2_client is None and l3_pool is None:
             return
+        if l2_client is not None and self._kv_key_scope is None:
+            raise L2ScopeNotConfiguredError(
+                f"bind_table({table_name!r}, l2_client=...) with no kv_key_scope on this "
+                f"registry: that collection would write into the shared collections bucket "
+                f"under a key no per-principal grant can name. configure the registry first "
+                f"-- registry.configure(kv_key_scope=threetears.nats.kv_key_scope_for(...))"
+            )
         existing = self._overrides.setdefault(table_name, {})
         if l1_backend is not None:
             existing["l1_backend"] = l1_backend
@@ -206,6 +364,56 @@ class CollectionRegistry:
         """Get L1 backend for a collection (override or default)."""
         overrides = self._overrides.get(table_name, {})
         return overrides.get("l1_backend", self._l1_backend)
+
+    def set_l1_max_age(self, table_name: str, max_age_seconds: float | None = DEFAULT_L1_MAX_AGE_SECONDS) -> None:
+        """Bound how long ``table_name``'s L1 rows may be served after a pull-through.
+
+        **Per collection, and off until one asks.** Collections in this repo
+        differ by orders of magnitude in read volume and in how much staleness
+        they can tolerate, so a single fleet-wide number would be tuned for the
+        worst of them and wrong for the rest. Nothing is bounded until a
+        collection sets a value.
+
+        Not every backend can honour one. ``DuckDBBackend`` injects no stamp and
+        raises ``NotImplementedError`` on the first repairing read rather than
+        silently never expiring -- so a bound accepted here surfaces at read
+        time, not at configuration time. It has no production construction site
+        today, which is why this is a documented sharp edge rather than a
+        validation: the check would have to reach into the backend a collection
+        happens to hold, and the refusal it would duplicate is already loud.
+
+        A collection with no L3 pool is refused a bound at the point of use
+        (:attr:`BaseCollection.l1_max_age_seconds`), regardless of what is set
+        here: with nothing to pull through from, an expired row is not a miss,
+        it is a deletion.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :param max_age_seconds: the bound, or ``None`` to turn expiry off.
+            Omitted, it is :data:`DEFAULT_L1_MAX_AGE_SECONDS` -- opting in
+            without a number is the supported way to take the default.
+        :ptype max_age_seconds: float | None
+        :return: nothing
+        :rtype: None
+        :raises ValueError: if ``max_age_seconds`` is not positive
+        """
+        if max_age_seconds is not None and max_age_seconds <= 0:
+            raise ValueError(
+                f"l1 max age for {table_name!r} must be positive or None, got {max_age_seconds!r}; "
+                f"a zero or negative bound expires every row on the read that follows its own write, "
+                f"which is not a cache",
+            )
+        self._l1_max_ages[table_name] = max_age_seconds
+
+    def get_l1_max_age(self, table_name: str) -> float | None:
+        """Return the configured L1 max age for a collection, or ``None``.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :return: the bound in seconds, or ``None`` when expiry is off
+        :rtype: float | None
+        """
+        return self._l1_max_ages.get(table_name)
 
     @property
     def scan_cache(self) -> ScanCache:
@@ -252,6 +460,13 @@ class CollectionRegistry:
         surfaces immediately rather than as silent
         invalidation-skips.
 
+        **idempotent while a listener is live.** a second call is a
+        no-op rather than a second consumer: two subscriptions on one
+        subject in one process means every broadcast is handled twice,
+        and a teardown that releases one of them leaves the other
+        running. call :meth:`stop_invalidation_listener` first to
+        rebind to a different client.
+
         :param nats_client: connected typed NATS wrapper client
         :ptype nats_client: NatsClient
         :return: nothing
@@ -259,7 +474,12 @@ class CollectionRegistry:
         :raises SubscribeError: if the underlying subscribe fails to
             register (transport / config error)
         """
-        self._nats_client = nats_client
+        if self._invalidation_subscription is not None:
+            log.debug(
+                "Invalidation listener already running",
+                extra={"extra_data": {"subject": Subjects.cache_invalidate().path}},
+            )
+            return
 
         async def _on_invalidation(message: CacheInvalidationMessage) -> None:
             # Skip invalidations this registry published itself. A single
@@ -286,6 +506,47 @@ class CollectionRegistry:
                 # not). log + skip without warning.
                 return
 
+            pk_cols = collection.primary_key_columns
+            if len(message.ids) != len(pk_cols):
+                log.warning(
+                    "Invalidation pk arity mismatch",
+                    extra={
+                        "extra_data": {
+                            "table": message.table,
+                            "expected_columns": list(pk_cols),
+                            "received_values": len(message.ids),
+                        },
+                    },
+                )
+                return
+            entity_id = tuple(message.ids)
+
+            # EVICT L2 HERE, ahead of the L1 guards below, and the placement is the
+            # requirement rather than a preference.
+            #
+            # Keys are per-principal (``{scope}.{table}.{body}``), so the writer updates
+            # only ITS OWN key. A peer that drops L1 and pulls through reads L2 first --
+            # its own, still-stale key -- and re-caches the value the broadcast was sent
+            # to retract. ``max_age`` on the bucket is unlimited and no collection sets an
+            # L1 bound, so nothing heals it: a revoked grant would be enforced forever,
+            # which is worse than the exposure per-principal keys exist to close. Under
+            # the old single shared key this could not happen (the peer read the writer's
+            # fresh value), so the eviction is a scoping-induced obligation and lands with
+            # it.
+            #
+            # Behind ``l1 is None`` / ``not l1.has_table(...)`` it would skip exactly the
+            # collections whose L1 schema was never initialised -- and those are precisely
+            # the ones that would then keep the stale L2 value forever. L2 presence is
+            # independent of L1 presence.
+            #
+            # NOT ``invalidate_cache``, which looks right and RE-PUBLISHES: the origin
+            # filter above only skips SELF, so every receiver would rebroadcast under its
+            # own origin, unbounded.
+            #
+            # The arity check is hoisted above this rather than left where it was, because
+            # ``l2_key`` normalises the pk and raises on a mismatch; it touches no L1.
+            await collection.delete_l2_entry(entity_id)
+
             l1 = self.get_l1_backend(message.table)
             if l1 is None:
                 return
@@ -306,31 +567,61 @@ class CollectionRegistry:
                 # doubles) that predate this method.
                 return
 
-            pk_cols = collection.primary_key_columns
-            if len(message.ids) != len(pk_cols):
-                log.warning(
-                    "Invalidation pk arity mismatch",
-                    extra={
-                        "extra_data": {
-                            "table": message.table,
-                            "expected_columns": list(pk_cols),
-                            "received_values": len(message.ids),
-                        },
-                    },
-                )
-                return
-            entity_id = tuple(message.ids)
             l1.delete_by_id(message.table, entity_id, pk_cols)
 
-        try:
-            await nats_client.subscribe_typed(
-                subject=Subjects.cache_invalidate(),
-                message_type=CacheInvalidationMessage,
-                cb=_on_invalidation,
-            )
-        except SubscribeError:
-            # surface subscribe failure; cache coherence is not optional
-            raise
+        # SubscribeError propagates deliberately: cache coherence is not
+        # optional, so a process that cannot subscribe must fail its startup
+        # rather than run on silently as an island. Both fields stay unset on
+        # that path, so a failed start leaves nothing behind for ``stop`` to
+        # find and a retry is a clean first start.
+        subscription = await nats_client.subscribe_typed(
+            subject=Subjects.cache_invalidate(),
+            message_type=CacheInvalidationMessage,
+            cb=_on_invalidation,
+        )
+        self._nats_client = nats_client
+        self._invalidation_subscription = subscription
+
+    async def stop_invalidation_listener(self) -> None:
+        """drop this registry's cache-invalidation subscription.
+
+        the teardown half of :meth:`start_invalidation_listener`, for a
+        process's shutdown path. after it returns the registry holds no
+        subscription and no client, and a later ``start`` subscribes
+        again -- the registry is reusable, not one-shot.
+
+        **a no-op when no listener is live**, whether one was never
+        started or was already stopped. callers run this from a
+        ``finally`` / ``close()`` alongside other teardown, where a
+        raise would abandon the teardown steps after it.
+
+        **no exception handling here, deliberately.**
+        :meth:`NatsClient.unsubscribe` already absorbs the transport
+        failures a shutdown produces: it returns early on an
+        already-closed subscription, and it wraps both the raw
+        unsubscribe and the dispatch-task join in its own handlers that
+        log at WARNING. so unsubscribing on a draining connection does
+        not raise, and a catch here would be code that never runs while
+        looking like it guards something. what WOULD reach a caller is a
+        genuine programming error, which must surface.
+
+        the handle is released before the unsubscribe is awaited, so the
+        registry is restartable even on the paths that unwind slowly.
+
+        :return: nothing
+        :rtype: None
+        """
+        subscription = self._invalidation_subscription
+        nats_client = self._nats_client
+        if subscription is None or nats_client is None:
+            return
+        self._invalidation_subscription = None
+        self._nats_client = None
+        await nats_client.unsubscribe(subscription)
+        log.info(
+            "Invalidation listener stopped",
+            extra={"extra_data": {"subject": Subjects.cache_invalidate().path}},
+        )
 
     async def publish_invalidation(
         self,
@@ -346,10 +637,17 @@ class CollectionRegistry:
         order.
 
         narrow exception scope: only :class:`PublishError` is logged
-        and swallowed (the write has already succeeded; the
-        invalidation broadcast is best-effort because the next pod
-        read will pull a stale-but-still-correct row from L3 if it
-        misses the eviction). programming errors propagate.
+        and swallowed. The write has already succeeded, and nats-py
+        buffers a publish issued while disconnected and flushes it on
+        reconnect, so an ordinary outage loses nothing.
+
+        The older justification here -- that a peer would "pull a
+        stale-but-still-correct row from L3" -- does not hold and is
+        recorded as wrong rather than deleted: a peer that missed the
+        eviction keeps serving its own L1 and never re-reads. What
+        actually bounds that staleness is the L1 max-age, and only for
+        a collection that has opted into one. programming errors
+        propagate.
 
         :param nats_client: connected typed NATS wrapper client;
             ``None`` short-circuits (no-op)
@@ -411,7 +709,9 @@ class CollectionRegistry:
             # wire envelope failed validation -- programming error,
             # but propagating would mask the calling write op. log
             # loud and continue; surfaces as a real failure in CI
-            # because tests assert on this counter.
+            # (there is no such counter, and nothing in
+            # test_cache_coherence.py asserts on one -- the claim this
+            # comment used to make was simply untrue).
             log.error(
                 "Invalidation envelope validation failed",
                 extra={
@@ -426,6 +726,22 @@ class CollectionRegistry:
             )
 
     def clear(self) -> None:
-        """Remove all registered collections and overrides (for tests)."""
+        """Remove all registered collections, overrides and L1 bounds (for tests).
+
+        **Does NOT stop the invalidation listener**, and cannot: unsubscribing
+        is awaitable and this method is synchronous. A registry cleared while a
+        listener is live keeps that subscription and the callback goes on
+        firing. The by-pk eviction below it is inert -- the collection lookup
+        misses and returns -- but the scan-cache drop sits ABOVE that guard and
+        runs on every broadcast regardless, so a cleared registry is not an
+        idle one. Call :meth:`stop_invalidation_listener` alongside this in any
+        teardown that started a listener.
+        """
         self._collections.clear()
         self._overrides.clear()
+        # The bound keeps its own dict so ``register()`` cannot wipe it, but a
+        # separate lifetime is not an unbounded one: a table re-registered after
+        # a clear would otherwise inherit a bound nobody in the new setup asked
+        # for, which is the same silent-config class of bug in the other
+        # direction.
+        self._l1_max_ages.clear()

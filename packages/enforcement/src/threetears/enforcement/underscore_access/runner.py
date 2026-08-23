@@ -40,6 +40,7 @@ from threetears.enforcement.common import (
 from threetears.enforcement.underscore_access.config import (
     UnderscoreAccessConfig,
 )
+from threetears.enforcement.underscore_access.ledger import MODULE_SCOPE, enclosing_scopes
 from threetears.enforcement.underscore_access.walkers import (
     shape_a_violations,
     shape_b_violations,
@@ -49,6 +50,16 @@ from threetears.enforcement.underscore_access.walkers import (
 )
 
 __all__ = ["run_underscore_enforcement"]
+
+#: Per-file scope maps, so a run parses each exempted file once rather than once
+#: per access.
+#:
+#: Keyed by path AND mtime. A single enforcement run does read a tree nobody is
+#: editing, but this module is imported for the process, not for the run: a test
+#: session that runs enforcement over a file, rewrites it, and runs again is a
+#: real caller, and a path-only key would answer the second run from the first
+#: run's parse. The tests for this feature do exactly that shape.
+_SCOPE_CACHE: dict[tuple[str, int], dict[int, str]] = {}
 
 
 _VALID_WALKERS: frozenset[str] = frozenset(
@@ -106,6 +117,16 @@ def run_underscore_enforcement(
     :raises ValueError: ``walker`` is not in the accepted set
     :raises pytest.fail.Exception: in strict mode with violations
     """
+    # Run-scoped, not process-scoped. The cache key is (path, st_mtime_ns),
+    # which cannot distinguish two versions of a file on a filesystem whose
+    # mtime granularity is coarser than the gap between writes -- and several
+    # are: five successive writes here can report one identical st_mtime_ns.
+    # A test session that enforces a tree, rewrites it and enforces again then
+    # reads the FIRST parse back, which is exactly the staleness the key was
+    # meant to prevent. Clearing per run removes the class instead of narrowing
+    # it, and costs nothing the cache was buying: its stated purpose is to
+    # parse each exempted file once per RUN, not once per process.
+    _SCOPE_CACHE.clear()
     if walker not in _VALID_WALKERS:
         raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
@@ -114,7 +135,7 @@ def run_underscore_enforcement(
     violations = _run_walker(walker, config, scan_roots, inheritance_roots)
 
     exemptions = _load_exemptions(config.exemptions_path)
-    filtered = apply_exemptions(violations, exemptions, config.repo_root)
+    filtered = apply_exemptions(violations, exemptions, config.repo_root, scope_of=_scope_of)
 
     mode = resolve_mode(config.mode_env_var, default=MODE_STRICT)
 
@@ -176,6 +197,44 @@ def _resolve_inheritance_roots(
     return discover_src_roots(config.repo_root)
 
 
+def _scope_of(path: Path, line: int) -> str:
+    """resolve a source line to the qualname of the scope enclosing it.
+
+    The identity a scope-keyed exemption is written against. Backed by
+    :func:`~threetears.enforcement.underscore_access.ledger.enclosing_scopes`, which
+    is the same derivation ``scripts/regen-underscore-exemptions.py`` uses to carry
+    rationales forward -- so an entry the script writes is an entry this matches, by
+    construction rather than by two implementations agreeing.
+
+    Per-file results are cached: a run resolves thousands of accesses across a few
+    dozen exempted files, and re-parsing each file per access would dominate it.
+
+    :param path: absolute path of the file the access is in
+    :ptype path: Path
+    :param line: 1-based line of the access
+    :ptype line: int
+    :return: enclosing qualname, or ``"<module>"`` at module level and for a file
+        that cannot be read
+    :rtype: str
+    """
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        # Unreadable now; report it rather than cache a guess about it.
+        return MODULE_SCOPE
+    scopes = _SCOPE_CACHE.get(key)
+    if scopes is None:
+        try:
+            scopes = enclosing_scopes(path)
+        except OSError:
+            # A path the walker reached but this cannot read is not a reason to fail
+            # the whole run: it degrades to module scope, which simply will not match
+            # a scope-keyed entry, so the violation is REPORTED rather than hidden.
+            scopes = {}
+        _SCOPE_CACHE[key] = scopes
+    return scopes.get(line, MODULE_SCOPE)
+
+
 def _load_exemptions(path: Path | None) -> list[Exemption]:
     """load exemptions from ``path``, or return ``[]`` when ``path`` is None.
 
@@ -187,7 +246,7 @@ def _load_exemptions(path: Path | None) -> list[Exemption]:
     """
     if path is None:
         return []
-    return parse_exemptions_with_rationale(path)
+    return parse_exemptions_with_rationale(path, allow_scope_keys=True)
 
 
 def _run_walker(

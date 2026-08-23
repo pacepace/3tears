@@ -38,6 +38,17 @@ _CONFIG = CacheEnforcementConfig(
             # share one process-owned SQLiteBackend built here and wired into the
             # registry as the default L1 tier.
             "packages/channels/src/threetears/channels/presence/l1_cache.py",
+            # coll-task-07c: the tool pod's L1 tier, same per-process factory shape.
+            # It exists precisely SO a tool pod constructs no backend of its own -- a
+            # pod may live in a partner-operated fourth repository this allowlist
+            # cannot see at all, so the builder makes the question moot instead of
+            # leaving it to a per-repo exemption nobody there can write.
+            #
+            # this entry was declared before the walker could reach it:
+            # ``find_local_src_roots`` walked ``packages/*/src`` only and so never
+            # opened the nested ``packages/agent/*`` tree. the helper now recurses
+            # to any depth, and the site it names is live.
+            "packages/agent/tools/src/threetears/agent/tools/l1_cache.py",
         }
     ),
     collection_table_allowlist={
@@ -76,6 +87,38 @@ _CONFIG = CacheEnforcementConfig(
         # and :class:`...JobFireCollection`.
         "scheduled_jobs": "ScheduledJobCollection",
         "job_fires": "JobFireCollection",
+        # ── the nested ``packages/agent/*`` family ───────────────────
+        # every entry below was already backed by a real Collection when
+        # it was written; none of them appeared here because
+        # ``find_local_src_roots`` walked ``packages/*/src`` only and so
+        # never opened a single migration under ``packages/agent/``. the
+        # gate reported clean over ten packages. the widening that closed
+        # that hole is what surfaced them, and the resolution is to name
+        # the Collection that already exists -- NOT to write a class or
+        # take an exemption.
+        #
+        # identity_versions (agent-identity v001) -- the per-agent signing
+        # key generation ledger; :class:`threetears.agent.identity.collections.IdentityVersionsCollection`.
+        "identity_versions": "IdentityVersionsCollection",
+        # intentions (agent-intention v001) --
+        # :class:`threetears.agent.intention.collections.IntentionsCollection`.
+        "intentions": "IntentionsCollection",
+        # memory_consolidations (agent-memory v026) -- the consolidation
+        # provenance edge table;
+        # :class:`threetears.agent.memory.collections.MemoryConsolidationsCollection`.
+        "memory_consolidations": "MemoryConsolidationsCollection",
+        # agent_skills / agent_skill_invocations (agent-skills v001/v002) --
+        # :class:`threetears.agent.skills.collections.AgentSkillCollection`
+        # and :class:`...AgentSkillInvocationCollection`.
+        "agent_skills": "AgentSkillCollection",
+        "agent_skill_invocations": "AgentSkillInvocationCollection",
+        # agent_wake_schedules / wake_fires / webhook_subscriptions
+        # (agent-wake v001/v002/v003) --
+        # :class:`threetears.agent.wake.collections.WakeScheduleCollection`,
+        # :class:`...WakeFireCollection`, :class:`...WebhookSubscriptionCollection`.
+        "agent_wake_schedules": "WakeScheduleCollection",
+        "wake_fires": "WakeFireCollection",
+        "webhook_subscriptions": "WebhookSubscriptionCollection",
     },
     migration_table_allowlist=frozenset(
         {
@@ -99,6 +142,12 @@ _CONFIG = CacheEnforcementConfig(
             # caches on top of itself buys nothing and risks staleness
             # of the staleness signal. one row per subject, atomic
             # row-lock serialization, no derived view to cache.
+            #
+            # the table now serves ONLY the durable epoch family -- an
+            # epoch whose value escapes the cluster into browser and CDN
+            # caches, which therefore cannot live on a counter that
+            # resets with the broker. every other epoch counts in NATS
+            # KV and touches no table at all.
             "config_epochs",
         }
     ),

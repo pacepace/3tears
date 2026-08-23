@@ -14,6 +14,7 @@ import pytest
 from threetears.mcp.http_client import PlatformHttpClient, PlatformHttpError
 
 
+# parity-exempt: httpx.AsyncBaseTransport stand-in for unit-testing the MCP http client; full transport surface includes connection-pool primitives the tests do not exercise
 class _FakeTransport:
     """httpx.MockTransport-ish, with a recorded request log."""
 

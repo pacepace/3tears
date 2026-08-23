@@ -21,6 +21,7 @@ Reads promote up the stack (L3 miss -> L2 miss -> L1 hit on next access). Writes
 ```python
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.nats import Principal, kv_key_scope_for
 
 # Create and configure
 l1 = SQLiteBackend("my_app_cache")
@@ -30,8 +31,25 @@ registry = CollectionRegistry()
 registry.configure(
     l1_backend=l1,          # SQLiteBackend instance
     l2_client=nats_client,  # NATS client (optional, None to skip L2)
+    # REQUIRED wherever an l2_client is: every L2 key is written as
+    # `{scope}.{table}.{body}`, and the scope is the principal this process
+    # authenticates to NATS as, so one process cannot read another's cached
+    # rows. `configure()` raises `L2ScopeNotConfiguredError` without it.
+    # Derive it -- never a literal -- so it cannot drift from the NATS grant,
+    # which is minted from the same call.
+    kv_key_scope=kv_key_scope_for(Principal.AGENT_POD, agent_id=AGENT_ID),
     l3_pool=postgres_pool,  # asyncpg pool
 )
+```
+
+Bind the shared `{namespace}-collections` bucket once at startup, BEFORE that
+`configure()` call — one identity declares the bucket and every other process
+binds it:
+
+```python
+from threetears.core.collections import bind_collections_bucket
+
+await bind_collections_bucket(nats_client, component="my-pod")
 ```
 
 ### 2. Per-Collection Pool Overrides
@@ -206,6 +224,32 @@ Controls when deferred writes reach L3 (PostgreSQL):
 | `ON_SHUTDOWN` | Writes buffer; flushes to L3 on application shutdown |
 
 Only tables listed in `collection_flush_tables` are eligible for deferred writes. All other tables always write immediately regardless of strategy.
+
+## Bounding L1 Staleness
+
+Off unless a collection asks for it:
+
+```python
+registry.set_l1_max_age("my_table", 3600.0)   # omit the value for the 3600s default
+```
+
+A read past the bound deletes the L1 row and pulls through, so the next read is
+fresh. It applies only to rows cached **from a lower tier** -- a row this process
+wrote locally is not stamped and never expires, so a field write cannot renew a
+stale row's lifetime.
+
+Use it for the staleness invalidation cannot reach: a dropped invalidation when
+the outbound buffer overflows, and a pod whose subscription is partitioned while
+its peers stay healthy.
+
+**A collection with no L3 pool is refused a bound at the point of use.**
+`set_l1_max_age` still accepts and stores the value -- the refusal is in
+`BaseCollection.l1_max_age_seconds`, which reports `None` whatever was
+configured, so wiring order cannot defeat it. With nothing to pull through from,
+an expired row is not a miss that repairs -- it reads as "this row does not
+exist", and a compare-and-set that reads absence writes fresh state over live
+state. `DuckDBBackend` refuses too, with `NotImplementedError`: it injects no
+stamp, so accepting a bound would silently not enforce it.
 
 ## Optimistic Locking
 

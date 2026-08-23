@@ -27,6 +27,7 @@ class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     name: str
 
 
+# parity-exempt: workspace-collection subset for the workspace_use tool unit; the test exercises pin-resolution only
 class _FakeCollection:
     """records lookup calls and serves entities keyed by (agent_id, name)."""
 

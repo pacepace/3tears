@@ -123,7 +123,7 @@ def _make_pod(
     """
     l1 = create_registry_l1_backend()
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=nats)
+    registry.configure(l1_backend=l1, l2_client=nats, kv_key_scope="registry")
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     collection = HeartbeatCollection(registry, config, nats_client=nats)
     return collection, registry

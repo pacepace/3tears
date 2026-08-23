@@ -55,7 +55,7 @@ DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR: int = 60
 
 # Per-conversation active-schedule cap (PLACEMENT §1.9 / §3.5).
 # Enforced at ``wake_schedule_create`` time and re-verifiable on a tick
-# via :func:`threetears.agent.wake.rate_limit._check_active_schedule_cap`.
+# via :func:`threetears.agent.wake.rate_limit.check_active_schedule_cap`.
 # Default = 10 locked 2026-05-19.
 DEFAULT_MAX_SCHEDULES_PER_CONVERSATION: int = 10
 

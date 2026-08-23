@@ -1446,34 +1446,156 @@ change (every adoption assumes a current pin).
    filtered raw streams for structure, read `metadata` instead.
 5. PR, merge per its own workflow.
 
+***Correction 2026-08-19 — steps 3 and 4 describe a metallm tree three months
+stale, and both were already discharged before this document named them.***
+The steps are left above as written; what follows is what is actually true, and
+**check 1 passes by prior deletion rather than by migration work**.
+
+metallm's commit `f0b6903` (2026-06-23, *"consume the 3tears price-lookup
+primitive; drop the bespoke scraper"*) deleted **both** side-steps as a side
+effect of unrelated pricing work:
+
+- `api/src/services/web_fetch_utils.py` was **deleted as a file** — 210 lines,
+  zero importers.
+- `lookup_details` in `api/src/api/v1/admin/models.py` had its SearXNG
+  web-search-plus-LLM-extraction scrape replaced by
+  `threetears.models.lookup_price`. That commit's own message records
+  "adversarially verified: NO remnant of the bespoke pricing lookup remains".
+
+`grep -rin searxng api/src/` in metallm returns nothing today. There is no
+forwarding shim, no re-export, and no module of either name, so the check's
+"deleted, not wrapped" clause holds in its strong form. The only surviving
+`searxng` strings in that repo are its self-hosted service's own
+`searxng/settings.yml` and two `base_url` fixtures in an integration test.
+
+**Step 4 has no target either.** metallm does not filter raw streams for
+structure and deliberately refuses to: `_execute_service_tool`'s docstring
+(`api/src/services/tool_loop.py`) states that sniffing result text for an error
+prefix "both misses real failures and risks false positives", and status comes
+from an authoritative bool instead.
+
+**So metallm's migration reduces to step 2**, the pin — up as
+[metallm#288](https://github.com/pacepace/metallm/pull/288), pinning the whole
+family at the released tag `v0.26.1`. Under D29 that pin is what *binds* these
+contracts: publication does not, and a tag does not. It also unblocks
+[metallm#287](https://github.com/pacepace/metallm/pull/287), which fixes
+`_execute_service_tool` invoking `ainvoke(tool_args)` by args — the fourth site
+of the defect this repo closed in
+[#318](https://github.com/pacepace/3tears/pull/318) and
+[#326](https://github.com/pacepace/3tears/pull/326), and one that has been
+feeding the model stringified `(content, artifact)` tuples in production.
+
+**The generalisable point, and the reason this is recorded rather than quietly
+fixed.** A consumer-repo check written as *instructions to change a named file*
+rots at the consumer's commit rate, not ours, and nothing here notices — the
+whole cost of this one was paid re-deriving a June deletion in August. The five
+consumer-repo checks (1, 2, 3, 9, 10) all have this shape. **State a
+consumer-repo check as the property it wants, and verify it against the
+consumer's tree at the time of asking**; a filename in a step is a snapshot,
+not a requirement.
+
 **discodon** -- embedded mode (it is pre-NATS-convergence; check 10 says the
 switch later costs no consumer rewrite).
 1. Any generalization it needs lands **upstream first** (convergence
-   principle 4) -- e.g. gaps found while porting its budget semantics onto
-   `BudgetPort`.
+   principle 4). *(The example that stood here -- gaps found while porting
+   its budget semantics onto `BudgetPort` -- is withdrawn with step 4.)*
 2. `git checkout -b feature/new-search`; pin the family version.
 3. Collapse `tools/web_search_tool.py` and `tools/research/web_search.py`
    onto the leaf: persona path = Call + prose Bind; research path = Call +
    Aggregate + both bindings (prose and corpus).
-4. Budget hooks move onto `BudgetPort` -- the 2× advanced under-billing dies
-   (SR-E4); timeouts get wired to config (SR-G1 defect 3).
+4. ***Withdrawn 2026-08-19, same ruling as step 6:*** budget hooks do **not**
+   move onto `BudgetPort`. What survives of this step is the pair of defects
+   it named, which were never about the port: the 2× advanced under-billing
+   dies (SR-E4), and timeouts get wired to config (SR-G1 defect 3). SR-E4's
+   fix is R5 of
+   [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md)
+   -- the caller reports what it consumed, so the code that knows the depth is
+   the code that counts the credits.
 5. Search-internal replay lands where the coarse seams cannot reach:
    research-*pipeline* evals (grounding gate and cull re-run against a
    frozen web), through a `RecordingStore` over its existing store.
    Character-eval freezing stays on its action- and delivery-seam cassettes
    (D28), already wired discodon-side.
-6. Eval cost caps include search spend via the `BudgetPort` (check 3, under
-   D27's execution-spend rule). Recommended pre-work, doable any time while
-   discodon is still sole owner of its evals: reshape `EvalRunCostCap` and
-   the daily-budget mixin's refusal contract to the port's
-   `check(estimate)`/`record(spend)` shape, copied from
-   `threetears.search.contracts` rather than invented -- the protocol is
-   structural, so this gates on nothing shipping.
+6. Eval cost caps include search spend (check 3, under D27's execution-spend
+   rule). ***The pre-work this step used to recommend -- reshaping
+   `EvalRunCostCap` and the daily-budget mixin onto the port's
+   `check(estimate)`/`record(spend)` shape -- is withdrawn as of
+   2026-08-19.*** `BudgetPort` wraps one provider call and refuses a spend that
+   has not happened; the eval cap fires between cells, where the spend is
+   booked and the cell holds an unknown number of LLM calls, so there is no
+   honest estimate to pass. Two problems, two correct shapes. The eval budget
+   contract is shaped from what discodon runs -- R6 of
+   [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md).
+
+   **What check 3 actually needs is the other half, and it generalises past
+   search.** Eval must hold no provider-specific parameter-to-cost table: the
+   caller reports what it consumed in dimensions that name no provider --
+   calls, weighted provider units *and the name of that unit*, money and
+   currency. `Spend` here is already that shape (SR-E4), and eval owning an
+   equivalent vocabulary rather than importing this one is deliberate: eval
+   accounts for every metered external call -- image generation, Wolfram,
+   YouTube -- not only search. R5 of the same document.
 7. Existing web_search cassettes are keyed on the current wrapper's
    parameter hash; the rebuilt tool reshapes parameters, so this migration
    includes cassette re-capture (or a recorded key mapping) -- never silent
    reuse.
 8. PR, merge; record acceptance of what binds it (D15).
+
+***Correction 2026-08-19 — verified against discodon's tree. Check 3's spend
+half is largely satisfied already, by code that never touched this family;
+check 10 has no site at all.***
+
+**discodon has no 3tears dependency of any kind.** `3tears` appears in neither
+its `pyproject.toml` nor its `uv.lock`, and no module imports `threetears`. The
+Phase 5 preamble's consumption modes — develop tracking develop, releases
+pinning the whole family — are true of metallm and have **no referent here**:
+step 2 is not a pin to bump but a first adoption, and step 1's "lands upstream
+first" governs a relationship that does not exist yet.
+
+**Check 3, first half — search spend inside the eval cost ceiling — is already
+true for the research path, and deliberately false for the standalone tool.**
+Built without `BudgetPort`, and the route is worth stating because a migrator
+reading step 6 would not expect to find it:
+`external_pricing_for` (`discodon/eval/usage_capture.py`) resolves one
+`ExternalCallPricing` per run from the research tool's depth
+(`SEARCH_CREDITS_BY_DEPTH`) and the operator-declared
+`config.tavily.usd_per_credit`; `blended_cost_roles` puts `external` into the
+roles `EvalResult.cost_usd` sums **exactly when that card is priced**;
+`runner.py` calls `on_cost(result.cost_usd)` after each saved cell, and
+`EvalService` wires that to `EvalRunCostCap.record`. So a run whose operator
+declared a credit rate stops on a ceiling that already counts its research
+search dollars.
+
+What is outside is outside on purpose: the standalone `web_search` tool's calls
+land as `external` rows carrying credits and **no dollars**
+(`RoleUsageLedger.add_unpriced_calls`), contributing nothing to the total, and
+discodon names its own blocker — action-seam dollars need the cassette
+withholding widened to that seam first. Volume rather than dollars is bounded
+separately, by `EvalRun.max_metered_calls`. One inconsistency a migrator will
+hit: `discodon/eval/models.py` still describes `max_cost_usd` as capping "the
+run's LLM cost", written before `external` joined the blend.
+
+**Step 6's reshape is still owed, and for the reason already recorded** at
+[`convergence-sequencing.md` Phase 1](convergence-sequencing.md#phase-1--foundations):
+`EvalRunCostCap.check()` takes no estimate and reports `accumulated > ceiling`,
+so it can only stop a run *after* the ceiling is crossed. Same names as
+`BudgetPort`, post-hoc semantics. Re-verified today, unchanged.
+
+**Check 3, second half — replay — is satisfied at the two seams D28 assigned to
+discodon and unbuilt at the one this document proposes.** Action-seam
+(`web_search`) and delivery-seam (research) cassettes are wired discodon-side.
+The search-internal replay of step 5 exists on neither side:
+`packages/search/src/threetears/search/` has no `replay.py`, and `RecordingStore`
+appears nowhere in discodon.
+
+**Check 10 has no site, and nothing on discodon's current course will give it
+one.** `nats` appears nowhere in its code or its compose files; 49 modules
+import `zmq`; no leaf is consumed. A check phrased as *before and after the
+switch* needs a before, and there is none to preserve.
+
+So discodon's honest position is not "not started": **step 6's property is
+mostly met by other means, steps 3, 4, 5 and 7 have no started work, and steps
+1 and 2 have no referent.**
 
 **samsung** -- rides its planned phase-2 image-search work, not a
 migration-for-migration's-sake.
@@ -1484,6 +1606,97 @@ migration-for-migration's-sake.
    `media-contracts` facets; verify checks 2, 5, 9 (no fork, no torch,
    one-shot `asyncio.run()`).
 4. Record acceptance (D15).
+
+***Correction 2026-08-19 — samsung's phase-2 image search is BUILT, it is not
+built on the leaf, and that is a decision with a price tag rather than a gap.***
+
+The work this step forecasts as "when that work schedules" shipped:
+`curation/src/curation/discovery/phase_two.py` ranks image instances,
+`discovery/images.py` is the provider seam (`ImageSearch`, `ImageQuery`,
+`FoundImage`), and `discovery/artic.py` is its first provider.
+
+**It does not use `3tears-search`, and not by forking it — the two solve
+different problems.** Phase 2 asks a museum's collection for instances of a
+*named* work and settles identity by comparing title and artist above the seam.
+It refuses to treat the provider's relevance score as evidence at all, having
+measured a nonsense query returning ten real works scoring in the fifties, and
+it spends nothing — so no budget, no carriers, no ranking cross that seam.
+Check 2's "without forking" clause has nothing to bite on. What it should have
+asked is whether the leaf was **considered and rejected**, and it was.
+
+**The rejection is recorded, and its currency is install weight rather than
+capability.** `curation/pyproject.toml` states 3tears core is "deliberately
+absent and is not expected", and confines `3tears-models` to an opt-in `eval`
+group because the default install is the plane running beside `display` under
+`MemoryMax=2G` (`deploy/curation.service`) and that one package would bring
+`3tears-observe`, `3tears-media-contracts`, `anthropic`, three `langchain-*`
+packages and `jsonschema` with it. Web-shaped traffic goes to one provider —
+OpenRouter, via its web plugin — behind a first-party client on a narrow seam.
+**So the bar `3tears-search` must clear at this consumer is the size of its
+transitive closure**, and no phrasing of check 2 says so. Its pin is also two
+minors below anything adoptable: `3tears-models>=0.22.5,<0.23` against a family
+at 0.26.1.
+
+***And the leaf clears that bar with room to spare, which nobody had
+measured.*** Installed from PyPI at 0.26.1 on CPython 3.14:
+
+| Install | Packages | `site-packages` |
+|---|---|---|
+| `3tears-search` | 8 | 8.3 MB |
+| `3tears-search[standalone]` | 14 | 10 MB |
+| `3tears-search[standalone,extract]` | 30 | 75 MB |
+
+The base closure is pydantic plus the two dependency-free family leaves — both
+`3tears-observe` and `3tears-media-contracts` declare `dependencies = []`, which
+is D24's permitted floor doing exactly what it was written for. curation already
+declares `pydantic` **and** `httpx`, so the marginal cost of
+`3tears-search[standalone]` at that consumer is **three wheels, ~684 KB, and no
+new transitive dependency at all**.
+
+**The exclusion samsung recorded is sound for the package it was written about
+and does not transfer.** `3tears-models` brings anthropic, three `langchain-*`
+and jsonschema; the search leaf shares only the two empty leaves with it. What
+kept the leaf out of that plane was never the leaf's weight — it was that
+nobody had asked, and check 2 gave no reason to.
+
+**`[extract]` is the extra that must stay off a Pi: +16 packages, +65 MB**, of
+which babel is 32 MB and lxml 19 MB, arriving `trafilatura -> courlan -> babel`.
+Phase 2 has no use for it — museum JSON, no HTML-to-text — and the leaf refuses
+correctly in its absence: importing `threetears.search.extract` succeeds because
+`_load_extractor` defers the import, and calling it raises `LocalCapExceeded`
+naming the extra and its remediation rather than an `ImportError` from the
+middle of a pipeline.
+
+Where the leaf would plug in is named in samsung's own code and is unbuilt:
+`phase_two.py` records that nothing produces a `contemporary_web` candidate —
+every instance it stores comes from a museum API and is `institutional`.
+
+***Check 9 describes a caller samsung no longer is, and the real shape is the
+harder one.*** The one-shot `asyncio.run()` callers are the legacy 2024 scripts
+(`tvart.py`, `tv_api_check.py`, `display/tools/power_probe.py`) — the modules
+`curation` exists to retire. The plane that would call search is a long-lived
+uvicorn process: `curation/src/curation/app.py` builds a FastAPI app with a
+mounted MCP session manager, its HTTP routes are plain `def` so Starlette runs
+them in its threadpool, and MCP tool dispatch crosses into sync code through
+`asyncio.to_thread` (`curation/src/curation/mcp/server.py`). The calling code is
+genuinely synchronous, which is the half that matters and it holds — but "no
+ambient event loop, no long-lived client" is **false of the process**. A leaf
+proved only against a bare `asyncio.run()` would not have proved what this
+consumer needs: a synchronous entry point reached from a worker thread while a
+loop runs on the main one.
+
+Check 5 passes vacuously and should not be counted: `torch` appears in no
+manifest or lock in that repo, but nothing has driven the check, because the
+leaf is not installed.
+
+***What the four re-verifications have in common.*** Three months of consumer
+commits moved every one of checks 1, 2, 3, 9 and 10, and none of the movement
+was toward the step as written — 1 and half of 3 came true by unrelated work, 2
+was answered in the negative for a reason recorded only in the consumer's own
+`pyproject.toml`, 9's premise expired, and 10 lost the "before" it compares
+against. A consumer-repo check is a claim about a tree this repo does not watch;
+it has to be re-read against that tree at the time of asking, and its cost is
+paid by whoever asks late.
 
 **Ordering within Phase 5:** metallm first (smallest, exercises the gutted
 builtins), discodon second (deepest, exercises budgets + replay + corpus),
@@ -1523,6 +1736,24 @@ at 0.24.3+, and Gate C should confirm that floor rather than assume it.
 - **Model-mediated producer detail** (D3) -- designed when samsung pulls.
 - **D12 ratification** -- the robots/terms stance needs per-repo acceptance,
   not just this spec's proposal.
+- ~~**A weighted provider unit has no name.**~~ **Closed the same day it was
+  opened, 2026-08-19, by fixing it rather than carrying it.**
+  `Spend.provider_units` was a bare `Decimal` while `Spend.__add__` refused to
+  sum `money` across currencies -- the identical fabrication, unguarded, in the
+  dimension right beside the one the guard was written for. `Spend` now carries
+  `provider_unit` as `"<provider>:<unit>"`, composed once from
+  `ProviderCapabilities.metered_unit` so a second spelling cannot appear and
+  compare unequal, and the sum refuses a mismatch. Qualified by provider on
+  purpose: two providers may both meter "credits" without those being one
+  fungible unit.
+
+  **Taken as a breaking change, deliberately.** `ContractModel` is
+  `extra="forbid"`, so an added field is a wire break for any reader on an
+  older exact version -- the exposure `_base.py` already documents. It was
+  taken because 0.27.0 is bumped and untagged, the only pinned consumer does
+  not call this surface, and a spend figure that silently sums two providers'
+  units fails in the direction nobody audits: it reads as a smaller, plausible
+  bill rather than as an error.
 
 ## 9. Requirements confidence
 

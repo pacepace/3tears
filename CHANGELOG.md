@@ -4,6 +4,695 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.27.0 -- 2026-08-22
+
+### Breaking
+
+- **`3tears-nats[client]` now requires `nats-py>=2.15`** (was `>=2.10`). The KV
+  create-or-reconcile path passes `StreamConfig(subject_delete_marker_ttl=...)`,
+  a field 2.14 does not have. The floor sat at 2.10 while that call landed, so a
+  consumer resolving anything in 2.10..2.14 built clean and died at RUNTIME with
+  an unexpected keyword -- the mixed-install failure mode this project already
+  warns about, arriving through an undeclared floor rather than an unbounded
+  sibling. A consumer pinned below 2.15 will now fail to resolve, which is the
+  intended outcome: failing at install beats failing at the first bucket
+  reconcile.
+
+- **Every L2 key is now `{scope}.{table}.{body}`, and the scope is mandatory.**
+  `CollectionRegistry.configure` and `bind_table` RAISE `L2ScopeNotConfiguredError`
+  when given an `l2_client` without a `kv_key_scope`. Derive the value from
+  `kv_key_scope_for(principal)` -- it is the single producer of that segment, and the
+  minted NATS grant comes from the same call, so a literal that drifts from it writes
+  keys no grant names.
+
+  **Every key already in a deployed `{ns}-collections` bucket is orphaned by this.**
+  For a collection with an L3 tier that is one cache miss per key. For a collection
+  whose `L3` is `None` -- the identity fence among them -- L2 IS the source of truth
+  and an orphaned key is lost data, so those must be copied under their new prefix
+  BEFORE the new code rolls. There is no dual-read shim and none will be added.
+  `14-eng-ai-bot/scripts/copy_l2_keys_into_scope.py` performs the copy and
+  `docs/runbook-l2-key-scope-cutover.md` is the procedure.
+
+- **The shared collections bucket must run `allow_direct: true`.** One identity
+  declares it; every other process BINDS it (`bind_collections_bucket`, called before
+  `configure`) and refuses a bucket carrying a different configuration. Without
+  `allow_direct` every KV read falls back to the body-carried
+  `$JS.API.STREAM.MSG.GET` form, where the key travels in the request body and no
+  subject-scoped grant can constrain it -- which is what made per-principal isolation
+  unenforceable at the cache tier.
+
+- **`kv_buckets` is now `js_resources`** on the grant-shaping surface: a KV bucket was
+  never the only JetStream resource a principal holds, and the old name could not
+  express the others.
+
+- **`threetears.registry.l1_cache`'s re-exports are removed.** Import from the
+  owning module; per the no-shims rule there is no alias at the old path.
+
+### Added
+
+- `agent-identity`: **`wants` and `needs` are now identity blocks.** Both join
+  `IdentityBlockKey` and both are **tier 2** -- they auto-apply and the human
+  vetoes after the fact, rather than waiting on consent. That is a deliberate
+  ruling, not an oversight: a want or a need is the agent's own homeostatic
+  condition, regulated rather than requested, so it gets wider latitude than
+  the persona block despite being just as identity-shaping.
+
+  Migration **v002** (`ALTER TYPE identity_block_key ADD VALUE IF NOT EXISTS`)
+  carries the two labels onto schemas already at v001. A deployed agent schema
+  recorded v001 applied when it shipped in v0.26.1 and will never re-run its
+  `CREATE TYPE`, so the forward migration is the only path that reaches it --
+  editing v001 in place would have landed the labels on fresh installs alone.
+  The runner does not wrap a version in a transaction, which is what makes
+  `ALTER TYPE ... ADD VALUE` legal here.
+
+  The `identity_propose` tool description now interpolates the block list
+  instead of spelling it out. It was the one place stale text would not fail a
+  test: the description is the only channel telling the model which blocks
+  exist, so a hand-kept copy going stale makes a real block unreachable rather
+  than merely mis-documented.
+
+- `core`: **`bind_collections_bucket(nats_client, *, component=None)`** -- the
+  one call every non-declaring process makes at startup, after connect and
+  BEFORE any `configure()` that wires an L2 client. It retries only the
+  TRANSIENT half of the failure space (the declaring identity has not reached
+  the bucket yet); a permission refusal is terminal and raises immediately,
+  because retrying a grant that will never appear turns a fixable
+  misconfiguration into an unexplained slow start. `component` names the binder
+  in the log, which is what makes an ORDERING failure readable after the fact.
+
+- `nats`: **`NatsClient.ensure_kv_bucket(...)`** -- DECLARES a KV bucket,
+  reconciling a live one in place, as `ensure_jetstream_stream` already did for
+  streams. It replaces a create-or-BIND path that silently discarded the
+  caller's entire requested config when the bucket already existed, with nothing
+  above a `log.debug` to say so. That defect is how a bucket could run without
+  `allow_direct` after code that asked for it shipped -- see `### Breaking`.
+
+- `nats`: **`KvDeclaring`** protocol, beside the existing `KvCapable`. Declaring
+  is a strictly larger capability than opening, and adding the method to
+  `KvCapable` would have un-satisfied every double that implements only
+  `kv_bucket`.
+
+- `core`: **`BaseCollection.delete_l2_entry(entity_id)`** -- the receiver half
+  of cross-pod coherence, promoted from `_delete_from_l2` because its caller
+  (the registry's invalidation listener) lives in another class, and the
+  underscore contract says to promote the api rather than exempt the caller. It
+  is presence-gated: a JetStream KV delete is an unconditional publish of a
+  delete marker, so an ungated broadcast would write one marker per receiver per
+  never-cached entity into a `history=1` memory bucket.
+
+- `core`: **`CollectionRegistry.stop_invalidation_listener()`** -- the pair to
+  `start_invalidation_listener`, which had none. Subscription state lives on the
+  REGISTRY instance, so a process holding two L2-live registries stops each
+  independently.
+
+- `agent-tools`: **`ToolServer.add_connected_callback(cb)`** -- the one seam
+  through which the connection reaches the server's OWNER. Hooks run inside
+  `serve()`, in registration order, AFTER the connection exists and BEFORE the
+  server subscribes its call subject or publishes its registration manifest, so
+  state a hook wires cannot lose the race with the first call; a raise aborts
+  startup deliberately. `ToolServerBootstrap` builds the pod's three-tier stack
+  here. It is a STARTUP hook, not a reconnect hook -- re-declaring the bucket
+  after a NATS restart deletes it is `NatsClient.add_reconnect_callback`'s job,
+  which the declaring identity registers.
+
+- `agent-tools`: **`build_tool_pod_collection_stack(...)`** and
+  **`create_tool_pod_l1_backend(metadata)`** -- a tool pod's whole three-tier
+  wiring in one call, scoped by pod id. It derives the scope FIRST, before any
+  network call, because a pod id that cannot produce a collision-free scope is a
+  configuration error that should not cost a JetStream round trip to discover.
+  `ToolServerBootstrap.collection_tables` is how a pod declares the tables it
+  wants; leaving it unset is the valid "no Collections" configuration and builds
+  no stack at all.
+
+- `agent-acl`: **`unsubscribe_acl_invalidation(...)`** and
+  **`RBAC_L1_COLLECTIONS`** -- the pair to `subscribe_acl_invalidation`, which had
+  none, and the canonical list of the rbac tables an L1 backend must carry.
+
+- `nats`: **`KvConfigMismatch`** and `core`: **`InvalidL2ScopeError`** /
+  **`L2ScopeNotConfiguredError`** -- deliberately OUTSIDE the `KvError` hierarchy.
+  Four of `BaseCollection`'s five KV call sites sit inside `except KvError`
+  handlers that degrade to a warning -- `_get_from_l2`, `_save_to_l2`,
+  `_delete_from_l2` and `delete_l2_entry`; only `l2_cas_mutate` propagates -- so a config
+  mismatch or a missing scope raised as a `KvError` would leave the fleet running
+  with L2 silently off, which is the state these types exist to prevent.
+
+- `nats`: **`build_kv_stream_config`**, **`open_kv_stream`**,
+  **`kv_stream_differences`**, **`RECONCILED_KV_STREAM_FIELDS`**,
+  **`REQUESTABLE_KV_STREAM_FIELDS`** -- the reconcile primitive `ensure_kv_bucket`
+  is built from. The two field sets are separate on purpose: a KV bucket requests
+  more configuration than JetStream will let you change on a live stream, so
+  asking for a difference outside the reconcilable set has to be an error rather
+  than a silent no-op.
+
+- `nats`: **`subject_permissions.kv_bucket_names(permissions)`** -- the KV bucket
+  names one principal's GRANTS declare, derived from
+  `PrincipalPermissions.js_resources` filtered by kind. It reports grant
+  configuration, NOT runtime state -- there is no client-side equivalent. What it
+  buys is a test that the bucket a process opens is a bucket its grant names,
+  since that drift otherwise surfaces as a JetStream deadline rather than an
+  error.
+
+- `core`: **`CollectionRegistry.l2_create_if_missing`** -- whether this registry's
+  collections may CREATE the shared bucket. `False` says the process BINDS and
+  never declares, which is what a principal holding `STREAM.INFO` and no
+  `STREAM.CREATE` must say.
+
+- `registry`: **`build_heartbeat_collection_registry(...)`** -- the registry
+  server's own L2-live registry and the `HeartbeatCollection` snapped onto it,
+  returned as a pair. That collection has **no L3**, so this process's L2 is a
+  SOURCE OF TRUTH rather than a cache -- which is why the registry server is one
+  of the processes that must not lose its invalidation listener.
+
+- `enforcement`: **new `invalidation_listener` domain** -- every L2-live
+  `CollectionRegistry` must consume the cross-pod invalidation stream, and every
+  start must be paired with a stop. Publishing an invalidation is automatic on
+  each write; CONSUMING it is a separate step, and forgetting it is silent: the
+  pod serves its own stale L1 copy and nothing reports it. Scoping the keyspace
+  per principal made that worse, not better -- a peer used to refresh a SHARED
+  key underneath a forgetful pod, and now nothing else writes those keys at all.
+  Two walkers (`unlistened`, `unpaired`), a per-repo exemption file whose
+  rationales must NAME the subscriber, and a non-vacuity floor checked before the
+  findings and not exemptable, because a scan reaching nothing reports exactly
+  what a clean repo reports. A consumer adopts it with
+  `InvalidationListenerConfig` + `run_invalidation_listener_enforcement`, the
+  same shape as every sibling domain; `minimum_live_registries` is required with
+  no default, so the floor is a number somebody decided rather than inherited.
+
+- `enforcement`: **`common.collection_registry`** -- the registry-detection AST
+  vocabulary the above shares with the L2-scope domain: `names_a_live_client`,
+  `constructed_registries`, `constructed_registry_lines`, `l2_live_registries`,
+  plus `REGISTRY_CTOR` / `CLIENT_KEYWORDS` / `CLIENT_SPELLINGS` /
+  `L2_BINDER_METHODS`. Two gates were asking the same question of the same syntax
+  from two copies; `CLIENT_SPELLINGS` is the sharp edge, since it is a heuristic
+  list that grows and a form taught to one copy left the other blind. Public by
+  intent -- a walker in another package reaching a private helper is the
+  underscore violation that produced the duplicate.
+
+- `enforcement`: **`common.ast_helpers` gains the generic spelling family** --
+  `dotted`, `callee_names`, `receiver`, `argument_spellings`. They are not
+  registry-specific and now live where a reader looks for them. `dotted` takes a
+  new **`unwrap_subscript`** keyword, OFF by default, which spells `Base[Param]`
+  as `Base`: that was the only thing distinguishing a THIRD copy of the same walk
+  in `fake_parity`, which this folds away. Off by default because a subscript is
+  not a name in most contexts, and dropping it silently would make `registry[0]`
+  read as `registry` -- a different object. All four are re-exported from
+  `threetears.enforcement.common` exactly as before, so no import path moves.
+
+- `enforcement`: **`logger_coverage` gained a second walker, `call_kwargs`**, and
+  the domain's `walker=` argument grew from `{"all"}` to
+  `{"all", "missing", "call_kwargs"}`. **This widens the DEFAULT gate**: every
+  consumer calls `run_logger_coverage_enforcement(config, walker="all")`, which
+  now also flags `log.info("msg", key=value)` -- structlog shape on a stdlib
+  logger, which raises `TypeError` the moment a process raises the log level.
+  All three consumer repos pass under it today, so the upgrade is quiet; a repo
+  that does not will see a new violation class rather than a behaviour change.
+  `find_structlog_shaped_log_calls` is the walker itself, exported for direct use.
+
+- `nats`: the `kv_buckets` -> `js_resources` rename brings its own vocabulary,
+  which callers constructing grants now need: **`JsResource`**, **`JsResourceKind`**,
+  **`JsCapability`**, **`capability_declares`**, **`capability_is_scoped`**,
+  **`KV_KEY_SCOPE_GRAMMAR`**, **`js_api_grants_for_stream`** and
+  **`sanitize_subject_segment`**. A `js_resources` entry is a record carrying a
+  kind, a scope and a writable flag rather than a bare bucket name, which is what
+  lets one declaration produce both the `$KV.` grant and the `$JS.API.` pair.
+
+- `agent-acl`: **`register_rbac_l1_tables(metadata)`** -- one definition of the
+  rbac L1 table shapes, returned by name. Three consumers carried their own
+  hand-written copies of these `Table(...)` stacks; a column added to one drifted
+  from the other two silently.
+
+- `agent-memory`: **`MemoryChunkCollection.find_by_chunk_indexes`** -- fetch the
+  chunks of one memory sitting at a set of ordinals, in `chunk_index ASC` order.
+  The `memory_recall` tool's `chunk_indexes` mode issued this SELECT inline
+  against the pool, outside the Collection and outside the cache tiers; it now
+  routes through the Collection. The inline SQL had also dropped `customer_id`
+  from the auth triple every other chunk lookup enforces, so the move tightens
+  scoping as well as ownership.
+
+- `agent-wake`: **`WakeFireCollection.count_in_window` takes
+  `webhook_subscription_id`** -- narrows the window count to one webhook
+  subscription server-side. The webhook receiver's per-subscription rate-limit
+  re-rolled that COUNT against a bare pool; it now calls the Collection, and the
+  helper that did the re-rolling is reduced to the POSIX-to-datetime conversion.
+
+- `core`: **`UpstreamHttpError` chains the transport exception that caused it.**
+  A status-less exhaustion said only "no response"; a caller reporting the
+  failure onward -- an MCP tool result, a datasource imperative -- has to tell a
+  timeout apart from a refused connection. `__cause__` now carries the last
+  `httpx` transport error; a 5xx exhaustion produced responses and chains
+  nothing.
+
+- `epoch`: **`catchup_tick(listener, subjects)`** -- one catch-up pass over a
+  consumer's subjects, pure-async, no internal polling. The consumer keeps its
+  loop, interval and shutdown; what it stops keeping is an opinion on which
+  subjects to poll and whether one failing subject abandons the rest. A
+  framework-owned loop is not available at any price here: `3tears-epoch`
+  cannot own a task in `3tears` without inverting the dependency arrow.
+
+  **A consumer that subscribes and schedules nothing gets no catch-up**, and
+  therefore never detects a replaced counter. That is a wiring requirement, not
+  a default.
+
+- `epoch`: **`EpochListener.deregister(subject, on_bump=None)`.** Registrations
+  were append-only, so a consumer that had shut down still received resets
+  through bound methods of a stopped object.
+
+  **Pass `on_bump` when the subject may be shared.** The listener keeps one
+  registration list per subject because two consumers on one subject are
+  supported, so omitting it drops the others too. Passing the callback you
+  subscribed with drops exactly your own entry; omitting it stays correct for a
+  sole owner tearing the subject down. Match is by equality, so a bound method
+  works -- identity does not, because one is built fresh on every attribute
+  access.
+
+- `epoch`: **`ResetCallback` / `subscribe(..., on_reset=)` / `signal_reset()`.**
+  A reset means the counter being tracked was REPLACED, not advanced, so it
+  carries no epoch: the only number available is below everything the consumer
+  has already acted on, which is exactly what epoch dedupe discards. The
+  listener now records every registration and fans a reset out to all of them,
+  clearing last-seen rather than re-priming.
+
+- `epoch`: **a recreated counter bucket is detected by identity.** The bucket
+  carries an opaque `uuid7` under a reserved key, minted create-if-absent so a
+  race resolves to one value and every opener converges on it. The listener
+  compares it for EQUALITY only and, on a change, clears last-seen and notifies
+  every registered consumer.
+
+  This is the conclusive detector. A memory-backed bucket is wiped when the
+  broker restarts, and every KV operation then *succeeds* while reading zero --
+  no exception, no gap in the sequence. The backwards-counter arm below is
+  cheaper but ambiguous (a counter legitimately reads zero when nothing has
+  bumped it), and it cannot see a bucket replaced while last-seen was already
+  zero. Both are kept.
+
+- `epoch`: `catch_up` treats a BACKWARDS counter as a generation reset. A
+  monotonic counter cannot go back, so a lower reading means a different
+  counter -- and without this arm the `current > last_seen` guard could never
+  fire again for the life of the process.
+
+- `core`: **a bounded lifetime for L1 rows, off unless a collection asks for it.**
+  `CollectionRegistry.set_l1_max_age` / `get_l1_max_age`, with
+  `DEFAULT_L1_MAX_AGE_SECONDS` (3600s) applied when a collection opts in without
+  naming a number. A read past the bound deletes the row and reports a miss, so
+  the next read pulls through.
+
+  It exists for the staleness nothing else reaches: an invalidation dropped when
+  the outbound buffer overflows, and a pod whose *subscription* is partitioned
+  while its peers stay healthy, which misses every invalidation published in that
+  window and never learns it did. No publisher-side mechanism can see the second.
+
+  **A collection with no L3 pool is refused a bound**, whatever configuration
+  says. With nothing to pull through from, an expired row is not a miss that
+  repairs itself, it reads as "this row does not exist" -- and a compare-and-set
+  that reads absence writes a fresh row over live state. That covers the
+  presence and heartbeat collections, which are L1+L2 only by design.
+
+  Expiry applies only on the read paths that repair by pulling through. The
+  paths that merely report whether a row is cached do not expire: for them a
+  miss is a final answer a caller acts on, so converting a stale hit into one
+  loses the row rather than refreshing it. The repairing set is `ensure`,
+  `collection[id]` and `collection[id, "field"]`; the reporting set is
+  `get_row_sync`, `get_field_sync`, `set_field_sync` and `exists_in_cache_sync`.
+
+  A read that does expire deletes the row, and a delete that loses a lock does
+  not raise out of the read: the row is withheld either way and the next read
+  retries. The stamp is stripped from every row the `L1Backend` protocol
+  returns, `execute_query` included. Expiry drops increment
+  `threetears_l1_rows_expired_total`, labelled by table, because the rate is
+  what separates a bound doing its job from one that never fires.
+
+- `core`: two keyword parameters on the `L1Backend` protocol reads,
+  `max_age_seconds` and `now_monotonic`. Both default to off, and the framework
+  **omits them entirely** rather than passing `None` when expiry is not
+  configured, so existing callers and out-of-repo `L1Backend` implementations
+  are unaffected until a collection opts into a bound.
+
+  Once one does, an out-of-tree backend must accept the two keywords, and the
+  failure mode is worse than a rejected type: `runtime_checkable` compares
+  member NAMES only, so such a backend still passes `isinstance` and the break
+  surfaces as a `TypeError` at call time rather than at the seam. In-tree
+  backends are updated. `DuckDBBackend` raises `NotImplementedError` rather than
+  accepting a bound it cannot honour -- it injects no stamp, so silence there
+  would hand back exactly the unbounded staleness the caller asked to be rid of.
+
+
+- `nats`: **`PayloadTooLargeError`, for a publish the broker will not accept.**
+  `nats-py` refuses an oversized publish client-side, against the `max_payload`
+  the server advertised in its INFO -- 1 MB on an untuned broker. That refusal
+  arrived as a generic `PublishError` carrying a stringified cause, which left
+  the two failures a caller most needs to tell apart -- the frame we built is
+  too big, versus the connection is gone -- separable only by matching on
+  message text. One of them is a bug in what we built and **must never be
+  retried**: nothing about the next attempt is smaller, so a retry is an
+  infinite loop that logs. The other is an outage, where retrying is often
+  right.
+
+  Both numbers ride the exception as attributes rather than only as prose. It
+  subclasses `PublishError`, so every existing catch site is unaffected.
+
+  Every public publish entry point reaches it, including the JetStream path,
+  where the refusal fires before the ack wait. The task this came from assumed
+  all four funnelled through `_publish_bytes`; two of them do not, so the funnel
+  callers can rely on is the classification rather than the call.
+
+- `nats`: **`NatsClient.max_payload`, so a frame builder can ask what fits.**
+  The half that makes the error more than a nicer message: a caller that can ask
+  how much fits can pick a shape that fits -- a narrower projection, a handle to
+  the part that did not, a chunked `pipe` transfer -- instead of building it
+  large, publishing it, and learning the answer as an exception.
+
+  It answers `None` before connect and `None` while disconnected, which is the
+  point of it rather than a gap in it. `nats-py` pre-fills its own attribute
+  with a 1 MB default, so reading that early returns a guess wearing the shape
+  of an answer; a default here would be a second source of truth for the one
+  number this change exists to stop guessing. The classification is
+  catch-and-retype for the same reason -- the limit has exactly one source of
+  truth, and it is the connected server.
+
+  Together they name the limit above the publish bound and let a caller ask about
+  it before building something that misses it. **A minor because the surface grew,
+  and it had to:** a refusal nobody can catch specifically is a refusal nobody can
+  act on, so the new type and the new property are the change, and `BLD-7QM3`'s
+  ruling puts them on a minor line.
+
+### Changed
+
+- **`family_from_base.py` ships inside `threetears-base`**, at
+  `/opt/threetears/family_from_base.py`, which is the path consumer Dockerfiles
+  invoke. Every consumer inheriting the base needs the same check against the same
+  family, and a per-repo copy is a second source of truth that drifts silently --
+  the exact failure the script exists to prevent one layer down. Its contract is
+  `--mode {0,1} --requirements <exported file, rewritten in place> --lock
+  <uv.lock, read for the recorded family versions>`; `--mode 0` writes nothing and
+  asserts nothing, so the released-lock path is untouched. `--mode 1` is for a
+  DEVELOPMENT lock, where the family resolves to editable paths outside the build
+  context that Docker cannot read at all -- it takes the family from the inherited
+  base venv instead, and fails loudly if the base was built from a different
+  checkout than the lock resolves. Full reasoning is in the module docstring.
+  Separately, the identity targets in `docker-bake.hcl` are retagged `-core` /
+  `-edge` to match the two images they actually produce.
+
+
+- `enforcement`: **`find_local_src_roots` now finds NESTED packages.** It walked
+  `packages/*/src` only, so on a repo that groups packages one level deeper -- as
+  3tears does under `packages/agent/` -- it returned nothing for them and every
+  walker built on it reported a clean tree over 233 of 702 python files. A walker
+  that scans nothing is indistinguishable, from the outside, from a walker that
+  finds nothing; that is why it survived unnoticed.
+
+  The helper now recurses to any depth under `packages/`, skipping the directories
+  in `SKIP_DIRS` and any dot-directory (a `.mypy_cache/3.14/src` is a directory
+  named `src` holding no source) and never descending into a `src/` tree it has
+  already claimed. Depth is deliberately unbounded rather than raised to two: the
+  grouping level is a naming choice, and encoding a guess about it is what
+  produced the hole.
+
+  Its own tests now assert against the live repo that the result is non-empty, is
+  of the expected order of magnitude, and covers every `[tool.uv.workspace]`
+  member carrying a `src/` -- read from the pyproject independently, so a package
+  added tomorrow is required automatically rather than quietly skipped.
+
+  **This widens what every consumer gate sees.** Consumers should expect
+  previously-unscanned trees to surface real violations on first run.
+  `discover_src_roots` is unaffected: it expands workspace members, which already
+  listed the nested globs.
+
+- `enforcement`: **`ast_helpers._SKIP_DIRS` is now public as `SKIP_DIRS`.**
+  Layout discovery and file iteration must agree on which directories are not
+  source, so the set is part of the module's api rather than a private of one
+  walker. No alias for the old name.
+
+- `agent-wake`: **`_check_rate_limit` / `_check_active_schedule_cap` are renamed
+  `check_rate_limit` / `check_active_schedule_cap`.** Both were already listed in
+  the package's `__all__`, which contradicted the underscore; the truthful
+  reading is public, and consumers integrate at exactly this level via
+  `WakeConfig`. **Breaking for any caller of the old names** -- there is no alias.
+
+- `agent-tools`: **`McpClient` routes through `TracedHttpClient`** instead of
+  owning a raw `httpx.AsyncClient`, so MCP calls get the platform's tracing,
+  per-attempt accounting, and configured egress. `http_client=` now takes a
+  `TracedHttpClient`; **breaking for any caller injecting an `httpx.AsyncClient`**.
+  The default transport uses `max_attempts=1` (`McpClient.MAX_ATTEMPTS`) because
+  `tools/call` invokes a tool whose side effects the client cannot see, and a
+  silent retry after a timeout can double-execute it. Failures now come back as a
+  named description (`timed out` / `could not be reached` / `HTTP <status>`)
+  rather than a raw exception string, and the broad `except Exception` on both
+  request paths is narrowed to the shapes a request can actually fail with.
+
+- `nats`: **agent pods no longer hold publish on the retired channel-default
+  WRITE subjects.** `hub.channel.engagement.default.set` / `.clear` are dropped
+  from the `AGENT_POD` grant, and `Subjects.hub_channel_engagement_default_set`
+  / `_clear` are removed with them. **Breaking for any caller of those two
+  constructors** -- there is no alias; binding or clearing a channel's default
+  engagement is an operator action on the hub's authenticated admin HTTP
+  surface.
+
+  The rail was retired on the hub side and no responder subscribes to either
+  subject, so the publishes already reached nothing. What survived was a
+  permission table claiming an agent may write the engagement binding it is
+  only ever supposed to read. The read half,
+  `hub_channel_engagement_default_resolve`, is unaffected and still granted --
+  the runtime genuinely calls it at the tool-call stamp seam.
+
+- `enforcement`: **exemption entries can be keyed on a scope instead of a line.**
+  `Exemption` gains `scope` and `occurrence`; `parse_exemptions_with_rationale`
+  accepts `path:qualname[#N]:symbol` when the caller passes
+  `allow_scope_keys=True`; `apply_exemptions` accepts a `scope_of` resolver and
+  matches on the scope when one is supplied. Both default to off, so a line-keyed
+  file in any other domain parses and matches exactly as before -- including
+  still raising on a non-numeric key, which for those domains is a typo.
+
+  `underscore_access` opts in, and its ledger is regenerated onto scope keys. A
+  line number is a fact about a file's LAYOUT, so an edit anywhere above an entry
+  silently stopped it matching and the reconciliation check then reported the
+  original violation against code nobody had touched. `#N` is retained because
+  two accesses in one function routinely have two different reasons, and
+  collapsing them replaced the second rationale with a copy of the first.
+
+  New in `threetears.enforcement.underscore_access`: `MODULE_SCOPE`,
+  `scoped_accesses`, `ledger_scope_entries`, `ledger_paths`. `ledger_entries`
+  still reads line-keyed entries only and is unchanged for consumers using them.
+
+- `enforcement`: **fake-parity exemptions moved out of the line-keyed file and
+  onto the classes they describe.** All 82 live entries are now
+  `# parity-exempt: <rationale>` markers; `_fake_parity_exemptions.txt` is
+  empty and documents why.
+
+  A file entry is keyed `path:LINE:symbol`, which is a property of the file's
+  layout rather than of the fake. Adding one import to a test module shifted
+  four entries and failed the gate with `no_declaration` for four fakes nobody
+  had touched, pointing at a declaration that already existed. Three further
+  entries named a module deleted some time ago and nothing noticed.
+
+  The in-place marker now clears the same rationale bar the file applies (30
+  characters, no blanket phrases), enforced through one shared
+  `common.exemptions.rationale_defect` so the route that survives a reformat is
+  not also the route with no standard. A marker that fails it reports
+  `fake_parity.weak_exempt_rationale`.
+
+- `nats`: **an ungranted KV bucket now says so, and says how to fix it.** A KV
+  operation the server refuses on permissions is never answered, so it dies on
+  the wrapper's deadline and reports a timeout -- the same thing an unreachable
+  broker reports. The operator goes to the network and finds a connection that
+  is up and carrying every other subject perfectly well.
+
+  The server does announce it, on a channel nothing was reading closely: a
+  `permissions violation` frame reaches the error callback and, unlike an
+  authorization violation, leaves the connection OPEN. Nothing downstream
+  re-reports it. That frame is now decoded to the bucket it names -- from the
+  `$KV` data subject or the `$JS.API...KV_{bucket}` control subject, whichever
+  was refused -- and logged with the `kv_buckets` entry to add. The deadline
+  path says the same thing where only the bucket name is available, and a
+  failed bucket open carries it in the raised `KvError`.
+
+  This is the failure mode a new grant requirement produces when someone misses
+  it, and the reason the requirement had to be written in a release note before:
+  there was nowhere else to put it.
+
+- `epoch`: **which substrate an epoch takes is now declared per family, with a
+  test that fails when a new `*_epoch` builder is declared by neither.** Previously
+  a subject nobody had considered was classified silently, and the silent answer
+  is ephemeral, which is the direction that cannot be repaired once a version
+  number has reached a CDN. The classifier still applies a path marker; what
+  changed is that the marker now belongs to a named, reasoned declaration and
+  that nothing can be absent from the tables.
+
+  Both tables now carry every epoch subject with its reason as a FIELD the
+  test can read, and
+  `packages/epoch/tests/unit/test_durability_policy.py` enumerates the real
+  `Subjects` factory: a new `*_epoch` builder fails until someone decides, a
+  declaration for a deleted subject fails, and a declaration that disagrees with
+  the classifier fails. All five existing subjects were re-decided on their
+  merits; the classification is unchanged.
+
+  **There is no durable epoch in NATS and that is a decision.** `storage="file"`
+  exists, but file-backed JetStream survives only if the store directory does,
+  and the failure this design answers wipes JetStream wholesale -- so NATS
+  durability is conditional on a volume someone provisioned. Conditional is the
+  wrong guarantee for the one value that escapes to caches we cannot purge.
+
+- `epoch`: **the epoch counter moved off Postgres onto NATS KV.** An epoch is a
+  coherence signal, not a durable fact, so every `current()`, catch-up tick and
+  echo confirmation was putting L3 on the cache-coherence path for a number
+  that has no business surviving a restart. Ephemeral epochs now count on
+  `DistributedCounter`. The semantics consumers rely on are unchanged: per-key
+  contiguous counters, so `0` still means "never bumped" and the first bump
+  still returns `1`.
+
+  **`datasource_tile_epoch` is carved out and stays durable.** Its value is the
+  `v{n}` in a tile URL and reaches browser and CDN caches this cluster cannot
+  touch, so a counter that resets with the broker would re-issue `v1..vN` for
+  different content while those caches still hold the old generation. Routing
+  is by subject family, because durability is a property of what the number
+  means rather than of who bumps it.
+
+  Two things Postgres gave for free: a wildcard path matched no row and
+  returned `0`, so `current()` now short-circuits before the lookup (`*` and
+  `>` are illegal KV key characters); and a subject segment carrying a
+  caller-supplied value is a legal row PK but not always a legal key, so a path
+  outside the grammar is digested rather than raising at `bump` in production.
+
+  **Deployments must grant the `{ns}-epochs` KV bucket** to AGENT_POD, HUB and
+  GATEWAY. A missing KV grant does not raise: the call blocks to its deadline
+  and reads as an unreachable broker.
+
+- `core`: **a subclass accessor that caches an L3 read must say so.**
+  `BaseCollection.write_to_cache_sync` takes `from_lower_tier=`, which stamps
+  the row's provenance and is what makes it eligible for expiry. Without it a
+  cached L3 read is indistinguishable from a local write and never expires, so
+  the rows most likely to go stale were exactly the ones exempt. Every in-repo
+  accessor that caches an L3 read now passes it.
+
+- `core`: **`_3t_cached_at` is now a reserved L1 column name.** The backend
+  injects it into generated entity tables to record when a row was last obtained
+  from a lower tier, and strips it from every row a read returns. A table
+  declaring a column of that name raises at `initialize()` rather than emitting
+  duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
+
+
+- `channels`: **`RoomFanout.broadcast` documents what it propagates and what
+  must not be retried.** It still does not catch, which is correct -- this
+  package is not where the decision about a lost room frame is made, and its two
+  consumers each handle it differently on purpose. What it owed them was a
+  failure they can tell apart, and the docstring now names it.
+
+  The failure is silent by construction: the publishing pod's own sockets
+  already hold the content, so the person who caused an oversized frame sees
+  everything while the room sees nothing, and a single-pod test never reaches
+  the publish at all.
+
+- `langgraph`: **`DEFAULT_STRUCTURED_INLINE_MAX_CHARS` records the ceiling above
+  it.** The inline bound was a placeholder with an owner; it now has an upper
+  limit too, so the open question is answered inside a range rather than into
+  open air. Measured through the real event -> `Frame` -> `RoomFrame` nesting,
+  an untuned 1 MB broker works back to roughly 780,000 characters of artifact --
+  and the nesting cost is neither 1.0 nor stable (1.20x on a body-heavy payload,
+  1.34x on a metadata-heavy one), so the note points at
+  `scripts/measure-structured-result-sizes.py` rather than at either ratio.
+
+### Fixed
+
+- `agent-memory`: ambient retrieval admits candidates on **semantic
+  similarity**, not on the composite `hybrid_score`. Gating admission on the
+  composite let an *absent* signal lower the attainable ceiling: a query whose
+  lexemes match no row contributes a keyword term of exactly 0, and a memory
+  older than a few multiples of the recency half-life contributes a recency
+  term indistinguishable from 0. Only the semantic weight was left to clear a
+  threshold calibrated as though all three could fire, so a perfectly relevant
+  month-old memory was unreachable at *any* similarity -- `0.55 * 0.50 = 0.275`
+  against a `0.4` gate, for weights and a cosine range that are both ordinary.
+  In practice ambient recall reached nothing older than about a day, and agents
+  appeared to remember only because the model called `memory_search` explicitly
+  (that tool defaults to a `0.2` threshold, half the ambient one).
+
+  Recency now **ranks and never admits** -- how recently something was written
+  is not evidence that it answers this query. In the three `hybrid_search`
+  paths, `similarity_threshold` gates `similarity >= threshold` and means what
+  its name says; a row that matched the FTS query is admitted too, so the
+  keyword leg still recalls hits whose `similarity` is the placeholder `0.0`
+  rather than a measurement. Ranking is unchanged: `hybrid_score` still orders
+  results on all three signals.
+
+  The `>=` is specific to hybrid-search admission. The single-signal siblings
+  (`search_by_semantic`, and the two paginated cosine scans) keep their existing
+  strict `>` / `<=` comparisons and are untouched here -- worth knowing if you
+  read one threshold value as governing every path.
+
+  **This changes what the threshold gates, not its magnitude.** No default
+  moved. Callers that tuned `similarity_threshold` against the old composite
+  should re-read it as a cosine floor -- under the old rule a brand-new row
+  needed only `similarity > 0.18` to clear `0.4` on its recency term, and such
+  rows are no longer admitted. Applies to `MemoriesCollection`,
+  `MediaContentCollection` and both `MemoryChunkCollection` search paths.
+
+- `models`: **a zero cost registered as "no cost", and priced the call at
+  nothing.** `registry_loader` coalesced its cost fields with `a or b`, and
+  `Decimal("0")` is FALSY -- so every EMBEDDING model, whose output cost is
+  legitimately zero, fell through to `None` and the whole call was billed at
+  nothing. Replaced with `_first_present(row, *keys)`, which tests presence
+  rather than truthiness. The bug class is wider than this call site: any `or`
+  coalescing over a numeric or a `Decimal` treats a real zero as absent.
+
+- `nats`: **the `_hub` principal now subscribes
+  `hub_channel_engagement_default_resolve`.** The hub answers that request and
+  held no grant to receive it, so the call was refused -- and a refused JetStream
+  request is never answered, so it arrived as a deadline rather than an error.
+
+- `nats`: **the channel-delivery stream is named with DASHES in every grant.**
+  `_agent_pod`, `_hub` and `_channel_adapter` all named `{ns}_channels_deliver`,
+  which is not a stream and never was: it is created by
+  `ensure_jetstream_stream(name="channels-deliver")`, so `{ns}-channels-deliver`
+  is the only name a grant can name. Paired with the hub-side change its
+  `_DROPPED_RESOURCES` coupling required.
+
+
+- `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
+  below an early return taken whenever there was no catch-up task -- which is
+  every single-process authorizer, since that task exists only in epoch mode --
+  so a stopped authorizer stayed marked started and `start()`'s double-start
+  guard refused to bring it back up. It also now releases the task handle
+  before awaiting it, so a raise during teardown cannot strand a cancelled
+  task on an object that already reads as not-started.
+
+- `epoch`: `EpochListener.subscribe` records its registration only after the
+  NATS subscribe succeeds. Registering first left an entry behind on failure,
+  so a retry double-registered and every later reset fired that consumer twice.
+
+- `core`: `DuckDBBackend.upsert` now filters writes to the table's registered
+  schema, as `SQLiteBackend` already did. Without it any framework-injected
+  column reached the SQL against a table that does not declare it.
+
+### Removed
+
+- `core`: **`threetears.core.cache.kv` is deleted** -- both `NatsKvClient` and
+  `BucketConfig`, and the module itself. The class had zero production
+  construction sites: every live KV path goes through `NatsClient.kv_bucket` /
+  `NatsKvBucket`, and `BaseCollection._ensure_kv` has not called its
+  `get(bucket, key)` / `put(bucket, key, value)` api since the typed-wrapper
+  migration. `BucketConfig` existed only to configure it and had no other
+  consumer, so it goes with it rather than surviving as an orphan.
+
+  It was not inert. Its docstrings advertised **file** storage while
+  `BucketConfig.storage` defaulted to memory, and the hub's CLAUDE.md cache
+  carve-out cited that stale declaration as the authority for the
+  memory-storage decision -- a reader following the citation found a
+  contradiction and no live code path. The real authority is
+  `NatsClient.kv_bucket`'s `storage: str = "memory"`. Its `connect` also
+  wrapped every bucket open in `except Exception: log.warning(...)`, commented
+  "fail-open", and its 7200 s `collections` TTL was routinely misread as
+  evidence that live bucket config had drifted.
+
+  Per the no-shims rule there is no deprecation alias and no re-export at the
+  old path. Callers import `NatsClient` from `threetears.nats` and open buckets
+  through `kv_bucket`.
+
+### Docs
+
+- `docs/structured-result-tiers.md` and its three task documents: let a client
+  declare what it wants from a structured result -- `citations` or `full` --
+  rather than having the platform drop everything when a projection does not fit
+  the frame. Proposal only; task-03, the ceiling above, is the first piece built.
+
 ## v0.26.1 -- 2026-08-18
 
 The sidecar, which 0.26.0 changed and had no way to ship. A patch, and the

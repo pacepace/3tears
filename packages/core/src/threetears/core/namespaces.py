@@ -44,6 +44,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from threetears.nats.subjects import sanitize_subject_segment
+
 __all__ = [
     "HITL_NAMESPACE_TYPE",
     "NAMESPACE_NAME_SEPARATOR",
@@ -145,7 +147,7 @@ PLURAL_PREFIX_BY_NAMESPACE_TYPE: dict[str, str] = {
 }
 
 
-def sanitize_segment(value: str) -> str:
+def sanitize_segment(value: str | UUID) -> str:
     """replace any ``.`` in a namespace-name segment with ``-``.
 
     the canonical name shape uses ``.`` as the separator between the
@@ -157,12 +159,31 @@ def sanitize_segment(value: str) -> str:
     code path reconstructs the original dotted form from the segment
     alone.
 
-    :param value: raw segment value (may contain dots)
-    :ptype value: str
+    delegates to :func:`threetears.nats.sanitize_subject_segment`, the
+    ONE implementation of this rule. the copies this replaced (a
+    private ``_sanitize`` in ``subjects.py``, a private ``_seg`` in
+    ``subject_permissions.py``) had drifted apart from nothing except
+    being three, and the grant side could reach neither this one nor
+    each other's without a Shape-A underscore violation.
+
+    **the delegation is a coincidence of rules, not one rule.** the callee's
+    contract is "safe as a NATS subject token"; this function's is "safe as a
+    ``platform.namespaces.name`` segment", and those values are PERSISTED, so a
+    change to the sanitizer rewrites what new rows key on while old rows keep the
+    old shape. the two rules agree on every character today, which is why sharing
+    the implementation is right. if the subject rule ever widens -- a new NATS
+    token restriction, or a relaxation -- do NOT follow it here by inheritance:
+    fork this function, keep the persisted shape, and say why. the dedup exists to
+    stop three copies drifting silently, not to make a storage-key rule track a
+    wire-format rule automatically.
+
+    :param value: raw segment value (may contain dots); a UUID renders
+        as its 36-character canonical string
+    :ptype value: str | UUID
     :return: sanitized value safe to concatenate with the separator
     :rtype: str
     """
-    return value.replace(".", "-")
+    return sanitize_subject_segment(value)
 
 
 def build_namespace_name(plural_prefix: str, *segments: str) -> str:

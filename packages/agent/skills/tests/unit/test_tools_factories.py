@@ -48,6 +48,7 @@ def _new_uuid() -> UUID:
 
 
 # parity-with: threetears.agent.skills.collections.AgentSkillCollection
+# parity-exempt: AgentSkillCollection subset for the eight tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user/increment_outcome_counts and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
 class _FakeSkillsCollection:
     """In-memory stand-in for the public surface of :class:`AgentSkillCollection`.
 
@@ -168,6 +169,7 @@ class _FakeSkillsCollection:
 
 
 # parity-with: threetears.agent.skills.collections.AgentSkillInvocationCollection
+# parity-exempt: AgentSkillInvocationCollection subset for skill_invoke + skill_report_outcome unit coverage; the tools call only create/save_entity/record/list_for_conversation/set_outcome so the cache/persistence methods on the production class are out of scope
 class _FakeInvocationsCollection:
     """In-memory stand-in for :class:`AgentSkillInvocationCollection`."""
 
@@ -225,6 +227,7 @@ class _FakeInvocationsCollection:
 
 
 # parity-with: threetears.agent.skills.tools.SkillRegistryClient
+# parity-exempt: in-memory SkillRegistryClient implementation; the production protocol is the SkillRegistryClient defined in tools.py and the fake declares parity-with via the marker on the class, but the strict walker also requires this entry to satisfy the cross-file Protocol lookup
 class _FakeRegistry:
     """In-memory implementation of :class:`SkillRegistryClient`."""
 

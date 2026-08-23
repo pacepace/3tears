@@ -290,3 +290,67 @@ class TestSerializationRoundTrip:
         assert result["data"] is None
         assert result["created_at"] is None
         assert result["raw_bytes"] is None
+
+
+class TestUpsertFiltersToTheRegisteredSchema:
+    """A framework-injected column must not reach the SQL against a table without it.
+
+    The collection's pull-through stamps every row with the L1 cache-age column
+    before writing, and it does so backend-agnostically. DuckDB declares no such
+    column, so an unfiltered write failed on every pull-through against a table
+    that is otherwise fine. SQLiteBackend had always filtered; this backend had
+    not, and nothing noticed because nothing constructs it outside tests.
+    """
+
+    def test_the_cache_age_stamp_does_not_break_the_write(self, backend: DuckDBBackend) -> None:
+        from threetears.core.cache.base import _CACHED_AT_COLUMN
+
+        entity_id = uuid.uuid4()
+        backend.upsert(
+            "test_entities",
+            {"id": entity_id, "name": "stamped", _CACHED_AT_COLUMN: 1234.5},
+            "id",
+        )
+
+        row = backend.select_by_id("test_entities", entity_id, "id")
+        assert row is not None
+        assert row["name"] == "stamped"
+
+    def test_the_stamp_is_dropped_rather_than_stored(self, backend: DuckDBBackend) -> None:
+        """It is filtered out, not silently accepted into some other column."""
+        from threetears.core.cache.base import _CACHED_AT_COLUMN
+
+        entity_id = uuid.uuid4()
+        backend.upsert(
+            "test_entities",
+            {"id": entity_id, "name": "stamped", _CACHED_AT_COLUMN: 1234.5},
+            "id",
+        )
+
+        row = backend.select_by_id("test_entities", entity_id, "id")
+        assert row is not None
+        assert _CACHED_AT_COLUMN not in row
+
+    def test_any_undeclared_key_is_dropped_too(self, backend: DuckDBBackend) -> None:
+        """The filter is general, not a special case for the stamp."""
+        entity_id = uuid.uuid4()
+        backend.upsert(
+            "test_entities",
+            {"id": entity_id, "name": "kept", "not_a_column": "dropped"},
+            "id",
+        )
+
+        row = backend.select_by_id("test_entities", entity_id, "id")
+        assert row is not None
+        assert row["name"] == "kept"
+        assert "not_a_column" not in row
+
+    def test_declared_columns_still_round_trip(self, backend: DuckDBBackend) -> None:
+        """The control: filtering must not have narrowed a legitimate write."""
+        entity_id = uuid.uuid4()
+        backend.upsert("test_entities", {"id": entity_id, "name": "alice", "age": 30}, "id")
+
+        row = backend.select_by_id("test_entities", entity_id, "id")
+        assert row is not None
+        assert row["name"] == "alice"
+        assert row["age"] == 30

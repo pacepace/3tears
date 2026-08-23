@@ -4,9 +4,9 @@
 talk to NATS. it absorbs the lifecycle, dual-phase reconnect-ceiling,
 rate-limited error logging, deadletter dispatch, typed publish, and
 JetStream KV access that previously lived in three half-overlapping
-wrappers (``<upstream-hub>/common/nats.py``,
-``threetears.core.cache.kv.NatsKvClient`` (formerly
-``cache.nats.NatsClient``), ``<consumer>.runtime.nats_transport``).
+wrappers (``<upstream-hub>/common/nats.py``, the KV facade formerly at
+``threetears.core.cache.kv`` (since deleted),
+``<consumer>.runtime.nats_transport``).
 there is exactly one canonical wrapper now; :func:`from nats import`
 outside this module is flagged by the per-repo enforcement walker.
 
@@ -76,7 +76,8 @@ from nats.errors import (
 from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger, representative_exception
 
-from threetears.nats._publish import publish_bounded, raise_as_publish_error
+from threetears.nats._diagnostics import permissions_violation_remedy
+from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
 from threetears.nats.errors import (
     NamespaceNotConfiguredError,
     NatsClientError,
@@ -1220,6 +1221,38 @@ class NatsClient:
         return bool(self._raw.is_closed)
 
     @property
+    def max_payload(self) -> int | None:
+        """the largest single publish this broker will accept, in bytes.
+
+        ``None`` until the server's INFO has been seen, and ``None`` again while
+        disconnected. **That is the point of the property, not a gap in it.**
+        The value is a deployment's, not a library's: 1 MB on an untuned broker
+        and whatever the operator chose otherwise. ``nats-py`` fills its own
+        attribute with a 1 MB default *before* connecting, so reading it early
+        gets a guess wearing the shape of an answer -- which is the one thing a
+        caller asking this question must not be handed. A default here would
+        also be a second source of truth for the number
+        :class:`~threetears.nats.errors.PayloadTooLargeError` exists to stop
+        guessing.
+
+        A caller that can ask how much fits can build something that fits --
+        a narrower projection, a handle to the part that did not, a chunked
+        :mod:`threetears.nats.pipe` transfer -- instead of building it large,
+        publishing it, and learning the answer as an exception. That is the
+        whole reason this is exposed rather than left to the error path.
+
+        :return: the broker's advertised ``max_payload``, or ``None`` when no
+            server has told us
+        :rtype: int | None
+        """
+        if not self._raw.is_connected:
+            return None
+        advertised = getattr(self._raw, "max_payload", None)
+        if not isinstance(advertised, int) or advertised <= 0:
+            return None
+        return advertised
+
+    @property
     def is_healthy(self) -> bool:
         """whether the connection is NOT stuck in a persistent auth-violation or outbound-overflow loop.
 
@@ -1499,6 +1532,38 @@ class NatsClient:
                 },
             )
 
+    def _publish_failure(self, *, subject: str, size_bytes: int, exc: Exception, label: str) -> PublishError:
+        """classify a raised publish failure into the wrapper's typed error.
+
+        One classifier for every publish entry point, so "too large" cannot mean
+        :class:`~threetears.nats.errors.PayloadTooLargeError` on one method and a
+        stringified generic on another. The four public entry points do NOT all
+        share a single call into nats-py -- :meth:`publish` and
+        :meth:`publish_raw` funnel through :meth:`_publish_bytes` while the two
+        reply methods publish directly -- so the funnel a caller can rely on is
+        this classification, not the call.
+
+        :param subject: subject the publish targeted
+        :ptype subject: str
+        :param size_bytes: size of the payload that was handed to nats-py
+        :ptype size_bytes: int
+        :param exc: the exception the underlying publish raised
+        :ptype exc: Exception
+        :param label: leading text for the generic case, naming the entry point
+        :ptype label: str
+        :return: the error to raise
+        :rtype: PublishError
+        """
+        too_large = as_payload_too_large(
+            subject=subject,
+            size_bytes=size_bytes,
+            max_payload=self.max_payload,
+            exc=exc,
+        )
+        if too_large is not None:
+            return too_large
+        return PublishError(f"{label}: subject={subject}: {exc}")
+
     async def publish(
         self,
         *args: Any,
@@ -1613,7 +1678,12 @@ class NatsClient:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
             self._note_if_outbound_overflow(exc)  # resilience-task-03
-            raise PublishError(f"publish_reply failed: subject={reply_subject}: {exc}") from exc
+            raise self._publish_failure(
+                subject=reply_subject,
+                size_bytes=len(payload),
+                exc=exc,
+                label="publish_reply failed",
+            ) from exc
         self._note_publish_success()  # resilience-task-03
 
     async def publish_raw_reply(
@@ -1644,7 +1714,12 @@ class NatsClient:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
             self._note_if_outbound_overflow(exc)  # resilience-task-03
-            raise PublishError(f"publish_raw_reply failed: subject={reply_subject}: {exc}") from exc
+            raise self._publish_failure(
+                subject=reply_subject,
+                size_bytes=len(payload),
+                exc=exc,
+                label="publish_raw_reply failed",
+            ) from exc
         self._note_publish_success()  # resilience-task-03
 
     async def _publish_bytes(
@@ -1676,7 +1751,12 @@ class NatsClient:
             # publish boundary) -- it never reaches error_cb. re-raised as a typed PublishError so the
             # caller gets the wrapper's contract, not an unhandled nats-py raise crashing the coroutine.
             self._note_if_outbound_overflow(exc)
-            raise PublishError(f"publish failed: subject={subject.path}: {exc}") from exc
+            raise self._publish_failure(
+                subject=subject.path,
+                size_bytes=len(payload),
+                exc=exc,
+                label="publish failed",
+            ) from exc
         self._note_publish_success()
 
     # ------------------------------------------------------------------
@@ -2167,6 +2247,7 @@ class NatsClient:
         storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
+        direct: bool | None = None,
     ) -> NatsKvBucket:
         """obtain (or create) a JetStream KV bucket.
 
@@ -2176,20 +2257,33 @@ class NatsClient:
         the **L2** tier (ephemeral; durability rides JetStream R3
         replication + the consumer's real L3). Pass ``"file"`` only as a
         deliberate opt-in when a bucket genuinely needs on-disk durability.
+        **This is the authority for the memory-storage default**, not any
+        retired cache wrapper's docstring.
+
+        the returned handle is CACHED by full bucket name, so the first
+        opener's config wins for the life of the process. a component that
+        needs a bucket to carry a specific configuration must declare it
+        through :meth:`ensure_kv_bucket` BEFORE anything else opens it.
 
         :param name: bucket name suffix (will be prefixed by namespace)
         :ptype name: str
         :param ttl: optional time-to-live for entries; ``None`` for no expiry
         :ptype ttl: timedelta | None
-        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
+        :param storage: ``"memory"`` (default -- L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :param create_if_missing: create bucket if it does not exist
         :ptype create_if_missing: bool
         :param history: number of historical revisions to keep per key
         :ptype history: int
+        :param direct: request ``allow_direct`` on the backing stream. ``None``
+            (the default) neither requests nor compares it, which is what an
+            ordinary consumer wants: it binds to whatever the declaring identity
+            established. see :meth:`ensure_kv_bucket`
+        :ptype direct: bool | None
         :return: ready KV bucket handle
         :rtype: NatsKvBucket
         :raises KvError: if bucket creation or binding fails
+        :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
         """
         # local import avoids circular dependency between client.py and kv.py
         from threetears.nats.kv import NatsKvBucket
@@ -2206,6 +2300,81 @@ class NatsClient:
                 storage=storage,
                 create_if_missing=create_if_missing,
                 history=history,
+                direct=direct,
+            )
+            self._buckets[full_name] = bucket
+        return bucket
+
+    async def ensure_kv_bucket(
+        self,
+        *,
+        name: str,
+        ttl: timedelta | None = None,
+        storage: str = "memory",
+        history: int = 1,
+        direct: bool = True,
+        create_if_missing: bool = True,
+    ) -> NatsKvBucket:
+        """DECLARE a KV bucket's configuration, reconciling a live one in place.
+
+        the KV counterpart of :meth:`ensure_jetstream_stream`, and the answer to
+        the create-or-BIND defect: opening a bucket that already existed used to
+        drop the caller's whole requested config with nothing above a
+        ``log.debug`` to say so. this declares instead -- it creates the bucket
+        when absent and updates the live stream in place when it carries a
+        different value for one of
+        :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS`.
+
+        **call this at startup, from the identity that owns the bucket**, before
+        anything else in the process opens it. it writes through the SAME cache
+        :meth:`kv_bucket` reads, so every later consumer shares this handle and
+        cannot diverge from the declared config; running it second would find the
+        cache already populated by an undeclared open. it does not read that
+        cache first -- a declaration is idempotent and re-running it after a
+        reconnect is exactly how a wiped bucket comes back.
+
+        ``direct`` defaults to ``True`` here and to ``None`` on
+        :meth:`kv_bucket`, and the asymmetry is the point: a declaration states
+        the value, an ordinary open accepts whatever the declarer established.
+        ``allow_direct`` is load-bearing for security -- with it false, nats-py
+        reads a key by putting the key in the REQUEST BODY of
+        ``$JS.API.STREAM.MSG.GET.KV_{bucket}``, and NATS authorises on subjects,
+        so no key-scoped ``$KV.`` grant can constrain a read.
+
+        :param name: bucket name suffix (will be prefixed by namespace)
+        :ptype name: str
+        :param ttl: optional time-to-live for entries; ``None`` for no expiry
+        :ptype ttl: timedelta | None
+        :param storage: ``"memory"`` (default -- L2) or ``"file"`` (opt-in)
+        :ptype storage: str
+        :param history: number of historical revisions to keep per key
+        :ptype history: int
+        :param direct: the ``allow_direct`` value this bucket must carry
+        :ptype direct: bool
+        :param create_if_missing: ``True`` declares (create + reconcile);
+            ``False`` binds read-only and REFUSES a bucket whose reconciled
+            config differs, which is what a process that is not the bucket's
+            owner should do
+        :ptype create_if_missing: bool
+        :return: ready KV bucket handle, also installed in the client's cache
+        :rtype: NatsKvBucket
+        :raises KvError: if bucket creation or binding fails
+        :raises KvConfigMismatch: if ``create_if_missing=False`` and the live bucket differs
+        :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
+        """
+        # local import avoids circular dependency between client.py and kv.py
+        from threetears.nats.kv import NatsKvBucket
+
+        full_name = f"{self._namespace}-{name}"
+        async with self._kv_lock:
+            bucket = await NatsKvBucket.open(
+                client=self,
+                full_name=full_name,
+                ttl=ttl,
+                storage=storage,
+                create_if_missing=create_if_missing,
+                history=history,
+                direct=direct,
             )
             self._buckets[full_name] = bucket
         return bucket
@@ -2233,7 +2402,7 @@ class NatsClient:
         :ptype name: str
         :param subjects: subject patterns the stream captures
         :ptype subjects: list[str]
-        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
+        :param storage: ``"memory"`` (default -- L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :param max_age_seconds: discard a message this long after it was published, whether or not
             anything consumed it. ``None`` (the default) retains until another limit bites. a stream
@@ -2332,7 +2501,15 @@ class NatsClient:
         except PublishError:
             raise
         except Exception as exc:
-            raise raise_as_publish_error(subject.path, exc) from exc
+            # The oversized-publish refusal fires before the ack wait, so it reaches here too and
+            # must land on the same type the core publish path raises -- a caller branching on it
+            # should not have to know which publish path produced the frame.
+            raise raise_as_publish_error(
+                subject.path,
+                exc,
+                size_bytes=len(payload),
+                max_payload=self.max_payload,
+            ) from exc
 
     async def jetstream_subscribe_durable(
         self,
@@ -2853,6 +3030,14 @@ def _is_outbound_overflow(exc: Exception) -> bool:
 async def _on_error(exc: Exception) -> None:
     """nats-py error callback with rate-limited logging.
 
+    A permissions violation is logged as a remediation instead of as an error
+    string. It is the one condition here that arrives with the connection still
+    UP -- ``nats-py``'s ``_process_err`` closes the connection for every other
+    ``-ERR`` but returns early for this one -- so nothing downstream will
+    re-report it, and the operation it refused will resurface much later as a
+    timeout that reads like an unreachable broker. This callback is the only
+    place the truth is available. See :mod:`threetears.nats._diagnostics`.
+
     :param exc: exception from nats-py client
     :ptype exc: Exception
     :return: nothing
@@ -2862,7 +3047,11 @@ async def _on_error(exc: Exception) -> None:
     now = time.monotonic()
     last = _last_error_log.get(key, 0.0)
     if now - last >= _ERROR_LOG_RATE_LIMIT_SECONDS:
-        log.error("NATS error: %s", exc)
+        remedy = permissions_violation_remedy(exc)
+        if remedy is not None:
+            log.error(remedy, extra={"extra_data": {"nats_error": str(exc)}})
+        else:
+            log.error("NATS error: %s", exc)
         _last_error_log[key] = now
     else:
         log.debug("NATS error (rate-limited duplicate): %s", exc)

@@ -38,12 +38,14 @@ def _reset_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
 # ----------------------------------------------------------------------
 
 
+# parity-exempt: fakes the external nats.js.api.PubAck ack object (seq + duplicate fields only); not a threetears protocol
 class _FakePubAck:
     def __init__(self, seq: int, duplicate: bool | None) -> None:
         self.seq = seq
         self.duplicate = duplicate
 
 
+# parity-exempt: fakes the external nats JetStreamContext (add_stream/publish subset with scripted acks); external lib, no threetears parity
 class _FakeJetStream:
     """records add_stream/publish calls; returns scripted acks/errors."""
 
@@ -75,6 +77,7 @@ class _FakeJetStream:
         return self._next_ack
 
 
+# parity-exempt: fakes the external nats Client wrapper handing back the fake jetstream; external lib, no threetears parity
 class _FakeClient:
     def __init__(self, js: _FakeJetStream) -> None:
         self._js = js
@@ -220,16 +223,19 @@ async def test_replay_rejects_from_seq_below_one() -> None:
             pass
 
 
+# parity-exempt: fakes the external nats.js.api.StreamState (last_seq field only); not a threetears protocol
 class _FakeStreamState:
     def __init__(self, last_seq: int) -> None:
         self.last_seq = last_seq
 
 
+# parity-exempt: fakes the external nats.js.api.StreamInfo (last_seq field only); not a threetears protocol
 class _FakeStreamInfo:
     def __init__(self, last_seq: int) -> None:
         self.state = _FakeStreamState(last_seq)
 
 
+# parity-exempt: fakes the external nats pull subscription raising a scripted fetch error; external lib, no threetears parity
 class _FakePullSub:
     def __init__(self, fetch_error: BaseException) -> None:
         self._fetch_error = fetch_error

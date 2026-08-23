@@ -243,7 +243,9 @@ Postgres fixture per consuming app. Full setup: `docs/integration-guide.md`,
 If your app defines its own test fake standing in for a 3tears protocol --
 an ACL evaluator, a store client, a workspace shell -- declare what
 production protocol it stands in for: a subclass, a `# parity-with:` marker
-comment, or an explicit exemption. This is the same fake-parity discipline
+comment, or a `# parity-exempt: <rationale>` marker. All three go on the
+class itself, so they survive a rename or a reformat. This is the same
+fake-parity discipline
 3tears enforces on itself (see this repo's own `CLAUDE.md`, "Test Fakes");
 it's what keeps a fake from silently rotting out of sync with the real
 protocol it's supposed to mirror.

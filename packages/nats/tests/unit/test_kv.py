@@ -9,6 +9,8 @@ tests against a real JetStream KV bucket live in tests/integration/.
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -17,14 +19,18 @@ import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
 from threetears.nats import KvError, NatsKvBucket
+from threetears.nats.errors import PublishTimeoutError
+from threetears.nats.kv import _last_timeout_remedy_log  # noqa: SLF001 - module-level throttle state under test
 
 
+# parity-exempt: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
 class _FakeEntry:
     def __init__(self, value: bytes | None, revision: int | None) -> None:
         self.value = value
         self.revision = revision
 
 
+# parity-exempt: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour
 class _FakeKv:
     """fake KeyValue handle storing entries in a dict."""
 
@@ -89,6 +95,7 @@ def _make_bucket() -> tuple[NatsKvBucket, _FakeKv]:
     return bucket, kv
 
 
+# parity-exempt: minimal JetStream stand-in exposing only create_key_value/key_value for the bucket self-heal re-open path; full nats.js JetStreamContext surface is huge and unrelated to wrapper behaviour
 class _FakeJetStream:
     """Returns a pre-seeded healed KV from create_key_value / key_value (re-open path)."""
 
@@ -102,6 +109,7 @@ class _FakeJetStream:
         return self._healed_kv
 
 
+# parity-exempt: minimal NatsClient stand-in exposing only jetstream_context() for the bucket self-heal re-open path; full NatsClient parity would be over-mocking
 class _FakeClient:
     """Minimal NatsClient stand-in whose jetstream re-open yields ``healed_kv``."""
 
@@ -122,14 +130,18 @@ def _make_self_healing_bucket(broken_kv: _FakeKv, healed_kv: _FakeKv) -> NatsKvB
     )
 
 
+# parity-exempt: minimal JetStream stand-in recording the StreamConfig an open sends to add_stream; the full JetStreamContext surface is unrelated to what the opener builds
 class _CapturingJetStream:
-    """Captures the KeyValueConfig passed to create_key_value so storage can be asserted."""
+    """Captures the StreamConfig an open passes to add_stream so its shape can be asserted."""
 
     def __init__(self) -> None:
         self.config: Any = None
 
-    async def create_key_value(self, config: Any) -> _FakeKv:
+    async def add_stream(self, config: Any) -> Any:
         self.config = config
+        return MagicMock()
+
+    async def key_value(self, _name: str) -> _FakeKv:
         return _FakeKv()
 
 
@@ -354,6 +366,23 @@ async def test_ttl_property() -> None:
     assert bucket.ttl == timedelta(seconds=60)
 
 
+@pytest.fixture(autouse=True)
+def _clear_timeout_remedy_throttle() -> Iterator[None]:
+    """Reset the per-bucket remedy throttle around every test in this module.
+
+    The throttle is module-level state with a 300s window, so without this the
+    FIRST test to wedge a given bucket logs the remedy and every later one is
+    silently suppressed. That failure is ordering-dependent, which is the kind
+    that shows up in CI and not locally.
+
+    :return: nothing
+    :rtype: Iterator[None]
+    """
+    _last_timeout_remedy_log.clear()
+    yield
+    _last_timeout_remedy_log.clear()
+
+
 class TestAKvOperationThatNeverAnswers:
     """The publish wedge at its other call site.
 
@@ -373,7 +402,6 @@ class TestAKvOperationThatNeverAnswers:
         :return: nothing
         :rtype: None
         """
-        from threetears.nats.errors import PublishTimeoutError
         from threetears.nats.kv import _KV_OP_TIMEOUT_SECONDS  # noqa: SLF001
 
         kv = MagicMock()
@@ -401,7 +429,6 @@ class TestAKvOperationThatNeverAnswers:
         :return: nothing
         :rtype: None
         """
-        from threetears.nats.errors import PublishTimeoutError
 
         kv = MagicMock()
         attempts = 0
@@ -419,3 +446,196 @@ class TestAKvOperationThatNeverAnswers:
                 await bucket.put(key="k", value=b"v")
 
         assert attempts == 1, f"the wedged operation was retried {attempts} times through reopen"
+
+    @pytest.mark.asyncio
+    async def test_the_timeout_log_names_the_bucket_and_the_grant(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A deadline cannot tell an ungranted bucket from a dead broker; the log must say so.
+
+        The two produce the identical timeout, because a JetStream request the server
+        refuses is never answered at all. This frame is the only one that knows which
+        bucket to name, so leaving the reader with "the broker did not answer" sends them
+        to the network while a healthy connection carries every other subject.
+
+        :param caplog: pytest log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+
+        kv = MagicMock()
+
+        async def _never_answers(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(3600)
+
+        kv.put = _never_answers
+        bucket = NatsKvBucket(client=None, full_name="prod-epochs", kv=kv, ttl=None)  # type: ignore[arg-type]
+
+        with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
+            with pytest.raises((PublishTimeoutError, KvError)):
+                await bucket.put(key="k", value=b"v")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("'prod-epochs'" in message and "js_resources" in message for message in messages), messages
+
+    @pytest.mark.asyncio
+    async def test_the_remedy_is_not_repeated_for_every_wedged_operation(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The condition lasts; the explanation should not be re-printed per operation.
+
+        A wedged broker times out every KV call, and the remedy is long and identical
+        each time. Emitting it unthrottled buries the diagnosis inside its own
+        repetitions. Each call still raises, which is the signal the caller acts on.
+
+        :param caplog: pytest log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+
+        kv = MagicMock()
+
+        async def _never_answers(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(3600)
+
+        kv.put = _never_answers
+        bucket = NatsKvBucket(client=None, full_name="throttle-probe", kv=kv, ttl=None)  # type: ignore[arg-type]
+
+        with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
+            for _ in range(3):
+                with pytest.raises((PublishTimeoutError, KvError)):
+                    await bucket.put(key="k", value=b"v")
+
+        remedies = [
+            r for r in caplog.records if "throttle-probe" in r.getMessage() and "js_resources" in r.getMessage()
+        ]
+        assert len(remedies) == 1, f"remedy logged {len(remedies)} times across 3 wedged operations"
+
+
+class TestOpeningAnUngrantedBucket:
+    """The FIRST symptom, for a bucket a component opens lazily on first use.
+
+    Both halves of the opener are refused alike -- `STREAM.CREATE` and the `key_value`
+    bind -- and neither is answered, so both die on their own deadline and the caller
+    gets a `KvError` naming two transport failures. That message is what reaches the
+    operator, so the fix has to be in it rather than only in a log line.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failed_open_carries_the_grant_it_probably_needs(self) -> None:
+        """The raised error names the bucket's grant, not just the two failures.
+
+        :return: nothing
+        :rtype: None
+        """
+        js = MagicMock()
+
+        async def _refused(*_args: object, **_kwargs: object) -> None:
+            raise TimeoutError("nats: timeout")
+
+        # A refusal is never ANSWERED -- the server drops the request and the call
+        # dies on its own deadline. Both halves of the opener look like this, which
+        # is why neither can be told apart from an unreachable broker on its own.
+        js.add_stream = _refused
+        js.key_value = _refused
+        client = MagicMock()
+        client.jetstream_context = MagicMock(return_value=js)
+
+        with pytest.raises(KvError) as caught:
+            await NatsKvBucket.open(
+                client=client,
+                full_name="prod-epochs",
+                ttl=None,
+                storage="memory",
+                create_if_missing=True,
+                history=1,
+            )
+
+        assert "js_resources" in str(caught.value)
+        assert '"$KV.prod-epochs.>"' in str(caught.value)
+        # Unhedged: create_if_missing was asked for, so a merely-absent bucket would
+        # have been created. Reaching the bind at all rules that cause out.
+        assert "FIX: grant" in str(caught.value)
+        assert "never created" not in str(caught.value)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_bind_only_open_hedges_between_the_two_causes(self) -> None:
+        """`create_if_missing=False` never attempts a create, so it cannot rule one out.
+
+        A bucket nobody has created yet fails this branch exactly the way an ungranted
+        one does, so asserting the grant would send half of these readers to change a
+        permission that was already correct.
+
+        :return: nothing
+        :rtype: None
+        """
+        js = MagicMock()
+
+        async def _refused(*_args: object, **_kwargs: object) -> None:
+            raise TimeoutError("nats: timeout")
+
+        js.key_value = _refused
+        client = MagicMock()
+        client.jetstream_context = MagicMock(return_value=js)
+
+        with pytest.raises(KvError) as caught:
+            await NatsKvBucket.open(
+                client=client,
+                full_name="prod-epochs",
+                ttl=None,
+                storage="memory",
+                create_if_missing=False,
+                history=1,
+            )
+
+        assert "js_resources" in str(caught.value)
+        assert "never created" in str(caught.value)
+
+
+class TestTheRemedyIsNotSuppressedOnAFreshlyBootedMachine:
+    """`time.monotonic()` is time since BOOT on Linux, not since the epoch.
+
+    The throttle compared `now - last` against its window with `0.0` standing in for
+    "never logged". On a machine whose uptime is under that window the arithmetic
+    suppresses the FIRST remedy -- the one that matters, because a missing KV grant
+    is most likely to bite a process that has just started.
+
+    It reads as correct on any developer machine (uptime in days) and fails only
+    where it counts. CI found it: a GitHub runner is about a minute old.
+
+    Probed by inflating the INTERVAL rather than faking the clock. Patching
+    `time.monotonic` patches it for asyncio too and hangs the event loop; making the
+    window larger than the machine's uptime reproduces the same arithmetic on any
+    host, and is what the old code fails.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_first_remedy_logs_however_young_the_machine_is(self, caplog: pytest.LogCaptureFixture) -> None:
+        """An absent key means never logged, whatever the clock reads.
+
+        :param caplog: pytest log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        kv = MagicMock()
+
+        async def _never_answers(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(3600)
+
+        kv.put = _never_answers
+        bucket = NatsKvBucket(client=None, full_name="fresh-boot", kv=kv, ttl=None)  # type: ignore[arg-type]
+
+        with (
+            caplog.at_level(logging.ERROR),
+            patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05),
+            # Larger than any real uptime, so `now - 0.0` is inside the window and the
+            # old `0.0` sentinel suppresses. Absence must still mean "never logged".
+            patch("threetears.nats.kv._TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS", 1e12),
+        ):
+            with pytest.raises((PublishTimeoutError, KvError)):
+                await bucket.put(key="k", value=b"v")
+
+        assert any("'fresh-boot'" in r.getMessage() and "js_resources" in r.getMessage() for r in caplog.records), (
+            "the first remedy was suppressed because the machine had not been up long enough"
+        )

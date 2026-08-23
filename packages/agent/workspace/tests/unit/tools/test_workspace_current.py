@@ -45,6 +45,7 @@ class _FakeContext(FakeWorkspaceContext):
 
 
 @dataclass
+# parity-exempt: workspace discovery-client subset for the workspace_current tool unit; the discovery client carries multiple find methods and the test only exercises one
 class _FakeDiscoveryClient:
     """stand-in for :class:`NamespaceDiscoveryClient` returning fixed items.
 

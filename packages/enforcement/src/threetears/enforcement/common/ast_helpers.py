@@ -4,6 +4,20 @@ these helpers exist because every domain walker re-implemented the same
 file-iteration / parse / private-name / logger-call recognisers slightly
 differently. consolidating them here keeps the walkers focused on the
 shape they're actually checking.
+
+**The dotted-name spelling family lives here too** -- :func:`dotted`,
+:func:`callee_names`, :func:`receiver`, :func:`argument_spellings`. Look here
+before writing another one: this walk has been reimplemented three times in this
+package already, and each copy differed by one detail that turned out to be a
+parameter rather than a reason. :func:`dotted`'s ``unwrap_subscript`` is the
+surviving example.
+
+One near-relative deliberately stays separate: ``inheritance._base_name`` does
+the same unwrap but returns the LAST segment, because the class-base graph keys
+by bare name. Folding it would change that graph's keys, so it is a different
+function rather than a fifth copy -- but note the two therefore disagree on a
+dotted base (``pkg.Base`` here, ``Base`` there), which is a real difference to
+know about before comparing their outputs.
 """
 
 from __future__ import annotations
@@ -15,6 +29,7 @@ from pathlib import Path
 from threetears.observe import get_logger
 
 __all__ = [
+    "SKIP_DIRS",
     "iter_python_files",
     "note_unscanned",
     "parse_python_file",
@@ -22,6 +37,10 @@ __all__ = [
     "is_private_name",
     "is_logger_call",
     "is_suppress_call",
+    "dotted",
+    "callee_names",
+    "receiver",
+    "argument_spellings",
 ]
 
 log = get_logger(__name__)
@@ -49,11 +68,16 @@ def note_unscanned(target: Path | str, reason: str) -> None:
     )
 
 
-# directories never walked for source-scanning passes. covers virtual
-# environments, build artefacts, IDE caches, vcs metadata, and the
-# legacy sphinx ``_build`` output dir. cookiecutter template trees are
-# detected separately because their names contain ``{{`` placeholders.
-_SKIP_DIRS: frozenset[str] = frozenset(
+#: directories never walked for source-scanning passes. covers virtual
+#: environments, build artefacts, IDE caches, vcs metadata, and the
+#: legacy sphinx ``_build`` output dir. cookiecutter template trees are
+#: detected separately because their names contain ``{{`` placeholders.
+#:
+#: public because layout discovery shares the exclusion: a tooling cache
+#: such as ``packages/registry/.mypy_cache/3.14/src`` is a directory named
+#: ``src`` that is not a source tree, and both the file iterator and the
+#: src-root finder must agree on that.
+SKIP_DIRS: frozenset[str] = frozenset(
     {
         ".venv",
         ".mypy_cache",
@@ -88,7 +112,7 @@ def _has_cookiecutter_marker(path: Path) -> bool:
 def iter_python_files(root: Path) -> Iterable[Path]:
     """yield every ``.py`` file under ``root``, deterministically ordered.
 
-    skips :data:`_SKIP_DIRS` (venv / build / cache / vcs) and any path
+    skips :data:`SKIP_DIRS` (venv / build / cache / vcs) and any path
     that lives inside a cookiecutter template tree (component contains
     ``{{``). entries within each directory are sorted so report output
     is stable across runs.
@@ -119,7 +143,7 @@ def _walk_sorted(directory: Path) -> Iterable[Path]:
         return
     for entry in entries:
         if entry.is_dir():
-            if entry.name in _SKIP_DIRS:
+            if entry.name in SKIP_DIRS:
                 continue
             if "{{" in entry.name:
                 continue
@@ -251,10 +275,13 @@ def is_logger_call(
         return False
     if func.attr not in method_names:
         return False
-    receiver = func.value
-    if isinstance(receiver, ast.Name) and receiver.id in logger_names:
+    # not `receiver`: that is a module-level function here now, and shadowing it inside
+    # a helper that does not call it is the kind of thing that reads fine until someone
+    # adds the call.
+    called_on = func.value
+    if isinstance(called_on, ast.Name) and called_on.id in logger_names:
         return True
-    if isinstance(receiver, ast.Attribute):
+    if isinstance(called_on, ast.Attribute):
         return True
     return False
 
@@ -281,3 +308,81 @@ def is_suppress_call(node: ast.AST) -> bool:
     if isinstance(func, ast.Attribute) and func.attr == "suppress":
         return True
     return False
+
+
+def dotted(node: ast.expr, *, unwrap_subscript: bool = False) -> str | None:
+    """return the dotted spelling of a Name-rooted expression.
+
+    ``registry`` and ``self._registry`` resolve; ``build()[0]`` does not, because there is
+    no static name for it.
+
+    :param node: expression to spell
+    :ptype node: ast.expr
+    :param unwrap_subscript: spell ``Base[Param]`` as ``Base``. OFF by default, because a
+        subscript is not a name in most contexts and silently dropping the parameter
+        would be a lie; ON for base-class lists, where ``BaseCollection[FakeEntity]``
+        genuinely names ``BaseCollection``
+    :ptype unwrap_subscript: bool
+    :return: dotted spelling, or ``None`` when the expression is not name-rooted
+    :rtype: str | None
+    """
+    parts: list[str] = []
+    current: ast.expr = node
+    while unwrap_subscript and isinstance(current, ast.Subscript):
+        current = current.value
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    spelled: str | None = None
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        spelled = ".".join(reversed(parts))
+    return spelled
+
+
+def callee_names(call: ast.Call) -> frozenset[str]:
+    """return the bare and attribute spellings of a call's callee.
+
+    :param call: call to inspect
+    :ptype call: ast.Call
+    :return: callee names
+    :rtype: frozenset[str]
+    """
+    callee = call.func
+    names: set[str] = set()
+    if isinstance(callee, ast.Name):
+        names.add(callee.id)
+    elif isinstance(callee, ast.Attribute):
+        names.add(callee.attr)
+    return frozenset(names)
+
+
+def receiver(call: ast.Call) -> str | None:
+    """return the dotted spelling of a method call's receiver.
+
+    :param call: call to inspect
+    :ptype call: ast.Call
+    :return: receiver spelling, or ``None`` when the call is not a method call
+    :rtype: str | None
+    """
+    callee = call.func
+    spelled: str | None = None
+    if isinstance(callee, ast.Attribute):
+        spelled = dotted(callee.value)
+    return spelled
+
+
+def argument_spellings(call: ast.Call) -> frozenset[str]:
+    """return the dotted spelling of every positional and keyword argument value.
+
+    :param call: call to inspect
+    :ptype call: ast.Call
+    :return: argument spellings
+    :rtype: frozenset[str]
+    """
+    spellings: set[str] = set()
+    for argument in [*call.args, *(keyword.value for keyword in call.keywords)]:
+        spelled = dotted(argument)
+        if spelled is not None:
+            spellings.add(spelled)
+    return frozenset(spellings)

@@ -475,7 +475,7 @@ class PipeEndpoint:
         # makes them the one place in this module where a remote string reaches a subject
         # un-digested, so they are checked here rather than trusted.
         #
-        # ``_sanitize`` is not enough on its own: it maps ``.`` to ``-`` and touches nothing
+        # ``sanitize_subject_segment`` is not enough on its own: it maps ``.`` to ``-`` and touches nothing
         # else, so ``*`` and ``>`` survive it. An owner answering an attach with ``pod_id="*"``
         # and ``nonce="*"`` would otherwise have the caller subscribe a WILDCARD across every
         # pod and every stream of that tool -- which the caller's own grant permits, because a

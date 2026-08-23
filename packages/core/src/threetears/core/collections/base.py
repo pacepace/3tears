@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -25,11 +26,12 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVa
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
+from threetears.core.cache.base import _CACHED_AT_COLUMN
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry
+from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry, L2ScopeNotConfiguredError
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
 
@@ -437,7 +439,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return MISSING
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         if row is None:
             return MISSING
         return row.get(field, MISSING)
@@ -458,7 +460,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         if row is None:
             return False
         row[field] = value
@@ -474,14 +476,108 @@ class BaseCollection(ABC, Generic[EntityT]):
             is not cached
         :rtype: dict[str, Any] | None
         """
+        return self._select_from_l1(entity_id)
+
+    @property
+    def l1_max_age_seconds(self) -> float | None:
+        """How long an L1 row cached from a lower tier may be served, or ``None``.
+
+        **``None`` unless a collection opts in, and structurally ``None`` when
+        there is no L3.** The second half is the load-bearing one. A collection
+        with no L3 pool does not fall back to a slower tier on a miss: the
+        L1+L2-only collections override :meth:`get` to return ``None`` on a
+        total miss, so an expired row does not become a pull-through, it becomes
+        "this row does not exist". Downstream, a compare-and-set that reads
+        absence writes a fresh row over a live one -- a presence room with ten
+        members replaced by a room with one, and no error anywhere. Expiry is a
+        cache mechanism, and a tier that is the source of truth is not a cache.
+
+        :return: the configured bound, or ``None`` when expiry is off
+        :rtype: float | None
+        """
+        if self.l3_pool is None:
+            return None
+        return self._registry.get_l1_max_age(self.table_name)
+
+    def _select_from_l1(self, entity_id: Any, *, expiring: bool = False) -> dict[str, Any] | None:
+        """The one L1 read, with expiry applied only where a miss is repairable.
+
+        Every reader **in this class** routes through here rather than calling
+        the backend itself, so the policy has one home. But the callers do not
+        share a contract, and that is why ``expiring`` is a parameter rather
+        than always-on:
+
+        - **Repairing callers** (:meth:`ensure`, :meth:`_resolve_row`,
+          :meth:`_ensure_in_l1`) treat a
+          miss as "go to the lower tier", so expiring a row makes it reload.
+          That is the whole mechanism, and they pass ``expiring=True``.
+
+          :meth:`_resolve_row` is on this list for a reason worth stating: it
+          backs ``collection[id]``, the primary read path, and it reaches L1
+          directly rather than through :meth:`get_row_sync`. Routing it through
+          that reporting method instead makes the bound unreachable for
+          subscript reads -- the non-expiring read returns the stale row and
+          nothing further runs -- which is inert, not conservative.
+        - **Reporting callers** (:meth:`get_row_sync`, :meth:`get_field_sync`,
+          :meth:`set_field_sync`, :meth:`exists_in_cache_sync`) treat a miss as
+          "not cached" and return it to a caller that will not fall back.
+          Expiring for them turns a stale row into a *deleted* one and reports
+          absence, which is worse than the staleness it was bounding:
+          ``__setitem__`` reads a field write back through
+          :meth:`get_row_sync` and skips propagation when it sees ``None``, so
+          the write is silently dropped, and an entity handle held across the
+          bound starts answering ``None`` for fields it has.
+
+        The distinction is a miss's *meaning*, not its value. Expiry converts a
+        stale hit into a miss, which is only an improvement where a miss is
+        cheap and self-correcting.
+
+        The class scoping is deliberate. A subclass in another package can
+        still reach ``self._l1`` directly, and one does --
+        ``ContextItemCollection.touch`` reads L1 to stamp ``date_accessed``.
+        That read is outside the bound, which is harmless there because it
+        neither serves the row to a caller nor clears the stamp on write-back,
+        but it is not covered by this funnel and should not be assumed to be.
+
+        :param entity_id: primary-key value identifying the row
+        :ptype entity_id: Any
+        :param expiring: whether to apply the collection's max-age bound; only
+            a caller that repairs a miss by pulling through may pass ``True``
+        :ptype expiring: bool
+        :return: row dict, or ``None`` when L1 is absent, the row is not
+            cached, or (when ``expiring``) the row was past its max age
+        :rtype: dict[str, Any] | None
+        """
         if self._l1 is None:
             return None
-        return self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)  # type: ignore[no-any-return]
+        max_age = self.l1_max_age_seconds if expiring else None
+        if max_age is None:
+            # The kwarg is omitted, not passed as None, when expiry is off.
+            # ``L1Backend`` is a published Protocol, so an out-of-repo
+            # implementation predating this parameter would raise TypeError on
+            # EVERY cached read otherwise -- and a bound nobody configured is
+            # the overwhelmingly common case, so the whole platform would break
+            # for a feature it had not opted into.
+            untouched: dict[str, Any] | None = self._l1.select_by_id(
+                self.table_name,
+                self.normalize_pk(entity_id),
+                self.primary_key_columns,
+            )
+            return untouched
+        row: dict[str, Any] | None = self._l1.select_by_id(
+            self.table_name,
+            self.normalize_pk(entity_id),
+            self.primary_key_columns,
+            max_age_seconds=max_age,
+        )
+        return row
 
     def write_to_cache_sync(
         self,
         data: dict[str, Any],
         primary_key: str | tuple[str, ...] | None = None,
+        *,
+        from_lower_tier: bool = False,
     ) -> bool:
         """upsert full row into L1 cache, synchronously.
 
@@ -492,13 +588,23 @@ class BaseCollection(ABC, Generic[EntityT]):
             accepts either single column name (str) or tuple of column
             names (composite-pk override).
         :ptype primary_key: str | tuple[str, ...] | None
+        :param from_lower_tier: whether ``data`` was just read from L2 or
+            L3 rather than authored here. Stamps the row's provenance, which
+            is what makes it eligible for max-age expiry. **A subclass
+            accessor that reads L3 and caches the result must pass this**:
+            without it the row is indistinguishable from a local write and
+            never expires, so the rows most likely to go stale are exactly
+            the ones exempt. Defaults to ``False`` because the unstamped
+            reading is the safe one -- it can only under-expire, never
+            revert a local write.
+        :ptype from_lower_tier: bool
         :return: ``True`` on successful write, ``False`` when L1 is absent
         :rtype: bool
         """
         if self._l1 is None:
             return False
         pk: str | tuple[str, ...] = primary_key if primary_key is not None else self.primary_key_columns
-        self._l1.upsert(self.table_name, data, pk)
+        self._l1.upsert(self.table_name, self._stamped(data) if from_lower_tier else data, pk)
         return True
 
     def exists_in_cache_sync(self, entity_id: Any) -> bool:
@@ -511,7 +617,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         return row is not None
 
     def evict_from_cache_sync(self, entity_id: Any) -> bool:
@@ -549,6 +655,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         constructed without a connected client (unit tests, L1+L3
         configurations) never touch JetStream.
 
+        whether a collection may CREATE the shared bucket is the registry's
+        :attr:`CollectionRegistry.l2_create_if_missing` decision, not this
+        method's: baking a literal in here would put one deployment's
+        bucket-ownership policy in the library, and ``False`` is only safe
+        once the declaring identity re-declares the bucket on every NATS
+        reconnect.
+
         :return: ready bucket handle, or ``None`` when no NATS client
             was supplied
         :rtype: NatsKvBucket | None
@@ -558,16 +671,36 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return None
         if self._kv is None:
-            self._kv = await self._nats_client.kv_bucket(name=self.L2_BUCKET_SUFFIX)
+            self._kv = await self._nats_client.kv_bucket(
+                name=self.L2_BUCKET_SUFFIX,
+                create_if_missing=self._registry.l2_create_if_missing,
+            )
         return self._kv
 
     def l2_key(self, entity_id: Any) -> str:
-        """build a grammar-safe NATS KV key for given pk.
+        """build a grammar-safe, principal-scoped NATS KV key for given pk.
 
-        single-pk shape: ``{table_name}.{value}``. composite-pk shape:
-        ``{table_name}.{v1}_{v2}_...`` -- pk values stringified at the
-        NATS boundary (per CLAUDE.md UUID/datetime border-conversion
-        rule) and joined with ``"_"`` to form the **key body**.
+        single-pk shape: ``{scope}.{table_name}.{value}``. composite-pk
+        shape: ``{scope}.{table_name}.{v1}_{v2}_...`` -- pk values
+        stringified at the NATS boundary (per CLAUDE.md UUID/datetime
+        border-conversion rule) and joined with ``"_"`` to form the
+        **key body**.
+
+        ``{scope}`` is the registry's :attr:`CollectionRegistry.kv_key_scope`,
+        the principal this process authenticates as. Every principal
+        shares one ``{ns}-collections`` bucket, so without a leading
+        per-principal token the only grant expressible is
+        ``$KV.{bucket}.>`` -- every key in the platform, to everyone. The
+        scope is what lets the minted grant narrow to
+        ``$KV.{bucket}.{scope}.>``. There is ONE tier: every key is
+        scoped, always; no key is shared.
+
+        The scope is never hashed and never derived from a sanitized
+        display name. Not hashed, because an operator reading a subject
+        in a grant has to be able to tell whose it is. Not
+        name-derived, because the dots-to-dash sanitizer is
+        non-injective, and two principals landing on one scope is
+        precisely the outcome scoping exists to prevent.
 
         the body is constrained by the JetStream KV grammar
         (``^[-/_=.a-zA-Z0-9]+$`` per ``nats-server`` ``kv.go``): a body
@@ -585,11 +718,13 @@ class BaseCollection(ABC, Generic[EntityT]):
           collision-resistant (distinct bodies map to distinct digests,
           unlike a naive ``:``->``=`` replace which silently collides).
 
-        the ``{table_name}.`` prefix is always grammar-safe (table names
-        are ``[a-z_]`` identifiers) and is never hashed, so it stays a
-        readable namespace. only the body is conditionally hashed. the
-        raw pk continues to round-trip through L1, the stored value, and
-        the invalidation envelope, so reversibility is not needed.
+        the ``{scope}.{table_name}.`` prefix is always grammar-safe (the
+        scope is checked against the stricter scope grammar at wiring
+        time; table names are ``[a-z_]`` identifiers) and is never
+        hashed, so it stays a readable namespace. only the body is
+        conditionally hashed. the raw pk continues to round-trip through
+        L1, the stored value, and the invalidation envelope, so
+        reversibility is not needed.
 
         deterministic: the same pk always yields the same key (the
         grammar check and the digest are both pure functions of the
@@ -604,14 +739,35 @@ class BaseCollection(ABC, Generic[EntityT]):
         :param entity_id: pk value (single-pk) or tuple of pk values
             in declared order (composite-pk)
         :ptype entity_id: Any
-        :return: grammar-safe nats KV key, scoped by table name
+        :return: grammar-safe nats KV key, scoped by principal and table name
         :rtype: str
+        :raises L2ScopeNotConfiguredError: if this collection's registry
+            carries no ``kv_key_scope``. the BACKSTOP raise, not the
+            primary one: :meth:`CollectionRegistry.configure` and
+            :meth:`CollectionRegistry.bind_table` both refuse an L2
+            client with no scope at wiring time, which is where a
+            process can still fail its startup rather than dying on the
+            first cache access under load. this covers the ONE path
+            neither of them sees -- ``nats_client=`` passed straight to
+            the constructor, which wins over the registry default and
+            never calls either. deliberately NOT a :class:`KvError` -- four
+            of this method's five call sites sit inside ``except
+            KvError`` handlers that degrade to a warning, so a
+            ``KvError`` here would leave the fleet running with L2
+            silently off
         """
+        scope = self._registry.kv_key_scope
+        if scope is None:
+            raise L2ScopeNotConfiguredError(
+                f"{self.table_name}: no kv_key_scope on this collection's registry, so its L2 "
+                f"keys would carry no principal segment. wire it with "
+                f"registry.configure(kv_key_scope=threetears.nats.kv_key_scope_for(...))"
+            )
         pk_values = self.normalize_pk(entity_id)
         body = "_".join(str(v) for v in pk_values)
         if not _KV_KEY_GRAMMAR.match(body):
             body = hashlib.sha256(body.encode("utf-8")).hexdigest()
-        return f"{self.table_name}.{body}"
+        return f"{scope}.{self.table_name}.{body}"
 
     async def _get_from_l2(self, entity_id: Any) -> dict[str, Any] | None:
         """read entity payload from the L2 NATS KV bucket.
@@ -717,6 +873,73 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
             return False
 
+    async def delete_l2_entry(self, entity_id: Any) -> bool:
+        """evict this pod's OWN scoped L2 entry for one pk, when one exists.
+
+        The receiver-side half of cross-pod cache coherence, called by
+        :class:`CollectionRegistry`'s invalidation listener. Public because that caller lives in
+        another class: reaching :meth:`_delete_from_l2` from there is a cross-class private
+        access, which ``SLF`` forbids repo-wide and which the underscore contract says to fix by
+        promoting the api rather than exempting the caller.
+
+        **Presence-gated, and that gate is load-bearing.** A JetStream KV delete is a publish of
+        a delete-marker message and happens UNCONDITIONALLY -- deleting an absent key still
+        writes a marker. Ungated, every broadcast would write one marker per receiver for every
+        entity that receiver never cached, into a memory-storage bucket with ``history=1``,
+        unlimited ``max_age`` and no ``max_bytes``.
+
+        Distinct from :meth:`_delete_from_l2`, which is the unconditional delete the write path
+        uses: there the entity is being removed and a delete that raced a concurrent write must
+        still land, so paying a probe first would open a window in which the racing value
+        survives. Here the value is already known stale and skipping an absent key costs
+        nothing.
+
+        **Structurally a no-op when there is no L3**, on exactly the reasoning
+        :attr:`l1_max_age_seconds` already applies to expiry: a tier that is the source of
+        truth is not a cache, and evicting from it is not eviction, it is deletion. An
+        L1+L2-only collection has nothing to pull through from, so a key this method removed
+        is a row that no longer exists -- ``HeartbeatCollection``'s pod row, a presence room's
+        membership, the identity fence's generation, which fails OPEN on a missing key and
+        would admit the superseded connection it exists to refuse. The staleness this eviction
+        exists to prevent cannot arise there either: with no L3 there is no ``_pull_through``
+        re-caching anything, and a peer principal's copy is its own truth rather than a stale
+        view of somebody else's.
+
+        Same narrow exception scope as its siblings: only :class:`KvError` (real transport
+        failure, including during bucket resolution) degrades to ``False``. A
+        :class:`L2ScopeNotConfiguredError` from :meth:`l2_key` is NOT a transport failure and
+        propagates.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+            (composite-pk)
+        :ptype entity_id: Any
+        :return: whether an entry was found and deleted
+        :rtype: bool
+        :raises L2ScopeNotConfiguredError: if this collection's registry carries no scope
+        """
+        if self.l3_pool is None:
+            return False
+        try:
+            kv = await self._ensure_kv()
+            if kv is None:
+                return False
+            key = self.l2_key(entity_id)
+            if await kv.get(key=key) is None:
+                return False
+            return await kv.delete(key=key)
+        except KvError as exc:
+            log.warning(
+                "L2 cache eviction failed",
+                extra={
+                    "extra_data": {
+                        "entity_id": str(entity_id),
+                        "table": self.table_name,
+                        "error": str(exc),
+                    },
+                },
+            )
+            return False
+
     # --- Subscript access (sync, transparent pull-through) ---
 
     def _ensure_in_l1(self, entity_id: Any) -> dict[str, Any] | None:
@@ -724,10 +947,9 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         Returns the row data if found, None if not found in any tier.
         """
-        if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-            if row is not None:
-                return row  # type: ignore[no-any-return]
+        row = self._select_from_l1(entity_id, expiring=True)
+        if row is not None:
+            return row
         return sync_await(self._pull_through(entity_id))
 
     async def _pull_through(self, entity_id: Any) -> dict[str, Any] | None:
@@ -735,19 +957,44 @@ class BaseCollection(ABC, Generic[EntityT]):
         l2_data = await self._get_from_l2(entity_id)
         if l2_data is not None:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, l2_data, self.primary_key_columns)
+                self._l1.upsert(self.table_name, self._stamped(l2_data), self.primary_key_columns)
             return l2_data
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, pg_data, self.primary_key_columns)
+                self._l1.upsert(self.table_name, self._stamped(pg_data), self.primary_key_columns)
             await self._save_to_l2(entity_id, pg_data)
             return pg_data
         return None
 
+    @staticmethod
+    def _stamped(data: dict[str, Any]) -> dict[str, Any]:
+        """Return a copy of ``data`` carrying the cache-age stamp for this instant.
+
+        Stamped wherever a row arrives from a LOWER tier -- both pull-through
+        sites and :meth:`reload_entity` -- and nowhere else. The stamp records
+        provenance, not local activity: stamping on every write would let
+        ``set_field_sync`` renew a stale row's lifetime by editing one field,
+        which makes exactly the rows this bounds immortal.
+
+        A copy, because the caller's dict is returned to the caller and becomes
+        entity data. The stamp is storage bookkeeping and must not ride along.
+        """
+        return {**data, _CACHED_AT_COLUMN: time.monotonic()}
+
     def _resolve_row(self, entity_id: Any) -> dict[str, Any]:
-        """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found."""
-        row = self.get_row_sync(entity_id)
+        """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found.
+
+        The first read expires, and goes to :meth:`_select_from_l1` directly rather
+        than through :meth:`get_row_sync`. This method repairs a miss by pulling
+        through, which is what earns it the bound; ``get_row_sync`` is a reporting
+        read and does not expire, so borrowing it here would return the stale row
+        and return it forever -- ``collection[id]`` never reaches the pull-through
+        below, whatever max age the collection configured, while ``get()`` beside
+        it refreshes. The re-read after the pull-through does NOT expire: it was
+        just written.
+        """
+        row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
             return row
         data = self._ensure_in_l1(entity_id)
@@ -773,12 +1020,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if isinstance(key, tuple):
             entity_id, field = key
-            result = self.get_field_sync(entity_id, field)
+            # Straight to the repairing read, not through ``get_field_sync`` first.
+            # That is a reporting read and does not expire, so a stale row still
+            # holding the field answered here and the bound never applied to
+            # ``collection[id, "field"]``. Resolving first is also one L1 read
+            # rather than two, and the outcomes are otherwise identical -- a row
+            # without the field raises below either way.
+            row = self._resolve_row(entity_id)
+            result = row.get(field, MISSING)
             if result is MISSING:
-                row = self._resolve_row(entity_id)
-                result = row.get(field, MISSING)
-                if result is MISSING:
-                    raise KeyError(f"{self.table_name}[{entity_id!r}, {field!r}]: field not found")
+                raise KeyError(f"{self.table_name}[{entity_id!r}, {field!r}]: field not found")
             return result
         entity_id = key
         row = self._resolve_row(entity_id)
@@ -953,14 +1204,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             access is guaranteed to hit L1 (when L1 is available).
         :rtype: dict[str, Any] | None
         """
-        if self._l1 is not None:
-            row: dict[str, Any] | None = self._l1.select_by_id(
-                self.table_name,
-                self.normalize_pk(entity_id),
-                self.primary_key_columns,
-            )
-            if row is not None:
-                return row
+        row = self._select_from_l1(entity_id, expiring=True)
+        if row is not None:
+            return row
         data = await self._pull_through(entity_id)
         return data
 
@@ -1110,7 +1356,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity.set_data(data)
         entity.original_date_updated = data.get("date_updated")
         if self._l1 is not None:
-            self._l1.upsert(self.table_name, data, self.primary_key_columns)
+            # Stamped: this row came from L3, so its provenance is a lower tier
+            # even though no pull-through ran. Leaving it unstamped would make a
+            # freshly-reloaded row read as locally authored, and locally
+            # authored rows never expire.
+            self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
         await self._save_to_l2(entity_id, data)
         await self._publish_invalidation(entity_id)
 

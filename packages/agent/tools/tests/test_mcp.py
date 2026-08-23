@@ -1,41 +1,79 @@
-"""Tests for McpClient."""
+"""Tests for McpClient.
+
+The client owns a :class:`threetears.core.http_client.TracedHttpClient`
+rather than a raw ``httpx.AsyncClient``, so these tests drive the real
+transport with an ``httpx.MockTransport`` instead of a mock object with a
+``post`` attribute. That distinction matters: the retry, tracing, and
+error-normalisation the traced client performs sit BETWEEN this client and
+the socket, and a mocked-out ``post`` asserts on a path production never
+takes.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from collections.abc import Callable
 
 import httpx
 
 from threetears.agent.tools.mcp import McpClient
+from threetears.core.http_client import TracedHttpClient
+
+_BASE_URL = "http://localhost:9000"
 
 
-def _mock_response(json_data: dict, status_code: int = 200) -> MagicMock:
-    """Create a mock httpx.Response."""
-    resp = MagicMock()
-    resp.status_code = status_code
-    resp.json.return_value = json_data
-    resp.raise_for_status = MagicMock()
-    if status_code >= 400:
-        resp.raise_for_status.side_effect = httpx.HTTPStatusError("error", request=MagicMock(), response=resp)
-    return resp
+def _client(handler: Callable[[httpx.Request], httpx.Response]) -> McpClient:
+    """construct McpClient over a mock transport running ``handler``.
 
-
-def _client_with_post(post_mock: AsyncMock) -> McpClient:
-    """construct McpClient with an injected mock http client bound to ``post``.
-
-    :param post_mock: AsyncMock that the client's ``post`` method should invoke
-    :ptype post_mock: AsyncMock
-    :return: client whose internal http transport is the injected mock
+    :param handler: request handler returning a response (or raising a
+        transport exception)
+    :ptype handler: Callable[[httpx.Request], httpx.Response]
+    :return: client whose traced transport is bound to ``handler``
     :rtype: McpClient
     """
-    http = AsyncMock()
-    http.post = post_mock
-    return McpClient("http://localhost:9000", http_client=http)
+    http = TracedHttpClient(
+        upstream_base_url=_BASE_URL,
+        timeout=1.0,
+        max_attempts=1,
+        transport=httpx.MockTransport(handler),
+    )
+    return McpClient(_BASE_URL, http_client=http)
+
+
+def _responding(payload: dict, status_code: int = 200) -> Callable[[httpx.Request], httpx.Response]:
+    """handler returning ``payload`` as JSON under ``status_code``.
+
+    :param payload: JSON body to return
+    :ptype payload: dict
+    :param status_code: HTTP status to return
+    :ptype status_code: int
+    :return: mock-transport handler
+    :rtype: Callable[[httpx.Request], httpx.Response]
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json=payload)
+
+    return handler
+
+
+def _raising(exc: Exception) -> Callable[[httpx.Request], httpx.Response]:
+    """handler raising ``exc`` instead of answering.
+
+    :param exc: transport exception to raise
+    :ptype exc: Exception
+    :return: mock-transport handler
+    :rtype: Callable[[httpx.Request], httpx.Response]
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc
+
+    return handler
 
 
 async def test_list_tools():
-    post = AsyncMock(
-        return_value=_mock_response(
+    client = _client(
+        _responding(
             {
                 "tools": [
                     {"name": "search", "description": "Search things", "inputSchema": {"type": "object"}},
@@ -44,7 +82,6 @@ async def test_list_tools():
             }
         )
     )
-    client = _client_with_post(post)
 
     tools = await client.list_tools()
     assert len(tools) == 2
@@ -55,17 +92,29 @@ async def test_list_tools():
     assert tools[1].input_schema == {}
 
 
+async def test_list_tools_targets_the_spec_path():
+    """The path is joined onto the traced client's base URL, not re-prefixed."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"tools": []})
+
+    client = _client(handler)
+    await client.list_tools()
+    assert seen == [f"{_BASE_URL}/mcp/v1/tools/list"]
+
+
 async def test_list_tools_error():
-    post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
-    client = _client_with_post(post)
+    client = _client(_raising(httpx.ConnectError("connection refused")))
 
     tools = await client.list_tools()
     assert tools == []
 
 
 async def test_invoke_tool_success():
-    post = AsyncMock(
-        return_value=_mock_response(
+    client = _client(
+        _responding(
             {
                 "content": [
                     {"type": "text", "text": "Hello "},
@@ -76,7 +125,6 @@ async def test_invoke_tool_success():
             }
         )
     )
-    client = _client_with_post(post)
 
     result = await client.invoke_tool("greet", {"name": "test"})
     assert result.success is True
@@ -93,8 +141,8 @@ async def test_invoke_tool_keeps_structured_content():
     ``content`` and the caller had to re-parse the rendering to recover a
     shape the server already knew.
     """
-    post = AsyncMock(
-        return_value=_mock_response(
+    client = _client(
+        _responding(
             {
                 "content": [{"type": "text", "text": '{"status": "ok"}'}],
                 "structuredContent": {"status": "ok", "count": 3},
@@ -102,7 +150,6 @@ async def test_invoke_tool_keeps_structured_content():
             }
         )
     )
-    client = _client_with_post(post)
 
     result = await client.invoke_tool("probe", {})
     assert result.metadata == {"status": "ok", "count": 3}
@@ -116,8 +163,8 @@ async def test_invoke_tool_ignores_a_non_object_structured_field():
     would hand the caller a ``metadata`` that is not a mapping, which every
     reader of that field assumes it is.
     """
-    post = AsyncMock(
-        return_value=_mock_response(
+    client = _client(
+        _responding(
             {
                 "content": [{"type": "text", "text": "[1, 2]"}],
                 "structuredContent": [1, 2],
@@ -125,22 +172,20 @@ async def test_invoke_tool_ignores_a_non_object_structured_field():
             }
         )
     )
-    client = _client_with_post(post)
 
     result = await client.invoke_tool("probe", {})
     assert result.metadata is None
 
 
 async def test_invoke_tool_error_flag():
-    post = AsyncMock(
-        return_value=_mock_response(
+    client = _client(
+        _responding(
             {
                 "content": [{"type": "text", "text": "something went wrong"}],
                 "isError": True,
             }
         )
     )
-    client = _client_with_post(post)
 
     result = await client.invoke_tool("failing", {})
     assert result.success is False
@@ -148,8 +193,13 @@ async def test_invoke_tool_error_flag():
 
 
 async def test_invoke_tool_timeout():
-    post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
-    client = _client_with_post(post)
+    """A timeout still reads as a timeout after the traced client normalises it.
+
+    ``TracedHttpClient`` collapses every transport failure into a status-less
+    ``UpstreamHttpError``; the cause it chains is what keeps this message
+    distinguishable from an unreachable server.
+    """
+    client = _client(_raising(httpx.TimeoutException("timed out")))
 
     result = await client.invoke_tool("slow_tool", {})
     assert result.success is False
@@ -157,24 +207,58 @@ async def test_invoke_tool_timeout():
 
 
 async def test_invoke_tool_connection_error():
-    post = AsyncMock(side_effect=httpx.ConnectError("refused"))
-    client = _client_with_post(post)
+    client = _client(_raising(httpx.ConnectError("refused")))
 
     result = await client.invoke_tool("unreachable", {})
     assert result.success is False
     assert result.error is not None
-    assert "refused" in result.error
+    assert "could not be reached" in result.error
+
+
+async def test_invoke_tool_upstream_5xx():
+    """An exhausted 5xx names the status; there is no transport cause to report."""
+    client = _client(_responding({"detail": "boom"}, status_code=503))
+
+    result = await client.invoke_tool("broken", {})
+    assert result.success is False
+    assert result.error is not None
+    assert "503" in result.error
+
+
+async def test_invoke_tool_does_not_retry_a_side_effecting_call():
+    """``tools/call`` is not idempotent, so the client must send it exactly once."""
+    calls: list[int] = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls[0] += 1
+        raise httpx.ConnectError("refused")
+
+    http = TracedHttpClient(
+        upstream_base_url=_BASE_URL,
+        timeout=1.0,
+        max_attempts=McpClient.MAX_ATTEMPTS,
+        transport=httpx.MockTransport(handler),
+    )
+    client = McpClient(_BASE_URL, http_client=http)
+
+    await client.invoke_tool("unreachable", {})
+    assert calls[0] == 1
 
 
 async def test_test_connection_success():
-    post = AsyncMock(return_value=_mock_response({"tools": []}))
-    client = _client_with_post(post)
+    client = _client(_responding({"tools": []}))
 
     assert await client.test_connection() is True
 
 
 async def test_test_connection_failure():
-    post = AsyncMock(side_effect=httpx.ConnectError("refused"))
-    client = _client_with_post(post)
+    client = _client(_raising(httpx.ConnectError("refused")))
 
     assert await client.test_connection() is False
+
+
+async def test_close_closes_the_traced_client():
+    client = _client(_responding({"tools": []}))
+    await client.close()
+    result = await client.list_tools()
+    assert result == []

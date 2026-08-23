@@ -253,7 +253,8 @@ def _build_pod(
     l1 = SQLiteBackend(db_name=f"pod_{uuid.uuid4().hex[:8]}")
     l1.initialize(_metadata())
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1, l2_client=nats, l3_pool=pool)
+    # both pods are replicas of one principal, so they share a scope and therefore an L2 key.
+    reg.configure(l1_backend=l1, l2_client=nats, l3_pool=pool, kv_key_scope="test-principal")
     coll = FakeRefCollection(reg, cfg, nats_client=nats)
     return coll, reg, l1
 
@@ -291,7 +292,7 @@ class TestCompositePkThreeTier:
             l1_row = coll.get_row_sync(("conv-i1", "item-i1"))
             assert l1_row is not None
 
-            assert "fake_refs.conv-i1_item-i1" in nats.kv
+            assert "test-principal.fake_refs.conv-i1_item-i1" in nats.kv
         finally:
             l1.reset()
 

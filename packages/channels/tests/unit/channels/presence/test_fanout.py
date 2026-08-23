@@ -30,6 +30,7 @@ from threetears.channels.presence.wire import RoomFrame
 from threetears.nats import Subjects
 
 
+# parity-exempt: live-socket transport stand-in capturing send_text frames; the production socket handle is a dunder/transport surface with no public parity to assert in a fanout unit test
 class _FakeSocket:
     """live-socket stand-in capturing payloads delivered via ``send_text``."""
 
@@ -47,6 +48,7 @@ class _BoomSocket:
         raise RuntimeError("socket is dead")
 
 
+# parity-exempt: records unsubscribe teardown only; intentional subset of the subscription surface the fanout path exercises
 class _FakeSubscription:
     """records whether it was torn down via ``unsubscribe``."""
 
@@ -58,6 +60,7 @@ class _FakeSubscription:
         self.unsubscribed = True
 
 
+# parity-exempt: NatsClient stand-in recording publishes + handing back fake subscriptions; intentional subset of the NatsClient surface the fanout path uses
 class _FakeNats:
     """fake ``NatsClient``: records publishes + hands back fake subscriptions."""
 
@@ -97,6 +100,7 @@ class _GatedNats(_FakeNats):
         self._gate.set()
 
 
+# parity-exempt: RoomState stand-in recording join/leave + serving canned local sockets; intentional subset of the RoomState surface
 class _FakeRoomState:
     """fake ``RoomState``: records join/leave, serves canned local sockets."""
 
