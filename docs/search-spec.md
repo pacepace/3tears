@@ -955,7 +955,7 @@ node:
 **Conditional requests: nothing today, and the question it raised is now ruled.**
 No `If-None-Match` or `If-Modified-Since` exists anywhere in the leaf, scrape, or
 core's traced client. For `_verify_candidate_page` specifically that is correct
-and stays correct — it runs once per candidate at discovery, holds no copy, and
+and stays correct -- it runs once per candidate at discovery, holds no copy, and
 would have nothing to inspect on a 304.
 
 Asking why led somewhere larger, and the answer is **SR-M4 / D30**, ruled
@@ -963,7 +963,7 @@ Asking why led somewhere larger, and the answer is **SR-M4 / D30**, ruled
 response, and a conditional request holds nothing. What the gap actually was is
 that D7/D12 put the bytes in the consumer's store and then left the consumer no
 way to spend the validator they arrived with, so every re-read of an unchanged
-page pays full freight — on the scrape path, a render and an LLM extraction. The
+page pays full freight -- on the scrape path, a render and an LLM extraction. The
 build sequence is `search-task-01-conditional-revalidation.md`; the transport
 seam already suffices and the work sits above it.
 
@@ -1446,7 +1446,7 @@ change (every adoption assumes a current pin).
    filtered raw streams for structure, read `metadata` instead.
 5. PR, merge per its own workflow.
 
-***Correction 2026-08-19 — steps 3 and 4 describe a metallm tree three months
+***Correction 2026-08-19 -- steps 3 and 4 describe a metallm tree three months
 stale, and both were already discharged before this document named them.***
 The steps are left above as written; what follows is what is actually true, and
 **check 1 passes by prior deletion rather than by migration work**.
@@ -1455,7 +1455,7 @@ metallm's commit `f0b6903` (2026-06-23, *"consume the 3tears price-lookup
 primitive; drop the bespoke scraper"*) deleted **both** side-steps as a side
 effect of unrelated pricing work:
 
-- `api/src/services/web_fetch_utils.py` was **deleted as a file** — 210 lines,
+- `api/src/services/web_fetch_utils.py` was **deleted as a file** -- 210 lines,
   zero importers.
 - `lookup_details` in `api/src/api/v1/admin/models.py` had its SearXNG
   web-search-plus-LLM-extraction scrape replaced by
@@ -1474,12 +1474,12 @@ structure and deliberately refuses to: `_execute_service_tool`'s docstring
 prefix "both misses real failures and risks false positives", and status comes
 from an authoritative bool instead.
 
-**So metallm's migration reduces to step 2**, the pin — up as
+**So metallm's migration reduces to step 2**, the pin -- up as
 [metallm#288](https://github.com/pacepace/metallm/pull/288), pinning the whole
 family at the released tag `v0.26.1`. Under D29 that pin is what *binds* these
 contracts: publication does not, and a tag does not. It also unblocks
 [metallm#287](https://github.com/pacepace/metallm/pull/287), which fixes
-`_execute_service_tool` invoking `ainvoke(tool_args)` by args — the fourth site
+`_execute_service_tool` invoking `ainvoke(tool_args)` by args -- the fourth site
 of the defect this repo closed in
 [#318](https://github.com/pacepace/3tears/pull/318) and
 [#326](https://github.com/pacepace/3tears/pull/326), and one that has been
@@ -1487,7 +1487,7 @@ feeding the model stringified `(content, artifact)` tuples in production.
 
 **The generalisable point, and the reason this is recorded rather than quietly
 fixed.** A consumer-repo check written as *instructions to change a named file*
-rots at the consumer's commit rate, not ours, and nothing here notices — the
+rots at the consumer's commit rate, not ours, and nothing here notices -- the
 whole cost of this one was paid re-deriving a June deletion in August. The five
 consumer-repo checks (1, 2, 3, 9, 10) all have this shape. **State a
 consumer-repo check as the property it wants, and verify it against the
@@ -1541,18 +1541,18 @@ switch later costs no consumer rewrite).
    reuse.
 8. PR, merge; record acceptance of what binds it (D15).
 
-***Correction 2026-08-19 — verified against discodon's tree. Check 3's spend
+***Correction 2026-08-19 -- verified against discodon's tree. Check 3's spend
 half is largely satisfied already, by code that never touched this family;
 check 10 has no site at all.***
 
 **discodon has no 3tears dependency of any kind.** `3tears` appears in neither
 its `pyproject.toml` nor its `uv.lock`, and no module imports `threetears`. The
-Phase 5 preamble's consumption modes — develop tracking develop, releases
-pinning the whole family — are true of metallm and have **no referent here**:
+Phase 5 preamble's consumption modes -- develop tracking develop, releases
+pinning the whole family -- are true of metallm and have **no referent here**:
 step 2 is not a pin to bump but a first adoption, and step 1's "lands upstream
 first" governs a relationship that does not exist yet.
 
-**Check 3, first half — search spend inside the eval cost ceiling — is already
+**Check 3, first half -- search spend inside the eval cost ceiling -- is already
 true for the research path, and deliberately false for the standalone tool.**
 Built without `BudgetPort`, and the route is worth stating because a migrator
 reading step 6 would not expect to find it:
@@ -1569,7 +1569,7 @@ search dollars.
 What is outside is outside on purpose: the standalone `web_search` tool's calls
 land as `external` rows carrying credits and **no dollars**
 (`RoleUsageLedger.add_unpriced_calls`), contributing nothing to the total, and
-discodon names its own blocker — action-seam dollars need the cassette
+discodon names its own blocker -- action-seam dollars need the cassette
 withholding widened to that seam first. Volume rather than dollars is bounded
 separately, by `EvalRun.max_metered_calls`. One inconsistency a migrator will
 hit: `discodon/eval/models.py` still describes `max_cost_usd` as capping "the
@@ -1581,7 +1581,7 @@ run's LLM cost", written before `external` joined the blend.
 so it can only stop a run *after* the ceiling is crossed. Same names as
 `BudgetPort`, post-hoc semantics. Re-verified today, unchanged.
 
-**Check 3, second half — replay — is satisfied at the two seams D28 assigned to
+**Check 3, second half -- replay -- is satisfied at the two seams D28 assigned to
 discodon and unbuilt at the one this document proposes.** Action-seam
 (`web_search`) and delivery-seam (research) cassettes are wired discodon-side.
 The search-internal replay of step 5 exists on neither side:
@@ -1607,7 +1607,7 @@ migration-for-migration's-sake.
    one-shot `asyncio.run()`).
 4. Record acceptance (D15).
 
-***Correction 2026-08-19 — samsung's phase-2 image search is BUILT, it is not
+***Correction 2026-08-19 -- samsung's phase-2 image search is BUILT, it is not
 built on the leaf, and that is a decision with a price tag rather than a gap.***
 
 The work this step forecasts as "when that work schedules" shipped:
@@ -1615,12 +1615,12 @@ The work this step forecasts as "when that work schedules" shipped:
 `discovery/images.py` is the provider seam (`ImageSearch`, `ImageQuery`,
 `FoundImage`), and `discovery/artic.py` is its first provider.
 
-**It does not use `3tears-search`, and not by forking it — the two solve
+**It does not use `3tears-search`, and not by forking it -- the two solve
 different problems.** Phase 2 asks a museum's collection for instances of a
 *named* work and settles identity by comparing title and artist above the seam.
 It refuses to treat the provider's relevance score as evidence at all, having
 measured a nonsense query returning ten real works scoring in the fifties, and
-it spends nothing — so no budget, no carriers, no ranking cross that seam.
+it spends nothing -- so no budget, no carriers, no ranking cross that seam.
 Check 2's "without forking" clause has nothing to bite on. What it should have
 asked is whether the leaf was **considered and rejected**, and it was.
 
@@ -1630,8 +1630,8 @@ absent and is not expected", and confines `3tears-models` to an opt-in `eval`
 group because the default install is the plane running beside `display` under
 `MemoryMax=2G` (`deploy/curation.service`) and that one package would bring
 `3tears-observe`, `3tears-media-contracts`, `anthropic`, three `langchain-*`
-packages and `jsonschema` with it. Web-shaped traffic goes to one provider —
-OpenRouter, via its web plugin — behind a first-party client on a narrow seam.
+packages and `jsonschema` with it. Web-shaped traffic goes to one provider -- 
+OpenRouter, via its web plugin -- behind a first-party client on a narrow seam.
 **So the bar `3tears-search` must clear at this consumer is the size of its
 transitive closure**, and no phrasing of check 2 says so. Its pin is also two
 minors below anything adoptable: `3tears-models>=0.22.5,<0.23` against a family
@@ -1646,7 +1646,7 @@ measured.*** Installed from PyPI at 0.26.1 on CPython 3.14:
 | `3tears-search[standalone]` | 14 | 10 MB |
 | `3tears-search[standalone,extract]` | 30 | 75 MB |
 
-The base closure is pydantic plus the two dependency-free family leaves — both
+The base closure is pydantic plus the two dependency-free family leaves -- both
 `3tears-observe` and `3tears-media-contracts` declare `dependencies = []`, which
 is D24's permitted floor doing exactly what it was written for. curation already
 declares `pydantic` **and** `httpx`, so the marginal cost of
@@ -1656,30 +1656,30 @@ new transitive dependency at all**.
 **The exclusion samsung recorded is sound for the package it was written about
 and does not transfer.** `3tears-models` brings anthropic, three `langchain-*`
 and jsonschema; the search leaf shares only the two empty leaves with it. What
-kept the leaf out of that plane was never the leaf's weight — it was that
+kept the leaf out of that plane was never the leaf's weight -- it was that
 nobody had asked, and check 2 gave no reason to.
 
 **`[extract]` is the extra that must stay off a Pi: +16 packages, +65 MB**, of
 which babel is 32 MB and lxml 19 MB, arriving `trafilatura -> courlan -> babel`.
-Phase 2 has no use for it — museum JSON, no HTML-to-text — and the leaf refuses
+Phase 2 has no use for it -- museum JSON, no HTML-to-text -- and the leaf refuses
 correctly in its absence: importing `threetears.search.extract` succeeds because
 `_load_extractor` defers the import, and calling it raises `LocalCapExceeded`
 naming the extra and its remediation rather than an `ImportError` from the
 middle of a pipeline.
 
 Where the leaf would plug in is named in samsung's own code and is unbuilt:
-`phase_two.py` records that nothing produces a `contemporary_web` candidate —
+`phase_two.py` records that nothing produces a `contemporary_web` candidate -- 
 every instance it stores comes from a museum API and is `institutional`.
 
 ***Check 9 describes a caller samsung no longer is, and the real shape is the
 harder one.*** The one-shot `asyncio.run()` callers are the legacy 2024 scripts
-(`tvart.py`, `tv_api_check.py`, `display/tools/power_probe.py`) — the modules
+(`tvart.py`, `tv_api_check.py`, `display/tools/power_probe.py`) -- the modules
 `curation` exists to retire. The plane that would call search is a long-lived
 uvicorn process: `curation/src/curation/app.py` builds a FastAPI app with a
 mounted MCP session manager, its HTTP routes are plain `def` so Starlette runs
 them in its threadpool, and MCP tool dispatch crosses into sync code through
 `asyncio.to_thread` (`curation/src/curation/mcp/server.py`). The calling code is
-genuinely synchronous, which is the half that matters and it holds — but "no
+genuinely synchronous, which is the half that matters and it holds -- but "no
 ambient event loop, no long-lived client" is **false of the process**. A leaf
 proved only against a bare `asyncio.run()` would not have proved what this
 consumer needs: a synchronous entry point reached from a worker thread while a
@@ -1691,7 +1691,7 @@ leaf is not installed.
 
 ***What the four re-verifications have in common.*** Three months of consumer
 commits moved every one of checks 1, 2, 3, 9 and 10, and none of the movement
-was toward the step as written — 1 and half of 3 came true by unrelated work, 2
+was toward the step as written -- 1 and half of 3 came true by unrelated work, 2
 was answered in the negative for a reason recorded only in the consumer's own
 `pyproject.toml`, 9's premise expired, and 10 lost the "before" it compares
 against. A consumer-repo check is a claim about a tree this repo does not watch;

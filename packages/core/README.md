@@ -43,7 +43,7 @@ registry.configure(
 ```
 
 Bind the shared `{namespace}-collections` bucket once at startup, BEFORE that
-`configure()` call — one identity declares the bucket and every other process
+`configure()` call -- one identity declares the bucket and every other process
 binds it:
 
 ```python
