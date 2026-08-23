@@ -1,11 +1,14 @@
 """shared AST vocabulary for reasoning about ``CollectionRegistry`` wiring.
 
-Two enforcement domains ask questions about the same three facts -- which names are bound
-to a ``CollectionRegistry()``, which of those are L2-live, and what a call was handed --
-and until this module existed each carried its own copy of the AST helpers that answer
-them. The copies were near-identical: same ``_dotted`` / ``_callee_names`` / ``receiver``
-/ ``argument_spellings``, same ``_REGISTRY_CTOR`` / ``_CLIENT_KEYWORDS`` /
-``_CLIENT_SPELLINGS`` constants, differing only in which private name they hid behind.
+Two enforcement domains ask questions about the same two facts -- which names are bound to
+a ``CollectionRegistry()``, and which of those are L2-live -- and until this module existed
+each carried its own copy of the answer, along with its own ``_REGISTRY_CTOR`` /
+``_CLIENT_KEYWORDS`` / ``_CLIENT_SPELLINGS`` constants.
+
+The generic spelling helpers those answers are built from (``dotted``, ``callee_names``,
+``receiver``, ``argument_spellings``) live in :mod:`~threetears.enforcement.common.ast_helpers`
+and are imported here: they are not registry-specific, and keeping them in a
+registry-named module is what made a third copy in ``fake_parity`` look reasonable.
 
 That is the drift shape these gates exist to catch, one level up: a new wiring form
 teaches one walker to see it and leaves the other blind, and the blind one keeps
@@ -30,19 +33,22 @@ from __future__ import annotations
 import ast
 from typing import Final
 
+from threetears.enforcement.common.ast_helpers import (
+    argument_spellings,
+    callee_names,
+    dotted,
+    receiver,
+)
+
 __all__ = [
     "CLIENT_KEYWORDS",
     "CLIENT_SPELLINGS",
     "L2_BINDER_METHODS",
     "REGISTRY_CTOR",
-    "argument_spellings",
-    "callee_names",
     "constructed_registries",
     "constructed_registry_lines",
-    "dotted",
     "l2_live_registries",
     "names_a_live_client",
-    "receiver",
 ]
 
 #: the constructor whose bound names every walker here tracks.
@@ -62,77 +68,6 @@ CLIENT_KEYWORDS: Final[frozenset[str]] = frozenset({"l2_client", "nats_client"})
 #: keyword to key on. A heuristic list, and the reason this module exists: it grows, and a
 #: second copy of it goes stale silently rather than loudly.
 CLIENT_SPELLINGS: Final[frozenset[str]] = frozenset({"nc", "nats_client", "l2_client", "_nc", "_nats_client"})
-
-
-def dotted(node: ast.expr) -> str | None:
-    """return the dotted spelling of a Name-rooted expression.
-
-    ``registry`` and ``self._registry`` resolve; ``build()[0]`` does not, because there is
-    no static name for it.
-
-    :param node: expression to spell
-    :ptype node: ast.expr
-    :return: dotted spelling, or ``None`` when the expression is not name-rooted
-    :rtype: str | None
-    """
-    parts: list[str] = []
-    current: ast.expr = node
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    spelled: str | None = None
-    if isinstance(current, ast.Name):
-        parts.append(current.id)
-        spelled = ".".join(reversed(parts))
-    return spelled
-
-
-def callee_names(call: ast.Call) -> frozenset[str]:
-    """return the bare and attribute spellings of a call's callee.
-
-    :param call: call to inspect
-    :ptype call: ast.Call
-    :return: callee names
-    :rtype: frozenset[str]
-    """
-    callee = call.func
-    names: set[str] = set()
-    if isinstance(callee, ast.Name):
-        names.add(callee.id)
-    elif isinstance(callee, ast.Attribute):
-        names.add(callee.attr)
-    return frozenset(names)
-
-
-def receiver(call: ast.Call) -> str | None:
-    """return the dotted spelling of a method call's receiver.
-
-    :param call: call to inspect
-    :ptype call: ast.Call
-    :return: receiver spelling, or ``None`` when the call is not a method call
-    :rtype: str | None
-    """
-    callee = call.func
-    spelled: str | None = None
-    if isinstance(callee, ast.Attribute):
-        spelled = dotted(callee.value)
-    return spelled
-
-
-def argument_spellings(call: ast.Call) -> frozenset[str]:
-    """return the dotted spelling of every positional and keyword argument value.
-
-    :param call: call to inspect
-    :ptype call: ast.Call
-    :return: argument spellings
-    :rtype: frozenset[str]
-    """
-    spellings: set[str] = set()
-    for argument in [*call.args, *(keyword.value for keyword in call.keywords)]:
-        spelled = dotted(argument)
-        if spelled is not None:
-            spellings.add(spelled)
-    return frozenset(spellings)
 
 
 def names_a_live_client(call: ast.Call) -> bool:

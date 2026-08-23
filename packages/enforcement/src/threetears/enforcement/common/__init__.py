@@ -13,20 +13,20 @@ from threetears.enforcement.common.ast_helpers import (
     is_private_name,
     is_logger_call,
     is_suppress_call,
+    dotted,
+    callee_names,
+    receiver,
+    argument_spellings,
 )
 from threetears.enforcement.common.collection_registry import (
     CLIENT_KEYWORDS,
     CLIENT_SPELLINGS,
     L2_BINDER_METHODS,
     REGISTRY_CTOR,
-    argument_spellings,
-    callee_names,
     constructed_registries,
     constructed_registry_lines,
-    dotted,
     l2_live_registries,
     names_a_live_client,
-    receiver,
 )
 from threetears.enforcement.common.repo_layout import (
     find_repo_root,

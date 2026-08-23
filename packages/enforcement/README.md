@@ -99,7 +99,9 @@ Per-repo exemption files (e.g., `_cache_exemptions.txt`) stay in the consumer re
 ## How to add a new enforcement domain
 
 1. Create `src/threetears/enforcement/<domain>/` with `walkers.py`, `config.py`, `runner.py`, and `__init__.py`.
-2. Use `common/` helpers (`ast_helpers`, `collection_registry`, `repo_layout`, `pyproject_discovery`, `inheritance`, `exemptions`, `modes`, `violations`, `reports`). Do not duplicate scaffolding. `collection_registry` in particular: if your domain asks which `CollectionRegistry` names are L2-live, take the answer from there rather than re-deriving it -- two copies of that question is what this module exists to end.
+2. Use `common/` helpers (`ast_helpers`, `collection_registry`, `repo_layout`, `pyproject_discovery`, `inheritance`, `exemptions`, `modes`, `violations`, `reports`). Do not duplicate scaffolding. Two in particular, because both have already been re-implemented in this package rather than imported:
+   - **`ast_helpers` owns the dotted-name spelling family** -- `dotted`, `callee_names`, `receiver`, `argument_spellings`. If you are about to write a loop that walks an `ast.Attribute` chain accumulating segments, it exists. Three copies of that walk shipped here before it was shared, each differing by one detail that turned out to be a parameter (`dotted`'s `unwrap_subscript` is the survivor).
+   - **`collection_registry` owns "which `CollectionRegistry` names are L2-live"** -- take the answer from there rather than re-deriving it. `CLIENT_SPELLINGS` is a heuristic list that grows, so a second copy goes stale silently while still compiling.
 3. Walkers return `list[Violation]`. Configs are frozen dataclasses. Runners orchestrate walker → exemption-application → mode-resolution → report.
 4. Write unit tests in `tests/<domain>/`.
 5. Document the domain in this README.
