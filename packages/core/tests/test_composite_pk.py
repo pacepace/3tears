@@ -42,6 +42,10 @@ from threetears.core.entities.base import BaseEntity
 # ---------------------------------------------------------------------------
 
 
+#: the principal scope this module's registry wires. every L2 key leads with one.
+_TEST_SCOPE = "test-principal"
+
+
 def _composite_metadata() -> MetaData:
     md = MetaData()
     Table(
@@ -343,7 +347,8 @@ def composite_l1() -> SQLiteBackend:
 @pytest.fixture()
 def composite_registry(composite_l1: SQLiteBackend) -> CollectionRegistry:
     reg = CollectionRegistry()
-    reg.configure(l1_backend=composite_l1)
+    # ``l2_key`` refuses to build a key on a registry with no principal scope.
+    reg.configure(l1_backend=composite_l1, kv_key_scope=_TEST_SCOPE)
     return reg
 
 
@@ -440,9 +445,9 @@ class TestL2Key:
                 return {}
 
         coll = SingleColl(composite_registry, always_cfg)
-        assert coll.l2_key("e1") == "single_pk_table.e1"
+        assert coll.l2_key("e1") == f"{_TEST_SCOPE}.single_pk_table.e1"
         # tuple input also valid for single-pk
-        assert coll.l2_key(("e1",)) == "single_pk_table.e1"
+        assert coll.l2_key(("e1",)) == f"{_TEST_SCOPE}.single_pk_table.e1"
 
     def test_composite_key_joins_with_underscore(
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
@@ -455,7 +460,7 @@ class TestL2Key:
         the cause of the every-conversation-write KV warning storm.
         """
         coll = FakeRefCollection(composite_registry, always_cfg, nats_client=_nats_mock())
-        assert coll.l2_key(("conv-A", "item-1")) == "fake_refs.conv-A_item-1"
+        assert coll.l2_key(("conv-A", "item-1")) == f"{_TEST_SCOPE}.fake_refs.conv-A_item-1"
 
     def test_composite_key_passes_jetstream_kv_grammar(
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
@@ -510,7 +515,7 @@ class TestCollectionOps:
         # L2 key joins composite pk components with ``_`` so the key
         # passes the JetStream KV grammar (``:`` is rejected with
         # ``InvalidKeyError`` -- see test_composite_key_passes_jetstream_kv_grammar).
-        assert "fake_refs.conv-A_item-1" in nats.store
+        assert f"{_TEST_SCOPE}.fake_refs.conv-A_item-1" in nats.store
 
         # subsequent get hits L1 (no L2 call)
         nats.get.reset_mock()
@@ -561,7 +566,7 @@ class TestCollectionOps:
         row = coll.get_row_sync(("conv-A", "item-1"))
         assert row is None
         # L2 gone
-        assert "fake_refs.conv-A:item-1" not in nats.store
+        assert f"{_TEST_SCOPE}.fake_refs.conv-A:item-1" not in nats.store
 
 
 class TestDerivedCompositeIdentity:
@@ -617,8 +622,8 @@ class TestDerivedCompositeIdentity:
         assert coll.get_row_sync(("conv-A", "item-1"))["score"] == 1
         assert coll.get_row_sync(("conv-B", "item-1"))["score"] == 2
         # L2: two distinct keys
-        assert "fake_refs.conv-A_item-1" in nats.store
-        assert "fake_refs.conv-B_item-1" in nats.store
+        assert f"{_TEST_SCOPE}.fake_refs.conv-A_item-1" in nats.store
+        assert f"{_TEST_SCOPE}.fake_refs.conv-B_item-1" in nats.store
 
     @pytest.mark.asyncio
     async def test_reload_addresses_the_composite_row(

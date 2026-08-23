@@ -4,12 +4,12 @@ Also wires the sibling collections for tables the memory package owns
 but previously lacked Collection coverage: :class:`MediaCollection`,
 :class:`MediaContentCollection`, :class:`MemoryChunkCollection` (adopted
 under namespace-task-01 phase 8.5b). Each Collection resolves its L3
-pool via the registry (``self.l3_pool``) — the bespoke
+pool via the registry (``self.l3_pool``) -- the bespoke
 ``_postgres_pool`` field is retired in favour of the registry pattern
 :class:`ConversationCollection` already uses.
 
 Complex hybrid-search queries (vector + FTS + MMR) live as methods on
-these Collections with documented ``# cache-bypass:`` comments — the
+these Collections with documented ``# cache-bypass:`` comments -- the
 Collection stays the single entry point for memory-table SQL even when
 the query shape is not primary-key addressable and therefore cannot
 benefit from L1 row caching.
@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -135,7 +135,7 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
 #
 # Before v0.8.0, each factory hand-wrote the SQLAlchemy
 # ``Table(...)`` declaration alongside the Collection's
-# ``TableSchema`` — two declarations of the same shape inside one
+# ``TableSchema`` -- two declarations of the same shape inside one
 # file. v0.8.0 enriched ``TableSchema`` (shards 01-03) so the factory
 # bodies can delegate to ``to_sqlalchemy_table`` (shard 04), closing
 # the duplication trap that the v0.7.5 factories themselves were
@@ -349,6 +349,62 @@ def _recency_weight(created: datetime, half_life_hours: float) -> float:
     return math.exp(-hours_ago / half_life_hours)
 
 
+# Set on a merged candidate that reached the pool through the FTS leg. Private to
+# this module: stripped in :func:`_admit_and_rank` before rows reach a caller.
+_FTS_MATCHED_KEY = "_fts_matched"
+
+
+def _admit_and_rank(
+    candidates: list[dict[str, Any]],
+    *,
+    similarity_threshold: float,
+) -> list[dict[str, Any]]:
+    """Admit candidates on evidence of relevance, then order them by the composite.
+
+    Admission and ranking answer different questions, and conflating them
+    silently un-recalls old memories.
+
+    ``hybrid_score`` is a weighted sum over semantic / keyword / recency. Gating
+    admission on that sum means **a signal that is absent lowers the attainable
+    ceiling**: a query whose lexemes match no row contributes a keyword term of
+    exactly 0, and a memory older than a few multiples of the recency half-life
+    contributes a recency term indistinguishable from 0. Only the semantic weight
+    is left to clear a threshold calibrated as though all three could fire, so a
+    perfectly relevant month-old memory is unreachable at any similarity --
+    ``0.55 x 0.50 = 0.275`` against a 0.4 gate, for weights and a cosine range
+    that are both ordinary.
+
+    Recency is the sharper half of the error: how recently something was written
+    is not evidence that it answers *this* query. It is a tiebreaker among
+    relevant candidates, so it ranks here and never admits.
+
+    Admission therefore consults only per-query evidence:
+
+    - semantic -- ``similarity >= similarity_threshold``
+    - keyword -- the row actually matched the FTS query
+
+    The keyword arm matters because an FTS-only row carries ``similarity`` 0.0 as
+    a *placeholder* rather than a measurement (it never entered the vector
+    query's top-N, so no distance was computed for it). Admitting on similarity
+    alone would drop every keyword-only hit.
+
+    :param candidates: merged candidate rows, each carrying ``similarity`` and a
+        precomputed ``hybrid_score``; mutated to strip the private FTS marker
+    :ptype candidates: list[dict[str, Any]]
+    :param similarity_threshold: floor on semantic similarity for admission
+    :ptype similarity_threshold: float
+    :return: admitted rows, sorted by ``hybrid_score`` DESC
+    :rtype: list[dict[str, Any]]
+    """
+    admitted = [c for c in candidates if c["similarity"] >= similarity_threshold or c.get(_FTS_MATCHED_KEY, False)]
+    # Strip from every candidate, not just the admitted ones: `or` short-circuits,
+    # so a row admitted on similarity never evaluates the second arm.
+    for c in candidates:
+        c.pop(_FTS_MATCHED_KEY, None)
+    admitted.sort(key=lambda c: c["hybrid_score"], reverse=True)
+    return admitted
+
+
 def _chunk_row_to_dict(row: Any, score_key: str, score_value: float) -> dict[str, Any]:
     """shape a single chunk SQL row into the canonical result dict.
 
@@ -417,10 +473,11 @@ def _merge_chunk_search_rows(
     :param chunk_signal_weights: mapping ``{"semantic", "keyword"}``
         to combination weights
     :ptype chunk_signal_weights: dict[str, float]
-    :param similarity_threshold: floor on ``hybrid_score`` for the
-        final list
+    :param similarity_threshold: floor on semantic similarity for
+        admission; see :func:`_admit_and_rank` for why the composite
+        does not gate
     :ptype similarity_threshold: float
-    :return: ranked list of chunk dicts, threshold-filtered, sorted
+    :return: ranked list of chunk dicts, admission-filtered, sorted
         by hybrid_score DESC
     :rtype: list[dict[str, Any]]
     """
@@ -433,6 +490,7 @@ def _merge_chunk_search_rows(
             merged[ckid]["fts_rank"] = float(row["fts_rank"])
         else:
             merged[ckid] = _chunk_row_to_dict(row, score_key="fts_rank", score_value=float(row["fts_rank"]))
+        merged[ckid][_FTS_MATCHED_KEY] = True
 
     candidates = list(merged.values())
     if not candidates:
@@ -446,9 +504,7 @@ def _merge_chunk_search_rows(
             4,
         )
 
-    filtered = [c for c in candidates if c["hybrid_score"] > similarity_threshold]
-    filtered.sort(key=lambda c: c["hybrid_score"], reverse=True)
-    return filtered
+    return _admit_and_rank(candidates, similarity_threshold=similarity_threshold)
 
 
 # explicit column list for raw SELECTs over the ``memories`` table. the
@@ -462,7 +518,7 @@ _MEMORIES_SELECT_COLUMNS = (
     "memory_id, agent_id, customer_id, user_id, type_memory, content, "
     "date_created, date_updated, embedding::text AS embedding, "
     "conversation_id, message_id_source, summary, search_vector, alias, "
-    # v024 salience substrate — keep in sync with the memories migration
+    # v024 salience substrate -- keep in sync with the memories migration
     # column set so raw-SQL read paths hydrate the full entity.
     "salience, last_decayed_at, last_accessed, evergreen, superseded_by, "
     # v025 tags JSONB label set. No codec is registered on the raw fetch
@@ -482,7 +538,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     vector + FTS + MMR queries that used to live raw on the pool; they
     carry ``# cache-bypass:`` justification because the query shape is
     not primary-key-addressable and therefore cannot benefit from the
-    L1 row cache — but keeping them on the Collection preserves the
+    L1 row cache -- but keeping them on the Collection preserves the
     single-entry-point contract enforcement test walker #3 relies on.
 
     CRUD is generated from :attr:`schema`: embedding is ``VECTOR_TYPE``
@@ -837,7 +893,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         when ``caller_user_id`` is provided the rbac evaluator
         decides ``memory.read`` on the ``(agent_id, customer_id)``
         memory namespace before the SQL runs. ``customer_id`` is
-        required for evaluator invocation — single-argument
+        required for evaluator invocation -- single-argument
         ``find_by_scope(agent_id)`` is an agent-internal row-scan
         path (no user dimension) and runs without evaluation.
 
@@ -945,7 +1001,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :param customer_id: owning customer UUID
         :ptype customer_id: UUID
         :param caller_user_id: invoking user UUID (``None`` for
-            agent-internal writes — owner short-circuit path)
+            agent-internal writes -- owner short-circuit path)
         :ptype caller_user_id: UUID | None
         :param caller_agent_id: invoking agent UUID
         :ptype caller_agent_id: UUID | None
@@ -976,7 +1032,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     async def count_by_user(self, user_id: UUID, *, agent_id: UUID) -> bool:
         """check whether any memory row exists for ``(agent_id, user_id)``.
 
-        returns a boolean rather than an exact count — every caller
+        returns a boolean rather than an exact count -- every caller
         today uses the existence flag (tools.py first-write ensure
         gate). keeps the query cheap (``SELECT EXISTS(...)``) and
         side-steps full row-count pagination concerns. ``agent_id`` is
@@ -1154,7 +1210,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype top_k: int
         :param candidate_limit: per-query candidate pool size
         :ptype candidate_limit: int
-        :param similarity_threshold: floor on hybrid score
+        :param similarity_threshold: floor on semantic similarity for admission
         :ptype similarity_threshold: float
         :param recency_half_life_hours: exponential decay half-life
         :ptype recency_half_life_hours: float
@@ -1333,6 +1389,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                     "fts_rank": float(row["fts_rank"]),
                     "embedding": emb,
                 }
+            merged[mid][_FTS_MATCHED_KEY] = True
 
         candidates = list(merged.values())
         if not candidates:
@@ -1350,9 +1407,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 4,
             )
 
-        filtered = [c for c in candidates if c["hybrid_score"] > similarity_threshold]
-        filtered.sort(key=lambda m: m["hybrid_score"], reverse=True)
-        return filtered[:top_k]
+        return _admit_and_rank(candidates, similarity_threshold=similarity_threshold)[:top_k]
 
     async def search_by_ids(
         self,
@@ -1515,12 +1570,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     ) -> list[dict[str, Any]]:
         """FTS keyword search for the add/search memory tools.
 
-        complements :meth:`search_by_semantic` — run both in parallel
+        complements :meth:`search_by_semantic` -- run both in parallel
         and merge on ``memory_id``. ``agent_id`` is the partition
         column on memories and is required.
 
         v0.7.5: ``date_after`` / ``date_before`` (inclusive) narrow by
-        ``date_created`` — mirrors the equivalent filter on
+        ``date_created`` -- mirrors the equivalent filter on
         :meth:`search_by_semantic` so the two legs return a consistent
         window when run in parallel.
 
@@ -1726,7 +1781,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         Cache coherence: the raw L3 decay leaves L1/L2 holding the
         pre-decay salience, so each decayed pk is invalidated (via
-        :meth:`invalidate_cache`) — otherwise a later full-entity save
+        :meth:`invalidate_cache`) -- otherwise a later full-entity save
         from the stale cache could write the old salience back. The
         ``salience``/``last_decayed_at`` columns are also ``immutable`` to
         the entity-UPDATE generator, so the two defenses compose: the
@@ -1807,7 +1862,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         )
         # cache coherence: invalidate each bumped row so a subsequent get()
         # re-reads the fresh salience from L3 rather than serving a stale
-        # cached row (a bounded set — the ids surfaced this retrieval).
+        # cached row (a bounded set -- the ids surfaced this retrieval).
         for memory_id in memory_ids:
             await self.invalidate_cache((agent_id, memory_id))
         return None
@@ -1823,7 +1878,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         Dream consolidation clusters memories WITHIN a pinned scope grain
         and the gist inherits that grain's identity, so the scope filter
-        is EXACT — a ``None`` grain matches ``IS NULL`` (not "any"). That
+        is EXACT -- a ``None`` grain matches ``IS NULL`` (not "any"). That
         is the isolation boundary: a user-scoped run
         (``customer_id``+``user_id`` set) sees only that user's rows; an
         agent-scoped run (both ``None``) sees only agent-scoped rows. This
@@ -1832,7 +1887,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         Excludes ``evergreen`` rows (pinned, never consolidated) and rows
         with no ``embedding`` (clustering needs a vector). Excludes
-        already-superseded rows — BUT only when their gist still exists:
+        already-superseded rows -- BUT only when their gist still exists:
         a source whose ``superseded_by`` points at a memory that no longer
         exists (e.g. the gist was bulk-deleted with its anchor
         conversation) becomes eligible again, so a fresh gist regenerates
@@ -1914,7 +1969,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         Sets ``superseded_by = gist_id`` on each source so ambient
         retrieval drops them (a gist now represents them) while direct
-        recall by id / alias still finds them — dormant, not gone, and
+        recall by id / alias still finds them -- dormant, not gone, and
         non-destructive (the source's own ``salience`` / ``content`` are
         untouched). Partition-scoped by ``agent_id``.
 
@@ -1954,7 +2009,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
     the media parent record carries a category discriminator and a
     JSONB metadata blob; child rows live in
     :class:`MediaContentCollection` and :class:`MemoryChunkCollection`.
-    adopted under namespace-task-01 phase 8.5b — the v006 migration
+    adopted under namespace-task-01 phase 8.5b -- the v006 migration
     had no Collection before now. CRUD is generated from
     :attr:`schema` via :class:`SchemaBackedCollection`; no CAS path
     because the table has no ``date_updated`` fence column distinct
@@ -2273,7 +2328,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         :ptype top_k: int
         :param candidate_limit: per-query candidate pool size
         :ptype candidate_limit: int
-        :param similarity_threshold: floor on hybrid score
+        :param similarity_threshold: floor on semantic similarity for admission
         :ptype similarity_threshold: float
         :param recency_half_life_hours: exponential decay half-life
         :ptype recency_half_life_hours: float
@@ -2414,6 +2469,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                     "fts_rank": float(row["fts_rank"]),
                     "embedding": emb,
                 }
+            merged[cid][_FTS_MATCHED_KEY] = True
 
         candidates = list(merged.values())
         if not candidates:
@@ -2431,9 +2487,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                 4,
             )
 
-        filtered = [c for c in candidates if c["hybrid_score"] > similarity_threshold]
-        filtered.sort(key=lambda c: c["hybrid_score"], reverse=True)
-        return filtered[:top_k]
+        return _admit_and_rank(candidates, similarity_threshold=similarity_threshold)[:top_k]
 
     async def search_by_ids(
         self,
@@ -2628,7 +2682,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
+        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) --
         # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
             "SELECT content FROM media_content WHERE agent_id = $1 AND content_id = $2 AND user_id = $3",
@@ -2808,7 +2862,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         ``chunk_id_after`` to restrict the candidate pool to chunks
         whose ``chunk_id`` is strictly greater than the cursor, or
         ``chunk_id_before`` for the symmetric backward direction.
-        The cursor predicate is applied AFTER the auth filter — auth
+        The cursor predicate is applied AFTER the auth filter -- auth
         scoping is non-negotiable, cursor is just for ordering within
         the auth-scoped result set. Passing both raises ValueError.
 
@@ -2824,7 +2878,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype user_text: str
         :param candidate_k: per-query candidate pool size
         :ptype candidate_k: int
-        :param similarity_threshold: floor on hybrid score
+        :param similarity_threshold: floor on semantic similarity for admission
         :ptype similarity_threshold: float
         :param chunk_signal_weights: mapping ``{"semantic",
             "keyword"}`` to weights
@@ -2833,10 +2887,10 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype fts_min_len: int
         :param fts_max_len: truncation length for FTS queries
         :ptype fts_max_len: int
-        :param chunk_id_after: optional cursor — restrict candidate
+        :param chunk_id_after: optional cursor -- restrict candidate
             pool to chunks with chunk_id strictly greater
         :ptype chunk_id_after: UUID | None
-        :param chunk_id_before: optional cursor — restrict to chunks
+        :param chunk_id_before: optional cursor -- restrict to chunks
             with chunk_id strictly less. Mutually exclusive with
             ``chunk_id_after``
         :ptype chunk_id_before: UUID | None
@@ -2872,7 +2926,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         # media (through the new memory parent FK). not primary-key-
         # addressable; L1 row cache cannot help. method on Collection
         # preserves single entry point. The LEFT JOIN matches media
-        # rows whose ``memory_id`` equals the chunk's ``memory_id`` —
+        # rows whose ``memory_id`` equals the chunk's ``memory_id`` --
         # i.e. the chunk's parent memory IS the media's parent memory.
         # Transcript chunks naturally LEFT JOIN to NULL because their
         # parent memory has no media child.
@@ -3101,7 +3155,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
+        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) --
         # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
             "SELECT content, memory_id FROM memory_chunks WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
@@ -3141,7 +3195,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         Auth scoping: every query carries the full ``(user_id,
         agent_id, customer_id)`` triple. The triple matches the
         partition + sub-scope + row-owner triple every other memory
-        SQL site enforces — skipping any one is a cross-tenant data
+        SQL site enforces -- skipping any one is a cross-tenant data
         leak.
 
         :param memory_id: parent memory UUID
@@ -3154,10 +3208,10 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype customer_id: UUID
         :param limit: max chunks to return
         :ptype limit: int
-        :param chunk_id_after: cursor — return chunks with chunk_id
+        :param chunk_id_after: cursor -- return chunks with chunk_id
             strictly greater
         :ptype chunk_id_after: UUID | None
-        :param chunk_id_before: cursor — return chunks with chunk_id
+        :param chunk_id_before: cursor -- return chunks with chunk_id
             strictly less. Mutually exclusive with ``chunk_id_after``
         :ptype chunk_id_before: UUID | None
         :return: chunk row dicts in chunk_id ASC order
@@ -3212,6 +3266,73 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             result.reverse()
         return result
 
+    async def find_by_chunk_indexes(
+        self,
+        memory_id: UUID,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        customer_id: UUID,
+        chunk_indexes: Sequence[int],
+    ) -> list[dict[str, Any]]:
+        """fetch the chunks of ``memory_id`` sitting at ``chunk_indexes``.
+
+        ``chunk_index`` is the stable ordinal a caller reads off an
+        earlier chunk listing, so a re-read of "chunks 3 and 7" is
+        addressable without carrying chunk ids around. rows come back
+        in ``chunk_index ASC`` order whatever order they were asked
+        for, and indexes with no row are simply absent.
+
+        Auth scoping: the SQL carries the full ``(user_id, agent_id,
+        customer_id)`` triple, matching every other chunk lookup.
+        ``chunk_indexes`` is the only caller-supplied filter and binds
+        as one array parameter.
+
+        :param memory_id: parent memory UUID
+        :ptype memory_id: UUID
+        :param user_id: owning user UUID
+        :ptype user_id: UUID
+        :param agent_id: partition column on memory_chunks; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
+        :param chunk_indexes: ordinals to fetch; empty returns empty
+        :ptype chunk_indexes: Sequence[int]
+        :return: chunk row dicts in chunk_index ASC order
+        :rtype: list[dict[str, Any]]
+        """
+        wanted = list(chunk_indexes)
+        if not wanted:
+            return []
+        if self.l3_pool is None:
+            return []
+
+        # cache-bypass: a multi-row scan selecting an arbitrary SET of
+        # ordinals within one memory is not primary-key addressable
+        # (the pk is ``(agent_id, chunk_id)``). index
+        # ix_memory_chunks_memory backs (memory_id, chunk_index); the
+        # auth triple is enforced on every row.
+        rows = await self.l3_pool.fetch(
+            """
+            SELECT mc.chunk_id, mc.chunk_index, mc.content, mc.summary,
+                   mc.message_id_start, mc.message_id_end,
+                   mc.token_count, mc.date_created
+            FROM memory_chunks mc
+            WHERE mc.agent_id = $1
+              AND mc.memory_id = $2
+              AND mc.user_id = $3
+              AND mc.customer_id = $4
+              AND mc.chunk_index = ANY($5)
+            ORDER BY mc.chunk_index ASC
+            """,
+            agent_id,
+            memory_id,
+            user_id,
+            customer_id,
+            wanted,
+        )
+        return [dict(row) for row in rows]
+
     async def find_by_conversation_id(
         self,
         conversation_id: UUID,
@@ -3244,9 +3365,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype customer_id: UUID
         :param limit: max chunks to return
         :ptype limit: int
-        :param chunk_id_after: cursor — chunks with chunk_id > cursor
+        :param chunk_id_after: cursor -- chunks with chunk_id > cursor
         :ptype chunk_id_after: UUID | None
-        :param chunk_id_before: cursor — chunks with chunk_id < cursor
+        :param chunk_id_before: cursor -- chunks with chunk_id < cursor
             (returned DESC then reversed)
         :ptype chunk_id_before: UUID | None
         :return: chunk row dicts in narrative order
@@ -3324,7 +3445,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         the only addition is a ``WHERE mc.memory_id = :memory_id``
         predicate that narrows the candidate pool to chunks under
         one parent memory. Auth scoping is enforced verbatim from
-        the cross-memory path — the memory_id filter is purely
+        the cross-memory path -- the memory_id filter is purely
         additive, never a replacement for the auth triple.
 
         :param memory_id: parent memory UUID to scope the search to
@@ -3341,7 +3462,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype user_text: str
         :param candidate_k: per-query candidate pool size
         :ptype candidate_k: int
-        :param similarity_threshold: floor on hybrid score
+        :param similarity_threshold: floor on semantic similarity for admission
         :ptype similarity_threshold: float
         :param chunk_signal_weights: mapping ``{"semantic", "keyword"}``
         :ptype chunk_signal_weights: dict[str, float]
@@ -3446,7 +3567,7 @@ _MEMORY_REF_SHORT_DESC_MAX = 150
 class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     """three-tier collection for :class:`MemoryRefEntity`.
 
-    namespace-task-01 phase 8.5l-2: retires :class:`MemoryLedger` — the
+    namespace-task-01 phase 8.5l-2: retires :class:`MemoryLedger` -- the
     bespoke wrapper that sat on top of ``SQLiteBackend`` with hand-rolled
     pool.fetch / pool.execute against ``conversation_memory_refs``. on
     top of 8.5l-1's composite-pk :class:`BaseCollection` support, the
@@ -3654,7 +3775,7 @@ async def assert_no_consolidation_cycle(
     provenance chain leads back to the gist).
 
     A ``visited`` set makes the walk loop-safe and keeps a legitimate
-    diamond DAG — two sources that share a common ancestor — from
+    diamond DAG -- two sources that share a common ancestor -- from
     false-positiving: only the target gist is treated as a cycle, never a
     merely-revisited node. Read-only over the edge graph; the source
     rows are never mutated.

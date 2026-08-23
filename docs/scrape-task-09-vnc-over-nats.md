@@ -72,7 +72,8 @@ any deployment that enforces these grants.
 
 **The session claim is blocked the same way.** `KVLease` defaults its bucket suffix to `leases`,
 which the transport prefixes to `{ns}-leases`
-(`packages/core/src/threetears/core/coordination/lease.py`). `_tool_pod`'s `kv_buckets` grant is
+(`packages/core/src/threetears/core/coordination/lease.py`). `_tool_pod`'s KV grant (the
+field was `kv_buckets` then; `coll-task-05a` renamed it `js_resources`) is
 `({ns}-proxy_assertion_nonces,)` alone, so the bucket is ungranted. **CLOSED:** `{ns}-leases` is
 now granted to `_tool_pod`, and `KVLease`'s default is the bare suffix rather than a
 namespace-bearing name. `KVLease.acquire` defers the

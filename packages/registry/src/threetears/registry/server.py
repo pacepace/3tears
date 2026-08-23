@@ -14,7 +14,12 @@ import asyncio
 import os
 import signal
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
+from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.bucket import (
+    bind_collections_bucket,
+)
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.config import DefaultCoreConfig
@@ -27,7 +32,9 @@ from threetears.nats import (
     RESULT_RETENTION_SECONDS,
     RESULT_STREAM_SUFFIX,
     NatsClient,
+    Principal,
     Subjects,
+    kv_key_scope_for,
 )
 from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
@@ -50,8 +57,12 @@ from threetears.registry.config import (
 )
 from threetears.registry.registration import RegistrationHandler
 
+if TYPE_CHECKING:
+    from threetears.registry.rbac_stack import RegistryRbacStack
+
 __all__ = [
     "RegistryServer",
+    "build_heartbeat_collection_registry",
     "nats_connect",
 ]
 
@@ -60,6 +71,63 @@ _logger = get_logger(__name__)
 # a pop nonce must be remembered at least as long as a proof stays valid: the iat freshness
 # window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
 _POP_NONCE_TTL_SECONDS = 120
+
+
+def build_heartbeat_collection_registry(
+    *,
+    nats_client: NatsClient,
+    l1_backend: SQLiteBackend,
+    core_config: DefaultCoreConfig,
+) -> tuple[CollectionRegistry, HeartbeatCollection]:
+    """build the registry server's own L2-live collection registry and its heartbeat store.
+
+    THE FIRST OF TWO REGISTRIES in this process; :func:`~threetears.registry.rbac_stack.build_registry_rbac_stack`
+    builds the second. Both resolve to the same principal and therefore to the same key scope --
+    one process, one NATS identity, one scope -- and replicas of the registry share it
+    deliberately, because the scope is the SHARING boundary rather than the connection.
+
+    ``HeartbeatCollection`` has **no L3**, so this process's L2 is a SOURCE OF TRUTH and not a
+    cache: a key that no longer resolves is a pod liveness record that no longer exists. That is
+    also why the scope has to be right rather than merely present -- a wrong one does not miss,
+    it loses.
+
+    Extracted from :meth:`RegistryServer._start_handlers` so the scope decision is drivable by a
+    test without standing up the whole serve loop, mirroring the reason
+    :meth:`RegistryServer.apply_rbac_factory` is a method rather than an inline block.
+
+    :param nats_client: connected canonical NATS wrapper client, used as the L2 tier and as the
+        heartbeat collection's own client
+    :ptype nats_client: NatsClient
+    :param l1_backend: the process-local SQLite L1 tier
+    :ptype l1_backend: SQLiteBackend
+    :param core_config: collection flush configuration
+    :ptype core_config: DefaultCoreConfig
+    :return: the configured registry and the heartbeat collection snapped onto it
+    :rtype: tuple[CollectionRegistry, HeartbeatCollection]
+    :raises L2ScopeNotConfiguredError: never from here -- the scope is supplied in the same call
+        that supplies the client, which is what the raise exists to demand
+    """
+    collection_registry = CollectionRegistry()
+    # ``l2_create_if_missing=False``: this process BINDS the shared collections bucket, it never
+    # declares it. The hub is the declaring identity, and the registry's own NATS grant carries
+    # ``$JS.API.STREAM.INFO.KV_{ns}-collections`` with no ``CREATE`` -- so leaving the default
+    # ``True`` would issue a create the broker never answers (a permissions refusal arrives as a
+    # deadline, not as an error) before falling through to the bind that was always going to
+    # succeed. Binding also RESTORES the config check: the declare path reconciles or falls
+    # through silently, while the bind path compares ``allow_direct`` and refuses a bucket this
+    # process must not run against.
+    collection_registry.configure(
+        l1_backend=l1_backend,
+        l2_client=nats_client,
+        kv_key_scope=kv_key_scope_for(Principal.REGISTRY),
+        l2_create_if_missing=False,
+    )
+    heartbeat_collection = HeartbeatCollection(
+        collection_registry,
+        core_config,
+        nats_client=nats_client,
+    )
+    return collection_registry, heartbeat_collection
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +205,7 @@ class RegistryServer:
         limit_guard_factory: ("Callable[[NatsClient], Awaitable[LimitGuard | None]] | None") = None,
         usage_emitter: "EndpointUsageEmitter | None" = None,
         usage_emitter_factory: ("Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None") = None,
+        on_shutdown: "Callable[[], Awaitable[None]] | None" = None,
     ) -> None:
         """initialize registry server.
 
@@ -279,9 +348,49 @@ class RegistryServer:
         self._discovery_handler: DiscoveryHandler | None = None
         self._call_proxy: CallProxy | None = None
         self._jwks_provider: CachedHubJwksProvider | None = None
+        # a caller-supplied teardown, awaited LAST before the connection closes. It exists
+        # because a factory can build something whose lifecycle the server never sees:
+        # `_rbac_factory` builds a `RegistryRbacStack`, subscribes its invalidations, and
+        # returns only the authorizer -- so `RegistryRbacStack.close()` had no production
+        # caller anywhere and its subscriptions outlived the server that made them.
+        self._on_shutdown = on_shutdown
         self._health_server: HealthServer | None = None
         self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
+
+    async def open_collections_bucket(self, nc: "NatsClient") -> None:
+        """bind the shared L2 collections bucket before any collection is wired against it.
+
+        ``coll-task-04a`` KVC-05. Two properties, neither of which survives lazy resolution:
+
+        - **it fails at wiring time, not in a request path.** ``BaseCollection`` resolves the
+          bucket in ``_ensure_kv``, on the first read -- so a bucket running a configuration this
+          process refuses (``allow_direct`` unset, which puts every KV read back on the
+          body-carried form no key-scoped grant can constrain) would surface as a
+          ``KvConfigMismatch`` raised under load rather than at startup.
+        - **it pins the handle every later opener shares.** ``NatsClient.kv_bucket`` caches by
+          full bucket name, so the first open in a process decides the configuration for the
+          life of that process. Opening here, before either registry is configured, is what
+          makes the two registries' view of the bucket the same one.
+
+        The BIND-not-declare choice, and the two failure classes it distinguishes, belong to
+        :func:`threetears.core.collections.bucket.bind_collections_bucket` -- promoted there by
+        ``coll-task-07c`` so a tool pod's bootstrap does not become a third hand-written copy of a
+        security-relevant startup step. This method stays as the registry's named entry point:
+        ``serve()`` calls it, and tests drive it without standing up the serve loop.
+
+        :param nc: connected canonical NATS wrapper client
+        :ptype nc: NatsClient
+        :return: nothing
+        :rtype: None
+        :raises KvError: the bucket could not be bound within the attempt budget -- it does not
+            exist (nothing has declared it) or this principal is not granted it
+        :raises KvConfigMismatch: the live bucket carries a configuration this process refuses
+        """
+        # component=: several processes bind this same bucket and the interesting failure is
+        # an ORDERING one -- which of them reached it before the declaring identity. A bind
+        # log that does not say who is speaking cannot answer that.
+        await bind_collections_bucket(nc, component="registry")
 
     async def apply_rbac_factory(
         self,
@@ -408,6 +517,13 @@ class RegistryServer:
             "connected to NATS",
             extra={"extra_data": {"nats_url": self._nats_url}},
         )
+
+        # open the shared collections bucket EAGERLY, before anything configures an L2 client
+        # against it. ``coll-task-04a`` KVC-05: a mismatch resolved lazily lands in a request
+        # path under load, and ``NatsClient.kv_bucket`` caches by full bucket name, so whichever
+        # call opens the bucket first hands its handle to every collection after it. Both
+        # registries in this process are wired downstream of this line.
+        await self.open_collections_bucket(self._nc)
 
         # swap in the production rbac authorizer now that NATS is up.
         # extracted to a method so tests can drive the same code path
@@ -552,19 +668,30 @@ class RegistryServer:
         # per-process SQLite tier; L2 is the shared NATS connection
         # that also carries the cross-pod invalidation subject.
         l1_backend = create_registry_l1_backend()
-        collection_registry = CollectionRegistry()
-        collection_registry.configure(l1_backend=l1_backend, l2_client=nc)
         core_config = DefaultCoreConfig(
             collection_flush="ALWAYS",
             collection_flush_tables="",
         )
-        heartbeat_collection = HeartbeatCollection(
-            collection_registry,
-            core_config,
+        collection_registry, heartbeat_collection = build_heartbeat_collection_registry(
             nats_client=nc,
+            l1_backend=l1_backend,
+            core_config=core_config,
         )
         self._collection_registry = collection_registry
         self._heartbeat_collection = heartbeat_collection
+        # log the RESOLVED scope, not just that one was supplied. A wrong-but-present scope
+        # reads nothing and writes where no grant names, and its timeout signature is
+        # identical to a missing grant -- so without this an operator is told to obtain a
+        # grant they already hold.
+        _logger.info(
+            "registry L2 wired",
+            extra={
+                "extra_data": {
+                    "kv_key_scope": kv_key_scope_for(Principal.REGISTRY),
+                    "principal": Principal.REGISTRY.value,
+                }
+            },
+        )
         await collection_registry.start_invalidation_listener(nc)
 
         heartbeat_subscriber = HeartbeatSubscriber(
@@ -724,6 +851,18 @@ class RegistryServer:
         if self._registration_handler is not None:
             await self._registration_handler.stop()
 
+        # BEFORE the connection closes, and not optional. `startup` calls
+        # `start_invalidation_listener`, and every other component it starts is stopped
+        # above -- this one was skipped, so the subscription outlived the server that owned
+        # it. `stop_invalidation_listener` is a no-op when no listener is live, so this is
+        # safe on a partial startup, which is why it is unconditional rather than guarded.
+        if self._collection_registry is not None:
+            await self._collection_registry.stop_invalidation_listener()
+        # whatever a factory built and the server never saw -- today the rbac stack's own
+        # invalidation subscriptions.
+        if self._on_shutdown is not None:
+            await self._on_shutdown()
+
         if self._nc is not None:
             await self._nc.shutdown()
 
@@ -785,6 +924,13 @@ def _run_server() -> None:
 
     authorizer: AgentToolAuthorizer
     rbac_authorizer_factory: "Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None" = None
+    # Bound HERE, above the mode branch, and not inside the rbac arm that fills it. The
+    # teardown closure below reads it unconditionally, so binding it in one arm made
+    # `shutdown()` raise `NameError` under `THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true` and
+    # under `THREETEARS_REGISTRY_FORCE_DENY_ALL=true` -- and forced-deny is the production
+    # kill-switch, so the panic button stopped draining cleanly. Empty in those modes, which
+    # is exactly right: no factory ran, so there is nothing to close.
+    built_rbac_stacks: list["RegistryRbacStack"] = []
 
     if allow_all:
         from threetears.registry.auth import AllowAllAuthorizer
@@ -836,6 +982,10 @@ def _run_server() -> None:
                 l1_backend=l1_backend,
             )
             await stack.subscribe_invalidations()
+            # hand the stack to the server's teardown. Without this the subscriptions this
+            # call just made outlive the server: the factory returns only the authorizer, so
+            # `RegistryRbacStack.close()` had no production caller in this package at all.
+            built_rbac_stacks.append(stack)
             _logger.info(
                 "registry running with RbacEvaluatorAuthorizer (rbac stack wired against system.platform.rbac proxy)",
                 extra={"extra_data": {"mode": "rbac"}},
@@ -847,9 +997,22 @@ def _run_server() -> None:
 
         rbac_authorizer_factory = _rbac_factory
 
+    async def _close_rbac_stacks() -> None:
+        """release every rbac stack the factory built.
+
+        ``close`` is idempotent and empties its own handle list, so a stack closed twice
+        releases nothing the second time.
+
+        :return: nothing
+        :rtype: None
+        """
+        for stack in built_rbac_stacks:
+            await stack.close()
+
     server = RegistryServer(
         authorizer=authorizer,
         rbac_authorizer_factory=rbac_authorizer_factory,
+        on_shutdown=_close_rbac_stacks,
         pod_authenticator_factory=_resolve_pod_authenticator_factory(),
         limit_guard_factory=_resolve_limit_guard_factory(),
         usage_emitter_factory=_resolve_usage_emitter_factory(),

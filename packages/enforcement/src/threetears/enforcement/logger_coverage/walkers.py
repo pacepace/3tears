@@ -43,7 +43,9 @@ from threetears.enforcement.common import (
 )
 
 __all__ = [
+    "STDLIB_LOG_CALL_KWARGS",
     "find_modules_without_logger",
+    "find_structlog_shaped_log_calls",
 ]
 
 
@@ -216,4 +218,116 @@ def find_modules_without_logger(
                     expected_var_names,
                 )
             )
+    return violations
+
+
+_CALL_KWARGS_CATEGORY = "logger_coverage.call_kwargs"
+
+#: the only keyword arguments ``logging.Logger``'s level methods accept. everything else
+#: reaches ``Logger._log`` as an unexpected keyword and raises ``TypeError``.
+STDLIB_LOG_CALL_KWARGS: frozenset[str] = frozenset({"exc_info", "extra", "stack_info", "stacklevel"})
+
+#: the ``Logger`` methods that forward ``**kwargs`` to ``Logger._log``.
+_LOG_LEVEL_METHODS: frozenset[str] = frozenset(
+    {"debug", "info", "warning", "warn", "error", "critical", "exception", "log"}
+)
+
+
+def _is_logger_receiver(node: ast.expr, expected_var_names: frozenset[str]) -> bool:
+    """true iff ``node`` is one of the recognised module-logger names.
+
+    Deliberately narrow: only the canonical receivers this domain already requires
+    (``log``, ``_logger``, and ``self.log`` / ``self._logger`` for the classes that hold
+    one). Matching any identifier containing "log" would sweep in domain loggers -- an
+    ``audit_logger.log(event_id=..., ...)`` is a different object with a keyword api of
+    its own, and flagging it would be a false positive that gets this walker switched off.
+
+    :param node: the call's receiver expression
+    :ptype node: ast.expr
+    :param expected_var_names: the module-logger names this domain recognises
+    :ptype expected_var_names: frozenset[str]
+    :return: whether the receiver is a recognised stdlib-backed logger
+    :rtype: bool
+    """
+    if isinstance(node, ast.Name):
+        return node.id in expected_var_names
+    result = False
+    if isinstance(node, ast.Attribute) and node.attr in expected_var_names:
+        result = isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}
+    return result
+
+
+def find_structlog_shaped_log_calls(
+    src_roots: tuple[Path, ...],
+    repo_root: Path,
+    exempt_files: dict[str, str],
+    expected_var_names: frozenset[str],
+    skip_basenames: frozenset[str],
+) -> list[Violation]:
+    """flag ``log.info("msg", key=value)`` -- structlog shape on a stdlib logger.
+
+    ``get_logger`` returns a ``logging.Logger`` subclass, not a structlog logger, so an
+    arbitrary keyword reaches ``Logger._log`` and raises ``TypeError``. The canonical form
+    is ``extra={"extra_data": {...}}``.
+
+    **This is why an AST walker earns its keep here rather than a test.** ``Logger.info``
+    guards the ``_log`` call with ``isEnabledFor``, so a call site below the configured
+    level never executes and never raises. A suite that leaves logging at WARNING is green
+    on code that dies the moment a process calls ``configure_logging(level="INFO")`` --
+    which is exactly what production entry points do, and only production entry points do.
+    The defect is invisible to every test that does not deliberately raise the level on the
+    module under test.
+
+    :param src_roots: every src root the scanner should consider
+    :ptype src_roots: tuple[Path, ...]
+    :param repo_root: repo root used to render relative paths
+    :ptype repo_root: Path
+    :param exempt_files: relative-posix-path -> rationale mapping; listed files are skipped
+    :ptype exempt_files: dict[str, str]
+    :param expected_var_names: recognised module-logger receiver names
+    :ptype expected_var_names: frozenset[str]
+    :param skip_basenames: file basenames the walker skips outright
+    :ptype skip_basenames: frozenset[str]
+    :return: violations in source order
+    :rtype: list[Violation]
+    """
+    violations: list[Violation] = []
+    for root in src_roots:
+        for module_path in iter_python_files(root):
+            if module_path.name in skip_basenames:
+                continue
+            rel = relative_posix_path(module_path, repo_root)
+            if rel in exempt_files:
+                continue
+            tree = parse_python_file(module_path)
+            if tree is None:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                if not isinstance(fn, ast.Attribute) or fn.attr not in _LOG_LEVEL_METHODS:
+                    continue
+                if not _is_logger_receiver(fn.value, expected_var_names):
+                    continue
+                offenders = sorted(
+                    kw.arg for kw in node.keywords if kw.arg is not None and kw.arg not in STDLIB_LOG_CALL_KWARGS
+                )
+                if not offenders:
+                    continue
+                violations.append(
+                    Violation(
+                        category=_CALL_KWARGS_CATEGORY,
+                        file=module_path,
+                        line=node.lineno,
+                        symbol=f"{rel}:{fn.attr}",
+                        reason=(
+                            f"log.{fn.attr}(...) passes {', '.join(offenders)} -- `get_logger` returns a "
+                            f"`logging.Logger`, not a structlog logger, so these reach `Logger._log` as "
+                            f"unexpected keywords and raise TypeError. this call is level-gated, so it is "
+                            f"silent until a process raises the level to {fn.attr.upper()}. "
+                            f'use extra={{"extra_data": {{...}}}} instead.'
+                        ),
+                    )
+                )
     return violations

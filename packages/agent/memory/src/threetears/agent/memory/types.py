@@ -25,7 +25,15 @@ class MemoryType(str, Enum):
 class MemoryConfig:
     """Configuration for memory retrieval and extraction."""
 
-    # Retrieval thresholds
+    # Retrieval thresholds. These two are NOT on the same scale, and reading
+    # them as a pair is the mistake to avoid: ``similarity_threshold`` is a
+    # cosine floor deciding whether a candidate is admitted at all, while
+    # ``detail_threshold`` gates the composite ``hybrid_score`` deciding whether
+    # an admitted item renders in full or as a summary. Admission deliberately
+    # ignores recency (see ``collections._admit_and_rank``); the detail cut does
+    # not, so an aged item renders summary-only however relevant it is — which
+    # is what the pull-not-push doctrine wants, since the agent reaches full
+    # content through ``memory_recall`` / ``chunk_recall``.
     similarity_threshold: float = 0.4
     detail_threshold: float = 0.85
     context_budget: int = 15

@@ -120,8 +120,8 @@ from threetears.agent.wake.rate_limit import (
     RATE_LIMIT_WINDOW_HOURS,
     RateLimitScope,
     ScheduleCapExceeded,
-    _check_active_schedule_cap,
-    _check_rate_limit,
+    check_active_schedule_cap,
+    check_rate_limit,
     create_schedule_serialized,
 )
 from threetears.agent.wake.tick import DispatchCallback, wake_tick_job
@@ -239,9 +239,9 @@ __all__ = [
     "WebhookSubscriptionListResponse",
     "WebhookSubscriptionResponse",
     "WebhookSubscriptionStatus",
-    "_check_active_schedule_cap",
-    "_check_rate_limit",
     "agent_wake_schedules_table",
+    "check_active_schedule_cap",
+    "check_rate_limit",
     "compute_generic_hmac_sha256_signature",
     "detect_silent_prefix",
     "dispatch_wake",

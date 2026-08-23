@@ -72,6 +72,10 @@ public surface — persistence:
   :class:`AssignmentInvalidatePayload`,
   :class:`RoleInvalidatePayload` — typed NATS payloads for
   cross-process cache invalidation.
+- :func:`register_rbac_l1_tables` -- the L1 SQLite mirror of the five
+  rbac tables, GENERATED from the Collection schemas above. every
+  process that evaluates locally needs it, and the hand-written
+  copies drifted; see :mod:`threetears.agent.acl.tables`.
 
 callers wire concrete loaders against their persistence layer (or
 use :class:`CollectionMembershipLoader` /
@@ -189,6 +193,7 @@ try:
         publish_membership_invalidation,
         publish_role_invalidation,
         subscribe_acl_invalidation,
+        unsubscribe_acl_invalidation,
     )
 except ImportError as _bus_exc:  # pragma: no cover - exercised by the packaging, not the suite
     _BUS_IMPORT_ERROR = _bus_exc
@@ -203,6 +208,7 @@ except ImportError as _bus_exc:  # pragma: no cover - exercised by the packaging
     publish_membership_invalidation = _bus_unavailable  # type: ignore[assignment]
     publish_role_invalidation = _bus_unavailable  # type: ignore[assignment]
     subscribe_acl_invalidation = _bus_unavailable  # type: ignore[assignment]
+    unsubscribe_acl_invalidation = _bus_unavailable  # type: ignore[assignment]
 from threetears.agent.acl.invalidation import (
     AssignmentInvalidatePayload,
     MembershipInvalidatePayload,
@@ -218,6 +224,11 @@ from threetears.agent.acl.query_visibility import (
     caller_visible_customers_query,
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
+)
+from threetears.agent.acl.tables import (
+    RBAC_L1_COLLECTIONS,
+    RBAC_L1_TABLE_NAMES,
+    register_rbac_l1_tables,
 )
 from threetears.agent.acl.types import (
     ActorType,
@@ -249,6 +260,7 @@ __all__ = [
     "publish_membership_invalidation",
     "publish_role_invalidation",
     "subscribe_acl_invalidation",
+    "unsubscribe_acl_invalidation",
     "AssignmentInvalidatePayload",
     "CatalogViolation",
     "CatalogViolationKind",
@@ -291,6 +303,8 @@ __all__ = [
     "PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS",
     "READ_FILE_MATCHING_PREFIX",
     "RBAC_AUDIT_ACTIONS",
+    "RBAC_L1_COLLECTIONS",
+    "RBAC_L1_TABLE_NAMES",
     "RBAC_AUDIT_EVENT_TYPES",
     "RBAC_AUDIT_RESOURCE_TYPES",
     "RbacAuditAction",
@@ -324,6 +338,7 @@ __all__ = [
     "evaluate_file_access",
     "evaluate_with_trail",
     "held_actions_on",
+    "register_rbac_l1_tables",
     "resolve_held_permissions",
     "three_scope_visibility_clause",
     "validate_permissions",

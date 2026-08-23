@@ -463,6 +463,72 @@ class TestFireRoundTrip:
         finally:
             await pool.close()
 
+    async def test_count_in_window_scoped_to_one_webhook_subscription(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """``webhook_subscription_id`` narrows the window count to one subscription."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            sub_coll = _build_subscription_collection(pool)
+            fire_coll = _build_fire_collection(pool)
+            conv = _new_uuid()
+            now = datetime.now(UTC)
+
+            subscription_ids = [_new_uuid(), _new_uuid()]
+            for subscription_id in subscription_ids:
+                await sub_coll.save_entity(
+                    sub_coll.create(
+                        {
+                            "conversation_id": conv,
+                            "subscription_id": subscription_id,
+                            "user_id": _new_uuid(),
+                            "agent_id": _new_uuid(),
+                            "name": f"src-{subscription_id}",
+                            "secret_ciphertext": b"\xab\xcd",
+                            "date_created": now,
+                            "date_updated": now,
+                        },
+                    ),
+                )
+            # two fires on the first subscription, one on the second
+            for subscription_id, count in zip(subscription_ids, (2, 1), strict=True):
+                for _ in range(count):
+                    await fire_coll.record(
+                        conv,
+                        fire_coll.create(
+                            {
+                                "conversation_id": conv,
+                                "fire_id": _new_uuid(),
+                                "webhook_subscription_id": subscription_id,
+                                "actual_fired_at": now,
+                                "status": "fired",
+                            },
+                        ),
+                    )
+
+            window_start = now - timedelta(minutes=5)
+            assert await fire_coll.count_in_window(conv, since=window_start) == 3
+            assert (
+                await fire_coll.count_in_window(
+                    conv,
+                    since=window_start,
+                    webhook_subscription_id=subscription_ids[0],
+                )
+                == 2
+            )
+            assert (
+                await fire_coll.count_in_window(
+                    conv,
+                    since=window_start,
+                    webhook_subscription_id=subscription_ids[1],
+                )
+                == 1
+            )
+        finally:
+            await pool.close()
+
 
 class TestSubscriptionRoundTrip:
     """Subscription Collection round-trip + domain methods."""

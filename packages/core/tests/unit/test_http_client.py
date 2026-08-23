@@ -176,6 +176,37 @@ async def test_connect_error_exhaustion_raises_status_none() -> None:
     assert calls[0] == 3
 
 
+async def test_exhaustion_chains_the_underlying_transport_error() -> None:
+    """``status_code is None`` says only "no response"; the cause says WHICH.
+
+    A caller reporting the failure onward -- an MCP tool result, a datasource
+    imperative -- has to tell a timeout apart from a refused connection, and
+    both arrive here as the same status-less error otherwise.
+    """
+    transport, _calls = _raising_transport(httpx.TimeoutException("timed out"))
+    async with _client(transport, max_attempts=2) as client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            await client.request("GET", "/slow")
+    assert isinstance(exc_info.value.__cause__, httpx.TimeoutException)
+
+
+async def test_exhaustion_chains_a_connect_error_as_the_cause() -> None:
+    transport, _calls = _raising_transport(httpx.ConnectError("refused"))
+    async with _client(transport, max_attempts=2) as client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            await client.request("GET", "/dead")
+    assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
+
+
+async def test_5xx_exhaustion_has_no_transport_cause() -> None:
+    """A 5xx is a RESPONSE; there is no transport exception to chain."""
+    transport, _calls = _sequenced_transport([500])
+    async with _client(transport, max_attempts=2) as client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            await client.request("GET", "/down")
+    assert exc_info.value.__cause__ is None
+
+
 async def test_circuit_open_fast_fails_without_request() -> None:
     breaker = CircuitBreaker(provider_name="test-upstream", failure_threshold=1)
     breaker.record_failure()  # trips CLOSED -> OPEN

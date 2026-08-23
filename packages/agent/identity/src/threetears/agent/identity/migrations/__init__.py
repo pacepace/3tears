@@ -16,6 +16,8 @@ version history:
   ``identity_version_status`` PG enums, and the three indexes (the partial
   UNIQUE active-per-block invariant, the block-history btree, the partial
   pending-queue btree). Self-evolution, 3tears v0.15.0.
+- v002 adds ``wants`` / ``needs`` to the ``identity_block_key`` enum,
+  making both proposable identity blocks. 3tears v0.27.0.
 
 No soft-ref provenance columns (no ``conversation_id`` / ``source_*``), so
 the package declares no cross-package apply-order dependency.
@@ -25,6 +27,9 @@ from __future__ import annotations
 
 from threetears.agent.identity.migrations.v001_create_identity_versions import (
     create_identity_versions_table,
+)
+from threetears.agent.identity.migrations.v002_add_wants_needs_block_keys import (
+    add_wants_needs_block_keys,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -49,12 +54,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
         scope=MigrationScope.AGENT,
     )
     pkg.version(1)(create_identity_versions_table)
+    pkg.version(2)(add_wants_needs_block_keys)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_wants_needs_block_keys",
     "create_identity_versions_table",
     "register",
 ]

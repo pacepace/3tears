@@ -33,9 +33,21 @@ from typing import Any
 
 import nkeys
 
-from threetears.nats.subject_permissions import PrincipalPermissions
+from threetears.nats.subject_permissions import (
+    JsCapability,
+    JsResourceKind,
+    PrincipalPermissions,
+    capability_declares,
+    capability_is_scoped,
+)
 
-__all__ = ["account_public_key", "encode_and_sign", "generate_account_seed", "mint_user_jwt"]
+__all__ = [
+    "account_public_key",
+    "encode_and_sign",
+    "generate_account_seed",
+    "js_api_grants_for_stream",
+    "mint_user_jwt",
+]
 
 _ALG = "ed25519-nkey"
 _HEADER: dict[str, str] = {"typ": "JWT", "alg": _ALG}
@@ -55,18 +67,42 @@ _HEADER: dict[str, str] = {"typ": "JWT", "alg": _ALG}
 _JS_API_ACCOUNT = ("$JS.API.INFO", "$JS.API.STREAM.NAMES")
 
 
-def _js_api_grants_for_stream(stream: str) -> list[str]:
+def js_api_grants_for_stream(
+    stream: str,
+    *,
+    capability: JsCapability = JsCapability.FULL,
+    bucket: str | None = None,
+    scope: str | None = None,
+) -> list[str]:
     """the JetStream control-plane subjects scoped to ONE stream ``stream``, pinned by literal name.
 
-    Every entry carries ``stream`` as a LITERAL subject token, so the grant permits exactly the JS
-    API operations nats-py issues against THIS principal's own stream and matches no other stream's
-    control subjects (the cross-tenant ``$JS.API.STREAM.MSG.GET.KV_<other>`` direct-read and
-    ``STREAM.DELETE``/``PURGE`` destroy that a bare ``$JS.API.>`` would have allowed are denied). a
+    Every entry carries ``stream`` as a LITERAL subject token, so the grant permits only the JS API
+    operations nats-py issues against THIS stream and matches no other stream's control subjects. A
     KV bucket ``<b>`` is backed by the stream ``KV_<b>``; a declared stream is its own name.
+
+    **Pinning the stream name pins nothing on a SHARED stream.** ``{ns}-collections`` is one bucket
+    held by many principals, so :attr:`JsCapability.FULL` on it admits every principal's keys
+    through four separate routes. The scoped capabilities exist to close them:
+
+    - ``$JS.API.STREAM.MSG.*.{stream}`` covers ``STREAM.MSG.GET``, whose key rides in the request
+      BODY where no subject permission can see it;
+    - ``$JS.API.DIRECT.GET.{stream}`` without a tail is get-by-SEQUENCE, also body-carried;
+    - ``$JS.API.CONSUMER.*`` lets the holder create a consumer whose ``filter_subject`` (again, in
+      the body) is the whole bucket, delivering to an inbox it names;
+    - ``$JS.API.STREAM.*`` puts the VERB at token 4, so the wildcard silently covers ``SNAPSHOT``
+      (the whole bucket, streamed to a caller-named ``deliver_subject``), ``RESTORE``, ``PURGE`` and
+      ``UPDATE`` -- and ``UPDATE`` is itself a read-all primitive, since ``republish`` / ``sources``
+      mirror every key onto a subject the caller controls.
+
+    Public because ``coll-task-05b`` must generate each STATIC NATS user's deny set from the
+    function that emits the grants rather than by hand: hand-deriving these shapes has failed twice,
+    once on whole-token wildcards (``KV_x*`` is a literal token containing an asterisk and matches
+    nothing) and once by missing ``$JS.API.STREAM.MSG.*.{stream}`` -- six tokens, terminal, which is
+    the body-carried read this whole sequence exists to close.
 
     The stream-name token position differs per op family (verified against the installed nats-py
     2.x: ``nats/js/manager.py`` STREAM/CONSUMER/DIRECT builders + ``nats/js/client.py`` pull-consumer
-    ``CONSUMER.MSG.NEXT``), so the set pins the name at each position it can occupy:
+    ``CONSUMER.MSG.NEXT``), so :attr:`JsCapability.FULL` pins the name at each position it can occupy:
 
     - ``$JS.API.STREAM.*.{stream}`` -- STREAM INFO/CREATE/UPDATE/DELETE/PURGE (name at token 5);
       ``manager.stream_info``/``add_stream``/``update_stream``/``delete_stream``/``purge_stream``.
@@ -82,24 +118,65 @@ def _js_api_grants_for_stream(stream: str) -> list[str]:
       (name at token 6; both are the only 7-token consumer ops and both put the stream at token 6,
       so a literal ``{stream}`` there can only ever target this stream).
 
+    The scoped capabilities emit LITERAL verb tokens instead, allow-listing rather than enumerating
+    destructive verbs to deny -- an enumeration of what to deny is wrong the moment nats-server adds
+    a verb:
+
+    - ``$JS.API.STREAM.INFO.{stream}`` -- ``js.key_value()`` binds through ``stream_info``, so
+      without this the bucket cannot even be opened.
+    - ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>`` -- **``$KV`` and ``{bucket}`` are
+      SEPARATE TOKENS** (``manager.get_msg``'s direct branch appends the whole ``$KV.<b>.<key>``
+      subject after the stream name). Writing ``$JS.API.DIRECT.GET.{stream}.{scope}.>`` matches
+      nothing, and a grant that matches nothing does not raise -- the request is dropped unanswered
+      and the caller sees a ten-second deadline, indistinguishable from an unreachable broker.
+      This read subject is only reachable at all because the bucket runs ``allow_direct: true``
+      (``coll-task-04a``); with it false nats-py falls back to the body-carried form.
+    - plus ``$JS.API.STREAM.CREATE.{stream}`` and ``$JS.API.STREAM.UPDATE.{stream}`` for
+      :attr:`JsCapability.KV_SCOPED_DECLARE` alone.
+
     JetStream consumer ACK/NAK is NOT listed: it publishes to the delivered message's ``$JS.ACK.*``
     reply subject and rides the principal's ``allow_responses`` grant (the same way it did under the
     old ``$JS.API.>``, which never covered ``$JS.ACK``), so it needs no standing control grant here.
 
     :param stream: the JetStream stream name to pin every entry to
     :ptype stream: str
+    :param capability: what the holder may do against ``stream``; defaults to the historical full
+        set, which is also what a deny-list generator wants
+    :ptype capability: JsCapability
+    :param bucket: the KV bucket ``stream`` backs; required for a scoped capability
+    :ptype bucket: str | None
+    :param scope: the holder's L2 key scope; required for a scoped capability
+    :ptype scope: str | None
     :return: the per-stream JS-API control-plane allow-list (publish subjects)
     :rtype: list[str]
+    :raises ValueError: if a scoped capability is requested without both ``bucket`` and ``scope``
     """
-    return [
-        f"$JS.API.STREAM.*.{stream}",
-        f"$JS.API.STREAM.MSG.*.{stream}",
-        f"$JS.API.DIRECT.GET.{stream}",
-        f"$JS.API.DIRECT.GET.{stream}.>",
-        f"$JS.API.CONSUMER.*.{stream}",
-        f"$JS.API.CONSUMER.*.{stream}.>",
-        f"$JS.API.CONSUMER.*.*.{stream}.>",
-    ]
+    grants: list[str]
+    if not capability_is_scoped(capability):
+        grants = [
+            f"$JS.API.STREAM.*.{stream}",
+            f"$JS.API.STREAM.MSG.*.{stream}",
+            f"$JS.API.DIRECT.GET.{stream}",
+            f"$JS.API.DIRECT.GET.{stream}.>",
+            f"$JS.API.CONSUMER.*.{stream}",
+            f"$JS.API.CONSUMER.*.{stream}.>",
+            f"$JS.API.CONSUMER.*.*.{stream}.>",
+        ]
+    else:
+        if bucket is None or scope is None:
+            raise ValueError(
+                f"{capability.value} grants for stream {stream!r} need both the bucket name and the "
+                f"key scope: the read subject is $JS.API.DIRECT.GET.{stream}.$KV.<bucket>.<scope>.>, "
+                f"in which $KV and the bucket are separate tokens. "
+                f"got bucket={bucket!r} scope={scope!r}"
+            )
+        grants = [
+            f"$JS.API.STREAM.INFO.{stream}",
+            f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>",
+        ]
+        if capability_declares(capability):
+            grants.extend([f"$JS.API.STREAM.CREATE.{stream}", f"$JS.API.STREAM.UPDATE.{stream}"])
+    return grants
 
 
 def _b64url(raw: bytes) -> str:
@@ -199,37 +276,50 @@ def mint_user_jwt(
     # JetStream grants for a callout-minted principal: a scoped user JWT carries its OWN pub/sub
     # allow-list (there is no account-wide JS grant behind it in config mode), so a principal that
     # touches KV/streams must be granted the JetStream subjects HERE or its JS operations time out.
-    #   - per declared KV bucket: the bucket's data subtree ``$KV.{bucket}.>`` (pub + sub).
+    #   - per declared KV bucket the principal WRITES: a ``$KV.`` publish grant, narrowed to the
+    #     principal's own key scope where the bucket's keys carry one and left at the whole
+    #     ``$KV.{bucket}.>`` subtree where they do not.
     #   - the JetStream control plane scoped to ONLY the streams this principal declares (pub; the
-    #     API is request/reply and the reply rides the principal's already-scoped inbox). A KV bucket
-    #     ``<b>`` is backed by the stream ``KV_<b>``; a declared stream is its own name. Each control
-    #     subject is PINNED to its stream's literal name (see ``_js_api_grants_for_stream``), so the
-    #     principal can drive every JS op against its OWN streams but is DENIED the cross-tenant
-    #     direct-read (``$JS.API.STREAM.MSG.GET.KV_<other>``) / destroy (``STREAM.DELETE``/``PURGE``)
-    #     that a bare ``$JS.API.>`` exposed on a shared account. Plus one account-level (stream-less)
-    #     subjects (``$JS.API.INFO`` + ``$JS.API.STREAM.NAMES``) -- see ``_JS_API_ACCOUNT`` for why
-    #     they cannot be scoped per-stream.
+    #     API is request/reply and the reply rides the principal's already-scoped inbox), at the
+    #     capability that resource declares -- see ``js_api_grants_for_stream``. Plus the two
+    #     account-level (stream-less) subjects (``$JS.API.INFO`` + ``$JS.API.STREAM.NAMES``) -- see
+    #     ``_JS_API_ACCOUNT`` for why they cannot be scoped per-stream.
     #
-    # RESIDUAL (deliberate, not a regression): the ``$KV.{bucket}.>`` data grant is bucket-scoped but
-    # NOT key-scoped. Buckets shared across principals (``{ns}-collections`` keyed by entity, the
-    # ``checkpoints`` bucket keyed by thread/conversation, ``{ns}_agent_config``) intentionally hold
-    # no per-agent key prefix -- the collections L2 key is ``{table}.{pk}`` and the checkpoint key is
-    # ``{thread_id}[.{ns}]`` (see ``collections/base.py:l2_key`` / ``langgraph/checkpoint.py:l2_key``),
-    # so a peer that legitimately holds the same bucket can read peers' keys within it. Tightening to
-    # ``$KV.{bucket}.{prefix}.>`` is impossible without a key-prefix the data layer does not write; it
-    # would break every read. Per-bucket isolation (the control-plane fix above) is what closes the
-    # cross-BUCKET hole; intra-bucket key isolation is tracked separately.
-    kv_data = [f"$KV.{bucket}.>" for bucket in permissions.kv_buckets]
-    js_streams = [f"KV_{bucket}" for bucket in permissions.kv_buckets] + list(permissions.streams)
+    # ``$KV.`` GOES ON PUBLISH ONLY, FOR EVERY BUCKET. It used to go into both allow lists, and the
+    # subscribe half conferred NO read capability at all: nothing in nats-py ever subscribes a
+    # ``$KV.`` subject -- ``put`` is a publish, ``get`` is a request to ``$JS.API``, and ``watch``
+    # creates a push consumer that delivers to ``nc.new_inbox()``, which the principal's own
+    # ``{inbox}.>`` grant already covers. What it DID confer was a firehose of every write's full
+    # value on every bucket the principal held, including the two cross-agent, cross-customer
+    # buckets (``checkpoints`` and ``{ns}_agent_config``) that are out of scope for KEY isolation.
+    # Dropping it costs nothing and closes that firehose everywhere, not only on the scoped bucket.
+    #
+    # PER-RESOURCE OPT-IN, and it is not optional. Only ``{ns}-collections`` writes a scope prefix.
+    # Emitting ``{scope}.>`` for ``checkpoints`` (its own separate ``l2_key``, keyed by thread id),
+    # ``{ns}_agent_config``, ``{ns}-epochs``, ``{ns}-ratelimits`` or ``{ns}-proxy_assertion_nonces``
+    # would deny every read on all of them -- and a refused JetStream request is never answered, so
+    # the failure arrives as a ten-second deadline that reads as an unreachable broker.
+    kv_data: list[str] = []
     js_control: list[str] = []
-    if js_streams:
-        js_control.extend(_JS_API_ACCOUNT)
-        for stream in js_streams:
-            js_control.extend(_js_api_grants_for_stream(stream))
+    for resource in permissions.js_resources:
+        if resource.kind is JsResourceKind.KV_BUCKET and resource.writable:
+            tail = ">" if resource.scope is None else f"{resource.scope}.>"
+            kv_data.append(f"$KV.{resource.name}.{tail}")
+        bucket = resource.name if resource.kind is JsResourceKind.KV_BUCKET else None
+        js_control.extend(
+            js_api_grants_for_stream(
+                resource.stream_name,
+                capability=resource.capability,
+                bucket=bucket,
+                scope=resource.scope,
+            )
+        )
+    if permissions.js_resources:
+        js_control = [*_JS_API_ACCOUNT, *js_control]
 
     nats_claim: dict[str, Any] = {
         "pub": {"allow": [*permissions.publish, *kv_data, *js_control]},
-        "sub": {"allow": [*permissions.subscribe, *kv_data]},
+        "sub": {"allow": list(permissions.subscribe)},
         "subs": -1,
         "data": -1,
         "payload": -1,

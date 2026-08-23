@@ -13,7 +13,7 @@
 
 This guide explains how to wire 3tears into a host application as its data layer:
 the mental model, the design decisions you have to make, and copy-pasteable
-"hello world" steps for the L1 / L2 / L3 tiers — for local development and for an
+"hello world" steps for the L1 / L2 / L3 tiers -- for local development and for an
 orchestrated (multi-pod) deployment.
 
 It is deliberately generic. It assumes no particular host app, cloud, or platform.
@@ -48,7 +48,7 @@ It is deliberately generic. It assumes no particular host app, cloud, or platfor
 - You `pip install` the packages you need and construct objects **inside your host
   application's process**.
 - It brings **infrastructure dependencies** (PostgreSQL, optionally a NATS server),
-  but *those* are services you stand up and own — 3tears just talks to them.
+  but *those* are services you stand up and own -- 3tears just talks to them.
 
 The monorepo publishes **many** independently-versioned packages (the full table is
 in the repo `README.md`). The ones that matter for the data layer:
@@ -73,13 +73,14 @@ or installs a log handler on your behalf. **You** construct the backing clients 
 PostgreSQL pool, optionally a `NatsClient`), hand them to 3tears, and **you own
 their lifecycle** (create on startup, close on shutdown).
 
-All three tiers funnel through one dependency-injection seam — the
-**`CollectionRegistry`**. You `configure(l1_backend=, l2_client=, l3_pool=)` once;
-every collection (including those `DataStore` builds for you) resolves all three
-tiers from the registry. A collection's L2 client can still be overridden per
+All three tiers funnel through one dependency-injection seam -- the
+**`CollectionRegistry`**. You `configure(l1_backend=, l2_client=, kv_key_scope=,
+l3_pool=)` once; every collection (including those `DataStore` builds for you)
+resolves all three tiers from the registry. `kv_key_scope` is required wherever an
+`l2_client` is -- see §8.2. A collection's L2 client can still be overridden per
 construction (an explicit `nats_client=` argument wins, and an explicit `None`
 disables L2 for that collection regardless of the registry), but the registry is
-the default wiring path — see §4.
+the default wiring path -- see §4.
 
 ```text
         ┌─────────────────────── your host app process ───────────────────────┐
@@ -87,13 +88,14 @@ the default wiring path — see §4.
         │   you create:   SQLiteBackend       asyncpg pool      NatsClient*    │
         │                      │                   │                 │         │
         │                      ▼                   ▼                 ▼         │
-        │   CollectionRegistry.configure(l1_backend=, l3_pool=, l2_client=)    │
+        │  CollectionRegistry.configure(l1_backend=, l3_pool=,                 │
+        │                               l2_client=, kv_key_scope=)             │
         │                      │                                               │
         │                      ▼                                               │
         │   DataStore(namespace_id, registry) ─► collections ─► entities       │
         │                                                                      │
         └──────────────────────────────────────────────────────────────────────┘
-                * NATS / L2 is optional — single-pod apps skip it (§3, §8.2).
+                * NATS / L2 is optional -- single-pod apps skip it (§3, §8.2).
 ```
 
 ---
@@ -102,12 +104,12 @@ the default wiring path — see §4.
 
 A read walks L1 → L2 → L3 and **re-promotes** on the way back. A write goes to L3
 (source of truth), promotes into L1 and L2, and broadcasts a cross-pod invalidation.
-A miss at any tier falls through to the next — **the stack degrades gracefully**.
+A miss at any tier falls through to the next -- **the stack degrades gracefully**.
 
 | Tier | Implementation | Nature | Source of truth? | Required? |
 |---|---|---|---|---|
-| **L1** | `SQLiteBackend` (`threetears.core.cache.sqlite`) | **In-process, in-memory** SQLite (named `memdb` VFS). Fast local cache, **not durable** — rebuilt from L3 on restart. | No | Practically yes (collections cache through it) |
-| **L2** | `NatsClient` JetStream KV (`threetears.nats`) | **Cross-pod** shared cache + typed cache-coherence pub/sub. Bucket is `{namespace}-collections`, **file** storage by default (survives broker restarts). | No | **No** — only matters with >1 pod |
+| **L1** | `SQLiteBackend` (`threetears.core.cache.sqlite`) | **In-process, in-memory** SQLite (named `memdb` VFS). Fast local cache, **not durable** -- rebuilt from L3 on restart. | No | Practically yes (collections cache through it) |
+| **L2** | `NatsClient` JetStream KV (`threetears.nats`) | **Cross-pod** shared cache + typed cache-coherence pub/sub. Bucket is `{namespace}-collections`, **file** storage by default (survives broker restarts). | No | **No** -- only matters with >1 pod |
 | **L3** | an asyncpg-style pool, or `NatsProxyL3Backend` | **Durable storage. The source of truth.** | **Yes** | **Yes, always** |
 
 Consequences:
@@ -120,10 +122,10 @@ Consequences:
 
 ### Two ways to reach L3
 
-1. **Direct pool** — the process holds DB credentials and you pass a connection pool.
+1. **Direct pool** -- the process holds DB credentials and you pass a connection pool.
    The pool is **duck-typed**: any object with `async` `.execute()` / `.fetch()` /
    `.fetchrow()` works; `asyncpg` pools satisfy this directly.
-2. **Proxy (`NatsProxyL3Backend`)** — the process has **no DB credentials**. It
+2. **Proxy (`NatsProxyL3Backend`)** -- the process has **no DB credentials**. It
    serializes SQL and sends it over NATS request/reply (`<ns>.l3.query`,
    `<ns>.l3.batch`) to a central broker that owns the real pool. Use for sandboxed
    worker pods. **Note:** only the *client* ships in `threetears.core`; the broker
@@ -135,9 +137,10 @@ Consequences:
 
 Unless noted, these are exported from `threetears.core` (see §15).
 
-- **`CollectionRegistry`** — DI container + table-name lookup + cache coherence.
-  Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, l3_pool=)`
-  sets defaults, `bind_table(table_name, l1_backend=, l2_client=, l3_pool=)` pins
+- **`CollectionRegistry`** -- DI container + table-name lookup + cache coherence.
+  Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, kv_key_scope=,
+  l3_pool=)` sets defaults -- `kv_key_scope` is required alongside any `l2_client` -- 
+  and `bind_table(table_name, l1_backend=, l2_client=, l3_pool=)` pins
   per-table overrides **before** a collection is constructed (needed because a
   collection snaps its backends from the registry at `__init__`). A collection
   resolves its L2 client from the registry (`get_l2_client(table_name)`) when no
@@ -145,24 +148,29 @@ Unless noted, these are exported from `threetears.core` (see §15).
   explicit `None` disables L2 for that collection. Drives cross-pod invalidation via
   `start_invalidation_listener(nats)` / `publish_invalidation(...)` using a typed
   `CacheInvalidationMessage` on `Subjects.cache_invalidate()`.
-- **`DataStore`** — the ergonomic front door. Wraps a registry, creates tables from
+  `stop_invalidation_listener()` is the teardown half: it unsubscribes the listener and
+  is safe to call from a `finally` -- a second call, or one with nothing subscribed, is a
+  no-op, and a stop on an already-draining connection does not raise. A second
+  `start_invalidation_listener` while one is live is likewise a no-op rather than a
+  second consumer, so the registry is reusable across a stop/start.
+- **`DataStore`** -- the ergonomic front door. Wraps a registry, creates tables from
   declarative definitions, hands you collections by name (`store["my_table"]`),
   exposes raw `query` / `execute`, and `run_migrations(runner)`.
-- **`BaseEntity`** — a change-tracking record (`entity.field = x` marks it dirty)
+- **`BaseEntity`** -- a change-tracking record (`entity.field = x` marks it dirty)
   with optimistic concurrency (`date_updated` mismatch → `ConcurrentModificationError`).
   `await entity.save()` / `reload()`; `.id`, `.is_new`.
-- **`BaseCollection`** — the per-table gateway implementing the three-tier logic.
+- **`BaseCollection`** -- the per-table gateway implementing the three-tier logic.
   **Composite primary keys are first-class** (`primary_key_column = ("a", "b")`).
-  Its `l3_pool` attribute is public — drop to `await self.l3_pool.fetch(...)` for
-  ad-hoc SQL the collection API can't express. You rarely subclass it by hand —
+  Its `l3_pool` attribute is public -- drop to `await self.l3_pool.fetch(...)` for
+  ad-hoc SQL the collection API can't express. You rarely subclass it by hand -- 
   `DataStore` generates one per table.
-- **Schema definitions** — `TableDef`, `ColumnDef`, `IndexDef`, `ForeignKeyDef`
+- **Schema definitions** -- `TableDef`, `ColumnDef`, `IndexDef`, `ForeignKeyDef`
   (validated Pydantic models).
-- **Migrations** (`threetears.core.data.migrations`) — the canonical
+- **Migrations** (`threetears.core.data.migrations`) -- the canonical
   `MigrationRunner`, `PackageMigrations`, `MigrationScope` (see §9).
-- **`CoreConfig` / `DefaultCoreConfig`** — flush-strategy and caching config (a
+- **`CoreConfig` / `DefaultCoreConfig`** -- flush-strategy and caching config (a
   `Protocol`, so your own settings object can satisfy it without inheritance).
-- **Coordination** — `KVLease` + `LeaseHandle` (NATS-backed distributed lock) for
+- **Coordination** -- `KVLease` + `LeaseHandle` (NATS-backed distributed lock) for
   multi-pod mutual exclusion.
 
 ---
@@ -178,13 +186,13 @@ Unless noted, these are exported from `threetears.core` (see §15).
    and degrades to L1+L3; programming errors still surface.
 4. **Explicit dependency injection.** One registry, configured once; all three tiers
    resolve through it. (A collection may still override its L2 client at construction
-   — see §4.)
+-- see §4.)
 5. **Caller owns concurrency boundaries.** Optimistic locking raises on conflict; the
    host decides retry/merge policy. `KVLease` is available for cross-pod mutual
    exclusion.
 6. **Schema is declarative and validated.** Identifiers must match
    `^[a-z][a-z0-9_]*$`; column types are a fixed allowed set (§9).
-7. **One blessed migration path.** No alembic, no autogen, no back-compat shims —
+7. **One blessed migration path.** No alembic, no autogen, no back-compat shims -- 
    hand-written, idempotent, version-tracked migrations (§9).
 
 ---
@@ -194,8 +202,8 @@ Unless noted, these are exported from `threetears.core` (see §15).
 | Decision | Options | Guidance |
 |---|---|---|
 | **Single pod or multiple?** | one / many | One → **skip L2/NATS**. Many → add NATS for L2 and cross-pod invalidation. |
-| **How does the process reach L3?** | direct pool / NATS proxy | Trusted service with DB creds → direct pool. Sandboxed worker without creds → proxy (and you must provide the broker — §13). |
-| **How are tables defined?** | `DataStore` dynamic / hand-written `BaseCollection` | Start with `DataStore` — its collections inherit all three tiers (incl. L2) from the registry. Drop to hand-written subclasses for bespoke serialization or composite-PK control. |
+| **How does the process reach L3?** | direct pool / NATS proxy | Trusted service with DB creds → direct pool. Sandboxed worker without creds → proxy (and you must provide the broker -- §13). |
+| **How are tables defined?** | `DataStore` dynamic / hand-written `BaseCollection` | Start with `DataStore` -- its collections inherit all three tiers (incl. L2) from the registry. Drop to hand-written subclasses for bespoke serialization or composite-PK control. |
 | **Which packages?** | `core` (+ `3tears-nats`) / + `agent-memory` | KV/relational caching → `core` (+ `3tears-nats` for L2). Semantic memory/search → add `agent-memory` and **enable pgvector**. |
 | **Flush strategy** | `ALWAYS`, `ON_CHECKPOINT`, `ON_SCHEDULE`, `ON_SHUTDOWN` | `ALWAYS` = write-through, simplest to reason about. Buffered strategies trade durability latency for throughput (§10). |
 
@@ -203,15 +211,15 @@ Unless noted, these are exported from `threetears.core` (see §15).
 
 ## 7. Prerequisites & installation
 
-**Host runtime** — Python **3.14+** (the `requires-python` floor; re-check package
+**Host runtime** -- Python **3.14+** (the `requires-python` floor; re-check package
 metadata as it moves) and an `async` runtime; the data API is `async`/`await` end to
 end.
 
 **Backing services**
 
-- **PostgreSQL** — always. For `agent-memory` (vector/semantic search):
+- **PostgreSQL** -- always. For `agent-memory` (vector/semantic search):
   `CREATE EXTENSION vector;` (pgvector).
-- **NATS with JetStream** — only if you run >1 pod and want L2.
+- **NATS with JetStream** -- only if you run >1 pod and want L2.
 
 **Install (into your host app's environment)**
 
@@ -221,7 +229,7 @@ pip install 3tears-nats             # L2 client (only if you use NATS)
 # pip install 3tears-agent-memory   # agent memory (requires pgvector)
 ```
 
-For local integration tests, 3tears ships reusable testcontainer fixtures — add
+For local integration tests, 3tears ships reusable testcontainer fixtures -- add
 `testcontainers` and see §8.1 / §12.
 
 > The repo's own `uv sync` / `./scripts/*` are for **developing the framework**, not
@@ -232,13 +240,13 @@ For local integration tests, 3tears ships reusable testcontainer fixtures — ad
 ## 8. Hello world
 
 Three progressively richer wirings. Each is self-contained inside an `async` entry
-point. CRUD is identical across all three — only the wiring differs.
+point. CRUD is identical across all three -- only the wiring differs.
 
 ### 8.1 Minimal: L1 + L3 (single pod, no NATS)
 
 The smallest *correct* configuration: an in-memory L1 cache in front of a durable
-PostgreSQL L3. No NATS. This exact shape — the `DataStore` dynamic path with a raw
-`asyncpg` pool and a `uuid` primary key — round-trips end to end (covered by an
+PostgreSQL L3. No NATS. This exact shape -- the `DataStore` dynamic path with a raw
+`asyncpg` pool and a `uuid` primary key -- round-trips end to end (covered by an
 asyncpg-backed integration test in `threetears.core`).
 
 ```python
@@ -325,7 +333,7 @@ They gate on Docker and `pytest.skip` cleanly when it's unavailable.
 
 When you run more than one pod, add NATS so pods share an L2 cache **and** a write in
 one pod evicts the stale copy in others. The only change from §8.1 is connecting a
-`NatsClient` and handing it to the registry — `DataStore` collections then pick up L2
+`NatsClient` and handing it to the registry -- `DataStore` collections then pick up L2
 automatically, and each pod subscribes once for cross-pod invalidation.
 
 ```python
@@ -334,14 +342,20 @@ import uuid
 
 from threetears.core import CollectionRegistry, DataStore, DefaultCoreConfig, TableDef, ColumnDef
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.nats import NatsClient
+from threetears.core.collections import bind_collections_bucket
+from threetears.nats import NatsClient, Principal, kv_key_scope_for
 
 
 async def wire_with_l2(pg_pool) -> None:
     l1 = SQLiteBackend(db_name="hello_world")
+    # the agent this pod serves, from its own env. NOT a fresh uuid per process:
+    # the key scope is the SHARING boundary, so replicas of one agent must derive
+    # the same value or each replica caches into a keyspace of its own.
+    AGENT_ID = uuid.UUID(os.environ["THREETEARS_AGENT_ID"])
 
-    # --- Connect NATS (classmethod). The namespace prefixes the KV bucket,
-    #     which collections create lazily as "{namespace}-collections". ---
+    # --- Connect NATS (classmethod). The namespace prefixes the shared KV bucket,
+    #     "{namespace}-collections". It is BOUND eagerly below, not created lazily on
+    #     first read: one identity declares it and every other process binds it. ---
     nats = await NatsClient.connect(
         nats_url=os.environ["THREETEARS_NATS_URL"],   # e.g. nats://nats:4222
         nats_subject_namespace="myapp",
@@ -350,8 +364,29 @@ async def wire_with_l2(pg_pool) -> None:
 
     # --- Configure all three tiers on the registry. Collections (including the
     #     ones DataStore builds) resolve their L2 client from here. ---
+    # --- Bind the shared collections bucket BEFORE configuring L2. The bind fails at
+    #     wiring time on a bucket this process refuses, rather than on the first read;
+    #     it also pins the handle every later opener in the process shares. ---
+    await bind_collections_bucket(nats, component="myapp-pod")
+
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l3_pool=pg_pool, l2_client=nats)
+    # `kv_key_scope` is MANDATORY alongside `l2_client` -- `configure` raises
+    # `L2ScopeNotConfiguredError` without it. Every L2 key is written as
+    # `{scope}.{table}.{body}`, and the scope is the principal this process
+    # authenticates to NATS as, so a process cannot read another principal's keys.
+    # Use `kv_key_scope_for(...)` rather than a literal: it is the single producer of
+    # that segment, and the minted NATS grant is derived from the same call.
+    registry.configure(
+        l1_backend=l1,
+        l3_pool=pg_pool,
+        l2_client=nats,
+        # AGENT_POD REQUIRES `agent_id=`: `kv_key_scope_for` refuses to derive a scope
+        # it cannot prove collision-free. Note it takes the AGENT id, never `pod_id` --
+        # replicas of one agent must land on one scope or L2 stops being a cross-pod
+        # cache. Principals with no per-instance identity (`Principal.HUB`,
+        # `Principal.REGISTRY`) take no id at all.
+        kv_key_scope=kv_key_scope_for(Principal.AGENT_POD, agent_id=AGENT_ID),
+    )
 
     store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))
     await store.create_table(
@@ -371,19 +406,23 @@ async def wire_with_l2(pg_pool) -> None:
 
     # ... use `widgets` exactly as in §8.1 ...
 
-    await nats.shutdown()   # graceful drain on shutdown
+    await registry.stop_invalidation_listener()   # release the subscription first
+    await nats.shutdown()                         # graceful drain on shutdown
 ```
 
 > Need L2 on for some tables but off for others? Override per table with
-> `registry.bind_table("widgets", l2_client=nats)` before the collection is built, or
-> pass `nats_client=None` to a hand-built collection to force L1+L3 for it. A
+> `registry.bind_table("widgets", l2_client=nats)` before the collection is built.
+> There is no per-table `kv_key_scope`: the scope names the PRINCIPAL, one process is
+> one principal, so it belongs on the registry -- and `bind_table` raises
+> `L2ScopeNotConfiguredError` if the registry has none yet. Or pass
+> `nats_client=None` to a hand-built collection to force L1+L3 for it. A
 > collection with no resolvable L2 client logs a one-shot warning on its first write
 > so the wiring gap is visible.
 
 ### 8.3 L3 over a proxy (no DB credentials in the pod)
 
 For sandboxed pods that must not hold DB credentials, swap the direct pool for the
-NATS proxy backend. Collection code is unchanged — only what you pass as `l3_pool`
+NATS proxy backend. Collection code is unchanged -- only what you pass as `l3_pool`
 differs.
 
 ```python
@@ -416,7 +455,7 @@ Validated Pydantic models:
   timezone-aware (`TIMESTAMPTZ`, stored aware-UTC), for datetimes that flow
   through a timezone-aware layer such as the datasource broker.
   A `vector` column **requires** `vector_dim` (a positive int, the pgvector
-  dimension) and `vector_dim` is only valid on a `vector` column — both are validated
+  dimension) and `vector_dim` is only valid on a `vector` column -- both are validated
   at construction. It renders `VECTOR(<dim>)` DDL, binds with a `::vector` cast on
   write, and reads back as `list[float]`, so vector columns work over a plain asyncpg
   pool without registering the pgvector codec. (Materialising a `vector` column needs
@@ -508,7 +547,7 @@ behavior is set in code. Observed on `develop`:
 
 | Variable | Used by | Purpose |
 |---|---|---|
-| `THREETEARS_NATS_URL` | host wiring (convention) | NATS URL — *you* read it and pass to `NatsClient.connect(...)`. |
+| `THREETEARS_NATS_URL` | host wiring (convention) | NATS URL -- *you* read it and pass to `NatsClient.connect(...)`. |
 | `THREETEARS_NATS_PROXY_TIMEOUT_MS` | `NatsProxyL3Backend` | Per-query timeout for proxied L3 (default `5000`). |
 | `THREETEARS_LOG_LEVEL`, `THREETEARS_LOG_COLOR` | `threetears.observe` | Standalone logging helpers. |
 | `THREETEARS_MCP_TIMEOUT` | `3tears-mcp` | MCP tool call timeout. |
@@ -567,66 +606,79 @@ environments; only *what you inject* changes.
 
 3tears ships no manifests. Deployment is a sequence of steps; each needs a few inputs
 and a matching app-side call. The steps are the same on any orchestrator (Kubernetes,
-Nomad, ECS, plain VMs) — only the mechanism for "run a service", "store a secret", and
+Nomad, ECS, plain VMs) -- only the mechanism for "run a service", "store a secret", and
 "run a one-shot job" differs, which is your platform's concern, not 3tears'.
 
 **Inputs to have on hand:** Postgres DSN · target schema name · (multi-pod) NATS URL,
 a subject namespace, a per-pod client name · replica count · (sandboxed pods) a per-pod
 id.
 
-**Step 1 — Provision PostgreSQL (L3). Required.**
+**Step 1 -- Provision PostgreSQL (L3). Required.**
 - Inputs: a connection DSN (`postgresql://user:pass@host:5432/db`); the schema your app
   uses; enable the `vector` extension (`CREATE EXTENSION vector`) **only if** you use
   agent-memory.
 - App counterpart: `pool = await asyncpg.create_pool(dsn=DSN)` →
   `registry.configure(l3_pool=pool)`.
 
-**Step 2 — Apply migrations once per schema. Required.**
+**Step 2 -- Apply migrations once per schema. Required.**
 - Inputs: a single migration runner with your packages registered. Run it as **one**
   one-shot task per schema (not from every pod) so concurrent pods don't race the same
   DDL. It is idempotent and `(version, package)`-keyed, so re-runs are safe.
 - App counterpart: `await store.run_migrations(runner)` (=
   `runner.apply_for_agent_schema(store)`).
 
-**Step 3 — Provision NATS (L2). Only if you run more than one pod.**
+**Step 3 -- Provision NATS (L2). Only if you run more than one pod.**
 - Inputs: a NATS URL (`nats://host:4222`); **JetStream enabled**; **persistent (file)
-  storage** so the KV bucket survives restarts. You do **not** create the bucket — the
-  app creates `{namespace}-collections` on first use.
+  storage** so the KV bucket survives restarts.
+- **One process must DECLARE `{namespace}-collections`; every other process BINDS it.**
+  Pick the declaring identity deliberately -- it is whichever process starts first and
+  owns the bucket's canonical configuration (in this platform, the hub, in its own
+  lifespan). It declares with `ensure_kv_bucket(...)` and re-declares on every NATS
+  reconnect, because a bucket on memory storage is DELETED by a NATS restart. Everyone
+  else calls `bind_collections_bucket(...)`, which is `create_if_missing=False` and will
+  NOT create it -- so if nothing declares it, every pod dies at wiring, by design.
 - App counterpart: `nats = await NatsClient.connect(nats_url=URL,
-  nats_subject_namespace=NAMESPACE, client_name=NAME)`; build collections with
-  `nats_client=nats`; call `await registry.start_invalidation_listener(nats)` on **every**
-  pod (without it, pods serve stale L1 after a peer writes).
+  nats_subject_namespace=NAMESPACE, client_name=NAME)`; `await
+  bind_collections_bucket(nats, component=NAME)`; configure the registry with both
+  `l2_client=` and `kv_key_scope=`; build collections with `nats_client=nats`; call
+  `await registry.start_invalidation_listener(nats)` on **every** pod (without it, pods
+  serve stale L1 after a peer writes).
 
-**Step 4 — Supply config as environment variables. Required.**
+**Step 4 -- Supply config as environment variables. Required.**
 - Variables the app reads: your Postgres DSN variable; `THREETEARS_NATS_URL`; optionally
   `THREETEARS_NATS_PROXY_TIMEOUT_MS` (sandboxed L3) and `THREETEARS_LOG_LEVEL`. Keep
   secrets out of the image.
 - App counterpart: read these in startup wiring and construct the pool / client from
   them; never hard-code.
 
-**Step 5 — Choose the pod count.**
+**Step 5 -- Choose the pod count.**
 - Input: replica count. **1 → skip Step 3** and use the §8.1 wiring (L1 + L3). **>1 →
   NATS (Step 3) is required** for cache coherence.
 
-**Step 6 — Wire startup and shutdown. Required.**
+**Step 6 -- Wire startup and shutdown. Required.**
 - Inputs: a shutdown grace window **≥ the NATS drain timeout (~30s default)**.
-- App counterpart: on startup create the pool and (if multi-pod) the `NatsClient`; on
-  SIGTERM call `await nats.shutdown()` then `await pool.close()`. A health check can call
+- App counterpart: on startup create the pool and (if multi-pod) the `NatsClient`, then
+  `await bind_collections_bucket(nats, component="<your-pod>")` BEFORE
+  `registry.configure(...)`, and pass `kv_key_scope=` alongside any `l2_client=` --
+  `configure` refuses an L2 client without one, so a process cannot write keys no grant
+  names. On
+  SIGTERM call `await registry.stop_invalidation_listener()`, then
+  `await nats.shutdown()`, then `await pool.close()`. A health check can call
   `await nats.ping()` and run `SELECT 1` on the pool.
 
-**Variant — sandboxed pods (no DB credentials).** Don't give these pods the DSN. Give
+**Variant -- sandboxed pods (no DB credentials).** Don't give these pods the DSN. Give
 them the NATS URL and a per-pod id, and configure
 `registry.configure(l3_pool=NatsProxyL3Backend(nats_client=nats, namespace_prefix=NAMESPACE, agent_id=POD_ID))`.
 A separate L3 broker that you provide (§13) holds the real DSN and answers their queries.
 
-**Variant — cross-pod mutual exclusion.** For singleton jobs / leader election use
+**Variant -- cross-pod mutual exclusion.** For singleton jobs / leader election use
 `KVLease` (NATS-backed) rather than rolling your own.
 
 ### Scaling notes
 
-- L1 is per-pod and in-memory — scales with pod count for free, no coordination.
+- L1 is per-pod and in-memory -- scales with pod count for free, no coordination.
 - L2 (NATS) is the shared layer that makes horizontal scaling cache-coherent.
-- L3 is your durability and throughput ceiling — size and tune it like any primary DB.
+- L3 is your durability and throughput ceiling -- size and tune it like any primary DB.
 
 ---
 
@@ -649,22 +701,22 @@ The first draft of this guide, written before the L2-registry-wiring / vector-co
 work landed (PRs #87, #89, #90), flagged six sharp edges that are now fixed. Recorded
 here so anyone holding the old draft knows the workarounds are no longer needed:
 
-- **L2 wiring via the registry** — `registry.configure(l2_client=...)` /
+- **L2 wiring via the registry** -- `registry.configure(l2_client=...)` /
   `bind_table(..., l2_client=...)` are now the wiring path: a collection resolves its
   NATS client from the registry when no constructor argument is given (§4, §8.2). The
   old "L2 only via the collection constructor" caveat is gone.
-- **`DataStore.create_table` threads L2** — collections built by `DataStore` inherit
+- **`DataStore.create_table` threads L2** -- collections built by `DataStore` inherit
   the registry's L2 client, so the "build the dynamic collection yourself" workaround
   is no longer required.
-- **`SQLiteBackend.initialize()` is additive** — it registers unseen tables on each
+- **`SQLiteBackend.initialize()` is additive** -- it registers unseen tables on each
   call and skips already-registered ones, so multiple single-table inits compose on
   one shared L1 backend. The "first table only" caveat is gone.
-- **`vector` column type** — `ColumnDef(column_type="vector", vector_dim=...)` is now
+- **`vector` column type** -- `ColumnDef(column_type="vector", vector_dim=...)` is now
   first-class (§9); raw DDL is no longer the only path.
-- **Raw asyncpg `Record` re-promotion (#85)** — `fetch_from_store` now converts
+- **Raw asyncpg `Record` re-promotion (#85)** -- `fetch_from_store` now converts
   rows to dicts at the L3 border, so L3→L1 re-promotion works with a raw asyncpg pool.
   Closed.
-- **asyncpg `pgproto.UUID` PK binding (#86)** — PK values are now serialized at the L1
+- **asyncpg `pgproto.UUID` PK binding (#86)** -- PK values are now serialized at the L1
   boundary the same way column values are, so a `uuid` PK round-trips. Closed. The
   §8.1 raw-pool + uuid-PK shape is covered by an asyncpg-backed integration test.
 
@@ -676,10 +728,13 @@ here so anyone holding the old draft knows the workarounds are no longer needed:
 - [ ] Stand up PostgreSQL; enable pgvector if using `agent-memory`.
 - [ ] Create the L3 pool at startup; close it on shutdown.
 - [ ] `CollectionRegistry().configure(l1_backend=SQLiteBackend(...), l3_pool=pool)`.
-- [ ] (Multi-pod) `await NatsClient.connect(...)`; pass it as
-      `registry.configure(..., l2_client=nats)` so collections pick up L2 (§8.2);
+- [ ] (Multi-pod) `await NatsClient.connect(...)`; then
+      `await bind_collections_bucket(nats, component="<your-pod>")` BEFORE configuring L2;
+      then `registry.configure(..., l2_client=nats, kv_key_scope=kv_key_scope_for(...))`
+      so collections pick up L2 (§8.2) -- the scope is REQUIRED wherever an `l2_client` is,
+      and `configure` raises `L2ScopeNotConfiguredError` without it;
       `await registry.start_invalidation_listener(nats)` on every pod;
-      `await nats.shutdown()` on exit.
+      `await registry.stop_invalidation_listener()` then `await nats.shutdown()` on exit.
 - [ ] Define schema with `TableDef`/`ColumnDef`/…; author migrations per
       [`how-to-add-a-migration.md`](./how-to-add-a-migration.md); apply at startup.
 - [ ] Choose `collection_flush` (start with `ALWAYS`).
@@ -706,6 +761,10 @@ from threetears.core import (
     Keyset, Page, decode_cursor, encode_cursor, CursorError,   # cursor pagination
     fire_and_forget,                           # submit a coroutine without awaiting it
 )
+
+# The eager L2 bucket bind. Every multi-pod process calls this once at startup,
+# after connect and BEFORE any configure() that wires an l2_client (see 8.2, 12).
+from threetears.core.collections import bind_collections_bucket
 
 # Egress -- HOW traffic leaves. A seam, not a proxy: `EgressDriver` is a
 # runtime_checkable Protocol, so a consumer may supply its own exit. Nothing

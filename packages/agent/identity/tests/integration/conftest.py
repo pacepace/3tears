@@ -165,7 +165,7 @@ def build_collection(pool: asyncpg.Pool, nats: InMemoryNatsBus) -> tuple[Any, An
     l1 = SQLiteBackend(db_name=f"identity_{uuid.uuid4().hex[:8]}")
     l1.initialize(l1_metadata())
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1, l2_client=nats, l3_pool=pool)
+    reg.configure(l1_backend=l1, l2_client=nats, l3_pool=pool, kv_key_scope="hub")
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     coll = IdentityVersionsCollection(registry=reg, config=cfg, nats_client=nats)
     return coll, l1

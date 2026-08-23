@@ -24,6 +24,11 @@ from threetears.core.exceptions import ConcurrentModificationError
 from threetears.nats.errors import KvError
 
 
+#: the principal scope every registry in this module wires. its VALUE is irrelevant here --
+#: what matters is that one exists, since ``l2_key`` refuses to build a key without one.
+_TEST_SCOPE = "test-principal"
+
+
 def _make_metadata() -> MetaData:
     metadata = MetaData()
     Table(
@@ -138,7 +143,9 @@ def l1_backend() -> SQLiteBackend:
 @pytest.fixture()
 def registry(l1_backend: SQLiteBackend) -> CollectionRegistry:
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1_backend)
+    # every L2 key is ``{scope}.{table}.{body}``; a registry with no scope refuses to key
+    # anything at all, so even the L1-only fixtures carry one.
+    reg.configure(l1_backend=l1_backend, kv_key_scope=_TEST_SCOPE)
     return reg
 
 
@@ -180,7 +187,7 @@ class TestThreeTierGet:
         """L1 miss, L2 hit promotes to L1 and returns entity."""
         nats = _make_nats_mock()
         l2_data = {"id": "e2", "name": "Bob", "score": 50}
-        nats.store["test_entities.e2"] = json.dumps(l2_data).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.e2"] = json.dumps(l2_data).encode()
         coll = StubCollection(registry, config_always, nats_client=nats)
 
         entity = await coll.get("e2")
@@ -207,7 +214,7 @@ class TestThreeTierGet:
         l1_row = coll.get_row_sync("e3")
         assert l1_row is not None
         # Promoted to L2
-        assert "test_entities.e3" in nats.store
+        assert f"{_TEST_SCOPE}.test_entities.e3" in nats.store
 
     @pytest.mark.asyncio
     async def test_all_miss_returns_none(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
@@ -240,7 +247,7 @@ class TestSaveEntity:
         l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
         # Written to L2
-        assert "test_entities.e1" in nats.store
+        assert f"{_TEST_SCOPE}.test_entities.e1" in nats.store
         # Entity is clean
         assert entity.is_dirty is False
         assert entity.is_new is False
@@ -262,7 +269,7 @@ class TestSaveEntity:
         l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
         # Written to L2
-        assert "test_entities.e1" in nats.store
+        assert f"{_TEST_SCOPE}.test_entities.e1" in nats.store
         # In write buffer
         assert buf.pending_count() == 1
         # Entity is clean
@@ -359,7 +366,7 @@ class TestDelete:
         # Removed from L1
         assert coll.get_row_sync("e1") is None
         # Removed from L2
-        assert "test_entities.e1" not in nats.store
+        assert f"{_TEST_SCOPE}.test_entities.e1" not in nats.store
 
 
 class TestCreate:
@@ -545,7 +552,7 @@ class TestSubscriptGetterPullThrough:
         """collection[id] pulls through L2 on L1 miss."""
         nats = _make_nats_mock()
         l2_data = {"id": "e1", "name": "Bob", "score": 50}
-        nats.store["test_entities.e1"] = json.dumps(l2_data).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.e1"] = json.dumps(l2_data).encode()
         coll = StubCollection(registry, config_always, nats_client=nats)
 
         entity = coll["e1"]
@@ -626,8 +633,8 @@ class TestSubscriptSetterPropagation:
         # Yield to the event loop so the fire-and-forget task can complete
         await asyncio.sleep(0.1)
 
-        assert "test_entities.e1" in nats.store
-        l2_data = json.loads(nats.store["test_entities.e1"])
+        assert f"{_TEST_SCOPE}.test_entities.e1" in nats.store
+        l2_data = json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])
         assert l2_data["name"] == "Bob"
 
     @pytest.mark.asyncio
@@ -665,7 +672,7 @@ class TestSubscriptSetterPropagation:
         # NOT in L3
         assert "e1" not in l3_rows
         # But IS in L2
-        assert "test_entities.e1" in nats.store
+        assert f"{_TEST_SCOPE}.test_entities.e1" in nats.store
         # And IS in write buffer
         assert buf.pending_count() == 1
 
@@ -685,7 +692,7 @@ class TestSubscriptSetterPropagation:
         assert row is not None
         assert row["name"] == "Alice"
         # L2
-        assert "test_entities.e1" in nats.store
+        assert f"{_TEST_SCOPE}.test_entities.e1" in nats.store
         # L3
         assert "e1" in l3_rows
         assert l3_rows["e1"]["name"] == "Alice"
@@ -732,7 +739,9 @@ class TestMultiPodSimulation:
         l1 = SQLiteBackend(db_name=f"test_pod_{uuid.uuid4().hex[:8]}")
         l1.initialize(_make_metadata())
         reg = CollectionRegistry()
-        reg.configure(l1_backend=l1)
+        # ONE scope across both pods: these are replicas of a single principal, which is
+        # exactly the case where the shared L2 key is the point.
+        reg.configure(l1_backend=l1, kv_key_scope=_TEST_SCOPE)
         return StubCollection(reg, config, nats_client=nats, write_buffer=write_buffer, l3_rows=l3_rows)
 
     @pytest.mark.asyncio
@@ -777,7 +786,7 @@ class TestMultiPodSimulation:
         assert stale_name == "Alice"
 
         # But L2 has the update (shared NATS KV)
-        l2_raw = nats.store.get("test_entities.e1")
+        l2_raw = nats.store.get(f"{_TEST_SCOPE}.test_entities.e1")
         assert l2_raw is not None
         l2_data = json.loads(l2_raw)
         assert l2_data["name"] == "Bob"
@@ -828,7 +837,7 @@ class TestMultiPodSimulation:
         # L3 still has old value
         assert l3_rows["e1"]["name"] == "Alice"
         # L2 has new value
-        l2_data = json.loads(nats.store["test_entities.e1"])
+        l2_data = json.loads(nats.store[f"{_TEST_SCOPE}.test_entities.e1"])
         assert l2_data["name"] == "Deferred"
         # Write buffer has pending entry
         assert buf.pending_count() == 1
@@ -848,12 +857,12 @@ class TestInvalidateCache:
         # Populate caches
         await coll.get("e1")
         assert coll.get_row_sync("e1") is not None
-        assert "test_entities.e1" in nats.store
+        assert f"{_TEST_SCOPE}.test_entities.e1" in nats.store
 
         await coll.invalidate_cache("e1")
 
         assert coll.get_row_sync("e1") is None
-        assert "test_entities.e1" not in nats.store
+        assert f"{_TEST_SCOPE}.test_entities.e1" not in nats.store
 
 
 class TestL3PoolAccessor:
@@ -956,35 +965,42 @@ _HEX = set("0123456789abcdef")
 
 
 class TestL2KeyGrammarSafe:
-    """l2_key keeps grammar-safe pks readable and hashes out-of-grammar ones."""
+    """l2_key keeps grammar-safe pks readable and hashes out-of-grammar ones.
+
+    Every key carries the registry's principal scope as its leading segment
+    (``{scope}.{table}.{body}``); the scope itself is exercised in
+    ``test_l2_key_scoping.py``, and appears here only because it is part of the key
+    these assertions read.
+    """
 
     def test_safe_single_pk_unchanged(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
-        """a grammar-safe single pk keeps its readable key (backward-compatible)."""
+        """a grammar-safe single pk keeps its readable key."""
         coll = StubCollection(registry, config_always)
-        assert coll.l2_key("e1") == "test_entities.e1"
+        assert coll.l2_key("e1") == f"{_TEST_SCOPE}.test_entities.e1"
         # uuid-shaped pk (dashes are in-grammar) stays readable too.
         uid = "550e8400-e29b-41d4-a716-446655440000"
-        assert coll.l2_key(uid) == f"test_entities.{uid}"
+        assert coll.l2_key(uid) == f"{_TEST_SCOPE}.test_entities.{uid}"
 
     def test_safe_composite_pk_unchanged(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """a grammar-safe composite pk keeps the readable underscore-joined body."""
         coll = CompositeStubCollection(registry, config_always)
-        assert coll.l2_key(("scope1", "grp7")) == "test_entities.scope1_grp7"
+        assert coll.l2_key(("scope1", "grp7")) == f"{_TEST_SCOPE}.test_entities.scope1_grp7"
 
     def test_out_of_grammar_pk_is_hashed_and_valid(
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         """a colon-bearing (out-of-grammar) pk yields a valid SHA-256-hashed key."""
         coll = StubCollection(registry, config_always)
-        prefix, _, body = coll.l2_key("cust:story:main:scene.md").partition(".")
-        assert prefix == "test_entities"
+        scope, table, body = coll.l2_key("cust:story:main:scene.md").split(".", 2)
+        assert scope == _TEST_SCOPE
+        assert table == "test_entities"
         assert ":" not in body
         assert len(body) == 64 and set(body) <= _HEX
 
     def test_space_pk_is_hashed_and_valid(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """a space (out-of-grammar) yields a valid hashed key, never a raw space."""
         coll = StubCollection(registry, config_always)
-        body = coll.l2_key("my file.md").partition(".")[2]
+        body = coll.l2_key("my file.md").split(".", 2)[2]
         assert " " not in body
         assert len(body) == 64 and set(body) <= _HEX
 
@@ -1203,7 +1219,7 @@ class TestL2CasMutate:
 
         await coll.l2_cas_mutate("r1", _append_member("conn-1"))
 
-        raw = await bucket.get(key="test_entities.r1")
+        raw = await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1")
         assert raw is not None
         assert _members(json.loads(raw)) == ["conn-1"]
         # L1 reconciled.
@@ -1220,7 +1236,7 @@ class TestL2CasMutate:
         await coll.l2_cas_mutate("r1", _append_member("conn-1"))
         await coll.l2_cas_mutate("r1", _append_member("conn-2"))
 
-        raw = await bucket.get(key="test_entities.r1")
+        raw = await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1")
         assert _members(json.loads(raw)) == ["conn-1", "conn-2"]
 
     @pytest.mark.asyncio
@@ -1234,7 +1250,7 @@ class TestL2CasMutate:
 
         await coll.l2_cas_mutate("r1", lambda _row: ("noop", None))
 
-        assert await bucket.get(key="test_entities.r1") is None
+        assert await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1") is None
         nats.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1249,7 +1265,7 @@ class TestL2CasMutate:
 
         await coll.l2_cas_mutate("r1", lambda _row: ("delete", None))
 
-        assert await bucket.get(key="test_entities.r1") is None
+        assert await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1") is None
         assert coll.get_row_sync("r1") is None
 
     @pytest.mark.asyncio
@@ -1259,12 +1275,12 @@ class TestL2CasMutate:
         """one CAS conflict then success — the loop retries and lands the write."""
         # seed the value so the write path is update (which conflicts once).
         bucket = _CasKvBucket(conflict_first=True)
-        await bucket.put(key="test_entities.r1", value=json.dumps({"id": "r1", "name": "seed"}).encode())
+        await bucket.put(key=f"{_TEST_SCOPE}.test_entities.r1", value=json.dumps({"id": "r1", "name": "seed"}).encode())
         coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
 
         await coll.l2_cas_mutate("r1", _append_member("conn-1"))
 
-        raw = await bucket.get(key="test_entities.r1")
+        raw = await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1")
         assert _members(json.loads(raw)) == ["seed", "conn-1"]
 
     @pytest.mark.asyncio
@@ -1273,7 +1289,7 @@ class TestL2CasMutate:
     ) -> None:
         """an always-conflicting bucket exhausts the budget and raises CME."""
         bucket = _CasKvBucket(always_conflict=True)
-        await bucket.put(key="test_entities.r1", value=json.dumps({"id": "r1", "name": "seed"}).encode())
+        await bucket.put(key=f"{_TEST_SCOPE}.test_entities.r1", value=json.dumps({"id": "r1", "name": "seed"}).encode())
         coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
 
         with pytest.raises(ConcurrentModificationError):
@@ -1336,7 +1352,7 @@ class TestStorageAgnosticL3Contract:
         got = await coll.get("g1")
         assert got is not None and got.name == "Gitish"
         assert coll.get_row_sync("g1") is not None  # promoted back to L1
-        assert "test_entities.g1" in nats.store  # promoted to L2
+        assert f"{_TEST_SCOPE}.test_entities.g1" in nats.store  # promoted to L2
 
         # delete → delete_from_store removes it from the non-SQL durable tier
         await coll.delete("g1")
@@ -1440,7 +1456,7 @@ class TestCacheAgeStampOnLowerTierReads:
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
     ) -> None:
         nats = _make_nats_mock()
-        nats.store["test_entities.p2"] = json.dumps({"id": "p2", "name": "FromL2", "score": 2}).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.p2"] = json.dumps({"id": "p2", "name": "FromL2", "score": 2}).encode()
         coll = StubCollection(registry, config_always, nats_client=nats)
 
         assert await coll.get("p2") is not None
@@ -1559,7 +1575,9 @@ class TestL1MaxAgePolicy:
         assert await coll.get("m1") is not None
         # a peer writes; its invalidation is lost, so this pod's L1 keeps the
         # old row while the shared tier already holds the new one.
-        nats.store["test_entities.m1"] = json.dumps({"id": "m1", "name": "PeerWrote", "score": 2}).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.m1"] = json.dumps(
+            {"id": "m1", "name": "PeerWrote", "score": 2}
+        ).encode()
         conn = l1_backend.get_connection()
         conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m1"))
 
@@ -1586,7 +1604,9 @@ class TestL1MaxAgePolicy:
         coll.l3_pool = object()
 
         assert await coll.get("m2") is not None
-        nats.store["test_entities.m2"] = json.dumps({"id": "m2", "name": "PeerWrote", "score": 2}).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.m2"] = json.dumps(
+            {"id": "m2", "name": "PeerWrote", "score": 2}
+        ).encode()
         conn = l1_backend.get_connection()
         conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m2"))
 
@@ -1672,7 +1692,9 @@ class TestExpiryDoesNotBreakNonRepairingReads:
         coll.l3_pool = object()
 
         assert await coll.get("w3") is not None
-        nats.store["test_entities.w3"] = json.dumps({"id": "w3", "name": "PeerWrote", "score": 2}).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.w3"] = json.dumps(
+            {"id": "w3", "name": "PeerWrote", "score": 2}
+        ).encode()
         self._age_out(l1_backend, "w3")
 
         refreshed = await coll.ensure("w3")
@@ -1799,7 +1821,9 @@ class TestTheBoundReachesTheSubscriptReadPath:
         coll.l3_pool = object()
 
         assert await coll.get("s1") is not None
-        nats.store["test_entities.s1"] = json.dumps({"id": "s1", "name": "PeerWrote", "score": 2}).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.s1"] = json.dumps(
+            {"id": "s1", "name": "PeerWrote", "score": 2}
+        ).encode()
         self._age_out(l1_backend, "s1")
 
         assert coll["s1"].name == "PeerWrote"
@@ -1826,7 +1850,9 @@ class TestTheBoundReachesTheSubscriptReadPath:
         coll.l3_pool = object()
 
         assert await coll.get("s2") is not None
-        nats.store["test_entities.s2"] = json.dumps({"id": "s2", "name": "PeerWrote", "score": 2}).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.s2"] = json.dumps(
+            {"id": "s2", "name": "PeerWrote", "score": 2}
+        ).encode()
         self._age_out(l1_backend, "s2")
 
         assert coll["s2", "name"] == "PeerWrote"
@@ -1851,7 +1877,9 @@ class TestTheBoundReachesTheSubscriptReadPath:
         coll.l3_pool = object()
 
         assert await coll.get("s3") is not None
-        nats.store["test_entities.s3"] = json.dumps({"id": "s3", "name": "PeerWrote", "score": 2}).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.s3"] = json.dumps(
+            {"id": "s3", "name": "PeerWrote", "score": 2}
+        ).encode()
 
         # Not aged out: the L1 row is inside its window and must win.
         assert coll["s3"].name == "Original"
@@ -1877,7 +1905,9 @@ class TestTheBoundReachesTheSubscriptReadPath:
         coll.l3_pool = object()
 
         assert await coll.get("s4") is not None
-        nats.store["test_entities.s4"] = json.dumps({"id": "s4", "name": "PeerWrote", "score": 2}).encode()
+        nats.store[f"{_TEST_SCOPE}.test_entities.s4"] = json.dumps(
+            {"id": "s4", "name": "PeerWrote", "score": 2}
+        ).encode()
         self._age_out(l1_backend, "s4")
 
         assert coll["s4"].name == "Original"

@@ -102,9 +102,13 @@ async def load_identity_propose_tool(
             "the user can review or roll it back."
         )
 
+    # Block list interpolated, never spelled out: this string is the only
+    # place the model learns which blocks it may edit, so a hand-kept copy
+    # going stale does not fail a test -- it silently makes a real block
+    # unreachable to the agent.
     identity_propose.description = (
-        "Propose a change to one of your own identity blocks (personality, "
-        "reinforcement, anti_sycophant, self_improvement, presence). "
+        "Propose a change to one of your own identity blocks "
+        f"({', '.join(IDENTITY_BLOCK_KEY_VALUES)}). "
         "Identity-shaping blocks await the user's consent; routine blocks apply "
         "immediately with the user able to roll back. Give the full new text + a "
         "short rationale."

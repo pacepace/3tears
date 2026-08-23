@@ -244,7 +244,7 @@ def registry(
     :mod:`3tears_agents.runtime.three_tier_stack.build_three_tier_stack`).
     """
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1_backend, l3_pool=pg_pool)
+    reg.configure(l1_backend=l1_backend, l3_pool=pg_pool, kv_key_scope="test-principal")
     return reg
 
 

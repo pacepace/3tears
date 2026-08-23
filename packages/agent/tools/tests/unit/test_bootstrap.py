@@ -8,9 +8,36 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import Column, MetaData, String, Table
 
 from threetears.agent.tools.bootstrap import EX_CONFIG, ToolPodConfigError, ToolServerBootstrap
+from threetears.nats import Principal, kv_key_scope_for
 from threetears.observe import HealthTier
+
+
+def _collection_tables() -> MetaData:
+    """one trivial table so a bootstrap can opt into the collection stack.
+
+    :return: metadata carrying a single-column table
+    :rtype: MetaData
+    """
+    metadata = MetaData()
+    Table("widgets", metadata, Column("id", String(64), primary_key=True))
+    return metadata
+
+
+def _stack_nats_client() -> MagicMock:
+    """a wrapper-client stand-in whose bucket bind and typed subscribe both succeed.
+
+    :return: mock NATS client
+    :rtype: MagicMock
+    """
+    client = MagicMock()
+    client.raw = MagicMock()
+    client.ensure_kv_bucket = AsyncMock(return_value=MagicMock())
+    client.subscribe_typed = AsyncMock(return_value=MagicMock())
+    client.unsubscribe = AsyncMock()
+    return client
 
 
 # parity-exempt: TearsTool subset shim covering the tool-server registration flow under unit test; full TearsTool surface includes mcp_schema/mcp_name/etc. but the test only exercises register+call
@@ -22,11 +49,16 @@ class _FakeToolServer:
     that constructs it. tests below NEVER touch that field directly.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, pod_id: str = "01947100-0000-7000-8000-0000000000aa") -> None:
         self.tools_count = 2
         self.serve_called = False
         self.shutdown_called = False
         self.serve_event = asyncio.Event()
+        self.pod_id = pod_id
+        self.connected_callbacks: list[Any] = []
+
+    def add_connected_callback(self, callback: Any) -> None:
+        self.connected_callbacks.append(callback)
 
     async def serve(self) -> None:
         self.serve_called = True
@@ -43,8 +75,14 @@ class _FakeToolServer:
 class _ConcreteBootstrap(ToolServerBootstrap):
     """subclass used to drive ``run`` / ``run_async`` paths."""
 
-    def __init__(self, *, server: _FakeToolServer, register_log: list[bool]) -> None:
-        super().__init__("test-pod")
+    def __init__(
+        self,
+        *,
+        server: _FakeToolServer,
+        register_log: list[bool],
+        collection_tables: MetaData | None = None,
+    ) -> None:
+        super().__init__("test-pod", collection_tables=collection_tables)
         self.server = server
         self.register_log = register_log
 
@@ -86,6 +124,94 @@ class TestRunAsync:
 
         await asyncio.wait_for(trigger_signal_then_run(), timeout=2.0)
         assert server.shutdown_called is True
+
+
+class TestTheCollectionStackRidesTheLifecycle:
+    """``coll-task-07c`` TP-04 / TP-06: the pod's tiers start and stop with the pod.
+
+    The stack is built on a CONNECTED-callback rather than in ``run_async`` directly, because the
+    connection does not exist until ``ToolServer.serve()`` opens it -- and it must be built BEFORE
+    the pod subscribes its call subject and publishes its registration manifest, or the pod is
+    discoverable while its own collections are still unwired.
+    """
+
+    async def test_no_tables_means_no_stack_and_no_callback(self) -> None:
+        """a pod that declares no Collection tables pays for nothing.
+
+        The opt-in is the tables, not a flag: there is no such thing as a collection stack with
+        nothing in it, and building one would bind the shared bucket for a pod that never reads it.
+        """
+        server = _FakeToolServer()
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        await bootstrap.run_async()
+
+        assert server.connected_callbacks == []
+        assert bootstrap.collection_registry is None
+
+    async def test_the_stack_is_built_when_the_connection_arrives(self) -> None:
+        server = _FakeToolServer()
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+        client = _stack_nats_client()
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(server.connected_callbacks) == 1
+        await server.connected_callbacks[0](client)
+        await run_task
+
+        client.ensure_kv_bucket.assert_awaited_once_with(name="collections", create_if_missing=False)
+
+    async def test_the_stack_is_scoped_to_the_servers_own_pod_id(self) -> None:
+        """the key side and the grant side must derive the scope from the SAME authenticated id.
+
+        The pod id comes off the ``ToolServer`` the subclass built -- the same value the pod
+        presents at connect and the auth callout pins as ``claims.sub`` -- rather than from a
+        second piece of bootstrap configuration that could drift from it.
+        """
+        server = _FakeToolServer(pod_id="01947100-0000-7000-8000-0000000000cc")
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await server.connected_callbacks[0](_stack_nats_client())
+        registry = bootstrap.collection_registry
+        await run_task
+
+        assert registry is not None
+        assert registry.kv_key_scope == kv_key_scope_for(Principal.TOOL_POD, pod_id=server.pod_id)
+
+    async def test_the_listener_is_stopped_when_serve_returns(self) -> None:
+        """a pod that shut down without this left a subscription on a client it no longer owns."""
+        server = _FakeToolServer()
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+        client = _stack_nats_client()
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await server.connected_callbacks[0](client)
+        await run_task
+
+        client.unsubscribe.assert_awaited_once()
 
 
 class TestUnoverriddenHooks:

@@ -202,6 +202,10 @@ def _make_nats_mock() -> AsyncMock:
     return nats
 
 
+#: the principal scope this module's registries wire. every L2 key leads with one.
+_TEST_SCOPE = "test-principal"
+
+
 @pytest.fixture()
 def l1_backend() -> SQLiteBackend:
     b = SQLiteBackend(db_name=f"test_integ_{uuid.uuid4().hex[:8]}")
@@ -213,7 +217,7 @@ def l1_backend() -> SQLiteBackend:
 @pytest.fixture()
 def registry(l1_backend: SQLiteBackend) -> CollectionRegistry:
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1_backend)
+    reg.configure(l1_backend=l1_backend, kv_key_scope=_TEST_SCOPE)
     return reg
 
 
@@ -264,7 +268,7 @@ class TestThreeTierIntegration:
         assert l1_row is not None
         assert l1_row["name"] == "Widget"
         # L2 populated
-        assert "stub_items.item-1" in nats.store
+        assert f"{_TEST_SCOPE}.stub_items.item-1" in nats.store
 
         # 3. Get — should hit L1
         nats.get.reset_mock()
@@ -277,7 +281,7 @@ class TestThreeTierIntegration:
         # 4. Invalidate L1 + L2 caches
         await coll.invalidate_cache("item-1")
         assert coll.get_row_sync("item-1") is None
-        assert "stub_items.item-1" not in nats.store
+        assert f"{_TEST_SCOPE}.stub_items.item-1" not in nats.store
 
         # 5. Get again — L1 miss, L2 miss, L3 hit -> re-promotes to L1 + L2
         fetched2 = await coll.get("item-1")
@@ -287,7 +291,7 @@ class TestThreeTierIntegration:
         l1_after = coll.get_row_sync("item-1")
         assert l1_after is not None
         # Re-promoted to L2
-        assert "stub_items.item-1" in nats.store
+        assert f"{_TEST_SCOPE}.stub_items.item-1" in nats.store
 
         # 6. Modify and save
         fetched2.name = "Gadget"
@@ -315,7 +319,7 @@ class TestThreeTierIntegration:
         assert result is True
         assert "item-1" not in l3_rows
         assert coll.get_row_sync("item-1") is None
-        assert "stub_items.item-1" not in nats.store
+        assert f"{_TEST_SCOPE}.stub_items.item-1" not in nats.store
 
         # Verify get returns None after delete
         gone = await coll.get("item-1")
@@ -336,7 +340,7 @@ class TestThreeTierIntegration:
         # Manually remove from L1 only (simulate L1 eviction), leave L2 intact
         coll.evict_from_cache_sync("item-2")
         assert coll.get_row_sync("item-2") is None
-        assert "stub_items.item-2" in nats.store  # L2 still has it
+        assert f"{_TEST_SCOPE}.stub_items.item-2" in nats.store  # L2 still has it
 
         # Get should hit L2 and re-promote to L1
         fetched = await coll.get("item-2")

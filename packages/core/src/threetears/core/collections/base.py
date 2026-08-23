@@ -31,7 +31,7 @@ from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity, derive_addressing_id
-from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry
+from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry, L2ScopeNotConfiguredError
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
 
@@ -678,6 +678,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         constructed without a connected client (unit tests, L1+L3
         configurations) never touch JetStream.
 
+        whether a collection may CREATE the shared bucket is the registry's
+        :attr:`CollectionRegistry.l2_create_if_missing` decision, not this
+        method's: baking a literal in here would put one deployment's
+        bucket-ownership policy in the library, and ``False`` is only safe
+        once the declaring identity re-declares the bucket on every NATS
+        reconnect.
+
         :return: ready bucket handle, or ``None`` when no NATS client
             was supplied
         :rtype: NatsKvBucket | None
@@ -687,16 +694,36 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return None
         if self._kv is None:
-            self._kv = await self._nats_client.kv_bucket(name=self.L2_BUCKET_SUFFIX)
+            self._kv = await self._nats_client.kv_bucket(
+                name=self.L2_BUCKET_SUFFIX,
+                create_if_missing=self._registry.l2_create_if_missing,
+            )
         return self._kv
 
     def l2_key(self, entity_id: Any) -> str:
-        """build a grammar-safe NATS KV key for given pk.
+        """build a grammar-safe, principal-scoped NATS KV key for given pk.
 
-        single-pk shape: ``{table_name}.{value}``. composite-pk shape:
-        ``{table_name}.{v1}_{v2}_...`` -- pk values stringified at the
-        NATS boundary (per CLAUDE.md UUID/datetime border-conversion
-        rule) and joined with ``"_"`` to form the **key body**.
+        single-pk shape: ``{scope}.{table_name}.{value}``. composite-pk
+        shape: ``{scope}.{table_name}.{v1}_{v2}_...`` -- pk values
+        stringified at the NATS boundary (per CLAUDE.md UUID/datetime
+        border-conversion rule) and joined with ``"_"`` to form the
+        **key body**.
+
+        ``{scope}`` is the registry's :attr:`CollectionRegistry.kv_key_scope`,
+        the principal this process authenticates as. Every principal
+        shares one ``{ns}-collections`` bucket, so without a leading
+        per-principal token the only grant expressible is
+        ``$KV.{bucket}.>`` -- every key in the platform, to everyone. The
+        scope is what lets the minted grant narrow to
+        ``$KV.{bucket}.{scope}.>``. There is ONE tier: every key is
+        scoped, always; no key is shared.
+
+        The scope is never hashed and never derived from a sanitized
+        display name. Not hashed, because an operator reading a subject
+        in a grant has to be able to tell whose it is. Not
+        name-derived, because the dots-to-dash sanitizer is
+        non-injective, and two principals landing on one scope is
+        precisely the outcome scoping exists to prevent.
 
         the body is constrained by the JetStream KV grammar
         (``^[-/_=.a-zA-Z0-9]+$`` per ``nats-server`` ``kv.go``): a body
@@ -714,11 +741,13 @@ class BaseCollection(ABC, Generic[EntityT]):
           collision-resistant (distinct bodies map to distinct digests,
           unlike a naive ``:``->``=`` replace which silently collides).
 
-        the ``{table_name}.`` prefix is always grammar-safe (table names
-        are ``[a-z_]`` identifiers) and is never hashed, so it stays a
-        readable namespace. only the body is conditionally hashed. the
-        raw pk continues to round-trip through L1, the stored value, and
-        the invalidation envelope, so reversibility is not needed.
+        the ``{scope}.{table_name}.`` prefix is always grammar-safe (the
+        scope is checked against the stricter scope grammar at wiring
+        time; table names are ``[a-z_]`` identifiers) and is never
+        hashed, so it stays a readable namespace. only the body is
+        conditionally hashed. the raw pk continues to round-trip through
+        L1, the stored value, and the invalidation envelope, so
+        reversibility is not needed.
 
         deterministic: the same pk always yields the same key (the
         grammar check and the digest are both pure functions of the
@@ -733,14 +762,35 @@ class BaseCollection(ABC, Generic[EntityT]):
         :param entity_id: pk value (single-pk) or tuple of pk values
             in declared order (composite-pk)
         :ptype entity_id: Any
-        :return: grammar-safe nats KV key, scoped by table name
+        :return: grammar-safe nats KV key, scoped by principal and table name
         :rtype: str
+        :raises L2ScopeNotConfiguredError: if this collection's registry
+            carries no ``kv_key_scope``. the BACKSTOP raise, not the
+            primary one: :meth:`CollectionRegistry.configure` and
+            :meth:`CollectionRegistry.bind_table` both refuse an L2
+            client with no scope at wiring time, which is where a
+            process can still fail its startup rather than dying on the
+            first cache access under load. this covers the ONE path
+            neither of them sees -- ``nats_client=`` passed straight to
+            the constructor, which wins over the registry default and
+            never calls either. deliberately NOT a :class:`KvError` -- four
+            of this method's five call sites sit inside ``except
+            KvError`` handlers that degrade to a warning, so a
+            ``KvError`` here would leave the fleet running with L2
+            silently off
         """
+        scope = self._registry.kv_key_scope
+        if scope is None:
+            raise L2ScopeNotConfiguredError(
+                f"{self.table_name}: no kv_key_scope on this collection's registry, so its L2 "
+                f"keys would carry no principal segment. wire it with "
+                f"registry.configure(kv_key_scope=threetears.nats.kv_key_scope_for(...))"
+            )
         pk_values = self.normalize_pk(entity_id)
         body = "_".join(str(v) for v in pk_values)
         if not _KV_KEY_GRAMMAR.match(body):
             body = hashlib.sha256(body.encode("utf-8")).hexdigest()
-        return f"{self.table_name}.{body}"
+        return f"{scope}.{self.table_name}.{body}"
 
     async def _get_from_l2(self, entity_id: Any) -> dict[str, Any] | None:
         """read entity payload from the L2 NATS KV bucket.
@@ -836,6 +886,73 @@ class BaseCollection(ABC, Generic[EntityT]):
         except KvError as exc:
             log.warning(
                 "L2 cache delete failed",
+                extra={
+                    "extra_data": {
+                        "entity_id": str(entity_id),
+                        "table": self.table_name,
+                        "error": str(exc),
+                    },
+                },
+            )
+            return False
+
+    async def delete_l2_entry(self, entity_id: Any) -> bool:
+        """evict this pod's OWN scoped L2 entry for one pk, when one exists.
+
+        The receiver-side half of cross-pod cache coherence, called by
+        :class:`CollectionRegistry`'s invalidation listener. Public because that caller lives in
+        another class: reaching :meth:`_delete_from_l2` from there is a cross-class private
+        access, which ``SLF`` forbids repo-wide and which the underscore contract says to fix by
+        promoting the api rather than exempting the caller.
+
+        **Presence-gated, and that gate is load-bearing.** A JetStream KV delete is a publish of
+        a delete-marker message and happens UNCONDITIONALLY -- deleting an absent key still
+        writes a marker. Ungated, every broadcast would write one marker per receiver for every
+        entity that receiver never cached, into a memory-storage bucket with ``history=1``,
+        unlimited ``max_age`` and no ``max_bytes``.
+
+        Distinct from :meth:`_delete_from_l2`, which is the unconditional delete the write path
+        uses: there the entity is being removed and a delete that raced a concurrent write must
+        still land, so paying a probe first would open a window in which the racing value
+        survives. Here the value is already known stale and skipping an absent key costs
+        nothing.
+
+        **Structurally a no-op when there is no L3**, on exactly the reasoning
+        :attr:`l1_max_age_seconds` already applies to expiry: a tier that is the source of
+        truth is not a cache, and evicting from it is not eviction, it is deletion. An
+        L1+L2-only collection has nothing to pull through from, so a key this method removed
+        is a row that no longer exists -- ``HeartbeatCollection``'s pod row, a presence room's
+        membership, the identity fence's generation, which fails OPEN on a missing key and
+        would admit the superseded connection it exists to refuse. The staleness this eviction
+        exists to prevent cannot arise there either: with no L3 there is no ``_pull_through``
+        re-caching anything, and a peer principal's copy is its own truth rather than a stale
+        view of somebody else's.
+
+        Same narrow exception scope as its siblings: only :class:`KvError` (real transport
+        failure, including during bucket resolution) degrades to ``False``. A
+        :class:`L2ScopeNotConfiguredError` from :meth:`l2_key` is NOT a transport failure and
+        propagates.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+            (composite-pk)
+        :ptype entity_id: Any
+        :return: whether an entry was found and deleted
+        :rtype: bool
+        :raises L2ScopeNotConfiguredError: if this collection's registry carries no scope
+        """
+        if self.l3_pool is None:
+            return False
+        try:
+            kv = await self._ensure_kv()
+            if kv is None:
+                return False
+            key = self.l2_key(entity_id)
+            if await kv.get(key=key) is None:
+                return False
+            return await kv.delete(key=key)
+        except KvError as exc:
+            log.warning(
+                "L2 cache eviction failed",
                 extra={
                     "extra_data": {
                         "entity_id": str(entity_id),

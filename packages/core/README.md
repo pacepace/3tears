@@ -21,6 +21,7 @@ Reads promote up the stack (L3 miss -> L2 miss -> L1 hit on next access). Writes
 ```python
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.nats import Principal, kv_key_scope_for
 
 # Create and configure
 l1 = SQLiteBackend("my_app_cache")
@@ -30,8 +31,25 @@ registry = CollectionRegistry()
 registry.configure(
     l1_backend=l1,          # SQLiteBackend instance
     l2_client=nats_client,  # NATS client (optional, None to skip L2)
+    # REQUIRED wherever an l2_client is: every L2 key is written as
+    # `{scope}.{table}.{body}`, and the scope is the principal this process
+    # authenticates to NATS as, so one process cannot read another's cached
+    # rows. `configure()` raises `L2ScopeNotConfiguredError` without it.
+    # Derive it -- never a literal -- so it cannot drift from the NATS grant,
+    # which is minted from the same call.
+    kv_key_scope=kv_key_scope_for(Principal.AGENT_POD, agent_id=AGENT_ID),
     l3_pool=postgres_pool,  # asyncpg pool
 )
+```
+
+Bind the shared `{namespace}-collections` bucket once at startup, BEFORE that
+`configure()` call -- one identity declares the bucket and every other process
+binds it:
+
+```python
+from threetears.core.collections import bind_collections_bucket
+
+await bind_collections_bucket(nats_client, component="my-pod")
 ```
 
 ### 2. Per-Collection Pool Overrides

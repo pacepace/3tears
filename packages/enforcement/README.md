@@ -10,6 +10,31 @@ This replaces a previous pattern in which the same enforcement test files were v
 
 ## Domains
 
+> **Adopting `invalidation_listener` in a repo that already runs a local copy.**
+> Three things change, and only the first is obvious.
+>
+> 1. **The exemption format.** The hub's pre-shared walker keyed by BARE MODULE
+>    PATH (`src/aibots/gateway/acl.py`). The shared parser wants a
+>    `path:line:symbol` triple and rejects anything else with `ExemptionError`, so
+>    an unmigrated file does not degrade -- it aborts the domain. Rewrite each
+>    entry as `<path>:*:<registry-spelling>`, keeping its `# rationale:` line. `*`
+>    means "any line in that file", which is what you want: keying an exemption to
+>    a line number silently stops matching when the line moves.
+> 2. **`minimum_live_registries` is yours to supply**, and it is REQUIRED with no
+>    default. Count the L2-live registries your repo actually wires and put that
+>    number in the shell. It is the floor that makes a green report mean anything.
+> 3. **Repo-specific shell assertions do not come across.** A local walker
+>    typically carries checks the shared domain has no equivalent for -- which
+>    processes must be in scope, that an L1-only registry is not dragged in,
+>    detector positive/negative cases. Those are yours to keep: port them into the
+>    thin shell rather than assuming the domain replaced them, because deleting the
+>    local file deletes them silently.
+>
+> This note describes a one-time migration and should be deleted once every
+> consumer has adopted the domain. Tracked as ENF-7WQ2 in the `14-eng-ai-bot`
+> backlog, which is this family's backlog of record -- not this repo's, so do not
+> go looking for it here.
+
 | Module | Invariant enforced |
 |---|---|
 | `cache` | Every stateful data surface routes through `BaseCollection`; no bespoke SQLiteBackend wrappers; no direct pool access to Collection-backed tables; every migration-defined table has a Collection class. |
@@ -18,6 +43,7 @@ This replaces a previous pattern in which the same enforcement test files were v
 | `coercion_coverage` | Tool subclasses override `execute`, never `run`, preserving the `normalize_kwargs → execute` input-coercion path. |
 | `dependency_alignment` | Declared dependencies match actual imports (no undeclared module-top sibling import, no declaration nothing imports); designated contracts packages import only stdlib, their own namespace, and configured extras; a package with a pinned `DependencyFloor` declares exactly the ruled hard-dependency list, no more and no fewer. |
 | `dict_state_detection` | No raw `dict`/`OrderedDict` persistent state in `__init__`; use `SQLiteBackend` (L1) or NATS KV for shared state. |
+| `invalidation_listener` | Every L2-live `CollectionRegistry` starts the cross-pod invalidation listener, and every start is paired with a stop. Carries a REQUIRED non-vacuity floor: a scan reaching nothing reports what a clean repo reports. |
 | `logger_coverage` | Every production module declares a module-level `log = get_logger(__name__)` unless explicitly exempt. |
 | `migration_yugabyte_safety` | Migration shapes are yugabyte-safe per `threetears.core.data.migrations.enforcement`. |
 | `nats_wrapper_usage` | All `nats-py` imports route through `threetears.nats.NatsClient`; no direct `import nats`. |
@@ -73,7 +99,9 @@ Per-repo exemption files (e.g., `_cache_exemptions.txt`) stay in the consumer re
 ## How to add a new enforcement domain
 
 1. Create `src/threetears/enforcement/<domain>/` with `walkers.py`, `config.py`, `runner.py`, and `__init__.py`.
-2. Use `common/` helpers (`ast_helpers`, `repo_layout`, `pyproject_discovery`, `inheritance`, `exemptions`, `modes`, `violations`, `reports`). Do not duplicate scaffolding.
+2. Use `common/` helpers (`ast_helpers`, `collection_registry`, `repo_layout`, `pyproject_discovery`, `inheritance`, `exemptions`, `modes`, `violations`, `reports`). Do not duplicate scaffolding. Two in particular, because both have already been re-implemented in this package rather than imported:
+   - **`ast_helpers` owns the dotted-name spelling family** -- `dotted`, `callee_names`, `receiver`, `argument_spellings`. If you are about to write a loop that walks an `ast.Attribute` chain accumulating segments, it exists. Three copies of that walk shipped here before it was shared, each differing by one detail that turned out to be a parameter (`dotted`'s `unwrap_subscript` is the survivor).
+   - **`collection_registry` owns "which `CollectionRegistry` names are L2-live"** -- take the answer from there rather than re-deriving it. `CLIENT_SPELLINGS` is a heuristic list that grows, so a second copy goes stale silently while still compiling.
 3. Walkers return `list[Violation]`. Configs are frozen dataclasses. Runners orchestrate walker → exemption-application → mode-resolution → report.
 4. Write unit tests in `tests/<domain>/`.
 5. Document the domain in this README.
