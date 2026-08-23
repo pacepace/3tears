@@ -50,6 +50,27 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `agent-identity`: **`wants` and `needs` are now identity blocks.** Both join
+  `IdentityBlockKey` and both are **tier 2** -- they auto-apply and the human
+  vetoes after the fact, rather than waiting on consent. That is a deliberate
+  ruling, not an oversight: a want or a need is the agent's own homeostatic
+  condition, regulated rather than requested, so it gets wider latitude than
+  the persona block despite being just as identity-shaping.
+
+  Migration **v002** (`ALTER TYPE identity_block_key ADD VALUE IF NOT EXISTS`)
+  carries the two labels onto schemas already at v001. A deployed agent schema
+  recorded v001 applied when it shipped in v0.26.1 and will never re-run its
+  `CREATE TYPE`, so the forward migration is the only path that reaches it --
+  editing v001 in place would have landed the labels on fresh installs alone.
+  The runner does not wrap a version in a transaction, which is what makes
+  `ALTER TYPE ... ADD VALUE` legal here.
+
+  The `identity_propose` tool description now interpolates the block list
+  instead of spelling it out. It was the one place stale text would not fail a
+  test: the description is the only channel telling the model which blocks
+  exist, so a hand-kept copy going stale makes a real block unreachable rather
+  than merely mis-documented.
+
 - `core`: **`bind_collections_bucket(nats_client, *, component=None)`** -- the
   one call every non-declaring process makes at startup, after connect and
   BEFORE any `configure()` that wires an L2 client. It retries only the
