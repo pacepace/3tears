@@ -11,6 +11,7 @@ rather than only through whichever domain happens to exercise a shape.
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 
 from threetears.enforcement.common import (
     CLIENT_SPELLINGS,
@@ -21,40 +22,35 @@ from threetears.enforcement.common import (
 )
 
 
-def _call(source: str) -> ast.Call:
-    node = ast.parse(source).body[0]
-    assert isinstance(node, ast.Expr)
-    assert isinstance(node.value, ast.Call)
-    return node.value
-
-
 class TestNamesALiveClient:
     """the heuristic half, and the one that grows."""
 
-    def test_a_client_keyword_counts(self) -> None:
-        assert names_a_live_client(_call("configure(l2_client=x)")) is True
+    def test_a_client_keyword_counts(self, parse_call: Callable[[str], ast.Call]) -> None:
+        assert names_a_live_client(parse_call("configure(l2_client=x)")) is True
 
-    def test_the_per_collection_keyword_counts(self) -> None:
+    def test_the_per_collection_keyword_counts(self, parse_call: Callable[[str], ast.Call]) -> None:
         """``nats_client=`` WINS over the registry default, so it must count."""
-        assert names_a_live_client(_call("Collection(registry=r, nats_client=x)")) is True
+        assert names_a_live_client(parse_call("Collection(registry=r, nats_client=x)")) is True
 
-    def test_an_explicit_none_does_not(self) -> None:
+    def test_an_explicit_none_does_not(self, parse_call: Callable[[str], ast.Call]) -> None:
         """``nats_client=None`` is the deliberate opt-out, not a live client."""
-        assert names_a_live_client(_call("Collection(registry=r, nats_client=None)")) is False
+        assert names_a_live_client(parse_call("Collection(registry=r, nats_client=None)")) is False
 
-    def test_a_positional_client_counts_by_spelling(self) -> None:
-        assert names_a_live_client(_call("configure(nc)")) is True
+    def test_a_positional_client_counts_by_spelling(self, parse_call: Callable[[str], ast.Call]) -> None:
+        assert names_a_live_client(parse_call("configure(nc)")) is True
 
-    def test_a_dotted_positional_client_matches_on_its_last_segment(self) -> None:
-        assert names_a_live_client(_call("configure(self._nc)")) is True
+    def test_a_dotted_positional_client_matches_on_its_last_segment(
+        self, parse_call: Callable[[str], ast.Call]
+    ) -> None:
+        assert names_a_live_client(parse_call("configure(self._nc)")) is True
 
-    def test_an_unrelated_argument_does_not(self) -> None:
-        assert names_a_live_client(_call("configure(pool)")) is False
+    def test_an_unrelated_argument_does_not(self, parse_call: Callable[[str], ast.Call]) -> None:
+        assert names_a_live_client(parse_call("configure(pool)")) is False
 
-    def test_every_declared_spelling_is_recognised(self) -> None:
+    def test_every_declared_spelling_is_recognised(self, parse_call: Callable[[str], ast.Call]) -> None:
         """the constant and the matcher must not drift apart."""
         for spelling in CLIENT_SPELLINGS:
-            assert names_a_live_client(_call(f"configure({spelling})")) is True, spelling
+            assert names_a_live_client(parse_call(f"configure({spelling})")) is True, spelling
 
 
 class TestConstructedRegistries:

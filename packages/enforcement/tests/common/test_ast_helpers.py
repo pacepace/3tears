@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from pathlib import Path
 
 from threetears.enforcement.common.ast_helpers import (
@@ -201,14 +202,6 @@ class TestIsSuppressCall:
         assert is_suppress_call(node) is False
 
 
-def _call(source: str) -> ast.Call:
-    """parse a single call expression out of one line of source."""
-    node = ast.parse(source).body[0]
-    assert isinstance(node, ast.Expr)
-    assert isinstance(node.value, ast.Call)
-    return node.value
-
-
 class TestDotted:
     """the spelling function every other helper is built on."""
 
@@ -227,27 +220,27 @@ class TestDotted:
 
 
 class TestCalleeAndReceiver:
-    def test_a_bare_call_has_a_callee_and_no_receiver(self) -> None:
-        call = _call("configure(x)")
+    def test_a_bare_call_has_a_callee_and_no_receiver(self, parse_call: Callable[[str], ast.Call]) -> None:
+        call = parse_call("configure(x)")
 
         assert callee_names(call) == frozenset({"configure"})
         assert receiver(call) is None
 
-    def test_a_method_call_has_both(self) -> None:
-        call = _call("self._registry.configure(x)")
+    def test_a_method_call_has_both(self, parse_call: Callable[[str], ast.Call]) -> None:
+        call = parse_call("self._registry.configure(x)")
 
         assert callee_names(call) == frozenset({"configure"})
         assert receiver(call) == "self._registry"
 
 
 class TestArgumentSpellings:
-    def test_positional_and_keyword_values_are_both_collected(self) -> None:
-        call = _call("configure(nc, l3_pool=pool)")
+    def test_positional_and_keyword_values_are_both_collected(self, parse_call: Callable[[str], ast.Call]) -> None:
+        call = parse_call("configure(nc, l3_pool=pool)")
 
         assert argument_spellings(call) == frozenset({"nc", "pool"})
 
-    def test_unspellable_arguments_are_dropped_rather_than_guessed(self) -> None:
-        call = _call("configure(build()[0], nc)")
+    def test_unspellable_arguments_are_dropped_rather_than_guessed(self, parse_call: Callable[[str], ast.Call]) -> None:
+        call = parse_call("configure(build()[0], nc)")
 
         assert argument_spellings(call) == frozenset({"nc"})
 
