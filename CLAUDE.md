@@ -151,12 +151,12 @@ alone.
 - Releases: bump version → PR into develop → PR develop into main (no
   version bump on that second PR) → tag from main. Don't cut a release
   tag on a plain develop→main sync that isn't meant to ship a release.
-  **"Tag from main" means PUSH A TAG** — `git tag -a vX.Y.Z <commit on main>
+  **"Tag from main" means PUSH A TAG** -- `git tag -a vX.Y.Z <commit on main>
   && git push origin vX.Y.Z`. The tag push is the trigger; it is the only
   path that creates the GitHub Release. Do NOT reach for
   `gh workflow run release.yml` here: that is the REPUBLISH command from the
   section below, it deliberately creates no release, and using it to cut a new
-  one publishes to PyPI while leaving no tag and no release behind — with every
+  one publishes to PyPI while leaving no tag and no release behind -- with every
   job green. That happened on 2026-08-01 with 0.22.5.
   **A green release run does not mean a release exists.** Confirm with
   `git ls-remote --tags origin` and by checking `github-release` did not report
