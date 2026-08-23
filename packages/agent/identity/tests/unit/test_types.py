@@ -19,6 +19,8 @@ def test_block_key_values_are_declaration_ordered() -> None:
         "anti_sycophant",
         "self_improvement",
         "presence",
+        "wants",
+        "needs",
     )
 
 
@@ -39,6 +41,14 @@ def test_every_block_has_a_tier() -> None:
 def test_tier_assignment_matches_signed_off_model() -> None:
     """Tier from day one: identity-shaping = tier 1; routine = tier 2."""
     tier1 = {IdentityBlockKey.PERSONALITY, IdentityBlockKey.ANTI_SYCOPHANT, IdentityBlockKey.PRESENCE}
-    tier2 = {IdentityBlockKey.SELF_IMPROVEMENT, IdentityBlockKey.REINFORCEMENT}
+    tier2 = {
+        IdentityBlockKey.SELF_IMPROVEMENT,
+        IdentityBlockKey.REINFORCEMENT,
+        # Wants / needs are the agent's own homeostatic conditions --
+        # regulated, not requested -- so they auto-apply under a human
+        # veto rather than waiting on consent. Pace's ruling, 2026-08-22.
+        IdentityBlockKey.WANTS,
+        IdentityBlockKey.NEEDS,
+    }
     assert {b for b, t in IDENTITY_BLOCK_TIERS.items() if t is IdentityTier.TIER_1} == tier1
     assert {b for b, t in IDENTITY_BLOCK_TIERS.items() if t is IdentityTier.TIER_2} == tier2

@@ -39,8 +39,10 @@ class IdentityBlockKey(str, Enum):
     These mirror metallm's ``users.config_*`` prompt columns: the
     system-prefix persona (``PERSONALITY``), the post-history reinforcement
     (``REINFORCEMENT``), the anti-sycophancy guard (``ANTI_SYCOPHANT``),
-    the self-improvement scratch prompt (``SELF_IMPROVEMENT``), and the
-    presence/aliveness voice (``PRESENCE``). Subclasses :class:`str` so a
+    the self-improvement scratch prompt (``SELF_IMPROVEMENT``), the
+    presence/aliveness voice (``PRESENCE``), and the standing appetite and
+    regulatory conditions the blocks layout renders ahead of the
+    conversation (``WANTS`` / ``NEEDS``). Subclasses :class:`str` so a
     member compares equal to its wire value and serialises transparently.
     """
 
@@ -49,6 +51,8 @@ class IdentityBlockKey(str, Enum):
     ANTI_SYCOPHANT = "anti_sycophant"
     SELF_IMPROVEMENT = "self_improvement"
     PRESENCE = "presence"
+    WANTS = "wants"
+    NEEDS = "needs"
 
 
 class IdentityVersionStatus(str, Enum):
@@ -93,4 +97,12 @@ IDENTITY_BLOCK_TIERS: dict[IdentityBlockKey, IdentityTier] = {
     IdentityBlockKey.PRESENCE: IdentityTier.TIER_1,
     IdentityBlockKey.SELF_IMPROVEMENT: IdentityTier.TIER_2,
     IdentityBlockKey.REINFORCEMENT: IdentityTier.TIER_2,
+    # TIER_2 (Pace, 2026-08-22). Wants and Needs are identity-shaping in the
+    # sense PERSONALITY is, which would argue tier 1 — the ruling went the
+    # other way deliberately: these are the agent's own homeostatic
+    # conditions, regulated rather than requested, so they auto-apply and the
+    # human vetoes after the fact. Wider latitude than the persona block gets,
+    # and chosen knowing that.
+    IdentityBlockKey.WANTS: IdentityTier.TIER_2,
+    IdentityBlockKey.NEEDS: IdentityTier.TIER_2,
 }

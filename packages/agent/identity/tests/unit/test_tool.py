@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from threetears.agent.identity.tools import load_identity_propose_tool
+from threetears.agent.identity.types import IDENTITY_BLOCK_KEY_VALUES
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,3 +51,24 @@ async def test_unknown_block_key_is_rejected_without_calling_lifecycle() -> None
         out = await tool.ainvoke({"block_key": "nope", "content": "x", "rationale": "r"})
     assert "Unknown block_key" in out
     prop.assert_not_awaited()
+
+
+async def test_description_advertises_every_editable_block() -> None:
+    """Every block key the tool accepts is named in the description.
+
+    The description is the ONLY channel telling the model which blocks
+    exist, so a block that validates fine but goes unmentioned is
+    unreachable in practice -- wired, tested, and never used. Asserting
+    against the enum (not a literal) makes adding a block upstream fail
+    here until the advertisement catches up.
+    """
+    tool = await _tool()
+    for value in IDENTITY_BLOCK_KEY_VALUES:
+        assert value in tool.description, f"{value} is accepted but never advertised"
+
+
+async def test_wants_and_needs_are_advertised() -> None:
+    """The blocks added in 3tears v0.27.0, named explicitly as a regression pin."""
+    tool = await _tool()
+    assert "wants" in tool.description
+    assert "needs" in tool.description
