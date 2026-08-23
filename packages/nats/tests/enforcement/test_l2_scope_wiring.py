@@ -43,6 +43,7 @@ from typing import Final
 
 import pytest
 
+from threetears.enforcement.invalidation_listener import count_l2_live_registries
 from threetears.enforcement.common import (
     CLIENT_KEYWORDS,
     MODE_REPORT,
@@ -302,12 +303,11 @@ class TestTheReaderIsNotVacuous:
 
     def test_the_repo_really_does_run_live_registries(self) -> None:
         """the count is asserted from below so a broken reader is loud."""
-        live = sum(
-            len(l2_live_registries(tree))
-            for root in find_local_src_roots(_REPO_ROOT)
-            for source in iter_python_files(root)
-            if (tree := parse_python_file(source)) is not None
-        )
+        # the SHARED counter, not a local sum: the invalidation-listener gate asserts the
+        # same floor over the same roots, and two hand-rolled counts are what let these
+        # drift to 2-vs-3. it also honours `skip_basenames`, which the inline sum did not,
+        # so the two answers stay equal for a consumer that sets one.
+        live = count_l2_live_registries(find_local_src_roots(_REPO_ROOT))
         assert live >= _MINIMUM_LIVE_REGISTRIES, (
             f"only {live} L2-live registries found across packages/*/src; the wiring reader has "
             "probably stopped matching one of the five shapes"
