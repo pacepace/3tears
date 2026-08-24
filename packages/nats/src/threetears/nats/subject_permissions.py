@@ -53,7 +53,10 @@ from threetears.nats.subjects import Subjects, get_default_namespace, sanitize_s
 
 __all__ = [
     "CROSS_PLATFORM_CACHE_INVALIDATE",
+    "COORDINATION_BUCKET_SUFFIX_GRAMMAR",
     "KV_KEY_SCOPE_GRAMMAR",
+    "MAX_COORDINATION_BUCKETS",
+    "MAX_COORDINATION_BUCKET_SUFFIX_CHARS",
     "JsCapability",
     "JsResource",
     "JsResourceKind",
@@ -82,6 +85,30 @@ CROSS_PLATFORM_CACHE_INVALIDATE = "threetears.cache.invalidate"
 #: scope exists to provide. reusing the key grammar here was the mistake this constant exists
 #: to make impossible.
 KV_KEY_SCOPE_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[-_=a-zA-Z0-9]+$")
+
+#: what one AGENT_POD-declared coordination bucket SUFFIX may contain.
+#:
+#: A KV bucket ``<b>`` is backed by the stream ``KV_<b>``, and a stream name is ONE
+#: subject token, so a dot in the suffix would split the token and silently point every
+#: emitted grant at a subject shape nothing matches. The remaining characters are what
+#: nats-server accepts in a bucket name.
+COORDINATION_BUCKET_SUFFIX_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[-_a-zA-Z0-9]+$")
+
+#: how many coordination buckets ONE agent may declare.
+#:
+#: The prefix (see :func:`_coordination_resources`) is what stops a declaration reaching
+#: another principal's buckets; it is not what stops a declaration being expensive. Each
+#: entry materialises one JetStream stream on the platform's bus, so the count is bounded
+#: as well. Generous relative to what any product needs -- the survey engine, which
+#: motivated this, declares six -- and low enough that a runaway manifest is refused
+#: rather than provisioned.
+MAX_COORDINATION_BUCKETS: Final[int] = 16
+
+#: longest coordination bucket suffix accepted. the composed name is
+#: ``{ns}-{scope}-{suffix}`` and its stream is ``KV_`` plus that; the scope alone is 42
+#: characters, so this keeps the whole stream name well inside what nats-server accepts
+#: while leaving room for a name that says what the bucket is for.
+MAX_COORDINATION_BUCKET_SUFFIX_CHARS: Final[int] = 64
 
 
 class Principal(StrEnum):
@@ -548,6 +575,7 @@ def build_permissions(
     pod_id: str | None = None,
     conn_id: str | None = None,
     tool_namespaces: Sequence[str] | None = None,
+    coordination_buckets: Sequence[str] | None = None,
 ) -> PrincipalPermissions:
     """resolve the concrete allow-list for one connecting principal.
 
@@ -571,12 +599,29 @@ def build_permissions(
         read from one source of truth. omitting it grants none of them (a pod that serves no
         human-in-the-loop session needs none).
     :ptype tool_namespaces: Sequence[str] | None
+    :param coordination_buckets: KV bucket SUFFIXES this agent declares for its own
+        coordination primitives -- the ``coordination_buckets`` column on its ``agents``
+        row, resolved by the auth callout exactly as ``tool_namespaces`` is. Each becomes
+        one grant composed under the agent's OWN key scope, so a declared string can never
+        name a bucket outside that agent's space; see :func:`_coordination_resources`.
+        Read by :attr:`Principal.AGENT_POD` alone and ignored for every other principal.
+        Omitting it grants none of them, which is what every pre-existing caller does and
+        therefore what every pre-existing caller still gets.
+    :ptype coordination_buckets: Sequence[str] | None
     :return: the resolved permissions
     :rtype: PrincipalPermissions
-    :raises ValueError: when a required id for the principal is missing
+    :raises ValueError: when a required id for the principal is missing, or when a declared
+        coordination bucket suffix is malformed or the declaration exceeds
+        :data:`MAX_COORDINATION_BUCKETS`
     """
     resolver = _RESOLVERS[principal]
-    return resolver(agent_id=agent_id, pod_id=pod_id, conn_id=conn_id, tool_namespaces=tool_namespaces)
+    return resolver(
+        agent_id=agent_id,
+        pod_id=pod_id,
+        conn_id=conn_id,
+        tool_namespaces=tool_namespaces,
+        coordination_buckets=coordination_buckets,
+    )
 
 
 def _require(value: str | None, *, name: str, principal: Principal) -> str:
@@ -586,12 +631,79 @@ def _require(value: str | None, *, name: str, principal: Principal) -> str:
     return value
 
 
+def _coordination_resources(
+    ns: str,
+    scope: str,
+    coordination_buckets: Sequence[str] | None,
+) -> tuple[JsResource, ...]:
+    """the KV grants for one agent's OWN declared coordination buckets.
+
+    **The declared string is a SUFFIX and never a bucket name, and that is the whole
+    security property.** Every grant is composed as ``{ns}-{scope}-{suffix}``, where
+    ``scope`` is :func:`kv_key_scope_for` on the AUTHENTICATED agent id -- an id the auth
+    callout pins from the verified token's ``sub``, never from the spoofable connect name.
+    The prefix is therefore not an input, so no declaration can name a bucket outside the
+    declaring agent's own space: an agent that asks for ``collections`` is granted its own
+    ``{ns}-agent_pod-<hex>-collections`` and comes no closer to the shared bucket every
+    principal writes its L2 into. That makes the declaration itself non-sensitive, which is
+    what lets it come from an agent's own manifest at all.
+
+    **Unscoped WITHIN the bucket, deliberately.** The bucket is the isolation boundary, so
+    its keys need no scope segment -- and must not have one, because 3tears's own
+    coordination primitives (:class:`~threetears.core.coordination.ReplayGuard`,
+    :class:`~threetears.core.coordination.DistributedCounter`, the idempotency and ticket
+    stores) each hash their own keys with no scope prefix. A scoped grant here would emit
+    ``$KV.{bucket}.{scope}.>``, match none of their keys, and deny every call as a
+    ten-second deadline that reads as an unreachable broker.
+
+    **Never a declaring capability.** ``STREAM.UPDATE`` is a read-all primitive on any
+    stream it is held against (``republish`` / ``sources`` mirror every key onto a subject
+    the holder names), so a pod gets :attr:`JsCapability.FULL` on a bucket of its own and
+    never :attr:`JsCapability.KV_SCOPED_DECLARE`.
+
+    :param ns: the subject namespace prefix
+    :ptype ns: str
+    :param scope: this agent's own key scope, from :func:`kv_key_scope_for`
+    :ptype scope: str
+    :param coordination_buckets: the bucket suffixes this agent declares, or ``None``
+    :ptype coordination_buckets: Sequence[str] | None
+    :return: one writable KV resource per declared suffix, in declaration order
+    :rtype: tuple[JsResource, ...]
+    :raises ValueError: if more than :data:`MAX_COORDINATION_BUCKETS` are declared, or if
+        any suffix is empty, over-long, or outside
+        :data:`COORDINATION_BUCKET_SUFFIX_GRAMMAR`
+    """
+    declared = tuple(coordination_buckets or ())
+    if len(declared) > MAX_COORDINATION_BUCKETS:
+        raise ValueError(
+            f"an agent declared {len(declared)} coordination buckets, over the "
+            f"{MAX_COORDINATION_BUCKETS} cap; each one materialises a JetStream stream"
+        )
+    for suffix in declared:
+        # REFUSE rather than skip. a dropped entry leaves the pod opening a bucket it was
+        # never granted, and an ungranted KV call does not raise -- it blocks to its
+        # deadline and reports an unreachable broker, which is the failure this file's own
+        # comments repeatedly describe as the kind that costs a day.
+        if not suffix or len(suffix) > MAX_COORDINATION_BUCKET_SUFFIX_CHARS:
+            raise ValueError(
+                f"coordination bucket suffix {suffix!r} must be 1 to {MAX_COORDINATION_BUCKET_SUFFIX_CHARS} characters"
+            )
+        if not COORDINATION_BUCKET_SUFFIX_GRAMMAR.match(suffix):
+            raise ValueError(
+                f"coordination bucket suffix {suffix!r} does not match "
+                f"{COORDINATION_BUCKET_SUFFIX_GRAMMAR.pattern}; a KV bucket is backed by the "
+                f"stream KV_<bucket>, and a stream name is one subject token"
+            )
+    return tuple(JsResource.kv(f"{ns}-{scope}-{suffix}", scope=None, writable=True) for suffix in declared)
+
+
 def _agent_pod(
     *,
     agent_id: str | None,
     pod_id: str | None,
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
+    coordination_buckets: Sequence[str] | None,
 ) -> PrincipalPermissions:
     a = _require(agent_id, name="agent_id", principal=Principal.AGENT_POD)
     p = _require(pod_id, name="pod_id", principal=Principal.AGENT_POD)
@@ -721,6 +833,10 @@ def _agent_pod(
             # the long calls it makes. one stream, so one JetStream control-plane grant.
             JsResource.stream(f"{ns}-channels-deliver"),
             JsResource.stream(result_stream_name()),
+            # the agent's OWN coordination buckets, each composed under ``scope`` so a
+            # declaration can only ever reach this agent's space. LAST, so a reader sees the
+            # platform's fixed grants above and this agent's variable ones below.
+            *_coordination_resources(ns, scope, coordination_buckets),
         ),
     )
 
@@ -731,6 +847,7 @@ def _tool_pod(
     pod_id: str | None,
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
+    coordination_buckets: Sequence[str] | None,
 ) -> PrincipalPermissions:
     p = _require(pod_id, name="pod_id", principal=Principal.TOOL_POD)
     inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=conn_id or p)
@@ -867,6 +984,7 @@ def _registry(
     pod_id: str | None,
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
+    coordination_buckets: Sequence[str] | None,
 ) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.REGISTRY)
     inbox = inbox_prefix_for(Principal.REGISTRY, conn_id=c)
@@ -946,6 +1064,7 @@ def _hub(
     pod_id: str | None,
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
+    coordination_buckets: Sequence[str] | None,
 ) -> PrincipalPermissions:
     # the hub is the broadest principal: trust anchor + control plane + L3 broker + router. it owns
     # the whole {ns}.hub.*, {ns}.agents.*, {ns}.l3.*, and the platform-write event streams. it is
@@ -1096,6 +1215,7 @@ def _gateway(
     pod_id: str | None,
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
+    coordination_buckets: Sequence[str] | None,
 ) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.GATEWAY)
     inbox = inbox_prefix_for(Principal.GATEWAY, conn_id=c)
@@ -1143,6 +1263,7 @@ def _channel_adapter(
     pod_id: str | None,
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
+    coordination_buckets: Sequence[str] | None,
 ) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.CHANNEL_ADAPTER)
     inbox = inbox_prefix_for(Principal.CHANNEL_ADAPTER, conn_id=c)
@@ -1184,6 +1305,7 @@ def _agent_router(
     pod_id: str | None,
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
+    coordination_buckets: Sequence[str] | None,
 ) -> PrincipalPermissions:
     # the sticky router: it drains the durable inbound-turn stream, forwards each turn to whichever
     # pod currently owns the conversation, and awaits the pod's completion signal before acking.
@@ -1260,6 +1382,7 @@ def _dataset_executor(
     pod_id: str | None,
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
+    coordination_buckets: Sequence[str] | None,
 ) -> PrincipalPermissions:
     # D14's separate deployment of the hub image: it drains dataset build work, holds a KVLease for
     # the run it owns, and releases the admission slots the hub took.
