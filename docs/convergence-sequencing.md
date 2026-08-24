@@ -585,23 +585,43 @@ discodon's NATS convergence and sits outside this sequence.)
   Nothing moves out of discodon and no package is published; the lift becomes
   mechanical once it holds.
 
-  **Held as of 2026-08-20.** In place: R1's boundary test; the `DocumentStore`
-  port with its YugabyteDB adapter; the narrow completion protocol
-  (`CompletionClient` / `CompletionResult`); R10's fidelity axis; an installable
-  chart/spec package with a host-supplied palette.
+  **Held as of 2026-08-24**, re-checked against discodon's tree. In place: R1's
+  boundary test and its totality assertion; the `DocumentStore` port with its
+  YugabyteDB adapter; the narrow completion protocol (`CompletionClient` /
+  `CompletionResult`); R10's fidelity axis; an installable chart/spec package with
+  a host-supplied palette. **And, since the 2026-08-20 reading of this list,
+  discodon's Wave 2 built four more of it:**
 
-  Outstanding -- the first item was this phase's pair of open decisions and both
-  are now ruled, so what remains of it is build:
+  - **`SweepableValue`'s `display` and `scale`** (R9) -- built, with `scale` in
+    three kinds rather than a bare ordinal.
+  - **The pooling boundary** (R11) -- built, all three obligations, disclosure
+    included.
+  - **R8's input registry** -- built, with `confounds` prose refused-if-absent on
+    apparatus registrations.
+  - **R10's controllability gate** -- built, and it fires at campaign authoring.
+    Two of R10's four axes now exist.
 
-  - **`SweepableValue`'s `display` and `scale`** (R9) and **the pooling boundary**
-    (R11) are ruled (discodon Wave 2 design §5.2; C6) and unbuilt. Both are cheaper
-    before the cut than after, so they still belong to this phase.
-  - **`universe` → `scope`** -- discodon Wave 2; touches the MCP surface. Binding
-    eval-contracts before it lands means binding under provisional vocabulary.
-  - **The package still imports `discodon.llm`** -- discodon #2402 -- #2407.
-  - **R8's input registry** -- not built, and **R10's authoring-time gate cannot be
-    built without it**, since controllability derives from the registry. One of
-    R10's four axes exists.
+  Shapes and evidence per item are in
+  [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon).
+  Take them as the contract: they are what a real consumer built.
+
+  Outstanding:
+
+  - **`universe` → `scope`** -- half done. The shared-contract half shipped
+    (`scope_ids`, `Observation.scope_id`); `AnalysisContextBundle.universe_id` and
+    `identity.py`'s `id_universe` remain, as shrink-only allowlisted debt under a
+    pinned ceiling. discodon #2397. Binding eval-contracts before it lands still
+    means binding two names under provisional vocabulary.
+  - **The package still imports `discodon.llm`** -- discodon #2402 -- #2407. This is
+    now the only *unbounded* item on the list.
+  - **R10's remaining two axes** -- `representable` and `observable` have predicates
+    on the host profile and no production caller. discodon #2412, #2433, #2421.
+  - **R5's external-spend generalisation** -- new to this list. discodon's eval still
+    prices external calls from ONE card for one provider, with no provider identity
+    on the row, so a zero-money self-hosted call and an unpriced one read alike. The
+    search side of the vocabulary already exists here (`Spend.provider_unit`); the
+    consumer side does not. discodon #2447. It was neither built nor recorded as
+    deferred until 2026-08-24, which is why it appears now rather than earlier.
 
 **Checkpoint:** discodon running on the extracted packages; the eval
 contracts ratified per
