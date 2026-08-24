@@ -154,3 +154,36 @@ def test_the_epoch_bucket_the_pods_are_granted_is_the_one_epochclient_opens() ->
             f"and bump from this principal would block to its deadline and read as an "
             f"unreachable broker."
         )
+
+
+def test_the_checkpoint_l2_grant_matches_the_bucket_a_host_opens() -> None:
+    """The checkpointer's L2 grant and the bucket its opener materialises must agree.
+
+    ``ThreeTierCheckpointSaver`` takes ``l2_bucket`` as a SUFFIX (default
+    ``_DEFAULT_L2_BUCKET``) and the host opens it through
+    :meth:`~threetears.nats.kv.KvCapable.kv_bucket`, which layers ``{namespace}-``
+    over whatever it is given. So the bucket that exists is ``{ns}-checkpoints``,
+    and a grant naming ``checkpoints`` bare covers nothing.
+
+    Pinned as a PAIR, and read out of the saver's own default rather than
+    restated, for the reason this file exists: the mismatch is silent. A missing
+    KV grant does not raise -- the open blocks to its deadline and surfaces as an
+    unreachable broker -- so a host that soft-degrades its checkpointer build runs
+    with no checkpointer at all until the first graph call, which then fails as
+    something else entirely.
+    """
+    from threetears.langgraph.checkpoint import _DEFAULT_L2_BUCKET
+
+    assert "-" not in _DEFAULT_L2_BUCKET and "_" not in _DEFAULT_L2_BUCKET, (
+        f"{_DEFAULT_L2_BUCKET!r} looks like it has baked in a namespace of its own; it is a "
+        f"SUFFIX that kv_bucket prefixes."
+    )
+    granted = kv_bucket_names(build_permissions(Principal.AGENT_POD, agent_id=_AGENT_ID, pod_id=_POD_ID))
+    assert f"{_NAMESPACE}-{_DEFAULT_L2_BUCKET}" in granted, (
+        f"an agent pod is not granted the bucket its checkpointer L2 actually opens "
+        f"('{_NAMESPACE}-{_DEFAULT_L2_BUCKET}'); it holds {list(granted)}."
+    )
+    assert _DEFAULT_L2_BUCKET not in granted, (
+        f"the checkpoint grant is still the bare name '{_DEFAULT_L2_BUCKET}', which names a "
+        f"bucket no host opens through kv_bucket."
+    )

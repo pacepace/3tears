@@ -817,7 +817,18 @@ def _agent_pod(
             # UNSCOPED: ``checkpoints`` carries its OWN l2_key implementation
             # (``langgraph/checkpoint.py``), keyed by thread id with no scope segment. the same
             # accepted residual as ``{ns}_agent_config``.
-            JsResource.kv("checkpoints", scope=None, writable=True),
+            #
+            # NAMESPACE-PREFIXED, unlike ``{ns}_agent_config`` beside it, and the difference is
+            # in HOW each is opened rather than in what either is. ``AgentConfigKV`` builds its
+            # own name and opens it with a direct ``js.create_key_value``, which applies no
+            # prefix; the checkpointer's L2 is opened through ``KvCapable.kv_bucket``, which
+            # takes a SUFFIX and layers ``{namespace}-`` over it. This grant read ``checkpoints``
+            # bare, so it named a bucket nothing opens while the one every host actually
+            # materialises -- ``{ns}-checkpoints`` -- was granted to nobody. A missing KV grant
+            # does not raise: the open blocks to its deadline and reports an unreachable broker,
+            # so a host that wrapped its checkpointer build in a try/except (14-eng-ai-survey
+            # did) simply ran without a checkpointer until the first graph call failed.
+            JsResource.kv(f"{ns}-checkpoints", scope=None, writable=True),
             # memory extraction throttle: the agent's MemoryExtractor uses a
             # per-conversation SET-NX-with-TTL key in this bucket to rate-limit
             # extraction. without the grant the JS API calls are denied and
