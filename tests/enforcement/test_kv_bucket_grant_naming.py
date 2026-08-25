@@ -187,3 +187,24 @@ def test_the_checkpoint_l2_grant_matches_the_bucket_a_host_opens() -> None:
         f"the checkpoint grant is still the bare name '{_DEFAULT_L2_BUCKET}', which names a "
         f"bucket no host opens through kv_bucket."
     )
+
+
+def test_the_audit_stream_an_agent_consumes_is_the_one_it_is_granted() -> None:
+    """An agent that runs an audit consumer must be granted the stream it declares.
+
+    ``AGENT_POD`` is granted ``audit.tool.call`` as a PUBLISH subject, which is the
+    emitting half. A pod that also CONSUMES its own audit events calls
+    ``ensure_jetstream_stream`` on ``{ns}-audit``, and JetStream stream create/update
+    is a control-plane grant, not a subject grant -- so publish succeeding says
+    nothing about whether the consumer can bind.
+
+    Pinned because the failure is silent from the emitting side: the publishes keep
+    returning, the stream is never created, and every envelope the consumer was meant
+    to durably record is dropped.
+    """
+    granted = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_ID, pod_id=_POD_ID)
+    streams = [r.stream_name for r in granted.js_resources]
+    assert f"KV_{_NAMESPACE}-audit" not in streams, "the audit stream is a plain stream, not a KV bucket"
+    assert f"{_NAMESPACE}-audit" in streams, (
+        f"an agent pod is not granted the audit stream it declares ('{_NAMESPACE}-audit'); it holds {streams}."
+    )

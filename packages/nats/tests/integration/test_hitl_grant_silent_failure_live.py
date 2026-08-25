@@ -58,8 +58,13 @@ _TOOL = "tools.scrape-zone_alpha.1-0-0"
 #: the human-in-the-loop session both pods address. owner-routed on this key.
 _SESSION_KEY = "session-42"
 
-_POD_SERVING = "pod-serving"
-_POD_UNGRANTED = "pod-ungranted"
+#: pod identities are UUIDs, and that is a CONTRACT rather than a convenience:
+#: ``kv_key_scope_for`` derives a tool pod's L2 key scope from its id and REFUSES
+#: anything that is not a uuid, because a scope built from an arbitrary display
+#: name is not provably collision-free. these were slugs, so this whole module
+#: raised at permission-build time and never reached the broker it exists to test.
+_POD_SERVING = "01947100-0000-7000-8000-00000000fe01"
+_POD_UNGRANTED = "01947100-0000-7000-8000-00000000fe02"
 _HUB_CONN = "hub-1"
 
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential

@@ -844,6 +844,13 @@ def _agent_pod(
             # the long calls it makes. one stream, so one JetStream control-plane grant.
             JsResource.stream(f"{ns}-channels-deliver"),
             JsResource.stream(result_stream_name()),
+            # the audit stream this pod both PUBLISHES to (``audit.tool.call``, granted
+            # above) and CONSUMES from. An agent that runs its own audit consumer calls
+            # ``ensure_jetstream_stream`` on it, and without this grant the create and
+            # update are refused -- so the consumer never binds and every audit envelope
+            # it was meant to durably record is dropped. That failure is quiet: the
+            # publish side keeps succeeding, so audit looks healthy from the emitter.
+            JsResource.stream(f"{ns}-audit"),
             # the agent's OWN coordination buckets, each composed under ``scope`` so a
             # declaration can only ever reach this agent's space. LAST, so a reader sees the
             # platform's fixed grants above and this agent's variable ones below.
