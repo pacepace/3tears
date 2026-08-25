@@ -1,6 +1,6 @@
 # Eval extraction: requirements for discodon
 
-**Status:** Requirements -- 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening); R9 and R11 reconciled against the discodon Wave 2 rulings 2026-08-20
+**Status:** Requirements -- 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening); R9 and R11 reconciled against the discodon Wave 2 rulings 2026-08-20; **every per-requirement status re-checked against discodon's tree 2026-08-24** -- R8, R9 and R11 are now built, and R10 has two axes of four. **No requirement changed; only what is true of the consumer did.**
 **For:** discodon, next release
 **Why now:** the eval packages
 ([`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon))
@@ -74,8 +74,11 @@ Growing a ceiling is a two-line, diff-visible act.
 unclassified. Rename and deletion of a declared module fail; a new unclassified
 file is simply absent from every register, and absence is not a failure. Closing
 it requires asserting the classified set is total -- write that assertion first,
-while the module set is small (discodon is retrofitting it across ~35 files,
-#2409).
+while the module set is small. **Discodon did (#2409, closed 2026-08-21):** every
+`*.py` under `discodon/eval/` must appear in exactly one register, and an
+unclassified module now fails the canary by name rather than passing unlooked-at.
+The retrofit cost ~35 files at that size; a package cutting the assertion in on
+day one pays none of it.
 
 ## R2 -- eval owns its model base
 
@@ -209,6 +212,16 @@ units; and one that a zero-money provider (a self-hosted search) and a provider
 with no declared rate produce distinguishable rows rather than both reading as
 free.
 
+**Status: not built, now tracked** -- discodon #2447, filed 2026-08-24. Worth
+stating plainly, because this requirement had gone quiet: discodon still prices
+external calls from ONE card for one provider (`ExternalCallPricing`, resolved at
+launch from the research tool's `search_depth`), every external call lands in one
+anonymous `external` role, and a self-hosted zero-money call is indistinguishable
+from an unpriced one. A sibling issue (#2399) retires the duplicated credit table
+and leaves all of that standing, which is how the gap survived four days of Wave 2
+work without appearing in any plan or design as either built or deferred. The three
+tests above are that issue's acceptance list verbatim.
+
 ## R6 -- do NOT converge the eval cost cap onto `BudgetPort`
 
 **Property.** `EvalRunCostCap` keeps its current semantics: `check()` takes no
@@ -319,6 +332,14 @@ core and assert the bisect and confound surfaces return a well-formed empty
 answer rather than raising or reporting fabricated agreement; and a test that
 the shared default registry contains no name outside the shared core.
 
+**Status: built** -- discodon, 2026-08-24. `discodon/eval/host/sweepables.py` holds
+the classification and the algebra; `SHARED_CORE` holds only what every LLM product
+has; a registration declaring `apparatus` with no `confounds` prose is refused, in
+those terms -- *"a bare name is a label"*. The host extends rather than edits
+(`DISCODON_SWEEPABLE_REGISTRY = SHARED_CORE.extend(...)`), which is the shape to
+take. The wider rule landed too: the campaign field is `intended_repetitions`, and
+the caveat-kind enum is open to host-registered additions.
+
 ## R9 -- a swept component is identified by its content, not by a name in a host registry
 
 **Property.** The extracted notion of a swept component is content-addressed. A
@@ -403,6 +424,15 @@ downstream of a distinction the data model does not make.
 **Verify.** Two runs naming the same preset across an edit to that preset's
 content do not share a variant key; and a variant key can be computed for a
 component the host supplies as bytes, with no registry present.
+
+**Status: built** -- discodon, 2026-08-24. `prompt_overrides` is content-addressed
+by its resolved text, so the one component that could not travel now does, and the
+name-referenced debt register is empty under a ceiling of 0.
+`discodon/eval/host/values.py` carries `SweepableValue{content_hash, display,
+scale, raw?}` with `display` required and never derived from the hash, and `scale`
+in three kinds -- `nominal`, `ordinal(rank)`, `interval(value, unit?)` -- the
+interval deriving its own display. A design is authored by CONTENT and hashed
+server-side; an author never types a digest.
 
 ## R10 -- what is evaluable is declared per precondition, derived where it can be, and gates authoring
 
@@ -500,21 +530,27 @@ absent from the input registry is reported as uncontrollable without a second
 list being maintained; and the fidelity axis is covered by a test that the eval
 and production paths reach one construction function, not by an entry anywhere.
 
-**Status: one axis of four is built.** The fidelity axis exists in discodon and
+**Status: two axes of four are built** (re-checked 2026-08-24). The fidelity axis exists in discodon and
 works as prescribed -- production and eval reach one construction function, and
 `fidelity.py` proves it by **walking the source**, not by counting calls at
 runtime. A runtime assertion passes just as happily once a third path is added.
 The registry naming *which* pairs must converge is separated from the walker that
 proves convergence: the walker is what extracts, the registry is what stays.
 
-**Not built: the gate.** Representability, controllability and observability have
-no authoring-time refusal, and controllability cannot have one until R8's input
-registry exists -- R10 derives that map from the registry rather than maintaining a
-second list. Until then R10 is a description, which is the failure mode it names.
+**Controllability now gates, and it derived rather than duplicated.** R8's registry
+landed, and campaign authoring asks `HostProfile.controllable` and refuses a design
+declaring an axis the host has not registered, naming the axis and listing what IS
+registered -- before any run is launched. It asks the profile rather than re-reading
+the registry itself, so there is one authoritative answer to "is this controllable"
+and not two free to disagree. This is the derive-don't-maintain clause working as
+written: no second list exists.
 
-Tracked as discodon **#2412**, which carries the per-axis state and keeps R10's own
-constraints (derive rather than maintain; the unit is a precondition, not an area;
-fidelity stays a test and gains no map entry).
+**Still not built: representability and observability.** Both have predicates on the
+host profile and **no production caller**, which is the state most easily mistaken for
+done. Tracked as discodon **#2412** (the gate), with **#2433** and **#2421** on the two
+unreached predicates -- and #2412 keeps R10's own constraints (derive rather than
+maintain; the unit is a precondition, not an area; fidelity stays a test and gains no
+map entry).
 
 ## R11 -- the subject key declares the pooling boundary; the engine discloses the basis
 
@@ -566,10 +602,14 @@ dimension set.
 subjects with different keys never merge into one cell; a pooled composite renders
 with the dimension set it was computed over and is marked when that set is ragged.
 
-**Status: ruled** -- discodon C6 (`.prawduct/artifacts/eval-system.md`), 2026-08-20.
-The declaration replaces the blunt prohibition, with the three obligations above and the
-sequencing constraint intact: the disclosure ships before any pooling prohibition
-relaxes. What remains is build, not decision.
+**Status: built** -- discodon, 2026-08-24 (ruled as C6, `.prawduct/artifacts/eval-system.md`,
+2026-08-20). All three obligations, and the sequencing held: `ScoreRecord.dimension_basis`
+carries the basis and refuses a value arriving without one -- **and a basis arriving
+without a value** -- so the disclosure could not be half-landed. `SubjectSnapshot` carries
+`subject_id` and `subject_label` as separate `min_length=1` fields, so a host passing the
+display name into both makes the mistake visible in the data rather than absent from it.
+`subject_key_instabilities` warns at population level on one key under two labels or one
+label under two keys, classifying no single string. Take this shape.
 
 ## Two host norms that do not cross into the package
 
@@ -627,8 +667,10 @@ not discodon's.
   owes is the shape they are expressed in, so two consumers describe their gaps
   the same way.
 - The package cut itself, once R1 holds -- at which point the lift is mechanical.
-  R1's test holds in discodon today; its totality assertion belongs in the
-  package's own conformance suite, where the module set is still small.
+  R1's test holds in discodon today, **and so does its totality assertion** (#2409,
+  closed 2026-08-21): an unclassified module fails by name. The package still owes
+  the assertion in its own conformance suite, where the module set is still small
+  and cutting it in costs nothing.
 
 ---
 
