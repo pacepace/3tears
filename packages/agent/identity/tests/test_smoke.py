@@ -1,4 +1,4 @@
 def test_agent_identity_import():
     from threetears.agent.identity import __version__
 
-    assert __version__ == "0.27.0"
+    assert __version__ == "0.28.0"

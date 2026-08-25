@@ -1175,6 +1175,8 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
     CASCADE`` so the per-template column list goes with it.
     """
 
+    primary_key_column: str | tuple[str, ...] = ("customer_id", "id")
+
     @property
     def table_name(self) -> str:
         """return database table name.

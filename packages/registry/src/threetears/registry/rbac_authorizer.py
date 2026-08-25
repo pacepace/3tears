@@ -77,10 +77,35 @@ class RbacEvaluatorAuthorizer:
 
     platform built-in tools (``owner_agent_id=NULL``,
     ``customer_id=NULL``) require an explicit grant — the evaluator
-    does not special-case them. an admin seeds one assignment on
-    ``scope=all`` (or ``type_customer`` with ``namespace_type=tool``)
-    binding the "default tool access" group to the caller's customer.
-    this matches the shared-workspace pattern (no implicit grants on
+    does not special-case them.
+
+    a ``type_customer`` assignment bound to a real customer CANNOT
+    grant one. :meth:`~threetears.agent.acl.RoleAssignment.covers`
+    admits a ``type_customer`` scope only when
+    ``scope_customer_id == namespace.customer_id``, and these rows
+    carry ``customer_id=NULL``, so no assignment naming an actual
+    customer ever matches. seeding a "default tool access" group
+    against the caller's customer therefore grants nothing here,
+    however that group is populated.
+
+    the assignment shapes that DO cover such a namespace:
+
+    - ``scope=all`` — covers every namespace unconditionally;
+      platform admins only write rows of this shape.
+    - ``scope=namespace`` with ``scope_namespace_id`` set to the
+      tool's own namespace id — the per-tool grant, and the narrowest
+      one available.
+    - ``scope=type_customer`` with ``scope_namespace_type='tool'`` and
+      ``scope_customer_id`` left NULL — the NULL is what matches the
+      row's NULL ``customer_id``. despite the scope's name this is a
+      PLATFORM-scope assignment, not a per-customer one:
+      :class:`~threetears.agent.acl.RoleAssignmentCollection` derives
+      ``row_scope='platform'`` for exactly this shape, and it grants
+      the group every ``tool`` namespace on the platform.
+
+    agent-spun tools carry a real ``customer_id``, so the ordinary
+    per-customer ``type_customer`` grant does work for those. this
+    matches the shared-workspace pattern (no implicit grants on
     shared-type rows).
 
     :param acl_cache: shared :class:`AclCache` carrying loaders +

@@ -30,7 +30,7 @@ from threetears.core.cache.base import _CACHED_AT_COLUMN
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
-from threetears.core.entities.base import BaseEntity
+from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry, L2ScopeNotConfiguredError
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
@@ -300,6 +300,29 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: int
         """
         ...
+
+    @property
+    def emits_cas_fence(self) -> bool:
+        """whether EVERY L3 write this collection generates carries a CAS fence.
+
+        ``False`` by default, and for the ordinary collection it is the truth:
+        a save with ``original_timestamp=None`` is written unfenced, so a
+        ``save_to_store`` returning 0 means the backend chose not to write
+        (``ON CONFLICT DO NOTHING``, a no-op update) rather than "another
+        writer beat me".
+
+        a collection that fences unconditionally --
+        :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection`
+        over a ``TableSchema(cas_null_safe=True)`` -- overrides this to ``True``.
+        the framework then knows a 0 rowcount is a LOST RACE on every write
+        path, including the fire-and-forget ones that have no caller left to
+        return it to, and says so in the log instead of dropping it silently.
+
+        :return: whether a 0 rowcount from :meth:`save_to_store` always means
+            "lost the race"
+        :rtype: bool
+        """
+        return False
 
     @abstractmethod
     async def delete_from_store(self, entity_id: Any) -> None:
@@ -1091,7 +1114,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             await self._write_buffer.add(self.table_name, entity_id, data)
         else:
             try:
-                await self.save_to_store(data)
+                rows_affected = await self.save_to_store(data)
             except Exception as exc:
                 log.error(
                     "Background L3 write failed",
@@ -1103,6 +1126,26 @@ class BaseCollection(ABC, Generic[EntityT]):
                         }
                     },
                 )
+            else:
+                # This path is fire-and-forget: there is no caller left to
+                # hand a rowcount back to, and no exception is raised when a
+                # CAS fence rejects the write. On an unconditionally fenced
+                # collection that makes a 0 here a LOST WRITE -- L1 and L2
+                # already hold the new value while L3 kept the old one. Say
+                # so. (Left silent for unfenced collections, where 0 is the
+                # ordinary "DO NOTHING matched" outcome, not a loss.)
+                if rows_affected == 0 and self.emits_cas_fence:
+                    log.error(
+                        "Background L3 write lost its CAS race and was dropped; "
+                        "the sync item-assignment write path cannot retry -- use "
+                        "save_entity() with a retry loop on a cas_null_safe table",
+                        extra={
+                            "extra_data": {
+                                "entity_id": str(entity_id),
+                                "table": self.table_name,
+                            }
+                        },
+                    )
 
     def __contains__(self, entity_id: Any) -> bool:
         """Check if entity is in L1 cache."""
@@ -1258,19 +1301,18 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         self._set_span_table()
         data = entity.to_dict()
-        # composite-PK collections (eg. ``datasources`` keyed on
-        # ``(customer_id, id)`` after the v054 row_scope partition
-        # split) need a tuple key for ``_save_to_l2`` /
-        # ``_publish_invalidation`` -- ``BaseEntity.id`` only carries
-        # the singular ``primary_key_field`` value, so the framework
-        # rebuilds the composite from the on-the-wire payload here.
-        # single-PK collections short-circuit to ``entity.id`` to
-        # match the behaviour every existing caller already relies on.
-        pk_cols = self.primary_key_columns
-        if len(pk_cols) > 1:
-            entity_id: Any = tuple(data[col] for col in pk_cols)
-        else:
-            entity_id = entity.id
+        # The key is derived from the PAYLOAD, not from the entity's
+        # construction-time ``addressing_id``. Those agree whenever
+        # ``to_dict()`` reads the L1 row (that row is fetched BY the
+        # construction-time key), but diverge when ``to_dict()`` falls
+        # back to ``_changes`` -- no L1 backend wired, or the L1 row
+        # evicted -- and a pk column has since been written. Keying L2
+        # by the stale value while L3 takes the payload caches one
+        # partition's row under another's key, which is the exact
+        # cross-partition bleed the composite key exists to prevent.
+        # ``strict`` makes a payload missing a pk column raise here
+        # rather than silently addressing the scalar.
+        entity_id: Any = derive_addressing_id(entity.id, data, self, strict=True)
         original_timestamp = getattr(entity, "original_date_updated", None)
 
         now = datetime.now(UTC)
@@ -1347,7 +1389,10 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def reload_entity(self, entity: BaseEntity) -> None:
         """Reload entity from L3."""
         self._set_span_table()
-        entity_id = entity.id
+        # addressing_id, not id: on a composite-pk table the bare row id
+        # addresses nothing, and every tier below this line keys off the
+        # full tuple.
+        entity_id = entity.addressing_id
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         data = await self.fetch_from_store(entity_id)

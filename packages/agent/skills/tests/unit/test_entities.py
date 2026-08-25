@@ -18,6 +18,7 @@ from uuid import UUID
 
 from uuid_utils import uuid7
 
+from threetears.core.testing import entity_collection_stub
 from threetears.agent.skills.entities import (
     AgentSkillEntity,
     AgentSkillInvocationEntity,
@@ -42,9 +43,10 @@ class TestAgentSkillEntity:
         assert AgentSkillEntity.primary_key_field == "skill_id"
 
     def test_composite_id_set_when_both_columns_present(self) -> None:
-        """``id`` returns the ``(agent_id, skill_id)`` composite tuple."""
+        """the addressing key is the ``(agent_id, skill_id)`` tuple."""
         agent_id = _new_uuid()
         skill_id = _new_uuid()
+        coll, _cache = entity_collection_stub(("agent_id", "skill_id"))
         entity = AgentSkillEntity(
             {
                 "agent_id": agent_id,
@@ -66,8 +68,10 @@ class TestAgentSkillEntity:
                 "date_created": _now(),
                 "date_updated": _now(),
             },
+            collection=coll,
         )
-        assert entity.id == (agent_id, skill_id)
+        assert entity.addressing_id == (agent_id, skill_id)
+        assert entity.id == skill_id
 
     def test_field_accessors_round_trip(self) -> None:
         """Property getters return the values stored at construction."""
@@ -210,9 +214,10 @@ class TestAgentSkillInvocationEntity:
         assert AgentSkillInvocationEntity.primary_key_field == "invocation_id"
 
     def test_composite_id_set_when_both_columns_present(self) -> None:
-        """``id`` returns the ``(agent_id, invocation_id)`` composite tuple."""
+        """the addressing key is the ``(agent_id, invocation_id)`` tuple."""
         agent_id = _new_uuid()
         invocation_id = _new_uuid()
+        coll, _cache = entity_collection_stub(("agent_id", "invocation_id"))
         entity = AgentSkillInvocationEntity(
             {
                 "agent_id": agent_id,
@@ -223,8 +228,10 @@ class TestAgentSkillInvocationEntity:
                 "invocation_source": "invoke",
                 "invoked_at": _now(),
             },
+            collection=coll,
         )
-        assert entity.id == (agent_id, invocation_id)
+        assert entity.addressing_id == (agent_id, invocation_id)
+        assert entity.id == invocation_id
 
     def test_field_accessors_round_trip(self) -> None:
         """Every property getter returns the construction value."""

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-epoch"
-version = "0.27.0"
+version = "0.28.0"
 description = "Generation-stamped config epochs with NATS broadcast and per-message echo for cross-pod cache reload coherence"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -21,11 +21,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.27.0,<0.28.0",
+    "3tears>=0.28.0,<0.29.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
-    "3tears-nats[client]>=0.27.0,<0.28.0",
-    "3tears-observe>=0.27.0,<0.28.0",
+    "3tears-nats[client]>=0.28.0,<0.29.0",
+    "3tears-observe>=0.28.0,<0.29.0",
     "pydantic>=2",
     "uuid-utils",  # uuid7 bucket-identity token (epoch.client)
 ]

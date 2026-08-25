@@ -2,6 +2,12 @@
 
 Tests the serialization helpers, protocol interactions, and sync-method guards.
 Full integration tests require a Postgres instance and are in the host app.
+
+Every saver here is built on one shared unscoped :class:`CheckpointScope`, so
+this file keeps pinning the un-tenanted keyspace exactly as it did before the
+scope parameter existed. The customer dimension has its own suite in
+``test_checkpoint_tenancy.py``; that split is what proves the unscoped path did
+not move.
 """
 
 from __future__ import annotations
@@ -16,8 +22,13 @@ import pytest
 from langgraph.checkpoint.base import WRITES_IDX_MAP
 
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import AsyncpgPoolAdapter
 from threetears.langgraph.serde import UUIDSafeSerializer
+
+#: built once at import so the warning it emits lands outside every ``caplog``
+#: block in this file.
+_UNSCOPED = CheckpointScope.unscoped(reason="tests pin the un-tenanted keyspace")
 
 
 def _make_executor() -> Any:
@@ -69,7 +80,7 @@ class TestCacheSerializationHelpers:
     """Test serialize/deserialize checkpoint tuple for cache storage."""
 
     def _make_saver(self) -> ThreeTierCheckpointSaver:
-        return ThreeTierCheckpointSaver(executor=_make_executor())
+        return ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
     def test_roundtrip(self):
         saver = self._make_saver()
@@ -105,7 +116,7 @@ class TestL1Degradation:
         l1 = AsyncMock()
         l1.get.side_effect = RuntimeError("L1 down")
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, scope=_UNSCOPED)
 
         result = await saver.l1_get("thread-1", "")
         assert result is None
@@ -114,7 +125,7 @@ class TestL1Degradation:
         l1 = AsyncMock()
         l1.put.side_effect = RuntimeError("L1 down")
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, scope=_UNSCOPED)
 
         # Should not raise
         await saver.l1_put("thread-1", "", b"data")
@@ -123,7 +134,7 @@ class TestL1Degradation:
         l1 = AsyncMock()
         l1.delete.side_effect = RuntimeError("L1 down")
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, scope=_UNSCOPED)
 
         await saver.l1_delete("thread-1")
 
@@ -165,7 +176,7 @@ class TestCrashRecoveryWritesDegrade:
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         with caplog.at_level(logging.WARNING, logger=self._LOGGER):
             await saver.aput_writes(self._CONFIG, [("channel-a", "value-a")], "task-1")
@@ -188,7 +199,7 @@ class TestCrashRecoveryWritesDegrade:
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         with caplog.at_level(logging.WARNING, logger=self._LOGGER), pytest.raises(RuntimeError, match="timeout"):
             await saver.aput_writes(self._CONFIG, [(channel, "value")], "task-1")
@@ -204,7 +215,7 @@ class TestCrashRecoveryWritesDegrade:
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         with pytest.raises(RuntimeError, match="timeout"):
             await saver.aput_writes(
@@ -222,7 +233,7 @@ class TestCrashRecoveryWritesDegrade:
         ``configurable: None`` is included because a ``.get`` default does not
         cover it -- the next lookup still raises AttributeError.
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         await saver.aput_writes(config, [("channel-a", "value-a")], "task-1")
 
@@ -235,7 +246,7 @@ class TestCrashRecoveryWritesDegrade:
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("null value in column violates not-null constraint")
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         with caplog.at_level(logging.WARNING, logger=self._LOGGER):
             await saver.aput_writes({"configurable": {}}, [("channel-a", "value-a")], "task-1")
@@ -251,7 +262,7 @@ class TestCrashRecoveryWritesDegrade:
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         with pytest.raises(RuntimeError, match="timeout"):
             await saver.aput_writes({"configurable": {}}, [("__interrupt__", "approve?")], "task-1")
@@ -266,7 +277,7 @@ class TestCrashRecoveryWritesDegrade:
         """
         executor = _make_executor()
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         await saver.aput_writes(
             self._CONFIG,
@@ -288,7 +299,7 @@ class TestCrashRecoveryWritesDegrade:
         """an ordinary channel keeps the row already stored, per the reference saver."""
         executor = _make_executor()
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         await saver.aput_writes(self._CONFIG, [("channel-a", "value-a")], "task-1")
 
@@ -300,7 +311,7 @@ class TestCrashRecoveryWritesDegrade:
         """the reserved negative index is what makes a control row upsertable."""
         executor = _make_executor()
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
 
@@ -317,7 +328,7 @@ class TestCrashRecoveryWritesDegrade:
         """
         l1, l2 = AsyncMock(), AsyncMock()
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
 
         await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
 
@@ -337,7 +348,7 @@ class TestCrashRecoveryWritesDegrade:
         """
         l1, l2 = AsyncMock(), AsyncMock()
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
 
         await saver.aput_writes(
             {"configurable": {"thread_id": "t-1", "checkpoint_ns": "inner", "checkpoint_id": "c-1"}},
@@ -359,7 +370,7 @@ class TestCrashRecoveryWritesDegrade:
         l1, l2 = AsyncMock(), AsyncMock()
         l2.delete.side_effect = RuntimeError("NATS request failed: nats: timeout")
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
 
         with pytest.raises(RuntimeError, match="timeout"):
             await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
@@ -369,7 +380,7 @@ class TestCrashRecoveryWritesDegrade:
         l1, l2 = AsyncMock(), AsyncMock()
         l1.delete.side_effect = RuntimeError("L1 down")
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
 
         with pytest.raises(RuntimeError, match="L1 down"):
             await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
@@ -378,7 +389,7 @@ class TestCrashRecoveryWritesDegrade:
         """invalidation is scoped to control channels, not every write."""
         l1, l2 = AsyncMock(), AsyncMock()
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
 
         await saver.aput_writes(self._CONFIG, [("channel-a", "value-a")], "task-1")
 
@@ -393,7 +404,7 @@ class TestCrashRecoveryWritesDegrade:
         """
         executor = _make_executor()
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         class _Unserializable:
             def __reduce__(self):
@@ -413,7 +424,7 @@ class TestCrashRecoveryWritesDegrade:
         """
         executor = _make_executor()
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         await saver.aput_writes(
             self._CONFIG,
@@ -433,7 +444,7 @@ class TestCrashRecoveryWritesDegrade:
         """no rows to persist is not a failure to persist rows."""
         executor = _make_executor()
 
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         await saver.aput_writes(self._CONFIG, [], "task-1")
 
@@ -447,13 +458,13 @@ class TestL2Degradation:
         l2 = AsyncMock()
         l2.get.side_effect = RuntimeError("L2 down")
 
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
 
         result = await saver.l2_get("thread-1", "")
         assert result is None
 
     async def testl2_key_with_ns(self):
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert saver.l2_key("thread-1", "") == "thread-1"
         assert saver.l2_key("thread-1", "ns1") == "thread-1.ns1"
@@ -463,14 +474,14 @@ class TestNoCacheProvided:
     """When no L1/L2 provided, all cache ops are no-ops."""
 
     async def test_l1_ops_are_noop(self):
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert await saver.l1_get("t", "") is None
         await saver.l1_put("t", "", b"data")  # no-op
         await saver.l1_delete("t")  # no-op
 
     async def test_l2_ops_are_noop(self):
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert await saver.l2_get("t", "") is None
         await saver.l2_put("t", "", b"data")  # no-op
@@ -481,31 +492,31 @@ class TestSyncMethodsRaise:
     """Sync methods raise NotImplementedError."""
 
     def test_get_tuple_raises(self):
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             saver.get_tuple({"configurable": {"thread_id": "t1"}})
 
     def test_list_raises(self):
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             list(saver.list(None))
 
     def test_put_raises(self):
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             saver.put({"configurable": {"thread_id": "t1"}}, {}, {}, {})
 
     def test_put_writes_raises(self):
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             saver.put_writes({"configurable": {"thread_id": "t1"}}, [], "task-1")
 
     def test_delete_thread_raises(self):
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             saver.delete_thread("t1")
@@ -517,7 +528,7 @@ class TestProtocolFlow:
     async def test_aput_invokes_executor_execute(self):
         """aput() writes the checkpoint INSERT via executor.execute."""
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         checkpoint = {
             "id": "cp-1",
@@ -540,7 +551,7 @@ class TestProtocolFlow:
     async def test_aget_tuple_returns_none_when_executor_empty(self):
         """aget_tuple() returns None when executor.fetchrow returns None."""
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         result = await saver.aget_tuple(
             {"configurable": {"thread_id": "thread-404", "checkpoint_ns": ""}},
@@ -552,7 +563,7 @@ class TestProtocolFlow:
     async def test_adelete_thread_issues_two_delete_statements(self):
         """adelete_thread() runs DELETE on writes and checkpoints tables."""
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         await saver.adelete_thread("thread-42")
 
@@ -566,7 +577,7 @@ class TestProtocolFlow:
         """flush_callback is invoked after aput() writes succeed."""
         executor = _make_executor()
         flush = AsyncMock(return_value=3)
-        saver = ThreeTierCheckpointSaver(executor=executor, flush_callback=flush)
+        saver = ThreeTierCheckpointSaver(executor=executor, flush_callback=flush, scope=_UNSCOPED)
 
         checkpoint = {
             "id": "cp-1",
@@ -640,7 +651,7 @@ class TestAsyncpgPoolAdapter:
         conn.fetchrow = AsyncMock(return_value=None)
         pool = _build_pool_with_conn(conn)
 
-        saver = ThreeTierCheckpointSaver(executor=AsyncpgPoolAdapter(pool))
+        saver = ThreeTierCheckpointSaver(executor=AsyncpgPoolAdapter(pool), scope=_UNSCOPED)
 
         checkpoint = {
             "id": "cp-1",

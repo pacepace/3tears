@@ -40,6 +40,19 @@ design notes
 - **rate-limited error logging**: identical errors within
   :data:`_ERROR_LOG_RATE_LIMIT_SECONDS` log at debug; distinct errors
   log at error. prevents the 60-DNS-error-per-minute incident pattern.
+  a PERMISSIONS VIOLATION gets its own line naming the subject, the
+  refused operation, and the consequence -- it is the only error here
+  that leaves the connection up and raises to nobody, so a refused
+  subscribe otherwise reads as one anonymous error while the
+  subscription it belonged to silently receives nothing forever. its
+  rate-limit key carries the subject, so a second dead subject is
+  never suppressed behind the first. the same facts also go out
+  STRUCTURED (``extra={"extra_data": ...}``, the platform convention
+  the :mod:`threetears.observe` formatter serialises to JSON) as
+  ``subject`` / ``operation`` / ``subject_case`` / ``error``, so a dead
+  subject can be alerted on and grouped rather than only read. see
+  :data:`_SUBJECT_CASE_VERBATIM` for why the subject's case is
+  qualified rather than presented as exact.
 - **deadletter dispatch**: by default uncaught exceptions in subscribe
   callbacks publish the original message + a structured envelope to
   ``{ns}.deadletter.{original_path}``. opt out per-subscribe with
@@ -53,10 +66,11 @@ import asyncio
 import json
 import math
 import random
+import re
 import time
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, TypeVar
 
 import nats
 from nats.aio.client import Client as _NatsPyClient
@@ -279,6 +293,74 @@ DEFAULT_JETSTREAM_PUBLISH_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
 
 #: dedup window for error-callback rate limiting.
 _ERROR_LOG_RATE_LIMIT_SECONDS: Final[float] = 10.0
+
+#: the phrase every NATS server permissions refusal carries, matched lowercased. nats-py lowercases
+#: the whole ``-ERR`` payload in its protocol parser before dispatching to ``error_cb``, so the
+#: comparison is done on a lowercased copy rather than assuming either case.
+_PERMISSIONS_VIOLATION_PHRASE: Final[str] = "permissions violation"
+
+#: decomposes the server's refusal into the operation + the subject it names. The server emits
+#: ``Permissions Violation for Subscription to "<subject>"`` (optionally ``... using queue "<q>"``)
+#: and ``Permissions Violation for Publish to "<subject>"``; the subject is always the FIRST quoted
+#: token, so one pattern covers every variant. Case-insensitive so it survives a nats-py that stops
+#: lowercasing the payload.
+_PERMISSIONS_VIOLATION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'permissions violation for (?P<operation>subscription|publish) to "(?P<subject>[^"]+)"',
+    re.IGNORECASE,
+)
+
+#: server wording -> the word an operator reads. "subscription" becomes "subscribe" so the two
+#: refusals read as the two operations a subject grant is split into.
+_VIOLATION_OPERATIONS: Final[dict[str, str]] = {"subscription": "subscribe", "publish": "publish"}
+
+#: what a refusal actually COSTS, per operation -- the half of the message that says a capability
+#: just went dead rather than merely that an error occurred.
+_VIOLATION_CONSEQUENCES: Final[dict[str, str]] = {
+    "subscribe": (
+        "That subscription stays open on this client and will receive NOTHING, from now on, "
+        "with no further error and no exception anywhere -- the capability it serves is dead "
+        "until the grant exists."
+    ),
+    "publish": (
+        "That message was DROPPED and reached no subscriber; the publish call itself did not "
+        "raise, so the sender believes it succeeded."
+    ),
+}
+
+#: placeholders for a violation whose wording :data:`_PERMISSIONS_VIOLATION_PATTERN` cannot
+#: decompose. Reporting the loss with placeholders beats degrading to an anonymous "NATS error".
+#: they are for the HUMAN-READABLE sentence only -- the structured fields report ``None``, because a
+#: placeholder in a queryable field is a value a log pipeline would group and alert on as if it were
+#: a real subject.
+_UNKNOWN_OPERATION: Final[str] = "operation"
+_UNKNOWN_SUBJECT: Final[str] = "<not reported in the server's wording>"
+_UNKNOWN_CONSEQUENCE: Final[str] = (
+    "The refused operation fails SILENTLY: the connection stays open and nothing is raised to any "
+    "caller, so whatever it served is dead until the grant exists."
+)
+
+#: how far the reported subject's CASE can be trusted. nats-py lowercases the WHOLE ``-ERR`` payload
+#: in its protocol parser before dispatching to ``error_cb``, so a subject recovered from an
+#: all-lowercase payload may have been mangled on the way here. That is harmless for a HITL subject
+#: (sha256 hex, uuids -- already lowercase) and NOT harmless for ``$KV.``, ``$JS.API.`` or
+#: ``_INBOX_`` subjects, where an operator pasting the reported string into a grant list would get
+#: one that never matches. The subject is therefore reported EXACTLY as received, with a companion
+#: field saying whether that case is the server's or the client parser's -- rather than being
+#: silently "corrected", which would invent a case nothing observed.
+#:
+#: The flag is DERIVED, not assumed: uppercase anywhere in the payload proves the parser did not
+#: lowercase it, so a future nats-py that stops doing so reports ``verbatim`` with no code change.
+_SUBJECT_CASE_VERBATIM: Final[str] = "verbatim"
+_SUBJECT_CASE_LOWERCASED: Final[str] = "lowercased-by-nats-py-parser"
+_SUBJECT_CASE_NOT_REPORTED: Final[str] = "not-reported"
+
+#: the caveat appended to the human-readable line when the case cannot be trusted. an operator
+#: reading the sentence rather than the JSON must be warned BEFORE pasting the subject into a grant.
+_LOWERCASED_SUBJECT_CAVEAT: Final[str] = (
+    "The subject was reported by a client parser that lowercases the whole server error, so its case "
+    "may not be the server's -- verify before pasting it into a grant list (this matters for $KV., "
+    "$JS.API. and _INBOX_ subjects; HITL digests and uuids are lowercase already)."
+)
 
 
 def _full_jitter_backoff(
@@ -3027,31 +3109,125 @@ def _is_outbound_overflow(exc: Exception) -> bool:
     return "outbound buffer limit exceeded" in str(exc).lower()
 
 
+class _ViolationDetail(NamedTuple):
+    """what a server permissions refusal names, decomposed, with the case of the subject qualified.
+
+    ``operation`` and ``subject`` are ``None`` when the server's wording could not be decomposed:
+    the violation is still reported, but the structured fields say "not recovered" rather than
+    carrying a human placeholder a log pipeline would treat as a real subject.
+    """
+
+    operation: str | None
+    subject: str | None
+    subject_case: str
+
+
+def _permissions_violation(exc: Exception) -> _ViolationDetail | None:
+    """the operation, subject and subject-case a server permissions violation names, or ``None``.
+
+    A permissions violation is the one error reaching this callback that leaves the connection UP
+    (nats-py's ``Client._process_err`` returns before ``_close`` for it) and that no caller ever
+    observes, so it is the one that has to be decomposed rather than logged whole. The server text
+    is matched CASE-INSENSITIVELY against the original string rather than a lowercased copy: nats-py
+    currently lowercases the whole ``-ERR`` payload in its protocol parser before dispatch, but a
+    version that stops doing so should hand back the subject in its true case, not a mangled one.
+
+    Because that lowercasing cannot be undone, the subject is reported EXACTLY as received and
+    qualified by :attr:`_ViolationDetail.subject_case`: uppercase anywhere in the payload proves the
+    parser left it alone (:data:`_SUBJECT_CASE_VERBATIM`), an all-lowercase payload is
+    indistinguishable from a mangled one (:data:`_SUBJECT_CASE_LOWERCASED`). Guessing the true case
+    back would invent a value nothing observed.
+
+    When the phrase is present but the wording cannot be decomposed -- a future NATS rewording --
+    this still reports a violation, with ``None`` ids, rather than degrading to an anonymous error.
+
+    :param exc: the exception nats-py surfaced to the error callback
+    :ptype exc: Exception
+    :return: the decomposed violation, or ``None`` when ``exc`` is not a permissions violation
+    :rtype: _ViolationDetail | None
+    """
+    result: _ViolationDetail | None = None
+    text = str(exc)
+    if _PERMISSIONS_VIOLATION_PHRASE in text.lower():
+        match = _PERMISSIONS_VIOLATION_PATTERN.search(text)
+        if match is None:
+            result = _ViolationDetail(None, None, _SUBJECT_CASE_NOT_REPORTED)
+        else:
+            operation = _VIOLATION_OPERATIONS[match.group("operation").lower()]
+            case = _SUBJECT_CASE_VERBATIM if text != text.lower() else _SUBJECT_CASE_LOWERCASED
+            result = _ViolationDetail(operation, match.group("subject"), case)
+    return result
+
+
 async def _on_error(exc: Exception) -> None:
     """nats-py error callback with rate-limited logging.
 
-    A permissions violation is logged as a remediation instead of as an error
-    string. It is the one condition here that arrives with the connection still
-    UP -- ``nats-py``'s ``_process_err`` closes the connection for every other
-    ``-ERR`` but returns early for this one -- so nothing downstream will
-    re-report it, and the operation it refused will resurface much later as a
-    timeout that reads like an unreachable broker. This callback is the only
-    place the truth is available. See :mod:`threetears.nats._diagnostics`.
+    A PERMISSIONS VIOLATION is singled out because it is otherwise INVISIBLE. It is the one
+    condition here that arrives with the connection still UP -- ``nats-py``'s ``_process_err``
+    closes the connection for every other ``-ERR`` but returns early for this one -- and nothing
+    is raised to any caller, so nothing downstream will re-report it. A refused SUBSCRIBE leaves a
+    live client-side subscription that will never receive a message and never complain, and a
+    refused JetStream request is simply never answered, resurfacing much later as a timeout that
+    reads like an unreachable broker. This callback is the only place the truth is available.
+
+    The line is therefore built from BOTH halves of that truth:
+
+    - the REMEDY, from :mod:`threetears.nats._diagnostics`, which recognises a ``$KV`` subject and
+      names the grant declaration that is missing rather than only the wire subject; and
+    - the DECOMPOSITION -- which operation was refused, on which subject, and what that costs --
+      because a remedy alone does not say whether a publish was dropped or a subscription went
+      permanently deaf, and the subject's case is only trustworthy under the condition
+      :data:`_SUBJECT_CASE_VERBATIM` documents.
+
+    Rate limiting keeps DISTINCT SUBJECTS distinct: the key carries the subject, so a second dead
+    subject is never suppressed behind the first (each one is a different capability lost, not a
+    repeat of the same error). Only the same subject repeating is collapsed.
+
+    This is observability only. Every error path here still logs and CONTINUES, because the
+    reconnect and degrade paths depend on that.
 
     :param exc: exception from nats-py client
     :ptype exc: Exception
     :return: nothing
     :rtype: None
     """
-    key = f"{type(exc).__name__}:{exc}"
+    violation = _permissions_violation(exc)
+    if violation is None:
+        key = f"{type(exc).__name__}:{exc}"
+    else:
+        key = f"{_PERMISSIONS_VIOLATION_PHRASE}:{violation.operation}:{violation.subject}"
     now = time.monotonic()
     last = _last_error_log.get(key, 0.0)
     if now - last >= _ERROR_LOG_RATE_LIMIT_SECONDS:
-        remedy = permissions_violation_remedy(exc)
-        if remedy is not None:
-            log.error(remedy, extra={"extra_data": {"nats_error": str(exc)}})
-        else:
+        if violation is None:
             log.error("NATS error: %s", exc)
+        else:
+            operation = violation.operation or _UNKNOWN_OPERATION
+            caveat = "" if violation.subject_case != _SUBJECT_CASE_LOWERCASED else f" {_LOWERCASED_SUBJECT_CAVEAT}"
+            # the remedy leads because it names the FIX (and, for a ``$KV`` subject, the bucket and
+            # the `js_resources` declaration that grants it); the decomposition follows because the
+            # remedy does not say which operation died or what that costs. the remedy already ends
+            # with the server's own words, so the raw error is carried once, not twice.
+            # ``_permissions_violation`` and ``permissions_violation_remedy`` key off the SAME
+            # phrase, so a decomposed violation always has a remedy -- the fallback exists only so a
+            # future divergence degrades to a shorter line instead of logging ``None``.
+            remedy = permissions_violation_remedy(exc) or f"NATS PERMISSIONS VIOLATION. Server said: {exc}"
+            log.error(
+                "%s -- REFUSED OPERATION: the server refused this connection's %s of subject %s. %s%s",
+                remedy,
+                operation,
+                violation.subject or _UNKNOWN_SUBJECT,
+                _VIOLATION_CONSEQUENCES.get(operation, _UNKNOWN_CONSEQUENCE),
+                caveat,
+                extra={
+                    "extra_data": {
+                        "subject": violation.subject,
+                        "operation": violation.operation,
+                        "subject_case": violation.subject_case,
+                        "error": str(exc),
+                    }
+                },
+            )
         _last_error_log[key] = now
     else:
         log.debug("NATS error (rate-limited duplicate): %s", exc)

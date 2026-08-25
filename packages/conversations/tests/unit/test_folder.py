@@ -25,6 +25,7 @@ from uuid import uuid7
 from threetears.conversations.collection import ConversationsCollection
 from threetears.conversations.entity import Conversation
 from threetears.conversations.folder_collection import FolderCollection
+from threetears.core.testing import entity_collection_stub
 from threetears.conversations.folder_entity import Folder
 from threetears.core.collections.flush import FlushStrategy
 
@@ -316,11 +317,19 @@ class TestFolderEntityIdentity:
         assert isinstance(entity.customer_id, UUID)
         assert isinstance(entity.user_id, UUID)
 
-    def test_id_returns_composite_pk_tuple(self) -> None:
-        """id property surfaces the (agent_id, folder_id) tuple."""
+    def test_id_returns_the_bare_folder_id(self) -> None:
+        """id surfaces the scalar row id named by ``primary_key_field``."""
         data = _sample_folder_data()
-        entity = Folder(data)
-        assert entity.id == (data["agent_id"], data["folder_id"])
+        coll, _cache = entity_collection_stub(("agent_id", "folder_id"))
+        entity = Folder(data, is_new=True, collection=coll)
+        assert entity.id == data["folder_id"]
+
+    def test_addressing_id_is_the_composite_tuple(self) -> None:
+        """the tier-addressing key is ``(agent_id, folder_id)``, in order."""
+        data = _sample_folder_data()
+        coll, _cache = entity_collection_stub(("agent_id", "folder_id"))
+        entity = Folder(data, is_new=True, collection=coll)
+        assert entity.addressing_id == (data["agent_id"], data["folder_id"])
 
 
 class TestFolderEntityValueProperties:

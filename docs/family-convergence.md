@@ -397,18 +397,20 @@ eval-run's judge primitives once they land; and the eval measure registry must
 disambiguate its naming from the unrelated BI measures in
 `datasources.definition`.
 
-**Open against this section as of 2026-08-20** -- each blocks a named thing. The
-first two were the contract's open decisions and are now ruled; what is left of them
-is build:
+**Open against this section, re-checked against discodon's tree 2026-08-24** -- each
+blocks a named thing. The list was written on 2026-08-20 while discodon's Wave 2 was
+mid-flight, and four of its six rows have since closed. **Take the shipped shapes as the
+contract**: they are what a real consumer built, and cutting the packages against the
+2026-08-20 reading would mint shapes nobody has run.
 
-| Gap | Blocks | Where it is decided |
+| Gap | Blocks | Status |
 |---|---|---|
-| `SweepableValue` carries no `display` or `scale` | a readable memo, and a true-spacing axis, for any consumer whose levers are scalars | **ruled** -- R9; discodon Wave 2 design §5.2 |
-| No declared pooling boundary; a pooled composite carries no dimension basis | evaluating subjects that have no self-description | **ruled** -- R11; discodon C6 |
-| `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | discodon, Wave 2 |
-| Package still imports `discodon.llm` | R1 holding for the analysis generator | discodon, #2402 -- #2407 |
-| R8's input registry not built | R10's controllability map, which derives from it | discodon, Wave 2 |
-| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | discodon #2412 |
+| `SweepableValue` carries no `display` or `scale` | a readable memo, and a true-spacing axis, for any consumer whose levers are scalars | **Built** -- `discodon/eval/host/values.py`: `content_hash`, a required `display` never derived from the hash, and `scale` in three kinds (`nominal`, `ordinal(rank)`, `interval(value, unit?)`, the last deriving its own display). R9's shape as written |
+| No declared pooling boundary; a pooled composite carries no dimension basis | evaluating subjects that have no self-description | **Built** -- all three R11 obligations. `SubjectSnapshot` carries `subject_id` and `subject_label` as separate `min_length=1` fields; `ScoreRecord.dimension_basis` refuses a value that arrives without its basis, and a basis that arrives without a value; `subject_key_instabilities` warns at population level on one key under two labels or one label under two keys |
+| `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | **Half built** -- the shared-contract half shipped (`EvalAnalysis.scope_ids`, `Observation.scope_id`). What is left is `AnalysisContextBundle.universe_id` and `identity.py`'s `id_universe` parameter, held as shrink-only allowlisted debt under a pinned ceiling rather than as unrecorded coupling. discodon #2397, whose own scope-out declares the run/storage-layer `id_universe` host-resident |
+| Package still imports `discodon.llm` | R1 holding for the analysis generator | **Open**, as recorded -- discodon #2402 -- #2407 |
+| R8's input registry not built | R10's controllability map, which derives from it | **Built** -- `discodon/eval/host/sweepables.py`: the `lever` / `apparatus` / `label` classification, a `SHARED_CORE` holding only what every LLM product has, and a registration that refuses an `apparatus` input stating no `confounds` prose (*"a bare name is a label"*). The host extends it rather than editing it -- `DISCODON_SWEEPABLE_REGISTRY = SHARED_CORE.extend(...)` |
+| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | **Two axes of four** -- fidelity as before, and **controllability now gates**: campaign authoring asks `HostProfile.controllable` and refuses a design declaring an axis the host has not registered, naming it. `representable` and `observable` have no production caller. discodon #2412, with #2433 and #2421 on the two unreached predicates |
 
 ### 4.3 Prompt management -- identity from discodon; durable tier from scriob's pattern
 

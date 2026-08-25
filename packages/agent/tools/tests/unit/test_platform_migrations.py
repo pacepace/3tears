@@ -17,6 +17,7 @@ import pytest
 
 from threetears.agent.tools.platform_migrations import (
     PACKAGE_NAME,
+    add_face_rest_columns,
     add_tool_eligibility_columns,
     add_tool_face_columns,
     register,
@@ -129,20 +130,20 @@ class TestRegisterPlatformMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    def test_register_attaches_v001_and_v002(self) -> None:
-        """v001 (eligibility) + v002 (face flags) are registered."""
+    def test_register_attaches_v001_through_v003(self) -> None:
+        """v001 (eligibility) + v002 (face flags) + v003 (REST face)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2}
+        assert set(pkg.versions.keys()) == {1, 2, 3}
 
     async def test_apply_in_isolation_runs_all_versions(self) -> None:
-        """apply_package walks v001 then v002 against the fake store."""
+        """apply_package walks v001, v002 then v003 against the fake store."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_package(store, PACKAGE_NAME)
-        assert first_count == 2
-        assert [row["version"] for row in store.migrations_rows] == [1, 2]
+        assert first_count == 3
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3]
 
 
 class TestAddToolEligibilityColumnsMigration:
@@ -265,6 +266,59 @@ class TestAddToolFaceColumnsMigration:
         """direct invocation must NOT write to ``_schema_migrations``."""
         store = _FakeDataStore()
         await add_tool_face_columns(store)  # type: ignore[arg-type]
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
+
+
+class TestAddFaceRestColumnsMigration:
+    """direct invocation of the v003 REST-face callable."""
+
+    async def test_issues_two_alter_statements(self) -> None:
+        """one ``ADD COLUMN IF NOT EXISTS`` for the flag, one for the shape."""
+        store = _FakeDataStore()
+        await add_face_rest_columns(store)  # type: ignore[arg-type]
+        assert len(store.executed) == 2
+
+    async def test_alter_targets_face_rest_with_default_false(self) -> None:
+        """``face_rest BOOLEAN NOT NULL DEFAULT FALSE`` -- every face is
+        explicit opt-in."""
+        store = _FakeDataStore()
+        await add_face_rest_columns(store)  # type: ignore[arg-type]
+        joined = _joined_sql(store)
+        assert re.search(
+            r"ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS face_rest BOOLEAN NOT NULL DEFAULT FALSE",
+            joined,
+        )
+
+    async def test_alter_targets_declaration_column_as_nullable_jsonb(self) -> None:
+        """the authored declaration is JSONB and NULL means 'no REST face'."""
+        store = _FakeDataStore()
+        await add_face_rest_columns(store)  # type: ignore[arg-type]
+        joined = _joined_sql(store)
+        assert re.search(
+            r"ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS face_rest_declaration JSONB",
+            joined,
+        )
+        assert "face_rest_declaration JSONB NOT NULL" not in joined
+
+    async def test_statements_unqualified_so_search_path_governs(self) -> None:
+        """no statement carries an explicit ``platform.`` schema prefix."""
+        store = _FakeDataStore()
+        await add_face_rest_columns(store)  # type: ignore[arg-type]
+        joined = _joined_sql(store)
+        assert "platform.namespaces" not in joined.lower()
+
+    async def test_idempotent_via_if_not_exists(self) -> None:
+        """both ALTERs use IF NOT EXISTS so replays are no-ops."""
+        store = _FakeDataStore()
+        await add_face_rest_columns(store)  # type: ignore[arg-type]
+        joined = _joined_sql(store)
+        assert joined.count("ADD COLUMN IF NOT EXISTS") == 2
+
+    async def test_direct_call_does_not_touch_migrations_table(self) -> None:
+        """direct invocation must NOT write to ``_schema_migrations``."""
+        store = _FakeDataStore()
+        await add_face_rest_columns(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
 

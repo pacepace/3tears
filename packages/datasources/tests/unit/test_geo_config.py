@@ -116,6 +116,15 @@ class TestCacheClass:
         layer = GeoLayerConfig(**_layer(cache="private"))  # type: ignore[arg-type]
         assert layer.cache is CacheClassConfig.PRIVATE
 
+    def test_the_name_this_package_exports_is_the_promoted_enum_itself(self) -> None:
+        # promoted to threetears.core.http_cache when a second consumer (the
+        # tool REST affordance) arrived. this asserts identity rather than
+        # equality: a copy would be a second vocabulary, which is the thing
+        # the promotion exists to prevent.
+        from threetears.core.http_cache import CacheClass
+
+        assert CacheClassConfig is CacheClass
+
 
 class TestGeoBlock:
     def test_duplicate_layer_names_are_rejected(self) -> None:

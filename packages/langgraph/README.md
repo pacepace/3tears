@@ -17,18 +17,42 @@ pip install 3tears-langgraph
 ```python
 from threetears.langgraph import (
     AsyncpgPoolAdapter,
+    CheckpointScope,
     ThreeTierCheckpointSaver,
 )
 
 # Trusted service with direct asyncpg.Pool: wrap once
-saver = ThreeTierCheckpointSaver(executor=AsyncpgPoolAdapter(pool))
+saver = ThreeTierCheckpointSaver(
+    executor=AsyncpgPoolAdapter(pool),
+    scope=CheckpointScope.for_customer(customer_id),
+)
 
 # Sandboxed agent: NatsProxyL3Backend already implements
 # AsyncQueryExecutor, pass it straight through
-saver = ThreeTierCheckpointSaver(executor=nats_l3_backend)
+saver = ThreeTierCheckpointSaver(
+    executor=nats_l3_backend,
+    scope=CheckpointScope.for_customer(customer_id),
+)
 
 graph = builder.compile(checkpointer=saver)
 ```
+
+### Scope is required
+
+`scope` has no default. A saver either names the customer whose checkpoints it addresses, or says in writing that it deliberately names none:
+
+```python
+saver = ThreeTierCheckpointSaver(
+    executor=AsyncpgPoolAdapter(pool),
+    scope=CheckpointScope.unscoped(reason="single-tenant deployment"),
+)
+```
+
+`CheckpointScope.for_customer(...)` folds the customer into the stored `thread_id`, and therefore into the L3 bound parameter, the L2 bucket key, and the L1 thread key — a saver scoped to one customer cannot *name* another customer's row at any tier. It also unlocks `adelete_customer_threads()`, the whole-tenant purge, which refuses on an unscoped saver.
+
+`CheckpointScope.unscoped(...)` is a legitimate answer, not a placeholder: it produces byte-identical keys and statements to a pre-tenancy saver, so **an existing deployment adopts the required parameter by adding this one argument and migrating no data**. The reason is mandatory, logged at WARNING on construction, and greppable in source, so "which deployments still run unscoped, and why" has an answer.
+
+Adopting a real customer *later* is a data change rather than a code change: existing rows live under a bare thread id and a scoped saver will not find them, so they must be re-keyed (`UPDATE checkpoints SET thread_id = $customer || '/' || thread_id`, likewise `checkpoint_writes`, plus L2 invalidation). No re-key script ships here and none can — which customer owns which thread lives in the host's own tables, which this library has never seen.
 
 ## Middleware
 

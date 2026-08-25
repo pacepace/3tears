@@ -3,9 +3,10 @@
 :class:`IdentityVersionEntity` covers the ``identity_versions`` table
 (migration v001) with its composite primary key ``(agent_id,
 version_id)``. It mirrors :class:`threetears.agent.intention.entities.
-IntentionEntity`: the constructor overwrites ``_id`` with the
-declared-order tuple so :class:`BaseCollection`'s tuple-aware pk path
-addresses the row uniformly across L1 / L2 / L3.
+IntentionEntity`: :class:`BaseEntity` derives ``_id`` as the
+declared-order tuple from the collection's ``primary_key_columns`` so
+:class:`BaseCollection`'s tuple-aware pk path addresses the row
+uniformly across L1 / L2 / L3.
 
 A version is an immutable snapshot of one identity block at one point in
 the linear chain -- ``content`` / ``rationale`` / ``content_hash`` /
@@ -19,7 +20,6 @@ fence).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from threetears.core.entities.base import BaseEntity
@@ -46,34 +46,14 @@ def _as_uuid_or_none(value: object) -> UUID | None:
 class IdentityVersionEntity(BaseEntity):
     """Cache proxy entity for the ``identity_versions`` table (v001).
 
-    The composite primary key is ``(agent_id, version_id)``; the
-    constructor sets ``_id`` to that tuple so
+    The composite primary key is ``(agent_id, version_id)``;
+    ``BaseEntity`` derives ``_id`` as that tuple from the collection's
+    declared ``primary_key_columns`` so
     :meth:`BaseCollection.normalize_pk` and :meth:`BaseCollection.l2_key`
     address the row uniformly across tiers.
     """
 
     primary_key_field: str = "version_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite ``_id`` for composite-pk lookup.
-
-        :param data: row dict; must carry ``agent_id`` and ``version_id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "agent_id" in data and "version_id" in data:
-            object.__setattr__(self, "_id", (data["agent_id"], data["version_id"]))
 
     @property
     def version_id(self) -> UUID:

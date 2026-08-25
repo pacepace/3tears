@@ -15,84 +15,24 @@ import pytest
 from uuid import uuid7
 
 from threetears.conversations.entity import Conversation
-from threetears.core.cache import MISSING
+from threetears.core.testing import entity_collection_stub
 
 
 @pytest.fixture()
-def mock_collection() -> tuple[MagicMock, dict[str, dict[str, object]]]:
+def mock_collection() -> tuple[MagicMock, dict[tuple[object, ...], dict[str, object]]]:
     """
-    provide a mock collection with an in-memory L1 cache simulation.
+    provide a collection stub declaring the ``conversations`` pk shape.
 
-    :return: mock collection and the backing cache dict
-    :rtype: tuple[MagicMock, dict[str, dict[str, object]]]
+    ``conversations`` is partitioned on ``agent_id`` with composite pk
+    ``(agent_id, conversation_id)``. the stub must declare that shape:
+    the entity derives its addressing ``_id`` from the collection, so a
+    stub omitting it makes every cache call address the bare
+    ``conversation_id``.
+
+    :return: collection stub and the backing cache dict
+    :rtype: tuple[MagicMock, dict[tuple[object, ...], dict[str, object]]]
     """
-    cache: dict[str, dict[str, object]] = {}
-    coll = MagicMock()
-
-    def write_to_cache(data: dict[str, object]) -> bool:
-        """
-        write a row into the cache keyed on primary-key id.
-
-        :param data: row dict
-        :ptype data: dict[str, object]
-        :return: always True (cache always accepts)
-        :rtype: bool
-        """
-        pk = data.get("conversation_id", "")
-        cache[str(pk)] = dict(data)
-        return True
-
-    def get_field(entity_id: object, field: str) -> object:
-        """
-        read a field out of the cache, returning MISSING when absent.
-
-        :param entity_id: entity primary key
-        :ptype entity_id: object
-        :param field: column name
-        :ptype field: str
-        :return: cached value or MISSING
-        :rtype: object
-        """
-        row = cache.get(str(entity_id))
-        result: object
-        if row is None:
-            result = MISSING
-        else:
-            result = row.get(field, MISSING)
-        return result
-
-    def set_field(entity_id: object, field: str, value: object) -> None:
-        """
-        write a field into the cache row.
-
-        :param entity_id: entity primary key
-        :ptype entity_id: object
-        :param field: column name
-        :ptype field: str
-        :param value: new value
-        :ptype value: object
-        """
-        row = cache.get(str(entity_id))
-        if row is not None:
-            row[field] = value
-
-    def get_row(entity_id: object) -> dict[str, object] | None:
-        """
-        return the full cached row for entity_id.
-
-        :param entity_id: entity primary key
-        :ptype entity_id: object
-        :return: row dict or ``None``
-        :rtype: dict[str, object] | None
-        """
-        return cache.get(str(entity_id))
-
-    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll.get_field_sync = MagicMock(side_effect=get_field)
-    coll.set_field_sync = MagicMock(side_effect=set_field)
-    coll.get_row_sync = MagicMock(side_effect=get_row)
-
-    return coll, cache
+    return entity_collection_stub(("agent_id", "conversation_id"))
 
 
 def _sample_data() -> dict[str, object]:
@@ -164,12 +104,37 @@ class TestConversationIdentityProperties:
         assert result == data["user_id"]
         assert isinstance(result, UUID)
 
-    def test_id_returns_underlying_pk(self) -> None:
-        """id property surfaces the composite primary key tuple."""
+    def test_id_returns_the_bare_conversation_id(self) -> None:
+        """id surfaces the scalar row id named by ``primary_key_field``."""
         data = _sample_data()
-        entity = Conversation(data)
+        coll, _cache = entity_collection_stub(("agent_id", "conversation_id"))
+        entity = Conversation(data, is_new=True, collection=coll)
 
-        assert entity.id == (data["agent_id"], data["conversation_id"])
+        assert entity.id == data["conversation_id"]
+
+    def test_addressing_id_is_the_composite_tuple(self) -> None:
+        """the tier-addressing key is ``(agent_id, conversation_id)``.
+
+        derived by ``BaseEntity`` from the collection's declared
+        ``primary_key_columns``; the ORDER is the L2-key contract, so it
+        is asserted directly.
+        """
+        data = _sample_data()
+        coll, _cache = entity_collection_stub(("agent_id", "conversation_id"))
+        entity = Conversation(data, is_new=True, collection=coll)
+
+        assert entity.addressing_id == (data["agent_id"], data["conversation_id"])
+
+    def test_detached_entity_keeps_the_scalar_shape(self) -> None:
+        """with no collection there is no key shape to derive from.
+
+        a detached entity addresses nothing -- ``save`` raises without a
+        collection -- so the scalar is the honest answer rather than a
+        guessed tuple.
+        """
+        entity = Conversation(_sample_data())
+
+        assert entity.addressing_id == entity.id
 
 
 class TestConversationNameProperty:

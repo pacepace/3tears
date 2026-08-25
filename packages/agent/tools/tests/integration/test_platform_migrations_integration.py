@@ -149,7 +149,7 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert count == 2, f"expected v001 + v002 to apply, applied {count}"
+            assert count == 3, f"expected v001 + v002 + v003 to apply, applied {count}"
             cols = await conn.fetch(
                 "SELECT column_name, data_type, is_nullable, column_default "
                 "FROM information_schema.columns "
@@ -178,7 +178,7 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             first = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert first == 2
+            assert first == 3
             # second apply with a fresh runner: the bookkeeping table
             # remembers the prior apply so the runner does nothing.
             runner_two = MigrationRunner()
@@ -203,6 +203,10 @@ class TestPlatformMigrationAddsColumns:
             await conn.execute(
                 "ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS face_mcp BOOLEAN NOT NULL DEFAULT FALSE"
             )
+            await conn.execute(
+                "ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS face_rest BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await conn.execute("ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS face_rest_declaration JSONB")
         finally:
             await conn.close()
 
@@ -237,6 +241,39 @@ class TestPlatformMigrationAddsColumns:
         finally:
             await conn.close()
 
+    async def test_v003_applies_rest_face_columns_with_defaults(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """v003 lands the REST flag plus the authored-declaration column."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}"')
+            runner = MigrationRunner()
+            register(runner)
+            store = _AsyncpgStore(conn)
+            await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+            cols = await conn.fetch(
+                "SELECT column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns "
+                "WHERE table_schema = $1 AND table_name = 'namespaces' "
+                "AND column_name IN ('face_rest', 'face_rest_declaration')",
+                schema,
+            )
+            assert len(cols) == 2
+            by_name = {row["column_name"]: row for row in cols}
+            assert by_name["face_rest"]["data_type"] == "boolean"
+            assert by_name["face_rest"]["is_nullable"] == "NO"
+            assert "false" in (by_name["face_rest"]["column_default"] or "").lower()
+            # the declaration is nullable with no default: NULL means "no
+            # REST face", the same fact ``face_rest FALSE`` carries.
+            assert by_name["face_rest_declaration"]["data_type"] == "jsonb"
+            assert by_name["face_rest_declaration"]["is_nullable"] == "YES"
+            assert by_name["face_rest_declaration"]["column_default"] is None
+        finally:
+            await conn.close()
+
     async def test_pre_existing_rows_pick_up_defaults(
         self,
         pg_schema: tuple[str, str],
@@ -256,9 +293,10 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert count == 2
+            assert count == 3
             row = await conn.fetchrow(
-                "SELECT tool_eligible, skill_eligible, face_platform_tool, face_api, face_mcp "
+                "SELECT tool_eligible, skill_eligible, face_platform_tool, face_api, face_mcp, "
+                "face_rest, face_rest_declaration "
                 "FROM namespaces WHERE name = 'tools.legacy.1-0'",
             )
             assert row is not None
@@ -267,5 +305,7 @@ class TestPlatformMigrationAddsColumns:
             assert row["face_platform_tool"] is True
             assert row["face_api"] is False
             assert row["face_mcp"] is False
+            assert row["face_rest"] is False
+            assert row["face_rest_declaration"] is None
         finally:
             await conn.close()
