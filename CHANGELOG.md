@@ -6,6 +6,55 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.28.0 -- 2026-08-24
+
+### Added
+
+- `nats`: **an agent pod may declare its own coordination KV buckets.**
+  `build_permissions` gains `coordination_buckets`, mirroring `tool_namespaces`:
+  resolved per principal by the auth callout from a registry row, read by
+  `AGENT_POD` alone, defaulting to `None` so every existing caller resolves
+  byte-identically.
+
+  A product pod needs KV buckets the platform does not define -- a replay
+  ledger, an idempotency store, a lockout counter, a ticket store, a handle
+  store, a quota counter -- and they cannot share one bucket, because TTL is a
+  property of the BUCKET and those want six different ones (a quota cell must
+  never expire; a challenge nonce must expire in minutes).
+
+  **The declared string is a SUFFIX and never a bucket name.** Each grant is
+  composed as `{ns}-{scope}-{suffix}` from `kv_key_scope_for` on the
+  AUTHENTICATED agent id, so an agent that declares `collections` is granted its
+  own `{ns}-agent_pod-<hex>-collections` and comes no closer to the shared
+  bucket every principal writes its L2 into. That is what makes the declaration
+  non-sensitive, and therefore safe to take from an agent's own manifest. A
+  malformed suffix RAISES at mint rather than being dropped, because a dropped
+  entry leaves a pod opening a bucket it was never granted -- and an ungranted KV
+  call does not raise, it blocks to its deadline and reports an unreachable
+  broker.
+
+### Fixed
+
+- `nats`: **the checkpoint L2 grant named a bucket nothing opens.** `AGENT_POD`
+  was granted `checkpoints` bare, while `ThreeTierCheckpointSaver` takes
+  `l2_bucket` as a SUFFIX and every host opens it through `kv_bucket`, which
+  layers `{namespace}-` over it -- so the bucket that materialises is
+  `{ns}-checkpoints` and the grant covered nothing. Non-breaking: the previous
+  grant addressed a bucket nothing opens, so nothing loses access.
+
+- `nats`: **an agent pod is granted the `{ns}-audit` stream it declares.** It
+  held `audit.tool.call` as a PUBLISH subject -- the emitting half -- but not the
+  stream, so a pod running its own audit consumer had its
+  `ensure_jetstream_stream` refused. Silent from the emitting side: publishes
+  keep returning, the consumer never binds, and every envelope it was meant to
+  durably record is dropped.
+
+- `nats`: `test_hitl_grant_silent_failure_live` passed slug pod ids, but
+  `kv_key_scope_for` has required UUIDs since scopes became per-principal. The
+  module raised at permission-build time and never reached the broker it exists
+  to test.
+
+
 ### Added
 
 - `core`: **`TableSchema(cas_null_safe=True)` — a compare-and-swap fence that
