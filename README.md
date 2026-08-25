@@ -85,10 +85,18 @@ await store.run_migrations(migrations)
 ### LangGraph agents with three-tier checkpointing
 
 ```python
-from threetears.langgraph import build_tool_agent, ThreeTierCheckpointSaver, AsyncpgPoolAdapter
+from threetears.langgraph import (
+    AsyncpgPoolAdapter,
+    CheckpointScope,
+    ThreeTierCheckpointSaver,
+)
 
-graph = build_tool_agent(system_prompt="You are helpful.", max_iterations=10)
-saver = ThreeTierCheckpointSaver(executor=AsyncpgPoolAdapter(pool))
+# a saver must say which customer's checkpoints it addresses. there is no
+# default: the alternative to naming a customer is naming a reason not to.
+saver = ThreeTierCheckpointSaver(
+    executor=AsyncpgPoolAdapter(pool),
+    scope=CheckpointScope.for_customer(customer_id),
+)
 compiled = graph.compile(checkpointer=saver)
 ```
 

@@ -244,17 +244,14 @@ class TestSQLiteArityMismatch:
 class FakeRefEntity(BaseEntity):
     """composite-pk entity — identity is ``(conversation_id, item_id)``.
 
-    overrides ``__init__`` to build ``_id`` as a tuple of the two pk
-    values so collection-level id operations receive the tuple
-    uniformly. subclasses for future composite-pk collections follow
-    the same shape.
+    carries NO ``__init__`` override: ``BaseEntity`` builds ``_id`` as
+    the tuple of pk values from the owning collection's declared
+    ``primary_key_columns``, so collection-level id operations receive
+    the tuple uniformly. ``primary_key_field`` names the bare row id,
+    which is what ``entity.id`` returns.
     """
 
-    primary_key_field = "conversation_id"  # unused — __init__ overrides _id
-
-    def __init__(self, data: dict[str, Any], is_new: bool = True, collection: Any = None) -> None:
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_id", (data["conversation_id"], data["item_id"]))
+    primary_key_field = "item_id"
 
 
 class FakeRefCollection(BaseCollection[FakeRefEntity]):
@@ -570,6 +567,85 @@ class TestCollectionOps:
         assert row is None
         # L2 gone
         assert f"{_TEST_SCOPE}.fake_refs.conv-A:item-1" not in nats.store
+
+
+class TestDerivedCompositeIdentity:
+    """``FakeRefEntity`` carries no ``_id`` override; the base derives it.
+
+    every assertion here would also pass with a hand-written
+    ``__init__`` -- the point is that there is not one, so the
+    derivation from ``primary_key_columns`` is what is under test.
+    """
+
+    def test_entity_addresses_by_the_declared_tuple(
+        self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
+    ) -> None:
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=_nats_mock())
+        entity = coll.create({"conversation_id": "conv-A", "item_id": "item-1", "score": 1, "note": "x"})
+
+        assert entity.addressing_id == ("conv-A", "item-1")
+        assert entity.id == "item-1"
+
+    def test_l2_key_differs_per_partition(
+        self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
+    ) -> None:
+        """same bare id under two partitions yields two L2 keys."""
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=_nats_mock())
+        first = coll.create({"conversation_id": "conv-A", "item_id": "item-1", "score": 1, "note": "a"})
+        second = coll.create({"conversation_id": "conv-B", "item_id": "item-1", "score": 2, "note": "b"})
+
+        assert coll.l2_key(first.addressing_id) != coll.l2_key(second.addressing_id)
+
+    @pytest.mark.asyncio
+    async def test_same_bare_id_under_two_partitions_does_not_collide(
+        self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
+    ) -> None:
+        """two rows sharing ``item_id`` stay distinct at L1, L2 and L3.
+
+        the cross-tenant read this shard exists to make impossible: an
+        entity whose ``_id`` collapsed to the bare id would have the
+        second write overwrite the first at every tier.
+        """
+        nats = _nats_mock()
+        l3_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, l3_rows=l3_rows)
+
+        first = coll.create({"conversation_id": "conv-A", "item_id": "item-1", "score": 1, "note": "a"})
+        await coll.save_entity(first)
+        second = coll.create({"conversation_id": "conv-B", "item_id": "item-1", "score": 2, "note": "b"})
+        await coll.save_entity(second)
+
+        # L3: two rows, not one overwritten row
+        assert l3_rows[("conv-A", "item-1")]["score"] == 1
+        assert l3_rows[("conv-B", "item-1")]["score"] == 2
+        # L1: independent rows
+        assert coll.get_row_sync(("conv-A", "item-1"))["score"] == 1
+        assert coll.get_row_sync(("conv-B", "item-1"))["score"] == 2
+        # L2: two distinct keys
+        assert f"{_TEST_SCOPE}.fake_refs.conv-A_item-1" in nats.store
+        assert f"{_TEST_SCOPE}.fake_refs.conv-B_item-1" in nats.store
+
+    @pytest.mark.asyncio
+    async def test_reload_addresses_the_composite_row(
+        self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
+    ) -> None:
+        """``reload_entity`` uses the addressing key, not the bare id.
+
+        it read ``entity.id``, which on a composite table names one
+        column; the fetch then missed and raised "not found in storage"
+        for a row that was present.
+        """
+        nats = _nats_mock()
+        l3_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, l3_rows=l3_rows)
+
+        entity = coll.create({"conversation_id": "conv-A", "item_id": "item-1", "score": 1, "note": "a"})
+        await coll.save_entity(entity)
+        l3_rows[("conv-A", "item-1")]["score"] = 77
+
+        await entity.reload()
+
+        assert entity.score == 77
 
 
 # ---------------------------------------------------------------------------

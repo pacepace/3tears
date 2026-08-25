@@ -19,6 +19,7 @@ import pytest
 
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
+    MAX_COORDINATION_BUCKETS,
     JsCapability,
     JsResourceKind,
     Principal,
@@ -962,3 +963,176 @@ class TestDirectlyBoundBuckets:
             r for r in _build(Principal.AGENT_ROUTER).js_resources if r.kind is JsResourceKind.KV_BUCKET and r.writable
         ]
         assert f"{_NS}_agent_config" not in {r.name for r in emitted}
+
+
+class TestDeclaredCoordinationBuckets:
+    """an agent's own coordination buckets, and the prefix that fences them.
+
+    A product pod needs KV buckets the platform does not define: a replay ledger, an
+    idempotency store, a lockout counter, a ticket store, a handle store, a quota
+    counter. They cannot share one bucket -- TTL is a bucket property and those six
+    want six different ones, two of them incompatible (a quota cell must never expire;
+    a challenge nonce must expire in minutes).
+
+    So the agent declares them. The property that makes declaring them SAFE is that the
+    declared string is a SUFFIX and never a whole bucket name: every grant is composed
+    under ``{ns}-{scope}-``, where ``scope`` comes from ``kv_key_scope_for`` on the
+    AUTHENTICATED agent id. An agent that declares ``collections`` is granted its OWN
+    ``{ns}-agent_pod-<hex>-collections`` and gets no closer to the shared one, so no
+    declaration -- honest, mistaken or hostile -- can reach another agent's buckets or
+    the platform's.
+    """
+
+    def test_a_declared_bucket_is_granted_under_the_agents_own_prefix(self) -> None:
+        """the grant is the composed name, never the declared suffix."""
+        set_default_namespace(_NS)
+        scope = kv_key_scope_for(Principal.AGENT_POD, agent_id=_AGENT_A)
+
+        granted = kv_bucket_names(
+            build_permissions(
+                Principal.AGENT_POD,
+                agent_id=_AGENT_A,
+                pod_id=_POD_A,
+                coordination_buckets=("entry_challenge_nonces",),
+            )
+        )
+
+        assert f"{_NS}-{scope}-entry_challenge_nonces" in granted
+        assert f"{_NS}-entry_challenge_nonces" not in granted
+
+    def test_declaring_a_platform_bucket_name_reaches_only_the_agents_own(self) -> None:
+        """
+        THE escalation test. an agent naming a shared bucket must not be given it.
+
+        ``collections`` is the one bucket every principal shares, and it carries every
+        tenant's L2. A declaration mechanism that concatenated the namespace directly
+        would hand an unscoped, whole-subtree write grant on it to any agent that asked.
+        """
+        set_default_namespace(_NS)
+        scope = kv_key_scope_for(Principal.AGENT_POD, agent_id=_AGENT_A)
+
+        permissions = build_permissions(
+            Principal.AGENT_POD,
+            agent_id=_AGENT_A,
+            pod_id=_POD_A,
+            coordination_buckets=("collections", "checkpoints", "epochs"),
+        )
+        granted = kv_bucket_names(permissions)
+
+        # its own three, named for what it asked
+        for asked in ("collections", "checkpoints", "epochs"):
+            assert f"{_NS}-{scope}-{asked}" in granted
+
+        # and the shared ones are held only where they were ALREADY held, at the
+        # capability the platform block declares -- not widened by the declaration
+        shared_collections = [r for r in permissions.js_resources if r.name == _COLLECTIONS]
+        assert len(shared_collections) == 1
+        assert shared_collections[0].scope == scope, (
+            "the shared collections bucket must still be SCOPE-narrowed; a declaration "
+            "has widened it to the whole subtree"
+        )
+
+    def test_one_agent_cannot_reach_another_agents_declared_bucket(self) -> None:
+        """two agents declaring the same suffix resolve to two different buckets."""
+        set_default_namespace(_NS)
+
+        a = kv_bucket_names(
+            build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A, coordination_buckets=("nonces",))
+        )
+        b = kv_bucket_names(
+            build_permissions(Principal.AGENT_POD, agent_id=_AGENT_B, pod_id=_POD_B, coordination_buckets=("nonces",))
+        )
+
+        assert not (set(a) & set(b) & {name for name in a if name.endswith("-nonces")})
+
+    def test_declaring_nothing_changes_nothing(self) -> None:
+        """the parameter is additive: omitting it reproduces the previous grant set exactly."""
+        set_default_namespace(_NS)
+
+        without = kv_bucket_names(build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A))
+        empty = kv_bucket_names(
+            build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A, coordination_buckets=())
+        )
+
+        assert without == empty
+
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            "has.a.dot",  # a dot is a subject separator; the stream name is ONE token
+            "has space",
+            "has/slash",
+            "$KV",
+            "wild*card",
+            "sub>tree",
+            "",
+        ],
+    )
+    def test_a_suffix_outside_the_grammar_is_refused_at_mint(self, suffix: str) -> None:
+        """
+        refuse LOUDLY rather than dropping the entry.
+
+        a dropped entry produces a pod whose KV calls block to their deadline and
+        report an unreachable broker -- the exact silent failure this module's own
+        comments say costs a day to diagnose. raising happens at mint, names the
+        offending value, and cannot be mistaken for a network fault.
+        """
+        set_default_namespace(_NS)
+
+        with pytest.raises(ValueError, match="coordination bucket"):
+            build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A, coordination_buckets=(suffix,))
+
+    def test_more_buckets_than_the_cap_are_refused(self) -> None:
+        """
+        the count is bounded, because each entry materialises one JetStream stream.
+
+        the prefix makes an over-broad declaration harmless to OTHER principals; it does
+        not make it free. a bound is what stops one agent's manifest creating streams
+        without limit.
+        """
+        set_default_namespace(_NS)
+        too_many = tuple(f"bucket{n}" for n in range(MAX_COORDINATION_BUCKETS + 1))
+
+        with pytest.raises(ValueError, match="coordination bucket"):
+            build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A, coordination_buckets=too_many)
+
+    def test_only_an_agent_pod_may_declare_them(self) -> None:
+        """
+        no other principal expands the list, so a stray claim cannot widen an infra grant.
+
+        every resolver takes the same keyword arguments, which is what makes a
+        misrouted claim conceivable; this pins that only the one resolver reads it.
+        """
+        set_default_namespace(_NS)
+
+        granted = kv_bucket_names(
+            build_permissions(Principal.TOOL_POD, pod_id=_POD_A, conn_id="conn-1", coordination_buckets=("nonces",))
+        )
+
+        assert not any(name.endswith("-nonces") for name in granted)
+
+    def test_a_declared_bucket_is_writable_and_unscoped_within_itself(self) -> None:
+        """
+        the BUCKET is the boundary, so its keys need no scope segment.
+
+        this is what lets 3tears's own coordination primitives -- ReplayGuard,
+        DistributedCounter, SingleUseTicketStore -- be used unchanged: none of them
+        writes a scope prefix into its keys, and a scoped grant would match none of
+        them and deny every call.
+        """
+        set_default_namespace(_NS)
+        scope = kv_key_scope_for(Principal.AGENT_POD, agent_id=_AGENT_A)
+
+        permissions = build_permissions(
+            Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A, coordination_buckets=("nonces",)
+        )
+        declared = [r for r in permissions.js_resources if r.name == f"{_NS}-{scope}-nonces"]
+
+        assert len(declared) == 1
+        assert declared[0].kind is JsResourceKind.KV_BUCKET
+        assert declared[0].writable is True
+        assert declared[0].scope is None
+        assert not capability_declares(declared[0].capability), (
+            "a pod must not hold a DECLARING capability; STREAM.UPDATE is a read-all "
+            "primitive on any stream it is held against"
+        )

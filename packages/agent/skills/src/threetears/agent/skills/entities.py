@@ -6,17 +6,17 @@ shapes are ``(agent_id, skill_id)`` and ``(agent_id, invocation_id)``
 respectively. Per the collections-task-04 convention the composite key
 is the structural defense against cross-partition data bleed.
 
-Each entity carries a tuple ``_id`` so ``BaseCollection.normalize_pk``
-and ``BaseCollection.l2_key`` address the row uniformly across L1 /
-L2 / L3. ``primary_key_field`` names the bare-id column so
-``BaseEntity.id`` returns the singular UUID that downstream callers
-(wake-side ``skill_id`` FK, MCP tool args) need.
+``BaseEntity`` derives the tuple ``_id`` from the collection's declared
+``primary_key_columns`` so ``BaseCollection.normalize_pk`` and
+``BaseCollection.l2_key`` address the row uniformly across L1 / L2 / L3
+with no per-entity override. ``primary_key_field`` names the bare-id
+column so ``BaseEntity.id`` returns the singular UUID that downstream
+callers (wake-side ``skill_id`` FK, MCP tool args) need.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from threetears.core.entities.base import BaseEntity
@@ -47,8 +47,9 @@ def _as_uuid(value: object) -> UUID:
 class AgentSkillEntity(BaseEntity):
     """Cache proxy entity for the ``agent_skills`` table.
 
-    Composite primary key is ``(agent_id, skill_id)``; the entity sets
-    ``_id`` to the tuple form so the framework's pk-aware paths
+    Composite primary key is ``(agent_id, skill_id)``; ``BaseEntity``
+    derives ``_id`` as that tuple from the collection's declared
+    ``primary_key_columns`` so the framework's pk-aware paths
     (``BaseCollection.normalize_pk``, ``l2_key``,
     ``_publish_invalidation``) address rows uniformly across tiers.
 
@@ -61,32 +62,6 @@ class AgentSkillEntity(BaseEntity):
     """
 
     primary_key_field: str = "skill_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """Initialise with composite ``_id`` for tuple-pk lookup.
-
-        :param data: row dict; ``agent_id`` and ``skill_id`` must be
-            present so the tuple ``_id`` can be assembled
-        :ptype data: dict[str, Any]
-        :param is_new: whether the entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "agent_id" in data and "skill_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["agent_id"], data["skill_id"]),
-            )
 
     @property
     def skill_id(self) -> UUID:
@@ -338,32 +313,6 @@ class AgentSkillInvocationEntity(BaseEntity):
     """
 
     primary_key_field: str = "invocation_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """Initialise with composite ``_id`` for tuple-pk lookup.
-
-        :param data: row dict; ``agent_id`` and ``invocation_id`` must
-            be present
-        :ptype data: dict[str, Any]
-        :param is_new: whether the entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "agent_id" in data and "invocation_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["agent_id"], data["invocation_id"]),
-            )
 
     @property
     def invocation_id(self) -> UUID:

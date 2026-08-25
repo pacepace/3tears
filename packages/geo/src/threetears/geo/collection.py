@@ -162,9 +162,21 @@ class LayerDefinition:
 
 
 class TileEntity(BaseEntity):
-    """one built tile."""
+    """one built tile.
 
-    primary_key_field = "layer"
+    the tile's key is the 5-tuple ``(layer, version, z, x, y)`` declared
+    on :class:`TileCollection`; :class:`BaseEntity` derives the
+    addressing ``_id`` from that declaration, and ``addressing_id``
+    exposes it.
+
+    ``primary_key_field`` names ``z`` rather than ``layer``: it selects
+    what the scalar ``.id`` surfaces, and a layer NAME identifies a whole
+    layer rather than a row, so it was the one component guaranteed to be
+    wrong. no component of a 5-part key is a row identity on its own --
+    read ``addressing_id`` when identity is what is wanted.
+    """
+
+    primary_key_field = "z"
 
 
 #: fetches source rows for a layer, generation and rectangle. the collection

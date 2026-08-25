@@ -16,7 +16,7 @@ from typing import Any
 from threetears.core.cache import MISSING
 from threetears.observe import get_logger
 
-__all__ = ["BaseEntity"]
+__all__ = ["BaseEntity", "derive_addressing_id"]
 
 log = get_logger(__name__)
 
@@ -29,6 +29,7 @@ log = get_logger(__name__)
 _INTERNAL_ATTRS = frozenset(
     {
         "_id",
+        "_row_id",
         "_collection",
         "_is_new",
         "_dirty",
@@ -37,6 +38,57 @@ _INTERNAL_ATTRS = frozenset(
         "_column_names",
     }
 )
+
+
+def derive_addressing_id(row_id: Any, data: dict[str, Any], collection: Any, *, strict: bool = False) -> Any:
+    """derive the tier-addressing key for one entity's row.
+
+    mirrors the rule :meth:`BaseCollection.save_entity` already applies
+    when it rebuilds a composite key from the on-the-wire payload, so
+    construction and persistence address the same row. a single-pk
+    collection -- and any entity constructed with no collection at all,
+    which cannot know its table's key shape -- keeps the scalar
+    ``row_id`` it always had.
+
+    the composite branch requires every declared pk column to be present
+    in ``data``. a payload missing one is left on the scalar form rather
+    than silently addressing a ``None`` component: the miss then surfaces
+    as :meth:`BaseCollection.normalize_pk`'s arity error at the first
+    tier access, which names the table and the expected columns.
+
+    :param row_id: scalar value of the entity's ``primary_key_field``
+    :ptype row_id: Any
+    :param data: row dict the entity was constructed from
+    :ptype data: dict[str, Any]
+    :param collection: owning collection, or ``None`` for a transient
+        factory-created entity
+    :ptype collection: Any
+    :param strict: when true, a composite-pk payload missing a declared
+        pk column raises instead of falling back to the scalar. the
+        write path sets this: a save that silently addressed the wrong
+        row would write L3 under one key and cache it under another
+    :ptype strict: bool
+    :return: scalar pk value for single-pk tables, declared-order tuple
+        for composite-pk tables
+    :rtype: Any
+    :raises KeyError: when ``strict`` and a declared pk column is absent
+    """
+    if collection is None:
+        return row_id
+    pk_cols = getattr(collection, "primary_key_columns", ())
+    # the tuple check is not defensive noise: ``BaseCollection`` types
+    # this property as ``tuple[str, ...]``, and anything else reaching
+    # here is a stand-in (a bare ``MagicMock`` in a unit test) that
+    # cannot describe a key shape. those keep the scalar form.
+    if not isinstance(pk_cols, tuple) or len(pk_cols) < 2:
+        return row_id
+    missing = [col for col in pk_cols if col not in data]
+    if missing:
+        if strict:
+            table = getattr(collection, "table_name", "<unknown>")
+            raise KeyError(f"{table}: cannot address row -- payload is missing pk column(s) {missing} of {pk_cols}")
+        return row_id
+    return tuple(data[col] for col in pk_cols)
 
 
 class BaseEntity:
@@ -64,8 +116,29 @@ class BaseEntity:
     this as part of the cache-coherence contract; renaming it would
     break persistence in every subclass, so it is public API.
 
-    :cvar primary_key_field: name of the primary-key column on the
-        underlying table; default ``"id"``, subclasses override
+    Two identities, and they differ only on composite-pk tables:
+
+    - ``_id`` is the **addressing** key the framework hands to
+      :meth:`BaseCollection.normalize_pk` / :meth:`BaseCollection.l2_key`
+      and every L1 / L2 / L3 path beneath them. It is derived from the
+      owning collection's ``primary_key_columns``: the scalar value for
+      a single-pk table, the declared-order tuple for a composite-pk
+      one.
+    - ``id`` is the entity's own **scalar** identity -- the value of the
+      column named by :attr:`primary_key_field`. On a single-pk table
+      the two coincide, which is why this distinction was invisible
+      until composite keys arrived.
+
+    Deriving ``_id`` here is what makes a composite-pk entity need no
+    ``__init__`` override: the same rule
+    :meth:`BaseCollection.save_entity` already applies on the write path
+    now applies on construction, so the two cannot disagree.
+
+    :cvar primary_key_field: name of the column whose value :attr:`id`
+        returns; default ``"id"``, subclasses override. On a composite-pk
+        table this names the bare row id, NOT the partition column --
+        the partition column reaches ``_id`` through the collection's
+        declared ``primary_key_columns``
     :ivar original_date_updated: timestamp stamped on the row when it
         was last loaded from L3. collections read this as the
         optimistic-concurrency CAS token on save. cleared to ``None``
@@ -81,8 +154,9 @@ class BaseEntity:
         collection: Any = None,
     ) -> None:
         pk_field = type(self).primary_key_field
-        entity_id = data.get(pk_field, data.get("id", ""))
-        object.__setattr__(self, "_id", entity_id)
+        row_id = data.get(pk_field, data.get("id", ""))
+        object.__setattr__(self, "_row_id", row_id)
+        object.__setattr__(self, "_id", derive_addressing_id(row_id, data, collection))
         object.__setattr__(self, "_collection", collection)
         object.__setattr__(self, "_is_new", is_new)
         object.__setattr__(self, "_dirty", is_new)
@@ -105,7 +179,32 @@ class BaseEntity:
 
     @property
     def id(self) -> Any:
-        """Get entity primary key value."""
+        """Get entity primary key value.
+
+        returns the **scalar** value of the column named by
+        :attr:`primary_key_field`. on a single-pk table that is the
+        whole key and equals ``_id``; on a composite-pk table it is the
+        bare row id, while ``_id`` carries the full addressing tuple.
+
+        :return: scalar primary-key value
+        :rtype: Any
+        """
+        return self._row_id
+
+    @property
+    def addressing_id(self) -> Any:
+        """Get the key every tier addresses this entity's row by.
+
+        the shape :meth:`BaseCollection.normalize_pk` expects: the scalar
+        pk value on a single-pk table, the declared-order tuple of pk
+        values on a composite-pk one. use this, not :attr:`id`, whenever
+        a row is being fetched, cached, invalidated or deleted -- on a
+        composite-pk table :attr:`id` names only the bare row id and
+        addresses nothing on its own.
+
+        :return: addressing key matching the collection's pk arity
+        :rtype: Any
+        """
         return self._id
 
     @property
@@ -232,6 +331,17 @@ class BaseEntity:
             wrote = collection.write_to_cache_sync(data)
             if not wrote:
                 raise RuntimeError(f"L1 cache write failed in set_data() for {type(self).__name__} id={self._id}")
+        # Re-derive identity from the incoming row. Skipping this left
+        # the entity addressing its PREVIOUS row after a reload that
+        # returned a different one: the new row went into L1 under its
+        # own key while every read still went to the old one, silently
+        # and with no exception. Harmless while pk columns never change,
+        # and this is the method that makes them able to.
+        pk_field = type(self).primary_key_field
+        row_id = data.get(pk_field, data.get("id", ""))
+        collection = object.__getattribute__(self, "_collection")
+        object.__setattr__(self, "_row_id", row_id)
+        object.__setattr__(self, "_id", derive_addressing_id(row_id, data, collection))
         object.__setattr__(self, "_column_names", frozenset(data.keys()))
         object.__setattr__(self, "_changes", {})
         object.__setattr__(self, "_dirty", False)

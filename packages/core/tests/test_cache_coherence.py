@@ -904,11 +904,6 @@ class CompUuidEntity(BaseEntity):
 
     primary_key_field = "entity_id"
 
-    def __init__(self, data: dict[str, Any], is_new: bool = True, collection: Any = None) -> None:
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "conversation_id" in data and "entity_id" in data:
-            object.__setattr__(self, "_id", (data["conversation_id"], data["entity_id"]))
-
     @property
     def conversation_id(self) -> uuid.UUID:
         return _coerce_uuid(self._get_raw("conversation_id"))

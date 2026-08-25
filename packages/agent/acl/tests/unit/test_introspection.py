@@ -40,7 +40,7 @@ from threetears.agent.acl import (
     evaluate_with_trail,
 )
 
-from tests.unit._fake_loaders import FakeStore, make_cache
+from ._fake_loaders import FakeStore, make_cache
 
 
 def _ns(

@@ -18,6 +18,12 @@ sensitivity is deliberately absent as a free-standing field. a datasource
 already records how exposed it is (``visibility`` alongside a nullable
 ``customer_id``), and a second place to say the same thing is a second place
 for it to be wrong. a layer may only *narrow* what it inherits.
+
+``CacheClassConfig`` is that narrow-only vocabulary. it no longer lives here:
+a second consumer arrived (the inbound REST affordance a tool may declare)
+and neither package may import the other, so the enum was promoted to
+:mod:`threetears.core.http_cache` as ``CacheClass`` and is re-exported below
+under the name this package has always used. one enum object, two names.
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from threetears.core.http_cache import CacheClass as CacheClassConfig
 
 __all__ = [
     "AggregateBandConfig",
@@ -54,30 +62,6 @@ class MeasureAggregation(StrEnum):
     SUM = "sum"
     MEAN = "mean"
     COUNT = "count"
-
-
-class CacheClassConfig(StrEnum):
-    """how far out a layer's tiles may travel.
-
-    a layer may narrow what its datasource's ``visibility`` implies and may
-    never widen it. widening would let a layer declaration overrule the
-    datasource's own classification, which is exactly how data reaches an
-    edge cache it was never cleared for.
-    """
-
-    #: take the datasource's own classification. the default and the
-    #: overwhelmingly common case.
-    INHERIT = "inherit"
-    #: shared across customers. cacheable at a shared edge with no check
-    #: on the way in, so the widest reach of the three.
-    PUBLIC = "public"
-    #: cacheable at a shared edge, but the edge verifies a tile token
-    #: first. the cache directives match ``public``; the difference is
-    #: the check, not the headers.
-    AUTHENTICATED = "authenticated"
-    #: never reaches a shared cache at all. the narrowest reach, and what
-    #: an unrecognised datasource visibility falls back to.
-    PRIVATE = "private"
 
 
 class GeometryConfig(BaseModel):

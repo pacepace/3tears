@@ -393,6 +393,7 @@ class TestRoleGetMany:
                 "name": "Reader",
                 "permissions": {"workspace": ["read"], "*": ["read"]},
                 "is_builtin": True,
+                "customer_id": None,
             },
         ]
         pool = AsyncMock()
@@ -404,6 +405,35 @@ class TestRoleGetMany:
         assert isinstance(role, Role)
         assert role.permissions["workspace"] == frozenset({"read"})
         assert role.permissions["*"] == frozenset({"read"})
+        assert role.customer_id is None
+
+    @pytest.mark.asyncio
+    async def test_carries_owning_customer_for_an_authored_role(self) -> None:
+        """ownership reaches the evaluator's value type, not just the table.
+
+        the read is a bare ``row["customer_id"]`` rather than a
+        defaulted ``.get()`` on purpose: a missing column would
+        otherwise read as "platform-owned", which is the fail-OPEN
+        direction for the ownership wall in
+        :func:`~threetears.agent.acl.evaluator._walk_assignments`.
+        """
+        role_id = uuid7()
+        customer_id = uuid7()
+        rows = [
+            {
+                "role_id": role_id,
+                "name": "Field Manager",
+                "permissions": {"workspace": ["read"]},
+                "is_builtin": False,
+                "customer_id": customer_id,
+            },
+        ]
+        pool = AsyncMock()
+        pool.fetch.return_value = rows
+        coll = _make_collection(RoleCollection, l3_pool=pool)
+        result = await coll.get_many([role_id])
+        assert result[0].customer_id == customer_id
+        assert "customer_id" in pool.fetch.await_args.args[0]
 
 
 class TestRoleAssignmentLoadForGroups:

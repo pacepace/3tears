@@ -14,10 +14,11 @@ Two entity classes, generalized from agent-wake's ``WakeScheduleEntity``
 ``partition_key`` is the generic partition column (agent-wake's
 ``conversation_id`` equivalent). There is NO database-level FK on
 ``partition_key`` -- a consumer's partition referent is its own concern;
-the column is a plain denormalised UUID. Each entity carries a tuple
-``_id`` so ``BaseCollection.normalize_pk`` / ``l2_key`` address the row
-uniformly across L1 / L2 / L3. ``primary_key_field`` names the bare-id
-column so ``BaseEntity.id`` returns the singular UUID.
+the column is a plain denormalised UUID. ``BaseEntity`` derives the
+tuple ``_id`` from the collection's declared ``primary_key_columns``, so
+``BaseCollection.normalize_pk`` / ``l2_key`` address the row uniformly
+across L1 / L2 / L3 with no per-entity override. ``primary_key_field``
+names the bare-id column so ``BaseEntity.id`` returns the singular UUID.
 """
 
 from __future__ import annotations
@@ -63,8 +64,9 @@ def _as_uuid(value: object) -> UUID:
 class ScheduledJobEntity(BaseEntity):
     """Cache proxy entity for the ``scheduled_jobs`` table.
 
-    Composite primary key ``(partition_key, job_id)``; the entity sets
-    ``_id`` to the tuple form so the framework's pk-aware paths address
+    Composite primary key ``(partition_key, job_id)``; ``BaseEntity``
+    derives the tuple ``_id`` from the collection's declared
+    ``primary_key_columns`` so the framework's pk-aware paths address
     rows uniformly across tiers. Satisfies the
     :class:`~threetears.scheduled_jobs.protocols.DueSchedule` Protocol.
 
@@ -74,28 +76,6 @@ class ScheduledJobEntity(BaseEntity):
     """
 
     primary_key_field: str = "job_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """Initialise with composite ``_id`` for tuple-pk lookup.
-
-        :param data: row dict; ``partition_key`` and ``job_id`` must be
-            present so the tuple ``_id`` can be assembled
-        :ptype data: dict[str, Any]
-        :param is_new: whether the entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "partition_key" in data and "job_id" in data:
-            object.__setattr__(self, "_id", (data["partition_key"], data["job_id"]))
 
     @property
     def job_id(self) -> UUID:
@@ -260,28 +240,6 @@ class JobFireEntity(BaseEntity):
     """
 
     primary_key_field: str = "fire_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """Initialise with composite ``_id`` for tuple-pk lookup.
-
-        :param data: row dict; ``partition_key`` and ``fire_id`` must be
-            present
-        :ptype data: dict[str, Any]
-        :param is_new: whether the entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "partition_key" in data and "fire_id" in data:
-            object.__setattr__(self, "_id", (data["partition_key"], data["fire_id"]))
 
     @property
     def fire_id(self) -> UUID:

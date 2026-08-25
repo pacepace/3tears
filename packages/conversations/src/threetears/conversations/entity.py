@@ -81,45 +81,20 @@ class Conversation(BaseEntity):
     conversation's identity and scope.
 
     composite primary key on ``(agent_id, conversation_id)`` so rows
-    are partitioned per agent; ``_id`` holds the
-    ``(agent_id, conversation_id)`` tuple after construction.
+    are partitioned per agent. ``BaseEntity`` derives ``_id`` from the
+    collection's declared ``primary_key_columns``, so the addressing
+    tuple needs no override here; ``primary_key_field`` names the bare
+    row id so :attr:`BaseEntity.id` returns the conversation UUID.
 
     v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
     ``conversation_id`` to standardize on ``<entity>_id`` across all
     entity tables (matches the JSON API contract).
 
-    :ivar primary_key_field: name of the first pk column on the table
+    :ivar primary_key_field: name of the bare row-id column on the table
     :ptype primary_key_field: str
     """
 
-    primary_key_field: str = "agent_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with tuple ``_id`` for composite-pk lookup.
-
-        :class:`BaseEntity.__init__` captures the first pk field by
-        name; composite-pk entities overwrite ``_id`` with the
-        declared-order tuple so :meth:`BaseCollection.normalize_pk`
-        and :meth:`BaseCollection.l2_key` address the row uniformly
-        across tiers.
-
-        :param data: row dict; must carry both ``agent_id`` and
-            ``conversation_id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_id", (data["agent_id"], data["conversation_id"]))
+    primary_key_field: str = "conversation_id"
 
     @property
     def agent_id(self) -> UUID:

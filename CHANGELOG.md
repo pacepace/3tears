@@ -4,6 +4,886 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+## v0.28.0 -- 2026-08-24
+
+### Added
+
+- `nats`: **an agent pod may declare its own coordination KV buckets.**
+  `build_permissions` gains `coordination_buckets`, mirroring `tool_namespaces`:
+  resolved per principal by the auth callout from a registry row, read by
+  `AGENT_POD` alone, defaulting to `None` so every existing caller resolves
+  byte-identically.
+
+  A product pod needs KV buckets the platform does not define -- a replay
+  ledger, an idempotency store, a lockout counter, a ticket store, a handle
+  store, a quota counter -- and they cannot share one bucket, because TTL is a
+  property of the BUCKET and those want six different ones (a quota cell must
+  never expire; a challenge nonce must expire in minutes).
+
+  **The declared string is a SUFFIX and never a bucket name.** Each grant is
+  composed as `{ns}-{scope}-{suffix}` from `kv_key_scope_for` on the
+  AUTHENTICATED agent id, so an agent that declares `collections` is granted its
+  own `{ns}-agent_pod-<hex>-collections` and comes no closer to the shared
+  bucket every principal writes its L2 into. That is what makes the declaration
+  non-sensitive, and therefore safe to take from an agent's own manifest. A
+  malformed suffix RAISES at mint rather than being dropped, because a dropped
+  entry leaves a pod opening a bucket it was never granted -- and an ungranted KV
+  call does not raise, it blocks to its deadline and reports an unreachable
+  broker.
+
+### Fixed
+
+- `nats`: **the checkpoint L2 grant named a bucket nothing opens.** `AGENT_POD`
+  was granted `checkpoints` bare, while `ThreeTierCheckpointSaver` takes
+  `l2_bucket` as a SUFFIX and every host opens it through `kv_bucket`, which
+  layers `{namespace}-` over it -- so the bucket that materialises is
+  `{ns}-checkpoints` and the grant covered nothing. Non-breaking: the previous
+  grant addressed a bucket nothing opens, so nothing loses access.
+
+- `nats`: **an agent pod is granted the `{ns}-audit` stream it declares.** It
+  held `audit.tool.call` as a PUBLISH subject -- the emitting half -- but not the
+  stream, so a pod running its own audit consumer had its
+  `ensure_jetstream_stream` refused. Silent from the emitting side: publishes
+  keep returning, the consumer never binds, and every envelope it was meant to
+  durably record is dropped.
+
+- `nats`: `test_hitl_grant_silent_failure_live` passed slug pod ids, but
+  `kv_key_scope_for` has required UUIDs since scopes became per-principal. The
+  module raised at permission-build time and never reached the broker it exists
+  to test.
+
+
+### Added
+
+- `core`: **`TableSchema(cas_null_safe=True)` — a compare-and-swap fence that
+  covers a row's FIRST write.** Default `False`, so no existing schema, caller
+  or emitted statement changes.
+
+  The fence a `SchemaBackedCollection` could generate had a hole in it, and the
+  hole was silent. `SqlL3Backend._upsert_schema` treated a write as
+  fence-eligible only when the expected value was non-`None`; a save carrying
+  `original_timestamp=None` fell through to an UNFENCED
+  `INSERT … ON CONFLICT (pk) DO UPDATE SET …`. That is correct for a RANDOM
+  primary key, where two writers cannot collide on one id. It is wrong for a
+  DERIVED one — a `uuid5` or hash of the business key — where two writers who
+  have never seen the row still compute the same id and collide on its first
+  insert. Both statements reported one row affected, the second overwrote the
+  first, and a read-modify-write lost an increment with nothing raised
+  anywhere. The other branch could not cover it either: `WHERE cas_column = $n`
+  is an equality test, and `= NULL` matches nothing, ever.
+
+  With the flag on, one statement serves create and update alike::
+
+      INSERT INTO t (…) VALUES (…)
+      ON CONFLICT (pk) DO UPDATE SET <mutable> = EXCLUDED.…
+      WHERE t.<cas_column> IS NOT DISTINCT FROM $N
+
+  `IS NOT DISTINCT FROM` is Postgres's NULL-safe equality, so an expected value
+  of `NULL` matches a row nobody has stamped and matches NOTHING once a rival
+  has. With no conflicting row at all the plain INSERT applies and the fence is
+  never evaluated, so it cannot block a genuine creation — it only stops a
+  second writer clobbering the first. The loser affects 0 rows, which
+  `save_entity` turns into `ConcurrentModificationError` for the caller's retry
+  loop.
+
+  This is the shape three `14-eng-ai-survey` collections hand-write today
+  precisely because the generator could not express it, and it is what blocked
+  converting them. The 20-way concurrency test that exercises it is an
+  INTEGRATION test, which is why nobody's unit gate ever saw the loss.
+
+  The opt-in is validated at construction rather than trusted, because every
+  way of getting it wrong degrades silently: it requires `cas_column` set,
+  `on_conflict="update"`, and a `cas_column` that is a mutable non-pk column
+  with no `server_default` — anything else leaves the fence unable to advance,
+  or drops it out of the statement altogether. Constructing such a collection
+  with the table also listed in `collection_flush_tables` is refused for the
+  same reason: a buffered write is replayed without the fence value it was
+  decided under, so every deferred write to an existing row would evaporate.
+
+- `core`: `BaseCollection.emits_cas_fence`, a `False`-by-default property a
+  collection overrides to declare that EVERY write it generates is fenced. The
+  framework uses it in the fire-and-forget `collection[id] = value` path, which
+  has no caller left to return a rowcount to: a 0 there is now logged as a lost
+  write rather than discarded. Unfenced collections are unaffected, where 0 is
+  the ordinary "DO NOTHING matched" outcome and not a loss.
+
+- `agent-tools`, `core`: **a tool may declare a REST address — and nothing
+  serves it yet.** `TearsTool` gains a fourth reach face, `face_rest`, beside
+  `face_platform_tool` / `face_api` / `face_mcp`. It ships INERT on purpose: the
+  contract lands and is released before anything consumes it, so the serving
+  side is built against a published declaration rather than a moving one.
+
+  It is the one face that cannot be a boolean. The other three have a derived
+  address — a mesh subject, an API operation, an MCP tool name all fall out of
+  `mcp_name()` — while a REST resource needs a method, a path template, a
+  binding from URL positions to schema properties, and a cacheability posture.
+  Those live on `threetears.agent.tools.http_operation.RestAffordance`, and
+  `None` is the off state: every face is surface to defend.
+
+  **It is not a new descriptor type.** The outbound half of this exact idea
+  already shipped one directory down: `HttpOperationDescriptor` derives its
+  `{name}` placeholders from its own path template. Both now inherit
+  `PathTemplateBinding`, which owns the template, the placeholder derivation and
+  the `QUERY_METHODS` split, so the two directions cannot disagree about how a
+  template is read. What inbound deliberately does NOT inherit is as
+  load-bearing: no `credentials_ref` (inbound is authorized per caller, not by
+  an upstream secret), no `param_schema` (the tool's own `mcp_schema()` is the
+  one place it exists), and a CLOSED method vocabulary where outbound stays
+  permissive — an imported third-party spec may legitimately carry `PROPFIND`;
+  an authored declaration carrying `BREW` is a typo.
+
+  `HttpMethod` covers all seven verbs, HEAD and OPTIONS included. A five-verb
+  list would have left half of `QUERY_METHODS` — `{GET, DELETE, HEAD, OPTIONS}`
+  — undeclarable while the binding rule still branched on it.
+
+  **Binding covers path AND query, because a GET has nowhere else to put its
+  arguments.** `RestAffordance.bind()` partitions the tool's declared properties
+  into path (the template placeholders), then query for a `QUERY_METHODS` verb
+  and body otherwise. Header and cookie locations are unrepresented inbound:
+  those carry the platform's concerns, not a tool's arguments.
+
+  **Cacheability is derived and narrowable, never declared outright.**
+  `CacheClass` moves out of `threetears.datasources.geo_config` (where it was
+  spelled `CacheClassConfig` and served map tiles only) into
+  `threetears.core.http_cache`, because a second consumer arrived and neither
+  package may import the other. `threetears.datasources` re-exports the name it
+  has always used, so no geo declaration changes — one enum object, two names,
+  not two vocabularies. `narrow_cache_class()` is the rule as a function: a
+  declaration may narrow what the resolved resource already is and is clamped if
+  it tries to widen. A tool REST read is per-caller authorized by construction,
+  so a class attribute that could say "cacheable" outright is exactly the
+  widening that leaks to an edge. `cache_version_param` must name a path
+  placeholder — an HTTP shared cache keys on URL and cannot key on a bearer
+  token, so a version outside the URL keys nothing, and a tenant-varying
+  resource is either origin-only or carries its tenant in the path.
+
+  **What is validated, and what is not.** Intra-tool coherence fails early: the
+  method vocabulary and the cache posture at class-definition time (the
+  declaration is a class attribute, so constructing it IS defining the class),
+  and the path template against the tool's own `mcp_schema()` at registration,
+  with a message naming the offending property and the tool. Inter-tool
+  coherence — template collision across pods, prefix ownership within a
+  customer, whether a resolved tool has an ingress principal — needs the full
+  `platform.namespaces` view and belongs to the serving side, which refuses on
+  collision.
+
+  The existing registration manifest carries it; there is no second channel.
+  `ToolManifestEntry.face_rest` holds the declaration and deliberately has no
+  boolean twin — the declaration's presence IS the flag. The platform-scope
+  `v003` migration adds `face_rest BOOLEAN NOT NULL DEFAULT FALSE` beside the
+  other three face columns plus a nullable `face_rest_declaration JSONB`, both
+  idempotent. They ship here rather than in a consumer because splitting one
+  column family across two repositories puts half of it on a second release
+  train.
+
+  **Known open gap, assigned:** `_coercion` engages only for declared types
+  `object` and `array`, and `run` performs no schema validation, so a tool
+  declaring `{"page": {"type": "integer"}}` would receive `"5"` over REST and
+  `5` over a JSON body — a per-face divergence inside one tool. Closing it by
+  widening `_coercion` to scalars would change the arguments EVERY existing tool
+  receives on EVERY existing face, which an inert declaration-only change must
+  not carry. The serving shard parses path and query segments against the
+  declared schema before dispatch instead; `bind()` gives it the property names
+  and `mcp_schema().input_schema` the types. This is recorded in
+  `http_operation`'s module docstring so it cannot be lost.
+
+- `channels`: **`threetears.channels.mail` — outbound email, and the delivery
+  reports that come back.** The platform had no mail at all: no SMTP, no
+  provider API, nothing in `packages/*`. The `channels` protocol is not an
+  answer either — `ChannelDeliveryMessage` requires a `conversation_id` and an
+  `agent_id` and routes to a thread, and a survey respondent or a
+  password-reset recipient has no platform presence at all.
+
+  A complete implementation existed one repo over, in
+  `14-eng-ai-bot-identity`'s `identity_core/email/`, whose own module docstring
+  set the condition for moving it: *"Not a new 3tears primitive — revisit only
+  if a second 3tears product needs the same capability."* Survey fielding is
+  that second product, so this is that implementation promoted rather than a
+  second copy of it.
+
+  Promoted as-is, including the decisions that are load-bearing rather than
+  incidental: stdlib `smtplib` on `asyncio.to_thread` instead of an async SMTP
+  dependency; no provider SDK, so changing relay is a settings edit rather than
+  a rewrite; settings read PER SEND, so an operator correcting a wrong password
+  waits for the next send rather than the next deploy; and EVERY failure
+  leaving as `EmailSendError`, because narrowing that catch was measured wrong
+  once already — a header the stdlib refuses to fold raises `HeaderWriteError`,
+  and it escaped a caller handling exactly one type.
+
+  What is a seam rather than a lift: the settings STORE stays with each
+  product. identity-core resolves its own from `platform_email_settings` with
+  the password sealed, a residency-routed pool and its own audit trail, none of
+  which generalises, so what moves upstream is `EmailSettingsResolver` — which
+  `PlatformEmailSettingsService` already satisfies structurally, method name
+  and return shape included. `StaticEmailSettingsResolver` is the answer for a
+  product with no settings table, and it keeps both disciplines: the password
+  arrives as a `scheme://locator` secret reference, resolved on every send.
+  The original's hard-wired NATS audit call becomes an `on_failure` callback
+  for the same reason.
+
+- `channels`: **`threetears.channels.mail.bounce` — a `bounced` outcome now has
+  a source.** An SMTP send is fire-and-forget: the relay accepts the message,
+  the conversation ends, and nothing on the outbound path can ever report a
+  bounce. `BounceReceiver` is the inbound half — verify the provider's
+  signature, parse the body into `DeliveryEvent` values, hand each to the
+  product.
+
+  `DeliveryEventType` separates `bounced_hard` from `bounced_soft` because the
+  policies are opposite (suppress immediately versus retry then suppress), and
+  keeps `complained` distinct from both: a spam report is a suppression event
+  where the address works perfectly, and folding it into a bounce loses an
+  opt-out and corrupts the bounce rate a sender's reputation is measured on.
+
+  It deliberately does NOT run through `WebhookReceiver`. That path resolves a
+  `webhook_subscriptions` row and dispatches a `WakeTrigger` into a
+  conversation for an agent to act on, and a delivery report has no
+  conversation, no agent and no user. What it DOES reuse is that receiver's
+  verification contract entire: the same `Verifier` callable shape, the same
+  canonical `verify_generic_hmac_sha256`, the same default signature header and
+  body-size cap. A second HMAC implementation was found and removed once in
+  this package already.
+
+  No provider-specific verifier ships. The default is the platform's own
+  `sha256=<hex>` HMAC; SendGrid signs with ECDSA and SES arrives as an
+  RSA-signed SNS notification, and both are `register_verifier`
+  implementations with a real signature-scheme decision behind them rather than
+  something to guess at here.
+
+- `channels`: **`threetears.channels.mail.batch` — many recipients, where one
+  failing is ordinary.** `send_batch` isolates per recipient, pulls the
+  iterable lazily so sample size does not drive memory, bounds concurrency, and
+  reports each failure by ADDRESS as it happens rather than only at the end —
+  a caller that records an outcome per recipient can resume from its own
+  records. Rate limiting plugs in through `SendPacer`, and `TokenBucketPacer`
+  is the platform's existing distributed `TokenBucket` over NATS KV rather than
+  a second limiter, because a per-process limiter set to a relay's rate is that
+  rate multiplied by the replica count.
+
+  Its ceiling is documented rather than discovered: no durability, no retry,
+  one process. Past roughly a hundred thousand recipients per run, or wherever
+  a partial run has to survive a restart, the shape wanted is a durable job per
+  recipient with this function reduced to the worker body.
+
+- `channels`: **`threetears.channels.mail.templating` — per-recipient
+  substitution, an HTML alternative, and `List-Unsubscribe`.** Products supply
+  the content; this owes a consistent way to fill it in. `{name}` substitution,
+  one pass, with a missing value refused BY NAME rather than rendering
+  `Hello , open` into a live inbox, values HTML-escaped in the HTML part only,
+  and a value carrying CRLF refused where it would land in a header. An HTML
+  body without a plain-text alternative is refused at construction.
+
+  `EmailMessage` carries `list_unsubscribe_url` / `list_unsubscribe_mailto`,
+  which the transport renders as RFC 2369 `List-Unsubscribe` and — for an
+  `https://` URL only — RFC 8058 `List-Unsubscribe-Post`. Bulk survey mail
+  legally needs both; transactional mail never bothered with either.
+
+  Deliberately not a template language, and the alternative was weighed:
+  `jinja2.sandbox.SandboxedEnvironment` is already used in
+  `threetears.agent.wake` and was ruled out because adding `jinja2` to
+  `3tears-channels` changes this package's dependency metadata for every
+  consumer that only wants Slack, and because a bulk-mail substitution surface
+  actively wants to be incapable of evaluating an expression.
+
+- `agent-acl`: **`threetears.agent.acl.catalog` — a declarable vocabulary for
+  `Role.permissions`.** `Role.permissions` is free text. A role may name any
+  resource type and any action, both are compared by string equality at
+  evaluation time, and a pair nothing serves does not fail — it resolves to an
+  empty action set and the role grants silence. The role exists, it reads as
+  granted, and it does nothing.
+
+  `PermissionCatalog` is an application's statement of which pairs mean
+  something, built from `ResourceTypeDescriptor` entries that each carry a
+  declaring application, an operator-facing label, and a closed tuple of
+  `ActionDescriptor`s. `validate_permissions(permissions, catalog)` returns
+  every undeclared pair as a `CatalogViolation`; `enforce_declared_permissions`
+  is the raising form and carries the same detail on `UndeclaredPermission`.
+
+  Labels ship with the declaration rather than being retrofitted, because the
+  consumer is a role builder rendering `survey_version.field` to a researcher,
+  and a display string invented separately by each surface is a different string
+  on each surface.
+
+  **The resource type is a namespace type, not a free label**, and everything
+  else follows from that. Evaluation is namespace-centric end to end — the
+  evaluator resolves `role.actions_for(namespace.namespace_type)` — so a
+  declared resource type that `platform.namespaces.namespace_type` does not
+  admit has nothing to bind to, and a role naming it can never be reached.
+
+  That is also why the declaring application is a FIELD on the descriptor rather
+  than a prefix on the resource type. An application-prefixed wire form would
+  have to be the bucket key to have any effect, and the bucket key is what the
+  evaluator looks up by namespace type; a `survey/report` bucket would need a
+  `survey/report`-type namespace row, which the platform's
+  `namespaces_namespace_type_ck` CHECK does not admit and no product can widen
+  from its own repo. Two applications claiming one resource type is therefore
+  REFUSED at catalog construction, by name, rather than disambiguated: at
+  evaluation time there is no application dimension available to tell them
+  apart, so merging their action sets would let one application's role grant the
+  other's action on the same rows.
+
+  The wildcard bucket is skipped by an explicit branch rather than by failing to
+  find an entry for `"*"`. `{"*": ["read"]}` is the shipped `Reader` shape, it
+  names no resource type, and there is nothing to check it against;
+  `ResourceTypeDescriptor` separately refuses `"*"` as a declared type, so the
+  two cases cannot converge. Parameterized actions — the
+  `read_file_matching:<glob>` shape the evaluator already ships — are declared
+  once as a stem and match any argument.
+
+  Nothing here participates in evaluation. It is a write-path and
+  authoring-path concern; a role evaluates identically whether or not a catalog
+  exists.
+
+  Whether a declared resource type is a namespace type the platform actually
+  admits is deliberately NOT checked here. The authoritative closed set is the
+  `namespaces_namespace_type_ck` CHECK in the deploying hub. The nearest thing
+  on this side, `threetears.core.namespaces.PLURAL_PREFIX_BY_NAMESPACE_TYPE`,
+  already disagrees with it in both directions — it carries `hitl`, which no
+  CHECK admits, and omits `intention` and `identity`, which ship as role buckets
+  in `threetears.agent.intention` and `threetears.agent.identity`. Validating
+  against a list known to be wrong would refuse correct declarations and admit
+  incorrect ones, so that check belongs where the CHECK is.
+
+### Changed
+
+- `langgraph`: **`ThreeTierCheckpointSaver` now requires a tenancy decision.**
+  `customer_id: UUID | None = None` is replaced by `scope: CheckpointScope`,
+  keyword-only, with no default. Omitting it is a `TypeError` at construction.
+
+  The mechanism is unchanged and was already right: the customer is folded into
+  the stored `thread_id` and so into every key the saver addresses at all three
+  tiers. It fails CLOSED — a bare thread id under a scoped saver matches
+  nothing, whereas a statement that forgot a `customer_id` predicate would
+  return every customer's rows — and it reaches L1 and L2, which are key-value
+  stores with no columns to filter on.
+
+  The DEFAULT was the defect. `customer_id=None` meant "address every
+  customer's keyspace", it is what a caller got by saying nothing, and it is
+  what all six construction sites in the estate said. That made tenancy a
+  convention rather than a gate, which the old docstring conceded in as many
+  words.
+
+  `CheckpointScope` has exactly three constructors and no public one:
+
+  - `CheckpointScope.for_customer(customer_id)` — one customer for the saver's
+    whole life.
+  - `CheckpointScope.from_config(key="customer_id")` — many customers, one per
+    call, resolved out of `config["configurable"][key]`. See the multi-tenant
+    section below.
+  - `CheckpointScope.unscoped(reason="...")` — an explicit opt-out. The reason
+    is mandatory and non-empty, is logged at WARNING when the scope is built,
+    and makes an unscoped deployment greppable estate-wide by its own
+    constructor name.
+
+  `CheckpointScope()` raises, the value is immutable and slotted, and every
+  constructor refuses anything but a `uuid.UUID` for the customer — the
+  customer is rendered into a `LIKE` pattern by the purge, and that statement
+  needs no `ESCAPE` clause only because a UUID's text form contains no `%` and
+  no `_`.
+
+- `langgraph`: **`CheckpointScope.from_config()` — the multi-tenant answer.**
+  A saver whose scope is config-resolved reads each call's customer out of
+  `config["configurable"]["customer_id"]` (the key is configurable) and folds it
+  into the stored key exactly as `for_customer` does, at all three tiers.
+
+  It exists because the other two answers both assume ONE customer per saver
+  INSTANCE, and a host that serves every customer from one process — one
+  compiled graph, one process-lifetime saver built in lifespan startup before
+  any request exists — can honestly say neither. It has no single customer to
+  name, and it is not un-tenanted: it has many customers who must not share a
+  keyspace. Under the two-answer API such a host had to pick `unscoped` and rely
+  on `thread_id` unguessability for isolation.
+
+  LangGraph already threads a `RunnableConfig` into every checkpoint call that
+  reads or writes (`aget_tuple`, `alist`, `aput`, `aput_writes`), so the
+  customer travels with the request that knows it. One saver, one compiled
+  graph, one keyspace per customer, no per-request construction.
+
+  **It fails CLOSED, and that is the whole property.** A missing key, a `None`,
+  or a value that is not a `uuid.UUID` RAISES, before any statement is issued
+  and before any cache is read. It never degrades to the un-tenanted keyspace: a
+  host that forgot the key would otherwise end up with every customer's
+  conversations sharing one keyspace while believing itself isolated, which is
+  strictly worse than never having tenanted at all. Each of those shapes is
+  asserted directly, together with the assertion that nothing reached the
+  executor, and the degradation is refused structurally as well — an enforcement
+  rule rejects a defaulted `.get(key, fallback)` inside the resolver, which is
+  the one-character diff that would turn "fail closed" into "fail open".
+
+  The other two scopes are untouched by this, including by the new key: a
+  `customer_id` sitting in a `configurable` does not re-scope a `for_customer`
+  saver and does not un-scope an unscoped one, because neither consults the
+  config at all.
+
+  **The two methods that receive no config.** `adelete_thread` and
+  `adelete_customer_threads` get no `RunnableConfig`, so they take the customer
+  as a KEYWORD-ONLY argument reconciled against the scope:
+
+  - `adelete_thread(thread_id)` keeps working unchanged under `for_customer` and
+    `unscoped` — scriob's delete-session route calls it positionally, and an
+    enforcement rule now pins `thread_id` as its only positional parameter.
+  - Under `from_config` both methods REFUSE without a customer. A delete that
+    cannot know its customer must not guess: purging under the bare thread id
+    would address the un-tenanted keyspace, and picking a customer would be a
+    guess about whose data to destroy.
+  - Restating the customer a `for_customer` saver already holds is accepted;
+    naming a different one is refused, so the argument is not a way to reach
+    outside a scope. An `unscoped` saver refuses any customer, and
+    `adelete_customer_threads` still refuses it outright.
+
+  Every refusal names the constructor the saver was built with, because that —
+  not the argument — is what the caller has to reconcile.
+
+  **Upgrading: the minimum viable change is one argument.**
+
+  ```python
+  saver = ThreeTierCheckpointSaver(
+      executor=executor,
+      scope=CheckpointScope.unscoped(reason="single-tenant deployment"),
+  )
+  ```
+
+  That is a legitimate destination, not a placeholder. An unscoped saver emits
+  byte-identical statements and cache keys to a pre-tenancy one, so **it reads
+  the rows that already exist and migrates nothing.** The property is pinned by
+  a test rather than described.
+
+  **Adopting a real customer later is a data change, not a code change.**
+  Existing rows live under a bare thread id and a scoped saver will not find
+  them, so they must be re-keyed —
+  `UPDATE checkpoints SET thread_id = $customer || '/' || thread_id`, the same
+  over `checkpoint_writes`, and the cached L2 bundles invalidated. No re-key
+  script ships here and none can: which customer owns which thread lives in the
+  host's own tables (a sessions table, a conversations table), which this
+  library has never seen. Each consumer writes that mapping query itself.
+
+  **Where a customer is available today**, from reading each consumer:
+
+  - `14-eng-ai-bot-agents` bootstrap (`runtime/bootstrap/phases/backend.py`) —
+    available, no plumbing. `state.customer_id` is a sibling attribute on the
+    `BootstrapState` already in scope and already checked non-`None` earlier in
+    the same function. One customer per pod for the pod's whole life, so the
+    process-lifetime saver can hold a scope.
+  - `14-eng-ai-survey` (`core/checkpointer_factory.py`) — available, one call
+    away. `get_platform_identity().customer_id` is a process-wide accessor over
+    the same one-customer-per-pod environment; it is simply not wired into the
+    factory yet. Also single-tenant per process, so a scoped process-lifetime
+    saver is safe.
+  - `scriob` delete-session route (`chat/routes.py`) — available, no plumbing.
+    `identity.tenant_id` is a local in the same handler, used two lines above
+    the construction. Per-request construction on a multi-tenant server, which
+    is the shape a scoped saver fits best.
+  - `scriob` history read (`chat/turn.py`, `read_message_history`) — not in
+    scope, one hop away. The function takes only a pool and a conversation id;
+    its caller holds `identity.tenant_id`. Adopting a customer means threading
+    one parameter through one call.
+  - `scriob` turn build (`chat/turn.py`, `_build_compiled`) — not in scope, two
+    to three hops away. The same `identity.tenant_id` is already threaded down
+    this chain for the summarization wiring, so the path exists.
+  - `metallm` (`api/src/graph/checkpoint.py`) — **available, via
+    `from_config`.** See the worked migration below. An earlier revision of this
+    entry recorded metallm as "could not determine a customer" and pointed it at
+    `unscoped`; that is **superseded**. It was a limitation of the two-answer
+    API, not of metallm — the customer was always in scope at the call site, it
+    just had nowhere to go. `unscoped` is not metallm's path.
+
+  `adelete_thread(thread_id)` keeps its positional signature: it has a live
+  production consumer that passes a bare thread id, and under `for_customer` and
+  `unscoped` the customer comes from the saver's own scope rather than from an
+  argument.
+
+- `langgraph`: **metallm's migration, worked.** metallm is the multi-tenant case
+  above, and `from_config` is its answer. Two edits, neither changing a
+  construction lifetime.
+
+  1. **Build site** — `api/src/graph/checkpoint.py:292`, the
+     `return ThreeTierCheckpointSaver(...)` inside `build_checkpoint_saver`:
+
+     ```python
+     return ThreeTierCheckpointSaver(
+         AsyncpgPoolAdapter(postgres_pool),
+         scope=CheckpointScope.from_config(),
+         l1_cache=l1_cache,
+         l2_cache=l2_cache,
+         l2_bucket=BUCKET_CHECKPOINTS,
+         flush_callback=flush_callback,
+     )
+     ```
+
+     Nothing about the singleton changes. It is still built once in lifespan
+     startup at `api/src/main.py:906` and still baked into the compiled graph by
+     `get_graph(checkpointer=checkpointer)` at `api/src/main.py:915`.
+
+  2. **Call site** — `api/src/graph/metallm_graph.py:1707`, the
+     `config: RunnableConfig = {...}` literal in `run_conversation`. Add one key
+     beside the `thread_id` already set on line 1709:
+
+     ```python
+     config: RunnableConfig = {
+         "configurable": {
+             "thread_id": str(conversation_id),
+             "customer_id": user_id,
+             ...
+         },
+     }
+     ```
+
+     `user_id: UUID` is a parameter of `run_conversation` itself
+     (`api/src/graph/metallm_graph.py:925`) and is already in scope at that
+     literal. The customer is one dict key away; nothing needs threading.
+
+  **Why `user_id` is the customer.** metallm's tenant model maps
+  `customer_id -> user_id`, one customer per user, stated in
+  `api/src/services/metallm_memory_authorizer.py:449-467`
+  (`metallm_memory_namespace_for_user`, whose docstring says "each user is their
+  own customer" and whose body returns `METALLM_AGENT_ID, user_id`). metallm is
+  therefore not a single-tenant deployment missing a customer — it is a
+  multi-tenant one whose customer is per request. Its checkpoints are today
+  isolated only by `thread_id` unguessability; after this they are isolated by
+  the key itself, at L1, L2 and L3.
+
+  **Data caveat, not waived by `from_config`.** metallm's existing checkpoint
+  rows live under a bare `thread_id` and a config-resolved saver will not find
+  them. A cutover either re-keys them
+  (`UPDATE checkpoints SET thread_id = <customer> || '/' || thread_id`, the same
+  over `checkpoint_writes`, cached L2 bundles invalidated) or accepts that
+  in-flight conversations start a fresh checkpoint history. The
+  conversation-to-user mapping lives in metallm's own tables, so that statement
+  is metallm's to write; no script ships here.
+
+  No metallm code is changed by this release. This is the instruction, sited and
+  line-numbered, for the change metallm makes on its own side.
+
+- `core`: `BaseEntity` derives its tier-addressing `_id` from the owning
+  collection's declared `primary_key_columns`, so a composite-primary-key
+  entity needs no constructor override. Twenty-three of them are deleted here.
+
+  `_id` is the key `normalize_pk` / `l2_key` and every L1 / L2 / L3 path address
+  a row by. It was seeded from the scalar `primary_key_field`, which is correct
+  only on a single-pk table, so every composite entity hand-wrote
+  `object.__setattr__(self, "_id", (data["a"], data["b"]))` after calling
+  `super().__init__`. That copy is not a style problem: it is a second,
+  independent statement of the table's key shape sitting next to the
+  collection's declaration, free to disagree with it. When it does, the
+  disagreement is silent and asymmetric -- L3 keeps addressing the right row
+  because its SQL is generated from the declaration, while L1 and L2 address the
+  wrong one. A stale or cross-tenant read then returns from cache with no error
+  raised anywhere.
+
+  The rule applied is not new: `BaseCollection.save_entity` already rebuilt the
+  composite from the payload on the write path. It now runs at construction too,
+  so the read and write paths cannot disagree about which row an entity is.
+
+  Two identities are now distinguished, and they differ only on composite-pk
+  tables. `BaseEntity.addressing_id` (new) is the full key -- scalar for
+  single-pk, declared-order tuple for composite -- and is what
+  `save_entity` / `reload_entity` now use. `BaseEntity.id` is the entity's
+  scalar identity: the value of the column named by `primary_key_field`.
+
+  **Single-pk behaviour is unchanged**, which was the whole risk and is asserted
+  rather than assumed.
+
+  **Composite-pk `.id` changes on eighteen classes** — every one that previously
+  returned the tuple from `.id` (i.e. had no `id` property override). They now
+  return the bare row id and expose the tuple as `addressing_id`, and
+  `primary_key_field` was retargeted from the partition column to the bare-id
+  column to match. That contract is what several of these modules' own docstrings
+  already claimed while their code contradicted it.
+
+  - `conversations`: `Conversation`, `Folder`
+  - `scheduled-jobs`: `ScheduledJobEntity`, `JobFireEntity`
+  - `agent-memory`: `MemoryEntity`, `MediaEntity`, `MediaContentEntity`,
+    `MemoryChunkEntity`, `MemoryRefEntity`, `MemoryConsolidationEntity`
+  - `agent-skills`: `AgentSkillEntity`, `AgentSkillInvocationEntity`
+  - `agent-wake`: `WakeScheduleEntity`, `WakeFireEntity`,
+    `WebhookSubscriptionEntity`
+  - `agent-identity`: `IdentityVersionEntity`
+  - `agent-intention`: `IntentionEntity`
+  - `agent-tools`: `ContextItemEntity`
+
+  A sweep of every package's `src/` and `tests/` found no production reader of
+  `.id` on any of them, so the change is source-compatible in this repo; it is
+  not necessarily so downstream.
+
+  **Two of these `.id` values are not row-unique, and callers should read
+  `addressing_id` instead.** `MemoryConsolidationEntity.id` is
+  `consolidated_memory_id` on a three-part key — many source edges share one
+  consolidated id — and `MemoryRefEntity.id` is `item_id`, a polymorphic ref
+  unique only within a conversation. No component of a multi-part key is a row
+  identity on its own.
+
+  **`geo` changes too, and previously had no override to change.**
+  `FeatureEntity` and `TileEntity` sit under collections declaring 3- and 5-part
+  keys but never wrote an `_id`, so their `_id` was a scalar that addressed
+  nothing; it is now the correct tuple. `TileEntity.primary_key_field` moved from
+  `layer` to `z`, because a layer NAME identifies a whole layer rather than a row
+  and was the one component guaranteed to be wrong for `.id`.
+
+  `reload_entity` is fixed as a consequence: it read `entity.id`, which on the
+  composite entities that kept `.id` scalar named one column, so the fetch missed
+  and raised "not found in storage" for a row that was present.
+
+- `core`: `threetears.core.testing.entity_collection_stub` -- a collection
+  stand-in for entity unit tests, declaring a real `primary_key_columns` tuple.
+
+  Every package had grown its own `mock_collection` fixture: a bare `MagicMock`
+  with hand-written `side_effect` closures over a dict. All of those copies
+  shared one defect -- none declared `primary_key_columns` -- so a composite-pk
+  entity built against them addressed rows by the bare id. That went unnoticed
+  while each entity carried its own `_id` override and surfaced the moment the
+  overrides were deleted.
+
+### Fixed
+
+- `nats`: **a NATS permissions violation is no longer an anonymous error line.**
+  `NatsClient`'s error callback logged every nats-py error identically
+  (`NATS error: %s`), which for a permissions violation was the wrong shape for
+  the one failure on that callback nobody can otherwise see.
+
+  A permissions violation is not a denial you find out about. The server refuses
+  the operation and KEEPS THE CONNECTION OPEN — nats-py's `_process_err` returns
+  before `_close` for exactly this case — and nothing is raised to any caller. So
+  a refused SUBSCRIBE leaves a perfectly live client-side subscription that
+  receives nothing, forever, silently: the capability is dead and the only trace
+  is one line that reads like any transient transport hiccup.
+
+  The line now names the subject, says whether the refusal was a `publish` or a
+  `subscribe`, states the consequence (a subscribe violation means that
+  subscription receives nothing from now on; a publish violation means the
+  message was dropped while the sender believes it succeeded), and points at
+  `threetears.nats.subject_permissions.build_permissions` as the place the grant
+  is missing from. The raw server error is still carried verbatim.
+
+  Those same facts also go out STRUCTURED, via the platform's own
+  `extra={"extra_data": {...}}` convention that `threetears.observe`'s formatter
+  serialises to JSON — `subject`, `operation`, `subject_case` and `error`. Prose
+  alone could be read but not alerted on or grouped, which is most of what naming
+  the subject was for. When the server's wording cannot be decomposed at all the
+  fields are `null` rather than the human placeholders, so a log pipeline never
+  groups on a subject nobody recovered.
+
+  `subject_case` exists because the subject's case cannot always be trusted:
+  nats-py lowercases the WHOLE `-ERR` payload in its protocol parser before
+  dispatch. That is harmless for a HITL subject (sha256 digests and uuids are
+  lowercase already) and NOT harmless for `$KV.`, `$JS.API.` or `_INBOX_`
+  subjects, where an operator pasting the reported string into a grant list would
+  get one that never matches. The subject is therefore reported exactly as
+  received — never silently "corrected" into a case nothing observed — and
+  qualified: uppercase anywhere in the payload PROVES the parser left it alone
+  (`verbatim`), an all-lowercase payload is indistinguishable from a mangled one
+  (`lowercased-by-nats-py-parser`), and an undecomposable wording is
+  `not-reported`. The flag is derived, not assumed, so a future nats-py that
+  stops lowercasing reports `verbatim` with no code change. The human-readable
+  line carries the same caveat in words, and only when it applies.
+
+  Rate limiting keeps DISTINCT SUBJECTS distinct, so a second dead subject is
+  never suppressed behind the first — each is a different capability lost, not a
+  repeat of one error. Only the same subject repeating inside the window is
+  collapsed to debug, as before.
+
+  Observability only: no other error path changed, and nothing raises where the
+  client previously continued (the reconnect and degrade paths depend on that).
+  A permissions violation still does NOT trip the wedged-auth `is_healthy`
+  signal, which is correct — restarting the pod cannot fix a missing grant.
+
+  Proven end to end against a real broker by
+  `packages/nats/tests/integration/test_hitl_grant_silent_failure_live.py`: a
+  tool pod whose permissions were built WITHOUT `tool_namespaces` subscribes its
+  owner-routed HITL subject with no exception, reports itself healthy, receives
+  nothing when the hub publishes — and this line is the only evidence that
+  exists, naming that exact subject in its structured fields. The same test runs
+  the identical actions on the identical subject with `tool_namespaces` supplied
+  and the message genuinely arrives, so the credential is the only variable.
+
+- `core`: **`entity_collection_stub` told two lies about the collection it
+  stands in for, and each one made a real behaviour untestable.** The shared
+  stub in `threetears.core.testing.entities` backs entity unit tests across six
+  packages; where it disagrees with `BaseCollection`, every test built on it
+  agrees with the stub and none of them notices.
+
+  `write_to_cache_sync` returned `True` unconditionally. The real one returns
+  `False` when `self._l1 is None` (`collections/base.py:498`), and `BaseEntity`
+  reads that return value to make two decisions: `__init__` stores the row in
+  the in-memory `_changes` buffer instead of L1, and `set_data` raises
+  `RuntimeError`. Both branches exist precisely for the no-L1 case and neither
+  was reachable from a stub-based test. `entity_collection_stub(has_l1=False)`
+  now models a collection with no L1 backend — reads answer `MISSING` / `None`,
+  writes answer `False`, and the backing dict stays empty. The short-circuit is
+  checked BEFORE pk normalization, as the real accessors do, so a no-L1 stub
+  skips arity validation exactly as the real collection skips it.
+
+  `set_field_sync` mutated the cached row in place. The real one reads the row
+  through `select_by_id` — which hands back a DETACHED dict — mutates that, and
+  re-`upsert`s it under whatever primary key the mutated row now carries
+  (`collections/base.py:461-465`). For an ordinary column the two are
+  indistinguishable. For a PRIMARY KEY column they are not: the real write lands
+  at the NEW key and leaves the old row sitting there, so the table ends up with
+  TWO rows while the caller still addresses the old one. In-place mutation
+  renamed the single row instead, which no backend does, and made that
+  divergence impossible to reproduce in a unit test.
+
+  The stub is still a `MagicMock` and `assert_called_with` on its methods still
+  works — that property is load-bearing for its current callers, and is now
+  asserted rather than assumed. No existing test was modified, and the six
+  consuming packages (`core`, `datasources`, `agent/memory`, `agent/wake`,
+  `agent/skills`, `conversations`) pass in full. New parity tests run the SAME
+  assertions against the stub and against a real `BaseCollection`, so the two
+  cannot drift apart again silently.
+
+  **Two further gaps are now closed, and the second is the dangerous one.**
+  `write_to_cache_sync` did not accept the real one's optional `primary_key`
+  override (`collections/base.py:481-484`), which names the columns a single
+  write keys on and defaults to the collection's declared
+  `primary_key_columns`; a caller passing it — `agent/memory`'s collection tests
+  do — got a `TypeError` from the stub. That failure is at least loud.
+
+  `exists_in_cache_sync` and `evict_from_cache_sync` were simply ABSENT, and
+  absence on a `MagicMock` is not a failure: the attribute is auto-created and
+  the child it returns is truthy. A test asking "is this row cached?" got `True`
+  for a row nothing had ever written, `True` after an eviction it had just
+  requested, and `True` against an empty cache — an assertion that could not
+  fail. Both are now implemented against the real semantics, including the one
+  that reads backwards: `evict_from_cache_sync` returns `True` whenever an L1
+  backend EXISTS, not when a row was found, because the real method issues its
+  delete unconditionally (`collections/base.py:534-537`). Both short-circuit to
+  `False` with no L1, and both normalize the pk first, so a scalar id against a
+  composite-pk stub raises the same arity `ValueError` the real collection
+  raises.
+
+  The parity suite gains a real composite-pk `BaseCollection` alongside the
+  single-pk one, so the pk-override, presence and eviction assertions run
+  against both key shapes on both objects — 15 new tests, each asserting the
+  stub and a real collection agree.
+
+- `core`: **the last hand-rolled `mock_collection` fixture is gone.**
+  `packages/core/tests/test_base_entity.py` still defined its own, predating the
+  shared stub and carrying both of the defects above plus a third: it keyed its
+  dict by `str(entity_id)` rather than the normalized pk tuple, which collapses
+  `("cust-a", "row-1")` and `("cust-b", "row-1")` onto one entry. It now uses
+  `entity_collection_stub` like every other consumer.
+
+  All 35 tests pass unchanged. **No test in that file was passing only because
+  of a stub defect** — the three assertions that moved (`cache["e1"]` →
+  `cache[("e1",)]`) changed key SHAPE and nothing else, and no assertion was
+  weakened or removed. That is the expected outcome rather than a lucky one: the
+  file's fixture always reported a successful cache write, which is what the
+  shared stub does at its `has_l1=True` default, and no test in it writes a
+  PRIMARY KEY column through `set_field_sync`, which is the only case where
+  in-place mutation and a detached re-upsert differ.
+
+- `registry`: **`RbacEvaluatorAuthorizer`'s docstring described a grant the
+  evaluator refuses.** It told an admin to reach platform built-in tools by
+  binding a "default tool access" group to the caller's customer with a
+  `type_customer` assignment. `RoleAssignment.covers` admits a `type_customer`
+  scope only when `scope_customer_id == namespace.customer_id`
+  (`agent/acl/types.py:299-303`), and platform built-in tool namespaces are
+  written with `customer_id=NULL` (`agent/tools/server.py:1603-1605`), so an
+  assignment naming an actual customer never matches one. Following the
+  docstring produced a grant that silently authorized nothing.
+
+  The docstring now names the three shapes that DO cover such a namespace:
+  `scope=all`, a per-namespace assignment on the tool's own namespace id, and —
+  the counter-intuitive one — `type_customer` with `scope_namespace_type='tool'`
+  and `scope_customer_id` left NULL, where the NULL is what matches the row's
+  NULL `customer_id`. That last shape is a PLATFORM-scope assignment despite the
+  scope's name; `RoleAssignmentCollection` already derives `row_scope='platform'`
+  for exactly it (`agent/acl/collections.py:941-942`), and it grants the group
+  every `tool` namespace on the platform, so it is not the per-customer grant
+  the old text implied.
+
+  Documentation only — no authorization behaviour changed. The code was right
+  and internally consistent; only the instructions were wrong. The full coverage
+  matrix is now pinned by tests in `packages/agent/acl/tests/unit/`, including
+  the agent-spun contrast case where a real `customer_id` makes the ordinary
+  per-customer `type_customer` grant work, because a docstring cannot be checked
+  by the test suite.
+
+- **Test collection no longer depends on which package pytest reached first.**
+  `pytest packages/geo packages/agent/acl` produced 7 collection errors while
+  each package alone was clean — and the REVERSE argument order,
+  `pytest packages/agent/acl packages/geo`, was green. Pre-existing on
+  `develop`; not introduced by this branch.
+
+  Several packages ship a regular `tests` package (`agent/acl`, `geo`,
+  `datasources` and others each have `tests/__init__.py`). pytest walks up from
+  a test file only while `__init__.py` exists, so it stops at `packages/<pkg>`
+  and registers every one of those trees under the same top-level module name,
+  `tests`. `sys.modules` is first-writer-wins: the first package collected owns
+  `tests` and `tests.unit`, and every later package's helper import then
+  resolves inside the WINNER's directory and raises `ModuleNotFoundError`.
+
+  Relative imports are NOT a defence, which is what makes this worth fixing
+  rather than documenting. `datasources` already imports its helpers as
+  `from ._helpers.driver_shims import ...` and still fails
+  (`pytest packages/agent/acl packages/datasources` → 6 errors), because a
+  relative import resolves against the same shadowed `__package__`.
+
+  **CI was green by alphabetical accident.** Both CI and `scripts/test.sh` run
+  one cross-package invocation (`pytest packages/ tests/`), so they could see
+  this; `packages/agent/acl` simply sorts first in the `packages/` walk and won
+  the `tests` binding, which is precisely why `datasources` was safe there. A
+  package sorting ahead of it — `packages/admin` would — moves the breakage onto
+  acl and datasources at once, with nobody having touched either.
+
+  Fixed by setting `pythonpath = ["."]` in the root `[tool.pytest.ini_options]`,
+  which anchors every test module to a `packages.<pkg>.tests....` name and
+  removes the shared node entirely. The seven absolute `from tests.unit.
+  _fake_loaders import ...` statements in `agent/acl` become relative in the
+  same change — they are the only absolute `tests.`-rooted imports in the
+  workspace, and they must land together, since the `pythonpath` line alone
+  would break them. Verified order-independent across `geo` / `acl` /
+  `datasources` in both directions and all three together.
+
+  **68 of the 80 `tests/**/__init__.py` files that caused it are now deleted** —
+  and **12 turned out to still be load-bearing**, which the `pythonpath` line
+  alone does not make true of all of them.
+
+  The rule that separates the two: an `__init__.py` still decides the module
+  name wherever a conftest puts a TEST DIRECTORY on `sys.path`, which five do
+  (`agent/tools`, `agent/workspace`, `scrape` and `search` insert their own
+  tests dir; `packages/conversations/tests/conftest.py:15-16` inserts
+  `packages/core/tests/unit/coordination`). Once a test dir is on `sys.path`,
+  pytest's `resolve_pkg_root_and_module_name` walks OUTWARD from the deepest
+  package root and takes the first name that imports — so the innermost
+  candidate, `test_challenge` or `unit.test_bind`, wins and the walk never
+  reaches the repo root. The `__init__.py` is what moves the starting point up
+  to `packages/<pkg>`, past the bare candidate.
+
+  Deleting those was not cosmetic. It renamed
+  `packages.agent.workspace.tests.unit.test_bind` to `unit.test_bind` — the
+  shared top-level node this entry exists to remove — and it broke `scrape` and
+  `search` outright: a module with no package cannot resolve
+  `from ._searxng_payloads import ...`, so both trees stopped collecting
+  entirely (`ImportError: attempted relative import with no known parent
+  package`). The split was decided by measurement, not inspection: every
+  collected module's `__name__` was diffed before and after, and the 68 removed
+  are exactly the ones whose name did not move. After the deletion that diff is
+  empty — all 723 module names are byte-identical to the pre-change run.
+
+  `agent/tools` is the exception that proves the rule, and is NOT fixed here:
+  its tests dir is on `sys.path` (`tests/conftest.py:9`) and it has no
+  `tests/__init__.py`, so its modules were ALREADY named `unit.test_x` /
+  `enforcement.test_y` on `develop`. Its nested `__init__.py` files changed
+  nothing either way and are gone with the other 67. That package keeps a
+  latent version of this clash, unchanged by this branch.
+
+  The last two survivors are not test-tree packages at all:
+  `packages/agent/workspace/tests/_helpers/__init__.py` documents an importable
+  helper package that `tests/conftest.py` deliberately puts on `sys.path`
+  (import sites read `from _helpers.asyncpg_shims import ...`), and
+  `packages/scrape/sidecar/tests/__init__.py` belongs to the separate sidecar
+  deployable the workspace pytest config `--ignore`s outright and whose suite
+  runs from its own venv.
+
+  Collection counts are unchanged and still order-independent after the
+  deletion: `geo` + `acl` and `acl` + `geo` both collect 328, and all three with
+  `datasources` collect 2302 in either direction. The workspace total drops by
+  exactly the 68 parametrized cases that
+  `tests/enforcement/test_no_entity_id_override.py` generated for those files —
+  it parametrizes over every `.py` file in the repo, so deleting a file deletes
+  a case.
+
 ## v0.27.0 -- 2026-08-22
 
 ### Breaking

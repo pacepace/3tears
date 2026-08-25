@@ -22,6 +22,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.datasources.config import _VALID_ACCESS_MODES, DatasourceConfig
+from threetears.core.testing import entity_collection_stub
 from threetears.datasources.entities import (
     CapabilitySourceEntity,
     DataSourceAccessMode,
@@ -238,10 +239,30 @@ class TestTableTemplateEntity:
 
     def test_id_and_partition(self) -> None:
         template_id = uuid4()
+        customer_id = uuid4()
+        coll, _cache = entity_collection_stub(("customer_id", "id"))
         entity = TableTemplateEntity(
-            data={"customer_id": uuid4(), "id": template_id, "name": "tpl"},
+            data={"customer_id": customer_id, "id": template_id, "name": "tpl"},
             is_new=True,
+            collection=coll,
         )
         assert entity.id == template_id
         assert isinstance(entity.id, UUID)
-        assert entity.primary_key_field == "customer_id"
+        # primary_key_field names the column ``id`` surfaces, which is the
+        # bare row id; the partition column reaches the addressing key
+        # through the collection's declared primary_key_columns.
+        assert entity.primary_key_field == "id"
+        assert entity.addressing_id == (customer_id, template_id)
+
+    def test_collection_declares_the_composite_key(self) -> None:
+        """the REAL collection declares ``(customer_id, id)``, not a stub.
+
+        the assertion above uses a stub told the key shape, so on its own
+        it proves nothing about the collection entities are actually
+        built by -- and the collection previously declared no
+        ``primary_key_column`` at all while its SQL unpacked a 2-tuple.
+        this pins the declaration itself.
+        """
+        from threetears.datasources.collections import TableTemplateCollection
+
+        assert TableTemplateCollection.primary_key_column == ("customer_id", "id")

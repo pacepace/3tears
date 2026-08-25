@@ -115,11 +115,7 @@ def _metadata() -> MetaData:
 class FakeRefEntity(BaseEntity):
     """composite-pk entity with tuple ``_id``."""
 
-    primary_key_field = "conversation_id"
-
-    def __init__(self, data: dict[str, Any], is_new: bool = True, collection: Any = None) -> None:
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_id", (data["conversation_id"], data["item_id"]))
+    primary_key_field = "item_id"
 
 
 class FakeRefCollection(BaseCollection[FakeRefEntity]):

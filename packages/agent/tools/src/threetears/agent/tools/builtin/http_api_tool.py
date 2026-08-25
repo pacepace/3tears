@@ -33,12 +33,12 @@ apply.
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.http_operation import QUERY_METHODS, PathTemplateBinding
 from threetears.agent.tools.utils import tool_error
 from threetears.core.http_client import UpstreamHttpError
 from threetears.core.security.secret_refs import (
@@ -52,13 +52,6 @@ if TYPE_CHECKING:
 
 __all__ = ["HttpApiTool", "HttpOperationDescriptor"]
 
-# HTTP verbs that carry their non-path arguments as query params rather than a
-# JSON request body. everything else (POST / PUT / PATCH) sends a JSON body.
-_QUERY_METHODS: frozenset[str] = frozenset({"GET", "DELETE", "HEAD", "OPTIONS"})
-
-# a ``{name}`` placeholder inside a path template.
-_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
-
 # the duck-typed name of the circuit breaker's OPEN signal. agent-tools cannot
 # import ``threetears.models.circuit_breaker.CircuitOpenError`` (no models
 # dependency), so the classifier matches on the exception's class name.
@@ -66,14 +59,22 @@ _CIRCUIT_OPEN_EXC_NAME = "CircuitOpenError"
 
 
 @dataclass(frozen=True)
-class HttpOperationDescriptor:
+class HttpOperationDescriptor(PathTemplateBinding):
     """one imported API operation, as the OpenAPI parser (gu-task-23) emits it.
 
     the descriptor is transport-free: ``upstream_base_url`` + the per-source
     circuit breaker live on the shared
     :class:`threetears.core.http_client.TracedHttpClient` (one per source), not
-    duplicated on each per-operation descriptor. ``path_params`` is derived from
-    ``path_template`` at construction and need not be supplied by the caller.
+    duplicated on each per-operation descriptor. ``method``, ``path_template``
+    and the ``path_params`` derived from it come from
+    :class:`~threetears.agent.tools.http_operation.PathTemplateBinding`, which
+    the INBOUND REST declaration shares -- the two directions of the same idea
+    cannot drift apart on how a template is read.
+
+    ``method`` stays unpoliced here on purpose: an imported third-party spec may
+    carry any verb (``PROPFIND`` and worse), and refusing one would drop an
+    operation the upstream really serves. the inbound face, whose declarations
+    are authored in this codebase, narrows to a closed vocabulary instead.
 
     :ivar method: HTTP verb (``GET`` / ``POST`` / ...); compared case-insensitively
     :ivar path_template: request path with ``{name}`` placeholders
@@ -86,26 +87,14 @@ class HttpOperationDescriptor:
     :ivar version: stable tool version (``mcp_version``)
     :ivar description: human-readable operation description
     :ivar path_params: placeholder names extracted from ``path_template``; derived
-        in ``__post_init__`` -- any supplied value is replaced
+        by the shared base and never supplied by the caller
     """
 
-    method: str
-    path_template: str
     param_schema: dict[str, Any]
     credentials_ref: str | None
     name: str
     version: str
     description: str
-    path_params: frozenset[str] = field(default=frozenset())
-
-    def __post_init__(self) -> None:
-        """derive ``path_params`` from ``path_template``.
-
-        :return: nothing
-        :rtype: None
-        """
-        derived = frozenset(_PLACEHOLDER_RE.findall(self.path_template))
-        object.__setattr__(self, "path_params", derived)
 
 
 class HttpApiTool(TearsTool):
@@ -189,8 +178,8 @@ class HttpApiTool(TearsTool):
             filled_path = filled_path.replace("{" + placeholder + "}", quote(str(value), safe=""))
 
         method = descriptor.method.upper()
-        params = args or None if method in _QUERY_METHODS else None
-        json_body = None if method in _QUERY_METHODS else (args or None)
+        params = args or None if method in QUERY_METHODS else None
+        json_body = None if method in QUERY_METHODS else (args or None)
 
         auth_headers: dict[str, str] | None = None
         if descriptor.credentials_ref is not None:

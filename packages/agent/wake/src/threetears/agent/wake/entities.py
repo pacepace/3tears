@@ -16,10 +16,11 @@ Three entity classes:
   (Fernet-encrypted) and is NEVER decoded by the entity; the consumer
   supplies an encryption service that opens it on demand.
 
-Each entity carries a tuple ``_id`` so ``BaseCollection.normalize_pk``
-and ``BaseCollection.l2_key`` address the row uniformly across L1 / L2
-/ L3. ``primary_key_field`` names the bare-id column so
-``BaseEntity.id`` returns the singular UUID downstream callers need
+``BaseEntity`` derives the tuple ``_id`` from the collection's declared
+``primary_key_columns`` so ``BaseCollection.normalize_pk`` and
+``BaseCollection.l2_key`` address the row uniformly across L1 / L2 / L3
+with no per-entity override. ``primary_key_field`` names the bare-id
+column so ``BaseEntity.id`` returns the singular UUID downstream callers need
 (e.g. the wake-fires ``schedule_id`` FK target, tool input args).
 
 Partition column for every wake table is ``conversation_id`` per
@@ -128,9 +129,10 @@ def _as_uuid(value: object) -> UUID:
 class WakeScheduleEntity(BaseEntity):
     """Cache proxy entity for the ``agent_wake_schedules`` table.
 
-    Composite primary key is ``(conversation_id, schedule_id)``; the
-    entity sets ``_id`` to the tuple form so the framework's pk-aware
-    paths (``BaseCollection.normalize_pk``, ``l2_key``,
+    Composite primary key is ``(conversation_id, schedule_id)``;
+    ``BaseEntity`` derives ``_id`` as that tuple from the collection's
+    declared ``primary_key_columns`` so the framework's pk-aware paths
+    (``BaseCollection.normalize_pk``, ``l2_key``,
     ``_publish_invalidation``) address rows uniformly across tiers.
 
     Field accessors mirror the column list. Change tracking inherits
@@ -145,32 +147,6 @@ class WakeScheduleEntity(BaseEntity):
     """
 
     primary_key_field: str = "schedule_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """Initialise with composite ``_id`` for tuple-pk lookup.
-
-        :param data: row dict; ``conversation_id`` and ``schedule_id``
-            must be present so the tuple ``_id`` can be assembled
-        :ptype data: dict[str, Any]
-        :param is_new: whether the entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "conversation_id" in data and "schedule_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["conversation_id"], data["schedule_id"]),
-            )
 
     @property
     def schedule_id(self) -> UUID:
@@ -427,32 +403,6 @@ class WakeFireEntity(BaseEntity):
 
     primary_key_field: str = "fire_id"
 
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """Initialise with composite ``_id`` for tuple-pk lookup.
-
-        :param data: row dict; ``conversation_id`` and ``fire_id`` must
-            be present
-        :ptype data: dict[str, Any]
-        :param is_new: whether the entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "conversation_id" in data and "fire_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["conversation_id"], data["fire_id"]),
-            )
-
     @property
     def fire_id(self) -> UUID:
         """Return the bare ``fire_id`` UUID."""
@@ -609,32 +559,6 @@ class WebhookSubscriptionEntity(BaseEntity):
     """
 
     primary_key_field: str = "subscription_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """Initialise with composite ``_id`` for tuple-pk lookup.
-
-        :param data: row dict; ``conversation_id`` and
-            ``subscription_id`` must be present
-        :ptype data: dict[str, Any]
-        :param is_new: whether the entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "conversation_id" in data and "subscription_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["conversation_id"], data["subscription_id"]),
-            )
 
     @property
     def subscription_id(self) -> UUID:

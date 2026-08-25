@@ -65,17 +65,47 @@ from threetears.channels.websocket import (
     WebSocketProtocol,
 )
 
+# Outbound email. A SIBLING of the channel adapters rather than one of them: an email
+# recipient has no conversation, no agent and usually no account, so
+# ``ChannelDeliveryMessage`` does not fit and none of it is reused. Eager because the
+# transport is stdlib ``smtplib`` and costs an importer nothing; bounce ingest DOES
+# need the ``webhook`` extra and guards its own import inside the subpackage.
+from threetears.channels.mail import (
+    BatchSendResult,
+    EmailMessage,
+    EmailSendError,
+    EmailSettingsResolver,
+    EmailTemplate,
+    EmailTransport,
+    Mailer,
+    RecipientFailure,
+    ResolvedEmailSettings,
+    SendPacer,
+    SmtpEmailTransport,
+    StaticEmailSettingsResolver,
+    TemplateRenderError,
+    TokenBucketPacer,
+    send_batch,
+)
+
 __all__ = [
     "PRESENCE_L1_METADATA",
     "PRESENCE_L1_TABLE_NAMES",
     "Attachment",
+    "BatchSendResult",
     "ChannelDeliveryMessage",
     "ChannelMessage",
     "ChannelResponse",
     "ChannelRouter",
     "ConnectionRegistry",
+    "EmailMessage",
+    "EmailSendError",
+    "EmailSettingsResolver",
+    "EmailTemplate",
+    "EmailTransport",
     "Frame",
     "FrameHandler",
+    "Mailer",
     "NsEntity",
     "NsResolver",
     "OpHandler",
@@ -85,14 +115,21 @@ __all__ = [
     "PresenceConnectionCollection",
     "PresenceConnectionEntity",
     "PresenceSweeper",
+    "RecipientFailure",
     "ReplaySource",
+    "ResolvedEmailSettings",
     "RoomFanout",
     "RoomFrame",
     "RoomIndexCollection",
     "RoomIndexEntity",
     "RoomMember",
     "RoomState",
+    "SendPacer",
+    "SmtpEmailTransport",
+    "StaticEmailSettingsResolver",
     "StreamingChannelRouter",
+    "TemplateRenderError",
+    "TokenBucketPacer",
     "WebSocketHandler",
     "WebSocketProtocol",
     "build_discord_embed",
@@ -100,6 +137,7 @@ __all__ = [
     "build_slack_blocks",
     "build_slack_payload",
     "create_presence_l1_backend",
+    "send_batch",
     "should_use_rich_formatting",
 ]
 

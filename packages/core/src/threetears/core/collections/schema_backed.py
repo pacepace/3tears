@@ -48,6 +48,7 @@ from threetears.core.backends.schema_sql import (
     json_default as _json_default,
 )
 from threetears.core.collections.base import BaseCollection, EntityT
+from threetears.core.collections.flush import FlushStrategy
 from threetears.observe import get_logger
 
 __all__ = [
@@ -679,6 +680,48 @@ class TableSchema:
         ``"ignore"`` emits ``ON CONFLICT (pk) DO NOTHING``; duplicate
         primary keys are silently dropped (dedup-on-redelivery tables
         like ``audit_events`` keyed on ``(correlation_id, event_type)``)
+    :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
+        that also covers the FIRST write of a row. default ``False``,
+        which leaves every existing schema's emitted SQL untouched.
+
+        the default fence cannot express "no row existed when i read".
+        with ``cas_null_safe=False`` a save carrying
+        ``original_timestamp=None`` is NOT fence-eligible at all: it
+        falls through to an UNFENCED
+        ``INSERT ... ON CONFLICT (pk) DO UPDATE SET ...``. that is
+        correct for a random primary key (two writers cannot collide on
+        one), and WRONG for a DERIVED primary key -- a
+        ``uuid5``/hash-of-the-business-key id that two concurrent
+        first-writers both compute to the same value. both of their
+        statements report one row affected and the second silently
+        overwrites the first, so a read-modify-write (a counter
+        increment, a set-member append) loses the first writer's work
+        with nothing raised anywhere.
+
+        with ``cas_null_safe=True`` every save on the table -- first
+        write included -- emits ONE statement::
+
+            INSERT INTO t (...) VALUES (...)
+            ON CONFLICT (pk) DO UPDATE SET <mutable> = EXCLUDED....
+            WHERE t.<cas_column> IS NOT DISTINCT FROM $N
+
+        ``IS NOT DISTINCT FROM`` is the NULL-safe equality Postgres
+        offers, so ``$N = NULL`` (a first write) matches a row whose
+        fence column is NULL and matches NOTHING once a rival writer has
+        stamped one. no conflicting row at all means the plain INSERT
+        applies and the fence never runs, so the row IS created. the
+        loser therefore affects 0 rows, which
+        :meth:`BaseCollection.save_entity` turns into
+        :class:`~threetears.core.exceptions.ConcurrentModificationError`
+        for the caller's retry loop -- provided the entity is
+        constructed ``is_new=False`` (``is_new=True`` maps 0 rows onto an
+        unretryable :class:`RuntimeError` instead).
+
+        requires ``cas_column`` set, ``on_conflict="update"``, and the
+        ``cas_column`` to be a mutable non-pk column carrying no
+        ``server_default`` -- otherwise the fence could never advance and
+        would wave every later writer through. all four are validated in
+        :meth:`__post_init__`.
     """
 
     name: str
@@ -701,6 +744,11 @@ class TableSchema:
     # ``pg_indexes`` rows; see :class:`UniqueConstraintDef` docstring.
     # v0.8.1+
     unique_constraints: tuple[UniqueConstraintDef, ...] = ()
+    # NULL-safe CAS fence opt-in. declared LAST among the init fields so
+    # every existing positional construction keeps its argument
+    # positions, and defaulted False so no existing schema changes the
+    # SQL it emits. see the :cvar: entry above for the full contract.
+    cas_null_safe: bool = False
 
     _pk_columns: tuple[str, ...] = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -715,9 +763,11 @@ class TableSchema:
             :attr:`columns`, when :attr:`cas_column` is set but missing
             from :attr:`columns`, when more than one column is flagged
             ``partition=True`` (only one partition column per table),
-            or when a partition column is not part of
+            when a partition column is not part of
             :attr:`primary_key` (the schema must enforce row uniqueness
-            through the partition)
+            through the partition), or when :attr:`cas_null_safe` is set
+            without the four preconditions its fence needs (see
+            :meth:`_validate_cas_null_safe`)
         """
         pk = self.primary_key
         pk_cols: tuple[str, ...] = (pk,) if isinstance(pk, str) else tuple(pk)
@@ -825,6 +875,60 @@ class TableSchema:
             raise ValueError(
                 f"TableSchema(name={self.name!r}): name(s) {sorted(collision)!r} "
                 f"used by both an IndexDef and a UniqueConstraintDef",
+            )
+        self._validate_cas_null_safe(pk_cols, by_name)
+
+    def _validate_cas_null_safe(self, pk_cols: tuple[str, ...], by_name: dict[str, Column]) -> None:
+        """reject a :attr:`cas_null_safe` opt-in whose fence could never work.
+
+        the NULL-safe fence is only sound when the generated statement can
+        (a) exist at all and (b) ADVANCE the fence column on every write, so
+        the next writer's expected value stops matching. four preconditions
+        carry that, and each one silently degrades to a lost write when
+        violated -- hence a hard failure at construction rather than a
+        surprise at 2am.
+
+        :param pk_cols: primary-key column names in declared order
+        :ptype pk_cols: tuple[str, ...]
+        :param by_name: declared columns indexed by name
+        :ptype by_name: dict[str, Column]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when :attr:`cas_null_safe` is set and
+            :attr:`cas_column` is unset, :attr:`on_conflict` is not
+            ``"update"``, the ``cas_column`` is part of the primary key or
+            declared ``immutable=True`` (the ``DO UPDATE SET`` clause would
+            omit it, so the fence never advances), or the ``cas_column``
+            declares a ``server_default`` (the INSERT generator drops an
+            omitted server-default column, so the fence would silently
+            vanish from the statement)
+        """
+        if not self.cas_null_safe:
+            return
+        if self.cas_column is None:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): cas_null_safe=True requires cas_column to be set",
+            )
+        if self.on_conflict != "update":
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): cas_null_safe=True requires "
+                f"on_conflict='update', got {self.on_conflict!r} -- the fence lives "
+                f"on the ON CONFLICT DO UPDATE branch, which the other modes do not emit",
+            )
+        cas_col = by_name[self.cas_column]
+        if self.cas_column in pk_cols or cas_col.immutable:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): cas_null_safe=True requires cas_column "
+                f"{self.cas_column!r} to be a mutable non-pk column -- an immutable or pk "
+                f"fence column is excluded from DO UPDATE SET, so the fence would never "
+                f"advance and every later writer would match the same expected value",
+            )
+        if cas_col.server_default is not None:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): cas_null_safe=True requires cas_column "
+                f"{self.cas_column!r} to declare no server_default -- the INSERT generator "
+                f"drops a server-default column the payload omits, which would drop the "
+                f"fence out of the statement without saying so",
             )
 
     @property
@@ -1403,7 +1507,58 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: None
         """
         super().__init__(*args, **kwargs)
+        self._reject_deferred_flush_on_cas_null_safe()
         self._register_schema()
+
+    @property
+    def emits_cas_fence(self) -> bool:
+        """whether every generated L3 write carries a CAS fence (``cas_null_safe``).
+
+        see :attr:`BaseCollection.emits_cas_fence` for what the framework does
+        with the answer.
+
+        :return: :attr:`TableSchema.cas_null_safe`
+        :rtype: bool
+        """
+        return bool(self.schema.cas_null_safe)
+
+    def _reject_deferred_flush_on_cas_null_safe(self) -> None:
+        """fail construction when a fenced table is also configured for deferred flush.
+
+        the two are mutually exclusive by construction, and the failure mode is
+        silent. a deferred write never reaches ``save_to_store`` from
+        :meth:`BaseCollection.save_entity` at all -- it lands in the write
+        buffer and is replayed later through ``persist_to_store``, which
+        supplies NO ``original_timestamp``. on a ``cas_null_safe`` table that
+        replay fences against ``NULL``, so it matches only a row nobody has
+        written since; against any row that DOES exist it affects 0 rows, and
+        the flush loop discards the rowcount. every deferred write to an
+        existing row would evaporate with nothing raised and nothing logged.
+
+        cheap to detect at construction, so detect it there.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the schema declares ``cas_null_safe=True`` and
+            this collection's table is configured for deferred flush
+        """
+        if not self.schema.cas_null_safe:
+            return
+        deferred = (
+            self._flush_strategy != FlushStrategy.ALWAYS
+            and self.table_name in self._flush_tables
+            and self._write_buffer is not None
+        )
+        if deferred:
+            raise ValueError(
+                f"{type(self).__name__}: table {self.table_name!r} declares "
+                f"cas_null_safe=True but is also listed in collection_flush_tables "
+                f"with collection_flush={self._flush_strategy.value!r}. a deferred "
+                f"write is replayed without the CAS fence value it was decided "
+                f"under, so every deferred write to an existing row would be "
+                f"silently dropped. remove the table from collection_flush_tables, "
+                f"or drop cas_null_safe and fence in hand-written SQL.",
+            )
 
     def _register_schema(self) -> None:
         """register :attr:`schema` with the resolved ``SqlL3Backend``, if any.

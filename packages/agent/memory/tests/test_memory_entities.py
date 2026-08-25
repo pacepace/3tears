@@ -9,6 +9,7 @@ from uuid import uuid7
 import pytest
 
 from threetears.core.cache import MISSING
+from threetears.core.testing import entity_collection_stub
 from threetears.agent.memory.entities import MemoryConsolidationEntity, MemoryEntity
 
 
@@ -350,12 +351,15 @@ class TestMemoryConsolidationEntity:
     """v026 edge entity: 3-tuple composite pk + accessors."""
 
     def test_composite_id_is_three_tuple(self) -> None:
-        # white-box: the constructor override builds ``_id`` in
-        # (agent_id, consolidated, source) order — that ORDER is the L2
-        # key / tuple-pk addressing contract, so it is asserted directly.
+        # BaseEntity derives the addressing key from the collection's
+        # declared primary_key_columns; that ORDER is the L2 key /
+        # tuple-pk addressing contract, so it is asserted directly.
         data = _consolidation_data()
-        entity = MemoryConsolidationEntity(data)
-        assert entity._id == (  # noqa: SLF001 -- composite-pk tuple order is the contract under test
+        coll, _cache = entity_collection_stub(
+            ("agent_id", "consolidated_memory_id", "source_memory_id"),
+        )
+        entity = MemoryConsolidationEntity(data, is_new=True, collection=coll)
+        assert entity.addressing_id == (
             data["agent_id"],
             data["consolidated_memory_id"],
             data["source_memory_id"],

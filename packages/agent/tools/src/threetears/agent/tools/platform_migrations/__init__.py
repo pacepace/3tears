@@ -25,6 +25,11 @@ version history:
   ``ToolManifestEntry`` field, gu-task-02) the hub
   ``ToolNamespaceEmitter`` stamps onto each ``tool``-type row.
   Idempotent via ``ADD COLUMN IF NOT EXISTS``.
+- v003 adds the FOURTH reach face: ``face_rest BOOLEAN NOT NULL
+  DEFAULT FALSE`` plus ``face_rest_declaration JSONB`` (nullable).
+  REST needs more than a boolean because its address is authored
+  rather than derived, so the flag and the declaration land
+  together. Idempotent via ``ADD COLUMN IF NOT EXISTS``.
 """
 
 from __future__ import annotations
@@ -34,6 +39,9 @@ from threetears.agent.tools.platform_migrations.v001_add_tool_eligibility_column
 )
 from threetears.agent.tools.platform_migrations.v002_add_tool_face_columns import (
     add_tool_face_columns,
+)
+from threetears.agent.tools.platform_migrations.v003_add_face_rest_columns import (
+    add_face_rest_columns,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -81,12 +89,14 @@ def register(
     )
     pkg.version(1)(add_tool_eligibility_columns)
     pkg.version(2)(add_tool_face_columns)
+    pkg.version(3)(add_face_rest_columns)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_face_rest_columns",
     "add_tool_eligibility_columns",
     "add_tool_face_columns",
     "register",
