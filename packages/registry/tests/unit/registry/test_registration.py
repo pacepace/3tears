@@ -622,3 +622,66 @@ class TestRegistrationHandlerAuthenticator:
         reply = nc.publish_reply.call_args.kwargs["message"]
         assert reply.success is True
         assert reply.registered_tools == ["acme@1.0.0"]
+
+
+class TestRefusingEveryToolSaysWhichNodeItComparedAgainst:
+    """a pod that registers nothing is told what was compared, not just that it failed.
+
+    the refusal reaches the pod author as ``RegistrationResponse.error``,
+    and it used to read ``no tools authorized for this pod's namespaces``
+    -- true, and indistinguishable from a missing RBAC grant. the two
+    values that decide the outcome are the pod's own allow-list nodes and
+    the names it offered, so both belong in the sentence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_trailing_separator_node_is_named_in_the_refusal(self) -> None:
+        """``evd.`` matches nothing, and the refusal quotes it back."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["evd."])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "evd.hello",
+                "version": "1.0",
+                "description": "a tool under a node written with a trailing dot",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert "evd." in reply.error
+        assert "evd.hello" in reply.error
+
+    @pytest.mark.asyncio
+    async def test_a_glob_shaped_node_is_named_in_the_refusal(self) -> None:
+        """``evd.*`` is not a node; the refusal says which value failed."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["evd.*"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "evd.hello",
+                "version": "1.0",
+                "description": "a tool under a node written as a glob",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert "evd.*" in reply.error
+        assert "evd.hello" in reply.error

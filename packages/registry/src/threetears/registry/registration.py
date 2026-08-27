@@ -343,7 +343,24 @@ class RegistrationHandler:
             )
 
         if not allowed_tools:
-            return "no tools authorized for this pod's namespaces"
+            # NAME both sides of the comparison that failed. The bare
+            # "no tools authorized" this used to return is true and
+            # unactionable: it arrives AFTER the pod authenticated, so it
+            # reads as a missing RBAC grant when the usual cause is a
+            # value in `allowed_namespaces` that can never match anything
+            # -- a node written with a trailing separator (`evd.`), or one
+            # written as a glob (`evd.*`). Those are NODES compared on a
+            # segment boundary, not patterns, so quoting the nodes and the
+            # offered names next to each other is what makes the mismatch
+            # visible without a registry log the pod author cannot read.
+            return (
+                "no tools authorized for this pod's namespaces: "
+                f"offered {sorted(rejected_tools)}, "
+                f"allowed nodes {sorted(pod_auth.allowed_namespaces)}. "
+                "a node is compared on a segment boundary and is written "
+                "WITHOUT a trailing separator and WITHOUT a glob "
+                "(`evd`, never `evd.` or `evd.*`)"
+            )
 
         manifest.tools = allowed_tools
 
