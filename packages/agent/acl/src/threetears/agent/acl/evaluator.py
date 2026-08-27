@@ -14,11 +14,29 @@ two entry points share one resolution algorithm:
 
 resolution rules (in order):
 
-1. **agent ownership short-circuit** — if namespace's
-   ``owner_agent_id`` matches calling agent, agent side
-   short-circuits to "every action allowed" without ever touching
-   membership / grant tables. ownership is a property of the
-   namespace row, not a grant.
+1. **ownership short-circuit** — if the namespace's
+   ``owner_namespace`` is the namespace the calling agent IS, agent
+   side short-circuits to "every action allowed" without ever
+   touching membership / grant tables. ownership is a property of
+   the namespace row, not a grant.
+
+   the owner is a NAMESPACE rather than an agent because a tool pod,
+   a capability source and an in-hub component own namespaces too and
+   none of them is an agent. the caller's own namespace name is
+   DERIVED from its agent id in process, so the short-circuit still
+   costs no i/o -- which is a requirement rather than an optimisation:
+   an agent pod's sandboxed L3 search_path is its own schema, which
+   carries no ``namespaces`` table, and the owner path is the one path
+   that must work there.
+
+   ``owner_namespace`` of ``None`` matches NOTHING, and the guard is
+   explicit rather than implied. under the previous ``owner_agent_id``
+   comparison an unowned namespace could not match because the
+   calling agent id was non-null by the enclosing branch; that
+   accident does not carry over, because the caller's resolved
+   namespace id can itself be ``None``, and ``None == None`` would
+   hand every unowned namespace to any agent whose own namespace could
+   not be resolved.
 
 2. **side resolution** — for each side caller supplied
    (user side iff ``user_id`` set; agent side iff ``agent_id`` set):
@@ -92,6 +110,7 @@ from threetears.agent.acl.types import (
     RoleAssignment,
     Trail,
 )
+from threetears.core.namespaces import build_agent_namespace_name
 from threetears.observe import get_logger, traced
 
 __all__ = [
@@ -203,7 +222,7 @@ async def evaluate_with_trail(
         )
 
     if ctx.agent_id is not None:
-        if ctx.namespace.owner_agent_id == ctx.agent_id:
+        if _agent_owns_namespace(ctx.namespace, ctx.agent_id):
             # ownership short-circuit: agent side is implicitly full
             # access. record a sentinel "every action" set and skip
             # loader trip. trail surface stays empty because there
@@ -402,6 +421,40 @@ def _path_matches_trails(
         if matched:
             break
     return matched
+
+
+# ---------------------------------------------------------------------------
+# ownership
+# ---------------------------------------------------------------------------
+
+
+def _agent_owns_namespace(namespace: Namespace, agent_id: UUID) -> bool:
+    """resolve whether the calling agent's own namespace OWNS ``namespace``.
+
+    ``namespace.owner_namespace`` is compared against the name of the
+    namespace the caller IS, derived in process by
+    :func:`threetears.core.namespaces.build_agent_namespace_name`. no
+    lookup happens: the derivation is the same rule the hub writes the
+    owner column with, and the owner path has to answer inside an agent
+    pod whose L3 cannot see ``platform.namespaces`` at all.
+
+    the ``is not None`` guard is EXPLICIT and load-bearing. the previous
+    comparison was ``owner_agent_id == agent_id``, where a null owner
+    could not match because the enclosing branch guaranteed a non-null
+    agent id. that accident does not survive the move: two ``None``
+    values compare EQUAL in python, so an unowned namespace would be
+    handed to any caller whose own name came out null. the guard is
+    what keeps "nothing owns this" meaning "nobody owns this".
+
+    :param namespace: the namespace under evaluation
+    :ptype namespace: Namespace
+    :param agent_id: the calling agent
+    :ptype agent_id: UUID
+    :return: whether the caller owns the namespace
+    :rtype: bool
+    """
+    owner_namespace = namespace.owner_namespace
+    return owner_namespace is not None and owner_namespace == build_agent_namespace_name(agent_id)
 
 
 # ---------------------------------------------------------------------------

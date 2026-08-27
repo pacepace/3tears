@@ -254,6 +254,12 @@ class RbacEvaluatorAuthorizer:
             namespace_type=ns_entity.namespace_type,
             owner_agent_id=ns_entity.owner_agent_id,
             name=canonical_name,
+            # the ownership key. a tool namespace emitted by a PLATFORM
+            # pod records no owner, so nothing short-circuits and the
+            # row is reached by grant -- which is what a platform tool
+            # is for. one emitted by an agent-owned pod names that
+            # agent's own namespace and its owner reaches it directly.
+            owner_namespace=ns_entity.owner_namespace,
         )
         ctx = EvaluationContext(
             namespace=evaluator_namespace,

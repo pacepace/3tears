@@ -13,10 +13,12 @@ import pytest
 
 from threetears.core.namespaces import (
     HITL_NAMESPACE_TYPE,
+    PLURAL_PREFIX_AGENT,
     PLURAL_PREFIX_BY_NAMESPACE_TYPE,
     PLURAL_PREFIX_HITL,
     PLURAL_PREFIX_TOOL,
     HitlSessionNamespace,
+    build_agent_namespace_name,
     build_hitl_namespace_name,
     build_namespace_name,
     namespace_contains,
@@ -298,3 +300,36 @@ class TestNamespaceContains:
         # them and containment must not treat either as a boundary.
         assert namespace_contains("tools.scrape-zone_alpha", "tools.scrape-zone_alpha.1-0-0") is True
         assert namespace_contains("tools.scrape-zone", "tools.scrape-zone_alpha.1-0-0") is False
+
+
+class TestBuildAgentNamespaceName:
+    """the ONE derivation of an agent's own namespace name.
+
+    the rbac evaluator's ownership short-circuit compares a namespace's
+    recorded owner against the caller, and it has only an agent UUID to
+    work from. that comparison is sound only while this derivation is
+    the same one the hub writes onto the row, so the shape is pinned
+    here rather than left to two independent spellings.
+    """
+
+    def test_the_shape_is_the_plural_prefix_and_the_canonical_uuid(self) -> None:
+        agent = UUID("3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+        assert build_agent_namespace_name(agent) == "agents.3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+
+    def test_it_agrees_with_the_generic_builder(self) -> None:
+        # a second spelling of this rule is what would make an owner
+        # comparison quietly stop matching, so the two must not diverge.
+        agent = UUID("3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+        assert build_agent_namespace_name(agent) == build_namespace_name(
+            PLURAL_PREFIX_AGENT,
+            str(agent),
+        )
+
+    def test_two_agents_never_collide(self) -> None:
+        first = UUID("3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+        second = UUID("3f2504e0-4f89-41d3-9a0c-0305e82c3302")
+        assert build_agent_namespace_name(first) != build_agent_namespace_name(second)
+
+    def test_the_derived_name_sits_under_the_agents_prefix(self) -> None:
+        agent = UUID("3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+        assert namespace_contains(PLURAL_PREFIX_AGENT, build_agent_namespace_name(agent)) is True

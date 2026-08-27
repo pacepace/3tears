@@ -286,8 +286,8 @@ async def authorize_on_entity(
     was discovered.
 
     :param ns_entity: pre-resolved namespace entity exposing ``id``,
-        ``customer_id``, ``namespace_type``, ``owner_agent_id``
-        attributes; typed ``Any`` because concrete Collection entity
+        ``customer_id``, ``namespace_type``, ``owner_agent_id`` and
+        ``owner_namespace`` attributes; typed ``Any`` because concrete Collection entity
         class lives in consumer apps' layers (hub, agent pod) above
         this package
     :ptype ns_entity: Any
@@ -325,6 +325,11 @@ async def authorize_on_entity(
         # only the four authorization fields, so the fallback must not
         # assume a ``name`` attribute exists.
         name=namespace_name if namespace_name is not None else getattr(ns_entity, "name", None),
+        # ``ns_entity`` is typed ``Any`` and several consumers pass a
+        # duck-typed descriptor rather than a namespace row, so this
+        # reads through ``getattr``. A descriptor that does not supply
+        # an owner is not recognised as owned by anyone, which denies.
+        owner_namespace=getattr(ns_entity, "owner_namespace", None),
     )
     eval_ctx = EvaluationContext(
         namespace=acl_namespace,

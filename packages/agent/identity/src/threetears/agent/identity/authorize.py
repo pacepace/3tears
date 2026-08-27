@@ -3,8 +3,9 @@
 Identity reads and writes are agent-internal: the ``identity_propose``
 tool runs as the owning agent, and the consumer's consent / rollback path
 acts as the agent owner behind the host's own auth. So authz is exactly
-the evaluator's owner short-circuit (``caller_agent_id == owner_agent_id``):
-the agent owns its own identity namespace by construction, so every action
+the evaluator's owner short-circuit, which compares the namespace's recorded
+``owner_namespace`` against the name of the namespace the caller IS: the
+agent owns its own identity namespace by construction, so every action
 is allowed grant-free with no acl migration, no seed row, and no
 ``platform.namespaces`` write. Mirrors ``agent/intention``'s authorizer.
 
@@ -24,6 +25,7 @@ from threetears.agent.acl import (
     AclCache,
     authorize_on_entity,
 )
+from threetears.core.namespaces import build_agent_namespace_name
 from threetears.observe import get_logger
 
 __all__ = [
@@ -103,6 +105,7 @@ class _OwnerIdentityNamespace:
     customer_id: UUID
     owner_agent_id: UUID
     namespace_type: str = IDENTITY_NAMESPACE_TYPE
+    owner_namespace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,7 @@ async def authorize_identity_access(
         id=_identity_namespace_id(agent_id, customer_id),
         customer_id=customer_id,
         owner_agent_id=agent_id,
+        owner_namespace=build_agent_namespace_name(agent_id),
     )
     try:
         await authorize_on_entity(

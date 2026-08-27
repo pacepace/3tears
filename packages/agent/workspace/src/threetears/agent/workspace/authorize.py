@@ -26,9 +26,9 @@ rules (in order):
    deny lands here as :class:`WorkspaceAccessDenied`.
 
 the helper intentionally does NOT re-implement owner-path short-
-circuit: the evaluator already handles
-``namespace.owner_agent_id == agent_id`` inside
-:func:`~threetears.agent.acl.evaluator._resolve_side`. we keep the
+circuit: the evaluator already decides it, by comparing the namespace's
+recorded ``owner_namespace`` against the name of the namespace the caller
+IS (:func:`~threetears.agent.acl.evaluator._agent_owns_namespace`). we keep the
 cross-customer guard as a belt-and-suspenders check because it is
 the one rule with zero cost to surface at the call site (no IO, no
 evaluator round-trip) — and a tool arriving with a ``customer_id`` of
@@ -49,6 +49,7 @@ from threetears.agent.acl import (
     evaluate_file_access,
 )
 from threetears.agent.tools.call_scope import ToolCallScope
+from threetears.core.namespaces import build_agent_namespace_name
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -126,9 +127,20 @@ class _WorkspaceNamespaceAdapter:
     :ivar customer_id: owning customer UUID
     :ivar namespace_type: pinned to ``"workspace"``
     :ivar owner_agent_id: UUID of the agent that owns the rows
+    :ivar owner_namespace: canonical name of the namespace that owns
+        this one, derived from the workspace's own owning agent. a
+        workspace is reached from inside an agent pod, whose L3 cannot
+        see ``platform.namespaces``, so the owner has to be derivable
+        rather than read
     """
 
-    __slots__ = ("id", "customer_id", "namespace_type", "owner_agent_id")
+    __slots__ = (
+        "id",
+        "customer_id",
+        "namespace_type",
+        "owner_agent_id",
+        "owner_namespace",
+    )
 
     def __init__(self, workspace: WorkspaceLike) -> None:
         """capture the four namespace fields from a workspace record.
@@ -138,6 +150,9 @@ class _WorkspaceNamespaceAdapter:
         """
         self.id = workspace.id
         self.customer_id = workspace.customer_id
+        self.owner_namespace = (
+            build_agent_namespace_name(workspace.owner_agent_id) if workspace.owner_agent_id is not None else None
+        )
         self.namespace_type = "workspace"
         self.owner_agent_id = workspace.owner_agent_id
 
@@ -294,6 +309,9 @@ async def authorize_workspace_file_access(
         customer_id=workspace.customer_id,
         namespace_type="workspace",
         owner_agent_id=workspace.owner_agent_id,
+        owner_namespace=(
+            build_agent_namespace_name(workspace.owner_agent_id) if workspace.owner_agent_id is not None else None
+        ),
     )
     decision = await evaluate_file_access(
         namespace=namespace,

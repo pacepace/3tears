@@ -40,6 +40,9 @@ from threetears.agent.acl import (
     evaluate_decision,
     evaluate_with_trail,
 )
+from threetears.agent.acl.evaluator import _agent_owns_namespace
+
+from threetears.core.namespaces import build_agent_namespace_name
 
 from ._fake_loaders import FakeStore, make_cache
 
@@ -71,6 +74,11 @@ def _ns(
         customer_id=customer_id,
         namespace_type=namespace_type,
         owner_agent_id=owner_agent_id,
+        # a real row records its owner as the NAMESPACE that owns it,
+        # and for an agent-owned row that is the agent's own namespace.
+        # the fixture writes both columns so the assertions below keep
+        # asking the question they always asked.
+        owner_namespace=build_agent_namespace_name(owner_agent_id),
     )
 
 
@@ -1265,3 +1273,207 @@ class TestPlatformSharedNamespaceScopeCoverage:
         )
 
         assert assignment.covers(namespace) is True
+
+
+# ---------------------------------------------------------------------------
+# ownership is recorded as a NAMESPACE, not as an agent
+# ---------------------------------------------------------------------------
+
+
+class TestOwnershipIsANamespace:
+    """the short-circuit reads ``owner_namespace`` and nothing else.
+
+    ownership moved off ``owner_agent_id`` because an agent is only one
+    of the four kinds of principal that own namespaces -- a tool pod, a
+    capability source and an in-hub component own them too, and none of
+    those is an agent. an owner expressed as a namespace covers all
+    four with one column.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_agent_owner_grants_the_owner(self) -> None:
+        customer = uuid4()
+        agent = uuid4()
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=customer,
+            namespace_type="workspace",
+            owner_agent_id=agent,
+            owner_namespace=build_agent_namespace_name(agent),
+        )
+        result = await evaluate_with_trail(
+            EvaluationContext(namespace=namespace, action="read", agent_id=agent),
+            cache=make_cache(FakeStore()),
+        )
+        assert result.decision is True
+        assert result.agent_owner_short_circuited is True
+
+    @pytest.mark.asyncio
+    async def test_an_agent_owner_denies_a_peer(self) -> None:
+        customer = uuid4()
+        owner = uuid4()
+        peer = uuid4()
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=customer,
+            namespace_type="workspace",
+            owner_agent_id=owner,
+            owner_namespace=build_agent_namespace_name(owner),
+        )
+        result = await evaluate_with_trail(
+            EvaluationContext(namespace=namespace, action="read", agent_id=peer),
+            cache=make_cache(FakeStore()),
+        )
+        assert result.decision is False
+        assert result.agent_owner_short_circuited is False
+
+    @pytest.mark.asyncio
+    async def test_a_provider_owner_grants_the_owner(self) -> None:
+        """the owner need not be an agent namespace at all.
+
+        a tool leaf is owned by its PROVIDER node (``tools.pentest``),
+        not by an agent. the short-circuit compares names and does not
+        care which kind of namespace the owner is, which is the whole
+        reason the column names a namespace.
+        """
+        customer = uuid4()
+        agent = uuid4()
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=customer,
+            namespace_type="tool",
+            owner_agent_id=None,
+            # the caller's own namespace IS the provider node
+            owner_namespace=build_agent_namespace_name(agent),
+        )
+        result = await evaluate_with_trail(
+            EvaluationContext(namespace=namespace, action="tool.call", agent_id=agent),
+            cache=make_cache(FakeStore()),
+        )
+        assert result.decision is True
+        assert result.agent_owner_short_circuited is True
+
+    @pytest.mark.asyncio
+    async def test_a_provider_owner_denies_a_peer(self) -> None:
+        customer = uuid4()
+        peer = uuid4()
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=customer,
+            namespace_type="tool",
+            owner_agent_id=None,
+            owner_namespace="tools.pentest",
+        )
+        result = await evaluate_with_trail(
+            EvaluationContext(namespace=namespace, action="tool.call", agent_id=peer),
+            cache=make_cache(FakeStore()),
+        )
+        assert result.decision is False
+        assert result.agent_owner_short_circuited is False
+
+    @pytest.mark.asyncio
+    async def test_a_null_owner_matches_nothing(self) -> None:
+        """``owner_namespace`` of ``None`` grants NOBODY.
+
+        this is the ``is not None`` guard, asserted directly rather than
+        through a decision that could pass for another reason. under the
+        previous ``owner_agent_id == agent_id`` comparison a null owner
+        could not match, because the enclosing branch guaranteed a
+        non-null agent id on the other side. that accident does not
+        survive the move to a string: two ``None`` values compare EQUAL
+        in python, so without the explicit guard an unowned namespace
+        would be handed to any caller whose derived name came out null.
+        """
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=uuid4(),
+            namespace_type="workspace",
+            owner_agent_id=None,
+            owner_namespace=None,
+        )
+        assert _agent_owns_namespace(namespace, uuid4()) is False
+        # and the same row denies every caller, not merely this one
+        for _ in range(5):
+            assert _agent_owns_namespace(namespace, uuid4()) is False
+
+    @pytest.mark.asyncio
+    async def test_owner_agent_id_alone_no_longer_grants(self) -> None:
+        """a row whose only owner marking is ``owner_agent_id`` grants nobody.
+
+        this is the stale-gate assertion at the evaluator. after this
+        change ``owner_agent_id`` still records which agent owns a
+        workspace or a memory store, and it is true wherever it is set
+        -- but it no longer DECIDES. a gate still keyed on it would be
+        checking a column that does not govern.
+        """
+        agent = uuid4()
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=uuid4(),
+            namespace_type="workspace",
+            owner_agent_id=agent,
+            owner_namespace=None,
+        )
+        result = await evaluate_with_trail(
+            EvaluationContext(namespace=namespace, action="read", agent_id=agent),
+            cache=make_cache(FakeStore()),
+        )
+        assert result.decision is False
+        assert result.agent_owner_short_circuited is False
+
+    @pytest.mark.asyncio
+    async def test_the_comparison_is_exact(self) -> None:
+        """no case folding, no whitespace tolerance, no prefix matching.
+
+        the owner is one namespace, not a subtree of them: a caller that
+        owns ``agents.<x>`` does not thereby own everything under it,
+        and a value carrying stray whitespace or the wrong case grants
+        nothing rather than being silently normalised into one that
+        grants.
+        """
+        agent = uuid4()
+        canonical = build_agent_namespace_name(agent)
+        for spelled in (canonical.upper(), canonical + " ", " " + canonical, canonical + ".child"):
+            namespace = Namespace(
+                id=uuid4(),
+                customer_id=uuid4(),
+                namespace_type="workspace",
+                owner_agent_id=agent,
+                owner_namespace=spelled,
+            )
+            assert _agent_owns_namespace(namespace, agent) is False
+
+    @pytest.mark.asyncio
+    async def test_ownership_survives_a_deleted_and_recreated_owner_only_as_identity(
+        self,
+    ) -> None:
+        """a recreated owner node does not, BY ITSELF, transfer ownership.
+
+        UNREACHABLE RATHER THAN PREVENTED, and the distinction is the
+        point. The owner is stored as a NAME, so a node deleted and
+        recreated under the same name is the same owner value, and the
+        children still name it. What stops a transfer today is that
+        being the owner requires the caller to independently BE that
+        namespace -- and the only namespace any principal currently IS
+        is its own ``agents.<uuid>``, which no operator recreates as an
+        interior provider node.
+
+        So the guarantee is "no principal can currently occupy a
+        recreated node", not "the children were detached". PREVENTING
+        it needs a principal whose identity is a namespace row with its
+        own id, which is the chunk that gives a tool pod its own
+        namespace -- not this one. Recorded so whoever reaches that
+        chunk finds the pointer.
+        """
+        recreated_node = "tools.pentest"
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=None,
+            namespace_type="tool",
+            owner_agent_id=None,
+            owner_namespace=recreated_node,
+        )
+        # every agent-shaped caller is refused, because an agent's own
+        # namespace name can never equal an interior provider node
+        for _ in range(5):
+            assert _agent_owns_namespace(namespace, uuid4()) is False

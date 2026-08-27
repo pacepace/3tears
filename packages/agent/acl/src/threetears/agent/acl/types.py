@@ -137,8 +137,9 @@ class Namespace:
 
     a namespace row carries the customer it belongs to, the type it
     represents (``workspace``, ``agent``, ``shared``, ``system``, ...),
-    and the agent that owns it. ownership short-circuits any grant
-    lookup: an agent always has full access to namespaces it owns.
+    and the namespace that owns it. ownership short-circuits any grant
+    lookup: a principal always has full access to namespaces its own
+    namespace owns.
 
     :ivar id: namespace UUID; the primary key in ``platform.namespaces``
     :ivar customer_id: customer UUID this namespace belongs to, or
@@ -147,7 +148,24 @@ class Namespace:
         (``workspace``, ``agent``, ``shared``, ``system``, ...)
     :ivar owner_agent_id: UUID of the agent that owns the physical rows,
         or ``None`` for a namespace with no owning agent (datasource /
-        customer / knowledge / ...)
+        customer / knowledge / ...). it says which AGENT owns the rows
+        and is true wherever it is set; what it cannot say is that a
+        namespace is owned by something which is not an agent, which is
+        why it no longer decides authorization
+    :ivar owner_namespace: canonical NAME of the namespace row that
+        OWNS this one, or ``None`` when nothing owns it. this is the
+        ownership key the evaluator's short-circuit reads. it names a
+        namespace rather than an agent because a tool pod, a capability
+        source and an in-hub component own namespaces too and none of
+        them is an agent; one owner column covers all four without a
+        column per kind. it is a NAME rather than a row id because the
+        short-circuit must resolve with no i/o at all -- an agent pod's
+        sandboxed L3 has no ``namespaces`` table, so the owner-path
+        descriptors several packages build carry no row and could not
+        supply an id. a name the caller can derive from its own
+        identity is the only owner value answerable there. ``None``
+        matches NOTHING -- see
+        :func:`threetears.agent.acl.evaluator.evaluate_with_trail`
     :ivar name: canonical ``platform.namespaces.name`` value, or
         ``None`` when the construction site had no name to supply (the
         workspace file-access path builds this value out of a workspace
@@ -163,6 +181,7 @@ class Namespace:
     namespace_type: str
     owner_agent_id: UUID | None
     name: str | None = None
+    owner_namespace: str | None = None
 
 
 @dataclass(frozen=True)

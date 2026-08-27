@@ -53,7 +53,11 @@ from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver
-from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
+from threetears.core.namespaces import (
+    PLURAL_PREFIX_TOOL,
+    build_agent_namespace_name,
+    build_namespace_name,
+)
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
 from threetears.core.security.identity_token import (
@@ -1719,6 +1723,14 @@ class ToolServer:
                 "name": name,
                 "namespace_type": "tool",
                 "owner_agent_id": self._agent_id,
+                # the ownership key. a row written without it is a row
+                # the emitting pod cannot reach through the ownership
+                # short-circuit, and the hub's write gate refuses an
+                # owner that is not the caller's own namespace. a
+                # PLATFORM pod carries no agent id and so records no
+                # owner -- those rows are reached by grant, not by
+                # ownership.
+                "owner_namespace": (build_agent_namespace_name(self._agent_id) if self._agent_id is not None else None),
                 "customer_id": self._customer_id,
                 "schema_name": None,
                 "metadata": {

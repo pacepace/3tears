@@ -50,7 +50,11 @@ from threetears.agent.acl import (
     AclCache,
     authorize_on_entity,
 )
-from threetears.core.namespaces import PLURAL_PREFIX_MEMORY, build_namespace_name
+from threetears.core.namespaces import (
+    PLURAL_PREFIX_MEMORY,
+    build_agent_namespace_name,
+    build_namespace_name,
+)
 from threetears.observe import get_logger
 
 __all__ = [
@@ -202,6 +206,7 @@ class _OwnerMemoryNamespace:
     customer_id: UUID
     owner_agent_id: UUID
     namespace_type: str = MEMORY_NAMESPACE_TYPE
+    owner_namespace: str | None = None
 
 
 def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> _OwnerMemoryNamespace:
@@ -218,6 +223,7 @@ def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> _OwnerMemoryNa
         id=_memory_namespace_id(agent_id, customer_id),
         customer_id=customer_id,
         owner_agent_id=agent_id,
+        owner_namespace=build_agent_namespace_name(agent_id),
     )
 
 
@@ -359,6 +365,9 @@ async def _resolve_or_create_memory_namespace(
             "name": memory_namespace_name(agent_id, customer_id),
             "namespace_type": MEMORY_NAMESPACE_TYPE,
             "owner_agent_id": agent_id,
+            # a row created without an owner is a row its own agent
+            # cannot reach through the ownership short-circuit
+            "owner_namespace": build_agent_namespace_name(agent_id),
             "customer_id": customer_id,
             "schema_name": memory_namespace_schema_name(
                 agent_id,

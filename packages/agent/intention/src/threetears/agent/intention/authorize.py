@@ -3,9 +3,9 @@
 Intention reads and writes are agent-internal: the deliberation wake and
 the private tools run as the owning agent, and the presence API reads the
 agent's wants as the agent owner behind metallm's own JWT auth. So authz
-is exactly the evaluator's owner short-circuit
-(``caller_agent_id == owner_agent_id``, ``evaluator.py:194``): the agent
-owns its own intention namespace by construction, so every action is
+is exactly the evaluator's owner short-circuit, which compares the
+namespace's recorded ``owner_namespace`` against the name of the namespace
+the caller IS: the agent owns its own intention namespace by construction, so every action is
 allowed grant-free with no acl migration, no seed row, and no
 ``platform.namespaces`` write.
 
@@ -35,6 +35,7 @@ from threetears.agent.acl import (
     AclCache,
     authorize_on_entity,
 )
+from threetears.core.namespaces import build_agent_namespace_name
 from threetears.observe import get_logger
 
 __all__ = [
@@ -132,6 +133,7 @@ class _OwnerIntentionNamespace:
     customer_id: UUID
     owner_agent_id: UUID
     namespace_type: str = INTENTION_NAMESPACE_TYPE
+    owner_namespace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +189,7 @@ async def authorize_intention_access(
         id=_intention_namespace_id(agent_id, customer_id),
         customer_id=customer_id,
         owner_agent_id=agent_id,
+        owner_namespace=build_agent_namespace_name(agent_id),
     )
     try:
         await authorize_on_entity(

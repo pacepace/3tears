@@ -57,6 +57,7 @@ from threetears.agent.acl import (
 )
 from threetears.core.namespaces import (
     PLURAL_PREFIX_CONVERSATION,
+    build_agent_namespace_name,
     build_namespace_name,
 )
 from threetears.observe import get_logger
@@ -317,6 +318,9 @@ async def _resolve_or_create_conversation_namespace(
             "name": conversation_namespace_name(agent_id, customer_id),
             "namespace_type": CONVERSATION_NAMESPACE_TYPE,
             "owner_agent_id": agent_id,
+            # a row created without an owner is a row its own agent
+            # cannot reach through the ownership short-circuit
+            "owner_namespace": build_agent_namespace_name(agent_id),
             "customer_id": customer_id,
             "schema_name": conversation_namespace_schema_name(
                 agent_id,

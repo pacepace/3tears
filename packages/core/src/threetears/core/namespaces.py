@@ -67,6 +67,7 @@ __all__ = [
     "PLURAL_PREFIX_WORKSPACE",
     "PLURAL_PREFIX_BY_NAMESPACE_TYPE",
     "HitlSessionNamespace",
+    "build_agent_namespace_name",
     "build_hitl_namespace_name",
     "build_namespace_name",
     "namespace_contains",
@@ -211,6 +212,33 @@ def build_namespace_name(plural_prefix: str, *segments: str) -> str:
     sanitized_segments = [sanitize_segment(s) for s in segments]
     parts = [plural_prefix, *sanitized_segments]
     return NAMESPACE_NAME_SEPARATOR.join(parts)
+
+
+def build_agent_namespace_name(agent_id: UUID) -> str:
+    """build the canonical name of an agent's OWN namespace row.
+
+    shape is ``agents.<canonical uuid>``. the uuid renders through
+    :func:`sanitize_segment`, which leaves it untouched -- the hyphens
+    in ``xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`` are not separators and
+    the value carries no ``.``.
+
+    this lives here, beside the generic builder, because it is asked
+    from BOTH sides of an ownership question and the two sides must
+    agree exactly. the hub WRITES this name when it provisions an
+    agent; the rbac evaluator READS it to find out which namespace row
+    a calling agent IS, so it can answer whether that row owns the
+    namespace under evaluation. a second spelling of the rule in either
+    place makes every ownership comparison miss, and it misses
+    SILENTLY -- an agent simply stops being recognised as the owner of
+    its own storage.
+
+    :param agent_id: agent unique identifier
+    :ptype agent_id: UUID
+    :return: canonical namespace name in the form ``agents.<uuid>``
+    :rtype: str
+    """
+    # convert at border: namespace name segment
+    return build_namespace_name(PLURAL_PREFIX_AGENT, str(agent_id))
 
 
 def namespace_contains(node: str, name: str) -> bool:

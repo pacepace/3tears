@@ -1382,6 +1382,19 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             Column("name", STRING_TYPE),
             Column("namespace_type", STRING_TYPE, immutable=True),
             Column("owner_agent_id", UUID_TYPE, nullable=True, immutable=True),
+            # canonical NAME of the namespace row that OWNS this one,
+            # self-referential. WITHOUT this entry the Collection
+            # neither reads nor writes the column, so the evaluator
+            # would see ``None`` on every row and no agent would be
+            # recognised as an owner of anything.
+            #
+            # NOT immutable at this layer: an operator re-homing a
+            # namespace under a different owner is a legitimate write.
+            # The write that must never happen -- an AGENT binding it
+            # through the query broker -- is refused there, where the
+            # caller is known to be an agent; declaring it immutable
+            # here would break the operator path instead.
+            Column("owner_namespace", STRING_TYPE, nullable=True),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column("schema_name", STRING_TYPE, nullable=True, immutable=True),
             Column(
@@ -1923,6 +1936,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 namespace_type=str(data.get("namespace_type") or "tool"),
                 owner_agent_id=_coerce_uuid(data.get("owner_agent_id")),
                 name=data.get("name"),
+                owner_namespace=data.get("owner_namespace"),
             )
             ctx = EvaluationContext(
                 namespace=ns,
