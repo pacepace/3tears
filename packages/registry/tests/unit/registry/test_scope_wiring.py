@@ -21,6 +21,8 @@ than degrade.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
@@ -51,6 +53,21 @@ def _nats_client() -> MagicMock:
     client.subscribe = AsyncMock(return_value=MagicMock())
     client.unsubscribe = AsyncMock()
     return client
+
+
+def _identity_token_provider(token: str = "registry.identity.token") -> "Callable[[], str | None]":
+    """a stand-in for the host-minted identity token provider the stack now requires.
+
+    A PROVIDER rather than a string in the tests too, because that is what production
+    passes: the real one reads a holder the refresh loop rewrites, and a test that
+    handed a bare string would not exercise the same parameter.
+
+    :param token: the token the provider reports
+    :ptype token: str
+    :return: a zero-arg callable returning ``token``
+    :rtype: Callable[[], str | None]
+    """
+    return lambda: token
 
 
 class TestTheHeartbeatRegistryIsScoped:
@@ -94,6 +111,7 @@ class TestTheRbacRegistryIsScoped:
             nats_client=_nats_client(),
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
         assert stack.registry.kv_key_scope == kv_key_scope_for(Principal.REGISTRY)
 
@@ -103,6 +121,7 @@ class TestTheRbacRegistryIsScoped:
             nats_client=_nats_client(),
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
         key = stack.group_collection.l2_key(("customer-1", "g1"))
         assert key.split(".")[0] == kv_key_scope_for(Principal.REGISTRY)
@@ -113,6 +132,7 @@ class TestTheRbacRegistryIsScoped:
             nats_client=_nats_client(),
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
         assert stack.registry.l2_create_if_missing is False
 
@@ -131,6 +151,7 @@ class TestBothRegistriesAgree:
             nats_client=_nats_client(),
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
         assert heartbeat_registry.kv_key_scope == stack.registry.kv_key_scope
 

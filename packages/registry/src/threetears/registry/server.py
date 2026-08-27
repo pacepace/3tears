@@ -975,11 +975,18 @@ def _run_server() -> None:
                 "THREETEARS_NATS_SUBJECT_NAMESPACE",
                 "3tears",
             )
+            # BEFORE the stack, because the stack refuses to build without a token.
+            # This is the first of the four factories `serve()` applies, so the host
+            # provider is established here and every later consumer in this process
+            # (the pod authenticator's and the limit guard's own proxy pools) reuses
+            # the same held token rather than handshaking again.
+            identity_token = await _resolve_identity_token_provider(nc)
             l1_backend = create_registry_l1_backend()
             stack = build_registry_rbac_stack(
                 nats_client=nc,
                 subject_namespace=namespace,
                 l1_backend=l1_backend,
+                identity_token=identity_token,
             )
             await stack.subscribe_invalidations()
             # hand the stack to the server's teardown. Without this the subscriptions this
@@ -1018,6 +1025,54 @@ def _run_server() -> None:
         usage_emitter_factory=_resolve_usage_emitter_factory(),
     )
     asyncio.run(server.serve())
+
+
+async def _resolve_identity_token_provider(nc: NatsClient) -> "Callable[[], str | None] | None":
+    """resolve + invoke the host's identity-token provider factory, if one is configured.
+
+    3tears stays host-agnostic, and identity is the sharpest case of that: the token the
+    L3 broker demands is minted by the HOST, over a handshake protocol 3tears does not
+    define and against a principal store 3tears cannot read. So the provider is supplied
+    out-of-band via ``THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY``, a
+    ``module:callable`` dotted path pointing at a host-provided async factory --
+    ``Callable[[NatsClient], Awaitable[Callable[[], str | None]]]`` -- invoked here once
+    the connection is up. The aibots Hub points it at
+    ``aibots.hub.tools.registry_identity:identity_token_provider_factory``, which signs a
+    connect JWT with the registry's own key, performs the Hub handshake, and returns a
+    holder's ``get`` so a re-minted token is picked up without rewiring.
+
+    UNSET -> ``None``, which :func:`~threetears.registry.rbac_stack.build_registry_rbac_stack`
+    turns into a wiring-time refusal. That is deliberate rather than a degraded mode: unlike
+    the other three hooks there is no weaker-but-working fallback, because a broker that
+    refuses an unidentified request leaves nothing to fall back TO.
+
+    :param nc: the registry's connected canonical NATS client
+    :ptype nc: NatsClient
+    :return: the host's zero-arg token provider, or ``None`` when the env var is unset
+    :rtype: Callable[[], str | None] | None
+    :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
+    :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
+        misconfigured identity plugin must crash startup, never silently drop to unidentified)
+    """
+    import importlib
+
+    spec = os.environ.get("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", "").strip()
+    result: "Callable[[], str | None] | None" = None
+    if spec:
+        module_name, sep, attr = spec.partition(":")
+        if not module_name or not sep or not attr:
+            raise ValueError(
+                "THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY must be a "
+                f"'module:callable' dotted path; got {spec!r}"
+            )
+        module = importlib.import_module(module_name)
+        factory = getattr(module, attr)
+        result = await factory(nc)
+        _logger.info(
+            "registry identity-token provider wired (L3 requests carry a host-minted token)",
+            extra={"extra_data": {"factory": spec}},
+        )
+    return result
 
 
 def _resolve_pod_authenticator_factory() -> "Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None":

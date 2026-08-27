@@ -124,6 +124,7 @@ class TestDefaultNamespace:
             nats_client=MagicMock(),
             namespace_prefix="ns",
             agent_id="abc-def",
+            identity_token=lambda: "test-identity-token",
         )
         assert proxy.default_namespace == "agents.abc-def"
 
@@ -133,8 +134,89 @@ class TestDefaultNamespace:
             namespace_prefix="ns",
             agent_id="abc-def",
             default_namespace="custom.namespace",
+            identity_token=lambda: "test-identity-token",
         )
         assert proxy.default_namespace == "custom.namespace"
+
+
+# ------------------------------------------------------------------
+# identity token provider
+# ------------------------------------------------------------------
+
+
+class TestIdentityTokenProvider:
+    """the client half of the verified-principal contract.
+
+    The broker reads the caller off a signed token and refuses a request
+    without one, so a backend that cannot produce a token must fail AT THE
+    CALL and send nothing. A request that leaves here unauthorizable is the
+    shape these tests exist to keep out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_provider_raises_and_sends_nothing(self) -> None:
+        """a backend built with no provider refuses rather than sending."""
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock()
+        proxy = NatsProxyL3Backend(
+            nats_client=mock_nc,
+            namespace_prefix="test",
+            agent_id="agent-123",
+        )
+
+        with pytest.raises(DataLayerUnavailableError, match="no identity_token provider"):
+            await proxy.fetch("SELECT 1")
+
+        mock_nc.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_token_raises_and_sends_nothing(self) -> None:
+        """an empty token is refused exactly as a missing one is."""
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock()
+        proxy = NatsProxyL3Backend(
+            nats_client=mock_nc,
+            namespace_prefix="test",
+            agent_id="agent-123",
+            identity_token=lambda: "",
+        )
+
+        with pytest.raises(DataLayerUnavailableError, match="returned an empty token"):
+            await proxy.fetch("SELECT 1")
+
+        mock_nc.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provider_is_read_on_every_request(self) -> None:
+        """the CURRENT token is forwarded, never one captured at construction.
+
+        The refresh loop re-mints in place, so a cached value is expired within
+        the hour and every later call then fails against the real broker.
+        """
+        tokens = iter(["token-1", "token-2"])
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock(
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 1,
+                }
+            )
+        )
+        proxy = NatsProxyL3Backend(
+            nats_client=mock_nc,
+            namespace_prefix="test",
+            agent_id="agent-123",
+            identity_token=lambda: next(tokens),
+        )
+
+        await proxy.fetch("SELECT 1")
+        await proxy.fetch("SELECT 2")
+
+        forwarded = [json.loads(call[0][1])["identity_token"] for call in mock_nc.request.call_args_list]
+        assert forwarded == ["token-1", "token-2"]
 
 
 # ------------------------------------------------------------------

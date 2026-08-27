@@ -35,18 +35,31 @@ construction is synchronous; callers invoke
 :meth:`RegistryRbacStack.subscribe_invalidations` after start so the
 sync-vs-async split mirrors the agent stack pattern.
 
-note: the registry pod has no real agent identity. the
-:class:`NatsProxyL3Backend` requires an ``agent_id`` string which the
-broker stamps on logs but does NOT use to gate
-``system.platform.rbac`` reads (the carve-out keys on namespace +
-action only). the registry passes a service sentinel UUID so log
-correlation has a stable identifier; the broker still admits the
-read because of the namespace+action match.
+the registry HAS a real identity, and the broker reads it off a
+signature rather than off the request body. Its principal is a row in
+the host's agent table keyed by
+:data:`REGISTRY_SERVICE_SENTINEL_AGENT_ID`, and every
+:class:`NatsProxyL3Backend` request carries an identity token the HOST
+minted after verifying a connect JWT the registry signed with its own
+provisioned Ed25519 key. ``agent_id`` is still passed for log
+correlation, but it decides nothing: the broker resolves the principal
+from the verified token, and a request carrying no token is refused.
+
+That token is short-lived and re-minted in place, so
+:func:`build_registry_rbac_stack` takes a zero-arg PROVIDER rather than
+a token string -- see its ``identity_token`` parameter, and
+:class:`RegistryIdentityUnavailableError` for what happens when the
+caller has none. Obtaining one is the HOST's job (3tears knows no
+handshake protocol); the standalone entrypoint resolves a host-supplied
+provider factory from
+``THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY`` exactly as it
+resolves the pod-authenticator, limit-guard and usage-emitter factories.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
@@ -72,6 +85,7 @@ from threetears.observe import get_logger
 __all__ = [
     "REGISTRY_SERVICE_SENTINEL_AGENT_ID",
     "PLATFORM_RBAC_READ_NAMESPACE",
+    "RegistryIdentityUnavailableError",
     "RegistryRbacStack",
     "build_registry_rbac_stack",
 ]
@@ -89,17 +103,30 @@ log = get_logger(__name__)
 PLATFORM_RBAC_READ_NAMESPACE: str = "system.platform.rbac"
 
 
-#: deterministic uuid5 sentinel used as the ``agent_id`` on every
-#: :class:`NatsProxyL3Backend` request the registry issues. the broker
-#: stamps this id on logs for traceability but does NOT gate
-#: ``system.platform.rbac`` reads on it -- the carve-out keys on
-#: namespace + action. keeping the value deterministic across registry
-#: restarts means broker logs always show the same originator string
-#: for registry-side reads, which simplifies operator triage.
+#: deterministic uuid5 naming the registry's principal. It is passed as
+#: the ``agent_id`` on every :class:`NatsProxyL3Backend` request for log
+#: correlation, and it is ALSO the id of the row the host stores this
+#: service's Ed25519 public key against -- so a host that admits the
+#: registry's reads admits them because the identity token names THIS id
+#: and the signature behind it verified, never because the request body
+#: said so. Deterministic across restarts because it is a stored
+#: principal id, not a per-process handle.
 REGISTRY_SERVICE_SENTINEL_AGENT_ID: UUID = uuid5(
     NAMESPACE_DNS,
     "threetears.registry.service-sentinel",
 )
+
+
+class RegistryIdentityUnavailableError(RuntimeError):
+    """the registry cannot prove who it is, so no L3 backend is built at all.
+
+    The host broker resolves the caller from a signed identity token and refuses a
+    request that carries none. A backend built without a provider therefore raises on
+    its FIRST query -- after the process has reported itself up, and from whichever
+    request path happened to touch L3 first. That reads as an intermittent data-layer
+    fault rather than as a missing credential, which is the shape this error exists to
+    remove: the refusal happens at wiring, once, naming the cause.
+    """
 
 
 @dataclass
@@ -234,11 +261,41 @@ def _resolve_acl_ttl_seconds() -> int:
     return result
 
 
+def _require_identity_token(identity_token: Callable[[], str | None] | None) -> None:
+    """refuse at WIRING time when the registry has no identity to forward.
+
+    Called before a single Collection is constructed, so a process that cannot prove
+    who it is never reaches the point of reporting itself ready. The provider is
+    invoked once here purely to establish that it HAS a token now; the backend keeps
+    calling it per request, so a later re-mint is picked up without rewiring.
+
+    :param identity_token: the provider handed to :func:`build_registry_rbac_stack`
+    :ptype identity_token: Callable[[], str | None] | None
+    :return: nothing
+    :rtype: None
+    :raises RegistryIdentityUnavailableError: when the provider is missing or empty
+    """
+    if identity_token is None:
+        raise RegistryIdentityUnavailableError(
+            "the registry rbac stack was built with no identity_token provider. The host "
+            "broker resolves the caller from a signed token and refuses a request carrying "
+            "none, so every system.platform.rbac read would fail. Supply a provider (the "
+            "standalone entrypoint resolves one from "
+            "THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY)."
+        )
+    if not identity_token():
+        raise RegistryIdentityUnavailableError(
+            "the registry's identity_token provider returned no token. The identity "
+            "handshake has not completed, so there is nothing to forward on an L3 request."
+        )
+
+
 def build_registry_rbac_stack(
     *,
     nats_client: NatsClient,
     subject_namespace: str,
     l1_backend: SQLiteBackend,
+    identity_token: Callable[[], str | None] | None = None,
 ) -> RegistryRbacStack:
     """construct the registry-side rbac stack.
 
@@ -264,9 +321,20 @@ def build_registry_rbac_stack(
         for adding the rbac metadata tables to the backend's schema
         (see :data:`registry.l1_cache.REGISTRY_L1_METADATA`).
     :ptype l1_backend: SQLiteBackend
+    :param identity_token: zero-arg PROVIDER returning the registry's CURRENT
+        host-minted identity token. A PROVIDER and never a string: the token is
+        short-lived and re-minted in place, so a value captured here is expired
+        within the hour and every L3 read after that fails. Keyword-optional in
+        SHAPE only -- ``None``, or a provider with no token to give, raises
+        :class:`RegistryIdentityUnavailableError` rather than building a backend
+        that raises on its first query.
+    :ptype identity_token: Callable[[], str | None] | None
     :return: populated rbac stack ready for downstream consumers
     :rtype: RegistryRbacStack
+    :raises RegistryIdentityUnavailableError: when no identity-token provider was
+        supplied, or the one supplied has no token yet
     """
+    _require_identity_token(identity_token)
     core_config = DefaultCoreConfig()
     registry = CollectionRegistry()
 
@@ -275,6 +343,10 @@ def build_registry_rbac_stack(
         namespace_prefix=subject_namespace,
         agent_id=str(REGISTRY_SERVICE_SENTINEL_AGENT_ID),
         default_namespace=PLATFORM_RBAC_READ_NAMESPACE,
+        # the PROVIDER itself, not the token it currently returns. the refresh loop
+        # replaces the held token in place, and the backend reads through this
+        # callable on every request, so the two never drift.
+        identity_token=identity_token,
     )
 
     # THE SECOND REGISTRY IN THE REGISTRY-SERVER PROCESS, and it is L2-live even though no
