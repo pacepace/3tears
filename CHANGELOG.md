@@ -72,6 +72,49 @@ packages (bumped in lock-step).
   `pentest.` -- because a dotted value matches nothing under the new comparison.
   Deploying apps that seed `tool_pods` rows must strip it.
 
+- `core`: a deferred write the durable tier declined is no longer counted as
+  flushed, and no longer passes in silence. `save_entity` treats a 0 rowcount
+  as a hard failure, so the synchronous path can never report a row it did not
+  persist; the deferred path replays the same write through `persist_to_store`
+  and both flush loops -- per-entity and atomic-batch -- discarded that
+  rowcount, counted the write, and evicted its buffer entry. The buffer entry
+  is the only copy, so the loss was permanent and nothing said so.
+
+  Eviction and the FK-aware retry budget are unchanged: a declined write is
+  reported, never replayed. The report is graded by what the collection says its
+  own 0 means -- error when it declares `emits_cas_fence` (a provable lost race,
+  reachable only through a buffer that already held rows when the table was
+  fenced, since a fenced collection whose table is configured for deferred flush
+  refuses to construct at all), debug when the table declares
+  `on_conflict="ignore"` and a 0 is the duplicate the policy exists to absorb,
+  and warning otherwise, where it is ambiguous.
+
+- `core`: a dynamic collection (`DataStore.create_table` /
+  `create_dynamic_collection`) reports the rows its L3 write actually affected.
+  `save_to_store` tested the asyncpg status tag for TRUTHINESS -- `1 if
+  result_str else 0` -- so `"INSERT 0 0"` and `"UPDATE 0"` both answered 1.
+  `save_entity` raises on a 0 and is what stops a declined write being reported
+  as a persisted one, so that read handed the caller a success for a row the
+  store never wrote. It now parses the tag with the framework's own
+  `parse_rowcount`, which exists for exactly this raw-SQL border.
+
+  A zero-row tag is reachable rather than theoretical: `NatsProxyL3Backend`
+  composes `"INSERT 0 0"` whenever the broker's reply carries no `row_count`,
+  so an agent pod reaching L3 through the broker was the exposed case.
+
+  Its `original_timestamp` argument is documented as accepted-and-not-applied
+  rather than described as an optimistic-concurrency check, which it never was:
+  the generated statement is an unfenced `INSERT ... ON CONFLICT DO UPDATE` and
+  the argument reached nothing. Implementing the fence would change the contract
+  for every existing dynamic table, so it is stated rather than added.
+
+  **A deploying app whose pods reach L3 through the broker may see new raises.**
+  A reply carrying no `row_count` previously read as a successful write and now
+  makes `save_entity` raise -- `RuntimeError` for a new entity,
+  `ConcurrentModificationError` otherwise. That is the point of the fix, and it
+  is how every `SchemaBackedCollection` has always behaved, so a raise appearing
+  here names a broker reply that was already losing writes silently.
+
 ## v0.29.0 -- 2026-08-26
 
 ### Changed

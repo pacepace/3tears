@@ -1531,9 +1531,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         buffer and is replayed later through ``persist_to_store``, which
         supplies NO ``original_timestamp``. on a ``cas_null_safe`` table that
         replay fences against ``NULL``, so it matches only a row nobody has
-        written since; against any row that DOES exist it affects 0 rows, and
-        the flush loop discards the rowcount. every deferred write to an
-        existing row would evaporate with nothing raised and nothing logged.
+        written since; against any row that DOES exist it affects 0 rows, which
+        the flush loop reports and evicts rather than retries. every deferred
+        write to an existing row would evaporate with nothing raised.
 
         cheap to detect at construction, so detect it there.
 

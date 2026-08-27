@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
@@ -790,3 +791,144 @@ class TestFlushAtomicBatch:
         assert flushed == 1
         # per-entity loop persists WITHOUT a conn (no transaction to thread)
         coll.persist_to_store.assert_awaited_once_with({"id": "u1"})
+
+
+def _zero_rowcount_collection(
+    table: str,
+    *,
+    emits_cas_fence: bool = False,
+    on_conflict: str = "update",
+) -> MagicMock:
+    """A mock collection whose ``persist_to_store`` reports that no row was written.
+
+    ``emits_cas_fence`` and the schema's ``on_conflict`` are set as literal values
+    rather than left to the mock's auto-created attributes, which are truthy objects
+    and would make every mock read as fenced.
+    """
+    coll = MagicMock()
+    coll.table_name = table
+    coll.emits_cas_fence = emits_cas_fence
+    coll.schema.on_conflict = on_conflict
+    coll.persist_to_store = AsyncMock(return_value=0)
+    return coll
+
+
+class TestZeroRowcountFlushIsNotSuccess:
+    """A flush write the durable tier took no row for is not a persisted write.
+
+    ``save_entity`` raises on a 0 rowcount, so the synchronous path can never report a
+    write it did not land. The deferred path replays the same write through
+    ``persist_to_store`` and discarded that rowcount, so a write the store declined was
+    counted as flushed and its buffer entry evicted -- the loss was permanent, and
+    nothing said so.
+    """
+
+    @pytest.mark.asyncio
+    async def test_zero_rowcount_is_not_counted_as_flushed(self) -> None:
+        """the returned count states rows PERSISTED, so a declined write is not in it."""
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        registry.register(_zero_rowcount_collection("users"))
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 0
+
+    @pytest.mark.asyncio
+    async def test_zero_rowcount_names_the_row_it_dropped(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """the log has to carry the address, or the loss is unattributable after the fact."""
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        registry.register(_zero_rowcount_collection("users"))
+
+        with caplog.at_level(logging.WARNING):
+            await flush_pending(buf, registry)
+
+        assert caplog.records, "a write the durable tier declined must not pass in silence"
+        payload = caplog.records[-1].__dict__.get("extra_data", {})
+        assert payload.get("table") == "users"
+        assert payload.get("entity_id") == "u1"
+
+    @pytest.mark.asyncio
+    async def test_zero_rowcount_on_a_fenced_collection_is_an_error(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """on a collection that fences every write, 0 is provably a lost race, not a no-op."""
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        registry.register(_zero_rowcount_collection("users", emits_cas_fence=True))
+
+        with caplog.at_level(logging.WARNING):
+            await flush_pending(buf, registry)
+
+        assert [r for r in caplog.records if r.levelno == logging.ERROR]
+
+    @pytest.mark.asyncio
+    async def test_an_idempotent_collections_zero_is_not_escalated(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """on an ``on_conflict="ignore"`` table a 0 is the ordinary duplicate outcome.
+
+        Escalating it would put a warning in the log for every duplicate the policy
+        exists to absorb, which is how a real signal gets tuned out.
+        """
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        registry.register(_zero_rowcount_collection("users", on_conflict="ignore"))
+
+        with caplog.at_level(logging.DEBUG):
+            await flush_pending(buf, registry)
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    @pytest.mark.asyncio
+    async def test_zero_rowcount_is_still_evicted_rather_than_retried(self) -> None:
+        """eviction is unchanged: a declined write is reported, never replayed in a loop."""
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        registry.register(_zero_rowcount_collection("users"))
+
+        await flush_pending(buf, registry)
+
+        assert buf.pending_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_zero_rowcount_in_the_atomic_batch_is_not_counted(self) -> None:
+        """the batch path counted one per write regardless of what the backend reported."""
+        backend = _FakeTxBackend()
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+        await buf.add("users", "u2", {"id": "u2"})
+
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=backend)
+
+        coll = MagicMock()
+        coll.table_name = "users"
+        coll.emits_cas_fence = False
+
+        async def _persist(data: dict[str, object], *, conn: object = None) -> int:
+            return 0
+
+        coll.persist_to_store = AsyncMock(side_effect=_persist)
+        registry.register(coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 0
+        assert backend.committed is True
