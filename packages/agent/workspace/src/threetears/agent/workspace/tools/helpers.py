@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid7
 
 from threetears.agent.acl import AclCache
+from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 
 __all__ = [
     "NoWorkspacePinned",
@@ -280,7 +281,13 @@ class Sha256Mismatch(RuntimeError):
         super().__init__(f"sha256 mismatch: expected {expected!r}, current {current!r}")
 
 
-_SELECT_NAMESPACE_CUSTOMER_SQL = "SELECT customer_id FROM platform.namespaces WHERE namespace_id = $1"
+#: BARE table name, deliberately. The hub's control-plane tables live in the
+#: schema its deployment configures, so a ``platform.``-qualified reference is
+#: a hardcoded schema name that is right on one deployment and wrong on every
+#: other one -- the broker rewrites no table reference, so the statement can
+#: only fail there. What puts those tables on the path is the
+#: :data:`PLATFORM_RBAC_READ_NAMESPACE` binding the one caller passes.
+_SELECT_NAMESPACE_CUSTOMER_SQL = "SELECT customer_id FROM namespaces WHERE namespace_id = $1"
 
 
 async def authorize_workspace(
@@ -431,23 +438,48 @@ async def enrich_workspace_identity(
     :attr:`Workspace.customer_id` setter so the authorize helper can
     read it back on the next statement.
 
-    the query uses ``namespace=`` so it lands on the platform pool
-    regardless of the caller's default agent schema: the L3 proxy
-    recognizes ``namespace="platform"`` (or any platform-typed
-    namespace) and binds ``search_path`` accordingly. pools that lack
-    ``namespace=`` support (tests, direct asyncpg) fall back to the
-    fully-qualified ``platform.namespaces`` table reference.
+    **the read is BOUND, not qualified, and it has to be.** the caller
+    is an agent pod whose default namespace resolves to its own
+    ``agent_<hex>`` schema, and the ``namespaces`` table is not in
+    there -- a bare name alone raises ``relation "namespaces" does not
+    exist``, which is the same failure that retired the agent-side
+    namespace write in :meth:`ToolServer.register_tool`. so the request
+    names :data:`PLATFORM_RBAC_READ_NAMESPACE`: the broker resolves
+    that row and issues ``SET search_path`` from the row's own
+    ``schema_name``, which the hub seeds from ``current_schema()``.
+    that is what makes this statement land wherever the deployment put
+    its control-plane tables, rather than wherever this repo guessed.
+
+    qualifying the table instead does NOT work, and used to be what
+    this did: the broker rewrites no table reference, so a
+    ``platform.``-prefixed name is executed verbatim and resolves only
+    on a deployment whose schema happens to carry that name. that is
+    the removed hardcoded default by another route.
+
+    the broker admits this read from every principal without a grant
+    (its read-only carve-out covers SELECTs on the rbac metadata tables
+    and ``namespaces``), and refuses every write on the same namespace,
+    so nothing here can mutate what it reads.
+
+    ``db_pool`` must therefore accept ``namespace=`` -- the same
+    requirement :func:`_write_file_atomic` already places on the same
+    object through ``conn.transaction(namespace=...)``, and the
+    production :class:`NatsProxyL3Backend` satisfies both.
 
     :param workspace: workspace entity to enrich
     :ptype workspace: Workspace
-    :param db_pool: asyncpg pool (or pool-like) that can reach the
-        platform schema; the v014 migration places namespaces on
-        every agent's reachable path
+    :param db_pool: pool-like accepting ``fetchrow(query, *params,
+        namespace=...)``; the namespace is what routes the read, so a
+        pool that ignores the keyword cannot serve this
     :ptype db_pool: Any
     :return: the same ``workspace`` instance (returned for chaining)
     :rtype: Workspace
     """
-    row = await db_pool.fetchrow(_SELECT_NAMESPACE_CUSTOMER_SQL, workspace.id)
+    row = await db_pool.fetchrow(
+        _SELECT_NAMESPACE_CUSTOMER_SQL,
+        workspace.id,
+        namespace=PLATFORM_RBAC_READ_NAMESPACE,
+    )
     if row is not None:
         raw = row["customer_id"] if isinstance(row, dict) else row["customer_id"]
         workspace.customer_id = UUID(str(raw)) if raw is not None else None

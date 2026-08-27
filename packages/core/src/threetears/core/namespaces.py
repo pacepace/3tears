@@ -49,6 +49,7 @@ from threetears.nats.subjects import sanitize_subject_segment
 __all__ = [
     "HITL_NAMESPACE_TYPE",
     "NAMESPACE_NAME_SEPARATOR",
+    "PLATFORM_RBAC_READ_NAMESPACE",
     "PLURAL_PREFIX_AGENT",
     "PLURAL_PREFIX_API_KEY",
     "PLURAL_PREFIX_AUDIT",
@@ -216,6 +217,30 @@ def build_namespace_name(plural_prefix: str, *segments: str) -> str:
     sanitized_segments = [sanitize_segment(s) for s in segments]
     parts = [plural_prefix, *sanitized_segments]
     return NAMESPACE_NAME_SEPARATOR.join(parts)
+
+
+#: canonical name of the system namespace the platform's query broker
+#: admits read-only traffic on, so that a statement bound to it resolves
+#: against the platform control-plane tables (``namespaces``, ``groups``,
+#: ``group_members``, ``roles``, ``role_assignments``) instead of the
+#: caller's own agent schema.
+#:
+#: **The middle segment is not a schema name, and reading it as one is the
+#: bug this constant exists to prevent.** The platform's control-plane
+#: tables live in whatever schema its deployment configures; on the shipped
+#: compose stack that is not ``platform``. What binds a statement to those
+#: tables is this NAME: the broker resolves the row it names and issues
+#: ``SET search_path`` from that row's own ``schema_name`` column, which the
+#: platform seeds from ``current_schema()``. So a caller passes this name
+#: and writes the BARE table name; a caller that instead writes a
+#: ``platform.``-qualified table name has hardcoded a schema the deployment
+#: may not have, and the statement can only fail there.
+#:
+#: Declared here, beside the other canonical namespace names, because it is
+#: asked for from packages that must not depend on each other -- the
+#: registry's rbac stack and the workspace tools both bind reads to it --
+#: and a second spelling of a routing key fails by resolving nothing.
+PLATFORM_RBAC_READ_NAMESPACE: str = build_namespace_name(PLURAL_PREFIX_SYSTEM, "platform", "rbac")
 
 
 def build_agent_namespace_name(agent_id: UUID) -> str:

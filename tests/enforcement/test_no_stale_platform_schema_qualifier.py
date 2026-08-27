@@ -102,10 +102,6 @@ _ALLOWED: dict[str, str] = {
     "packages/agent/workspace/src/threetears/agent/workspace/migrations/__init__.py": (
         "indexes v003 by what it does, so it inherits v003's historical-DDL wording"
     ),
-    "packages/agent/workspace/src/threetears/agent/workspace/tools/helpers.py": (
-        "quotes ``_SELECT_NAMESPACE_CUSTOMER_SQL``, a fully-qualified fallback literal in this "
-        "same module for pools with no ``namespace=`` support. The docstring names a real string"
-    ),
 }
 
 

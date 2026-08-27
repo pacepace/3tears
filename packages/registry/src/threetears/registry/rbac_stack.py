@@ -79,6 +79,7 @@ from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 from threetears.nats import NatsClient, Principal, Subscription, kv_key_scope_for
 from threetears.observe import get_logger
 
@@ -94,13 +95,12 @@ __all__ = [
 log = get_logger(__name__)
 
 
-#: name of the system namespace the hub broker's read-only carve-out
-#: admits SELECT traffic on. the value is duplicated here (instead of
-#: imported from ``aibots.hub.broker.acl``) so the 3tears registry
-#: package retains its hub-independent dependency graph -- the hub is
-#: free to evolve the carve-out internally as long as the canonical
-#: name stays the same.
-PLATFORM_RBAC_READ_NAMESPACE: str = "system.platform.rbac"
+#: re-exported from :mod:`threetears.core.namespaces`, where the name is
+#: declared once. It stays in this module's ``__all__`` because consumers
+#: import it from here, and it is not imported from the deploying
+#: platform's own broker module so this package keeps a host-independent
+#: dependency graph -- the host is free to evolve its carve-out internally
+#: as long as the canonical name stays the same.
 
 
 #: deterministic uuid5 naming the registry's principal. It is passed as
