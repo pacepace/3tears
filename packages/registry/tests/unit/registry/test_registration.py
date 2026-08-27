@@ -685,3 +685,124 @@ class TestRefusingEveryToolSaysWhichNodeItComparedAgainst:
         assert reply.success is False
         assert "evd.*" in reply.error
         assert "evd.hello" in reply.error
+
+
+class TestTheManifestFilterComparesTheMcpName:
+    """the manifest filter reads ``tool.name``, never a namespace name.
+
+    the two live in the same conceptual space and are easy to confuse.
+    ``allowed_namespaces`` holds bare mcp-name NODES (``pentest``,
+    ``aibots.admin``, ``threetears``); ``tool.name`` is the mcp name a
+    pod offers (``pentest.sqlmap``). The canonical
+    ``platform.namespaces.name`` -- ``tools.pentest.sqlmap.1-0`` -- is
+    a THIRD string, built downstream, and it never reaches this filter.
+
+    That distinction is what decides whether rooting the namespace name
+    at ``tools.`` starves registration. It does not: a rooted namespace
+    name would match none of these nodes, but the filter is not handed
+    one. These tests pin that, because the failure mode if it were
+    wrong is total -- ``_authenticate_and_filter`` rejects the WHOLE
+    manifest, so the builtin, pentest and admin tool servers would
+    register nothing at all, and the only signal is a log line on a
+    pod that then sits there healthy and empty.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_rooted_namespace_name_is_not_what_the_filter_compares(self) -> None:
+        # the A/B: the mcp name is admitted, and the namespace name
+        # built FROM it is not. if the filter ever started reading the
+        # namespace name, the first assertion would fail and this one
+        # would be the reason why.
+        from threetears.core.namespaces import build_tool_namespace_name
+
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["pentest"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "pentest.sqlmap",
+                "version": "1.0",
+                "description": "offered under its mcp name",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True
+        assert reply.registered_tools == ["pentest.sqlmap@1.0"]
+        # and the namespace name this tool will be given downstream is
+        # NOT a value any node in the allow-list contains.
+        namespace_name = build_tool_namespace_name("pentest.sqlmap", "1.0")
+        assert namespace_name == "tools.pentest.sqlmap.1-0"
+        assert not namespace_name.startswith("pentest")
+
+    @pytest.mark.asyncio
+    async def test_a_manifest_offering_a_rooted_name_is_refused(self) -> None:
+        # the inverse guard: a pod that mistakenly offered the built
+        # namespace name as its tool name must NOT be admitted by a
+        # node naming the provider, or the registry would route a call
+        # to a name no dispatcher resolves.
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["pentest"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "tools.pentest.sqlmap",
+                "version": "1.0",
+                "description": "a namespace name offered where an mcp name belongs",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert "tools.pentest.sqlmap" in reply.error
+
+    @pytest.mark.asyncio
+    async def test_every_live_pod_allow_list_still_admits_its_own_tools(self) -> None:
+        """the four platform pods' live ``allowed_namespaces``, exercised.
+
+        read off a running deployment. ``dipp`` is included in the
+        trailing-dot spelling it actually carries there, and it admits
+        NOTHING -- that is the earlier landing's deliberate visible
+        failure, asserted here so this landing cannot be blamed for it.
+        """
+        live_pods = {
+            "admin-tool-server": (["aibots.admin"], "aibots.admin.list_agents", True),
+            "builtin-tool-server": (["threetears"], "threetears.calculator", True),
+            "pentest-tool-server": (["pentest"], "pentest.sqlmap", True),
+            "dipp-tool-server": (["dipp."], "dipp.getthing", False),
+        }
+        for pod_name, (allowed, offered, expected) in live_pods.items():
+            catalog = ToolCatalog()
+            auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=allowed)
+            handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+            nc = _make_registry_nc()
+            await handler.start(nc)
+            tools = [
+                {
+                    "name": offered,
+                    "version": "1.0",
+                    "description": pod_name,
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+            ]
+            manifest = _manifest_with_token("the-jwt", tools=tools)
+            msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+            await handler.handle_registration(msg)
+
+            reply = nc.publish_reply.call_args.kwargs["message"]
+            assert reply.success is expected, f"{pod_name} offering {offered} under {allowed}"

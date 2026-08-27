@@ -48,10 +48,7 @@ from threetears.agent.acl import (
     Namespace as AclNamespace,
     evaluate_decision,
 )
-from threetears.core.namespaces import (
-    PLURAL_PREFIX_TOOL,
-    build_namespace_name,
-)
+from threetears.core.namespaces import build_tool_namespace_name_or_none
 from threetears.observe import get_logger
 
 __all__ = [
@@ -167,11 +164,14 @@ class RbacEvaluatorAuthorizer:
             ``None`` when the dispatch carries no user identity
         :ptype user_id: str | None
         :param tool_name: ``mcp_name`` from the proxy request;
-            sanitized + plural-prefixed via
-            :func:`build_namespace_name` before lookup
+            plural-prefixed via
+            :func:`build_tool_namespace_name_or_none` before lookup,
+            and interpolated unchanged; a value that cannot compose a
+            namespace name DENIES rather than raising
         :ptype tool_name: str
         :param tool_version: ``mcp_version`` from the proxy
-            request; second segment of the canonical namespace name
+            request; sanitized into the LAST component of the
+            canonical namespace name
         :ptype tool_version: str
         :return: True iff the evaluator grants the ``tool.call``
             action on the resolved tool namespace
@@ -221,17 +221,38 @@ class RbacEvaluatorAuthorizer:
 
         # canonicalize: the dispatch arrives as the natural
         # ``(mcp_name, mcp_version)`` pair; the namespace ``name``
-        # column is the sanitized plural-prefix shape produced by
-        # :func:`build_namespace_name`. constructing the canonical
-        # form here keeps every consumer (this lookup, hub
-        # access materializer, namespace emitter) agreed on the
+        # column is the canonical shape. constructing the canonical
+        # form here keeps every consumer (this lookup, the hub access
+        # materializer, the namespace emitter) agreed on the
         # ``platform.namespaces.name`` value without the call site
-        # needing to reverse the sanitization rules.
-        canonical_name = build_namespace_name(
-            PLURAL_PREFIX_TOOL,
-            tool_name,
-            tool_version,
-        )
+        # needing to reverse the version's sanitization.
+        #
+        # this calls the shared grammar rather than composing the
+        # prefix and the segments itself. it used to do the latter, and
+        # a second spelling of the rule is what makes this lookup
+        # silently miss every row when the rule changes -- the miss is
+        # a DENY on the tool-dispatch hot path, with the row sitting
+        # right there under a name one character different.
+        # the non-raising door, because ``tool_name`` arrives on a proxy
+        # request. a name carrying an empty component is one no
+        # registration could have produced, so it names no row -- and
+        # the answer to "may this caller use a tool that does not
+        # exist" is DENY, not an exception out of the authorizer.
+        canonical_name = build_tool_namespace_name_or_none(tool_name, tool_version)
+        if canonical_name is None:
+            log.info(
+                "rbac authorizer: tool name cannot name a namespace, denying",
+                extra={
+                    "extra_data": {
+                        "agent_id": agent_id,
+                        "user_id": user_id,
+                        "tool_name": tool_name,
+                        "tool_version": tool_version,
+                    }
+                },
+            )
+            return result
+
         ns_entity = await self._namespace_collection.get_by_name(canonical_name)
         if ns_entity is None:
             log.info(

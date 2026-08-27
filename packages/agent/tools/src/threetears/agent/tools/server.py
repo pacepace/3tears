@@ -54,9 +54,9 @@ from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolve
 from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver
 from threetears.core.namespaces import (
-    PLURAL_PREFIX_TOOL,
     build_agent_namespace_name,
-    build_namespace_name,
+    build_tool_namespace_name,
+    build_tool_namespace_name_or_none,
 )
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
@@ -106,18 +106,25 @@ __all__ = [
 def tool_namespace_name(mcp_name: str, version: str) -> str:
     """build the canonical ``platform.namespaces.name`` for a tool row.
 
-    namespace-task-01 phase 9.5 pins the canonical shape at
-    ``tools.<mcp_name>.<version>`` (plural prefix + dot separator +
-    dot-sanitized segments). :func:`build_namespace_name` replaces
-    any ``.`` inside a segment with ``-`` before interpolation — a
-    mcp name like ``example.admin.backup`` comes through as
-    ``example-admin-backup`` and a semver version like ``1.0.0``
-    comes through as ``1-0-0``. the resulting shape stays unambiguous
-    for cross-type lookups (no collision with a workspace-typed row
-    sharing the name), preserves per-version pinning (different
-    versions of the same tool remain distinct namespace rows), and
-    keeps bulk-delete-on-deregister expressible via a
-    ``LIKE 'tools.<sanitized-mcp>.%'`` pattern.
+    the canonical shape is ``tools.<mcp_name>.<sanitized version>``:
+    the mcp name is interpolated VERBATIM, so ``example.admin.backup``
+    contributes three components and the row sits under
+    ``tools.example.admin`` by the ordinary containment rule, while a
+    semver version like ``1.0.0`` is sanitized to ``1-0-0`` and placed
+    last. the shape stays unambiguous for cross-type lookups (no
+    collision with a workspace-typed row sharing the name) and
+    preserves per-version pinning.
+
+    a thin delegate to :func:`threetears.core.namespaces.build_tool_namespace_name`,
+    which owns the grammar and ships beside the parser that has to
+    agree with it. this name stays because it is what every caller
+    imports and because it says which KIND of namespace it builds; the
+    rule behind it lives in exactly one place.
+
+    **do not compose a ``LIKE 'tools.<mcp>.%'`` deregistration
+    pattern.** under the unflattened shape that matches every version
+    of a distinct tool named one segment deeper, so it deletes rows
+    belonging to another tool. the reasoning is on the callee.
 
     :param mcp_name: tool mcp name (e.g. ``example.admin.backup``)
     :ptype mcp_name: str
@@ -125,8 +132,11 @@ def tool_namespace_name(mcp_name: str, version: str) -> str:
     :ptype version: str
     :return: canonical namespace name string
     :rtype: str
+    :raises ValueError: if either argument is empty, if ``mcp_name``
+        carries an empty component, or if it is already rooted at the
+        ``tools`` prefix
     """
-    return build_namespace_name(PLURAL_PREFIX_TOOL, mcp_name, version)
+    return build_tool_namespace_name(mcp_name, version)
 
 
 def tool_namespace_id(
@@ -1699,7 +1709,20 @@ class ToolServer:
         if self._namespace_collection is None:
             return
         schema = tool.mcp_schema()
-        name = tool_namespace_name(schema.name, schema.version)
+        # a tool's mcp name is an unvalidated ``str`` -- nothing between
+        # ``TearsTool`` and here constrains it -- so one that cannot
+        # compose a namespace name reaches this. it is refused per TOOL
+        # rather than allowed to raise, because this runs across a whole
+        # registration and one malformed tool must not stop every other
+        # tool on the same pod from getting its row.
+        name = build_tool_namespace_name_or_none(schema.name, schema.version)
+        if name is None:
+            log.warning(
+                "tool namespace not emitted: %r at version %r cannot address a namespace",
+                schema.name,
+                schema.version,
+            )
+            return
         now = datetime.now(UTC)
         namespace_id = tool_namespace_id(
             schema.name,

@@ -671,21 +671,25 @@ class TestRbacEvaluatorAuthorizer:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_lookup_uses_canonical_sanitized_name(self) -> None:
-        """authorizer constructs canonical name from (mcp_name, mcp_version).
+    async def test_lookup_uses_the_canonical_name(self) -> None:
+        """authorizer constructs the canonical name from (mcp_name, mcp_version).
 
         the dispatch carries the natural ``mcp_name`` /
         ``mcp_version`` shape (e.g. ``3tears.admin.customer_management`` /
-        ``1.0``); the namespace ``name`` column carries the sanitized
-        plural-prefix form (``tools.3tears-admin-customer_management.1-0``).
-        without this canonicalization step the lookup never resolves
-        the row and every dispatch denies even when a valid grant
-        exists.
+        ``1.0``); the namespace ``name`` column carries the rooted form
+        (``tools.3tears.admin.customer_management.1-0``), in which the
+        mcp name is interpolated unchanged and only the version is
+        sanitized. without this canonicalization step the lookup never
+        resolves the row and every dispatch denies even when a valid
+        grant exists.
+
+        the expectation is asserted BOTH against the shared grammar and
+        against the literal, because those fail differently: the first
+        catches this call site drifting away from the builder, and the
+        second catches the builder itself changing shape under a
+        deployment whose rows were written by the older one.
         """
-        from threetears.core.namespaces import (
-            PLURAL_PREFIX_TOOL,
-            build_namespace_name,
-        )
+        from threetears.core.namespaces import build_tool_namespace_name
 
         user_id = uuid4()
         agent_id = uuid4()
@@ -703,8 +707,64 @@ class TestRbacEvaluatorAuthorizer:
             "1.0",
         )
 
-        assert ns_coll.last_get_by_name == build_namespace_name(
-            PLURAL_PREFIX_TOOL,
+        assert ns_coll.last_get_by_name == build_tool_namespace_name(
             "3tears.admin.customer_management",
             "1.0",
         )
+        assert ns_coll.last_get_by_name == "tools.3tears.admin.customer_management.1-0"
+
+
+class TestAMalformedToolNameDeniesRatherThanRaises:
+    """the dispatch envelope is untrusted, and this is the authorization hot path.
+
+    ``tool_name`` arrives on a proxy request. The namespace-name builder
+    REFUSES a name carrying an empty component, and correctly so -- no
+    registration could have produced one. But an exception escaping here
+    is worse than a deny in two ways: the caller gets an error instead of
+    a refusal it can read, and an authorizer that can raise is one whose
+    failure mode is not "denied".
+
+    So a name that cannot compose denies, which is the same answer as a
+    name that composes and matches no row.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["a..b", ".leading", "trailing.", "tools.already.rooted", "tools"],
+    )
+    async def test_a_malformed_tool_name_denies(self, tool_name: str) -> None:
+        ns_coll = _FakeNamespaceCollection(None)
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
+            namespace_collection=ns_coll,
+        )
+
+        result = await authorizer.is_authorized(str(uuid4()), str(uuid4()), tool_name, "1.0")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_tool_name_is_never_looked_up(self) -> None:
+        """no row can be named by it, so the lookup would be a wasted read."""
+        ns_coll = _FakeNamespaceCollection(None)
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
+            namespace_collection=ns_coll,
+        )
+
+        await authorizer.is_authorized(str(uuid4()), str(uuid4()), "a..b", "1.0")
+
+        assert ns_coll.last_get_by_name is None
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_version_denies(self) -> None:
+        ns_coll = _FakeNamespaceCollection(None)
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
+            namespace_collection=ns_coll,
+        )
+
+        result = await authorizer.is_authorized(str(uuid4()), str(uuid4()), "pentest.sqlmap", "")
+
+        assert result is False
