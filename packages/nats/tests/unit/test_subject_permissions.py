@@ -330,6 +330,23 @@ class TestBootCompleteness:
         perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert f"{_NS}.tools.internal.{_POD_X}" in perm.subscribe
 
+    def test_tool_pod_may_publish_namespace_discover(self) -> None:
+        """a tool pod asks the broker which namespaces its caller can see.
+
+        the grant is a question about the CALLER and nothing else: the subject
+        reads the calling agent, customer and acting user off a forwarded token
+        it verifies, and the request carries no field naming any of them. that
+        is what makes it safe to hold, and the reason it has to be -- an answer
+        is a customer's whole namespace inventory, so a subject that accepted a
+        self-asserted customer would hand any pod a map of another customer's
+        estate. the hub answers it.
+        """
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert f"{_NS}.namespace.discover" in pod.publish
+        assert f"{_NS}.namespace.discover" in _build(Principal.HUB).subscribe
+        # read-only for the pod: it asks, it never answers.
+        assert f"{_NS}.namespace.discover" not in pod.subscribe
+
     def test_engagement_scope_resolve_grant_is_pod_publish_hub_subscribe(self) -> None:
         # engagement scope (consumer A of the §2 keystone): the consuming tool pod
         # PUBLISHES the resolve (forwarding the invoking agent's identity token);

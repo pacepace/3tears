@@ -917,6 +917,15 @@ def _tool_pod(
         # its call's engagement_id -> the authorized target set (same forwarded
         # identity-token auth; the hub verifies + tenant-scopes). read-only.
         str(Subjects.hub_engagement_scope()),
+        # "which namespaces can my caller see". Same forwarded-token auth as the two
+        # resolves above, and that is the whole reason this grant is safe to hold: the
+        # hub reads the calling agent, customer and acting user off a signature it
+        # verifies in-process, and the request carries no field naming any of the three,
+        # so a pod holding this subject can ask about its caller and about nobody else.
+        # An answer is a customer's whole namespace inventory -- every name, id and
+        # owning agent -- which is why the subject must never accept a self-asserted
+        # customer. Read-only; the pod asks and the hub answers.
+        str(Subjects.namespace_discover()),
         # THE STANDING RESULT GRANT, and the reason this file changed at all. A scan tool runs for up
         # to 1200s while this connection is rebuilt every 60s to stay authenticated; the reply-inbox
         # right (``allow_responses``) belongs to the connection that received the call, so it is gone

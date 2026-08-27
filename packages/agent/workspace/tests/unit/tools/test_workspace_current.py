@@ -27,7 +27,7 @@ import pytest
 from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
-from threetears.agent.workspace.discovery_client import (
+from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
     NamespaceDiscoverySummary,
 )
@@ -55,19 +55,22 @@ class _FakeDiscoveryClient:
     items: list[NamespaceDiscoverySummary]
     raise_exc: Exception | None = None
     last_filter: str | None = field(default=None, init=False)
+    last_identity_token: str | None = field(default=None, init=False)
+    last_user_identity_token: str | None = field(default=None, init=False)
 
     async def discover(
         self,
         *,
         correlation_id: UUID,
-        agent_id: UUID,
-        customer_id: UUID,
-        user_id: UUID | None,
+        identity_token: str | None = None,
+        user_identity_token: str | None = None,
         namespace_type: str | None = None,
     ) -> list[NamespaceDiscoverySummary]:
         if self.raise_exc is not None:
             raise self.raise_exc
         self.last_filter = namespace_type
+        self.last_identity_token = identity_token
+        self.last_user_identity_token = user_identity_token
         return list(self.items)
 
 
@@ -83,11 +86,18 @@ def _make_summary(workspace_id: UUID, owner_agent: UUID, customer: UUID) -> Name
 
 
 def _make_scope(customer_id: UUID | None = None, user_id: UUID | None = None) -> ToolCallScope:
-    """build a ToolCallScope with identity dims."""
+    """build a ToolCallScope carrying the tokens the tool forwards.
+
+    the identity dims stay on the context because the rest of the
+    dispatch reads them; what the discovery call now carries is the
+    TOKENS, which is what the broker verifies.
+    """
     ctx = CallContext(
         agent_id=uuid4(),
         user_id=user_id or uuid4(),
         customer_id=customer_id or uuid4(),
+        identity_token="agent.token",
+        user_identity_token="user.assertion",
     )
     return ToolCallScope(context=ctx)
 

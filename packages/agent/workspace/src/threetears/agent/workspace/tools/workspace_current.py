@@ -32,7 +32,7 @@ from threetears.observe import get_logger
 
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import WorkspaceAccessDenied
-from threetears.agent.workspace.discovery_client import (
+from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
     NamespaceDiscoveryClient,
 )
@@ -140,34 +140,41 @@ class WorkspaceCurrentTool(TearsTool):
         grant exists and the caller must not leak its existence --
         raise :class:`WorkspaceAccessDenied`.
 
+        the tokens forwarded off the call scope are what say whose
+        visibility this is: the broker verifies them and reads the
+        calling agent, customer and acting user off the signed claims.
+        a scope carrying neither is refused here rather than at the
+        broker, so the caller learns it holds no credential instead of
+        reading an empty set as "no grant".
+
         :param workspace_id: pinned workspace identifier
         :ptype workspace_id: UUID
         :return: nothing
         :rtype: None
-        :raises WorkspaceAccessDenied: on missing customer or missing grant
+        :raises WorkspaceAccessDenied: on a credential-less scope or a
+            missing grant
         :raises DiscoveryClientError: on broker failure
         """
         scope = current_scope()
-        customer_id: UUID | None = None if scope is None else scope.context.customer_id
-        user_id: UUID | None = None if scope is None else scope.context.user_id
+        identity_token: str | None = None if scope is None else scope.context.identity_token
+        user_identity_token: str | None = None if scope is None else scope.context.user_identity_token
         correlation_id: UUID = (
             scope.context.correlation_id if scope is not None and scope.context.correlation_id is not None else uuid7()
         )
-        if customer_id is None:
+        if identity_token is None and user_identity_token is None:
             raise WorkspaceAccessDenied(
-                "workspace.current requires a customer_id on the call scope",
+                "workspace.current requires a hub identity token on the call scope",
             )
         items = await self._discovery.discover(
             correlation_id=correlation_id,
-            agent_id=self._agent_id,
-            customer_id=customer_id,
-            user_id=user_id,
+            identity_token=identity_token,
+            user_identity_token=user_identity_token,
             namespace_type="workspace",
         )
         visible = any(item.id == workspace_id for item in items)
         if not visible:
             raise WorkspaceAccessDenied(
-                f"pinned workspace {workspace_id} not in discovery set for calling agent + user + customer",
+                f"pinned workspace {workspace_id} not in the discovery set for the verified caller",
             )
 
     def mcp_schema(self) -> MCPToolDefinition:

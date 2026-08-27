@@ -23,7 +23,7 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 
-from threetears.agent.workspace.discovery_client import (
+from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
     NamespaceDiscoverySummary,
 )
@@ -42,28 +42,38 @@ class _FakeDiscoveryClient:
     items: list[NamespaceDiscoverySummary]
     raise_exc: Exception | None = None
     last_filter: str | None = field(default=None, init=False)
+    last_identity_token: str | None = field(default=None, init=False)
+    last_user_identity_token: str | None = field(default=None, init=False)
 
     async def discover(
         self,
         *,
         correlation_id: UUID,
-        agent_id: UUID,
-        customer_id: UUID,
-        user_id: UUID | None,
+        identity_token: str | None = None,
+        user_identity_token: str | None = None,
         namespace_type: str | None = None,
     ) -> list[NamespaceDiscoverySummary]:
         if self.raise_exc is not None:
             raise self.raise_exc
         self.last_filter = namespace_type
+        self.last_identity_token = identity_token
+        self.last_user_identity_token = user_identity_token
         return list(self.items)
 
 
 def _make_scope(customer_id: UUID | None = None, user_id: UUID | None = None) -> ToolCallScope:
-    """build a ToolCallScope with identity dims."""
+    """build a ToolCallScope carrying the tokens the tool forwards.
+
+    the identity dims stay on the context because the rest of the
+    dispatch reads them; what the discovery call now carries is the
+    TOKENS, which is what the broker verifies.
+    """
     ctx = CallContext(
         agent_id=uuid4(),
         user_id=user_id or uuid4(),
         customer_id=customer_id or uuid4(),
+        identity_token="agent.token",
+        user_identity_token="user.assertion",
     )
     return ToolCallScope(context=ctx)
 
@@ -137,8 +147,8 @@ async def test_execute_traps_discovery_errors_as_data() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_requires_customer_on_scope() -> None:
-    """call without customer_id on scope yields a clean errors-as-data message."""
+async def test_execute_requires_an_identity_token_on_scope() -> None:
+    """a scope carrying neither token yields a clean errors-as-data message."""
     client = _FakeDiscoveryClient(items=[])
     tool = WorkspaceListTool(discovery_client=client, agent_id=uuid4())  # type: ignore[arg-type]
 
@@ -147,7 +157,21 @@ async def test_execute_requires_customer_on_scope() -> None:
         result = await tool.execute()
 
     assert result.success is False
-    assert "customer_id" in (result.error or "")
+    assert "identity token" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_forwards_both_tokens_to_discovery() -> None:
+    """the tool states no identity of its own; it forwards what it was given."""
+    client = _FakeDiscoveryClient(items=[])
+    tool = WorkspaceListTool(discovery_client=client, agent_id=uuid4())  # type: ignore[arg-type]
+
+    async with enter_call_scope(_make_scope()):
+        result = await tool.execute()
+
+    assert result.success is True
+    assert client.last_identity_token == "agent.token"
+    assert client.last_user_identity_token == "user.assertion"
 
 
 def test_mcp_name_is_exact_string() -> None:
