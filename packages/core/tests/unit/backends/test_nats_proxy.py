@@ -49,6 +49,7 @@ def _make_proxy(mock_nc: MagicMock) -> NatsProxyL3Backend:
         nats_client=mock_nc,
         namespace_prefix="test",
         agent_id="agent-123",
+        identity_token=lambda: "test-identity-token",
     )
 
 
@@ -534,7 +535,19 @@ class TestPayloadFormat:
         call_args = mock_nc.request.call_args
         payload = json.loads(call_args[0][1])
         assert "correlation_id" in payload
-        assert payload["agent_id"] == "agent-123"
+        # THE WIRE CONTRACT MOVED, and these two tests are the pin that moves with
+        # it. `agent_id` was SELF-ASSERTED identity: the broker fed it straight into
+        # its ACL check, so a caller could name any agent and be authorized as it. It
+        # is DELETED rather than validated -- a cross-check is a check somebody can
+        # forget -- and replaced by a token the broker verifies, reading the principal
+        # off the signed `sub`.
+        #
+        # LOCKSTEP with the hub's `broker/proxy.py`, whose models are `extra="forbid"`.
+        # Ship either half alone and every L3 op for every agent pod fails twice over:
+        # required field missing, forbidden field present. If this fails, the two repos
+        # have drifted and one of them is about to deploy alone.
+        assert payload["identity_token"] == "test-identity-token"
+        assert "agent_id" not in payload
         assert payload["namespace"] == "agents.agent-123"
         assert payload["operation"] == "select"
         assert payload["query"] == "SELECT * FROM foo WHERE id = $1"
@@ -624,7 +637,8 @@ class TestPayloadFormat:
         call_args = mock_nc.request.call_args
         payload = json.loads(call_args[0][1])
         assert "correlation_id" in payload
-        assert payload["agent_id"] == "agent-123"
+        assert payload["identity_token"] == "test-identity-token"
+        assert "agent_id" not in payload
         assert payload["namespace"] == "agents.agent-123"
         assert payload["transaction"] is False
         assert len(payload["queries"]) == 1
@@ -647,6 +661,7 @@ class TestPayloadFormat:
             namespace_prefix="test",
             agent_id="agent-123",
             timeout_ms=10000,
+            identity_token=lambda: "test-identity-token",
         )
 
         await proxy.fetch("SELECT 1")
@@ -724,6 +739,7 @@ class TestFetchDeserializesBytes:
             nats_client=mock_nc,
             namespace_prefix="3tears",
             agent_id="agent-test",
+            identity_token=lambda: "test-identity-token",
         )
 
         rows = await proxy.fetch("SELECT thread_id, checkpoint, type FROM checkpoints")
@@ -753,6 +769,7 @@ class TestFetchDeserializesBytes:
             nats_client=mock_nc,
             namespace_prefix="3tears",
             agent_id="agent-test",
+            identity_token=lambda: "test-identity-token",
         )
 
         row = await proxy.fetchrow("SELECT id, data FROM test WHERE id = $1", "r1")

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID, uuid7
 
@@ -212,6 +213,7 @@ class NatsProxyL3Backend:
         agent_id: str,
         default_namespace: str | None = None,
         timeout_ms: int | None = None,
+        identity_token: Callable[[], str] | None = None,
     ) -> None:
         """initialize NatsProxyL3Backend.
 
@@ -226,10 +228,25 @@ class NatsProxyL3Backend:
         :param timeout_ms: default query timeout in milliseconds.
             sourced from THREETEARS_NATS_PROXY_TIMEOUT_MS env var if not provided (default 5000).
         :ptype timeout_ms: int | None
+        :param identity_token: zero-arg PROVIDER returning this principal's CURRENT
+            hub-minted identity token, forwarded on every request so the broker can
+            read the principal off a signature instead of off the request body.
+
+            A provider rather than a string, following the ``auth_token`` precedent
+            on :class:`~threetears.agent.tools.server.ToolServer`: the token is
+            short-lived and re-minted by the refresh loop, so a value captured at
+            construction is expired within the hour and every L3 call then fails.
+
+            ``None`` only for a caller that has no hub-minted token at all. The
+            broker REFUSES such a request -- ``identity_token`` is required on its
+            side and the models are ``extra="forbid"`` -- so this raises at the
+            call site rather than sending a request that cannot be authorized.
+        :ptype identity_token: Callable[[], str] | None
         """
         self._nc = nats_client
         self.ns = namespace_prefix
         self.agent_id = agent_id
+        self._identity_token = identity_token
         self.default_namespace = default_namespace or build_namespace_name(PLURAL_PREFIX_AGENT, agent_id)
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
@@ -363,6 +380,34 @@ class NatsProxyL3Backend:
         response = await self._send_query(query, list(params), operation, namespace)
         return _format_execute_tag(operation, response.get("row_count"))
 
+    def forwarded_identity_token(self) -> str:
+        """the CURRENT hub-minted identity token to forward on an L3 request.
+
+        Read through the provider on EVERY call, never cached: the token is
+        short-lived and re-minted by the refresh loop, so a value captured once is
+        expired within the hour.
+
+        :return: the caller's current identity token
+        :rtype: str
+        :raises DataLayerUnavailableError: if no provider was supplied, or it
+            returned nothing
+        """
+        if self._identity_token is None:
+            raise DataLayerUnavailableError(
+                "NatsProxyL3Backend was built with no identity_token provider, so it cannot "
+                "prove who it is. The L3 broker reads the principal off a verified token and "
+                "refuses a request without one; failing here names the wiring gap instead of "
+                "sending a request that cannot be authorized."
+            )
+        token = self._identity_token()
+        if not token:
+            raise DataLayerUnavailableError(
+                "the identity_token provider returned an empty token. The handshake has not "
+                "completed or its result was not threaded through; an empty token is refused "
+                "by the broker exactly as a missing one is."
+            )
+        return token
+
     async def execute_batch(
         self,
         queries: list[dict[str, Any]],
@@ -385,7 +430,7 @@ class NatsProxyL3Backend:
         ns = namespace or self.default_namespace
         payload = {
             "correlation_id": str(uuid7()),
-            "agent_id": self.agent_id,
+            "identity_token": self.forwarded_identity_token(),
             "namespace": ns,
             "queries": [
                 {
@@ -440,7 +485,7 @@ class NatsProxyL3Backend:
         ns = namespace or self.default_namespace
         payload = {
             "correlation_id": str(uuid7()),
-            "agent_id": self.agent_id,
+            "identity_token": self.forwarded_identity_token(),
             "namespace": ns,
             "operation": operation,
             "query": query,
@@ -743,7 +788,7 @@ class _ProxyConnection:
             )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend.agent_id,
+            "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
@@ -797,7 +842,7 @@ class _ProxyConnection:
             )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend.agent_id,
+            "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
@@ -895,7 +940,7 @@ class _ProxyConnection:
             )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend.agent_id,
+            "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
@@ -929,7 +974,7 @@ class _ProxyConnection:
             return
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend.agent_id,
+            "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(tx_id),  # convert at border: NATS l3.tx.rollback request payload field
         }
         subject = f"{self._backend.ns}.l3.tx.rollback"
@@ -1009,7 +1054,7 @@ class _ProxyTransaction:
         effective_namespace = self._namespace if self._namespace is not None else self._backend.default_namespace
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend.agent_id,
+            "identity_token": self._backend.forwarded_identity_token(),
             "namespace": effective_namespace,
             "statement_timeout_ms": self._backend.timeout_ms,
         }
@@ -1054,7 +1099,7 @@ class _ProxyTransaction:
             return
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend.agent_id,
+            "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(tx_id),  # convert at border: NATS l3.tx.commit/rollback request payload field
         }
         action = "rollback" if exc_type is not None else "commit"

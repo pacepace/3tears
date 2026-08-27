@@ -104,6 +104,7 @@ def _make_proxy(mock_nc: MagicMock) -> NatsProxyL3Backend:
         nats_client=mock_nc,
         namespace_prefix="test",
         agent_id="agent-abc",
+        identity_token=lambda: "test-identity-token",
     )
 
 
