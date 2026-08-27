@@ -283,6 +283,12 @@ async def authorize_workspace_file_access(
             f"caller customer={ctx.customer_id}",
         )
 
+    # ``name`` is deliberately absent: this value is assembled from a
+    # WORKSPACE row, which carries no namespace name, and re-deriving one
+    # here would invent a second spelling of a persisted key. a namespace
+    # with no name is covered by no subtree assignment, which is the
+    # fail-closed direction and correct -- a workspace is never a subtree
+    # grant target.
     namespace = AclNamespace(
         id=workspace.id,
         customer_id=workspace.customer_id,

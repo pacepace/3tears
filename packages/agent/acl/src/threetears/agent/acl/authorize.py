@@ -319,6 +319,12 @@ async def authorize_on_entity(
         customer_id=ns_entity.customer_id,
         namespace_type=ns_entity.namespace_type,
         owner_agent_id=ns_entity.owner_agent_id,
+        # the caller's own name wins when it has one, because it is the
+        # name the lookup was performed BY. ``ns_entity`` is typed
+        # ``Any`` and the duck-typed adapters consumers pass here expose
+        # only the four authorization fields, so the fallback must not
+        # assume a ``name`` attribute exists.
+        name=namespace_name if namespace_name is not None else getattr(ns_entity, "name", None),
     )
     eval_ctx = EvaluationContext(
         namespace=acl_namespace,

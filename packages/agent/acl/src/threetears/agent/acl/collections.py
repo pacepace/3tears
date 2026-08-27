@@ -55,6 +55,7 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.namespaces import namespace_contains
 from threetears.observe import get_logger
 
 from threetears.agent.acl.entities import (
@@ -931,6 +932,12 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             Column("scope_namespace_id", UUID_TYPE, nullable=True, immutable=True),
             Column("scope_namespace_type", STRING_TYPE, nullable=True, immutable=True),
             Column("scope_customer_id", UUID_TYPE, nullable=True, immutable=True),
+            # the root of a ``subtree`` scope, as a NAME. containment is
+            # a statement about the name space -- namespace ids are
+            # minted per row and carry no hierarchy -- and a subtree
+            # root need not be a materialized namespace row at all,
+            # which is why this is not a second id column.
+            Column("scope_namespace_name", STRING_TYPE, nullable=True, immutable=True),
             Column("granted_by", UUID_TYPE, nullable=True, immutable=True),
             Column(
                 "date_granted",
@@ -989,6 +996,14 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             scope_type = data.get("scope_type")
             scope_customer_id = data.get("scope_customer_id")
             if scope_type == "all":
+                row_scope = "platform"
+            elif scope_type == "subtree":
+                # a subtree scope names a node in the namespace-NAME
+                # space and no customer at all, so by this rule -- the
+                # row's effective customer flows from the scope -- it
+                # partitions with the other customerless shapes. the
+                # caller's customer comes from the GROUP, which is a
+                # different column on a different table.
                 row_scope = "platform"
             elif scope_type == "type_customer" and scope_customer_id is None:
                 row_scope = "platform"
@@ -1062,7 +1077,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 """
                 SELECT assignment_id, role_id, group_id, scope_type,
                        scope_namespace_id, scope_namespace_type,
-                       scope_customer_id
+                       scope_customer_id, scope_namespace_name
                   FROM role_assignments
                  WHERE row_scope IN ('platform', 'customer')
                    AND group_id = ANY($1::uuid[])
@@ -1078,6 +1093,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                     scope_namespace_id=_coerce_uuid(row["scope_namespace_id"]),
                     scope_namespace_type=row["scope_namespace_type"],
                     scope_customer_id=_coerce_uuid(row["scope_customer_id"]),
+                    scope_namespace_name=row["scope_namespace_name"],
                 )
                 for row in rows
             ]
@@ -1328,6 +1344,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "find_by_type_and_customer",
             "list_ids_by_customer_and_type",
             "list_all_ids",
+            "list_ids_under_name",
             "get_by_name",
             "get_by_agent_id",
             "get_by_owner_and_customer",
@@ -1705,6 +1722,42 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             result = [row["namespace_id"] for row in rows if row["namespace_id"] is not None]
         return result
 
+    async def list_ids_under_name(self, node: str) -> list[UUID]:
+        """return every namespace id at or beneath the name ``node``.
+
+        the expansion of a :attr:`~threetears.agent.acl.types.ScopeType.SUBTREE`
+        assignment into the concrete id set an audit snapshot needs,
+        mirroring :meth:`list_all_ids` and
+        :meth:`list_ids_by_customer_and_type` so the caller composes one
+        id set regardless of scope shape.
+
+        membership is decided in python by
+        :func:`threetears.core.namespaces.namespace_contains` rather
+        than by a SQL ``LIKE`` pattern. two reasons, and both matter: a
+        second containment rule expressed in SQL is a second place the
+        segment boundary can be got wrong, and a namespace name legally
+        carries ``_`` (``sanitize_segment`` maps only ``.``), which is a
+        ``LIKE`` wildcard -- so the pattern would need escaping that
+        nothing else in this codebase performs.
+
+        :param node: subtree root name; an empty node expands to
+            nothing, never to everything
+        :ptype node: str
+        :return: list of namespace UUIDs at or beneath ``node``
+        :rtype: list[UUID]
+        """
+        result: list[UUID] = []
+        if node and self.l3_pool is not None:
+            rows = await self.l3_pool.fetch(
+                "SELECT namespace_id, name FROM namespaces WHERE row_scope IN ('platform', 'customer')",
+            )
+            result = [
+                row["namespace_id"]
+                for row in rows
+                if row["namespace_id"] is not None and row["name"] is not None and namespace_contains(node, row["name"])
+            ]
+        return result
+
     async def list_tool_namespaces_for_actor(
         self,
         *,
@@ -1869,6 +1922,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 customer_id=_coerce_uuid(data.get("customer_id")),
                 namespace_type=str(data.get("namespace_type") or "tool"),
                 owner_agent_id=_coerce_uuid(data.get("owner_agent_id")),
+                name=data.get("name"),
             )
             ctx = EvaluationContext(
                 namespace=ns,

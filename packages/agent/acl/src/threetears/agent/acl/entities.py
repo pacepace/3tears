@@ -143,13 +143,15 @@ class RoleAssignmentEntity(BaseEntity):
 
     composite primary key ``(row_scope, assignment_id)``. the
     row_scope column discriminates platform-scope assignments
-    (``scope_type='all'`` or ``scope_type='type_customer'`` with NULL
+    (``scope_type='all'``, ``scope_type='subtree'``, or
+    ``scope_type='type_customer'`` with NULL
     ``scope_customer_id``) from customer-scope assignments.
 
     fields: ``row_scope`` / ``assignment_id`` / ``role_id`` /
     ``group_id`` / ``scope_type`` / ``scope_namespace_id`` /
-    ``scope_namespace_type`` / ``scope_customer_id`` / ``granted_by``
-    / ``date_granted`` / ``managed_by``.
+    ``scope_namespace_type`` / ``scope_customer_id`` /
+    ``scope_namespace_name`` / ``granted_by`` / ``date_granted`` /
+    ``managed_by``.
 
     v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
     ``assignment_id`` to standardize on ``<entity>_id`` across all
@@ -188,6 +190,14 @@ class RoleAssignmentEntity(BaseEntity):
             scope_type = data.get("scope_type")
             scope_customer_id = data.get("scope_customer_id")
             if scope_type == "all":
+                row_scope = "platform"
+            elif scope_type == "subtree":
+                # a subtree scope names a node in the namespace-NAME
+                # space and no customer at all, so by this rule -- the
+                # row's effective customer flows from the scope -- it
+                # partitions with the other customerless shapes. the
+                # caller's customer comes from the GROUP, which is a
+                # different column on a different table.
                 row_scope = "platform"
             elif scope_type == "type_customer" and scope_customer_id is None:
                 row_scope = "platform"

@@ -19,6 +19,7 @@ from threetears.core.namespaces import (
     HitlSessionNamespace,
     build_hitl_namespace_name,
     build_namespace_name,
+    namespace_contains,
     sanitize_segment,
 )
 
@@ -227,3 +228,73 @@ class TestHitlSessionNamespace:
         session = HitlSessionNamespace(tool_namespace_name=TOOL_NS_ALPHA, customer_id=CUSTOMER_X)
         with pytest.raises(FrozenInstanceError):
             session.tool_namespace_name = TOOL_NS_BETA  # type: ignore[misc]
+
+
+class TestNamespaceContains:
+    """tests for :func:`namespace_contains`, the ONE containment rule.
+
+    the rule is ``name == node or name.startswith(node + separator)``,
+    which is segment-aware BY CONSTRUCTION: the only character that may
+    follow the node is the separator itself, so a sibling whose name
+    merely begins with the node's characters can never match.
+    """
+
+    def test_a_node_contains_its_child(self) -> None:
+        assert namespace_contains("tools.dipp", "tools.dipp.thing") is True
+
+    def test_a_node_contains_a_deeper_descendant(self) -> None:
+        assert namespace_contains("tools.dipp", "tools.dipp.thing.inner") is True
+
+    def test_a_node_does_not_contain_a_sibling_sharing_its_prefix(self) -> None:
+        # the bug class: a raw prefix test admits this, and it is why
+        # every allowed_namespaces value used to carry a trailing dot.
+        assert namespace_contains("tools.dipp", "tools.dippX.thing") is False
+
+    def test_pentest_does_not_reach_pentestimposter(self) -> None:
+        assert namespace_contains("pentest", "pentestimposter.sqlmap") is False
+        assert namespace_contains("pentest", "pentestimposter") is False
+
+    def test_a_node_contains_itself(self) -> None:
+        assert namespace_contains("tools.dipp", "tools.dipp") is True
+
+    def test_an_empty_node_contains_nothing(self) -> None:
+        # NOT everything: an empty node under a raw prefix test matches
+        # every name in the system, which is the widest possible grant
+        # arriving from the emptiest possible value.
+        assert namespace_contains("", "tools.dipp") is False
+        assert namespace_contains("", "") is False
+
+    def test_an_empty_name_is_contained_by_nothing(self) -> None:
+        assert namespace_contains("tools.dipp", "") is False
+
+    def test_case_does_not_widen(self) -> None:
+        assert namespace_contains("tools.DIPP", "tools.dipp.thing") is False
+        assert namespace_contains("tools.dipp", "TOOLS.DIPP.thing") is False
+
+    def test_trailing_whitespace_does_not_widen(self) -> None:
+        # a node carrying stray whitespace grants NOTHING rather than
+        # being silently stripped into a node that grants a subtree.
+        assert namespace_contains("tools.dipp ", "tools.dipp.thing") is False
+        assert namespace_contains("tools.dipp ", "tools.dipp") is False
+
+    def test_leading_whitespace_does_not_widen(self) -> None:
+        assert namespace_contains(" tools.dipp", "tools.dipp.thing") is False
+
+    def test_a_node_written_with_a_trailing_separator_is_not_a_convention(self) -> None:
+        # the trailing-dot workaround is GONE, not accommodated: a value
+        # written the old way matches nothing, which is a visible
+        # failure rather than a silent one.
+        assert namespace_contains("tools.dipp.", "tools.dipp.thing") is False
+
+    def test_a_child_does_not_contain_its_parent(self) -> None:
+        assert namespace_contains("tools.dipp.thing", "tools.dipp") is False
+
+    def test_the_top_prefix_contains_every_name_under_it(self) -> None:
+        assert namespace_contains(PLURAL_PREFIX_TOOL, TOOL_NS_ALPHA) is True
+        assert namespace_contains(PLURAL_PREFIX_TOOL, "toolsimposter.x") is False
+
+    def test_underscores_and_hyphens_are_ordinary_characters(self) -> None:
+        # sanitize_segment leaves both intact, so a real name carries
+        # them and containment must not treat either as a boundary.
+        assert namespace_contains("tools.scrape-zone_alpha", "tools.scrape-zone_alpha.1-0-0") is True
+        assert namespace_contains("tools.scrape-zone", "tools.scrape-zone_alpha.1-0-0") is False

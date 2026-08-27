@@ -6,6 +6,72 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Added
+
+- `core`: `namespaces.namespace_contains(node, name)` -- the ONE containment
+  rule for dot-segmented hierarchical names (`platform.namespaces.name` values,
+  and the mcp names those are built from). `name == node or
+  name.startswith(node + ".")`, so a node of `pentest` reaches `pentest.sqlmap`
+  and can never reach `pentestimposter.sqlmap`. Segment-awareness is
+  structural rather than conventional: it replaces a raw prefix test that
+  every caller compensated for by writing its VALUES with a trailing dot,
+  which left a value written without one silently wider than it looked.
+
+  Comparison is exact -- no case folding, no whitespace stripping, no
+  tolerance for a trailing separator, and an empty node contains nothing
+  rather than everything. A malformed node therefore grants NOTHING, which is
+  the fail-closed direction; refusing one belongs at write time, because this
+  function runs inside the rbac evaluator's inner loop where raising would
+  turn one bad row into a failure of every authorization question its caller
+  asks.
+
+- `agent-acl`: `ScopeType.SUBTREE`, a fourth role-assignment scope shape
+  answering "this node and everything under it". The three that existed reach
+  one exact namespace row, every namespace of one type inside one customer, or
+  everything -- so a grant meant as "the `tools.pentest` family" had to be
+  written as either a single row or every tool namespace the customer has.
+
+  The root is carried by the new `RoleAssignment.scope_namespace_name` and is a
+  NAME, not an id: a namespace id is `uuid5` over the unsanitized mcp name and
+  version, so a parent and its child have unrelated ids and an id cannot answer
+  a containment question at all -- and a subtree root need not be a
+  materialized `namespaces` row. Containment is delegated to
+  `threetears.core.namespaces.namespace_contains`.
+
+- `agent-acl`: `Namespace.name`, the canonical `platform.namespaces.name`
+  value. Optional and defaulting to `None`, so every existing construction site
+  compiles unchanged. Only `ScopeType.SUBTREE` reads it, and it reads it
+  FAIL-CLOSED: a namespace with no name is covered by no subtree assignment, so
+  a site that does not supply one narrows a subtree grant to nothing and can
+  never widen one.
+
+- `agent-acl`: `NamespaceCollection.list_ids_under_name(node)`, the expansion of
+  a subtree scope into a concrete id set for audit-snapshot paths. Membership is
+  decided in python by `namespace_contains` rather than by a SQL `LIKE`
+  pattern -- a second containment rule in SQL is a second place the segment
+  boundary can be got wrong, and a namespace name legally carries `_`, which is
+  a `LIKE` wildcard.
+
+  A subtree row's `row_scope` derives to `platform`, alongside `all` and a
+  customerless `type_customer`, because the scope names no customer -- the
+  caller's customer comes from the GROUP.
+
+  The deploying app owns the `role_assignments` DDL; the platform-side migration
+  that adds `scope_namespace_name` and widens both scope CHECK constraints must
+  land before a subtree row can be written.
+
+### Fixed
+
+- `registry`: a tool pod's `allowed_namespaces` is compared on a SEGMENT
+  boundary. It was `tool.name.startswith(ns)`, with no notion of a segment, so
+  a pod granted `threetears` could register `threetearsimposter.anything`. Every
+  value compensated by carrying a trailing dot, which meant a namespace written
+  without one was a wider grant than it looked.
+
+  **Values must now be written WITHOUT a trailing separator** -- `pentest`, not
+  `pentest.` -- because a dotted value matches nothing under the new comparison.
+  Deploying apps that seed `tool_pods` rows must strip it.
+
 ## v0.29.0 -- 2026-08-26
 
 ### Changed

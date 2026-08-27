@@ -69,6 +69,7 @@ __all__ = [
     "HitlSessionNamespace",
     "build_hitl_namespace_name",
     "build_namespace_name",
+    "namespace_contains",
     "sanitize_segment",
 ]
 
@@ -212,6 +213,59 @@ def build_namespace_name(plural_prefix: str, *segments: str) -> str:
     return NAMESPACE_NAME_SEPARATOR.join(parts)
 
 
+def namespace_contains(node: str, name: str) -> bool:
+    """true iff ``name`` is ``node`` itself or lives beneath it.
+
+    the ONE containment rule for dot-segmented hierarchical names in
+    this codebase -- ``platform.namespaces.name`` values, and the mcp
+    names those are built from, which share the shape. every other
+    place that used to ask "is this name under that one" with a raw
+    prefix test delegates here.
+
+    the rule is::
+
+        name == node or name.startswith(node + NAMESPACE_NAME_SEPARATOR)
+
+    which is segment-aware BY CONSTRUCTION rather than by convention:
+    the only character that may follow the node is the separator
+    itself, so ``pentest`` reaches ``pentest.sqlmap`` and can never
+    reach ``pentestimposter.sqlmap``. a raw ``name.startswith(node)``
+    reaches both, which is why every ``allowed_namespaces`` value used
+    to be written with a trailing dot -- a value-level workaround for a
+    gap in the comparison. the workaround is not accommodated here: a
+    node written ``pentest.`` matches nothing, so the old shape fails
+    visibly instead of silently.
+
+    **comparison is exact.** no case folding, no whitespace stripping,
+    no tolerance for a trailing separator. a node carrying stray
+    whitespace or the wrong case therefore grants NOTHING, which is the
+    fail-closed direction; normalizing it would make the value grant
+    more than it says while its author reads it as written. refusing a
+    malformed node belongs at write time -- the platform's
+    ``role_assignments_scope_shape`` CHECK does that -- because this
+    function runs inside the rbac evaluator's inner loop, where raising
+    would turn one bad row into a failure of every authorization
+    question the caller asks.
+
+    an empty ``node`` contains NOTHING. under a raw prefix test it
+    would contain every name there is, so the emptiest possible value
+    would be the widest possible grant; the explicit refusal is what
+    stops that.
+
+    :param node: the container -- a name, or a bare plural prefix
+        (``tools``), written WITHOUT a trailing separator
+    :ptype node: str
+    :param name: the candidate name being tested for membership
+    :ptype name: str
+    :return: whether ``name`` is ``node`` or sits beneath it
+    :rtype: bool
+    """
+    result = False
+    if node and name:
+        result = name == node or name.startswith(node + NAMESPACE_NAME_SEPARATOR)
+    return result
+
+
 #: leading component every tool namespace name carries, and the one
 #: :func:`build_hitl_namespace_name` swaps out. structural rather than
 #: conventional: ``threetears.agent.tools.server.tool_namespace_name``
@@ -292,7 +346,11 @@ def build_hitl_namespace_name(tool_namespace_name: str, customer_id: UUID) -> st
         ``tools.`` prefix, or if any component after that prefix is
         empty
     """
-    if not tool_namespace_name.startswith(_TOOL_NAME_PREFIX):
+    # a STRICT descendant of ``tools``: the bare prefix is not itself a
+    # tool namespace name, so :func:`namespace_contains` -- which counts
+    # a node as containing itself -- is composed with an inequality
+    # rather than replaced by a second prefix test.
+    if not (namespace_contains(PLURAL_PREFIX_TOOL, tool_namespace_name) and tool_namespace_name != PLURAL_PREFIX_TOOL):
         raise ValueError(
             f"tool_namespace_name must start with {_TOOL_NAME_PREFIX!r}, got {tool_namespace_name!r}",
         )

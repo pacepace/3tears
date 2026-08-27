@@ -167,6 +167,7 @@ class MemoryAccessService:
                     customer_id=ns.customer_id,
                     namespace_type=ns.namespace_type,
                     owner_agent_id=owner_agent_id,
+                    name=getattr(ns, "name", None),
                 ),
                 action=ACTION_MEMORY_READ,
                 user_id=caller_user_id,

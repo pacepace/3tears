@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from threetears.agent.tools.server import RegistrationManifest
+from threetears.core.namespaces import namespace_contains
 from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
@@ -313,7 +314,14 @@ class RegistrationHandler:
         for tool in manifest.tools:
             authorized = False
             for ns in pod_auth.allowed_namespaces:
-                if tool.name.startswith(ns):
+                # segment-aware containment, so a pod granted
+                # ``pentest`` serves ``pentest.sqlmap`` and can never
+                # serve ``pentestimposter.sqlmap``. a raw prefix test
+                # admits both, which is what made the values in this
+                # column carry a trailing dot; they no longer do, and
+                # must not -- a node written ``pentest.`` matches
+                # nothing here.
+                if namespace_contains(ns, tool.name):
                     authorized = True
                     break
             if authorized:

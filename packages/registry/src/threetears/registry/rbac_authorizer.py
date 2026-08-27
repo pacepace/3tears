@@ -253,6 +253,7 @@ class RbacEvaluatorAuthorizer:
             customer_id=ns_entity.customer_id,
             namespace_type=ns_entity.namespace_type,
             owner_agent_id=ns_entity.owner_agent_id,
+            name=canonical_name,
         )
         ctx = EvaluationContext(
             namespace=evaluator_namespace,

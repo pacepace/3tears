@@ -55,7 +55,10 @@ class ToolPodAuth:
     :ptype pod_entity_id: str
     :param name: tool pod display name
     :ptype name: str
-    :param allowed_namespaces: tool name prefixes this pod may register
+    :param allowed_namespaces: tool-name NODES this pod may register at
+        or beneath, compared on a segment boundary by
+        :func:`threetears.core.namespaces.namespace_contains`. written
+        WITHOUT a trailing separator -- ``pentest``, never ``pentest.``
     :ptype allowed_namespaces: list[str]
     """
 
