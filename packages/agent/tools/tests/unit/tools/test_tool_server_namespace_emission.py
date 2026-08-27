@@ -3,7 +3,7 @@
 The original namespace-task-01 phase 2 + three-tier-task-01 phase F
 contract had the agent-side ``ToolServer.register`` path call
 ``NamespaceCollection.save_entity`` to materialize one
-``platform.namespaces`` row of type ``tool`` per registered tool.
+``namespaces`` row of type ``tool`` per registered tool.
 That contract was retired in this v0.5.0 wave: the agent's L3 proxy
 routes platform-scoped writes to the agent's own ``agent_<hex>``
 schema, which has no ``namespaces`` table -- the write reliably

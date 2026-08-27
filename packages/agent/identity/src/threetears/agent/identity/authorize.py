@@ -7,7 +7,7 @@ the evaluator's owner short-circuit, which compares the namespace's recorded
 ``owner_namespace`` against the name of the namespace the caller IS: the
 agent owns its own identity namespace by construction, so every action
 is allowed grant-free with no acl migration, no seed row, and no
-``platform.namespaces`` write. Mirrors ``agent/intention``'s authorizer.
+hub-side ``namespaces`` write. Mirrors ``agent/intention``'s authorizer.
 
 **User isolation is NOT RBAC.** Every metallm user shares one ``agent_id``,
 so the owner short-circuit sees every user's blocks -- isolation is the
@@ -98,7 +98,7 @@ class _OwnerIdentityNamespace:
     Exposes exactly the four fields :func:`authorize_on_entity` reads
     (``id``, ``customer_id``, ``namespace_type``, ``owner_agent_id``),
     built deterministically in-process WITHOUT reading or creating a
-    ``platform.namespaces`` row. Mirrors intention's descriptor.
+    hub-side ``namespaces`` row. Mirrors intention's descriptor.
     """
 
     id: UUID

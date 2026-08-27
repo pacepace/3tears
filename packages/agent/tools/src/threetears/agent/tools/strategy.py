@@ -132,7 +132,7 @@ class BootstrapContext:
         three-tier stack phase. strategies that own a ToolServer
         thread this into :class:`ToolServer` so
         :meth:`register_tool` / :meth:`deregister_tool` materialize
-        ``platform.namespaces`` rows via
+        ``namespaces`` rows via
         :meth:`NamespaceCollection.save_entity` /
         :meth:`NamespaceCollection.delete`. strategies that build
         workspace tools thread it into

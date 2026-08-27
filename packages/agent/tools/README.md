@@ -10,7 +10,7 @@ Part of the [3tears](https://github.com/pacepace/3tears) framework.
 
 ## Tool-as-namespace emission
 
-Tool namespace materialization is platform-owned. `ToolServer.publish_registration` writes the `RegistrationManifest` (carrying `pod_id` + `tools` + the `owner_agent_id` / `customer_id` envelope fields), and a platform-side namespace emitter subscribes to `{ns}.tools.register` and upserts one `platform.namespaces` row of type `tool` per tool. This is the sole writer in the platform.
+Tool namespace materialization is platform-owned. `ToolServer.publish_registration` writes the `RegistrationManifest` (carrying `pod_id` + `tools` + the `owner_agent_id` / `customer_id` envelope fields), and a platform-side namespace emitter subscribes to `{ns}.tools.register` and upserts one `namespaces` row of type `tool` per tool. This is the sole writer in the platform.
 
 Agent-spun ToolServers stamp `agent_id` + `customer_id` on the `RegistrationManifest` so the emitter lands rows with the right owner scope; platform-built-in pods (admin tool server, datasource tool pod) leave both `None` and the row lands with NULL owner columns (admitted under the widened `namespaces_row_scope_customer_ck` carve-out for `tool` type alongside `system` / `model`).
 

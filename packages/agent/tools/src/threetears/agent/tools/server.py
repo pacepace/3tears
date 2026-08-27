@@ -104,7 +104,7 @@ __all__ = [
 
 
 def tool_namespace_name(mcp_name: str, version: str) -> str:
-    """build the canonical ``platform.namespaces.name`` for a tool row.
+    """build the canonical ``namespaces.name`` for a tool row.
 
     the canonical shape is ``tools.<mcp_name>.<sanitized version>``:
     the mcp name is interpolated VERBATIM, so ``example.admin.backup``
@@ -148,7 +148,7 @@ def tool_namespace_id(
 
     keying on the ``(mcp_name, version, agent_id_hex)`` triple makes
     concurrent register_tool racers on the same pod converge on the
-    same ``platform.namespaces.id`` so
+    same ``namespaces.id`` so
     :meth:`NamespaceCollection.save_entity` can resolve the replay
     through ``ON CONFLICT (id) DO UPDATE``. platform-built-in pods
     have ``agent_id=None`` and key on the literal string ``platform``
@@ -298,7 +298,7 @@ class ToolManifestEntry(BaseModel):
 
     The two visibility flags ride with each tool's manifest entry so
     the hub-side ``ToolNamespaceEmitter`` can stamp them onto the
-    ``platform.namespaces`` row it writes. Defaults match
+    ``namespaces`` row it writes. Defaults match
     :class:`~threetears.agent.tools.base_tool.TearsTool` so manifests
     composed by older callers that don't set the fields still land
     with the canonical "tool-eligible, not skill-eligible" shape.
@@ -371,7 +371,7 @@ class RegistrationManifest(BaseModel):
 
     ownership identity (``owner_agent_id`` / ``customer_id``) rides on
     the manifest so downstream namespace materialization can stamp
-    the right scope on each ``platform.namespaces`` row without
+    the right scope on each ``namespaces`` row without
     re-resolving the pod's identity from a separate auth lookup.
     agent-spun pods set both; platform-built-in pods (admin tools,
     datasource tool pod) leave both ``None`` and the namespace rows
@@ -880,7 +880,7 @@ class ToolServer:
             the concrete Collection is wired by the bootstrap caller.
             ``None`` suppresses emission entirely — reserved for
             in-process tests and standalone dev that never touch
-            ``platform.namespaces``; production callers MUST supply a
+            ``namespaces``; production callers MUST supply a
             Collection or namespace materialization silently falls
             behind and rbac resolution fails open.
         :ptype namespace_collection: Any
@@ -1615,11 +1615,11 @@ class ToolServer:
         will include it. safe to call multiple times with the same
         tool; duplicate ``name@version`` keys overwrite.
 
-        The tool's ``platform.namespaces`` row is materialized by the
+        The tool's ``namespaces`` row is materialized by the
         HUB-side ``ToolNamespaceEmitter`` listening on
         ``{ns}.tools.register`` -- the manifest publish above is the
         canonical handoff. The hub owns this write because it has
-        direct access to ``platform.*`` tables; the previous
+        direct access to the platform schema's tables; the previous
         agent-side direct write through ``NamespaceCollection.save_entity``
         on the L3 NATS proxy (namespace-task-01 phase 2 /
         three-tier-task-01 phase F) hit
@@ -1653,7 +1653,7 @@ class ToolServer:
         happens and the publish step is skipped.
 
         namespace-task-01 phase 2 / three-tier-task-01 phase F: on
-        successful removal, every paired tool ``platform.namespaces``
+        successful removal, every paired tool ``namespaces``
         row for that family is deleted via
         :meth:`NamespaceCollection.delete` so no stale namespace
         stays in play after the tool leaves. deletion failures raise
@@ -1676,7 +1676,7 @@ class ToolServer:
         return removed
 
     async def _emit_tool_namespace(self, tool: TearsTool) -> None:
-        """upsert ``platform.namespaces`` row for a registered tool.
+        """upsert ``namespaces`` row for a registered tool.
 
         every registered tool materializes as a ``tool``-type namespace
         so the unified rbac evaluator has a first-class id to evaluate
@@ -1788,7 +1788,7 @@ class ToolServer:
         mcp_name: str,
         removed_keys: list[str],
     ) -> None:
-        """delete ``platform.namespaces`` rows for deregistered tool versions.
+        """delete ``namespaces`` rows for deregistered tool versions.
 
         three-tier-task-01 phase F: translates the family-level
         deregister into a sequence of

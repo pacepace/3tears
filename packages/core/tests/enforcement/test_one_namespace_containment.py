@@ -1,6 +1,6 @@
 """Enforcement -- ``namespace_contains`` is the ONLY containment rule.
 
-"is this name under that one" is asked of ``platform.namespaces.name``
+"is this name under that one" is asked of ``namespaces.name``
 values, and of the mcp names those are built from, in several places.
 Asked with a raw ``name.startswith(node)`` it has a standing bug: the
 node's characters can be shared by a sibling, so ``pentest`` reaches

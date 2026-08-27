@@ -5,7 +5,7 @@ separate :class:`PackageMigrations` from the agent-scope set in
 declares one scope. these migrations run once against the
 deploying app's platform schema (whatever schema search_path
 binds before the runner applies them) and own the
-``platform.namespaces`` columns the tool registration path stamps
+``namespaces`` columns the tool registration path stamps
 with each tool's visibility flags.
 
 version history:

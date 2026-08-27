@@ -123,7 +123,7 @@ class _StoredWorkspace:
     date_updated: datetime
     date_deleted: datetime | None
     # WS-ACL-10 audit identity: customer_id mirrors the stamped value
-    # from platform.namespaces for integration tests that need the
+    # from the hub's ``namespaces`` for integration tests that need the
     # audit envelope's five-UUID tuple.
     customer_id: UUID | None = None
 

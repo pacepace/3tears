@@ -13,7 +13,7 @@ needs to resolve ``tool.call`` decisions:
   the hub broker's read-only carve-out admits SELECT against this
   namespace regardless of the SQL target table -- the registry uses
   this single pool for the four rbac metadata tables AND for
-  ``platform.namespaces`` (read-only lookups during authorization).
+  the hub's ``namespaces`` (read-only lookups during authorization).
 - five canonical Collections from :mod:`threetears.agent.acl`
   (``NamespaceCollection`` + ``Group`` / ``GroupMember`` / ``Role`` /
   ``RoleAssignment``).

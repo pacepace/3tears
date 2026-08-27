@@ -178,7 +178,7 @@ class KnowledgeIntegration:
         ``None`` disables concept injection (soft-fail to empty, entries
         unaffected)
     :ivar nats_client: connected NATS client used to PUBLISH draft events /
-        commands on ``{ns}.knowledge.draft`` (the agent cannot write ``platform.*``
+        commands on ``{ns}.knowledge.draft`` (the agent cannot write the hub's tables
         directly -- the hub-side emitter materializes the row,
         knowledge-task-06); ``None`` disables the write path (the harvester
         soft-fails to a no-op)
@@ -217,7 +217,7 @@ class KnowledgeIntegration:
     async def publish_draft(self, event: KnowledgeDraftEvent) -> None:
         """Publish a NEW correction-harvest draft to the hub (KNW-51).
 
-        The agent cannot write ``platform.*`` (the broker read-only carve-out
+        The agent cannot write the hub's tables (the broker read-only carve-out
         admits only SELECT), so a detected correction travels as a
         :class:`threetears.knowledge.KnowledgeDraftEvent` on
         ``{ns}.knowledge.draft``; the hub-side ``KnowledgeDraftEmitter``

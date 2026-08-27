@@ -1,7 +1,7 @@
 """canonical namespace-name builder.
 
 namespace-task-01 phase 9.5 locks the shape of every
-``platform.namespaces.name`` value to the canonical form:
+``namespaces.name`` value to the canonical form:
 
     ``{plural_prefix}.<segment1>.<segment2>...``
 
@@ -129,7 +129,7 @@ HITL_NAMESPACE_TYPE = "hitl"
 #: mapping from singular ``namespace_type`` column value to the
 #: plural prefix that leads the canonical name. the full closed set
 #: is pinned by the CHECK constraint on
-#: ``platform.namespaces.namespace_type``; in the 3tears hub repo that
+#: ``namespaces.namespace_type``; in the 3tears hub repo that
 #: constraint lives in the squashed init at
 #: ``v001_initial_schema.sql`` (widened to admit ``knowledge`` by
 #: ``v011_knowledge_substrate``).
@@ -174,7 +174,7 @@ def sanitize_segment(value: str | UUID) -> str:
 
     **the delegation is a coincidence of rules, not one rule.** the callee's
     contract is "safe as a NATS subject token"; this function's is "safe as a
-    ``platform.namespaces.name`` segment", and those values are PERSISTED, so a
+    ``namespaces.name`` segment", and those values are PERSISTED, so a
     change to the sanitizer rewrites what new rows key on while old rows keep the
     old shape. the two rules agree on every character today, which is why sharing
     the implementation is right. if the subject rule ever widens -- a new NATS
@@ -249,7 +249,7 @@ def namespace_contains(node: str, name: str) -> bool:
     """true iff ``name`` is ``node`` itself or lives beneath it.
 
     the ONE containment rule for dot-segmented hierarchical names in
-    this codebase -- ``platform.namespaces.name`` values, and the mcp
+    this codebase -- ``namespaces.name`` values, and the mcp
     names those are built from, which share the shape. every other
     place that used to ask "is this name under that one" with a raw
     prefix test delegates here.
@@ -332,7 +332,7 @@ class ToolNamespaceName:
 
 
 def build_tool_namespace_name(mcp_name: str, version: str) -> str:
-    """build the canonical ``platform.namespaces.name`` for a tool row.
+    """build the canonical ``namespaces.name`` for a tool row.
 
     the shape is ``tools.<mcp_name>.<sanitized version>``. the mcp name
     is interpolated VERBATIM -- its dots become segment boundaries

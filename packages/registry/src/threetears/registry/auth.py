@@ -106,7 +106,7 @@ class AgentToolAuthorizer(Protocol):
 
     Phase 26 widened the protocol again to carry ``tool_version`` so
     rbac implementations can construct the canonical
-    ``platform.namespaces.name`` shape
+    ``namespaces.name`` shape
     (``tools.<sanitized-mcp>.<sanitized-version>``) from the
     dispatch tuple. without the version on the protocol, the
     canonical name is undefined and the namespace lookup is

@@ -8,19 +8,19 @@ originals -- this shard is pure relocation, not refactor.
 collections in this module:
 
 - :class:`CapabilitySourceCollection` -- ``SchemaBackedCollection`` for
-  the ``platform.datasources`` registry, generalized (Fork-1,
+  the ``datasources`` registry, generalized (Fork-1,
   gu-task-08) to hold database datasources, API imports, and MCP
   imports discriminated by ``kind``. flat PK ``id`` with a
   ``find_by_id`` helper that uses the v054 ``UNIQUE (id)`` constraint.
 - :class:`DataSourceTableCollection` -- ``BaseCollection`` for the
-  ``platform.datasource_tables`` row set.
+  ``datasource_tables`` row set.
 - :class:`DataSourceColumnCollection` -- ``BaseCollection`` for
-  ``platform.datasource_columns``. natural-key upsert on
+  ``datasource_columns``. natural-key upsert on
   ``(datasource_id, schema_name, table_name, column_name)``.
 - :class:`DataSourceRelationCollection` -- ``BaseCollection`` for
-  ``platform.datasource_relations``.
+  ``datasource_relations``.
 - :class:`TableTemplateCollection` -- ``BaseCollection`` for
-  ``platform.table_templates``. composite PK ``(customer_id, id)``.
+  ``table_templates``. composite PK ``(customer_id, id)``.
 
 per-table column variants (``TableTemplateColumnCollection``) stay in
 Hub for now because they have no cross-consumer demand yet; lift later
@@ -93,7 +93,7 @@ _TABLE_FIELD_TYPES: dict[str, Any] = {
     "description": str,
     "row_count_approx": int,
     "caveats": str,
-    # template-task-01: nullable FK into platform.table_templates;
+    # template-task-01: nullable FK into table_templates;
     # most tables stay unbound (template_id IS NULL). when bound,
     # the read-time merge in template-task-02 overlays the
     # template's column docs onto this row's instance docs.
@@ -176,7 +176,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
     """three-tier collection for capability-source entities.
 
     generalized from the former datasource-only collection (Fork-1,
-    gu-task-08): the SAME ``platform.datasources`` registry holds
+    gu-task-08): the SAME ``datasources`` registry holds
     database datasources, external API imports, and MCP imports,
     discriminated by the ``kind`` column
     (:class:`CapabilitySourceKind`). the table stays; the SHAPE widens.

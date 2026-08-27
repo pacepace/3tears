@@ -966,7 +966,7 @@ class TestDirectlyBoundBuckets:
     def test_the_router_holds_agent_config_read_only(self) -> None:
         """Config Source-of-Truth: the router is a READER of cluster config, never a writer.
 
-        ``platform.agents`` is the source and this bucket is a hot cache over it, written only by
+        the hub's ``agents`` table is the source and this bucket is a hot cache over it, written only by
         the hub's admin endpoints. A KV read is a ``$JS.API`` request rather than a ``$KV.``
         publish, so withholding write authority costs the router nothing -- and a write grant it
         does not need is a write grant a bug can use.

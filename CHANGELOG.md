@@ -115,6 +115,26 @@ packages (bumped in lock-step).
   is how every `SchemaBackedCollection` has always behaved, so a raise appearing
   here names a broker reply that was already losing writes silently.
 
+- **docs: prose no longer qualifies a hub table with the `platform` schema.**
+  The hub writes to the schema its `FOURTEENAIBOTS_DB_SCHEMA` setting names --
+  `aibots` on the compose stack. It used to be `platform`, and the hardcoded
+  default was removed because every consumer that forgot to read the setting
+  fell back to `platform`, which is correct on one deployment and wrong on every
+  other. The code was corrected then; the docstrings were not, and ~175 comment
+  and docstring lines across 50 modules went on saying `platform.namespaces`,
+  `platform.agents`, `platform.roles`. A downstream engineer read them and spent
+  three days querying a stale leftover schema before filing a bug against
+  working code.
+
+  Prose now names the bare table (`namespaces`), or names the owner in words
+  ("the hub's `usage_records` table") where the qualifier was carrying ownership
+  rather than a schema. No code, SQL literal or log message changed.
+  `tests/enforcement/test_no_stale_platform_schema_qualifier.py` is the guard,
+  and it encodes four exclusions on their own stated grounds: `system.platform.*`
+  NATS subjects, attribute access on a local variable named `platform`,
+  historical DDL that really did name a schema, and hostnames such as
+  `platform.invalid`.
+
 ## v0.29.0 -- 2026-08-26
 
 ### Changed

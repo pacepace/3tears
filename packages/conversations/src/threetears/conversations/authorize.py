@@ -80,7 +80,7 @@ log = get_logger(__name__)
 
 
 #: namespace_type discriminator for conversation rows in
-#: ``platform.namespaces``. matches the closed-set admitted by the
+#: the hub's ``namespaces``. matches the closed-set admitted by the
 #: v042 CHECK constraint (which widens v037's 10-value set to 11).
 CONVERSATION_NAMESPACE_TYPE = "conversation"
 
@@ -158,10 +158,10 @@ def conversation_namespace_schema_name(
     agent_id: UUID,
     customer_id: UUID,
 ) -> str:
-    """build the schema_name persisted on ``platform.namespaces`` rows.
+    """build the schema_name persisted on the hub's ``namespaces`` rows.
 
     conversation rows route through the shared per-agent database
-    schema (or the hub's ``platform.conversations`` table) rather than
+    schema (or the hub's ``conversations`` table) rather than
     a per-namespace Postgres schema; the row carries a stable synthetic
     schema string so SELECT queries joining namespaces on
     ``schema_name`` still match. shape mirrors
@@ -429,13 +429,13 @@ async def ensure_conversation_owner_assignment(
     materializes three rows idempotently on the first time a user
     sends a message in a conversation within the namespace:
 
-    1. ``platform.groups`` row named
+    1. ``groups`` row named
        ``conversation-owner:<user_id_hex>`` with a deterministic
        :func:`uuid5` id keyed on ``(customer_id, user_id)``
-    2. ``platform.group_members`` row binding ``user_id`` to the
+    2. ``group_members`` row binding ``user_id`` to the
        group with a deterministic :func:`uuid5` id keyed on
        ``(group_id, user_id)``
-    3. ``platform.role_assignments`` row binding the group to the
+    3. ``role_assignments`` row binding the group to the
        platform ``ConversationOwner`` role scoped to ``namespace.id``
        via
        :meth:`RoleAssignmentCollection.ensure_group_role_assignment`

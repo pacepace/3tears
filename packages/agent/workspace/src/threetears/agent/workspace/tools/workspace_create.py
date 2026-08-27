@@ -25,7 +25,7 @@ import asyncpg
 from pydantic import BaseModel
 
 # namespace-task-01 follow-up (post-emit re-materialization wave): the
-# paired ``platform.namespaces`` write for every workspace-create now
+# paired ``namespaces`` write for every workspace-create now
 # rides a NATS event published on
 # :meth:`threetears.nats.Subjects.workspaces_create`. the hub-side
 # :class:`3tears.hub.workspace.namespace_emitter
@@ -77,7 +77,7 @@ class WorkspaceCreateEvent(BaseModel):
     carries the minimum identity + naming shape the hub-side
     :class:`3tears.hub.workspace.namespace_emitter
     .WorkspaceNamespaceEmitter` needs to upsert one ``workspace``-type
-    row in ``platform.namespaces``. the field set mirrors the entity
+    row in ``namespaces``. the field set mirrors the entity
     payload the agent used to assemble locally; the emitter stamps
     ``date_created`` / ``date_updated`` server-side from
     :func:`datetime.now(UTC)` so the hub is the timestamp authority.
@@ -219,7 +219,7 @@ class WorkspaceCreateTool(TearsTool):
             consumed by the hub's
             :class:`3tears.hub.workspace.namespace_emitter
             .WorkspaceNamespaceEmitter` to upsert the paired
-            ``platform.namespaces`` row of type ``workspace``. the tool
+            ``namespaces`` row of type ``workspace``. the tool
             will not degrade silently when it is omitted -- a
             misconfigured wiring fails loudly.
         :ptype nats_client: Any
@@ -557,7 +557,7 @@ class WorkspaceCreateTool(TearsTool):
         # workspace_create is owner-only by construction: it owns the
         # physical rows it is about to materialize. the workspace row
         # + file rows land under one ``conn.transaction()`` on the
-        # dedicated ``db_pool``; the paired ``platform.namespaces``
+        # dedicated ``db_pool``; the paired ``namespaces``
         # row rides the agent's main NATS-proxy pool via
         # :meth:`NamespaceCollection.save_entity` (three-tier-task-01
         # phase F). the two writes cannot share one transaction
@@ -609,7 +609,7 @@ class WorkspaceCreateTool(TearsTool):
 
         # workspace + files committed. publish the paired-namespace
         # event for the hub-side emitter to upsert
-        # ``platform.namespaces``. customer_id may be None when the
+        # ``namespaces``. customer_id may be None when the
         # create runs outside any conversation scope and the
         # constructor was supplied no fallback -- the emitter still
         # upserts the row but the hub authorize helper treats NULL

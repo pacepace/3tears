@@ -7,7 +7,7 @@ is exactly the evaluator's owner short-circuit, which compares the
 namespace's recorded ``owner_namespace`` against the name of the namespace
 the caller IS: the agent owns its own intention namespace by construction, so every action is
 allowed grant-free with no acl migration, no seed row, and no
-``platform.namespaces`` write.
+hub-side ``namespaces`` write.
 
 ``namespace_type`` is a free string in 3tears (``acl/types.py``), NOT a
 constrained enum, and the owner descriptor is built deterministically
@@ -122,7 +122,7 @@ class _OwnerIntentionNamespace:
     Exposes exactly the four fields :func:`authorize_on_entity` reads
     (``id``, ``customer_id``, ``namespace_type``, ``owner_agent_id``),
     built deterministically in-process WITHOUT reading or creating a
-    ``platform.namespaces`` row. Mirrors memory's
+    hub-side ``namespaces`` row. Mirrors memory's
     :class:`_OwnerMemoryNamespace`: the agent's sandboxed L3 search_path
     is its own schema, which has no ``namespaces`` table, so the
     evaluator's owner short-circuit must resolve from the descriptor's

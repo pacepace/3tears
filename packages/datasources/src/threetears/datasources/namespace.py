@@ -47,7 +47,7 @@ def datasource_namespace_name(datasource_name: str) -> str:
     datasource name segment is sanitized (any ``.`` replaced with
     ``-``) before interpolation.
 
-    :param datasource_name: datasource's ``platform.datasources.name``
+    :param datasource_name: datasource's ``datasources.name``
     :ptype datasource_name: str
     :return: canonical namespace name string
     :rtype: str

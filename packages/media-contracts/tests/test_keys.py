@@ -126,7 +126,7 @@ def test_filename_cannot_inject_path_separators() -> None:
 class TestSharedAndDeterministicKeys:
     """the two shapes added for objects that are not tenant-owned or not opaque.
 
-    both exist because ``platform.datasources.customer_id`` is itself
+    both exist because ``datasources.customer_id`` is itself
     nullable -- NULL meaning platform-shared -- so artifacts derived from
     such a row have no tenant to scope to, and because a reader like a CDN
     must be able to derive a key from a request without a lookup.

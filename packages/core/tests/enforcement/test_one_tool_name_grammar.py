@@ -1,6 +1,6 @@
 """Enforcement -- the tool-name BUILDER and PARSER are pinned to each other.
 
-``platform.namespaces.name`` for a tool row is written by one process
+``namespaces.name`` for a tool row is written by one process
 and rebuilt for comparison by several others, in two repositories and
 across a NATS boundary. Nothing raises when the two spellings disagree:
 the row is simply not found, the tool becomes unaddressable and the

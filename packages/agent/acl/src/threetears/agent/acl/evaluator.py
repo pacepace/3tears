@@ -436,7 +436,7 @@ def _agent_owns_namespace(namespace: Namespace, agent_id: UUID) -> bool:
     :func:`threetears.core.namespaces.build_agent_namespace_name`. no
     lookup happens: the derivation is the same rule the hub writes the
     owner column with, and the owner path has to answer inside an agent
-    pod whose L3 cannot see ``platform.namespaces`` at all.
+    pod whose L3 cannot see the hub's ``namespaces`` at all.
 
     the ``is not None`` guard is EXPLICIT and load-bearing. the previous
     comparison was ``owner_agent_id == agent_id``, where a null owner

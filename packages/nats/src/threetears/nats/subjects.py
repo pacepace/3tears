@@ -1000,7 +1000,7 @@ class Subjects:
 
         The agent sends its produced-object handle here (Path-2); the hub verifies
         the agent's session, derives the owning customer server-side, asserts the
-        object key is under that tenant, and writes the ``platform.objects`` row.
+        object key is under that tenant, and writes the ``objects`` row.
 
         :return: subject ``{ns}.hub.object.commit``
         :rtype: Subject
@@ -1097,7 +1097,7 @@ class Subjects:
         the adapter is sandboxed (NATS-only, no DB credentials), so it
         asks the hub for the active bot installs of a channel type
         (bot token refs + the agent each routes to) instead of reading
-        ``platform.channel_configs`` directly.
+        ``channel_configs`` directly.
 
         :return: subject ``{ns}.hub.channel.installs``
         :rtype: Subject
@@ -1247,7 +1247,7 @@ class Subjects:
         rows commit in the per-agent schema. the hub-side
         :class:`3tears.hub.workspace.namespace_emitter
         .WorkspaceNamespaceEmitter` subscribes (no queue group, every
-        replica observes) and upserts the paired ``platform.namespaces``
+        replica observes) and upserts the paired ``namespaces``
         row of type ``workspace``.
 
         decoupling the namespace upsert from the agent is the canonical
@@ -1652,7 +1652,7 @@ class Subjects:
         decoupling the knowledge write from the agent is the canonical
         platform pattern (mirrors :meth:`workspaces_create`): the
         agent-side L3 proxy is admitted only SELECT traffic against the
-        ``platform.*`` knowledge tables (the broker's read-only
+        hub's knowledge tables (the broker's read-only
         carve-out), so the hub — sole writer of platform-scoped rows —
         owns the write. the deterministic ``draft_id`` keying makes the
         upsert idempotent under at-least-once delivery.
@@ -1863,7 +1863,7 @@ class Subjects:
 
         higher cardinality than this family's other members, which are
         parameterless platform-wide config domains -- there is one row
-        in ``platform.config_epochs`` per registered geo layer, and one
+        in the hub's ``config_epochs`` per registered geo layer, and one
         subscription per layer per pod. that is the cost of not sharing
         a version across layers, and it is the point.
 

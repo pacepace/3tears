@@ -1,7 +1,7 @@
 """unit tests for the ``tools.*`` namespace-name grammar.
 
 the grammar is a BUILDER and a PARSER that must agree exactly, because
-the same string is written into ``platform.namespaces.name`` by one
+the same string is written into ``namespaces.name`` by one
 process and rebuilt for comparison by several others. a disagreement
 between the two spellings does not raise -- it makes a row stop being
 addressable, which is a silence.

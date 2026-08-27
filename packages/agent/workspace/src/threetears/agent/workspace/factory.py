@@ -125,14 +125,14 @@ def build_workspace_tools(
         because the concrete class lives in :mod:`3tears.hub.broker.namespaces`,
         which sits outside the agent-workspace package's dep graph).
         :class:`WorkspaceCreateTool` emits the paired
-        ``platform.namespaces`` row through
+        ``namespaces`` row through
         :meth:`NamespaceCollection.save_entity` on every create.
         REQUIRED — the workspace lifecycle cannot materialize a
         workspace without its namespace counterpart
     :ptype namespace_collection: Any
     :param customer_id: owning-customer UUID for the agent this tool
         bundle serves; stamped onto newly-created workspaces so the
-        paired ``platform.namespaces`` row carries the right customer
+        paired ``namespaces`` row carries the right customer
     :ptype customer_id: UUID | None
     :return: list of constructed TearsTool instances
     :rtype: list[TearsTool]

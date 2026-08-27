@@ -141,7 +141,7 @@ class Namespace:
     lookup: a principal always has full access to namespaces its own
     namespace owns.
 
-    :ivar id: namespace UUID; the primary key in ``platform.namespaces``
+    :ivar id: namespace UUID; the primary key in the hub's ``namespaces``
     :ivar customer_id: customer UUID this namespace belongs to, or
         ``None`` for a platform-scoped namespace (``customer_id IS NULL``)
     :ivar namespace_type: type discriminator string
@@ -166,7 +166,7 @@ class Namespace:
         identity is the only owner value answerable there. ``None``
         matches NOTHING -- see
         :func:`threetears.agent.acl.evaluator.evaluate_with_trail`
-    :ivar name: canonical ``platform.namespaces.name`` value, or
+    :ivar name: canonical ``namespaces.name`` value, or
         ``None`` when the construction site had no name to supply (the
         workspace file-access path builds this value out of a workspace
         row rather than a namespace row). only
@@ -213,7 +213,7 @@ class Group:
 class GroupMembership:
     """a single ``(group, member)`` pair.
 
-    materialized from ``platform.group_members``. the denormalized
+    materialized from the hub's ``group_members``. the denormalized
     ``customer_id`` mirrors the member's customer at write time and
     lets the membership loader cache by customer without a join back
     to the actor table.
@@ -236,7 +236,7 @@ class GroupMembership:
 class Role:
     """named bundle of ``{resource_type: [action, ...]}`` permissions.
 
-    permissions are stored as a JSONB column on ``platform.roles``;
+    permissions are stored as a JSONB column on the hub's ``roles``;
     this dataclass mirrors the shape after deserialization. the
     wildcard resource-type ``"*"`` (see
     :data:`WILDCARD_RESOURCE_TYPE`) is permitted for type-agnostic

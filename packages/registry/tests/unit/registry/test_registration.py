@@ -694,7 +694,7 @@ class TestTheManifestFilterComparesTheMcpName:
     ``allowed_namespaces`` holds bare mcp-name NODES (``pentest``,
     ``aibots.admin``, ``threetears``); ``tool.name`` is the mcp name a
     pod offers (``pentest.sqlmap``). The canonical
-    ``platform.namespaces.name`` -- ``tools.pentest.sqlmap.1-0`` -- is
+    ``namespaces.name`` -- ``tools.pentest.sqlmap.1-0`` -- is
     a THIRD string, built downstream, and it never reaches this filter.
 
     That distinction is what decides whether rooting the namespace name

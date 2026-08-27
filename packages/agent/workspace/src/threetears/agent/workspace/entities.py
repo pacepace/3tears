@@ -53,7 +53,7 @@ class Workspace(BaseEntity):
 
     workspace-task-19 (WS-ACL-03) makes every workspace a platform-level
     namespace: the row in ``agent_<owner>.workspaces`` shares its primary
-    key with a row in ``platform.namespaces`` and the latter carries the
+    key with a row in the hub's ``namespaces`` and the latter carries the
     ``customer_id`` the authorization helper gates on. the
     :attr:`customer_id`, :attr:`owner_agent_id`, :attr:`created_by_user_id`
     and :attr:`namespace_name` properties expose these authorization
@@ -72,7 +72,7 @@ class Workspace(BaseEntity):
     :class:`3tears.hub.workspace.namespace_emitter
     .WorkspaceNamespaceEmitter`) computes the same key without a
     network round trip. :attr:`customer_id` is the one field that must
-    be loaded from :class:`platform.namespaces` at resolve-time; the
+    be loaded from the hub's ``namespaces`` at resolve-time; the
     ``_resolve_workspace`` helper stamps it onto the entity via the
     ``customer_id`` setter after a single platform lookup.
 
@@ -316,7 +316,7 @@ class Workspace(BaseEntity):
         result is ``"workspaces.<uuid>"`` and matches the canonical
         platform-wide namespace naming contract documented in
         ``CLAUDE.md`` ("Namespace Names" section: every
-        ``platform.namespaces.name`` follows
+        ``namespaces.name`` follows
         ``{plural_prefix}.<segment1>...``). every consumer
         (authorize cache lookup, L3 proxy routing, discovery
         queries, hub-side
@@ -334,11 +334,11 @@ class Workspace(BaseEntity):
     @property
     def customer_id(self) -> UUID | None:
         """
-        returns owning-customer UUID once resolved from platform.namespaces.
+        returns owning-customer UUID once resolved from the hub's ``namespaces``.
 
         unlike :attr:`owner_agent_id` and :attr:`created_by_user_id`
         which alias columns already on the agent-schema row, the customer
-        dimension lives on the paired :class:`platform.namespaces` row.
+        dimension lives on the paired hub ``namespaces`` row.
         ``_resolve_workspace`` stamps the value via the :attr:`customer_id`
         setter after a single platform lookup before returning the
         entity to a tool's ``execute``. returns ``None`` when the entity
@@ -356,7 +356,7 @@ class Workspace(BaseEntity):
         """
         stamps the resolved customer UUID onto the entity.
 
-        invoked by ``_resolve_workspace`` once the platform.namespaces
+        invoked by ``_resolve_workspace`` once the hub's ``namespaces``
         row for this workspace id has been fetched. the value is NOT
         persisted back to the agent schema (the column does not exist
         there); it lives only on the in-memory entity for the duration

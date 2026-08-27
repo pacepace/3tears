@@ -1381,7 +1381,7 @@ def _agent_router(
             # that ``kv_bucket`` layers on. Matches the live ``aibots_agent_config`` bucket.
             #
             # READ-ONLY, and that is a rule rather than a trim: CLAUDE.md's Config Source-of-Truth
-            # makes ``platform.agents`` the source and this bucket a hot cache over it, written
+            # makes the hub's ``agents`` table the source and this bucket a hot cache over it, written
             # ONLY by the hub's admin endpoints. The router resolves a timeout from it and never
             # puts (``_config_kv`` is read at one site), and a KV read is a ``$JS.API`` request
             # rather than a ``$KV.`` publish, so withholding write authority costs it nothing.

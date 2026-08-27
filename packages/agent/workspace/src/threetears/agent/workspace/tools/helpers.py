@@ -71,7 +71,7 @@ class WorkspaceAuditIdentity:
         ``workspace.owner_agent_id``)
     :ivar customer_id: owning customer (from ``scope.context.customer_id``)
     :ivar namespace_id: workspace id (shared PK with the
-        ``platform.namespaces`` row); maps onto the
+        ``namespaces`` row); maps onto the
         :attr:`AuditEvent.resource_namespace_id` column at publish
         time
     """
@@ -309,7 +309,7 @@ async def authorize_workspace(
     :param operation: ``"read"`` or ``"write"``; passed verbatim to
         :func:`authorize_workspace_access`
     :ptype operation: Literal["read", "write"]
-    :param db_pool: asyncpg-like pool for the platform.namespaces
+    :param db_pool: asyncpg-like pool for the hub's ``namespaces``
         lookup; may be ``None`` to skip enrichment
     :ptype db_pool: Any
     :param acl_cache: shared :class:`AclCache` wired with membership
@@ -379,7 +379,7 @@ async def authorize_workspace_file(
         ``read_file_matching:`` / ``write_file_matching:`` action
         prefix in the evaluator)
     :ptype direction: Literal["read", "write"]
-    :param db_pool: asyncpg-like pool for the platform.namespaces
+    :param db_pool: asyncpg-like pool for the hub's ``namespaces``
         lookup; may be ``None`` to skip enrichment
     :ptype db_pool: Any
     :param acl_cache: shared :class:`AclCache` wired with membership +
@@ -421,10 +421,10 @@ async def enrich_workspace_identity(
     workspace: Workspace,
     db_pool: Any,
 ) -> Workspace:
-    """stamp ``workspace.customer_id`` from platform.namespaces in-place.
+    """stamp ``workspace.customer_id`` from the hub's ``namespaces`` in-place.
 
     workspace-task-19 (WS-ACL-03) keeps the customer dimension on
-    :class:`platform.namespaces` rather than duplicating it onto every
+    the hub's ``namespaces`` row rather than duplicating it onto every
     agent-schema ``workspaces`` row. resolving the customer requires a
     single platform-level fetch; this helper performs that lookup and
     stamps the result onto the in-memory entity via the

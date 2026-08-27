@@ -74,7 +74,7 @@ __all__ = [
 log = get_logger(__name__)
 
 
-#: namespace_type discriminator for memory rows in ``platform.namespaces``.
+#: namespace_type discriminator for memory rows in the hub's ``namespaces``.
 #: matches the closed-set admitted by the v018 CHECK constraint.
 MEMORY_NAMESPACE_TYPE = "memory"
 
@@ -146,7 +146,7 @@ def memory_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
 
 
 def memory_namespace_schema_name(agent_id: UUID, customer_id: UUID) -> str:
-    """build the schema_name persisted on ``platform.namespaces`` rows.
+    """build the schema_name persisted on the hub's ``namespaces`` rows.
 
     memory rows route through the shared agent database schema rather
     than a per-namespace Postgres schema; the row carries a stable
@@ -195,11 +195,11 @@ class _OwnerMemoryNamespace:
     (``id``, ``customer_id``, ``namespace_type``, ``owner_agent_id``). used
     when the calling agent owns the memory namespace, so the descriptor is
     built deterministically in-process WITHOUT reading or creating a
-    ``platform.namespaces`` row -- the agent's sandboxed L3 search_path is
+    hub-side ``namespaces`` row -- the agent's sandboxed L3 search_path is
     its own schema (``agent_<hex>``), which has no ``namespaces`` table, so
     a Collection access there fails ``relation "namespaces" does not
     exist``. mirrors the tool-namespace precedent that moved
-    ``platform.namespaces`` writes off the agent onto the hub.
+    ``namespaces`` writes off the agent onto the hub.
     """
 
     id: UUID
@@ -441,7 +441,7 @@ async def authorize_memory_access(
     if caller_agent_id is not None and caller_agent_id == agent_id:
         # owner path: the calling agent owns its own memory namespace by
         # construction (agent-internal retrieval / extraction). resolve it
-        # deterministically WITHOUT touching platform.namespaces -- the
+        # deterministically WITHOUT touching the hub's ``namespaces`` -- the
         # agent's sandboxed L3 search_path is its own schema (agent_<hex>),
         # which has no namespaces table, so a Collection read/create there
         # fails ``relation "namespaces" does not exist``. the evaluator's
@@ -480,15 +480,15 @@ async def ensure_memory_owner_assignment(
     """ensure the per-user MemoryOwner group + assignment rows exist.
 
     replaces the Phase-C bespoke ensurer callable. materializes three
-    rows idempotently:
+    rows idempotently in the hub's schema:
 
-    1. ``platform.groups`` row named ``memory-owner:<user_id_hex>``
+    1. ``groups`` row named ``memory-owner:<user_id_hex>``
        with a deterministic :func:`uuid5` id keyed on
        ``(customer_id, user_id)``
-    2. ``platform.group_members`` row binding ``user_id`` to the group
+    2. ``group_members`` row binding ``user_id`` to the group
        with a deterministic :func:`uuid5` id keyed on
        ``(group_id, user_id)``
-    3. ``platform.role_assignments`` row binding the group to the
+    3. ``role_assignments`` row binding the group to the
        platform ``MemoryOwner`` role scoped to ``namespace.id`` via
        :meth:`RoleAssignmentCollection.ensure_group_role_assignment`
 

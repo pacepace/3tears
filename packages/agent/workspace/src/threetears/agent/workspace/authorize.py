@@ -130,7 +130,7 @@ class _WorkspaceNamespaceAdapter:
     :ivar owner_namespace: canonical name of the namespace that owns
         this one, derived from the workspace's own owning agent. a
         workspace is reached from inside an agent pod, whose L3 cannot
-        see ``platform.namespaces``, so the owner has to be derivable
+        see the hub's ``namespaces``, so the owner has to be derivable
         rather than read
     """
 

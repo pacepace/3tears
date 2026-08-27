@@ -66,7 +66,7 @@ class RbacEvaluatorAuthorizer:
     """authorize tool dispatch via the unified rbac evaluator.
 
     implements the :class:`~threetears.registry.auth.AgentToolAuthorizer`
-    protocol. on each call, looks up the tool's ``platform.namespaces``
+    protocol. on each call, looks up the tool's hub-side ``namespaces``
     row via :meth:`NamespaceCollection.get_by_name` (Collection hits
     its L1 cache on hot paths), then asks
     :func:`~threetears.agent.acl.evaluate_decision` for a boolean on
@@ -151,7 +151,7 @@ class RbacEvaluatorAuthorizer:
         intersection decision, and the dispatch's
         ``(tool_name, tool_version)`` tuple so this implementation
         can construct the canonical
-        ``platform.namespaces.name`` shape
+        ``namespaces.name`` shape
         (``tools.<sanitized-mcp>.<sanitized-version>``) that the
         emitter writes the row under. the proxy sources
         ``user_id`` from ``ProxyCallRequest.context.user_id`` and
@@ -224,7 +224,7 @@ class RbacEvaluatorAuthorizer:
         # column is the canonical shape. constructing the canonical
         # form here keeps every consumer (this lookup, the hub access
         # materializer, the namespace emitter) agreed on the
-        # ``platform.namespaces.name`` value without the call site
+        # ``namespaces.name`` value without the call site
         # needing to reverse the version's sanitization.
         #
         # this calls the shared grammar rather than composing the
