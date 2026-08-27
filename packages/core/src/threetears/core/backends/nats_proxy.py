@@ -213,7 +213,7 @@ class NatsProxyL3Backend:
         agent_id: str,
         default_namespace: str | None = None,
         timeout_ms: int | None = None,
-        identity_token: Callable[[], str] | None = None,
+        identity_token: Callable[[], str | None] | None = None,
     ) -> None:
         """initialize NatsProxyL3Backend.
 
@@ -241,7 +241,7 @@ class NatsProxyL3Backend:
             broker REFUSES such a request -- ``identity_token`` is required on its
             side and the models are ``extra="forbid"`` -- so this raises at the
             call site rather than sending a request that cannot be authorized.
-        :ptype identity_token: Callable[[], str] | None
+        :ptype identity_token: Callable[[], str | None] | None
         """
         self._nc = nats_client
         self.ns = namespace_prefix
