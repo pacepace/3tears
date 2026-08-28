@@ -57,7 +57,13 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 from threetears.agent.acl import (
     AccessDenied,
     AclCache,
+    GroupCollection,
+    GroupMemberCollection,
+    NamespaceCollection,
+    RoleAssignmentCollection,
+    RoleCollection,
     authorize_on_entity,
+    row_scope_for_customer,
 )
 from threetears.agent.memory.namespace_client import (
     MemoryNamespaceProvisioner,
@@ -246,13 +252,18 @@ class MemoryAuthorizerDependencies:
     single bundle through their constructors so their signatures
     stay single-parameter.
 
-    the Collections are typed ``Any`` at this layer because
-    :class:`NamespaceCollection`, :class:`GroupCollection`,
-    :class:`GroupMemberCollection`, :class:`RoleCollection`, and
-    :class:`RoleAssignmentCollection` live in
-    :mod:`3tears.hub.*` — a higher layer than ``agent-memory``.
-    wiring code constructs the bundle with concrete Collection
-    instances; this module only uses their documented method surface.
+    the Collections are typed CONCRETELY, and the ``Any`` they used to
+    carry is what made this bundle's worst defect invisible. the stated
+    reason for it -- that the five rbac Collections "live in
+    :mod:`3tears.hub.*`, a higher layer than ``agent-memory``" -- had stopped
+    being true: they live in :mod:`threetears.agent.acl`, which this
+    module already imports. what the ``Any`` bought instead was that
+    nothing, human or tool, could see that
+    :func:`ensure_memory_owner_assignment` addressed two
+    composite-keyed tables with a bare id, so the function raised
+    ``primary key arity mismatch`` at its first statement for every
+    caller that reached it. hub subclasses (``HubGroupCollection`` and
+    friends) satisfy these annotations by inheritance.
 
     :ivar acl_cache: shared :class:`AclCache` carrying loaders + ttl
         layers
@@ -295,11 +306,11 @@ class MemoryAuthorizerDependencies:
         self,
         *,
         acl_cache: AclCache,
-        namespace_collection: Any,
-        group_collection: Any,
-        group_member_collection: Any,
-        role_collection: Any,
-        role_assignment_collection: Any,
+        namespace_collection: NamespaceCollection,
+        group_collection: GroupCollection,
+        group_member_collection: GroupMemberCollection,
+        role_collection: RoleCollection,
+        role_assignment_collection: RoleAssignmentCollection,
         namespace_provisioner: MemoryNamespaceProvisioner | None = None,
     ) -> None:
         """initialize the dependency bundle.
@@ -307,17 +318,17 @@ class MemoryAuthorizerDependencies:
         :param acl_cache: shared :class:`AclCache`
         :ptype acl_cache: AclCache
         :param namespace_collection: three-tier ``NamespaceCollection``
-        :ptype namespace_collection: Any
+        :ptype namespace_collection: NamespaceCollection
         :param group_collection: three-tier ``GroupCollection``
-        :ptype group_collection: Any
+        :ptype group_collection: GroupCollection
         :param group_member_collection: three-tier
             ``GroupMemberCollection``
-        :ptype group_member_collection: Any
+        :ptype group_member_collection: GroupMemberCollection
         :param role_collection: three-tier ``RoleCollection``
-        :ptype role_collection: Any
+        :ptype role_collection: RoleCollection
         :param role_assignment_collection: three-tier
             ``RoleAssignmentCollection``
-        :ptype role_assignment_collection: Any
+        :ptype role_assignment_collection: RoleAssignmentCollection
         :param namespace_provisioner: hub-backed provisioner for a missing
             memory namespace row, or ``None``
         :ptype namespace_provisioner: MemoryNamespaceProvisioner | None
@@ -532,7 +543,12 @@ async def ensure_memory_owner_assignment(
     group_name = f"{MEMORY_OWNER_GROUP_PREFIX}:{user_id.hex}"
     now = datetime.now(UTC)
 
-    existing_group = await deps.group_collection.get(group_id)
+    # ``groups`` is keyed ``(row_scope, group_id)``, so the partition value
+    # travels with the id. it is derived from the namespace's customer by the
+    # same rule ``GroupEntity`` applies on the way in, which is why both sides
+    # read it off one function rather than restating the string here.
+    group_pk = (row_scope_for_customer(customer_id), group_id)
+    existing_group = await deps.group_collection.get(group_pk)
     if existing_group is None:
         group_entity = deps.group_collection.entity_class(
             {
@@ -552,7 +568,10 @@ async def ensure_memory_owner_assignment(
         NAMESPACE_DNS,
         f"threetears.group_members.{group_id.hex}.{user_id.hex}",
     )
-    existing_member = await deps.group_member_collection.get(membership_id)
+    # ``group_members`` is keyed ``(group_id, id)`` -- group_id is its partition
+    # column, so per-group listing reads stay co-located -- and the group is the
+    # one just resolved above.
+    existing_member = await deps.group_member_collection.get((group_id, membership_id))
     if existing_member is None:
         member_entity = deps.group_member_collection.entity_class(
             {

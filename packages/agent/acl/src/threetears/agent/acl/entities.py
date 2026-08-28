@@ -40,6 +40,7 @@ the derivation reads ``data`` and the default has to be in it first.
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from threetears.core.entities.base import BaseEntity
 
@@ -50,7 +51,38 @@ __all__ = [
     "NamespaceEntity",
     "RoleAssignmentEntity",
     "RoleEntity",
+    "row_scope_for_customer",
 ]
+
+
+def row_scope_for_customer(customer_id: UUID | None) -> str:
+    """map an owning customer to the ``row_scope`` partition value.
+
+    ``groups`` and ``namespaces`` both partition on ``row_scope``, and
+    both derive it from the same fact: a row with no customer is
+    platform-scoped, a row with one is customer-scoped. the database
+    CHECK constraint pins that biconditional
+    (``row_scope='platform' <-> customer_id IS NULL``), so the rule is
+    not a convention a caller may reinterpret.
+
+    it is public because a CALLER needs it, not only the entities. both
+    tables are keyed on the composite ``(row_scope, <entity>_id)``, so
+    anyone addressing a row through
+    :meth:`~threetears.core.collections.base.BaseCollection.get` /
+    ``delete`` / ``ensure`` has to supply the partition value alongside
+    the id -- and the only way to work it out is this rule. stating it
+    once, here, is what stops each such call site re-deriving it (or,
+    as two of them did, passing the bare id and raising
+    ``primary key arity mismatch`` on every call).
+
+    :param customer_id: owning customer UUID, or ``None`` for a
+        platform-scoped row
+    :ptype customer_id: UUID | None
+    :return: ``"platform"`` when no customer owns the row, else
+        ``"customer"``
+    :rtype: str
+    """
+    return "platform" if customer_id is None else "customer"
 
 
 class GroupEntity(BaseEntity):
@@ -103,8 +135,7 @@ class GroupEntity(BaseEntity):
         :rtype: None
         """
         if data.get("row_scope") is None:
-            row_scope = "platform" if data.get("customer_id") is None else "customer"
-            data = {**data, "row_scope": row_scope}
+            data = {**data, "row_scope": row_scope_for_customer(data.get("customer_id"))}
         super().__init__(data, is_new=is_new, collection=collection)
 
 
@@ -263,8 +294,7 @@ class NamespaceEntity(BaseEntity):
         :rtype: None
         """
         if data.get("row_scope") is None:
-            row_scope = "platform" if data.get("customer_id") is None else "customer"
-            data = {**data, "row_scope": row_scope}
+            data = {**data, "row_scope": row_scope_for_customer(data.get("customer_id"))}
         super().__init__(data, is_new=is_new, collection=collection)
 
 

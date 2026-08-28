@@ -1,13 +1,19 @@
 """
-unit tests for agent-workspace v003 (workspace_namespace_backfill).
+unit tests for agent-workspace v003, which is retired and applies nothing.
 
-v003 is a one-statement data-translation migration that heals pre-task-19
-history: every live row in ``<agent_schema>.workspaces`` gets a matching
-``platform.namespaces`` row stamped with the same id and
-``namespace_type='workspace'``. these tests verify the emitted SQL shape
-against a ``_CaptureStore`` stub; end-to-end behavior is covered by the
-integration test in
-``14-eng-ai-bot/tests/integration/test_workspaces_as_namespaces_migration.py``.
+v003 used to issue one cross-schema INSERT that healed pre-task-19 history:
+every live row in ``<agent_schema>.workspaces`` got a matching row in the
+hub's ``namespaces`` table. Reaching a second schema from a connection whose
+``search_path`` is the agent's requires naming that schema in the SQL, and the
+statement named the hub's REMOVED default. That name is correct on one
+deployment and wrong on every other, the correct one cannot be threaded into a
+migration body, and the row is written by the hub off ``workspace_create``'s
+emitted event now. So the body is gone and the version number stays claimed.
+
+These tests hold the retirement: v003 executes NOTHING, and in particular
+issues no statement naming another schema. Its admitted twin is
+``test_migrations.py``'s registration assertions, which still expect version 3
+to exist -- retired is not the same as renumbered.
 """
 
 from __future__ import annotations
@@ -49,106 +55,53 @@ class _CaptureStore:
         return "EXECUTE"
 
 
-def _joined_sql(store: _CaptureStore) -> str:
-    """
-    join every captured SQL statement into a single whitespace-collapsed
-    string so asserts can pattern-match against a stable surface.
-
-    :param store: capture store
-    :ptype store: _CaptureStore
-    :return: normalized SQL text
-    :rtype: str
-    """
-    return "\n".join(" ".join(sql.split()) for sql in store.executed)
-
-
-class TestWorkspaceNamespaceBackfillShape:
-    """tests verifying the v003 migration emits the expected backfill SQL."""
+class TestWorkspaceNamespaceBackfillIsRetired:
+    """tests pinning that v003 issues no statement at all."""
 
     @pytest.mark.asyncio
-    async def test_inserts_into_platform_namespaces(self) -> None:
-        """v003 targets platform.namespaces (cross-schema write)."""
+    async def test_executes_no_statement(self) -> None:
+        """the retired body runs nothing against the store."""
         store = _CaptureStore()
         await workspace_namespace_backfill(store)  # type: ignore[arg-type]
-        joined = _joined_sql(store)
-        assert "INSERT INTO platform.namespaces" in joined
+        assert store.executed == []
 
     @pytest.mark.asyncio
-    async def test_sets_namespace_type_to_workspace(self) -> None:
-        """every inserted namespace row carries namespace_type='workspace'."""
-        store = _CaptureStore()
-        await workspace_namespace_backfill(store)  # type: ignore[arg-type]
-        joined = _joined_sql(store)
-        assert "'workspace' AS namespace_type" in joined
+    async def test_names_no_schema_in_any_statement(self) -> None:
+        """no statement qualifies a table with a schema name.
 
-    @pytest.mark.asyncio
-    async def test_uses_current_schema_for_schema_name(self) -> None:
-        """schema_name points at the current agent schema via search_path."""
-        store = _CaptureStore()
-        await workspace_namespace_backfill(store)  # type: ignore[arg-type]
-        joined = _joined_sql(store)
-        assert "current_schema() AS schema_name" in joined
-
-    @pytest.mark.asyncio
-    async def test_joins_platform_agents_for_customer_id(self) -> None:
-        """customer_id resolves via join against platform.agents."""
-        store = _CaptureStore()
-        await workspace_namespace_backfill(store)  # type: ignore[arg-type]
-        joined = _joined_sql(store)
-        assert "JOIN platform.agents a ON a.id = w.agent_id" in joined
-        assert "a.customer_id" in joined
-
-    @pytest.mark.asyncio
-    async def test_shares_primary_key_with_workspaces(self) -> None:
-        """the inserted id column is pulled straight from workspaces.id."""
-        store = _CaptureStore()
-        await workspace_namespace_backfill(store)  # type: ignore[arg-type]
-        joined = _joined_sql(store)
-        assert "SELECT w.id," in joined
-
-    @pytest.mark.asyncio
-    async def test_skips_soft_deleted_workspaces(self) -> None:
-        """only live (date_deleted IS NULL) workspaces are backfilled."""
-        store = _CaptureStore()
-        await workspace_namespace_backfill(store)  # type: ignore[arg-type]
-        joined = _joined_sql(store)
-        assert "WHERE w.date_deleted IS NULL" in joined
-
-    @pytest.mark.asyncio
-    async def test_is_idempotent_via_on_conflict(self) -> None:
-        """replay is safe: ON CONFLICT (namespace_id) DO NOTHING (v0.8.0)."""
-        store = _CaptureStore()
-        await workspace_namespace_backfill(store)  # type: ignore[arg-type]
-        joined = _joined_sql(store)
-        assert "ON CONFLICT (namespace_id) DO NOTHING" in joined
-
-    @pytest.mark.asyncio
-    async def test_namespace_name_prefix_avoids_agent_collision(self) -> None:
-        """
-        namespaces.name is UNIQUE. the agent-scope namespace uses
-        ``agent.<uuid>``; workspaces prefix with ``workspace.`` so the
-        two ranges cannot collide.
+        stated separately from "executes nothing" on purpose: if a future
+        change gives v003 a body again, this is the assertion that has to be
+        confronted, and the answer cannot be a hardcoded schema.
         """
         store = _CaptureStore()
         await workspace_namespace_backfill(store)  # type: ignore[arg-type]
-        joined = _joined_sql(store)
-        assert "'workspace.' || w.id::text AS name" in joined
+        qualified = [sql for sql in store.executed if "platform." in sql or "aibots." in sql]
+        assert qualified == []
+
+    @pytest.mark.asyncio
+    async def test_is_replay_safe(self) -> None:
+        """applying it twice is indistinguishable from applying it once."""
+        store = _CaptureStore()
+        await workspace_namespace_backfill(store)  # type: ignore[arg-type]
+        await workspace_namespace_backfill(store)  # type: ignore[arg-type]
+        assert store.executed == []
 
 
-class TestRegisterIncludesV003:
-    """tests verifying the new version is wired into the package registration."""
+class TestRegisterStillClaimsVersionThree:
+    """the version number survives the retirement; renumbering does not happen."""
 
     async def test_register_includes_v003(self) -> None:
-        """register wires v003 (workspace_namespace_backfill) alongside v001/v002.
+        """register still wires version 3, now to the retired callable.
 
-        the broader ``register_returns_package_with_versions_*`` total-set
-        assertion lives in ``test_migrations.py`` and tracks the full
-        version list as new migrations land. this test pins the v003
-        contract specifically: v003 is registered and the first three
-        versions are in the package.
+        the number must stay claimed. ``_verify_ledger_identity`` compares
+        the recorded ``description`` (the callable's ``__name__``) against
+        what the build registers at that version, so shifting v004 down into
+        3 would make every database carrying the old ledger read the shifted
+        version as already applied and never run its body.
         """
         runner = MigrationRunner()
         pkg = register(runner)
         assert pkg.name == PACKAGE_NAME
         assert pkg.scope == MigrationScope.AGENT
         assert {1, 2, 3}.issubset(set(pkg.versions.keys()))
+        assert pkg.versions[3] is workspace_namespace_backfill

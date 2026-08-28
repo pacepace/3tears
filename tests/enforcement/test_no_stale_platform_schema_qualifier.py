@@ -95,13 +95,6 @@ _ALLOWED: dict[str, str] = {
         "same as drift.py -- the docstring's ``platform.customers`` -> ``customers`` line "
         "is the walker's documented transform, not a claim about where a table lives"
     ),
-    "packages/agent/workspace/src/threetears/agent/workspace/migrations/v003_workspace_namespace_backfill.py": (
-        "historical DDL: this migration's SQL literally reads ``INSERT INTO platform.namespaces``. "
-        "The docstring describes the statement that ran; correcting the prose alone would make it lie"
-    ),
-    "packages/agent/workspace/src/threetears/agent/workspace/migrations/__init__.py": (
-        "indexes v003 by what it does, so it inherits v003's historical-DDL wording"
-    ),
 }
 
 

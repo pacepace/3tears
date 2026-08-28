@@ -65,6 +65,7 @@ from threetears.agent.acl.entities import (
     NamespaceEntity,
     RoleAssignmentEntity,
     RoleEntity,
+    row_scope_for_customer,
 )
 from threetears.agent.acl.types import (
     GroupMembership,
@@ -262,10 +263,9 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         :rtype: GroupEntity
         """
         if "row_scope" not in data:
-            customer_id = data.get("customer_id")
             data = {
                 **data,
-                "row_scope": "platform" if customer_id is None else "customer",
+                "row_scope": row_scope_for_customer(data.get("customer_id")),
             }
         return super().create(data)
 
@@ -1622,7 +1622,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             triple
         :rtype: NamespaceEntity | None
         """
-        row_scope = "platform" if customer_id is None else "customer"
+        row_scope = row_scope_for_customer(customer_id)
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(

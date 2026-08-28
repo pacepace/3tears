@@ -11,7 +11,12 @@ version history:
 
 - v001: create workspaces, workspace_files, workspace_file_versions
 - v002: add ``workspaces.date_deleted`` column for soft-delete
-- v003: backfill ``platform.namespaces`` rows for existing workspaces
+- v003: RETIRED, and applies nothing. it backfilled the hub's
+  ``namespaces`` table from ``workspaces`` by hardcoding the hub's
+  schema name into the statement, which is a fact about no deployment;
+  the row is written by the hub off ``workspace_create``'s event now.
+  the version number stays claimed rather than being reused -- see that
+  module's docstring.
 - v004: promote every datetime column from TIMESTAMP to TIMESTAMPTZ
   (collections-task-05 phase A3 -- eliminates DATETIME_TYPE in this
   package; the column declarations in

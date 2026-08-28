@@ -557,14 +557,14 @@ class WorkspaceCreateTool(TearsTool):
         # workspace_create is owner-only by construction: it owns the
         # physical rows it is about to materialize. the workspace row
         # + file rows land under one ``conn.transaction()`` on the
-        # dedicated ``db_pool``; the paired ``namespaces``
-        # row rides the agent's main NATS-proxy pool via
-        # :meth:`NamespaceCollection.save_entity` (three-tier-task-01
-        # phase F). the two writes cannot share one transaction
-        # because the Collection proxies through a different broker
-        # path, but the idempotent ``ON CONFLICT (id) DO UPDATE``
-        # semantics on the namespace id (equal to ``workspace_id``)
-        # let any retry converge on the same row.
+        # dedicated ``db_pool``. THIS TOOL WRITES NO NAMESPACE ROW AND
+        # HOLDS NO NAMESPACE COLLECTION: it publishes a
+        # ``WorkspaceCreateEvent`` below and the HUB writes the row (see
+        # the module-level note). so the two writes cannot share one
+        # transaction -- they do not even share a process -- and what
+        # makes a retry converge is that the namespace id equals
+        # ``workspace_id``, so the hub-side upsert is keyed on a value
+        # this transaction already fixed.
         async with self._db_pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(

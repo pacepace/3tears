@@ -122,13 +122,14 @@ def build_workspace_tools(
     :ptype acl_cache: AclCache
     :param namespace_collection: three-tier
         :class:`NamespaceCollection` (typed ``Any`` at this boundary
-        because the concrete class lives in :mod:`3tears.hub.broker.namespaces`,
-        which sits outside the agent-workspace package's dep graph).
-        :class:`WorkspaceCreateTool` emits the paired
-        ``namespaces`` row through
-        :meth:`NamespaceCollection.save_entity` on every create.
-        REQUIRED — the workspace lifecycle cannot materialize a
-        workspace without its namespace counterpart
+        because the concrete class lives outside the agent-workspace
+        package's dep graph). **NO BUILDER CONSUMES IT.** it used to say
+        :class:`WorkspaceCreateTool` wrote the paired ``namespaces`` row
+        through :meth:`NamespaceCollection.save_entity` on every create;
+        that write moved to the hub, which owns direct database access,
+        and ``WorkspaceCreateTool``'s builder never asks for this key.
+        the parameter is inert -- it is placed in the dependency bundle
+        and read by nothing
     :ptype namespace_collection: Any
     :param customer_id: owning-customer UUID for the agent this tool
         bundle serves; stamped onto newly-created workspaces so the
