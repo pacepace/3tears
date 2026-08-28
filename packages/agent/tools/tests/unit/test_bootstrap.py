@@ -11,6 +11,10 @@ import pytest
 from sqlalchemy import Column, MetaData, String, Table
 
 from threetears.agent.tools.bootstrap import EX_CONFIG, ToolPodConfigError, ToolServerBootstrap
+from threetears.agent.tools.object_resolution_collection import (
+    OBJECT_RESOLUTIONS_TABLE,
+    ObjectResolutionCollection,
+)
 from threetears.nats import Principal, kv_key_scope_for
 from threetears.observe import HealthTier
 
@@ -56,9 +60,13 @@ class _FakeToolServer:
         self.serve_event = asyncio.Event()
         self.pod_id = pod_id
         self.connected_callbacks: list[Any] = []
+        self.object_resolution_cache: Any = None
 
     def add_connected_callback(self, callback: Any) -> None:
         self.connected_callbacks.append(callback)
+
+    def attach_object_resolution_cache(self, cache: Any) -> None:
+        self.object_resolution_cache = cache
 
     async def serve(self) -> None:
         self.serve_called = True
@@ -149,6 +157,39 @@ class TestTheCollectionStackRidesTheLifecycle:
 
         assert server.connected_callbacks == []
         assert bootstrap.collection_registry is None
+        assert bootstrap.object_resolutions is None
+        assert server.object_resolution_cache is None
+
+    async def test_the_runtime_collection_is_built_and_handed_to_the_server(self) -> None:
+        """the stack carries a payload: the resolver's cache is wired without the host asking.
+
+        A pod that had to construct this itself is a pod that will not, and the resolver
+        then silently keeps its per-process dict -- a cache that looks live and is never
+        shared with the replica beside it.
+        """
+        server = _FakeToolServer()
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await server.connected_callbacks[0](_stack_nats_client())
+        collection = bootstrap.object_resolutions
+        await run_task
+
+        assert isinstance(collection, ObjectResolutionCollection)
+        assert server.object_resolution_cache is collection
+        # the pod's L1 tier carries the runtime's table, not only the host's own.
+        registry = bootstrap.collection_registry
+        assert registry is not None
+        l1 = registry.get_l1_backend(OBJECT_RESOLUTIONS_TABLE)
+        assert l1 is not None
+        assert l1.has_table(OBJECT_RESOLUTIONS_TABLE) is True
 
     async def test_the_stack_is_built_when_the_connection_arrives(self) -> None:
         server = _FakeToolServer()

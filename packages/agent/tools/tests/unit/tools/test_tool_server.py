@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import BaseModel
@@ -28,6 +28,7 @@ from threetears.core.security.identity_token import (
     generate_signing_keypair,
     sign_identity_token,
 )
+from threetears.media.contracts import ObjectHandle
 from threetears.nats import IncomingMessage
 
 from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
@@ -192,6 +193,24 @@ class _RecordingNatsClient:
         return self.replies[-1]
 
 
+class _RecordingResolutionCache:
+    """an object-resolution store that answers every lookup and records the ask."""
+
+    def __init__(self, handle: ObjectHandle) -> None:
+        self._handle = handle
+        self.lookups: list[tuple[UUID, UUID]] = []
+        self.remembered: list[tuple[UUID, ObjectHandle]] = []
+
+    async def lookup(self, customer_id: UUID, object_id: UUID) -> ObjectHandle | None:
+        """record the ask and answer with the configured handle."""
+        self.lookups.append((customer_id, object_id))
+        return self._handle
+
+    async def remember(self, customer_id: UUID, handle: ObjectHandle) -> None:
+        """record a write that should never happen while lookup answers."""
+        self.remembered.append((customer_id, handle))
+
+
 def _attach_recording_nc(server: ToolServer) -> _RecordingNatsClient:
     """install a recording NATS stub on ``server._nc`` and return it.
 
@@ -297,6 +316,64 @@ class TestToolServerServe:
                 pass
 
         mock_nc.subscribe.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_an_attached_resolution_cache_reaches_the_self_provisioned_resolver(self) -> None:
+        """the second lifecycle seam: what the owner attaches is what the resolver caches in.
+
+        ``ToolServerBootstrap`` builds the pod's two-tier resolution store in its connected
+        callback and attaches it here. Without this link the store is built, wired to L2, and
+        read by nobody -- the resolver keeps its per-process dict and every replica pays its
+        own hub round trip, which is the exact defect the store exists to close.
+        """
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod-resolution-cache",
+            namespace_collection=None,
+        )
+        server.register(StubTool())
+
+        customer = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
+        handle = ObjectHandle(
+            object_id=UUID("019f1924-1a31-72d3-81b4-855415bd34ba"),
+            s3_key="k/e/y",
+            mime_type="text/plain",
+            size_bytes=7,
+        )
+        cache = _RecordingResolutionCache(handle)
+
+        async def _hook(client: Any) -> None:
+            del client
+            server.attach_object_resolution_cache(cache)
+
+        server.add_connected_callback(_hook)
+
+        mock_nc = AsyncMock()
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock()
+        mock_nc.publish = AsyncMock()
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        # getattr for the reason ``_attach_recording_nc`` uses setattr: the resolver is
+        # deliberately not public, and this asserts the wiring rather than a public API.
+        resolver = getattr(server, "_object_resolver")
+        assert resolver is not None
+        resolved = await resolver.resolve(handle.object_id, customer_id=customer, identity_token="t")
+        assert resolved == handle
+        assert cache.lookups == [(customer, handle.object_id)]
 
     @pytest.mark.asyncio
     async def test_connected_callbacks_run_before_the_pod_is_reachable(self) -> None:

@@ -52,7 +52,7 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.http_operation import RestAffordance
-from threetears.agent.tools.object_resolver import HubObjectResolver
+from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
 from threetears.core.namespaces import (
     build_agent_namespace_name,
     build_tool_namespace_name,
@@ -1042,6 +1042,10 @@ class ToolServer:
         # serve() from the NATS client (needs no S3 creds), then installed on
         # every per-call ToolCallScope so consuming tools resolve ids ambiently.
         self._object_resolver = object_resolver
+        # the pod's two-tier resolution store, attached by the lifecycle owner once the
+        # collection stack exists (see attach_object_resolution_cache). None -> the
+        # self-provisioned resolver falls back to its own in-process cache.
+        self._object_resolution_cache: "ObjectResolutionCache | None" = None
         # the pod's single engagement-scope resolver; None here is self-provisioned
         # in serve() from the NATS client (needs no S3 creds), then installed on
         # every per-call ToolCallScope so tools re-authorize against the engagement.
@@ -1110,6 +1114,27 @@ class ToolServer:
         :rtype: None
         """
         self._connected_callbacks.append(callback)
+
+    def attach_object_resolution_cache(self, cache: "ObjectResolutionCache") -> None:
+        """hand the self-provisioned object resolver the pod's two-tier resolution store.
+
+        The second lifecycle-owner seam, and it exists for the same reason
+        :meth:`add_connected_callback` does: the store rides the pod's collection stack,
+        which only exists once the connection is up, while the resolver is built moments
+        later inside :meth:`serve`. ``ToolServerBootstrap`` calls this from its connected
+        callback, so the ordering is guaranteed rather than hoped for.
+
+        Read only where the resolver is SELF-PROVISIONED. A pod constructed with an
+        ``object_resolver`` of its own keeps it, caching and all: that resolver carries
+        whatever its owner chose, and swapping its cache out from under it here would
+        override a decision made elsewhere.
+
+        :param cache: the pod's resolution store, shared across its replicas through L2
+        :ptype cache: ObjectResolutionCache
+        :return: nothing
+        :rtype: None
+        """
+        self._object_resolution_cache = cache
 
     @property
     def owned_namespaces(self) -> tuple[str, ...] | None:
@@ -1516,9 +1541,14 @@ class ToolServer:
             # needs only NATS (the hub verifies the caller's identity_token +
             # owns the objects table), so -- unlike the object store -- the pod
             # does not have to be wired with S3 creds to resolve.
+            #
+            # the resolution cache is whatever the lifecycle owner attached above --
+            # the pod's two-tier store when it has a collection stack, ``None`` when
+            # it does not, in which case the resolver keeps its own in-process cache.
             self._object_resolver = HubObjectResolver(
                 self._nc,
                 request_timeout_seconds=get_object_resolve_request_timeout(),
+                resolution_cache=self._object_resolution_cache,
             )
         if self._engagement_resolver is None:
             # self-provision the engagement-scope resolver over this connection so
