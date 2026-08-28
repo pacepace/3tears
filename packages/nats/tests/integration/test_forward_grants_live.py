@@ -57,11 +57,12 @@ _NS = "fwdgrant"
 _POD_ID = "01947100-0000-7000-8000-0000000000a1"
 _HUB_CONN = "hub-1"
 
-#: the tool this pod's ``allowed_namespaces`` row authorizes it to serve.
-_GRANTED_TOOL = "tools.scrape-zone_alpha.1-0-0"
+#: the tool-name NODE this pod's ``allowed_namespaces`` row authorizes it to serve. a NODE,
+#: never a registered tool namespace name -- the grant is minted at connect from the row.
+_GRANTED_NODE = "scrape-zone_alpha"
 #: a peer network zone's tool, registered by a DIFFERENT pod set. serving it would be a reach
 #: into a firewalled zone this pod was never placed in.
-_FOREIGN_TOOL = "tools.scrape-zone_beta.1-0-0"
+_FOREIGN_NODE = "scrape-zone_beta"
 
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _POD_PW = "pod-pw"  # noqa: S105 - ephemeral testcontainer credential
@@ -70,7 +71,7 @@ _HUB_PW = "hub-pw"  # noqa: S105 - ephemeral testcontainer credential
 
 def _pod_permissions() -> PrincipalPermissions:
     """the tool pod's allow-list, scoped to the one tool it is authorized to serve."""
-    return build_permissions(Principal.TOOL_POD, pod_id=_POD_ID, tool_namespaces=(_GRANTED_TOOL,))
+    return build_permissions(Principal.TOOL_POD, pod_id=_POD_ID, tool_namespaces=(_GRANTED_NODE,))
 
 
 def _hub_permissions() -> PrincipalPermissions:
@@ -203,8 +204,8 @@ async def test_granted_family_round_trips_and_foreign_family_is_refused(tmp_path
         pytest.skip("Docker not available")
 
     set_default_namespace(_NS)
-    granted_family = Subjects.hitl_forward_family(_GRANTED_TOOL)
-    foreign_family = Subjects.hitl_forward_family(_FOREIGN_TOOL)
+    granted_family = Subjects.hitl_forward_family(_GRANTED_NODE)
+    foreign_family = Subjects.hitl_forward_family(_FOREIGN_NODE)
     session_key = "session-42"
 
     with _nats_with_auth(tmp_path) as uri:
@@ -336,10 +337,10 @@ async def test_pipe_stream_grants_admit_a_pods_own_half_and_refuse_every_other(t
 
     set_default_namespace(_NS)
     nonce = "3f2b1c"
-    own_down = Subjects.pipe(_GRANTED_TOOL, _POD_ID, nonce, "down")
-    own_up = Subjects.pipe(_GRANTED_TOOL, _POD_ID, nonce, "up")
-    peer_down = Subjects.pipe(_GRANTED_TOOL, "pod-beta", nonce, "down")
-    foreign_down = Subjects.pipe(_FOREIGN_TOOL, _POD_ID, nonce, "down")
+    own_down = Subjects.pipe(_GRANTED_NODE, _POD_ID, nonce, "down")
+    own_up = Subjects.pipe(_GRANTED_NODE, _POD_ID, nonce, "up")
+    peer_down = Subjects.pipe(_GRANTED_NODE, "pod-beta", nonce, "down")
+    foreign_down = Subjects.pipe(_FOREIGN_NODE, _POD_ID, nonce, "down")
 
     with _nats_with_auth(tmp_path) as uri:
         allowed, refused = await _violations_from(
@@ -371,9 +372,9 @@ async def test_pipe_stream_grants_let_the_hub_front_every_pod_on_the_callers_hal
 
     set_default_namespace(_NS)
     nonce = "9a7e40"
-    pod_down = Subjects.pipe(_GRANTED_TOOL, _POD_ID, nonce, "down")
-    pod_up = Subjects.pipe(_GRANTED_TOOL, _POD_ID, nonce, "up")
-    other_pod_down = Subjects.pipe(_FOREIGN_TOOL, "pod-beta", nonce, "down")
+    pod_down = Subjects.pipe(_GRANTED_NODE, _POD_ID, nonce, "down")
+    pod_up = Subjects.pipe(_GRANTED_NODE, _POD_ID, nonce, "up")
+    other_pod_down = Subjects.pipe(_FOREIGN_NODE, "pod-beta", nonce, "down")
 
     with _nats_with_auth(tmp_path) as uri:
         allowed, refused = await _violations_from(

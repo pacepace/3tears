@@ -53,8 +53,10 @@ pytestmark = pytest.mark.integration
 _NS = "hitlgrant"
 _CLIENT_LOGGER = "threetears.nats.client"
 
-#: the tool the SERVING pod's ``allowed_namespaces`` row authorizes it for.
-_TOOL = "tools.scrape-zone_alpha.1-0-0"
+#: the tool-name NODE the SERVING pod's ``allowed_namespaces`` row authorizes it for. a
+#: NODE, never a registered tool namespace name: these grants are minted at CONNECT and a
+#: tool leaf does not exist until REGISTRATION.
+_OWNED_NODE = "scrape-zone_alpha"
 #: the human-in-the-loop session both pods address. owner-routed on this key.
 _SESSION_KEY = "session-42"
 
@@ -78,8 +80,8 @@ _SILENCE_WINDOW_SECONDS = 1.5
 
 
 def _serving_permissions() -> PrincipalPermissions:
-    """a tool pod whose row authorizes :data:`_TOOL` -- the HITL family is granted."""
-    return build_permissions(Principal.TOOL_POD, pod_id=_POD_SERVING, tool_namespaces=(_TOOL,))
+    """a tool pod whose row authorizes :data:`_OWNED_NODE` -- the HITL family is granted."""
+    return build_permissions(Principal.TOOL_POD, pod_id=_POD_SERVING, tool_namespaces=(_OWNED_NODE,))
 
 
 def _ungranted_permissions() -> PrincipalPermissions:
@@ -232,7 +234,7 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
         pytest.skip("Docker not available")
 
     set_default_namespace(_NS)
-    family = Subjects.hitl_forward_family(_TOOL)
+    family = Subjects.hitl_forward_family(_OWNED_NODE)
     subject = Subjects.forward_scoped(family, _SESSION_KEY)
     payload = b"open_tab"
 
@@ -305,7 +307,7 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
 
                 # the sibling family is refused too: a pod without tool namespaces holds NEITHER of
                 # the two families one session derives, so its display stream is dead as well.
-                pipe_subject = Subjects.forward_scoped(Subjects.hitl_pipe_family(_TOOL), _SESSION_KEY)
+                pipe_subject = Subjects.forward_scoped(Subjects.hitl_pipe_family(_OWNED_NODE), _SESSION_KEY)
                 assert pipe_subject.path != subject.path
                 _last_error_log.clear()
                 with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):

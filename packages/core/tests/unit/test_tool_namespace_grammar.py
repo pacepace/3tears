@@ -27,6 +27,7 @@ from threetears.core.namespaces import (
     build_namespace_name,
     build_tool_namespace_name,
     build_tool_namespace_name_or_none,
+    build_tool_provider_node_name,
     namespace_contains,
     parse_tool_namespace_name,
     sanitize_segment,
@@ -269,6 +270,70 @@ class TestTheGrammarUnlocksSubtreeContainment:
     def test_a_provider_node_does_not_reach_an_imposter(self) -> None:
         built = build_tool_namespace_name("pentestimposter.sqlmap", "1.0")
         assert namespace_contains("tools.pentest", built) is False
+
+
+class TestTheProviderNodeBuilderAgreesWithTheSubjectLayer:
+    """the node name is built in TWO packages, and the two must never drift.
+
+    ``threetears.nats.subject_permissions`` mints a tool pod's human-in-the-loop grants
+    from the stems on its ``tool_pods`` row, and it cannot import this module -- this
+    module imports :mod:`threetears.nats.subjects`, so the dependency runs core -> nats
+    and not back. The rooting rule therefore lives in ``Subjects.tool_provider_node`` and
+    :func:`build_tool_provider_node_name` delegates to it.
+
+    That leaves one literal in the lower package (``"tools"``) and one constant in this
+    one (:data:`PLURAL_PREFIX_TOOL`). This class is the pin between them. A drift would
+    not raise anywhere: the grant would name one digest, the pod would subscribe another,
+    and an ungranted subscription receives nothing forever.
+    """
+
+    def test_the_node_builder_uses_this_packages_tool_prefix(self) -> None:
+        """the delegate's literal and ``PLURAL_PREFIX_TOOL`` are the same string.
+
+        :return: none
+        :rtype: None
+        """
+        assert build_tool_provider_node_name("pentest") == f"{PLURAL_PREFIX_TOOL}{NAMESPACE_NAME_SEPARATOR}pentest"
+
+    def test_a_multi_segment_stem_roots_whole(self) -> None:
+        """a stem's dots are segment boundaries and survive rooting.
+
+        :return: none
+        :rtype: None
+        """
+        built = build_tool_provider_node_name("aibots.admin")
+        assert built == "tools.aibots.admin"
+
+    def test_the_node_contains_the_tools_beneath_it(self) -> None:
+        """the property the whole shape exists for, asserted through the builder.
+
+        :return: none
+        :rtype: None
+        """
+        node = build_tool_provider_node_name("pentest")
+        assert namespace_contains(node, build_tool_namespace_name("pentest.sqlmap", "1.0")) is True
+        assert namespace_contains(node, build_tool_namespace_name("pentestimposter.sqlmap", "1.0")) is False
+
+    def test_an_already_rooted_stem_is_not_doubled(self) -> None:
+        """both spellings reach this builder, so rooting must be idempotent.
+
+        the mint holds the bare stem off the ``tool_pods`` row; a pod holds the canonical
+        name its registration reply carried back. doubling one of them mints
+        ``tools.tools.pentest``, a name nothing resolves and nothing complains about.
+
+        :return: none
+        :rtype: None
+        """
+        assert build_tool_provider_node_name("tools.pentest") == "tools.pentest"
+
+    def test_the_bare_prefix_is_not_a_node(self) -> None:
+        """``tools`` is the whole tree, and a family keyed on it would be shared by all.
+
+        :return: none
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="names the whole tool tree"):
+            build_tool_provider_node_name(PLURAL_PREFIX_TOOL)
 
 
 class TestHitlDerivationOverAnUnflattenedName:

@@ -592,12 +592,14 @@ def build_permissions(
     :ptype pod_id: str | None
     :param conn_id: a connection-unique id for the scoped inbox; defaults to ``pod_id``
     :ptype conn_id: str | None
-    :param tool_namespaces: the tool namespace names this pod is authorized to serve -- the
+    :param tool_namespaces: the tool-name NODES this pod is authorized to serve -- the
         ``allowed_namespaces`` list on its tool-pods row, the same list
-        ``RegistrationHandler._authenticate_and_filter`` filters its manifest against. each entry
-        becomes one EXACT per-tool subject grant, so registration filtering and subject permissions
-        read from one source of truth. omitting it grants none of them (a pod that serves no
-        human-in-the-loop session needs none).
+        ``RegistrationHandler._authenticate_and_filter`` filters its manifest against. NODES,
+        never registered tool namespace names: each entry is rooted through
+        :meth:`threetears.nats.Subjects.tool_provider_node` and becomes one EXACT per-node
+        subject grant, so registration filtering and subject permissions read from one source of
+        truth. omitting it grants none of them (a pod that serves no human-in-the-loop session
+        needs none).
     :ptype tool_namespaces: Sequence[str] | None
     :param coordination_buckets: KV bucket SUFFIXES this agent declares for its own
         coordination primitives -- the ``coordination_buckets`` column on its ``agents``
@@ -881,12 +883,21 @@ def _tool_pod(
     ns = _ns()
     # human-in-the-loop session control plane: while a pod holds a display's claim it serves the
     # owner-routed session messages (open/complete a tab, read state, close the session) forwarded
-    # to it. one EXACT family literal per authorized tool, minted by hashing the SAME
+    # to it. one EXACT family literal per authorized PROVIDER NODE, minted by hashing the SAME
     # ``allowed_namespaces`` entries that filter the pod's registration. a coarse ``{ns}.forward.>``
     # would instead let any tool pod serve any owner-routed key in the namespace, and since the key
     # segment is a digest of an arbitrary application string there is nothing else in the subject
     # left to discriminate on. SUBSCRIBE only: the owner answers on the requester's reply inbox
     # under ``allow_responses`` and never originates a forward.
+    #
+    # THE NODE IS THE KEY, AND IT USED TO BE THE TOOL LEAF. ``allowed_namespaces`` holds NODES
+    # (``pentest``, ``aibots.admin``) and these grants are minted at CONNECT; a tool's registered
+    # namespace name (``tools.pentest.sqlmap.1-0-0``) is minted at REGISTRATION and does not exist
+    # yet here. The consumer used to derive its family from that leaf, so the grant named one
+    # digest and the pod subscribed another -- and an ungranted SUBSCRIBE is not a refusal anybody
+    # sees, it is a subscription that receives nothing forever. ``Subjects.tool_provider_node``
+    # roots both spellings onto one value; the pod learns the canonical form of its node on the
+    # registration reply (``RegistrationResponse.owned_namespaces``).
     # BOTH families per tool. a session's control plane and its display stream are owner-routed
     # on the same key, so they must derive different subjects or the queue group ``serve_owner``
     # uses would split one pod's messages between the two handlers.

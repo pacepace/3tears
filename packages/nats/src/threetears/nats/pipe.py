@@ -15,7 +15,7 @@ design
   the key replies with the concrete stream coordinates. no second owner
   election exists here.
 
-- **the owner names its tool in readable form**, and the caller hashes it to
+- **the owner names the NODE it owns in readable form**, and the caller hashes it to
   derive the subject token. the readable name is what keeps a trace
   correlatable once the subject no longer is, and it costs nothing because the
   caller hashes it anyway. an owner naming a tool it does not serve gains
@@ -420,11 +420,16 @@ class PipeEndpoint:
     """the coordinates two ends agreed on at attach.
 
     everything needed to build both subjects and to run the flow control. the
-    tool name is the READABLE registered namespace name, not its digest: the
-    subject builders hash it, and the readable form is what makes a log line
-    correlatable to a subject nobody can read.
+    tool value is the READABLE tool-name NODE the serving pod OWNS, not its digest
+    and not a tool leaf: the subject builders hash it, and the readable form is
+    what makes a log line correlatable to a subject nobody can read.
 
-    :param tool: the serving tool's registered namespace name
+    :param tool: the tool-name NODE the serving pod owns -- ``pentest``, or the
+        canonical ``tools.pentest``, which :meth:`Subjects.pipe` roots to one value.
+        NOT a registered tool namespace name: the pod's grant on these subjects is
+        minted at connect from the NODES on its ``tool_pods`` row, so a leaf here
+        names a stream no grant covers. the field keeps its short name because it
+        is carried on the attach envelope's wire.
     :ptype tool: str
     :param pod_id: the owning pod's identifier
     :ptype pod_id: str
@@ -1258,7 +1263,10 @@ async def serve_pipe(
     :ptype nats: NatsClient
     :param key: ownership key this pod serves
     :ptype key: str
-    :param tool: this pod's registered tool namespace name, in readable form
+    :param tool: the tool-name NODE this pod owns, in readable form -- ``pentest``,
+        or the canonical ``tools.pentest`` its registration reply carried back, which
+        :meth:`Subjects.pipe` roots to one value. NOT a registered tool namespace
+        name; see :class:`PipeEndpoint`.
     :ptype tool: str
     :param pod_id: this pod's identifier; it leads the stream subject's
         variable segments and must be the one this pod's grant names

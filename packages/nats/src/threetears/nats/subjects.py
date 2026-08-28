@@ -41,7 +41,7 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 from uuid import UUID
 
 from threetears.nats.errors import NamespaceNotConfiguredError
@@ -207,6 +207,18 @@ def _digest_token(value: str) -> str:
     :rtype: str
     """
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+#: the leading component every tool namespace name carries, and the root of every
+#: tool-provider node. DECLARED HERE rather than imported because
+#: :mod:`threetears.core.namespaces` -- which owns the canonical
+#: ``PLURAL_PREFIX_TOOL`` and every other plural prefix -- imports THIS module for
+#: :func:`sanitize_subject_segment`, so the dependency runs core -> nats and cannot
+#: run back. ``threetears.core.namespaces.build_tool_provider_node_name`` delegates
+#: to :meth:`Subjects.tool_provider_node` for that reason, and
+#: ``packages/core/tests/unit/test_tool_namespace_grammar.py`` pins this literal
+#: against ``PLURAL_PREFIX_TOOL`` so the two cannot drift apart in silence.
+_TOOL_PROVIDER_ROOT: Final[str] = "tools"
 
 
 def _routing_token(pod_id: str | UUID) -> str:
@@ -1436,7 +1448,50 @@ class Subjects:
         return Subject(path=f"{_ns()}.forward.{_digest_token(family)}.*", kind="pattern")
 
     @classmethod
-    def hitl_pipe_family(cls, tool_namespace_name: str) -> str:
+    def tool_provider_node(cls, owned_node: str) -> str:
+        """root one tool-provider node at the ``tools.`` prefix, idempotently.
+
+        **The one normalization that lets a grant and its consumer meet.** A tool pod's
+        human-in-the-loop grants are minted at CONNECT from the ``allowed_namespaces``
+        column on its ``tool_pods`` row, which holds bare tool-name NODES
+        (``pentest``, ``aibots.admin``). The pod itself learns the CANONICAL name of the
+        provider namespace it owns -- ``tools.pentest`` -- on its registration reply. Both
+        are the same node written two ways, and every family below is a digest, so without
+        one normalization the two ends derive different subjects and the pod's subscription
+        receives nothing at all, with no error anywhere.
+
+        **Why a node and never a tool leaf.** A registered tool namespace name
+        (``tools.pentest.sqlmap.1-0-0``) does not exist at connect time, and it cannot be
+        reduced back to its node by any rule: a node may carry any number of components, so
+        ``tools.aibots.admin.thing.1-0-0`` and ``tools.pentest.sqlmap.1-0-0`` are the same
+        shape and split in different places. The node is the only value both ends hold.
+
+        Idempotent by construction, because both spellings genuinely arrive here.
+
+        :param owned_node: the tool-name node this principal owns, with or without the
+            ``tools.`` prefix, written WITHOUT a trailing separator
+        :ptype owned_node: str
+        :return: the node's canonical namespace name (``tools.<node>``)
+        :rtype: str
+        :raises ValueError: if ``owned_node`` is empty, or is the bare ``tools`` prefix --
+            which is the whole tool tree rather than a node anybody owns, and would hand
+            every provider on the platform one shared family
+        """
+        if not owned_node:
+            raise ValueError("owned_node must be non-empty")
+        if owned_node == _TOOL_PROVIDER_ROOT:
+            raise ValueError(
+                f"owned_node {owned_node!r} names the whole tool tree rather than one provider "
+                f"node; a family derived from it would be shared by every provider, and a pod "
+                f"holding it would take a share of every other pod's session traffic"
+            )
+        prefix = f"{_TOOL_PROVIDER_ROOT}."
+        if owned_node.startswith(prefix):
+            return owned_node
+        return f"{prefix}{owned_node}"
+
+    @classmethod
+    def hitl_pipe_family(cls, owned_node: str) -> str:
         """derive the forward family a session's DISPLAY STREAM attaches on.
 
         distinct from :meth:`hitl_forward_family`, and the distinctness is load-bearing rather
@@ -1453,15 +1508,17 @@ class Subjects:
         onto one subject behind a discriminator -- would put a routing decision inside a handler
         that the subject layer can make correctly on its own.
 
-        :param tool_namespace_name: the serving tool's registered namespace name
-        :ptype tool_namespace_name: str
-        :return: the raw forward family for that tool's display streams
+        keyed on the serving pod's OWNED NODE, exactly as :meth:`hitl_forward_family` is
+        and for the same reason -- see :meth:`tool_provider_node`.
+
+        :param owned_node: the tool-name node the serving pod owns, with or without the
+            ``tools.`` prefix
+        :ptype owned_node: str
+        :return: the raw forward family for that node's display streams
         :rtype: str
-        :raises ValueError: if tool_namespace_name is empty
+        :raises ValueError: if owned_node is empty or is the bare ``tools`` prefix
         """
-        if not tool_namespace_name:
-            raise ValueError("tool_namespace_name must be non-empty")
-        return f"hitl-pipe-{tool_namespace_name}"
+        return f"hitl-pipe-{cls.tool_provider_node(owned_node)}"
 
     @classmethod
     def forward_scoped_any_family(cls) -> Subject:
@@ -1486,37 +1543,42 @@ class Subjects:
         return Subject(path=f"{_ns()}.forward.*.*", kind="pattern")
 
     @classmethod
-    def hitl_forward_family(cls, tool_namespace_name: str) -> str:
-        """derive the forward family for one tool's human-in-the-loop session control plane.
+    def hitl_forward_family(cls, owned_node: str) -> str:
+        """derive the forward family for one PROVIDER NODE's human-in-the-loop session control plane.
 
         returns a plain family STRING (not a :class:`Subject`), for
         :meth:`forward_scoped` / :meth:`forward_scoped_wildcard` to hash into a
-        subject token. it is derived from the tool's REGISTERED namespace name
-        (``tools.{mcp_name}.{version}``, as
-        ``threetears.agent.tools.server.tool_namespace_name`` builds it) rather
-        than from a separately configured zone identifier, so there is no
-        second value that can disagree with the tool a pod actually registered:
-        a pod's grant is minted by hashing the entries of the same
-        ``allowed_namespaces`` list that filters its registration.
+        subject token.
 
-        the tool name is carried RAW in the returned family because the subject
+        **KEYED ON THE OWNED NODE, and it used to be keyed on the tool leaf.** It read the
+        tool's REGISTERED namespace name (``tools.{mcp_name}.{version}``), which is minted
+        at REGISTRATION -- while a pod's grants are minted at CONNECT, from the
+        ``allowed_namespaces`` NODES on its ``tool_pods`` row. The two are different
+        strings and this is a digest, so the grant named one subject and the pod
+        subscribed another. That failure is invisible: an ungranted subscription is
+        created client-side and simply receives nothing, forever.
+        :meth:`tool_provider_node` is what makes the row's spelling and the pod's spelling
+        one value; the full reasoning, including why the leaf cannot be reduced to its
+        node, is there.
+
+        the node is carried RAW in the returned family because the subject
         builders hash it; nothing here needs it to be subject-safe, and it is
-        not, since a registered tool name is unvalidated.
+        not, since these values are operator-written.
 
-        one family PER TOOL rather than a flat ``hitl`` family, because
+        one family PER PROVIDER NODE rather than a flat ``hitl`` family, because
         :func:`threetears.nats.serve_owner` queue-groups on the subject: a pod
-        serving one tool that could subscribe another tool's session-control
+        serving one provider that could subscribe another provider's session-control
         subject would take a SHARE of its messages, not merely observe them.
 
-        :param tool_namespace_name: the serving tool's registered namespace name
-        :ptype tool_namespace_name: str
-        :return: the raw forward family for that tool's sessions
+        :param owned_node: the tool-name node the serving pod owns, with or without the
+            ``tools.`` prefix -- the ``allowed_namespaces`` entry on its row, or the
+            canonical provider namespace name its registration reply carried back
+        :ptype owned_node: str
+        :return: the raw forward family for that node's sessions
         :rtype: str
-        :raises ValueError: if tool_namespace_name is empty
+        :raises ValueError: if owned_node is empty or is the bare ``tools`` prefix
         """
-        if not tool_namespace_name:
-            raise ValueError("tool_namespace_name must be non-empty")
-        return f"hitl-{tool_namespace_name}"
+        return f"hitl-{cls.tool_provider_node(owned_node)}"
 
     # ------------------------------------------------------------------
     # byte pipe (a stream between a caller and the pod that owns a key)
@@ -1525,7 +1587,7 @@ class Subjects:
     @classmethod
     def pipe(
         cls,
-        tool_namespace_name: str,
+        owned_node: str,
         pod_id: str | UUID,
         nonce: str,
         direction: PipeDirection,
@@ -1549,33 +1611,39 @@ class Subjects:
         stream, and keeps an application key (a session id, a tenant-bearing
         string) off a subject a wildcard subscriber could enumerate.
 
-        ``tool_namespace_name`` is hashed for the reason :meth:`forward_scoped`
-        hashes its family: a registered tool name is unvalidated, so a name
-        carrying a space, a ``*`` or a ``>`` would otherwise reach the subject.
+        ``owned_node`` is ROOTED through :meth:`tool_provider_node` and then hashed. Rooted
+        because this subject's grant (:meth:`pipe_pod_wildcard`) is minted at connect from
+        the pod's ``allowed_namespaces`` NODES while the owner renders the concrete subject
+        from the provider namespace it owns, and the two spellings must land on one digest.
+        Hashed for the reason :meth:`forward_scoped` hashes its family: these values are
+        operator-written and unvalidated, so one carrying a space, a ``*`` or a ``>`` would
+        otherwise reach the subject.
+
         ``pod_id`` takes :func:`sanitize_subject_segment` rather than :func:`_routing_token`
         because ``direction`` sits AFTER it: a composite pod-id would spend two
         tokens and shift every following segment, so this family requires the
         pod id to be exactly one token.
 
-        :param tool_namespace_name: the serving tool's registered namespace name
-        :ptype tool_namespace_name: str
+        :param owned_node: the tool-name node the serving pod owns, with or without the
+            ``tools.`` prefix
+        :ptype owned_node: str
         :param pod_id: the owning pod's identifier (a single token)
         :ptype pod_id: str | UUID
         :param nonce: per-attach nonce minted by the owner
         :ptype nonce: str
         :param direction: ``down`` (owner publishes) or ``up`` (caller publishes)
         :ptype direction: PipeDirection
-        :return: subject ``{ns}.pipe.{sha256hex(tool)}.{pod_id}.{nonce}.{direction}``
+        :return: subject ``{ns}.pipe.{sha256hex(node)}.{pod_id}.{nonce}.{direction}``
         :rtype: Subject
-        :raises ValueError: if tool_namespace_name or nonce is empty
+        :raises ValueError: if owned_node is empty or is the bare ``tools`` prefix, or if
+            nonce is empty
         """
-        if not tool_namespace_name:
-            raise ValueError("tool_namespace_name must be non-empty")
+        node = cls.tool_provider_node(owned_node)
         if not nonce:
             raise ValueError("nonce must be non-empty")
         return Subject(
             path=(
-                f"{_ns()}.pipe.{_digest_token(tool_namespace_name)}.{sanitize_subject_segment(pod_id)}.{sanitize_subject_segment(nonce)}.{direction}"
+                f"{_ns()}.pipe.{_digest_token(node)}.{sanitize_subject_segment(pod_id)}.{sanitize_subject_segment(nonce)}.{direction}"
             ),
             kind="point",
         )
@@ -1583,7 +1651,7 @@ class Subjects:
     @classmethod
     def pipe_pod_wildcard(
         cls,
-        tool_namespace_name: str,
+        owned_node: str,
         pod_id: str | UUID,
         direction: PipeDirection,
     ) -> Subject:
@@ -1599,20 +1667,21 @@ class Subjects:
         only ``up``. a ``>`` tail would collapse the two into one grant that
         also lets the owner publish onto the caller's half.
 
-        :param tool_namespace_name: the serving tool's registered namespace name
-        :ptype tool_namespace_name: str
+        :param owned_node: the tool-name node the serving pod owns, with or without the
+            ``tools.`` prefix -- rooted through :meth:`tool_provider_node`, so the grant
+            minted from the pod's row and the subject the owner renders agree
+        :ptype owned_node: str
         :param pod_id: the owning pod's identifier (a single token)
         :ptype pod_id: str | UUID
         :param direction: ``down`` (owner publishes) or ``up`` (owner subscribes)
         :ptype direction: PipeDirection
-        :return: subject ``{ns}.pipe.{sha256hex(tool)}.{pod_id}.*.{direction}``
+        :return: subject ``{ns}.pipe.{sha256hex(node)}.{pod_id}.*.{direction}``
         :rtype: Subject
-        :raises ValueError: if tool_namespace_name is empty
+        :raises ValueError: if owned_node is empty or is the bare ``tools`` prefix
         """
-        if not tool_namespace_name:
-            raise ValueError("tool_namespace_name must be non-empty")
+        node = cls.tool_provider_node(owned_node)
         return Subject(
-            path=f"{_ns()}.pipe.{_digest_token(tool_namespace_name)}.{sanitize_subject_segment(pod_id)}.*.{direction}",
+            path=f"{_ns()}.pipe.{_digest_token(node)}.{sanitize_subject_segment(pod_id)}.*.{direction}",
             kind="pattern",
         )
 

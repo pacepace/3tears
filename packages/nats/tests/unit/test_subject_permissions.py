@@ -511,8 +511,13 @@ class TestHitlApprovalBrokerGrants:
 class TestHitlSessionControlGrants:
     """the owner-routed session control plane a live display is driven over."""
 
-    ALPHA = "tools.scrape-zone_alpha.1-0-0"
-    BETA = "tools.scrape-zone_beta.1-0-0"
+    #: tool-name NODES, exactly as ``tool_pods.allowed_namespaces`` holds them and as the auth
+    #: callout hands them to ``build_permissions``. NOT registered tool namespace names: those
+    #: are minted at REGISTRATION and these grants at CONNECT, so a leaf here would describe a
+    #: value the mint never sees. ``test_hitl_family_is_keyed_on_the_owned_node.py`` holds the
+    #: property that the node and its canonical ``tools.`` form derive one family.
+    ALPHA = "scrape-zone_alpha"
+    BETA = "scrape-zone_beta"
 
     def _pod(self, *namespaces: str) -> PrincipalPermissions:
         return build_permissions(Principal.TOOL_POD, pod_id=_POD_X, tool_namespaces=namespaces)
@@ -548,7 +553,7 @@ class TestHitlSessionControlGrants:
         sanitizers replace dots and nothing else, so a ``>`` here would widen
         the pod's own grant to a subtree.
         """
-        perm = self._pod("tools.evil name.* > .1-0-0")
+        perm = self._pod("evil name.* > ")
         granted = [s for s in perm.subscribe if s.startswith(f"{_NS}.forward.")]
         assert granted, "the pod holds no session grant at all"
         # Every family the pod is granted, not a fixed number of them: one session is
@@ -601,7 +606,7 @@ class TestHitlSessionControlGrants:
         """the grant for one authorized tool does not render the digest of another."""
         from threetears.nats.subjects import Subjects
 
-        other = Subjects.hitl_forward_family("tools.some-other-tool.1-0-0")
+        other = Subjects.hitl_forward_family("some-other-provider")
         foreign_digest = str(Subjects.forward_scoped_wildcard(other)).split(".")[2]
         perm = self._pod(self.ALPHA)
         assert not [s for s in (*perm.publish, *perm.subscribe) if foreign_digest in s]
@@ -807,19 +812,12 @@ class TestScopedCollectionsGrant:
         assert len(resources) == 1, f"{principal} declares {len(resources)} collections resources"
         return resources[0]
 
-    @pytest.mark.parametrize(
-        "principal",
-        [
-            Principal.AGENT_POD,
-            Principal.TOOL_POD,
-            Principal.REGISTRY,
-            Principal.HUB,
-            Principal.GATEWAY,
-            Principal.CHANNEL_ADAPTER,
-            Principal.AGENT_ROUTER,
-            Principal.DATASET_EXECUTOR,
-        ],
-    )
+    # DERIVED FROM THE ENUM, never a hand-written roster. The list this replaced happened to
+    # name all eight members, which is exactly why it was dangerous: a ninth principal would
+    # have been added to ``Principal`` and silently left out of the one assertion that says its
+    # state is granted at all. ``_build`` indexes ``_IDS`` directly, so a member added without
+    # representative ids fails here with a ``KeyError`` rather than being skipped.
+    @pytest.mark.parametrize("principal", list(Principal))
     def test_the_collections_grant_carries_the_scope_the_process_writes(self, principal: Principal) -> None:
         resource = self._collections(principal)
         ids = {k: v for k, v in _IDS[principal].items() if k in {"agent_id", "pod_id"}}
@@ -902,6 +900,105 @@ class TestScopedCollectionsGrant:
         two = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_1, pod_id=_POD_2)
         scopes = [[r.scope for r in perm.js_resources if r.name == _COLLECTIONS][0] for perm in (one, two)]
         assert scopes[0] == scopes[1]
+
+
+class TestStateIsStandardForEveryPrincipal:
+    """L2 stops being a per-class privilege: every principal holds the bucket and the subject.
+
+    **Why this is asserted over the ENUM rather than over a list of principals.** The property
+    is *"every principal"*, and a roster written by hand asserts *"these principals"* -- which
+    reads identically until somebody adds a ninth member, at which point the roster silently
+    stops covering it and the test still passes. ``list(Principal)`` is the only spelling that
+    fails when the thing it describes grows.
+
+    **And it must not become a per-row opt-in.** A flag saying "this principal may hold L2"
+    reintroduces an ordering problem that has no fix: grants are minted at CONNECT and rows are
+    written at REGISTRATION, so the flag is read before the row that sets it exists. It is also
+    a new place for exactly the divergence this closes to grow back. So the grant is
+    unconditional, and :meth:`test_no_optional_argument_gates_either_grant` pins that by
+    building each principal with nothing but the ids it cannot resolve without.
+
+    Both halves fail SILENTLY when missing, in opposite ways:
+
+    - no bucket grant, and the JetStream op blocks to its deadline and reads as an unreachable
+      broker rather than as a refusal;
+    - no invalidation subject, and a write is never announced (publish) or never heard
+      (subscribe), so a peer replica serves a value it has already replaced -- and for the
+      several ``L3 = None`` collections on this platform, a key that no longer resolves is lost
+      data rather than a cache miss.
+    """
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_every_principal_declares_the_shared_collections_bucket(self, principal: Principal) -> None:
+        """the bucket every ``BaseCollection`` L2 writes into, held by every connection class.
+
+        :param principal: the connection identity class under test
+        :ptype principal: Principal
+        :return: none
+        :rtype: None
+        """
+        assert _COLLECTIONS in kv_bucket_names(_build(principal)), principal
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_every_principal_may_write_the_shared_collections_bucket(self, principal: Principal) -> None:
+        """read-only would be a grant that cannot save a row.
+
+        ``writable`` is the ``$KV.`` PUBLISH half; the read rides the scoped
+        ``$JS.API.DIRECT.GET`` tail the scoped capability already mints, so the two are
+        genuinely separable and holding one is not holding the other.
+
+        :param principal: the connection identity class under test
+        :ptype principal: Principal
+        :return: none
+        :rtype: None
+        """
+        resources = [r for r in _build(principal).js_resources if r.name == _COLLECTIONS]
+        assert len(resources) == 1, f"{principal} declares {len(resources)} collections resources"
+        assert resources[0].writable, principal
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_every_principal_publishes_the_invalidation_subject(self, principal: Principal) -> None:
+        """without it a principal cannot announce its own write.
+
+        :param principal: the connection identity class under test
+        :ptype principal: Principal
+        :return: none
+        :rtype: None
+        """
+        assert CROSS_PLATFORM_CACHE_INVALIDATE in _build(principal).publish, principal
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_every_principal_subscribes_the_invalidation_subject(self, principal: Principal) -> None:
+        """without it a principal never learns of a peer's write.
+
+        the direction that matters for the ``L3 = None`` collections: their L2 IS the store, so
+        a stale L1 in front of it is not a cache miss anybody recovers from.
+
+        :param principal: the connection identity class under test
+        :ptype principal: Principal
+        :return: none
+        :rtype: None
+        """
+        assert CROSS_PLATFORM_CACHE_INVALIDATE in _build(principal).subscribe, principal
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_no_optional_argument_gates_either_grant(self, principal: Principal) -> None:
+        """built with ONLY the ids it cannot resolve without, a principal still holds both.
+
+        this is the "not a per-row opt-in" property, asserted rather than described. ``_IDS``
+        carries no ``tool_namespaces`` and no ``coordination_buckets``, so this build is the
+        one a caller that passes nothing optional produces -- and it must be indistinguishable,
+        on these two grants, from any other.
+
+        :param principal: the connection identity class under test
+        :ptype principal: Principal
+        :return: none
+        :rtype: None
+        """
+        bare = build_permissions(principal, **_IDS[principal])
+        assert _COLLECTIONS in kv_bucket_names(bare), principal
+        assert CROSS_PLATFORM_CACHE_INVALIDATE in bare.publish, principal
+        assert CROSS_PLATFORM_CACHE_INVALIDATE in bare.subscribe, principal
 
 
 class TestTheToolPodHoldsTheSharedBucket:

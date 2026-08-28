@@ -607,7 +607,7 @@ def test_pipe_subject_token_is_subject_safe_for_a_hostile_tool_name() -> None:
 
 def test_pipe_subject_rejects_empty_identifiers() -> None:
     """an empty tool or nonce is a programming error, not a silent empty token."""
-    with pytest.raises(ValueError, match="tool_namespace_name must be non-empty"):
+    with pytest.raises(ValueError, match="owned_node must be non-empty"):
         Subjects.pipe("", "pod", "n0", "down")
     with pytest.raises(ValueError, match="nonce must be non-empty"):
         Subjects.pipe("tools.t.1-0-0", "pod", "", "down")

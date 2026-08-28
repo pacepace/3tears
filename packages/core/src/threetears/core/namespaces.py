@@ -44,7 +44,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from threetears.nats.subjects import sanitize_subject_segment
+from threetears.nats.subjects import Subjects, sanitize_subject_segment
 
 __all__ = [
     "HITL_NAMESPACE_TYPE",
@@ -74,6 +74,7 @@ __all__ = [
     "build_namespace_name",
     "build_tool_namespace_name",
     "build_tool_namespace_name_or_none",
+    "build_tool_provider_node_name",
     "namespace_contains",
     "parse_tool_namespace_name",
     "sanitize_segment",
@@ -422,6 +423,43 @@ def build_tool_namespace_name(mcp_name: str, version: str) -> str:
     return NAMESPACE_NAME_SEPARATOR.join(
         (PLURAL_PREFIX_TOOL, mcp_name, sanitize_segment(version)),
     )
+
+
+def build_tool_provider_node_name(stem: str) -> str:
+    """build the canonical ``namespaces.name`` of a tool PROVIDER node.
+
+    the shape is ``tools.<stem>``, where the stem is written exactly as
+    ``tool_pods.allowed_namespaces`` holds it -- a NODE, with no
+    trailing separator and no glob (``pentest``, ``aibots.admin``). the
+    node lives in the same name space as the tools beneath it, so
+    :func:`namespace_contains` has something to bite on: ``tools.pentest``
+    contains ``tools.pentest.sqlmap.1-0-0`` and can never contain
+    ``tools.pentestimposter.anything``.
+
+    **it DELEGATES to** :meth:`threetears.nats.Subjects.tool_provider_node`
+    rather than composing the name here, and the direction is forced:
+    ``threetears.nats.subject_permissions`` mints a tool pod's
+    human-in-the-loop grants from these stems and cannot import this
+    module, because this module imports :mod:`threetears.nats.subjects`.
+    So the rooting rule lives in the lower package and this is its name in
+    the vocabulary the rest of the platform reads. Two spellings of it
+    would be a grant and a subscription that quietly address different
+    subjects, which is the exact defect that re-keying closed.
+
+    ``packages/core/tests/unit/test_tool_namespace_grammar.py`` pins the
+    delegate's prefix literal against :data:`PLURAL_PREFIX_TOOL`, so a
+    drift between the two packages fails there rather than in a silent
+    subject mismatch.
+
+    :param stem: the provider stem, with no trailing separator; an
+        already-rooted value is returned unchanged rather than doubled
+    :ptype stem: str
+    :return: canonical namespace name in the form ``tools.<stem>``
+    :rtype: str
+    :raises ValueError: if ``stem`` is empty, or is the bare ``tools``
+        prefix -- which names the whole tool tree rather than one provider
+    """
+    return Subjects.tool_provider_node(stem)
 
 
 def build_tool_namespace_name_or_none(mcp_name: str, version: str) -> str | None:

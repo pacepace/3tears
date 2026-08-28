@@ -45,11 +45,13 @@ def _claim() -> SessionClaim:
 
 
 class TestTheForwardFamilyASessionRidesOn:
-    """Naming a tool moves a session onto the family a tool pod is actually granted."""
+    """Naming the pod's OWNED NODE moves a session onto the family it is actually granted."""
 
-    _TOOL = "tools.scrape-zone_alpha.1-0-0"
+    #: the tool-name NODE the serving pod owns, as its ``tool_pods`` row holds it. NOT a
+    #: tool leaf: the pod's grant on this family is minted from the node, at connect.
+    _OWNED_NODE = "tools.scrape"
 
-    async def test_naming_a_tool_moves_the_session_off_the_ungranted_subject(self) -> None:
+    async def test_naming_the_owned_node_moves_the_session_off_the_ungranted_subject(self) -> None:
         """The unscoped forward family is granted to no principal, so a session must leave it.
 
         Asserted on the SUBJECT the owner subscribes rather than on a round trip, because a round
@@ -57,16 +59,63 @@ class TestTheForwardFamilyASessionRidesOn:
         nothing is permitted to serve.
         """
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY, tool=self._TOOL):  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):  # type: ignore[arg-type]
             scoped = [str(r.subject) for r in bus.registrations]
         bus_unscoped, display2 = FakeBus(), RecordingDisplay()
         async with serve_session(bus_unscoped, _claim(), display2, session_state_key=_KEY):  # type: ignore[arg-type]
             unscoped = [str(r.subject) for r in bus_unscoped.registrations]
-        assert scoped != unscoped, "naming a tool did not change the subject the owner serves"
+        assert scoped != unscoped, "naming the owned node did not change the subject the owner serves"
         # the scoped subject carries a family segment between the prefix and the key digest.
         assert all(len(s.split(".")) > len(u.split(".")) for s in scoped for u in unscoped)
 
-    async def test_owner_and_caller_must_name_the_same_tool_to_meet(self) -> None:
+    async def test_the_served_subject_is_inside_a_real_tool_pod_grant(self) -> None:
+        """the subject this pod subscribes must be one a MINTED grant actually covers.
+
+        **The one assertion the other two in this class cannot make.** Both ends here derive
+        their family from ``_family_for``, so a round trip agrees with itself no matter what
+        that helper returns -- including a value keyed on a tool LEAF, which is what this
+        code did before the re-key and which no round-trip test could see. The grant is
+        minted in a different process from a different value (the NODES on the pod's
+        ``tool_pods`` row, at connect), so bringing it into the assertion is what turns
+        "the two ends agree" into "the two ends agree on something permitted".
+
+        Pinned here rather than only in the nats package because THIS is the consumer that
+        was wrong: the grant was correct all along.
+
+        :return: none
+        :rtype: None
+        """
+        from threetears.nats import Subjects
+        from threetears.nats.subject_permissions import Principal, build_permissions
+
+        # the row's spelling -- a bare NODE, no ``tools.`` prefix and no version.
+        stem = "scrape"
+        pod_id = "01947100-0000-7000-8000-0000000000c1"
+        granted = set(build_permissions(Principal.TOOL_POD, pod_id=pod_id, tool_namespaces=(stem,)).subscribe)
+
+        bus, display = FakeBus(), RecordingDisplay()
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):  # type: ignore[arg-type]
+            served = [str(r.subject) for r in bus.registrations]
+
+        assert served, "the owner subscribed nothing at all"
+        for subject in served:
+            # the grant wildcards only the KEY segment; a served subject is concrete, so it is
+            # covered exactly when the family half matches one granted pattern.
+            family_half = subject.rsplit(".", 1)[0]
+            assert any(pattern.rsplit(".", 1)[0] == family_half for pattern in granted), (
+                f"the owner subscribes {subject!r}, which no grant minted from allowed_namespaces "
+                f"{stem!r} covers. an ungranted subscribe is not refused anywhere the pod can see "
+                f"it -- it simply receives nothing, forever. granted: {sorted(granted)}"
+            )
+
+        # and the A/B that shows the assertion is load-bearing: the LEAF this used to be keyed
+        # on is not covered by the same grant.
+        leaf = Subjects.forward_scoped_wildcard(
+            Subjects.hitl_forward_family(f"{self._OWNED_NODE}.some-tool.1-0-0"),
+        )
+        assert str(leaf) not in granted
+
+    async def test_owner_and_caller_must_name_the_same_node_to_meet(self) -> None:
         """A family mismatch is silent by construction, so it is pinned here.
 
         The two ends simply address different subjects; nothing raises at either end until the
@@ -74,11 +123,11 @@ class TestTheForwardFamilyASessionRidesOn:
         each building it.
         """
         bus, display = FakeBus(), RecordingDisplay()
-        async with serve_session(bus, _claim(), display, session_state_key=_KEY, tool=self._TOOL):  # type: ignore[arg-type]
-            same = await read_state(bus, _SESSION, tool=self._TOOL)  # type: ignore[arg-type]
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY, owned_node=self._OWNED_NODE):  # type: ignore[arg-type]
+            same = await read_state(bus, _SESSION, owned_node=self._OWNED_NODE)  # type: ignore[arg-type]
             assert same is not None
             with pytest.raises(Exception):
-                await read_state(bus, _SESSION, tool="tools.other-tool.1-0-0")  # type: ignore[arg-type]
+                await read_state(bus, _SESSION, owned_node="tools.other-provider")  # type: ignore[arg-type]
 
 
 class TestAMessageReachesThePodHoldingTheSession:

@@ -10,7 +10,7 @@ import asyncio
 import os
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
@@ -94,6 +94,7 @@ __all__ = [
     "HeartbeatMessage",
     "ProbeAck",
     "RegistrationManifest",
+    "RegistrationResponse",
     "ToolCallFailure",
     "ToolManifestEntry",
     "ToolServer",
@@ -402,6 +403,60 @@ class RegistrationManifest(BaseModel):
     bootstrap_token: str | None = None
     owner_agent_id: UUID | None = None
     customer_id: UUID | None = None
+
+
+class RegistrationResponse(BaseModel):
+    """the registry's reply to one registration manifest.
+
+    **Defined here, beside** :class:`RegistrationManifest`, **rather than in the registry
+    that builds it.** The two are one protocol, and the pod is the process that has to
+    parse this -- ``threetears.registry`` depends on ``threetears.agent.tools``, so a
+    response class living there could never be imported by the pod that receives it.
+    ``threetears.registry.registration`` re-exports it, so
+    ``from threetears.registry import RegistrationResponse`` is unchanged.
+
+    :param success: whether registration succeeded
+    :ptype success: bool
+    :param pod_id: identifier of pod that attempted registration
+    :ptype pod_id: str
+    :param registered_tools: list of full_name values successfully registered
+    :ptype registered_tools: list[str]
+    :param owned_namespaces: the canonical ``namespaces.name`` of every namespace this pod
+        OWNS -- ``tools.pentest`` for each tool-name NODE on its ``tool_pods`` row, or
+        ``agents.<uuid>`` for an agent-owned in-process pod. **Self-identity, and the pod
+        cannot work it out for itself**: its subject grants are minted at CONNECT from that
+        row, which it never sees, and the only values it does hold are tool LEAVES, which
+        cannot be reduced back to their node by any rule. DERIVED by the registry from the
+        verified auth context, never read off the manifest, so a pod cannot claim a
+        namespace it does not own. Empty when there is nothing to name.
+    :ptype owned_namespaces: list[str]
+    :param error: error message if registration failed
+    :ptype error: str | None
+    """
+
+    success: bool
+    pod_id: str
+    registered_tools: list[str] = []
+    owned_namespaces: list[str] = []
+    error: str | None = None
+
+
+#: how long a pod waits for the registration reply that names what it owns.
+#:
+#: DELIBERATELY LONGER than :data:`threetears.nats.DEFAULT_REQUEST_TIMEOUT` (5s), because the
+#: registry does not answer a registration until it has PROBED the registering pod back and
+#: waited out ``THREETEARS_REGISTRY_PROBE_TIMEOUT`` (3s by default). Under the default request
+#: timeout a pod would time out waiting for a reply the registry was still legitimately
+#: computing, and then log a warning that reads as a broken registry.
+#:
+#: That ordering is a round trip in each direction and works only because the probe is answered
+#: by the client's own dispatch task while :meth:`ToolServer.serve` awaits here -- see
+#: :meth:`ToolServer.handle_probe`, which is bound BEFORE the registration is published and does
+#: not touch the readiness event. Do not move the probe subscription after the registration.
+#:
+#: A wedged registry therefore delays readiness by this much, ONCE. The heartbeat re-asks while
+#: the answer is still unknown, so nothing is lost permanently.
+_IDENTITY_REPLY_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
 
 
 _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
@@ -957,6 +1012,12 @@ class ToolServer:
         self._nats_user = nats_user
         self._nats_password = nats_password
         self._pod_id = pod_id or str(uuid7())
+        # SELF-IDENTITY, learned from the registration reply and never derived locally.
+        # ``None`` is "not learned yet"; an empty tuple is a real answer, because a pod
+        # with no ``tool_pods`` row and no owning agent genuinely owns nothing. Collapsing
+        # the two would make "never asked" indistinguishable from "asked and told nothing",
+        # and only one of those is worth retrying.
+        self._owned_namespaces: tuple[str, ...] | None = None
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
         # per-key-identity connect credential provider (self-minted identity JWT). when set it is
@@ -1049,6 +1110,24 @@ class ToolServer:
         :rtype: None
         """
         self._connected_callbacks.append(callback)
+
+    @property
+    def owned_namespaces(self) -> tuple[str, ...] | None:
+        """the namespaces this pod OWNS, as its registration reply named them.
+
+        ``tools.pentest`` for each tool-name NODE on its ``tool_pods`` row, or
+        ``agents.<uuid>`` for an agent-owned in-process pod. This is the value the pod's
+        human-in-the-loop subject family must be keyed on: its grants were minted at
+        CONNECT from that same row, and the tool names it holds locally are LEAVES, which
+        no rule can reduce back to their node.
+
+        ``None`` until a registration has been published with ``learn_identity=True`` AND
+        answered. An empty tuple is a different thing: an answer that named nothing.
+
+        :return: the owned namespace names, or ``None`` when not learned yet
+        :rtype: tuple[str, ...] | None
+        """
+        return self._owned_namespaces
 
     @property
     def pod_id(self) -> str:
@@ -1477,7 +1556,9 @@ class ToolServer:
             extra={"extra_data": {"subject": probe_subject.path}},
         )
 
-        await self.publish_registration()
+        # the ONE place the pod asks who it is. a re-publish does not need to re-ask, so the
+        # round trip is paid once rather than on every heartbeat.
+        await self.publish_registration(learn_identity=True)
 
         self._ready_event.set()
 
@@ -1832,8 +1913,8 @@ class ToolServer:
             )
 
     @traced()
-    async def publish_registration(self) -> None:
-        """publish registration manifest to NATS.
+    async def publish_registration(self, *, learn_identity: bool = False) -> None:
+        """publish registration manifest to NATS, optionally reading the reply.
 
         sends manifest containing all registered tool definitions
         to registration subject for discovery by registry. requires
@@ -1843,6 +1924,27 @@ class ToolServer:
         when you need to re-publish the current manifest without
         changing it (e.g. on registry recovery).
 
+        **``learn_identity`` asks the registry which namespace this pod OWNS**, and stores
+        the answer on :attr:`owned_namespaces`. The pod cannot work that out for itself:
+        its subject grants are minted at CONNECT from the tool-name NODES on its
+        ``tool_pods`` row, which it never sees, and the tool names it holds locally are
+        LEAVES that no rule reduces back to their node. The registry has just read that
+        row, so the reply is the one place the answer can come from.
+
+        **It is OFF by default, and that is the whole reason it is a parameter.** This
+        method is called on every heartbeat and on every dynamic register/deregister; a
+        round trip on each would turn a slow registry into a stalled pod. The identity is
+        learned once, at :meth:`serve`, and re-asked by the heartbeat only while it is
+        still unknown.
+
+        **Every failure of the ask degrades to a warning**, because a NATS request IS a
+        publish: the manifest has left this process before the reply is awaited, so a pod
+        that cannot hear the answer is in exactly the state it was in before this existed.
+
+        :param learn_identity: whether to await the reply and keep the namespaces it names
+        :ptype learn_identity: bool
+        :return: nothing
+        :rtype: None
         :raises RuntimeError: if called before ``serve`` connects NATS
         """
         nc = self._nc
@@ -1915,7 +2017,10 @@ class ToolServer:
         )
 
         subject = Subjects.tools_register()
-        await nc.publish(subject=subject, message=manifest)
+        if learn_identity:
+            await self._register_and_learn_identity(nc, subject, manifest)
+        else:
+            await nc.publish(subject=subject, message=manifest)
         log.debug(
             "published registration manifest",
             extra={
@@ -1925,6 +2030,67 @@ class ToolServer:
                     "tools_count": len(tools_list),
                 }
             },
+        )
+
+    async def _register_and_learn_identity(
+        self,
+        nc: NatsClient,
+        subject: Subject,
+        manifest: RegistrationManifest,
+    ) -> None:
+        """publish the manifest as a REQUEST and keep the self-identity its reply names.
+
+        The manifest is identical either way -- a request is a publish that also carries a
+        reply subject -- so the registration itself is unaffected by anything that happens
+        to the answer.
+
+        Failures are swallowed to a WARNING rather than raised, and the reason is which
+        failure this is: the registration SUCCEEDED (the manifest was published), and only
+        the identity is missing. Raising here would turn a working registration into a
+        failed startup over a value the pod ran without until now. A refused registration
+        is not treated as an identity either: its reply names nothing, and keeping the
+        previous answer over a refusal would report ownership the registry just denied.
+
+        :param nc: the connected client
+        :ptype nc: NatsClient
+        :param subject: the registration subject
+        :ptype subject: Subject
+        :param manifest: the manifest to send
+        :ptype manifest: RegistrationManifest
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            reply = await nc.request(
+                subject=subject,
+                message=manifest,
+                response_type=RegistrationResponse,
+                timeout=_IDENTITY_REPLY_TIMEOUT,
+            )
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the identity and never the registration. Logged with its type and message
+            log.warning(
+                "could not learn this pod's owned namespaces from the registration reply; "
+                "its human-in-the-loop family cannot be keyed on a node it was never told, so "
+                "any owner-routed session will subscribe successfully and receive nothing",
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                        "reason": type(exc).__name__,
+                        "detail": str(exc),
+                    }
+                },
+            )
+            return
+        if not reply.success:
+            log.warning(
+                "the registry refused this pod's registration, so it names no owned namespace",
+                extra={"extra_data": {"pod_id": self._pod_id, "error": reply.error}},
+            )
+            return
+        self._owned_namespaces = tuple(reply.owned_namespaces)
+        log.info(
+            "learned the namespaces this pod owns",
+            extra={"extra_data": {"pod_id": self._pod_id, "owned_namespaces": list(reply.owned_namespaces)}},
         )
 
     def _load_pod_jwks(self, tool_name: str) -> dict[str, Any]:
@@ -2965,7 +3131,10 @@ class ToolServer:
                     extra={"extra_data": {"error": str(exc)}},
                 )
             try:
-                await self.publish_registration()
+                # re-ask ONLY while the answer is still unknown: a pod that started before
+                # the registry did would otherwise never learn which node it owns, and the
+                # heartbeat is the only thing that runs again on its own.
+                await self.publish_registration(learn_identity=self._owned_namespaces is None)
             except Exception as exc:
                 log.warning(
                     "periodic re-registration failed",

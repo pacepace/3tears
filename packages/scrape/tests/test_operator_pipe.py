@@ -29,7 +29,9 @@ _SESSION = "session-1"
 
 #: The serving tool's registered namespace name, which is what the subject family is derived
 #: from. A per-zone name, because that is the deployment this exists for.
-_TOOL = "tools.scrape-zone_alpha.1-0-0"
+#: the tool-name NODE the serving pod owns, as its ``tool_pods`` row holds it and as
+#: its registration reply names it. NOT a tool leaf: the grant is minted from the node.
+_OWNED_NODE = "tools.scrape"
 
 _POD = "pod-a3f9c2"
 
@@ -125,7 +127,7 @@ async def _attach(bus: FakeBus, *, family: str | None = None) -> PipeEndpoint:
     return await attach_pipe(
         bus,  # type: ignore[arg-type]
         _SESSION,
-        family=Subjects.hitl_pipe_family(_TOOL) if family is None else family,
+        family=Subjects.hitl_pipe_family(_OWNED_NODE) if family is None else family,
         timeout=timedelta(seconds=5),
     )
 
@@ -138,7 +140,7 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
             endpoint = await _attach(bus)
             async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
                 first = await asyncio.wait_for(stream.receive(), timeout=5)
@@ -151,7 +153,7 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
             endpoint = await _attach(bus)
             async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
                 await asyncio.wait_for(stream.receive(), timeout=5)
@@ -170,11 +172,11 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
             with pytest.raises(NoOwnerError):
-                await _attach(bus, family=Subjects.hitl_pipe_family("tools.scrape-zone_beta.1-0-0"))
+                await _attach(bus, family=Subjects.hitl_pipe_family("tools.scrape-zone_beta"))
 
-        assert display.connections == 0, "a pod served an attach addressed to another tool's family"
+        assert display.connections == 0, "a pod served an attach addressed to another node's family"
 
     async def test_the_stream_does_not_ride_the_unscoped_forward_family(self, display: _LoopbackDisplay) -> None:
         """Serving the unscoped family would be serving a subject granted to no principal.
@@ -186,11 +188,53 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
             with pytest.raises(NoOwnerError):
                 await attach_pipe(bus, _SESSION, timeout=timedelta(seconds=5))  # type: ignore[arg-type]
 
         assert display.connections == 0, "a pod served an attach on the unscoped forward subject"
+
+
+class TestTheDisplayStreamRidesASubjectThePodIsGranted:
+    """the display's family, pinned against a MINTED grant rather than against itself."""
+
+    async def test_the_subscribed_family_is_inside_a_real_tool_pod_grant(self, display: _LoopbackDisplay) -> None:
+        """what a round trip between two ends of this module cannot show.
+
+        Every other test in this file has the owner and the caller derive their family from
+        the same helper, so they agree whatever that helper returns -- including a family
+        keyed on a tool LEAF, which is what this code did before the re-key and which no
+        round trip could see. The grant is minted somewhere else, from the NODES on the
+        pod's ``tool_pods`` row at connect, so bringing it in is what turns "the two ends
+        agree" into "the two ends agree on something the broker will deliver".
+
+        :param display: the loopback display fixture
+        :ptype display: _LoopbackDisplay
+        :return: none
+        :rtype: None
+        """
+        from threetears.nats.subject_permissions import Principal, build_permissions
+
+        stem = "scrape"
+        pod_id = "01947100-0000-7000-8000-0000000000c2"
+        granted = set(build_permissions(Principal.TOOL_POD, pod_id=pod_id, tool_namespaces=(stem,)).subscribe)
+
+        bus = FakeBus()
+        claim = SessionClaim(session_id=_SESSION)
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=pod_id, display=_where(display)):  # type: ignore[arg-type]
+            served = [str(r.subject) for r in bus.registrations]
+
+        assert served, "the pod subscribed nothing at all"
+        for subject in served:
+            family_half = subject.rsplit(".", 1)[0]
+            assert any(pattern.rsplit(".", 1)[0] == family_half for pattern in granted), (
+                f"the pod subscribes {subject!r}, which no grant minted from allowed_namespaces "
+                f"{stem!r} covers -- and an ungranted subscribe receives nothing rather than "
+                f"raising. granted: {sorted(granted)}"
+            )
+
+        leaf = Subjects.forward_scoped_wildcard(Subjects.hitl_pipe_family(f"{_OWNED_NODE}.some-tool.1-0-0"))
+        assert str(leaf) not in granted
 
 
 class TestAPodThatHoldsNoClaimNeverShowsItsDisplay:
@@ -203,7 +247,7 @@ class TestAPodThatHoldsNoClaimNeverShowsItsDisplay:
         claim.lost.set()
 
         with pytest.raises(RuntimeError, match="not held by this pod"):
-            async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+            async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
                 pytest.fail("a pod served the display of a session it had already lost")
 
         assert not bus.registrations, "a lost session had its display subscribed anyway"
@@ -221,7 +265,7 @@ class TestAPodThatHoldsNoClaimNeverShowsItsDisplay:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
             claim.lost.set()
             endpoint = await _attach(bus)
             with pytest.raises(PipeRemoteError) as caught:
@@ -243,7 +287,7 @@ class TestALostClaimEndsALiveStream:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
             endpoint = await _attach(bus)
             async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
                 assert await asyncio.wait_for(stream.receive(), timeout=5) == _RFB_BANNER
@@ -268,7 +312,7 @@ class TestALostClaimEndsALiveStream:
         bus = FakeBus()
         claim = SessionClaim(session_id=_SESSION)
 
-        async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
+        async with serve_display(bus, claim, owned_node=_OWNED_NODE, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
             endpoint = await _attach(bus)
             async with open_pipe(bus, endpoint) as stream:  # type: ignore[arg-type]
                 assert await asyncio.wait_for(stream.receive(), timeout=5) == _RFB_BANNER
@@ -290,8 +334,8 @@ async def test_the_display_stream_and_the_control_plane_never_share_a_subject() 
     """
     from threetears.nats import Subjects
 
-    tool = "tools.scrape-zone_alpha.1-0-0"
+    node = "tools.scrape-zone_alpha"
     session = "session-abc"
-    control = Subjects.forward_scoped(Subjects.hitl_forward_family(tool), session).path
-    stream = Subjects.forward_scoped(Subjects.hitl_pipe_family(tool), session).path
+    control = Subjects.forward_scoped(Subjects.hitl_forward_family(node), session).path
+    stream = Subjects.forward_scoped(Subjects.hitl_pipe_family(node), session).path
     assert control != stream, "a session's control plane and display stream derive one subject"
