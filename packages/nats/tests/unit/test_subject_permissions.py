@@ -330,6 +330,34 @@ class TestBootCompleteness:
         perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert f"{_NS}.tools.internal.{_POD_X}" in perm.subscribe
 
+    def test_tool_pod_may_reach_l3(self) -> None:
+        """a tool pod that owns a schema must be able to query it.
+
+        it holds a hub-minted token, its provider namespace resolves to an
+        ``ns_`` schema, and it is granted read and write on that namespace --
+        and without these subjects it cannot send the request at all, so every
+        one of those is inert. this is what "a tool pod can use tables" rests
+        on.
+
+        :return: none
+        :rtype: None
+        """
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert str(Subjects.l3_query()) in perm.publish
+        assert str(Subjects.l3_batch()) in perm.publish
+
+    def test_tool_pod_may_run_a_transaction(self) -> None:
+        """a write of more than one statement needs the tx subjects too.
+
+        granted as the same wildcard the agent pod holds, over all six ops,
+        rather than six literals that drift apart from ``Subjects.l3_tx``.
+
+        :return: none
+        :rtype: None
+        """
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert any(p.endswith(".l3.tx.*") for p in perm.publish)
+
     def test_tool_pod_may_handshake_for_a_token_of_its_own(self) -> None:
         """a tool pod writing its OWN state has no inbound token to forward.
 

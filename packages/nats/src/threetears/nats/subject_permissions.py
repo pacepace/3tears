@@ -931,6 +931,17 @@ def _tool_pod(
         # against the pod's stored public key, NOT the hub's JWKS, so it is not
         # interchangeable with this one and cannot stand in for it on the L3 path.
         str(Subjects.hub_handshake()),
+        # a tool pod that owns a provider namespace owns the schema behind it,
+        # and reaches it exactly as an agent reaches its own: over the L3 broker,
+        # carrying the hub-minted token the handshake above returns. The broker
+        # still decides -- it resolves the namespace, checks the caller's grant
+        # on it, and binds `search_path` to that namespace's schema, so these
+        # subjects buy reach and never authority. Without them every other half
+        # of provider storage is inert: the schema is provisioned, the grant is
+        # materialized, and the pod cannot send the request that would use them.
+        str(Subjects.l3_query()),
+        str(Subjects.l3_batch()),
+        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops, as the agent pod holds it
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify proxy assertions
         str(Subjects.audit_event("tool.call")),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
