@@ -3,10 +3,15 @@
 three-tier-task-01 phase D retired the bespoke resolver / ensurer
 callables and the parallel namespace-row value object. tests build
 the authorizer bundle directly from in-memory Collection stand-ins
-and the real ACL loaders; the bundle's
-``namespace_collection.get_by_owner_and_customer(...)`` +
-``save_entity(...)`` methods are the create-if-absent path
-:func:`authorize_memory_access` consumes.
+and the real ACL loaders.
+
+the create half then left this process entirely: the non-owner path
+READS through ``namespace_collection.get_by_owner_and_customer(...)``
+and, on a miss, asks the HUB through the bundle's
+``namespace_provisioner``. every test that used to assert on
+``save_entity`` now asserts the opposite -- that nothing in this
+package writes ``namespaces`` -- and the provisioner fake records what
+was asked for so a refusal can be told from a request never made.
 """
 
 from __future__ import annotations
@@ -34,6 +39,10 @@ from threetears.agent.memory.authorize import (
     MemoryAuthorizerDependencies,
     authorize_memory_access,
     memory_namespace_name,
+)
+from threetears.agent.memory.namespace_client import (
+    MemoryNamespaceRef,
+    MemoryNamespaceUnavailableError,
 )
 
 
@@ -228,6 +237,70 @@ class _NamespaceCollectionUnavailableFake:
         raise RuntimeError('relation "namespaces" does not exist')
 
 
+class _ProvisionerFake:
+    """hub-backed provisioner stand-in recording every ensure it was asked for.
+
+    :ivar calls: ``(agent_id, customer_id)`` per :meth:`ensure` call, in order
+    :ivar ref: reference returned on success
+    :ivar failure: when set, raised instead of returning
+    """
+
+    def __init__(
+        self,
+        *,
+        ref: MemoryNamespaceRef | None = None,
+        failure: Exception | None = None,
+    ) -> None:
+        """store the configured outcome.
+
+        :param ref: reference to return from :meth:`ensure`
+        :ptype ref: MemoryNamespaceRef | None
+        :param failure: exception to raise instead of returning
+        :ptype failure: Exception | None
+        :return: nothing
+        :rtype: None
+        """
+        self.calls: list[tuple[UUID, UUID]] = []
+        self.ref = ref
+        self.failure = failure
+
+    async def ensure(self, *, agent_id: UUID, customer_id: UUID) -> MemoryNamespaceRef:
+        """record the request and return (or raise) the configured outcome.
+
+        :param agent_id: owning agent UUID
+        :ptype agent_id: UUID
+        :param customer_id: owning customer UUID
+        :ptype customer_id: UUID
+        :return: configured reference
+        :rtype: MemoryNamespaceRef
+        :raises Exception: the configured failure, when one is set
+        """
+        self.calls.append((agent_id, customer_id))
+        if self.failure is not None:
+            raise self.failure
+        assert self.ref is not None
+        return self.ref
+
+
+def _hub_ref(*, agent_id: UUID, customer_id: UUID) -> MemoryNamespaceRef:
+    """build the reference a hub ensure would hand back.
+
+    :param agent_id: owning agent UUID
+    :ptype agent_id: UUID
+    :param customer_id: owning customer UUID
+    :ptype customer_id: UUID
+    :return: namespace reference
+    :rtype: MemoryNamespaceRef
+    """
+    return MemoryNamespaceRef(
+        id=uuid4(),
+        customer_id=customer_id,
+        owner_agent_id=agent_id,
+        namespace_type="memory",
+        owner_namespace=f"agents.{agent_id}",
+    )
+
+
 def _stub_ns(
     *,
     agent_id: UUID,
@@ -266,6 +339,7 @@ def _reader_role() -> Role:
 def _build_deps(
     *,
     namespace_collection: Any,
+    namespace_provisioner: Any = None,
     memberships_for_user: tuple[GroupMembership, ...] = (),
     memberships_for_agent: tuple[GroupMembership, ...] = (),
     assignments: tuple[RoleAssignment, ...] = (),
@@ -276,6 +350,9 @@ def _build_deps(
 
     :param namespace_collection: fake namespace collection
     :ptype namespace_collection: Any
+    :param namespace_provisioner: fake hub-backed provisioner, or ``None`` to
+        build a bundle that has nobody to ask
+    :ptype namespace_provisioner: Any
     :param memberships_for_user: user-side memberships (keyed by caller)
     :ptype memberships_for_user: tuple[GroupMembership, ...]
     :param memberships_for_agent: agent-side memberships
@@ -377,6 +454,7 @@ def _build_deps(
             grant_loader=grant_loader,
         ),
         namespace_collection=namespace_collection,
+        namespace_provisioner=namespace_provisioner,
         group_collection=object(),
         group_member_collection=object(),
         role_collection=object(),
@@ -393,38 +471,24 @@ class TestMemoryNamespaceName:
 
 
 class TestAuthorizeMemoryAccess:
-    async def test_namespace_materialized_on_miss_user_path(self) -> None:
-        """user (non-owner) path creates the missing namespace before evaluating.
+    async def test_missing_namespace_is_asked_of_the_hub_never_written_here(self) -> None:
+        """the non-owner path materializes through the PROVISIONER, not a save.
 
-        materialization runs in ``_resolve_or_create_memory_namespace``
-        before ``authorize_on_entity``; with no grant the call then denies,
-        but ``save_entity`` was invoked. the owner path (deterministic, no
-        Collection) is covered by :meth:`test_owner_shortcut_allows_agent_without_grant`.
+        this is the whole point of the change: an agent process that could
+        insert into ``platform.namespaces`` chooses what the control plane says
+        about itself. with no grant the call still denies afterwards, but the
+        namespace was resolved by asking the hub and the collection saw no
+        write at all.
         """
         agent_id = uuid4()
         customer_id = uuid4()
-        ns_created = _stub_ns(agent_id=agent_id, customer_id=customer_id)
-        # start with no namespace; after save_entity we flip the fake to
-        # return the resolved stub so the re-read returns cleanly.
         namespace_collection = _NamespaceCollectionFake(None)
+        provisioner = _ProvisionerFake(ref=_hub_ref(agent_id=agent_id, customer_id=customer_id))
+        deps = _build_deps(
+            namespace_collection=namespace_collection,
+            namespace_provisioner=provisioner,
+        )
 
-        async def _save(entity: Any) -> None:
-            """flip the fake's stored entity after save and record the call.
-
-            :param entity: entity being saved
-            :ptype entity: Any
-            :return: nothing
-            :rtype: None
-            """
-            namespace_collection.resolved_entity = ns_created
-            namespace_collection.save_calls.append(entity)
-
-        namespace_collection.save_entity = _save  # type: ignore[assignment]
-
-        deps = _build_deps(namespace_collection=namespace_collection)
-
-        # non-owner caller (caller_agent_id None) with no grant: the row is
-        # materialized, then the evaluator denies.
         with pytest.raises(MemoryAccessDenied, match="evaluator denied"):
             await authorize_memory_access(
                 action=ACTION_MEMORY_READ,
@@ -434,14 +498,96 @@ class TestAuthorizeMemoryAccess:
                 caller_agent_id=None,
                 deps=deps,
             )
-        assert len(namespace_collection.save_calls) == 1
+        assert provisioner.calls == [(agent_id, customer_id)]
+        assert namespace_collection.save_calls == []
 
-    async def test_namespace_create_failure_denies(self) -> None:
-        """when ``save_entity`` raises, the helper denies cleanly."""
+    async def test_granted_user_is_allowed_on_the_hub_provisioned_namespace(self) -> None:
+        """the admitted twin: a granted user passes, against the hub's own ref.
+
+        without this a helper that denied every non-owner call would satisfy
+        every other case in this class. it also pins that the reference the hub
+        returned is what the evaluator judged and what the caller gets back.
+        """
         agent_id = uuid4()
         customer_id = uuid4()
-        namespace_collection = _NamespaceCollectionRaisingFake(None)
-        deps = _build_deps(namespace_collection=namespace_collection)
+        user_id = uuid4()
+        group_id = uuid4()
+        role = _reader_role()
+        ref = _hub_ref(agent_id=agent_id, customer_id=customer_id)
+        assignment = RoleAssignment(
+            id=uuid4(),
+            group_id=group_id,
+            role_id=role.id,
+            scope_type=ScopeType.NAMESPACE,
+            scope_namespace_id=ref.id,
+            scope_namespace_type=None,
+            scope_customer_id=None,
+        )
+        namespace_collection = _NamespaceCollectionFake(None)
+        provisioner = _ProvisionerFake(ref=ref)
+        deps = _build_deps(
+            namespace_collection=namespace_collection,
+            namespace_provisioner=provisioner,
+            memberships_for_user=(
+                GroupMembership(
+                    group_id=group_id,
+                    member_type=MemberType.USER,
+                    member_id=user_id,
+                    customer_id=customer_id,
+                ),
+            ),
+            assignments=(assignment,),
+            roles={role.id: role},
+            groups={group_id: Group(id=group_id, name="readers", customer_id=customer_id)},
+        )
+
+        result = await authorize_memory_access(
+            action=ACTION_MEMORY_READ,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            caller_user_id=user_id,
+            caller_agent_id=None,
+            deps=deps,
+        )
+        assert result is ref
+        assert provisioner.calls == [(agent_id, customer_id)]
+        assert namespace_collection.save_calls == []
+
+    async def test_existing_row_is_not_re_asked_of_the_hub(self) -> None:
+        """a resolved row short-circuits: the hub is asked only on a MISS."""
+        agent_id = uuid4()
+        customer_id = uuid4()
+        ns = _stub_ns(agent_id=agent_id, customer_id=customer_id)
+        namespace_collection = _NamespaceCollectionFake(ns)
+        provisioner = _ProvisionerFake(ref=_hub_ref(agent_id=agent_id, customer_id=customer_id))
+        deps = _build_deps(
+            namespace_collection=namespace_collection,
+            namespace_provisioner=provisioner,
+        )
+
+        with pytest.raises(MemoryAccessDenied, match="evaluator denied"):
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=uuid4(),
+                caller_agent_id=None,
+                deps=deps,
+            )
+        assert provisioner.calls == []
+
+    async def test_namespace_create_failure_denies(self) -> None:
+        """a hub that cannot answer denies cleanly rather than proceeding."""
+        agent_id = uuid4()
+        customer_id = uuid4()
+        namespace_collection = _NamespaceCollectionFake(None)
+        provisioner = _ProvisionerFake(
+            failure=MemoryNamespaceUnavailableError("hub refused: IDENTITY_UNVERIFIED"),
+        )
+        deps = _build_deps(
+            namespace_collection=namespace_collection,
+            namespace_provisioner=provisioner,
+        )
         with pytest.raises(MemoryAccessDenied, match="could not be created"):
             await authorize_memory_access(
                 action=ACTION_MEMORY_READ,
@@ -451,6 +597,54 @@ class TestAuthorizeMemoryAccess:
                 caller_agent_id=None,
                 deps=deps,
             )
+        assert namespace_collection.save_calls == []
+
+    async def test_missing_provisioner_denies_and_writes_nothing(self) -> None:
+        """with nobody to ask, an absent namespace is a DENIAL, not a local write.
+
+        the failure mode this rules out is the tempting one: falling back to
+        building the row in-process, which is exactly the writer being retired.
+        """
+        agent_id = uuid4()
+        customer_id = uuid4()
+        namespace_collection = _NamespaceCollectionFake(None)
+        deps = _build_deps(namespace_collection=namespace_collection, namespace_provisioner=None)
+
+        with pytest.raises(MemoryAccessDenied, match="no namespace provisioner is wired"):
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=uuid4(),
+                caller_agent_id=None,
+                deps=deps,
+            )
+        assert namespace_collection.save_calls == []
+
+    async def test_owner_path_never_asks_the_hub(self) -> None:
+        """the owner short-circuit resolves in-process and sends no request.
+
+        the owner path was already collection-free; it must also stay
+        transport-free, or every agent-internal extraction would take a NATS
+        round trip it does not need.
+        """
+        agent_id = uuid4()
+        customer_id = uuid4()
+        provisioner = _ProvisionerFake(ref=_hub_ref(agent_id=agent_id, customer_id=customer_id))
+        deps = _build_deps(
+            namespace_collection=_NamespaceCollectionUnavailableFake(),
+            namespace_provisioner=provisioner,
+        )
+
+        await authorize_memory_access(
+            action=ACTION_MEMORY_WRITE,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            caller_user_id=None,
+            caller_agent_id=agent_id,
+            deps=deps,
+        )
+        assert provisioner.calls == []
 
     async def test_owner_shortcut_allows_agent_without_grant(self) -> None:
         """owner path allows without a grant AND never touches the collection.

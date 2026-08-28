@@ -25,6 +25,7 @@ dependencies = [
     "3tears>=0.29.0,<0.30.0",
     "3tears-agent-acl>=0.29.0,<0.30.0",
     "3tears-langgraph>=0.29.0,<0.30.0",
+    "3tears-nats>=0.29.0,<0.30.0",
     "3tears-observe>=0.29.0,<0.30.0",
     "pgvector",
     "uuid-utils",  # uuid7 ids (memory.tools, .dream, .extraction)
@@ -41,4 +42,5 @@ packages = ["src/threetears"]
 3tears = { workspace = true }
 3tears-agent-acl = { workspace = true }
 3tears-langgraph = { workspace = true }
+3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }

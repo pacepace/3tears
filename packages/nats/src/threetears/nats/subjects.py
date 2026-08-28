@@ -1034,6 +1034,24 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.object.resolve", kind="point")
 
     @classmethod
+    def hub_memory_namespace_ensure(cls) -> Subject:
+        """request/reply subject for materializing an agent's memory namespace row.
+
+        The AGENT asks the hub to resolve-or-create the ``memory``-type row in
+        the hub's ``namespaces`` table for its own ``(agent, customer)`` pair, so no
+        agent process writes the platform control plane itself. The agent forwards
+        its ``identity_token``; the hub verifies it, derives the owning agent +
+        customer from the signed claims, REFUSES a body that states a different
+        pair, and replies with the resolved row. Request/reply rather than publish
+        because the caller cannot proceed without the resolved namespace: an
+        authorization decision is made against it on the very next statement.
+
+        :return: subject ``{ns}.hub.memory.namespace.ensure``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.memory.namespace.ensure", kind="point")
+
+    @classmethod
     def hub_engagement_scope(cls) -> Subject:
         """request/reply subject for resolving an engagement's authorized target scope.
 

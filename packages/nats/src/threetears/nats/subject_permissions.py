@@ -725,6 +725,11 @@ def _agent_pod(
         # HITL: on a requires_confirmation tool pause the agent records a pending-approval marker
         # with the hub (forwarding its own identity token; the hub verifies + tenant-scopes).
         str(Subjects.hub_approval_record()),
+        # memory bootstrap: the agent asks the hub to materialize the ``memory`` namespace row
+        # for its OWN (agent, customer) pair. Granted here rather than left to the L3 write rail
+        # because no agent process writes the hub's ``namespaces`` table any more -- the hub verifies
+        # the forwarded identity token and refuses a request naming a pair that is not the token's.
+        str(Subjects.hub_memory_namespace_ensure()),
         # engagement selection, READ ONLY: the runtime resolves the conversation channel's default
         # engagement at the tool-call stamp seam. Without this the publish is refused at the
         # connection, the resolve soft-fails to "unbound", and a scan that should have authorized
@@ -1168,6 +1173,8 @@ def _hub(
         # (channel-router-forwarded) into an authorized approve/deny verdict on the resume rail.
         str(Subjects.hub_approval_record()),
         str(Subjects.hub_approval_resolve()),
+        # memory bootstrap: responds to an agent's memory-namespace ensure
+        str(Subjects.hub_memory_namespace_ensure()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),

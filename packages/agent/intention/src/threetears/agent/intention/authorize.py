@@ -12,8 +12,10 @@ hub-side ``namespaces`` write.
 ``namespace_type`` is a free string in 3tears (``acl/types.py``), NOT a
 constrained enum, and the owner descriptor is built deterministically
 in-process, so ``"intention"`` needs no acl schema change. The descriptor
-mirrors memory's :class:`_OwnerMemoryNamespace`; the thin wrapper reuses
-the generic :func:`~threetears.agent.acl.authorize_on_entity` primitive.
+mirrors memory's
+:class:`~threetears.agent.memory.namespace_client.MemoryNamespaceRef`; the thin
+wrapper reuses the generic
+:func:`~threetears.agent.acl.authorize_on_entity` primitive.
 
 **User isolation is NOT RBAC.** Every metallm user shares one
 ``agent_id``, so the owner short-circuit sees every user's wants --
@@ -123,7 +125,8 @@ class _OwnerIntentionNamespace:
     (``id``, ``customer_id``, ``namespace_type``, ``owner_agent_id``),
     built deterministically in-process WITHOUT reading or creating a
     hub-side ``namespaces`` row. Mirrors memory's
-    :class:`_OwnerMemoryNamespace`: the agent's sandboxed L3 search_path
+    :class:`~threetears.agent.memory.namespace_client.MemoryNamespaceRef`:
+    the agent's sandboxed L3 search_path
     is its own schema, which has no ``namespaces`` table, so the
     evaluator's owner short-circuit must resolve from the descriptor's
     fields alone -- no row need exist.

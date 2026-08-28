@@ -21,6 +21,16 @@ the owning agent's runtime), the evaluator's built-in owner rule
 short-circuits every action to allow without a grant. agent-internal
 writes therefore never require assignment configuration.
 
+the namespace row itself is the HUB's to write. this module used to
+build a :class:`NamespaceEntity` and ``save_entity`` it on the
+non-owner path, which made an agent process a writer of the platform
+control plane -- the last such writer on the platform, and the reason
+the L3 broker's platform-write gate still carved out
+``namespace_type='memory'``. it now asks the hub instead, over
+:class:`~threetears.agent.memory.namespace_client.MemoryNamespaceProvisioner`,
+and the hub decides whose namespace to make off a VERIFIED identity
+token rather than off the request. nothing here writes ``namespaces``.
+
 user-side enforcement: when a user explicitly writes or reads
 memories, the evaluator runs both sides. the user side must
 contribute the action via an assignment on the ``memory`` namespace
@@ -40,7 +50,6 @@ evaluator can answer subsequent questions from cache.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import NAMESPACE_DNS, UUID, uuid5
@@ -49,6 +58,11 @@ from threetears.agent.acl import (
     AccessDenied,
     AclCache,
     authorize_on_entity,
+)
+from threetears.agent.memory.namespace_client import (
+    MemoryNamespaceProvisioner,
+    MemoryNamespaceRef,
+    MemoryNamespaceUnavailableError,
 )
 from threetears.core.namespaces import (
     PLURAL_PREFIX_MEMORY,
@@ -68,7 +82,9 @@ __all__ = [
     "MemoryAuthorizerDependencies",
     "authorize_memory_access",
     "ensure_memory_owner_assignment",
+    "memory_namespace_id",
     "memory_namespace_name",
+    "memory_namespace_schema_name",
 ]
 
 log = get_logger(__name__)
@@ -165,14 +181,20 @@ def memory_namespace_schema_name(agent_id: UUID, customer_id: UUID) -> str:
     return f"memory__{agent_id.hex[:8]}__{customer_id.hex[:8]}"
 
 
-def _memory_namespace_id(agent_id: UUID, customer_id: UUID) -> UUID:
+def memory_namespace_id(agent_id: UUID, customer_id: UUID) -> UUID:
     """deterministic namespace id for the (agent, customer) memory pair.
 
-    same-triple -> same :func:`uuid5` so concurrent first-writers converge
-    on one row via ``ON CONFLICT (id) DO UPDATE``, and so the agent-owner
-    path (:func:`_owner_memory_namespace`) and the create path
-    (:func:`_resolve_or_create_memory_namespace`) agree on the id without a
-    shared DB read.
+    same pair -> same :func:`uuid5`, which is what lets two concurrent
+    first-writers converge on ONE row via ``ON CONFLICT (namespace_id)
+    DO UPDATE``, and what lets the agent-owner path
+    (:func:`_owner_memory_namespace`) and the hub's create path agree on the
+    id without a shared read.
+
+    PUBLIC because the hub derives the same id when it materializes the row.
+    Two sides deriving one identifier from one rule is the point; a hub-local
+    copy of this expression is a second rule that can drift from this one
+    silently, and the drift's symptom is a duplicate namespace row rather than
+    an error.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -187,42 +209,29 @@ def _memory_namespace_id(agent_id: UUID, customer_id: UUID) -> UUID:
     )
 
 
-@dataclass(frozen=True)
-class _OwnerMemoryNamespace:
-    """minimal namespace descriptor for the agent-owner memory path.
+def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> MemoryNamespaceRef:
+    """build the deterministic owner-path memory namespace reference.
 
-    exposes exactly the four fields :func:`authorize_on_entity` reads
-    (``id``, ``customer_id``, ``namespace_type``, ``owner_agent_id``). used
-    when the calling agent owns the memory namespace, so the descriptor is
-    built deterministically in-process WITHOUT reading or creating a
-    hub-side ``namespaces`` row -- the agent's sandboxed L3 search_path is
-    its own schema (``agent_<hex>``), which has no ``namespaces`` table, so
-    a Collection access there fails ``relation "namespaces" does not
-    exist``. mirrors the tool-namespace precedent that moved
-    ``namespaces`` writes off the agent onto the hub.
-    """
-
-    id: UUID
-    customer_id: UUID
-    owner_agent_id: UUID
-    namespace_type: str = MEMORY_NAMESPACE_TYPE
-    owner_namespace: str | None = None
-
-
-def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> _OwnerMemoryNamespace:
-    """build the deterministic owner-path memory namespace descriptor.
+    used when the calling agent owns the memory namespace, so the reference is
+    built deterministically in-process WITHOUT reading or creating a hub-side
+    ``namespaces`` row -- the agent's sandboxed L3 search_path is its own schema
+    (``agent_<hex>``), which has no ``namespaces`` table, so a Collection access
+    there fails ``relation "namespaces" does not exist``. the evaluator's owner
+    short-circuit allows the action from these five fields alone; no row need
+    exist.
 
     :param agent_id: owning agent UUID (also the caller on this path)
     :ptype agent_id: UUID
     :param customer_id: owning customer UUID
     :ptype customer_id: UUID
-    :return: deterministic descriptor exposing the four evaluator fields
-    :rtype: _OwnerMemoryNamespace
+    :return: deterministic reference exposing the fields the evaluator reads
+    :rtype: MemoryNamespaceRef
     """
-    return _OwnerMemoryNamespace(
-        id=_memory_namespace_id(agent_id, customer_id),
+    return MemoryNamespaceRef(
+        id=memory_namespace_id(agent_id, customer_id),
         customer_id=customer_id,
         owner_agent_id=agent_id,
+        namespace_type=MEMORY_NAMESPACE_TYPE,
         owner_namespace=build_agent_namespace_name(agent_id),
     )
 
@@ -263,6 +272,13 @@ class MemoryAuthorizerDependencies:
         ``RoleAssignmentCollection`` used by
         :func:`ensure_memory_owner_assignment` via
         :meth:`ensure_group_role_assignment`
+    :ivar namespace_provisioner: hub-backed
+        :class:`~threetears.agent.memory.namespace_client.MemoryNamespaceProvisioner`
+        asked to materialize a missing memory namespace row. optional, and
+        ``None`` is a real configuration rather than an omission: the hub's own
+        process resolves memory namespaces against a Collection that reaches
+        the ``namespaces`` table directly and has nobody to ask. a process that
+        DOES need one and lacks it gets a denial, never a local write
     """
 
     __slots__ = (
@@ -272,6 +288,7 @@ class MemoryAuthorizerDependencies:
         "group_member_collection",
         "role_collection",
         "role_assignment_collection",
+        "namespace_provisioner",
     )
 
     def __init__(
@@ -283,6 +300,7 @@ class MemoryAuthorizerDependencies:
         group_member_collection: Any,
         role_collection: Any,
         role_assignment_collection: Any,
+        namespace_provisioner: MemoryNamespaceProvisioner | None = None,
     ) -> None:
         """initialize the dependency bundle.
 
@@ -300,6 +318,9 @@ class MemoryAuthorizerDependencies:
         :param role_assignment_collection: three-tier
             ``RoleAssignmentCollection``
         :ptype role_assignment_collection: Any
+        :param namespace_provisioner: hub-backed provisioner for a missing
+            memory namespace row, or ``None``
+        :ptype namespace_provisioner: MemoryNamespaceProvisioner | None
         """
         self.acl_cache = acl_cache
         self.namespace_collection = namespace_collection
@@ -307,6 +328,7 @@ class MemoryAuthorizerDependencies:
         self.group_member_collection = group_member_collection
         self.role_collection = role_collection
         self.role_assignment_collection = role_assignment_collection
+        self.namespace_provisioner = namespace_provisioner
 
 
 async def _resolve_or_create_memory_namespace(
@@ -314,23 +336,24 @@ async def _resolve_or_create_memory_namespace(
     agent_id: UUID,
     customer_id: UUID,
     namespace_collection: Any,
+    namespace_provisioner: MemoryNamespaceProvisioner | None,
 ) -> Any:
-    """return the memory namespace entity for the (agent, customer) pair.
+    """return the memory namespace for the (agent, customer) pair.
 
-    looks up the triple ``(memory, agent_id, customer_id)`` via
-    :meth:`NamespaceCollection.get_by_owner_and_customer`. when no
-    row matches, constructs a new :class:`NamespaceEntity` with a
-    deterministic :func:`uuid5` id keyed on the triple (so concurrent
-    first-write racers converge on the same id without SELECT FOR
-    UPDATE) and calls :meth:`save_entity`; the Collection's
-    ``ON CONFLICT (id) DO UPDATE`` path makes the save idempotent
-    under replay.
+    looks the triple ``(memory, agent_id, customer_id)`` up first via
+    :meth:`NamespaceCollection.get_by_owner_and_customer`, which is a READ and
+    stays here. when no row matches, the row is materialized by the HUB through
+    ``namespace_provisioner`` and this process writes nothing: an agent that
+    could insert into the hub's ``namespaces`` table chooses what the control plane
+    says about itself, which is why the broker's platform-write carve-out for
+    ``namespace_type='memory'`` existed and why removing this writer is what
+    lets it close.
 
-    raises :class:`MemoryAccessDenied` if the Collection yields
-    ``None`` AND a save cannot create the row (configuration error:
-    the Collection has no L3 pool bound, or the save raised a
-    permission error). callers surface that as a cleanly-typed denial
-    rather than a bare ``RuntimeError``.
+    every non-answer becomes :class:`MemoryAccessDenied`: no provisioner wired,
+    transport failure, hub refusal, or a reply about a different pair. that is
+    deliberate rather than convenient -- a namespace that cannot be resolved is
+    a namespace no decision can be evaluated against, so the access fails
+    CLOSED instead of proceeding against an unverified stand-in.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -338,10 +361,13 @@ async def _resolve_or_create_memory_namespace(
     :ptype customer_id: UUID
     :param namespace_collection: three-tier ``NamespaceCollection``
     :ptype namespace_collection: Any
-    :return: resolved namespace entity
+    :param namespace_provisioner: hub-backed provisioner used when no row
+        exists yet; ``None`` when nothing wired one, which makes an absent
+        namespace a denial rather than a local write
+    :ptype namespace_provisioner: MemoryNamespaceProvisioner | None
+    :return: resolved namespace entity or reference
     :rtype: Any
     :raises MemoryAccessDenied: when the namespace cannot be resolved
-        or created
     """
     existing = await namespace_collection.get_by_owner_and_customer(
         namespace_type=MEMORY_NAMESPACE_TYPE,
@@ -351,53 +377,21 @@ async def _resolve_or_create_memory_namespace(
     if existing is not None:
         return existing
 
-    # deterministic id: same (agent, customer) -> same uuid5 so two
-    # concurrent first-writes converge on the same namespace row via
-    # ON CONFLICT (id) DO UPDATE. the uuid5 namespace/name scheme
-    # matches the group-id + membership-id pattern used by the
-    # memory-owner ensure path, keeping all derived ids uniformly
-    # deterministic.
-    new_id = _memory_namespace_id(agent_id, customer_id)
-    now = datetime.now(UTC)
-    entity = namespace_collection.entity_class(
-        {
-            "namespace_id": new_id,
-            "name": memory_namespace_name(agent_id, customer_id),
-            "namespace_type": MEMORY_NAMESPACE_TYPE,
-            "owner_agent_id": agent_id,
-            # a row created without an owner is a row its own agent
-            # cannot reach through the ownership short-circuit
-            "owner_namespace": build_agent_namespace_name(agent_id),
-            "customer_id": customer_id,
-            "schema_name": memory_namespace_schema_name(
-                agent_id,
-                customer_id,
-            ),
-            "metadata": {},
-            "date_created": now,
-            "date_updated": now,
-        },
-        is_new=True,
-        collection=namespace_collection,
-    )
+    if namespace_provisioner is None:
+        raise MemoryAccessDenied(
+            f"memory namespace for agent={agent_id} customer={customer_id} does not exist and no "
+            "namespace provisioner is wired to ask the hub for one",
+        )
     try:
-        await namespace_collection.save_entity(entity)
-    except Exception as exc:
+        resolved = await namespace_provisioner.ensure(
+            agent_id=agent_id,
+            customer_id=customer_id,
+        )
+    except MemoryNamespaceUnavailableError as exc:
         raise MemoryAccessDenied(
             f"memory namespace for agent={agent_id} customer={customer_id} could not be created: {exc}",
         ) from exc
-
-    # re-read to return the authoritative Collection-managed entity
-    # (the freshly-constructed handle may not be bound into L1 if the
-    # save path did not promote it). fall back to the freshly-
-    # constructed entity if the re-read misses — that can happen when
-    # the Collection's L3 round-trip lags the save.
-    resolved = await namespace_collection.get_by_owner_and_customer(
-        namespace_type=MEMORY_NAMESPACE_TYPE,
-        owner_agent_id=agent_id,
-        customer_id=customer_id,
-    )
-    return resolved if resolved is not None else entity
+    return resolved
 
 
 async def authorize_memory_access(
@@ -454,6 +448,7 @@ async def authorize_memory_access(
             agent_id=agent_id,
             customer_id=customer_id,
             namespace_collection=deps.namespace_collection,
+            namespace_provisioner=deps.namespace_provisioner,
         )
     try:
         await authorize_on_entity(
