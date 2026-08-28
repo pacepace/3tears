@@ -55,16 +55,30 @@ class ToolPodAuth:
     :ptype pod_entity_id: str
     :param name: tool pod display name
     :ptype name: str
-    :param allowed_namespaces: tool-name NODES this pod may register at
-        or beneath, compared on a segment boundary by
-        :func:`threetears.core.namespaces.namespace_contains`. written
-        WITHOUT a trailing separator -- ``pentest``, never ``pentest.``
-    :ptype allowed_namespaces: list[str]
+    :param owned_namespaces: the provider nodes this pod OWNS, as
+        ``namespaces.name`` values (``tools.pentest``). A bare stem
+        (``pentest``) is accepted and rooted by the registry through
+        :func:`threetears.core.namespaces.build_tool_provider_node_name`,
+        so an implementer reading either spelling out of its store
+        produces one family of names rather than two.
+
+        **This is ownership, not permission.** It used to be
+        ``allowed_namespaces`` -- a list of what a pod was allowed to
+        register at, held in a text column beside the pod's row and
+        answerable only there. It is now resolved from the namespace
+        GRAPH, the same rows a grant names and a schema is derived
+        from, so registration and authorization can no longer disagree
+        about who owns a provider.
+
+        Written WITHOUT a trailing separator and WITHOUT a glob: these
+        are names compared on a segment boundary, so ``pentest.`` and
+        ``pentest.*`` match nothing at all.
+    :ptype owned_namespaces: list[str]
     """
 
     pod_entity_id: str
     name: str
-    allowed_namespaces: list[str]
+    owned_namespaces: list[str]
 
 
 @runtime_checkable
@@ -85,8 +99,32 @@ class ToolPodAuthenticator(Protocol):
             (``RegistrationManifest.bootstrap_token``). under per-key identity this is the pod's
             self-minted identity JWT; the implementer verifies it against the pod's stored key.
         :ptype token: str
-        :return: auth context with allowed namespaces, or None if verification fails
+        :return: auth context with the namespaces the pod owns, or None if verification fails
         :rtype: ToolPodAuth | None
+        """
+        ...
+
+    async def provider_nodes(self) -> tuple[str, ...]:
+        """every tool PROVIDER node the host's namespace graph holds.
+
+        The whole inventory, not this pod's slice, and it is asked for WITHOUT a
+        token because the caller that most needs it presents none. A tool pod
+        registering over its owning agent's authenticated NATS connection carries
+        no registration token -- it holds no row in the host's tool-pod store and
+        could never present one -- so it used to be admitted with no filtering at
+        all. That path is every agent's in-process ``ToolServer``. It is filtered
+        now, against this inventory: an unbound pod may claim a name no provider
+        node contains, and may not claim one inside somebody else's node.
+
+        **A host that returns an empty tuple enforces nothing**, which is the
+        honest answer for a deployment whose graph has no provider nodes, and is
+        the behaviour registration had before ownership existed. It must not be
+        used to signal a read FAILURE: an empty inventory silently widens every
+        unbound pod, so an implementer that cannot read the graph should raise
+        and let the registration be refused rather than answer with nothing.
+
+        :return: the canonical ``namespaces.name`` of every provider node
+        :rtype: tuple[str, ...]
         """
         ...
 

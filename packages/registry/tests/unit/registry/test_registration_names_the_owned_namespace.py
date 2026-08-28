@@ -62,8 +62,14 @@ def _nc() -> AsyncMock:
     return nc
 
 
-def _manifest(pod_id: str = "pod-001", *, token: str | None = None, owner: UUID | None = None) -> bytes:
-    """one manifest offering a single tool under the ``pentest`` node.
+def _manifest(
+    pod_id: str = "pod-001",
+    *,
+    token: str | None = None,
+    owner: UUID | None = None,
+    tool: str = "pentest.sqlmap",
+) -> bytes:
+    """one manifest offering a single tool, by default under the ``pentest`` node.
 
     :param pod_id: the registering pod's id
     :ptype pod_id: str
@@ -71,11 +77,14 @@ def _manifest(pod_id: str = "pod-001", *, token: str | None = None, owner: UUID 
     :ptype token: str | None
     :param owner: the owning agent for an agent-spun pod
     :ptype owner: UUID | None
+    :param tool: the mcp name offered, so an agent-owned pod can offer one that
+        sits under no provider node anybody owns
+    :ptype tool: str
     :return: the serialized manifest
     :rtype: bytes
     """
     entry = ToolManifestEntry(
-        name="pentest.sqlmap",
+        name=tool,
         version="1.0.0",
         description="a tool",
         input_schema={"type": "object", "properties": {}},
@@ -105,17 +114,30 @@ async def _register(handler: RegistrationHandler, nc: AsyncMock, data: bytes) ->
 
 
 def _authenticator(*nodes: str) -> AsyncMock:
-    """an authenticator that verifies any token and authorizes ``nodes``.
+    """an authenticator that verifies any token and reports ``nodes`` as OWNED.
 
-    :param nodes: the ``allowed_namespaces`` entries on the pod's row
+    ``provider_nodes`` answers with the same nodes, rooted: a pod's nodes are rows
+    in the very graph the directory reports, so a double that let the two disagree
+    would be testing a state that cannot exist.
+
+    :param nodes: the pod's ownership entries, as a host might hold them
     :ptype nodes: str
     :return: the configured mock
     :rtype: AsyncMock
     """
+    from threetears.core.namespaces import build_tool_provider_node_name
+
+    rooted: list[str] = []
+    for node in nodes:
+        try:
+            rooted.append(build_tool_provider_node_name(node))
+        except ValueError:
+            continue
     auth = AsyncMock()
     auth.verify_pod = AsyncMock(
-        return_value=ToolPodAuth(pod_entity_id="pod-001", name="a pod", allowed_namespaces=list(nodes)),
+        return_value=ToolPodAuth(pod_entity_id="pod-001", name="a pod", owned_namespaces=list(nodes)),
     )
+    auth.provider_nodes = AsyncMock(return_value=tuple(rooted))
     return auth
 
 
@@ -177,7 +199,7 @@ class TestAVerifiedPodLearnsTheNodeItOwns:
     async def test_a_node_that_cannot_be_rooted_is_dropped_rather_than_raising(self) -> None:
         """a malformed row value must not turn a registration into a failure.
 
-        ``allowed_namespaces`` is operator-written and hub-side validation is not this
+        the ownership record is operator-written and hub-side validation is not this
         process's to rely on. A value that cannot compose a node name (empty, or the bare
         ``tools`` prefix, which names the whole tree) is left out of the reply -- the pod
         then holds no self-identity for it, which is what it already had. Raising instead
@@ -221,14 +243,36 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
         ``agents.<uuid>``, which is exactly the ``owner_namespace`` its own tool-namespace
         rows are stamped with.
 
+        The tool it offers sits under no provider node anybody owns, which is the
+        ordinary case for an agent's own tools -- and it is offered explicitly here
+        because owning no provider node is now a REAL constraint on what such a pod
+        may register, not merely a gap in what it is told.
+
         :return: none
         :rtype: None
         """
         nc = _nc()
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
         await handler.start(nc)
-        reply = await _register(handler, nc, _manifest(owner=_AGENT))
+        reply = await _register(handler, nc, _manifest(owner=_AGENT, tool="myagent.summarize"))
+        assert reply.success is True
         assert reply.owned_namespaces == [f"agents.{_AGENT}"]
+
+    async def test_a_tokenless_pod_may_not_take_a_name_inside_a_node_it_does_not_own(self) -> None:
+        """the path that used to return before any filter ran, now refused.
+
+        Paired with the admission above: the same pod, the same handler, one name
+        under nobody's node and one under ``pentest``'s.
+
+        :return: none
+        :rtype: None
+        """
+        nc = _nc()
+        handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
+        await handler.start(nc)
+        reply = await _register(handler, nc, _manifest(owner=_AGENT, tool="pentest.sqlmap"))
+        assert reply.success is False
+        assert reply.owned_namespaces == []
 
     async def test_a_tokenless_pod_with_no_owner_is_told_nothing(self) -> None:
         """no row and no agent is no self-identity, said as an empty list rather than a guess.
@@ -239,7 +283,8 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
         nc = _nc()
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
         await handler.start(nc)
-        reply = await _register(handler, nc, _manifest())
+        reply = await _register(handler, nc, _manifest(tool="myagent.summarize"))
+        assert reply.success is True
         assert reply.owned_namespaces == []
 
 
