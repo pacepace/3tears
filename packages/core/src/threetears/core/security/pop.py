@@ -154,7 +154,13 @@ def verify_pop_proof(
             proof,
             key=holder_key,
             algorithms=["EdDSA"],  # literal pin -- statically auditable; never widen
-            options={"require": _REQUIRED},
+            # `verify_iat` off so the `leeway_seconds` window below is the SINGLE authority on
+            # freshness. PyJWT's own `iat` check is one-sided (future only) and runs at the
+            # leeway passed to decode, which is zero here -- so leaving it on rejected every
+            # proof from even one second ahead while this function documented `leeway_seconds`,
+            # and which of the two fired was invisible from the outside. `require` is
+            # unaffected: `iat` is still mandatory, it is just adjudicated in one place.
+            options={"require": _REQUIRED, "verify_iat": False},
         )
     except jwt.PyJWTError as exc:
         _reject(f"pop verification failed ({type(exc).__name__}).")
@@ -166,6 +172,10 @@ def verify_pop_proof(
     if not isinstance(iat, int):
         _reject("pop iat must be an integer.")
     now = int(datetime.now(UTC).timestamp())
+    # Two-sided and the only thing adjudicating iat: a proof from the future is as suspect as
+    # a stale one. It must stay TOLERANT as well as bounded -- signer and verifier are
+    # different machines, and an integer `iat` from a clock a fraction of a second fast reads
+    # as `now + 1`, which is a real call, not an attack.
     if abs(now - iat) > leeway_seconds:
         _reject("pop iat is outside the acceptable freshness window.")
     jti = payload.get("jti")

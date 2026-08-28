@@ -157,7 +157,13 @@ async def validate_dpop_proof(
             proof,
             key=holder_key,
             algorithms=[_ALG],  # literal pin -- statically auditable; never widen
-            options={"require": _REQUIRED},
+            # `verify_iat` off so this module's `iat_window` below is the SINGLE authority on
+            # freshness. PyJWT's own `iat` check is one-sided (future only) and runs at the
+            # leeway passed to decode, which is zero here -- so leaving it on rejected every
+            # proof from even one second ahead while this module documented sixty, and which
+            # of the two fired was invisible from the outside. `require` is unaffected: `iat`
+            # is still a mandatory claim, it is just adjudicated in one place.
+            options={"require": _REQUIRED, "verify_iat": False},
         )
     except jwt.PyJWTError as exc:
         raise DpopError(f"dpop proof verification failed ({type(exc).__name__}).") from None
@@ -181,14 +187,16 @@ async def validate_dpop_proof(
     if not isinstance(iat, int) or isinstance(iat, bool):
         raise DpopError("dpop proof iat must be an integer.")
     now = int(datetime.now(UTC).timestamp())
-    # Two-sided: a proof from the future is as suspect as a stale one, and an unbounded
-    # future iat would let an attacker mint proofs today for use after a key rotation.
+    # Two-sided, and the ONLY thing adjudicating iat -- decode above has PyJWT's own check
+    # switched off. A proof from the future is as suspect as a stale one, and an unbounded
+    # future iat would let an attacker mint proofs today for use after a key rotation; a
+    # proof from the past is a replay window. Both halves are genuinely this module's:
+    # PyJWT checks only the future half, at whatever leeway decode was passed, and has no
+    # maximum-age notion at all.
     #
-    # The future half is a BACKSTOP today, not the thing that fires: PyJWT validates `iat`
-    # during decode above and rejects an immature signature first. It is kept because that
-    # is PyJWT's default with zero leeway -- a caller that ever passes leeway, or a PyJWT
-    # release that relaxes the check, silently removes the only guard otherwise. The stale
-    # half is genuinely this module's: PyJWT has no maximum-age notion at all.
+    # The future half must stay TOLERANT as well as bounded. `iat` is an integer, so a
+    # client whose clock leads the server's by a fraction of a second stamps `now + 1`;
+    # refusing that makes a login succeed or fail on sub-second timing.
     if abs(now - iat) > iat_window.total_seconds():
         raise DpopError("dpop proof iat is outside the acceptable freshness window.")
 
