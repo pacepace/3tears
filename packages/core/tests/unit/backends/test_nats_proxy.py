@@ -138,6 +138,40 @@ class TestDefaultNamespace:
         )
         assert proxy.default_namespace == "custom.namespace"
 
+    def test_a_principal_with_no_agent_id_names_the_namespace_it_owns(self) -> None:
+        """a tool pod holds no agent id and must not have to invent one.
+
+        Its durable state lives under the interior provider node it owns
+        (``tools.survey_admin``), which is not derivable from any principal id --
+        so the namespace is supplied directly. Before this, the only way to build
+        the backend was to pass an agent id purely to satisfy the parameter and
+        then override the namespace it derived -- which is what the registry's
+        stack does -- so the derivation was computed and thrown away, and a
+        principal with no agent id had to invent one to get past the signature.
+        """
+        proxy = NatsProxyL3Backend(
+            nats_client=MagicMock(),
+            namespace_prefix="ns",
+            default_namespace="tools.survey_admin",
+            identity_token=lambda: "test-identity-token",
+        )
+        assert proxy.default_namespace == "tools.survey_admin"
+        assert proxy.agent_id is None
+
+    def test_neither_an_agent_id_nor_a_namespace_is_refused_at_construction(self) -> None:
+        """a backend with no namespace to send to fails HERE, not on first query.
+
+        ``default_namespace`` rides on every request, so a backend built without
+        one would send ``namespace=None`` and be refused by the broker on each
+        call -- an authorization-shaped error, far from the wiring that caused it.
+        """
+        with pytest.raises(ValueError):
+            NatsProxyL3Backend(
+                nats_client=MagicMock(),
+                namespace_prefix="ns",
+                identity_token=lambda: "test-identity-token",
+            )
+
 
 # ------------------------------------------------------------------
 # identity token provider

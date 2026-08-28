@@ -172,11 +172,12 @@ class NatsProxyL3Backend:
     :ivar ns: NATS subject namespace prefix; collaborator proxies
         (``_ProxyConnection``, ``_ProxyTransaction``) read this to
         compose tx subject names
-    :ivar agent_id: agent UUID string used for ACL validation on the
-        broker side; collaborator proxies include it in every tx
-        envelope
-    :ivar default_namespace: default logical namespace applied to
-        queries that did not supply one
+    :ivar agent_id: the agent this backend belongs to, when it belongs to one.
+        Its ONLY remaining job is deriving :ivar:`default_namespace`: the broker
+        reads its principal off a signed token now, so no request carries it
+    :ivar default_namespace: the namespace this principal OWNS, applied to every
+        query that did not name one. THE key this backend is built around -- see
+        the constructor for why a principal may supply it instead of an agent id
     :ivar timeout_ms: query-side timeout threaded into outgoing
         envelopes and used to compute the NATS-level response timeout
 
@@ -184,9 +185,10 @@ class NatsProxyL3Backend:
     :ptype nats_client: Any
     :param namespace_prefix: NATS subject namespace prefix
     :ptype namespace_prefix: str
-    :param agent_id: agent UUID string for ACL validation
-    :ptype agent_id: str
-    :param default_namespace: default namespace for queries
+    :param agent_id: agent UUID string, or ``None`` for a principal that is not
+        an agent
+    :ptype agent_id: str | None
+    :param default_namespace: the namespace this principal owns
     :ptype default_namespace: str | None
     :param timeout_ms: default query timeout in milliseconds
     :ptype timeout_ms: int
@@ -210,20 +212,39 @@ class NatsProxyL3Backend:
         self,
         nats_client: Any,
         namespace_prefix: str,
-        agent_id: str,
+        agent_id: str | None = None,
         default_namespace: str | None = None,
         timeout_ms: int | None = None,
         identity_token: Callable[[], str | None] | None = None,
     ) -> None:
         """initialize NatsProxyL3Backend.
 
+        **This backend is keyed on the namespace its principal OWNS.** For an
+        agent that namespace is ``agents.<agent_id>``, so passing ``agent_id``
+        alone still derives it and every existing agent call site is unchanged.
+        For a principal that is not an agent -- a tool pod holding its own durable
+        state under the interior provider node ``tools.<provider>``, a platform
+        service -- there is no id the namespace can be derived from, so it is
+        supplied directly and ``agent_id`` is omitted.
+
+        ``agent_id`` became optional rather than being removed because it is not
+        dead: it is still the derivation for the overwhelmingly common case. What
+        it is NOT any more is an identity. It stopped riding on the wire when the
+        broker moved to reading its principal off a signed token, so nothing
+        downstream sees it; deriving a default namespace is its whole remaining
+        job. That is why a caller with a namespace of its own needs no id at all,
+        and why passing a made-up one to satisfy the parameter -- which is what a
+        sentinel id was for -- is no longer necessary.
+
         :param nats_client: connected NATS client
         :ptype nats_client: Any
         :param namespace_prefix: NATS subject namespace prefix
         :ptype namespace_prefix: str
-        :param agent_id: agent UUID string for ACL validation
-        :ptype agent_id: str
-        :param default_namespace: default namespace for queries
+        :param agent_id: agent UUID string, or ``None`` when this principal is
+            not an agent and supplies ``default_namespace`` instead
+        :ptype agent_id: str | None
+        :param default_namespace: the namespace this principal owns, applied to
+            every query that names none. Required when ``agent_id`` is absent
         :ptype default_namespace: str | None
         :param timeout_ms: default query timeout in milliseconds.
             sourced from THREETEARS_NATS_PROXY_TIMEOUT_MS env var if not provided (default 5000).
@@ -242,12 +263,30 @@ class NatsProxyL3Backend:
             side and the models are ``extra="forbid"`` -- so this raises at the
             call site rather than sending a request that cannot be authorized.
         :ptype identity_token: Callable[[], str | None] | None
+        :raises ValueError: when neither an agent id nor an owned namespace was
+            supplied, so there is no namespace to send anything to
         """
+        # the ``or`` is the ORIGINAL fallback, unchanged: an explicit namespace
+        # wins, otherwise it is derived from the agent id. What is new is only the
+        # case that was previously impossible to reach, because ``agent_id`` was
+        # required -- neither supplied, and therefore no namespace to send to.
+        resolved_namespace = default_namespace or (
+            build_namespace_name(PLURAL_PREFIX_AGENT, agent_id) if agent_id is not None else None
+        )
+        if not resolved_namespace:
+            # fail HERE rather than on the first query. the namespace rides on every
+            # request, so a backend built without one would be refused per call --
+            # an authorization-shaped error arriving nowhere near the wiring that
+            # caused it.
+            raise ValueError(
+                "NatsProxyL3Backend needs the namespace its principal owns: pass "
+                "default_namespace, or agent_id to derive it from"
+            )
         self._nc = nats_client
         self.ns = namespace_prefix
         self.agent_id = agent_id
         self._identity_token = identity_token
-        self.default_namespace = default_namespace or build_namespace_name(PLURAL_PREFIX_AGENT, agent_id)
+        self.default_namespace = resolved_namespace
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
         else:
