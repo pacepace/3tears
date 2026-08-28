@@ -330,6 +330,36 @@ class TestBootCompleteness:
         perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert f"{_NS}.tools.internal.{_POD_X}" in perm.subscribe
 
+    def test_tool_pod_may_handshake_for_a_token_of_its_own(self) -> None:
+        """a tool pod writing its OWN state has no inbound token to forward.
+
+        acting on a call, it forwards that call's identity token and needs
+        nothing of its own. writing its own durable state is the case with no
+        caller to act on behalf of, so it presents its provisioned key and
+        receives a short-lived hub-minted token, the same handshake an agent
+        pod performs. without this grant a tool pod cannot reach L3 at all.
+
+        :return: none
+        :rtype: None
+        """
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert str(Subjects.hub_handshake()) in perm.publish
+
+    def test_the_handshake_grant_is_not_a_second_verification_scheme(self) -> None:
+        """the pod's SELF-minted token is not interchangeable with a hub-minted one.
+
+        a self-minted token is verified against the pod's own stored public key;
+        a hub-minted one against the hub's JWKS. keeping one scheme for one
+        question is why the pod asks the hub rather than the broker gaining a
+        second verification path.
+
+        :return: none
+        :rtype: None
+        """
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert str(Subjects.hub_jwks()) in perm.publish
+        assert str(Subjects.hub_handshake()) in perm.publish
+
     def test_tool_pod_may_publish_namespace_discover(self) -> None:
         """a tool pod asks the broker which namespaces its caller can see.
 

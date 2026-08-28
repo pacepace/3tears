@@ -907,6 +907,14 @@ def _tool_pod(
         str(Subjects.tools_register()),
         str(Subjects.tools_heartbeat(p)),  # own pod only
         str(Subjects.tools_discover()),  # polls discovery during wait_until_ready
+        # a tool pod acting ON A CALL forwards that call's identity token and needs
+        # nothing of its own. Writing its OWN durable state is the case that has no
+        # inbound token to forward -- nobody's behalf to act on -- so the pod presents
+        # its provisioned key here and receives a short-lived hub-minted token, the
+        # same handshake an agent pod performs. Its self-minted token is verified
+        # against the pod's stored public key, NOT the hub's JWKS, so it is not
+        # interchangeable with this one and cannot stand in for it on the L3 path.
+        str(Subjects.hub_handshake()),
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify proxy assertions
         str(Subjects.audit_event("tool.call")),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
