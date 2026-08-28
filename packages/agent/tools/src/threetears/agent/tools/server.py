@@ -53,11 +53,7 @@ from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
-from threetears.core.namespaces import (
-    build_agent_namespace_name,
-    build_tool_namespace_name,
-    build_tool_namespace_name_or_none,
-)
+from threetears.core.namespaces import build_tool_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
 from threetears.core.security.identity_token import (
@@ -820,7 +816,6 @@ class ToolServer:
     def __init__(
         self,
         *,
-        namespace_collection: Any,
         nats_url: str = "",
         namespace: str = "3tears",
         nats_user: str | None = None,
@@ -909,36 +904,19 @@ class ToolServer:
         :ptype nats_client: NatsClient | None
         :param agent_id: owning-agent UUID for this pod. stamped on
             the ``owner_agent_id`` axis of every baseline ``tool.call``
-            audit envelope emitted from :meth:`handle_call` and on
-            every tool namespace row emitted from
-            :meth:`register_tool`. ``None`` in platform-spun ToolServers
-            (platform built-in tool pods have no owning agent); each
-            namespace row then lands with ``owner_agent_id=NULL``
-            matching the ``shared``-type namespace shape.
+            audit envelope emitted from :meth:`handle_call`, and carried
+            on the registration manifest so the HUB-side
+            ``ToolNamespaceEmitter`` can scope the ``namespaces`` rows
+            it writes. ``None`` in platform-spun ToolServers (platform
+            built-in tool pods have no owning agent); each namespace row
+            then lands with ``owner_agent_id=NULL`` matching the
+            ``shared``-type namespace shape.
         :ptype agent_id: UUID | None
-        :param customer_id: owning-customer UUID stamped on every
-            tool namespace row emitted by :meth:`register_tool`.
-            paired with ``agent_id``: agent-spun pods carry both,
-            platform-spun pods carry neither and emit with
-            ``customer_id=NULL``.
+        :param customer_id: owning-customer UUID carried on the
+            registration manifest beside ``agent_id``: agent-spun pods
+            carry both, platform-spun pods carry neither and the hub
+            writes their rows with ``customer_id=NULL``.
         :ptype customer_id: UUID | None
-        :param namespace_collection: three-tier
-            :class:`NamespaceCollection` from the agent-side stack.
-            :meth:`register_tool` calls
-            :meth:`NamespaceCollection.save_entity` with a
-            :class:`NamespaceEntity` of type ``tool`` so the unified
-            rbac evaluator can resolve per-call authorization against
-            a first-class namespace id; :meth:`deregister_tool` calls
-            :meth:`NamespaceCollection.delete`. typed ``Any`` at this
-            boundary because :mod:`threetears.agent.tools` sits below
-            the consumer hub's broker namespaces in the import graph;
-            the concrete Collection is wired by the bootstrap caller.
-            ``None`` suppresses emission entirely — reserved for
-            in-process tests and standalone dev that never touch
-            ``namespaces``; production callers MUST supply a
-            Collection or namespace materialization silently falls
-            behind and rbac resolution fails open.
-        :ptype namespace_collection: Any
         :param jwks_refresh: optional zero-arg coroutine triggering ONE
             immediate, debounced + rate-limited Hub JWKS refresh, returning
             whether it ran (typically
@@ -1034,7 +1012,6 @@ class ToolServer:
         # reactive Hub-rekey self-heal: ``serve()`` wires this to the owned provider's refresh_now
         # when self-provisioning; an injected-provider caller may pass one or leave it None (inert).
         self._jwks_refresh = jwks_refresh
-        self._namespace_collection = namespace_collection
         # the pod's single object store (None when no S3 configured); installed on
         # every per-call ToolCallScope so producing tools reach it ambiently.
         self._object_store = object_store
@@ -1763,12 +1740,16 @@ class ToolServer:
         before :meth:`serve` has connected NATS: the removal still
         happens and the publish step is skipped.
 
-        namespace-task-01 phase 2 / three-tier-task-01 phase F: on
-        successful removal, every paired tool ``namespaces``
-        row for that family is deleted via
-        :meth:`NamespaceCollection.delete` so no stale namespace
-        stays in play after the tool leaves. deletion failures raise
-        so callers see the wiring gap.
+        **the pod deletes no ``namespaces`` row, and must not.** it
+        used to: a paired row was removed per ``name@version`` key
+        through :meth:`NamespaceCollection.delete`, which was passed a
+        BARE uuid against a collection keyed on the composite
+        ``(row_scope, namespace_id)`` -- so every deregister raised
+        ``ValueError: primary key arity mismatch`` and stale-tool
+        pruning threw. the write had already moved anyway: the hub
+        reconciles tool namespaces off this manifest, under a verified
+        signature, so the manifest publish below is the whole of what
+        deregistration owes the platform.
 
         :param tool_name: namespaced ``mcp_name`` (without the
             ``@version`` suffix) identifying the family of tool
@@ -1776,171 +1757,11 @@ class ToolServer:
         :ptype tool_name: str
         :return: true when one or more registrations were removed
         :rtype: bool
-        :raises Exception: when namespace row deletion fails
         """
-        removed_keys = [key for key in self._tools if key.startswith(f"{tool_name}@")]
         removed = self.unregister(tool_name)
         if removed and self._nc is not None:
             await self.publish_registration()
-        if removed:
-            await self._delete_tool_namespace(tool_name, removed_keys)
         return removed
-
-    async def _emit_tool_namespace(self, tool: TearsTool) -> None:
-        """upsert ``namespaces`` row for a registered tool.
-
-        every registered tool materializes as a ``tool``-type namespace
-        so the unified rbac evaluator has a first-class id to evaluate
-        against in the Registry proxy hot path. row identity follows
-        the same naming convention as workspace namespace rows
-        (``<type>:<id>``): here the id is the tool's mcp_name plus
-        version, matching the dispatch key the Registry uses.
-
-        platform-built-in tools have ``agent_id=None`` and
-        ``customer_id=None``; the row lands with both owner columns
-        NULL so an admin grant can reach every customer. agent-spun
-        tools carry both, scoping the grant surface to the owning
-        customer.
-
-        writes through
-        :meth:`NamespaceCollection.save_entity` (three-tier-task-01
-        phase F): the Collection rides the agent's main NATS-proxy
-        pool so the broker admits the write under the caller's own
-        ``agent.<hex>`` namespace, and the paired uuid5 id keyed on
-        ``(mcp_name, version, agent_id_hex)`` lets concurrent
-        registrations converge via ``ON CONFLICT (id) DO UPDATE``.
-
-        :param tool: registered :class:`TearsTool`
-        :ptype tool: TearsTool
-        :return: nothing
-        :rtype: None
-        :raises Exception: when the Collection rejects the upsert;
-            raised unchanged so callers see the wiring gap
-        """
-        if self._namespace_collection is None:
-            return
-        schema = tool.mcp_schema()
-        # a tool's mcp name is an unvalidated ``str`` -- nothing between
-        # ``TearsTool`` and here constrains it -- so one that cannot
-        # compose a namespace name reaches this. it is refused per TOOL
-        # rather than allowed to raise, because this runs across a whole
-        # registration and one malformed tool must not stop every other
-        # tool on the same pod from getting its row.
-        name = build_tool_namespace_name_or_none(schema.name, schema.version)
-        if name is None:
-            log.warning(
-                "tool namespace not emitted: %r at version %r cannot address a namespace",
-                schema.name,
-                schema.version,
-            )
-            return
-        now = datetime.now(UTC)
-        namespace_id = tool_namespace_id(
-            schema.name,
-            schema.version,
-            self._agent_id,
-        )
-        # natural-identity metadata: the canonical ``name`` column is
-        # sanitized (``tools.<sanitized-mcp>.<sanitized-version>``);
-        # operators write yaml ``access.tools`` patterns in the
-        # pre-sanitized form (``example.admin.*``) and downstream
-        # consumers (registry authorizer lookup, hub access
-        # materializer) match patterns against this metadata. keeping
-        # ``mcp_name`` / ``mcp_version`` on the row decouples the
-        # rbac surface from the sanitization rules and makes
-        # platform-wide pattern matching uniform across rows emitted
-        # by every code path (this server-side path, the hub-side
-        # ``ToolNamespaceEmitter``).
-        entity = self._namespace_collection.entity_class(
-            {
-                "namespace_id": namespace_id,
-                "name": name,
-                "namespace_type": "tool",
-                "owner_agent_id": self._agent_id,
-                # the ownership key. a row written without it is a row
-                # the emitting pod cannot reach through the ownership
-                # short-circuit, and the hub's write gate refuses an
-                # owner that is not the caller's own namespace. a
-                # PLATFORM pod carries no agent id and so records no
-                # owner -- those rows are reached by grant, not by
-                # ownership.
-                "owner_namespace": (build_agent_namespace_name(self._agent_id) if self._agent_id is not None else None),
-                "customer_id": self._customer_id,
-                "schema_name": None,
-                "metadata": {
-                    "mcp_name": schema.name,
-                    "mcp_version": schema.version,
-                },
-                "tool_eligible": bool(getattr(tool, "tool_eligible", True)),
-                "skill_eligible": bool(getattr(tool, "skill_eligible", False)),
-                "date_created": now,
-                "date_updated": now,
-            },
-            is_new=True,
-            collection=self._namespace_collection,
-        )
-        await self._namespace_collection.save_entity(entity)
-        log.info(
-            "emitted tool namespace",
-            extra={
-                "extra_data": {
-                    "tool_name": schema.name,
-                    "tool_version": schema.version,
-                    "namespace_name": name,
-                    "namespace_id": str(namespace_id),  # convert at border: emitted-tool-namespace log extra_data field
-                    "owner_agent_id": (str(self._agent_id) if self._agent_id is not None else None),
-                    "customer_id": (str(self._customer_id) if self._customer_id is not None else None),
-                }
-            },
-        )
-
-    async def _delete_tool_namespace(
-        self,
-        mcp_name: str,
-        removed_keys: list[str],
-    ) -> None:
-        """delete ``namespaces`` rows for deregistered tool versions.
-
-        three-tier-task-01 phase F: translates the family-level
-        deregister into a sequence of
-        :meth:`NamespaceCollection.delete` calls, one per
-        ``name@version`` key removed from the in-memory registry. the
-        deterministic :func:`uuid5` derivation makes resolution a pure
-        client-side computation keyed on
-        ``(mcp_name, version, agent_id_hex)`` so no broker lookup is
-        needed before the delete.
-
-        :param mcp_name: tool mcp name (without version suffix)
-        :ptype mcp_name: str
-        :param removed_keys: ``name@version`` keys that were present
-            in the in-memory registry before :meth:`unregister` ran;
-            each produces one delete against the Collection
-        :ptype removed_keys: list[str]
-        :return: nothing
-        :rtype: None
-        :raises Exception: when the Collection rejects the delete
-        """
-        if self._namespace_collection is None:
-            return
-        for key in removed_keys:
-            _, _, version = key.partition("@")
-            namespace_id = tool_namespace_id(
-                mcp_name,
-                version,
-                self._agent_id,
-            )
-            await self._namespace_collection.delete(namespace_id)
-            log_namespace_id = str(namespace_id)  # convert at border: deleted-tool-namespace log extra_data field
-            log.info(
-                "deleted tool namespace",
-                extra={
-                    "extra_data": {
-                        "mcp_name": mcp_name,
-                        "tool_version": version,
-                        "namespace_id": log_namespace_id,
-                    }
-                },
-            )
 
     @traced()
     async def publish_registration(self, *, learn_identity: bool = False) -> None:

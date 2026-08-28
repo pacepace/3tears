@@ -16,7 +16,7 @@ Agent-spun ToolServers stamp `agent_id` + `customer_id` on the `RegistrationMani
 
 The canonical `name` shape is `tools.<sanitized-mcp>.<sanitized-version>` (per `build_namespace_name`); `metadata` carries the pre-sanitized natural-identity fields `mcp_name` / `mcp_version` / `pod_id` so downstream pattern matching (platform access materializer agent.yaml `access.tools` patterns + registry authorizer canonical-name lookup) does not need to reverse the sanitization rules. Deterministic `uuid5` derived from `(mcp_name, version, owner_agent_id_hex)` keeps concurrent emitters race-safe via `ON CONFLICT (id) DO UPDATE`.
 
-The `ToolServer.register_tool` / `deregister_tool` helpers still emit through an injected `namespace_collection` for callers that wire one explicitly, but in production deployments the platform-side emitter is the source of truth and the in-process emission is redundant.
+`ToolServer` holds no `NamespaceCollection` and has no constructor parameter to take one: `register_tool` / `deregister_tool` publish the manifest and nothing else. The pod-side emitter that once wrote and deleted these rows is deleted -- its write could not land (the agent's L3 proxy resolves platform-scoped writes to the per-agent `agent_<hex>` schema, which has no `namespaces` table) and its delete raised on every call (it passed a bare `UUID` to a Collection keyed on the composite `(row_scope, namespace_id)`). `packages/agent/tools/tests/enforcement/test_no_agent_side_namespace_writes.py` fails a build that brings any of it back.
 
 ## Installation
 

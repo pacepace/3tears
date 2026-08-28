@@ -61,7 +61,7 @@ def _request(**overrides: Any) -> CallRequest:
 
 def _server(**kwargs: Any) -> ToolServer:
     """a tool server with no NATS wired, configured with the given guards."""
-    return ToolServer(nats_url="nats://stub", namespace_collection=None, **kwargs)
+    return ToolServer(nats_url="nats://stub", **kwargs)
 
 
 # ---------------------------------------------------------------- §10.9 ----

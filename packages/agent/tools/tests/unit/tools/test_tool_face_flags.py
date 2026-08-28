@@ -128,7 +128,6 @@ class TestRegistrationManifestStampsFaceFlags:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_BaseStubTool())
@@ -149,7 +148,6 @@ class TestRegistrationManifestStampsFaceFlags:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_ApiMcpTool(name="test.api_mcp"))
@@ -172,7 +170,6 @@ class TestManifestFaceFlagRoundTrip:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_ApiMcpTool(name="test.api_mcp_roundtrip"))

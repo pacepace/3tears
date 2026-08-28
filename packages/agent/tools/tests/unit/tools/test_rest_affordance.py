@@ -164,7 +164,6 @@ def _server() -> ToolServer:
     return ToolServer(
         agent_id=uuid7(),
         customer_id=uuid7(),
-        namespace_collection=None,
         nats_url="nats://test:4222",
     )
 

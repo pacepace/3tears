@@ -121,7 +121,9 @@ def _server_with_nc(nc: object) -> ToolServer:
     :return: a server ready for the re-auth methods
     :rtype: ToolServer
     """
-    server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
+    server = ToolServer(
+        nats_url="nats://localhost:4222",
+    )
     # install the client on the server's NATS slot without dialing a real connection.
     setattr(server, "_nc", nc)
     return server
@@ -144,7 +146,9 @@ class TestReauthNatsOnce:
     @pytest.mark.asyncio
     async def test_skips_when_no_nats_client(self) -> None:
         """no nats_client -> no reconnect attempt (defensive no-op)."""
-        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
+        server = ToolServer(
+            nats_url="nats://localhost:4222",
+        )
         # _nc is None before serve(); must not raise.
         await server._reauth_nats_once()  # noqa: SLF001
 
@@ -279,7 +283,6 @@ class TestServeWiring:
             nats_url="nats://localhost:9999",
             namespace="testns",
             pod_id="reauth-pod",
-            namespace_collection=None,
         )
         mock_nc = _mock_owned_nc()
 
@@ -309,7 +312,6 @@ class TestServeWiring:
             nats_client=mock_nc,
             namespace="testns",
             pod_id="shared-pod",
-            namespace_collection=None,
         )
 
         serve_task = asyncio.create_task(server.serve())
