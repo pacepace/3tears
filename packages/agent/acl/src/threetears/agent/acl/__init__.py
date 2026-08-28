@@ -158,6 +158,8 @@ from threetears.agent.acl.collections import (
     ImpersonationGateCollection,
     ImpersonationGateStatus,
     NamespaceCollection,
+    NamespaceRescope,
+    NamespaceRescopeRefused,
     RoleAssignmentCollection,
     RoleCollection,
 )
@@ -302,6 +304,8 @@ __all__ = [
     "NamespaceCollection",
     "NamespaceEntity",
     "NamespaceNotFound",
+    "NamespaceRescope",
+    "NamespaceRescopeRefused",
     "PermissionCatalog",
     "PermissionEscalation",
     "PLATFORM_BUILTIN_PRE_CHECK_TOOL_NAMES",

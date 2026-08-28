@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json as _json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
@@ -83,6 +84,8 @@ __all__ = [
     "ImpersonationGateCollection",
     "ImpersonationGateStatus",
     "NamespaceCollection",
+    "NamespaceRescope",
+    "NamespaceRescopeRefused",
     "RoleAssignmentCollection",
     "RoleCollection",
 ]
@@ -1322,6 +1325,44 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
 # ---------------------------------------------------------------------------
 
 
+class NamespaceRescopeRefused(RuntimeError):
+    """raised when a re-scope would change WHICH customer owns a row.
+
+    :meth:`NamespaceCollection.rescope` exists for one transition:
+    ``customer_id`` going from absent to present, or present to absent, on a
+    row whose id and name do not move. Carrying a row from one customer to
+    another is a different act -- a re-tenanting -- and it is refused here
+    rather than expressed, because every grant, every derived schema name and
+    every audit record already written against the row names the customer it
+    is being moved away from.
+    """
+
+
+@dataclass(frozen=True)
+class NamespaceRescope:
+    """what a :meth:`NamespaceCollection.rescope` call decided about one row.
+
+    :ivar namespace_id: the row the call addressed
+    :ivar moved: whether THIS call was the one that wrote the move. ``False``
+        covers three different situations, all of them fine: no row exists
+        yet, the row is already in the target scope, or another replica moved
+        it between this call's read and its write
+    :ivar previous_row_scope: partition the row was in before, or ``None``
+        when no row existed
+    :ivar previous_customer_id: customer the row carried before, or ``None``
+        for a platform-scoped row and for a row that did not exist
+    :ivar row_scope: partition the row is in after the call
+    :ivar customer_id: customer the row carries after the call
+    """
+
+    namespace_id: UUID
+    moved: bool
+    previous_row_scope: str | None
+    previous_customer_id: UUID | None
+    row_scope: str
+    customer_id: UUID | None
+
+
 class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     """three-tier collection for ``namespaces`` rows.
 
@@ -1351,6 +1392,14 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "find_by_id",
             "list_tool_namespaces_for_actor",
             "list_skill_eligible_tool_namespaces",
+            # ``rescope`` is cross-partition BY CONSTRUCTION rather than by
+            # accident: it reads a row in one partition and writes it into the
+            # other. It is addressed by ``namespace_id`` -- the column the
+            # separate ``UNIQUE (namespace_id)`` index makes unambiguous
+            # platform-wide -- so there is no ``row_scope`` argument for the
+            # guard to find, and adding one would let a caller name a partition
+            # the row is not in.
+            "rescope",
         }
     )
     # v0.8.0 hygiene enrichment: ``metadata`` carries the test
@@ -1496,6 +1545,154 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 "row_scope": "platform" if customer_id is None else "customer",
             }
         return super().create(data)
+
+    async def rescope(
+        self,
+        namespace_id: UUID,
+        *,
+        customer_id: UUID | None,
+    ) -> NamespaceRescope:
+        """move one namespace row between the ``platform`` and ``customer`` partitions.
+
+        **Why this cannot be the ordinary upsert.** ``row_scope`` is DERIVED
+        from ``customer_id`` (``platform`` <-> ``customer_id IS NULL``) and it
+        is half the PRIMARY KEY, so a row that gains a customer changes its own
+        key. :meth:`save_entity`'s generated statement nominates
+        ``(row_scope, namespace_id)`` as its ``ON CONFLICT`` arbiter, which no
+        longer matches the stored row -- while the separate
+        ``UNIQUE (namespace_id)`` index the deploying app declares DOES. The
+        write is therefore not a conflict the upsert resolves; it is an
+        unretryable ``UniqueViolationError``, and re-issuing it never converges.
+        ``customer_id`` is additionally declared ``immutable=True``, so even a
+        matching arbiter would leave the column where it was.
+
+        **It is an UPDATE, never a delete-and-reinsert, and that is the whole
+        safety argument.** Grants reach a namespace by reference:
+        ``role_assignments.scope_namespace_id`` carries a foreign key to
+        ``namespaces(namespace_id)`` with ``ON DELETE CASCADE``. Removing the
+        row to write it again under the new scope would destroy every
+        assignment naming it -- including the operator-authored grants nothing
+        rebuilds -- with no write anything observes. An in-place UPDATE leaves
+        ``namespace_id`` and ``name`` untouched, so every reference survives
+        the move unchanged, and no grant is added or removed by it.
+
+        **What is refused.** A row already carrying a DIFFERENT customer raises
+        :class:`NamespaceRescopeRefused`. This method's transition is a
+        customer appearing or disappearing on a row that stays the same row;
+        carrying one company's namespace to another is a re-tenanting, and
+        every grant, schema name and audit record already written against the
+        row names the customer it would be moved away from.
+
+        **Concurrency.** The UPDATE fences on the partition this call read, so
+        two replicas converging on the same destination produce one write and
+        one no-op rather than two. The loser reports ``moved=False``, which is
+        the same answer it gets for "already in place" -- deliberately, because
+        both mean "this call changed nothing and the row is where it should
+        be". Nothing here retries: the caller re-attempts its own write, and
+        the row is already correct.
+
+        The pre-move composite key is evicted from L1 and L2 and announced to
+        other pods; leaving it would let a read addressed at the OLD partition
+        keep answering with the pre-move row for the life of the process.
+
+        :param namespace_id: the row to move, addressed by the column the
+            secondary unique index makes unique platform-wide
+        :ptype namespace_id: UUID
+        :param customer_id: the customer the row should belong to, or ``None``
+            to return it to the platform partition
+        :ptype customer_id: UUID | None
+        :return: what was decided, including whether this call wrote the move
+        :rtype: NamespaceRescope
+        :raises NamespaceRescopeRefused: when the row already belongs to a
+            different customer
+        """
+        target_scope = row_scope_for_customer(customer_id)
+        result = NamespaceRescope(
+            namespace_id=namespace_id,
+            moved=False,
+            previous_row_scope=None,
+            previous_customer_id=None,
+            row_scope=target_scope,
+            customer_id=customer_id,
+        )
+        if self.l3_pool is not None:
+            row = await self.l3_pool.fetchrow(
+                "SELECT row_scope, customer_id FROM namespaces WHERE namespace_id = $1",
+                namespace_id,
+            )
+            if row is not None:
+                result = await self._rescope_existing(
+                    namespace_id=namespace_id,
+                    customer_id=customer_id,
+                    target_scope=target_scope,
+                    previous_scope=str(row["row_scope"]),
+                    previous_customer=_coerce_uuid(row["customer_id"]),
+                )
+        return result
+
+    async def _rescope_existing(
+        self,
+        *,
+        namespace_id: UUID,
+        customer_id: UUID | None,
+        target_scope: str,
+        previous_scope: str,
+        previous_customer: UUID | None,
+    ) -> NamespaceRescope:
+        """decide and write the move for a row that is known to exist.
+
+        split from :meth:`rescope` so each half keeps one exit; the reasoning
+        for every branch is on that method.
+
+        :param namespace_id: the row being moved
+        :ptype namespace_id: UUID
+        :param customer_id: the customer the row should belong to
+        :ptype customer_id: UUID | None
+        :param target_scope: partition implied by ``customer_id``
+        :ptype target_scope: str
+        :param previous_scope: partition the row is in now
+        :ptype previous_scope: str
+        :param previous_customer: customer the row carries now
+        :ptype previous_customer: UUID | None
+        :return: what was decided
+        :rtype: NamespaceRescope
+        :raises NamespaceRescopeRefused: on a customer-to-customer move
+        """
+        if previous_customer is not None and customer_id is not None and previous_customer != customer_id:
+            raise NamespaceRescopeRefused(
+                f"namespaces.{namespace_id}: refusing to re-tenant a row from customer "
+                f"{previous_customer} to customer {customer_id}. rescope moves a row "
+                f"between the platform and customer partitions; it does not carry a "
+                f"namespace, its grants or its derived schema name between customers",
+            )
+        moved = False
+        if previous_scope != target_scope or previous_customer != customer_id:
+            # ``required_l3_pool`` rather than ``l3_pool``: the caller only
+            # reaches this method having READ a row through the pool, so a
+            # ``None`` here would be a wiring change that broke the read too,
+            # and it names that rather than raising an attribute error.
+            written = await self.required_l3_pool.fetchrow(
+                "UPDATE namespaces"
+                "   SET row_scope = $1, customer_id = $2, date_updated = $3"
+                " WHERE namespace_id = $4 AND row_scope = $5"
+                " RETURNING namespace_id",
+                target_scope,
+                customer_id,
+                datetime.now(UTC),
+                namespace_id,
+                previous_scope,
+            )
+            moved = written is not None
+            if moved:
+                await self.invalidate_cache((previous_scope, namespace_id))
+        return NamespaceRescope(
+            namespace_id=namespace_id,
+            moved=moved,
+            previous_row_scope=previous_scope,
+            previous_customer_id=previous_customer,
+            row_scope=target_scope,
+            customer_id=customer_id,
+        )
 
     async def find_by_id(
         self,
