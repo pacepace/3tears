@@ -875,6 +875,22 @@ class TestNoRegistrationPathIsUnfiltered:
     rather than special-cased.
     """
 
+    #: the name this pair is argued over. A SINGLE-OWNER provider, deliberately:
+    #: ``threetears`` reads as the natural example and is the one stem that must
+    #: never appear here, because it is the FRAMEWORK namespace -- co-hosted by the
+    #: shared built-in pod and by every agent's in-process ToolServer -- and using
+    #: it as an ownable example is what produced a landing that refused every
+    #: agent's builtins. See
+    #: ``test_the_framework_namespace_has_no_single_owner.py``.
+    _TOOL = [
+        {
+            "name": "pentest.sqlmap",
+            "version": "1.0.0",
+            "description": "sqlmap tool",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+    ]
+
     @pytest.mark.asyncio
     async def test_open_mode_admits_because_the_graph_is_empty(self) -> None:
         """no authenticator, no graph, nothing to enforce -- and no exemption either."""
@@ -882,13 +898,13 @@ class TestNoRegistrationPathIsUnfiltered:
         handler = RegistrationHandler(catalog, namespace="test")
         nc = _make_registry_nc()
         await handler.start(nc)
-        msg = _make_nats_msg(_make_manifest().model_dump_json().encode("utf-8"))
+        msg = _make_nats_msg(_make_manifest(tools=self._TOOL).model_dump_json().encode("utf-8"))
 
         await handler.handle_registration(msg)
 
         reply = nc.publish_reply.call_args.kwargs["message"]
         assert reply.success is True
-        assert reply.registered_tools == ["threetears.calculator@1.0.0"]
+        assert reply.registered_tools == ["pentest.sqlmap@1.0.0"]
 
     @pytest.mark.asyncio
     async def test_the_same_name_is_refused_once_the_graph_names_an_owner(self) -> None:
@@ -899,17 +915,17 @@ class TestNoRegistrationPathIsUnfiltered:
         registering pod does not own.
         """
         catalog = ToolCatalog()
-        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=[], other_nodes=["threetears"])
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=[], other_nodes=["pentest"])
         handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
         nc = _make_registry_nc()
         await handler.start(nc)
-        msg = _make_nats_msg(_manifest_with_token(None).model_dump_json().encode("utf-8"))
+        msg = _make_nats_msg(_manifest_with_token(None, tools=self._TOOL).model_dump_json().encode("utf-8"))
 
         await handler.handle_registration(msg)
 
         reply = nc.publish_reply.call_args.kwargs["message"]
         assert reply.success is False
-        assert catalog.get("threetears.calculator@1.0.0") is None
+        assert catalog.get("pentest.sqlmap@1.0.0") is None
 
 
 class TestAnUnreadableOwnershipGraphRefuses:
