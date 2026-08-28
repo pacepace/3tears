@@ -6,7 +6,7 @@ Asked with a raw ``name.startswith(node)`` it has a standing bug: the
 node's characters can be shared by a sibling, so ``pentest`` reaches
 ``pentestimposter`` and ``threetears`` reaches ``threetearsimposter``.
 That was worked around at the VALUE level for a while -- every
-``allowed_namespaces`` entry carried a trailing dot, so the raw prefix
+tool-pod namespace entry carried a trailing dot, so the raw prefix
 test happened to be segment-aware -- which left a namespace written
 without the dot silently wider than it looks.
 

@@ -288,9 +288,9 @@ def namespace_contains(node: str, name: str) -> bool:
     the only character that may follow the node is the separator
     itself, so ``pentest`` reaches ``pentest.sqlmap`` and can never
     reach ``pentestimposter.sqlmap``. a raw ``name.startswith(node)``
-    reaches both, which is why every ``allowed_namespaces`` value used
-    to be written with a trailing dot -- a value-level workaround for a
-    gap in the comparison. the workaround is not accommodated here: a
+    reaches both, which is why every tool-pod namespace value used to be
+    written with a trailing dot -- a value-level workaround for a gap in
+    the comparison. the workaround is not accommodated here: a
     node written ``pentest.`` matches nothing, so the old shape fails
     visibly instead of silently.
 
@@ -428,9 +428,10 @@ def build_tool_namespace_name(mcp_name: str, version: str) -> str:
 def build_tool_provider_node_name(stem: str) -> str:
     """build the canonical ``namespaces.name`` of a tool PROVIDER node.
 
-    the shape is ``tools.<stem>``, where the stem is written exactly as
-    ``tool_pods.allowed_namespaces`` holds it -- a NODE, with no
-    trailing separator and no glob (``pentest``, ``aibots.admin``). the
+    the shape is ``tools.<stem>``, where the stem is written exactly as a
+    tool pod's own declaration holds it (``tool_pods.declared_namespaces``
+    on the aibots hub) -- a NODE, with no trailing separator and no glob
+    (``pentest``, ``aibots.admin``). the
     node lives in the same name space as the tools beneath it, so
     :func:`namespace_contains` has something to bite on: ``tools.pentest``
     contains ``tools.pentest.sqlmap.1-0-0`` and can never contain

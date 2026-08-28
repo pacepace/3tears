@@ -57,7 +57,7 @@ _NS = "fwdgrant"
 _POD_ID = "01947100-0000-7000-8000-0000000000a1"
 _HUB_CONN = "hub-1"
 
-#: the tool-name NODE this pod's ``allowed_namespaces`` row authorizes it to serve. a NODE,
+#: the tool-name NODE this pod OWNS and therefore serves. a NODE,
 #: never a registered tool namespace name -- the grant is minted at connect from the row.
 _GRANTED_NODE = "scrape-zone_alpha"
 #: a peer network zone's tool, registered by a DIFFERENT pod set. serving it would be a reach

@@ -1,6 +1,6 @@
 """Integration test: the tool-namespace HITL grant delivers, and its absence fails SILENTLY.
 
-The tool-pod HITL grants are minted from a pod's ``allowed_namespaces`` row
+The tool-pod HITL grants are minted from the provider nodes a pod owns
 (:func:`threetears.nats.subject_permissions.build_permissions` with ``tool_namespaces=``), and every
 test of them so far asserts on the JWT's grant STRINGS or on a foreign family being refused. Neither
 proves the property the grant exists for: that the presence or absence of ``tool_namespaces`` is the
@@ -53,7 +53,7 @@ pytestmark = pytest.mark.integration
 _NS = "hitlgrant"
 _CLIENT_LOGGER = "threetears.nats.client"
 
-#: the tool-name NODE the SERVING pod's ``allowed_namespaces`` row authorizes it for. a
+#: the tool-name NODE the SERVING pod OWNS and is therefore granted. a
 #: NODE, never a registered tool namespace name: these grants are minted at CONNECT and a
 #: tool leaf does not exist until REGISTRATION.
 _OWNED_NODE = "scrape-zone_alpha"
@@ -88,7 +88,7 @@ def _ungranted_permissions() -> PrincipalPermissions:
     """the SAME principal with no ``tool_namespaces`` at all -- no HITL family is granted.
 
     not a pod holding the wrong tool: a pod whose permissions were built without the argument, which
-    is what a caller that forgets to pass ``allowed_namespaces`` through actually produces.
+    is what a caller that forgets to pass the owned nodes through actually produces.
     """
     return build_permissions(Principal.TOOL_POD, pod_id=_POD_UNGRANTED)
 

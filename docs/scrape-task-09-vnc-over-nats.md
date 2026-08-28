@@ -160,7 +160,7 @@ that registers it is free to override this with its own namespaced name".
 **A pod cannot register a tool it is not entitled to.**
 `threetears.registry.registration.RegistrationHandler._authenticate_and_filter` verifies the pod's
 presented identity token against its stored key, then filters `manifest.tools` against
-`pod_auth.allowed_namespaces` by prefix match. Tools outside those namespaces are dropped and
+the provider nodes the pod OWNS (`pod_auth.owned_namespaces`), by segment-aware containment. Tools outside those namespaces are dropped and
 logged with the pod name and the rejected list, and a manifest with nothing left is refused
 outright with "no tools authorized for this pod's namespaces".
 
@@ -235,7 +235,7 @@ listed thing, not a parallel one.
 | Namespace naming and tenant column | `threetears.core.namespaces`, `namespaces.customer_id` | no HITL namespace type or plural prefix |
 | Round-trip and live-grant test harness | `packages/nats/tests/integration/`, `threetears.core.testing.fixtures` | none |
 | Zone as a tool identity | `ScrapeTool.mcp_name()` override seam, `tool_namespace_name` | none; a consuming wrapper names its own tool |
-| Refusing a pod that claims the wrong tool | `RegistrationHandler._authenticate_and_filter`, `allowed_namespaces` on the tool-pods row | none |
+| Refusing a pod that claims the wrong tool | `RegistrationHandler._authenticate_and_filter`, the provider nodes the pod owns | none |
 
 ---
 
@@ -298,7 +298,7 @@ any pod paint frames onto any session).
 is the exact pod-id grant above; the digest adds nothing to it. What it buys is a SUBSCRIBE grant
 separable per pod set (`pipe.a3f9c2....>` held apart from another tool's), so a future per-zone
 gateway is a grant change rather than a subject migration -- and, because the digest is computable
-from the tool-pods row's `allowed_namespaces`, a pod's publish grant can be an EXACT literal with
+from the provider nodes the pod owns, a pod's publish grant can be an EXACT literal with
 no wildcard in it at all. It is cheap now and expensive to retrofit, which is the argument for it.
 
 What it explicitly does NOT buy is legibility: `pipe.a3f9c2...` tells a reader nothing about which
@@ -500,7 +500,7 @@ evaluated by the same evaluator, with no second mechanism to keep in sync.
 
 **And a pod cannot claim a zone it was not given.**
 `RegistrationHandler._authenticate_and_filter` verifies the pod's identity token against its stored
-key and then filters its manifest against `allowed_namespaces` on the tool-pods row. A
+key and then filters its manifest against the provider nodes it owns. A
 general-internet pod misconfigured to register `scrape.zone_alpha` has those tools dropped
 server-side and logged, and is refused entirely if nothing survives. The enforcement is on the row,
 not on the pod's honesty.
@@ -557,7 +557,7 @@ hub derive the same token from the same tool. It is the identical move
 `Subjects.forward` and `Subjects.room` already make, for the identical reason.
 
 **And it makes the grant exact rather than wildcarded.** The hub mints a pod's permissions at
-connect time from the `allowed_namespaces` list on its tool-pods row -- the same list that filters
+connect time from the provider nodes it owns -- the same set that filters
 its registration. It can hash each entry and emit literal subject grants, so a pod's publish
 permission names precisely the tools it was authorized to serve and nothing else. One source of
 truth feeding both registration filtering and subject permissions.
@@ -600,7 +600,7 @@ from writing a grant that deliberately spans them, and an operator grant that sh
 must be namespace-scoped.
 
 **What is NOT verified, and should be known.** Nothing confirms that a pod registering
-`scrape.zone_alpha` is ACTUALLY placed on the zone-alpha network. `allowed_namespaces` proves it was
+`scrape.zone_alpha` is ACTUALLY placed on the zone-alpha network. Owning the node proves it was
 authorized to claim that identity; the network placement is a chart and NetworkPolicy fact. That is
 the same trust model as the rest of the deployment, but it means the chart entry and the
 `tool_pods` row must be provisioned as a pair, and a mismatch is silent. A later guard could have a
@@ -731,7 +731,7 @@ does not block anything here at `replicaCount: 1`.
 9. An operator entitled to a customer in one zone is refused that SAME customer's display in
    another zone, from the same evaluator. This is the criterion a customer-only namespace passes
    criterion 8 while failing, which is why it is written separately rather than folded in.
-10. A pod presenting a manifest for a tool outside its `allowed_namespaces` has that tool rejected
+10. A pod presenting a manifest for a tool outside the nodes it owns has that tool rejected
     at registration, so a zone cannot be joined by a pod that was not granted it.
 11. A tool whose name contains a space, a `*` or a `>` yields a subject token of `[0-9a-f]` only,
     and the permission minted for it is an exact literal rather than a wildcard. The hostile name is

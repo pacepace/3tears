@@ -592,8 +592,8 @@ def build_permissions(
     :ptype pod_id: str | None
     :param conn_id: a connection-unique id for the scoped inbox; defaults to ``pod_id``
     :ptype conn_id: str | None
-    :param tool_namespaces: the tool-name NODES this pod is authorized to serve -- the
-        ``allowed_namespaces`` list on its tool-pods row, the same list
+    :param tool_namespaces: the tool-name NODES this pod OWNS -- resolved by the host from
+        its own ownership graph, the same answer
         ``RegistrationHandler._authenticate_and_filter`` filters its manifest against. NODES,
         never registered tool namespace names: each entry is rooted through
         :meth:`threetears.nats.Subjects.tool_provider_node` and becomes one EXACT per-node
@@ -888,14 +888,14 @@ def _tool_pod(
     ns = _ns()
     # human-in-the-loop session control plane: while a pod holds a display's claim it serves the
     # owner-routed session messages (open/complete a tab, read state, close the session) forwarded
-    # to it. one EXACT family literal per authorized PROVIDER NODE, minted by hashing the SAME
-    # ``allowed_namespaces`` entries that filter the pod's registration. a coarse ``{ns}.forward.>``
+    # to it. one EXACT family literal per OWNED PROVIDER NODE, minted by hashing the SAME
+    # nodes that filter the pod's registration. a coarse ``{ns}.forward.>``
     # would instead let any tool pod serve any owner-routed key in the namespace, and since the key
     # segment is a digest of an arbitrary application string there is nothing else in the subject
     # left to discriminate on. SUBSCRIBE only: the owner answers on the requester's reply inbox
     # under ``allow_responses`` and never originates a forward.
     #
-    # THE NODE IS THE KEY, AND IT USED TO BE THE TOOL LEAF. ``allowed_namespaces`` holds NODES
+    # THE NODE IS THE KEY, AND IT USED TO BE THE TOOL LEAF. what the host resolves is bare NODES
     # (``pentest``, ``aibots.admin``) and these grants are minted at CONNECT; a tool's registered
     # namespace name (``tools.pentest.sqlmap.1-0-0``) is minted at REGISTRATION and does not exist
     # yet here. The consumer used to derive its family from that leaf, so the grant named one

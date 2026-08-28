@@ -103,7 +103,7 @@ class TestTheForwardFamilyASessionRidesOn:
             # covered exactly when the family half matches one granted pattern.
             family_half = subject.rsplit(".", 1)[0]
             assert any(pattern.rsplit(".", 1)[0] == family_half for pattern in granted), (
-                f"the owner subscribes {subject!r}, which no grant minted from allowed_namespaces "
+                f"the owner subscribes {subject!r}, which no grant minted from the owned nodes "
                 f"{stem!r} covers. an ungranted subscribe is not refused anywhere the pod can see "
                 f"it -- it simply receives nothing, forever. granted: {sorted(granted)}"
             )

@@ -1,7 +1,7 @@
 """The human-in-the-loop family is keyed on the node a pod OWNS, not on a tool leaf.
 
 **The defect this closes, stated as the two values that never met.** A tool pod's
-human-in-the-loop grants are minted at CONNECT, from the ``allowed_namespaces`` column on
+human-in-the-loop grants are minted at CONNECT, from the provider nodes recorded for
 its ``tool_pods`` row -- and that column holds tool-name NODES (``pentest``,
 ``aibots.admin``), compared on a segment boundary by
 :func:`threetears.core.namespaces.namespace_contains`. The pod's own consumer, meanwhile,
@@ -33,7 +33,7 @@ from threetears.nats.subjects import Subjects, set_default_namespace
 
 _NS = "3tears"
 
-#: the node as ``tool_pods.allowed_namespaces`` holds it: no ``tools.`` prefix, no version,
+#: the node as a pod's own declaration holds it: no ``tools.`` prefix, no version,
 #: no trailing separator. this is what the auth callout hands ``build_permissions``.
 _STEM = "pentest"
 
@@ -146,7 +146,7 @@ class TestTheGrantAdmitsWhatTheOwnedNodeAddresses:
     def _pod(self, *stems: str) -> object:
         """permissions for a tool pod whose row authorizes ``stems``.
 
-        :param stems: ``allowed_namespaces`` entries, exactly as the column holds them
+        :param stems: declared provider stems, exactly as the column holds them
         :ptype stems: str
         :return: the resolved allow-list
         :rtype: PrincipalPermissions

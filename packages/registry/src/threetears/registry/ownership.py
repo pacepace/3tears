@@ -1,9 +1,9 @@
 """the one rule that decides which tool names a registering pod may claim.
 
 Registration used to answer that question three different ways. A token-bearing
-pod's tools were filtered against ``tool_pods.allowed_namespaces`` -- a text
-column naming what a pod was *permitted to register*, which is registration
-authority rather than ownership. A tokenless pod's tools were not filtered at
+pod's tools were filtered against the host's own tool-pod row -- a text column
+then named ``allowed_namespaces``, naming what a pod was *permitted to
+register*, which is registration authority rather than ownership. A tokenless pod's tools were not filtered at
 all, and that path is every agent's in-process ``ToolServer``, not a rare
 in-hub case. A registry constructed with no authenticator filtered nothing
 either.

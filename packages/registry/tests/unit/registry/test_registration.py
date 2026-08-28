@@ -582,7 +582,7 @@ class TestRegistrationHandlerAuthenticator:
         assert catalog.get("threetears.calculator@1.0.0") is None
 
     @pytest.mark.asyncio
-    async def test_tools_filtered_to_allowed_namespaces(self) -> None:
+    async def test_tools_filtered_to_owned_namespaces(self) -> None:
         """tools outside the pod's allowed namespaces are dropped; in-namespace tools survive."""
         catalog = ToolCatalog()
         auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["threetears"])
@@ -749,7 +749,7 @@ class TestTheManifestFilterComparesTheMcpName:
     """the manifest filter reads ``tool.name``, never a namespace name.
 
     the two live in the same conceptual space and are easy to confuse.
-    ``allowed_namespaces`` holds bare mcp-name NODES (``pentest``,
+    a pod's declaration holds bare mcp-name NODES (``pentest``,
     ``aibots.admin``, ``threetears``); ``tool.name`` is the mcp name a
     pod offers (``pentest.sqlmap``). The canonical
     ``namespaces.name`` -- ``tools.pentest.sqlmap.1-0`` -- is
@@ -830,7 +830,7 @@ class TestTheManifestFilterComparesTheMcpName:
 
     @pytest.mark.asyncio
     async def test_every_live_pod_allow_list_still_admits_its_own_tools(self) -> None:
-        """the four platform pods' live ``allowed_namespaces``, exercised.
+        """the four platform pods' live declarations, exercised.
 
         read off a running deployment. ``dipp`` is included in the
         trailing-dot spelling it actually carries there, and it admits

@@ -1470,8 +1470,8 @@ class Subjects:
         """root one tool-provider node at the ``tools.`` prefix, idempotently.
 
         **The one normalization that lets a grant and its consumer meet.** A tool pod's
-        human-in-the-loop grants are minted at CONNECT from the ``allowed_namespaces``
-        column on its ``tool_pods`` row, which holds bare tool-name NODES
+        human-in-the-loop grants are minted at CONNECT from the provider nodes the host
+        resolves it as owning, which are bare tool-name NODES
         (``pentest``, ``aibots.admin``). The pod itself learns the CANONICAL name of the
         provider namespace it owns -- ``tools.pentest`` -- on its registration reply. Both
         are the same node written two ways, and every family below is a digest, so without
@@ -1570,8 +1570,8 @@ class Subjects:
 
         **KEYED ON THE OWNED NODE, and it used to be keyed on the tool leaf.** It read the
         tool's REGISTERED namespace name (``tools.{mcp_name}.{version}``), which is minted
-        at REGISTRATION -- while a pod's grants are minted at CONNECT, from the
-        ``allowed_namespaces`` NODES on its ``tool_pods`` row. The two are different
+        at REGISTRATION -- while a pod's grants are minted at CONNECT, from the bare
+        NODES the host resolves the pod as owning. The two are different
         strings and this is a digest, so the grant named one subject and the pod
         subscribed another. That failure is invisible: an ungranted subscription is
         created client-side and simply receives nothing, forever.
@@ -1589,7 +1589,7 @@ class Subjects:
         subject would take a SHARE of its messages, not merely observe them.
 
         :param owned_node: the tool-name node the serving pod owns, with or without the
-            ``tools.`` prefix -- the ``allowed_namespaces`` entry on its row, or the
+            ``tools.`` prefix -- the bare stem its own declaration holds, or the
             canonical provider namespace name its registration reply carried back
         :ptype owned_node: str
         :return: the raw forward family for that node's sessions
@@ -1631,7 +1631,7 @@ class Subjects:
 
         ``owned_node`` is ROOTED through :meth:`tool_provider_node` and then hashed. Rooted
         because this subject's grant (:meth:`pipe_pod_wildcard`) is minted at connect from
-        the pod's ``allowed_namespaces`` NODES while the owner renders the concrete subject
+        the pod's owned NODES while the owner renders the concrete subject
         from the provider namespace it owns, and the two spellings must land on one digest.
         Hashed for the reason :meth:`forward_scoped` hashes its family: these values are
         operator-written and unvalidated, so one carrying a space, a ``*`` or a ``>`` would

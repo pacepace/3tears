@@ -65,7 +65,9 @@ class ToolPodAuth:
         **This is ownership, not permission.** It used to be
         ``allowed_namespaces`` -- a list of what a pod was allowed to
         register at, held in a text column beside the pod's row and
-        answerable only there. It is now resolved from the namespace
+        answerable only there. That column survives as a DECLARATION
+        under a name that says so (``tool_pods.declared_namespaces`` on
+        the aibots hub), and no longer decides anything. It is now resolved from the namespace
         GRAPH, the same rows a grant names and a schema is derived
         from, so registration and authorization can no longer disagree
         about who owns a provider.

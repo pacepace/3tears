@@ -228,7 +228,7 @@ class TestTheDisplayStreamRidesASubjectThePodIsGranted:
         for subject in served:
             family_half = subject.rsplit(".", 1)[0]
             assert any(pattern.rsplit(".", 1)[0] == family_half for pattern in granted), (
-                f"the pod subscribes {subject!r}, which no grant minted from allowed_namespaces "
+                f"the pod subscribes {subject!r}, which no grant minted from the owned nodes "
                 f"{stem!r} covers -- and an ungranted subscribe receives nothing rather than "
                 f"raising. granted: {sorted(granted)}"
             )

@@ -249,7 +249,7 @@ class TestNamespaceContains:
 
     def test_a_node_does_not_contain_a_sibling_sharing_its_prefix(self) -> None:
         # the bug class: a raw prefix test admits this, and it is why
-        # every allowed_namespaces value used to carry a trailing dot.
+        # every tool-pod namespace value used to carry a trailing dot.
         assert namespace_contains("tools.dipp", "tools.dippX.thing") is False
 
     def test_pentest_does_not_reach_pentestimposter(self) -> None:

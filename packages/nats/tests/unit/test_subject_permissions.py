@@ -511,7 +511,7 @@ class TestHitlApprovalBrokerGrants:
 class TestHitlSessionControlGrants:
     """the owner-routed session control plane a live display is driven over."""
 
-    #: tool-name NODES, exactly as ``tool_pods.allowed_namespaces`` holds them and as the auth
+    #: tool-name NODES, exactly as a pod's own declaration holds them and as the auth
     #: callout hands them to ``build_permissions``. NOT registered tool namespace names: those
     #: are minted at REGISTRATION and these grants at CONNECT, so a leaf here would describe a
     #: value the mint never sees. ``test_hitl_family_is_keyed_on_the_owned_node.py`` holds the
@@ -523,7 +523,7 @@ class TestHitlSessionControlGrants:
         return build_permissions(Principal.TOOL_POD, pod_id=_POD_X, tool_namespaces=namespaces)
 
     def test_pod_subscribes_an_exact_family_literal_per_authorized_tool(self) -> None:
-        """each ``allowed_namespaces`` entry becomes one grant, and only the key is wildcarded."""
+        """each owned NODE becomes one grant, and only the key is wildcarded."""
         perm = self._pod(self.ALPHA, self.BETA)
         for name in (self.ALPHA, self.BETA):
             expected = str(Subjects.forward_scoped_wildcard(Subjects.hitl_forward_family(name)))
