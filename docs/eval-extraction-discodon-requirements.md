@@ -481,8 +481,10 @@ Most of it does not need to be written down twice:
   registers what it sweeps has already enumerated what can be swept, and a
   surface absent from the registry is a surface no run can vary. The registry
   does double duty and cannot drift from itself.
-- The **toolworld's seed schema** is the representability map -- the state
-  dimensions a world accepts are the preconditions a scenario may presume.
+- The **world registry** of R12 is the representability map -- the state
+  dimensions a host registers are the preconditions a scenario may presume.
+  (Not the toolworld's seed schema: that slot holds a bare set of dimension
+  names, and a label list cannot be a map -- a bare name is a label, R8.)
 - **R9's content hash** answers whether a variation is even identifiable once
   made.
 
@@ -512,8 +514,10 @@ authoring; R10 asks for it as a mechanism rather than a habit.
 
 **Ownership splits three ways, and only one of them is 3tears'.** The *facts*
 originate in the consuming repo, because only the host knows what its own world
-can hold. The *schema, vocabulary and checker* belong in the package, or every
-consumer invents private words and no cross-product tooling can read them.
+can hold. The *grammar and checker* belong in the package, or no cross-product
+tooling can read a template; the *dimension vocabulary* is the host's -- the slot
+is shared, the vocabulary is the host's (R8), and a scenario nobody anticipated
+is a scenario over dimensions somebody registered.
 Development tooling is a **reader** -- a good surface for "here is what this
 template would presume that is not covered", and the wrong home for the source
 of truth, since it cannot be gated in CI and drifts without saying so.
@@ -547,10 +551,13 @@ written: no second list exists.
 
 **Still not built: representability and observability.** Both have predicates on the
 host profile and **no production caller**, which is the state most easily mistaken for
-done. Tracked as discodon **#2412** (the gate), with **#2433** and **#2421** on the two
-unreached predicates -- and #2412 keeps R10's own constraints (derive rather than
-maintain; the unit is a precondition, not an area; fidelity stays a test and gains no
-map entry).
+done. Representability's mechanism is now designed: **R12** replaces the bare-name
+`WorldSeedSchema` slot with the world registry, and discodon
+`.prawduct/artifacts/design-eval-world-contract.md` carries the design. Tracked as
+discodon **#2421** (first host implementation) and **#2412** (the gate) -- #2412 keeps
+R10's own constraints (derive rather than maintain; the unit is a precondition, not an
+area; fidelity stays a test and gains no map entry) -- with **#2433** on the unreached
+predicates.
 
 ## R11 -- the subject key declares the pooling boundary; the engine discloses the basis
 
@@ -610,6 +617,74 @@ without a value** -- so the disclosure could not be half-landed. `SubjectSnapsho
 display name into both makes the mistake visible in the data rather than absent from it.
 `subject_key_instabilities` warns at population level on one key under two labels or one
 label under two keys, classifying no single string. Take this shape.
+
+## R12 -- the world is a third registry: what a run may set is declared, proven, and classed per run
+
+**Property.** The engine ships a **world registry** in R8's shape, covering the axis R10
+names representable: the host registers each state dimension a run may set or a subject
+may perceive -- a name the engine never interprets, a JSON Schema for the value, opaque
+`seed` and `read` handles resolved through a binding table, `machine | labeled` evidence,
+the perceiving surface, `initial | triggered(turn | event | human)` timing, and required
+`matters` prose. The engine computes over registrations, knowing nothing about the host.
+At registration it computes capability (seedable x perceivable); at run time it computes
+what THIS run did -- *seeded* derived from the run's own seed record, *perceived* derived
+from the carriers actually attached for this subject, neither ever declared, because a
+declared mode can disagree with the run and cannot express the normal case of a run that
+seeds some dimensions and witnesses others.
+
+**Perceived-but-unseedable is witnessed world state, not an error.** The subject varies
+on it and the run does not control it -- a disclosure obligation and a pooling rule
+(declared and witnessed never pool into one cell; `family-convergence.md`'s
+declared|witnessed apparatus split, one axis over). Every existing design reports only
+"uncovered" here and loses the distinction between "no such concept" and "your subject
+sees this and your experiment does not control it" -- different findings, different
+remedies, and the second silently widens the variance of every run in a campaign.
+
+**The registry is the seeding path, not a description of one.** The runner stays
+host-side, so if the `seed` handle were a second path written for the contract's benefit,
+the conformance kit would prove a path no run takes. A host seeds through the registry or
+not at all: declaring is the seeding API, which is what makes an empty registry a
+checkable claim -- *this host seeds nothing* -- rather than a shrug.
+
+**Refused at registration**, because a registration can be wrong on its face: no
+`matters` prose (a bare name is a label); neither `seed` nor `perceived_by` (a field, not
+a dimension); `seed` without `read` (an instantiation nobody can verify took, declared at
+birth -- discodon's `music_catalog` is one, live in its tree today); a handle with no
+binding. scriob invented that last refusal independently (`validate_against_registry`) --
+convergent evidence these are the natural rules rather than one host's idiom.
+
+**Conformance is derived from shape, never one mandate with waivers.** The kit --
+round-trip, perception A/B, ambient isolation, vocabulary completeness, pairwise
+independence -- derives each dimension's obligations from its declared shape; every
+derived obligation is mandatory; `unproved` and `unavailable` name host capability gaps,
+never skips, and never render as proved. A mandate the hard hosts routinely waive becomes
+ceremony, and the hosts least like an in-memory dict are the ones this contract exists
+for -- samsung's world is a physical television reached by async RPC that can be asleep,
+so handles may resolve to awaitables and an unreachable device is not a false
+declaration.
+
+**The precondition language is closed grammar, open vocabulary** -- PDDL's split. The
+engine owns paths, comparisons, quantifiers and the ledger builtins; every dimension a
+host registers is immediately expressible with zero grammar change; host predicates
+register as pure functions with schemas and prose. A path roots at a dimension name and
+addresses that dimension's schema-shaped value, so how document-like a world looks to the
+language is the host's per-dimension choice -- the contract never decides what a world is
+made of.
+
+**Verify.** A toy host registers a dimension in each capability quadrant -- including a
+deliberately unseedable perceived one, because a fixture that cannot produce the
+dangerous quadrant proves nothing about it -- and the kit derives the right obligations
+for each shape; a template presuming an unregistered dimension fails authoring naming the
+dimension (R10's gate, now with a registry to resolve against); a run whose asserted
+precondition did not hold at t=0 is recorded and excluded, never silently scored; and
+declared and witnessed observations never pool.
+
+**Status: designed, not built** -- discodon
+`.prawduct/artifacts/design-eval-world-contract.md`, owner-ruled 2026-08-27, paper-walked
+against metallm, samsung-frame-art-loader and scriob before any code. The record shape,
+the two-level algebra, the shape-derived conformance table, and the integration seams
+(stimulus-not-variant, replay identity, name-set versioning) live there. Discodon is the
+first host implementation (#2421); the gate is #2412. Requirement precedes code.
 
 ## Two host norms that do not cross into the package
 

@@ -607,6 +607,11 @@ discodon's NATS convergence and sits outside this sequence.)
 
   Outstanding:
 
+  - **Representability is designed, not built** -- R12 (the world registry) replaces
+    the bare-name `WorldSeedSchema` slot; design at discodon
+    `.prawduct/artifacts/design-eval-world-contract.md` (owner-ruled 2026-08-27,
+    paper-walked against metallm, samsung-frame-art-loader and scriob). discodon
+    #2421 is the first host implementation, #2412 the gate.
   - **`universe` → `scope`** -- half done. The shared-contract half shipped
     (`scope_ids`, `Observation.scope_id`); `AnalysisContextBundle.universe_id` and
     `identity.py`'s `id_universe` remain, as shrink-only allowlisted debt under a
