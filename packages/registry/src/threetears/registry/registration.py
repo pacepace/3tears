@@ -12,16 +12,23 @@ catalog but its NATS subscription has not yet propagated.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from threetears.agent.tools.server import RegistrationManifest
+from threetears.agent.tools.server import RegistrationManifest, RegistrationResponse
+from threetears.core.namespaces import (
+    build_agent_namespace_name,
+    build_tool_provider_node_name,
+)
 from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.ownership import tool_is_registrable
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient, Subscription
@@ -30,6 +37,10 @@ __all__ = [
     "ProbeRequest",
     "ProbeResponse",
     "RegistrationHandler",
+    # RE-EXPORTED, not defined here. It lives beside ``RegistrationManifest`` in
+    # ``threetears.agent.tools.server`` because the POD is what parses it, and this
+    # package depends on that one rather than the other way round. Kept in ``__all__``
+    # so ``from threetears.registry import RegistrationResponse`` still resolves.
     "RegistrationResponse",
 ]
 
@@ -65,23 +76,63 @@ class ProbeResponse(BaseModel):
     ready: bool = True
 
 
-class RegistrationResponse(BaseModel):
-    """response sent back to registering pod.
+def _provider_node_names(nodes: "Iterable[str]", pod_id: str) -> tuple[str, ...]:
+    """canonical names of the provider nodes one verified pod owns.
 
-    :param success: whether registration succeeded
-    :ptype success: bool
-    :param pod_id: identifier of pod that attempted registration
+    A host may hold ownership as a bare NODE (``pentest``, ``aibots.admin``) or as
+    the canonical namespace ROW it was materialized as (``tools.pentest``).
+    :func:`build_tool_provider_node_name` accepts either and returns the canonical
+    form -- it is the one builder, shared with the subject layer that mints the
+    pod's grants, so the name the pod is told and the family its grant was keyed on
+    cannot drift.
+
+    **A value that cannot compose a name is DROPPED rather than raised on.** The
+    ownership record is written elsewhere and this process does not own its
+    validation, so one malformed entry must not refuse a registration whose other
+    nodes are good. The pod simply learns nothing about that entry, and -- because
+    the same tuple is what its tools are filtered against -- reaches nothing under
+    it either. Logged, because a node nobody can name is a node whose sessions will
+    never arrive.
+
+    :param nodes: the ownership record's entries, in row order
+    :ptype nodes: Iterable[str]
+    :param pod_id: the registering pod's id, for the diagnostic
     :ptype pod_id: str
-    :param registered_tools: list of full_name values successfully registered
-    :ptype registered_tools: list[str]
-    :param error: error message if registration failed
+    :return: canonical provider-node names, in row order, malformed entries dropped
+    :rtype: tuple[str, ...]
+    """
+    names: list[str] = []
+    for node in nodes:
+        try:
+            names.append(build_tool_provider_node_name(node))
+        except ValueError as exc:
+            log.warning(
+                "tool pod ownership entry names no provider node; the pod is told "
+                "nothing about it, reaches nothing under it, and any human-in-the-loop "
+                "session under it will never arrive",
+                extra={"extra_data": {"pod_id": pod_id, "entry": node, "error": str(exc)}},
+            )
+    return tuple(names)
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthOutcome:
+    """what authentication decided, and the self-identity it resolved on the way.
+
+    Two values rather than one because they are answered by the SAME lookup and must not be
+    answered by two: ``verify_pod`` is a network round trip against the pod's row, and
+    calling it twice to learn a second thing about one registration is both slower and a
+    place for the two answers to disagree.
+
+    :param error: the refusal to send back, or ``None`` when the pod is admitted
     :ptype error: str | None
+    :param owned_namespaces: canonical names of the namespaces this pod owns, empty when
+        none could be resolved
+    :ptype owned_namespaces: tuple[str, ...]
     """
 
-    success: bool
-    pod_id: str
-    registered_tools: list[str] = []
-    error: str | None = None
+    error: str | None
+    owned_namespaces: tuple[str, ...]
 
 
 class RegistrationHandler:
@@ -224,16 +275,19 @@ class RegistrationHandler:
                 )
             return
 
-        auth_error = await self._authenticate_and_filter(manifest)
-        if auth_error is not None:
+        outcome = await self._authenticate_and_filter(manifest)
+        if outcome.error is not None:
             log.warning(
                 "registration rejected: auth failed",
-                extra={"extra_data": {"pod_id": manifest.pod_id, "error": auth_error}},
+                extra={"extra_data": {"pod_id": manifest.pod_id, "error": outcome.error}},
             )
+            # a refusal names NOTHING. handing a rejected pod its self-identity as a
+            # consolation would leak which nodes exist to a caller that just failed to
+            # prove it holds any of them.
             response = RegistrationResponse(
                 success=False,
                 pod_id=manifest.pod_id,
-                error=auth_error,
+                error=outcome.error,
             )
             if msg.reply_subject is not None:
                 await self._nc.publish_reply(
@@ -248,6 +302,12 @@ class RegistrationHandler:
             success=True,
             pod_id=manifest.pod_id,
             registered_tools=registered,
+            # SELF-IDENTITY. The pod's subject grants were minted at connect from the row
+            # this handler just read, and the pod never sees that row -- so without this it
+            # holds only tool LEAVES and derives its human-in-the-loop family from a value
+            # no grant was keyed on. Derived from the verified auth context, never from the
+            # manifest, so a pod cannot name a namespace it does not own.
+            owned_namespaces=list(outcome.owned_namespaces),
         )
         if msg.reply_subject is not None:
             await self._nc.publish_reply(
@@ -264,94 +324,191 @@ class RegistrationHandler:
             },
         )
 
-    async def _authenticate_and_filter(self, manifest: RegistrationManifest) -> str | None:
-        """authenticate tool pod and filter tools to allowed namespaces.
+    async def _authenticate_and_filter(self, manifest: RegistrationManifest) -> _AuthOutcome:
+        """authenticate the pod, filter its tools by OWNERSHIP, and resolve its self-identity.
 
-        if no authenticator is configured, all tools are allowed (open mode).
+        **One rule, on every path.** This used to answer three different questions.
+        A pod carrying a token had its tools prefix-filtered against a text column
+        naming what it was permitted to register; a TOKENLESS pod -- every agent's
+        in-process ``ToolServer``, not a rare in-hub case -- returned here before
+        any filtering ran; and a handler built with no authenticator returned
+        before that. All three now go through
+        :func:`~threetears.registry.ownership.tool_is_registrable`, which asks the
+        namespace GRAPH who owns the most specific provider node containing the
+        offered name. See that module for the rule and for why an empty graph
+        enforces nothing.
 
-        with an authenticator configured, verification is gated on token PRESENCE:
+        Authentication itself is unchanged and still gated on token PRESENCE:
 
-        * a manifest carrying a token -- a PLATFORM tool pod under per-key identity, which self-mints
-          an identity JWT and presents it here -- has that RAW token passed to
-          :meth:`ToolPodAuthenticator.verify_pod`, which VERIFIES it against the pod's stored key;
-          tools are then filtered to the pod's allowed_namespaces. verification failure REJECTS. the
-          token is no longer sha256-hashed -- a hashed opaque token could not be cryptographically
-          verified.
-        * a TOKENLESS manifest is ADMITTED unchanged. This is the AGENT-OWNED in-process tool pod: it
-          registers over the agent's own NATS connection, which the auth-callout already authenticated
-          per-key as an AGENT (issuer ``aibots-agent-pod``), so its identity is enforced at the NATS
-          layer, not here -- and it is not a row in the platform ``tool_pods`` table this authenticator
-          verifies against, so it could never present a tool-pod token anyway. Admitting it preserves
-          the pre-cutover behaviour for agent-owned pods while per-key verification is enforced for the
-          platform tool pods this authenticator governs. (Boundary flagged: the registry cannot see the
-          publisher's NATS identity from the manifest, so token-presence is the discriminator; a future
-          refinement could have agent-owned pods stamp ``owner_agent_id`` as a positive marker.)
+        * a manifest carrying a token is a PLATFORM tool pod under per-key identity.
+          The RAW token goes to :meth:`ToolPodAuthenticator.verify_pod`, which
+          verifies it against the pod's stored key; failure REJECTS.
+        * a TOKENLESS manifest is the AGENT-OWNED in-process pod. It registers over
+          the agent's own NATS connection, which the auth-callout already
+          authenticated per-key as an AGENT, so its identity is enforced at the
+          transport; it holds no row in the host's tool-pod store and could never
+          present a token. It is still ADMITTED as a principal -- what changed is
+          that it is no longer admitted as an owner of everything.
+
+        **Two different tuples, deliberately not merged.** ``owned_nodes`` is what
+        the filter compares against: the PROVIDER nodes this pod owns, empty for
+        an agent-owned pod because an agent owns none. ``self_identity`` is what
+        travels back on the reply so the pod can key its human-in-the-loop
+        subscriptions on the same node its grants were minted from -- for an
+        agent-owned pod that is ``agents.<uuid>``, which is an ownership edge
+        rather than a name-containment one and must never be handed to the filter.
 
         :param manifest: registration manifest to authenticate and filter
         :ptype manifest: RegistrationManifest
-        :return: error message if authentication fails, None if successful
-        :rtype: str | None
+        :return: the refusal, if any, and the namespaces this pod owns
+        :rtype: _AuthOutcome
         """
-        if self._authenticator is None:
-            return None
+        owned_nodes: tuple[str, ...] = ()
+        self_identity: tuple[str, ...] = ()
+        pod_name = manifest.pod_id
 
-        if manifest.bootstrap_token is None:
-            # agent-owned / tokenless registration: authenticated at the NATS layer, admitted here.
-            return None
+        if self._authenticator is not None and manifest.bootstrap_token is not None:
+            pod_auth: ToolPodAuth | None = await self._authenticator.verify_pod(manifest.bootstrap_token)
+            if pod_auth is None:
+                log.warning(
+                    "tool pod registration rejected: invalid token",
+                    extra={"extra_data": {"pod_id": manifest.pod_id}},
+                )
+                return _AuthOutcome(error="invalid bootstrap token", owned_namespaces=())
+            owned_nodes = _provider_node_names(pod_auth.owned_namespaces, manifest.pod_id)
+            self_identity = owned_nodes
+            pod_name = pod_auth.name
+        else:
+            # agent-owned / tokenless registration, or a handler with no authenticator
+            # at all. Authenticated at the NATS layer in the first case and not
+            # authenticated at all in the second; either way it owns no provider node
+            # and is filtered against what other pods own.
+            self_identity = self._agent_owned_namespaces(manifest)
 
-        pod_auth: ToolPodAuth | None = await self._authenticator.verify_pod(manifest.bootstrap_token)
-
-        if pod_auth is None:
-            log.warning(
-                "tool pod registration rejected: invalid token",
-                extra={"extra_data": {"pod_id": manifest.pod_id}},
+        directory = await self._provider_node_directory(manifest.pod_id)
+        if directory is None:
+            return _AuthOutcome(
+                error=(
+                    "ownership graph unavailable; registration refused rather than admitted "
+                    "unfiltered. this is retried on the pod's next heartbeat"
+                ),
+                owned_namespaces=(),
             )
-            return "invalid bootstrap token"
 
         allowed_tools = []
         rejected_tools = []
         for tool in manifest.tools:
-            authorized = False
-            for ns in pod_auth.allowed_namespaces:
-                if tool.name.startswith(ns):
-                    authorized = True
-                    break
-            if authorized:
+            if tool_is_registrable(tool_name=tool.name, owned_nodes=owned_nodes, provider_nodes=directory):
                 allowed_tools.append(tool)
             else:
                 rejected_tools.append(tool.name)
 
         if rejected_tools:
             log.warning(
-                "tool pod tools rejected (outside allowed namespaces)",
+                "tool pod tools rejected (a provider node this pod does not own contains the name)",
                 extra={
                     "extra_data": {
                         "pod_id": manifest.pod_id,
-                        "pod_name": pod_auth.name,
+                        "pod_name": pod_name,
                         "rejected": rejected_tools,
-                        "allowed_namespaces": pod_auth.allowed_namespaces,
+                        "owned_nodes": list(owned_nodes),
                     }
                 },
             )
 
         if not allowed_tools:
-            return "no tools authorized for this pod's namespaces"
+            # NAME both sides of the comparison that failed. A bare "no tools
+            # authorized" is true and unactionable: it arrives AFTER the pod
+            # authenticated, so it reads as a missing RBAC grant when the usual
+            # causes are an ownership entry that can never match anything -- a node
+            # written with a trailing separator (`evd.`) or as a glob (`evd.*`) --
+            # or a name that lands inside a provider node somebody else owns.
+            owns = sorted(owned_nodes) if owned_nodes else "no provider namespace"
+            return _AuthOutcome(
+                error=(
+                    f"no tools authorized: offered {sorted(rejected_tools)}, "
+                    f"this pod owns {owns}. a tool name is placed under the MOST SPECIFIC "
+                    "`tools.` provider node that contains it, and only that node's owner may "
+                    "register it; a name under no provider node at all may be registered only "
+                    "by a pod that owns none. a node is compared on a segment boundary and is "
+                    "written WITHOUT a trailing separator and WITHOUT a glob "
+                    "(`evd`, never `evd.` or `evd.*`)"
+                ),
+                owned_namespaces=(),
+            )
 
         manifest.tools = allowed_tools
 
         log.info(
-            "tool pod authenticated",
+            "tool pod registration authorized",
             extra={
                 "extra_data": {
                     "pod_id": manifest.pod_id,
-                    "pod_name": pod_auth.name,
+                    "pod_name": pod_name,
                     "tools_accepted": len(allowed_tools),
                     "tools_rejected": len(rejected_tools),
                 }
             },
         )
-        result: str | None = None
+        return _AuthOutcome(error=None, owned_namespaces=self_identity)
+
+    async def _provider_node_directory(self, pod_id: str) -> tuple[str, ...] | None:
+        """every provider node the host's graph holds, or ``None`` when it cannot be read.
+
+        A handler with no authenticator has no host to ask, and answers with an
+        EMPTY inventory rather than a failure: there is no ownership data in that
+        deployment, so no node contains anything and an unbound pod is admitted --
+        which is exactly what open mode did before this filter existed.
+
+        A read that FAILS is a different thing and is not allowed to look like the
+        first one. An empty inventory silently widens every unbound pod to
+        everything, so a host that raises gets the registration REFUSED. That is
+        the recoverable direction: a pod re-announces on its heartbeat, so a
+        transient failure costs one interval, while admitting the manifest would
+        write catalog entries nobody can take back.
+
+        :param pod_id: the registering pod, for the diagnostic
+        :ptype pod_id: str
+        :return: the inventory, or ``None`` when the host could not answer
+        :rtype: tuple[str, ...] | None
+        """
+        result: tuple[str, ...] | None = ()
+        if self._authenticator is not None:
+            try:
+                result = tuple(await self._authenticator.provider_nodes())
+            except Exception as exc:  # noqa: BLE001 -- any host failure refuses, never admits
+                log.error(
+                    "tool pod registration refused: the ownership graph could not be read, and a "
+                    "manifest must not be admitted unfiltered. the pod retries on its next heartbeat",
+                    extra={"extra_data": {"pod_id": pod_id, "error": str(exc)}},
+                )
+                result = None
         return result
+
+    @staticmethod
+    def _agent_owned_namespaces(manifest: RegistrationManifest) -> tuple[str, ...]:
+        """the namespace an AGENT-OWNED in-process pod owns, or nothing.
+
+        A pod that presents no token is the agent's own in-process tool server: it is not a
+        row in ``tool_pods``, so it owns no provider node. What it owns is ``agents.<uuid>``
+        -- the same name :class:`~threetears.agent.tools.server.ToolServer` already stamps
+        as ``owner_namespace`` on every namespace row it emits.
+
+        ``owner_agent_id`` is taken off the manifest here, which is a claim rather than a
+        verified fact -- and that is acceptable for exactly this value and no other. The
+        pod is on the agent's OWN authenticated NATS connection, so the identity was
+        settled at the transport, and the name composed from it is the one the pod is
+        about to write onto its own rows regardless. It confers no authority: nothing in
+        this reply is a credential.
+
+        :param manifest: the registering pod's manifest
+        :ptype manifest: RegistrationManifest
+        :return: the agent's namespace name, or an empty tuple when the pod names no agent
+        :rtype: tuple[str, ...]
+        """
+        if manifest.owner_agent_id is None:
+            return ()
+        return (build_agent_namespace_name(manifest.owner_agent_id),)
 
     def _validate_manifest(self, manifest: RegistrationManifest) -> str | None:
         """validate registration manifest fields.

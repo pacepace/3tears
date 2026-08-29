@@ -91,12 +91,6 @@ class DynamicToolPod(ABC, Generic[SpecT]):
     :ptype nats_client: Any
     :param namespace: NATS subject-namespace prefix
     :ptype namespace: str
-    :param namespace_collection: three-tier NamespaceCollection threaded
-        into the ToolServer for tool-namespace materialization. ``None``
-        suppresses namespace emission -- used by the hub-side datasource
-        pod, where the admin path owns those rows; the API pod passes a
-        real collection
-    :ptype namespace_collection: Any
     :param pod_id: unique pod identifier; generated (uuid7) when omitted
     :ptype pod_id: str | None
     """
@@ -107,7 +101,6 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         nats_url: str,
         nats_client: Any,
         namespace: str,
-        namespace_collection: Any = None,
         pod_id: str | None = None,
     ) -> None:
         """initialize the dynamic tool pod.
@@ -119,9 +112,6 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :ptype nats_client: Any
         :param namespace: NATS subject-namespace prefix
         :ptype namespace: str
-        :param namespace_collection: NamespaceCollection for tool-namespace
-            materialization, or ``None`` to suppress emission
-        :ptype namespace_collection: Any
         :param pod_id: unique pod identifier; generated when omitted
         :ptype pod_id: str | None
         :return: nothing
@@ -130,7 +120,6 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         self._nats_url = nats_url
         self._nats_client = nats_client
         self._namespace = namespace
-        self._namespace_collection = namespace_collection
         self._pod_id = pod_id or str(uuid7())
         self._tool_server: ToolServer | None = None
         self._serve_task: asyncio.Task[None] | None = None
@@ -152,8 +141,9 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         the base owns ToolServer construction; this is the single seam
         subclasses / tests override to supply an alternative (a fake, a
         differently-configured server). production subclasses use the
-        default, which attaches the injected ``nats_client`` and threads
-        the ``namespace_collection`` through.
+        default, which attaches the injected ``nats_client``. the pod
+        writes no ``namespaces`` row of its own -- the hub reconciles
+        those off the registration manifest.
 
         :return: newly constructed ToolServer
         :rtype: ToolServer
@@ -163,7 +153,6 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             nats_client=self._nats_client,
             namespace=self._namespace,
             pod_id=self._pod_id,
-            namespace_collection=self._namespace_collection,
         )
 
     @abstractmethod

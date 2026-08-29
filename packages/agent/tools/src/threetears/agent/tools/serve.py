@@ -246,11 +246,11 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
     standalone platform-only pod (no host-application HubClient
     lifecycle). reads NATS connection details from
     ``THREETEARS_NATS_URL`` and ``THREETEARS_NATS_SUBJECT_NAMESPACE``
-    environment variables. ``namespace_collection`` is suppressed because
-    this entrypoint serves calculator / dictionary / current-date / etc.
-    from a standalone process and does not participate in the agent-side
-    three-tier stack -- :class:`NamespaceCollection` wiring is the agent
-    bootstrap's responsibility when agent-owned tools spin up.
+    environment variables. it writes no ``namespaces`` row and holds no
+    Collection to write one with: this entrypoint serves calculator /
+    dictionary / current-date / etc. from a standalone process, and every
+    pod's tool namespaces are reconciled hub-side off the registration
+    manifest.
     """
 
     async def build_server(self) -> ToolServer:
@@ -352,7 +352,6 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
             namespace=namespace,
             pod_id=pod_id,
             auth_token=lambda: minter.mint(pod_id, customer_id=customer_id),
-            namespace_collection=None,
         )
 
     async def register_tools(self, server: ToolServer) -> None:

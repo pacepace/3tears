@@ -259,15 +259,14 @@ class TestFreshness:
         """Two-sided deliberately: an unbounded future iat would let an attacker mint proofs
         today for use after a key rotation.
 
-        The rejection is asserted, not its wording. PyJWT's own ``iat`` validation refuses an
-        immature signature during decode, so it lands first and the module's own future-side
-        check sits behind it as the backstop rather than being what fires. The proof is denied
-        either way, which is the property; matching on the message would pin which of the two
-        layers happened to get there first.
+        The message is matched, and that is the point of matching it. This module's window is
+        the only thing adjudicating ``iat``, so "freshness" is the only wording a refusal can
+        carry. Asserting merely that something was refused passed just as well when PyJWT's
+        zero-leeway check got here first and refused EVERY future proof, one second included.
         """
         key = _key()
         future = int(time.time() + DEFAULT_IAT_WINDOW.total_seconds() + 30)
-        with pytest.raises(DpopError):
+        with pytest.raises(DpopError, match="freshness"):
             await validate_dpop_proof(_proof(key, iat=future), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
 
     async def test_an_iat_inside_the_window_is_accepted(self, guard: ReplayGuard) -> None:
@@ -276,6 +275,49 @@ class TestFreshness:
         assert await validate_dpop_proof(
             _proof(key, iat=recent), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard
         )
+
+    async def test_an_iat_a_second_or_two_ahead_of_the_server_is_accepted(self, guard: ReplayGuard) -> None:
+        """The admitted twin of the refusal above, and the case a real login actually hits.
+
+        ``iat`` is required to be an integer, so a client whose clock leads the server's by a
+        fraction of a second still stamps ``server_now + 1``. Refusing that makes whether a
+        login succeeds depend on sub-second timing between minting the proof and receiving it
+        -- rejected once, working on the retry. Absorbing exactly that is what the window is
+        for, and the window is symmetric.
+        """
+        key = _key()
+        for ahead in (1, 2):
+            assert await validate_dpop_proof(
+                _proof(key, jti=f"ahead-{ahead}", iat=int(time.time()) + ahead),
+                expected_htm=_HTM,
+                expected_htu=_HTU,
+                replay_guard=guard,
+            )
+
+    async def test_an_iat_just_inside_the_future_edge_of_the_window_is_accepted(self, guard: ReplayGuard) -> None:
+        # The whole documented tolerance is usable on the future side, not just its first second.
+        key = _key()
+        near_edge = int(time.time() + DEFAULT_IAT_WINDOW.total_seconds() - 5)
+        assert await validate_dpop_proof(
+            _proof(key, iat=near_edge), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard
+        )
+
+    async def test_an_iat_of_an_unconvertible_type_is_refused_rather_than_raising(self, guard: ReplayGuard) -> None:
+        """A token endpoint is reachable unauthenticated, so the payload's TYPES are attacker-chosen.
+
+        Every refusal in this module is a ``DpopError`` the caller collapses into one generic
+        denial. An ``iat`` that is neither a number nor a numeric string must land there too,
+        not escape as a bare ``TypeError`` for a request handler to turn into a 500.
+        """
+        key = _key()
+        proof = pyjwt.encode(
+            {"htm": _HTM, "htu": _HTU, "jti": "j", "iat": {"not": "a timestamp"}},
+            key=key,
+            algorithm="ES256",
+            headers={"typ": "dpop+jwt", "jwk": _public_jwk(key)},
+        )
+        with pytest.raises(DpopError, match="iat"):
+            await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
 
     async def test_a_boolean_iat_is_not_an_integer(self, guard: ReplayGuard) -> None:
         # bool is an int subclass; a boolean timestamp is malformed, not zero-or-one.

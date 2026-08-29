@@ -357,6 +357,8 @@ async def resolve_held_permissions(
                 customer_id=entity.customer_id,
                 namespace_type=entity.namespace_type,
                 owner_agent_id=entity.owner_agent_id,
+                owner_namespace=getattr(entity, "owner_namespace", None),
+                name=getattr(entity, "name", None),
             )
             for entity in entities
         ]

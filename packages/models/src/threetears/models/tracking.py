@@ -230,7 +230,7 @@ class UsageCounterSink(Protocol):
     A counter sink increments rolling-window counters (e.g. daily /
     monthly tokens-per-customer) suitable for quota enforcement and
     billing rollups. 14-eng-ai-bot's :class:`AggregateUsageCounterSink`
-    (increments the ``platform.usage_records`` table) is the canonical
+    (increments the hub's ``usage_records`` table) is the canonical
     implementation.
 
     Implementations MUST be coroutine-safe and MUST NOT raise into the

@@ -45,7 +45,7 @@ The unit of identity is the **NATS subject path**. Each consumer:
 2. Calls `EpochClient.bump(subject, payload=...)` after committing the row mutation that motivates the reload.
 3. Subscribes via `EpochListener.subscribe(subject, on_bump=...)` from sibling pods.
 
-For the durable family, the `platform.config_epochs` row PK is the subject path string and Postgres is the source of truth. For everything else the KV counter is, keyed on the subject path (digested when the path falls outside the KV key grammar). The NATS broadcast is best-effort either way. A subscriber that missed every broadcast still catches up on the next request whose response echoes the higher epoch (per-message echo is consumer-side wiring; the framework supplies the building blocks).
+For the durable family, the hub's `config_epochs` row PK is the subject path string and Postgres is the source of truth. For everything else the KV counter is, keyed on the subject path (digested when the path falls outside the KV key grammar). The NATS broadcast is best-effort either way. A subscriber that missed every broadcast still catches up on the next request whose response echoes the higher epoch (per-message echo is consumer-side wiring; the framework supplies the building blocks).
 
 ## Wire envelope
 

@@ -29,6 +29,8 @@ these tests exercise:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid7
@@ -59,9 +61,26 @@ from threetears.registry.l1_cache import (
 from threetears.registry.rbac_stack import (
     PLATFORM_RBAC_READ_NAMESPACE,
     REGISTRY_SERVICE_SENTINEL_AGENT_ID,
+    RegistryIdentityUnavailableError,
     build_registry_rbac_stack,
 )
+from threetears.registry import server as server_module
 from threetears.registry.server import RegistryServer
+
+
+def _identity_token_provider(token: str = "registry.identity.token") -> "Callable[[], str | None]":
+    """a stand-in for the host-minted identity token provider the stack now requires.
+
+    A PROVIDER rather than a string in the tests too, because that is what production
+    passes: the real one reads a holder the refresh loop rewrites, and a test that
+    handed a bare string would not exercise the same parameter.
+
+    :param token: the token the provider reports
+    :ptype token: str
+    :return: a zero-arg callable returning ``token``
+    :rtype: Callable[[], str | None]
+    """
+    return lambda: token
 
 
 def _unwrap_l3(resolved: Any) -> Any:
@@ -145,6 +164,7 @@ class TestBuildRegistryRbacStack:
             nats_client=_make_nats_client(),
             subject_namespace="3tears",
             l1_backend=l1,
+            identity_token=_identity_token_provider(),
         )
         assert isinstance(stack.namespace_collection, NamespaceCollection)
 
@@ -158,6 +178,7 @@ class TestBuildRegistryRbacStack:
             nats_client=_make_nats_client(),
             subject_namespace="3tears",
             l1_backend=l1,
+            identity_token=_identity_token_provider(),
         )
         assert isinstance(stack.group_collection, GroupCollection)
         assert isinstance(stack.group_member_collection, GroupMemberCollection)
@@ -176,6 +197,7 @@ class TestBuildRegistryRbacStack:
             nats_client=_make_nats_client(),
             subject_namespace="3tears",
             l1_backend=l1,
+            identity_token=_identity_token_provider(),
         )
         assert isinstance(stack.acl_cache, AclCache)
 
@@ -191,6 +213,7 @@ class TestBuildRegistryRbacStack:
             nats_client=_make_nats_client(),
             subject_namespace="3tears",
             l1_backend=l1,
+            identity_token=_identity_token_provider(),
         )
         # the rbac pool is wired onto the registry as the default L3.
         # introspect the registry's default pool through the public
@@ -215,6 +238,7 @@ class TestBuildRegistryRbacStack:
             nats_client=_make_nats_client(),
             subject_namespace="3tears",
             l1_backend=l1,
+            identity_token=_identity_token_provider(),
         )
         pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
         assert pool.agent_id == str(REGISTRY_SERVICE_SENTINEL_AGENT_ID)
@@ -234,6 +258,7 @@ class TestSubscribeInvalidations:
             nats_client=nc,
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
 
         await stack.subscribe_invalidations()
@@ -270,6 +295,7 @@ class TestSubscribeInvalidations:
             nats_client=nc,
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
 
         await stack.subscribe_invalidations()
@@ -294,6 +320,7 @@ class TestSubscribeInvalidations:
             nats_client=nc,
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
 
         await stack.subscribe_invalidations()
@@ -313,6 +340,7 @@ class TestSubscribeInvalidations:
             nats_client=nc,
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
         await stack.subscribe_invalidations()
         actor = uuid7()
@@ -423,6 +451,7 @@ class TestRegistryRbacStackClose:
             nats_client=nc,
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
         await stack.subscribe_invalidations()
         await stack.close()
@@ -444,6 +473,7 @@ class TestRegistryRbacStackClose:
             nats_client=nc,
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
         await stack.close()
         assert nc.unsubscribe.await_count == 0
@@ -456,6 +486,7 @@ class TestRegistryRbacStackClose:
             nats_client=nc,
             subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
         )
         await stack.subscribe_invalidations()
         await stack.close()
@@ -711,3 +742,119 @@ class TestResolveUsageEmitterFactory:
         monkeypatch.setenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
             _resolve_usage_emitter_factory()
+
+
+class TestTheStackRefusesWithoutAnIdentity:
+    """no identity token -> no backend at all, and the refusal happens at WIRING.
+
+    The host broker resolves the caller from a signed token and refuses a request that
+    carries none, so a stack built without a provider is a stack whose every read
+    fails. Building it anyway defers the failure to the first query -- after the
+    process has reported itself up, from whichever code path happened to touch L3
+    first, and reading as an intermittent data-layer fault rather than as a missing
+    credential.
+    """
+
+    def test_no_provider_refuses(self) -> None:
+        """the ``None`` case: nothing was wired at all."""
+        with pytest.raises(RegistryIdentityUnavailableError):
+            build_registry_rbac_stack(
+                nats_client=_make_nats_client(),
+                subject_namespace="3tears",
+                l1_backend=create_registry_l1_backend(),
+                identity_token=None,
+            )
+
+    def test_an_empty_provider_refuses(self) -> None:
+        """a provider that has nothing to give is the same refusal, not a warning.
+
+        This is the state between process start and a completed handshake. A stack
+        built here would carry a provider that looks correct and forwards ``None``.
+        """
+        with pytest.raises(RegistryIdentityUnavailableError):
+            build_registry_rbac_stack(
+                nats_client=_make_nats_client(),
+                subject_namespace="3tears",
+                l1_backend=create_registry_l1_backend(),
+                identity_token=lambda: None,
+            )
+
+    def test_the_refusal_names_the_env_var_an_operator_must_set(self) -> None:
+        """a credential error that names no variable leaves an operator guessing."""
+        with pytest.raises(RegistryIdentityUnavailableError) as caught:
+            build_registry_rbac_stack(
+                nats_client=_make_nats_client(),
+                subject_namespace="3tears",
+                l1_backend=create_registry_l1_backend(),
+                identity_token=None,
+            )
+        assert "THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY" in str(caught.value)
+
+
+class TestTheProviderIsForwardedByReferenceNotByValue:
+    """the backend reads THROUGH the provider on every request.
+
+    The token is short-lived and re-minted in place by a refresh loop, so a stack that
+    captured the token string at construction would forward an expired credential
+    within the hour and every L3 read would fail -- long after the wiring that caused
+    it, and with a wiring-time check that passed.
+    """
+
+    def test_a_re_minted_token_reaches_the_backend_without_rewiring(self) -> None:
+        """mutate what the provider returns; the backend forwards the NEW value."""
+        held: dict[str, str] = {"token": "first.token"}
+        stack = build_registry_rbac_stack(
+            nats_client=_make_nats_client(),
+            subject_namespace="3tears",
+            l1_backend=create_registry_l1_backend(),
+            identity_token=lambda: held["token"],
+        )
+        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
+        assert pool.forwarded_identity_token() == "first.token"
+        held["token"] = "re-minted.token"
+        assert pool.forwarded_identity_token() == "re-minted.token"
+
+
+class TestTheIdentityTokenProviderFactoryHook:
+    """3tears resolves the provider from config; it never implements one.
+
+    Identity is the sharpest case of the host-agnostic rule: the token is minted by the
+    HOST, over a handshake 3tears does not define, against a principal store 3tears
+    cannot read. So this hook has the same ``module:callable`` shape as the
+    pod-authenticator, limit-guard and usage-emitter hooks -- and unlike those three it
+    has no weaker-but-working default, because a broker that refuses an unidentified
+    request leaves nothing to fall back to.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unset_resolves_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """unset -> ``None``, which the stack turns into a wiring-time refusal."""
+        monkeypatch.delenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", raising=False)
+        assert await server_module._resolve_identity_token_provider(_make_nats_client()) is None  # noqa: SLF001 -- module-private resolver under test
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_spec_raises_rather_than_degrading(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a misconfigured identity plugin must crash startup, never run unidentified."""
+        monkeypatch.setenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", "not-a-dotted-path")
+        with pytest.raises(ValueError, match="module:callable"):
+            await server_module._resolve_identity_token_provider(_make_nats_client())  # noqa: SLF001 -- module-private resolver under test
+
+    @pytest.mark.asyncio
+    async def test_the_resolved_factory_is_awaited_with_the_live_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the host factory needs the connection to handshake over, so it gets it."""
+        nc = _make_nats_client()
+        seen: list[Any] = []
+
+        async def _factory(client: Any) -> "Callable[[], str | None]":
+            seen.append(client)
+            return lambda: "host.minted.token"
+
+        monkeypatch.setattr(server_module, "_HOST_FACTORY_FOR_TEST", _factory, raising=False)
+        monkeypatch.setenv(
+            "THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY",
+            "threetears.registry.server:_HOST_FACTORY_FOR_TEST",
+        )
+        provider = await server_module._resolve_identity_token_provider(nc)  # noqa: SLF001 -- module-private resolver under test
+        assert seen == [nc]
+        assert provider is not None
+        assert provider() == "host.minted.token"

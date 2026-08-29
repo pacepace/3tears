@@ -31,7 +31,7 @@ from threetears.agent.tools.base_tool import (
 from threetears.agent.tools.call_scope import current_scope
 from threetears.observe import get_logger
 
-from threetears.agent.workspace.discovery_client import (
+from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
     NamespaceDiscoveryClient,
 )
@@ -82,11 +82,13 @@ class WorkspaceListTool(TearsTool):
         """
         issue ``namespace.discover`` for ``workspace`` type and return JSON.
 
-        reads the caller's customer_id + user_id from the current
-        :class:`ToolCallScope` so the broker can filter the discovery
-        set to the caller's customer and honor user-scoped grants.
-        missing scope (or missing customer on the scope) is treated as
-        an unroutable call and surfaces as errors-as-data.
+        forwards the hub-minted tokens off the current
+        :class:`ToolCallScope`; the broker verifies them and takes the
+        calling agent, customer and acting user off the signed claims,
+        so this tool never states whose call it is. a scope carrying
+        neither token is an unroutable call and surfaces as
+        errors-as-data rather than reaching the broker, which would
+        refuse it anyway.
 
         :param kwargs: ignored, schema declares no inputs
         :ptype kwargs: Any
@@ -95,24 +97,23 @@ class WorkspaceListTool(TearsTool):
         """
         result: ToolResult
         scope = current_scope()
-        customer_id: UUID | None = None if scope is None else scope.context.customer_id
-        user_id: UUID | None = None if scope is None else scope.context.user_id
+        identity_token: str | None = None if scope is None else scope.context.identity_token
+        user_identity_token: str | None = None if scope is None else scope.context.user_identity_token
         correlation_id: UUID = (
             scope.context.correlation_id if scope is not None and scope.context.correlation_id is not None else uuid7()
         )
         try:
-            if customer_id is None:
+            if identity_token is None and user_identity_token is None:
                 result = ToolResult(
                     success=False,
                     content="",
-                    error="workspace.list requires a customer_id on the call scope",
+                    error="workspace.list requires a hub identity token on the call scope",
                 )
             else:
                 items = await self._discovery.discover(
                     correlation_id=correlation_id,
-                    agent_id=self._agent_id,
-                    customer_id=customer_id,
-                    user_id=user_id,
+                    identity_token=identity_token,
+                    user_identity_token=user_identity_token,
                     namespace_type="workspace",
                 )
                 payload = [

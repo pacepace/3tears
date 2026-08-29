@@ -38,6 +38,7 @@ from threetears.agent.acl import (
     RoleAssignment,
     ScopeType,
 )
+from threetears.core.namespaces import build_agent_namespace_name
 from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
 
 
@@ -62,9 +63,15 @@ def _cache(membership_loader: Any, grant_loader: Any) -> AclCache:
 
 
 class _StubToolNamespace:
-    """duck-typed namespace entity exposing the four fields the evaluator reads."""
+    """duck-typed namespace entity exposing the fields the evaluator reads."""
 
-    __slots__ = ("id", "namespace_type", "owner_agent_id", "customer_id")
+    __slots__ = (
+        "id",
+        "namespace_type",
+        "owner_agent_id",
+        "customer_id",
+        "owner_namespace",
+    )
 
     def __init__(
         self,
@@ -73,6 +80,7 @@ class _StubToolNamespace:
         namespace_type: str,
         owner_agent_id: UUID | None,
         customer_id: UUID | None,
+        owner_namespace: str | None = None,
     ) -> None:
         """initialize a stub namespace entity.
 
@@ -84,11 +92,18 @@ class _StubToolNamespace:
         :ptype owner_agent_id: UUID | None
         :param customer_id: owning customer UUID or ``None``
         :ptype customer_id: UUID | None
+        :param owner_namespace: canonical name of the namespace that
+            owns this row, or ``None``. a platform tool namespace has no
+            owner at all -- it is reached by grant, which is what
+            ``test_platform_tool_requires_explicit_grant`` asserts --
+            so ``None`` is the shape these cases actually want
+        :ptype owner_namespace: str | None
         """
         self.id = id
         self.namespace_type = namespace_type
         self.owner_agent_id = owner_agent_id
         self.customer_id = customer_id
+        self.owner_namespace = owner_namespace
 
 
 # parity-exempt: subset shim for the post-discovery NamespaceCollection exposing only the get_by_name lookup the rbac authorizer evaluates against
@@ -496,6 +511,139 @@ class TestRbacEvaluatorAuthorizer:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_ownership_supplies_the_agent_side_with_no_agent_grant(self) -> None:
+        """the owner short-circuit is WIRED at tool dispatch, not only in the evaluator.
+
+        This is the site the ownership move names, and an evaluator unit
+        test cannot cover it: the authorizer builds its OWN
+        ``AclNamespace``, so a construction site that forgot to carry
+        ``owner_namespace`` would leave every owner falling through to
+        grants it does not hold -- and the failure would look like an
+        ordinary deny.
+
+        Dispatch stays TWO-SIDED. Ownership opens the agent side and
+        nothing more, so the user still needs a real grant; what this
+        asserts is that the AGENT side needs no assignment at all when
+        the agent owns the namespace. The companion below removes the
+        ownership and shows the same setup then denies, which is what
+        makes this test about ownership rather than about the user
+        grant.
+        """
+        user_id = uuid4()
+        agent_id = uuid4()
+        customer_id = uuid4()
+        group_id = uuid4()
+        role_id = uuid4()
+        namespace_id = uuid4()
+
+        group = Group(id=group_id, name="user-side", customer_id=customer_id)
+        role = Role(
+            id=role_id,
+            name="ToolCaller",
+            permissions={"tool": frozenset({"tool.call"})},
+            is_built_in=True,
+        )
+        user_membership = GroupMembership(
+            group_id=group_id,
+            member_id=user_id,
+            member_type=MemberType.USER,
+            customer_id=customer_id,
+        )
+        assignment = RoleAssignment(
+            id=uuid4(),
+            group_id=group_id,
+            role_id=role_id,
+            scope_type=ScopeType.NAMESPACE,
+            scope_namespace_id=namespace_id,
+            scope_namespace_type=None,
+            scope_customer_id=None,
+        )
+        # the USER is a member; the AGENT is a member of nothing.
+        loaders = (
+            _FakeMembershipLoader(users={user_id: (user_membership,)}, agents={}),
+            _FakeGrantLoader(
+                assignments={group_id: (assignment,)},
+                roles={role_id: role},
+                groups={group_id: group},
+            ),
+        )
+
+        owned = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(*loaders),
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(
+                    id=namespace_id,
+                    namespace_type="tool",
+                    owner_agent_id=agent_id,
+                    customer_id=customer_id,
+                    owner_namespace=build_agent_namespace_name(agent_id),
+                ),
+            ),
+        )
+        assert await owned.is_authorized(str(agent_id), str(user_id), "example.own_tool", "1.0") is True
+
+    @pytest.mark.asyncio
+    async def test_the_same_call_denies_when_the_agent_does_not_own_the_row(self) -> None:
+        """the A/B that makes the case above about ownership.
+
+        identical user grant, identical absence of an agent grant, and
+        the ONLY difference is whose namespace the row records as its
+        owner. without that, the previous test would pass just as well
+        against a gate that had stopped checking the agent side at all.
+        """
+        user_id = uuid4()
+        agent_id = uuid4()
+        other_agent = uuid4()
+        customer_id = uuid4()
+        group_id = uuid4()
+        role_id = uuid4()
+        namespace_id = uuid4()
+
+        group = Group(id=group_id, name="user-side", customer_id=customer_id)
+        role = Role(
+            id=role_id,
+            name="ToolCaller",
+            permissions={"tool": frozenset({"tool.call"})},
+            is_built_in=True,
+        )
+        user_membership = GroupMembership(
+            group_id=group_id,
+            member_id=user_id,
+            member_type=MemberType.USER,
+            customer_id=customer_id,
+        )
+        assignment = RoleAssignment(
+            id=uuid4(),
+            group_id=group_id,
+            role_id=role_id,
+            scope_type=ScopeType.NAMESPACE,
+            scope_namespace_id=namespace_id,
+            scope_namespace_type=None,
+            scope_customer_id=None,
+        )
+
+        peer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(
+                _FakeMembershipLoader(users={user_id: (user_membership,)}, agents={}),
+                _FakeGrantLoader(
+                    assignments={group_id: (assignment,)},
+                    roles={role_id: role},
+                    groups={group_id: group},
+                ),
+            ),
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(
+                    id=namespace_id,
+                    namespace_type="tool",
+                    owner_agent_id=other_agent,
+                    customer_id=customer_id,
+                    owner_namespace=build_agent_namespace_name(other_agent),
+                ),
+            ),
+        )
+        assert await peer.is_authorized(str(agent_id), str(user_id), "example.own_tool", "1.0") is False
+
+    @pytest.mark.asyncio
     async def test_invalid_agent_id_denied(self) -> None:
         """malformed ``agent_id`` surfaces as a deny rather than crash."""
         user_id = uuid4()
@@ -523,21 +671,25 @@ class TestRbacEvaluatorAuthorizer:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_lookup_uses_canonical_sanitized_name(self) -> None:
-        """authorizer constructs canonical name from (mcp_name, mcp_version).
+    async def test_lookup_uses_the_canonical_name(self) -> None:
+        """authorizer constructs the canonical name from (mcp_name, mcp_version).
 
         the dispatch carries the natural ``mcp_name`` /
         ``mcp_version`` shape (e.g. ``3tears.admin.customer_management`` /
-        ``1.0``); the namespace ``name`` column carries the sanitized
-        plural-prefix form (``tools.3tears-admin-customer_management.1-0``).
-        without this canonicalization step the lookup never resolves
-        the row and every dispatch denies even when a valid grant
-        exists.
+        ``1.0``); the namespace ``name`` column carries the rooted form
+        (``tools.3tears.admin.customer_management.1-0``), in which the
+        mcp name is interpolated unchanged and only the version is
+        sanitized. without this canonicalization step the lookup never
+        resolves the row and every dispatch denies even when a valid
+        grant exists.
+
+        the expectation is asserted BOTH against the shared grammar and
+        against the literal, because those fail differently: the first
+        catches this call site drifting away from the builder, and the
+        second catches the builder itself changing shape under a
+        deployment whose rows were written by the older one.
         """
-        from threetears.core.namespaces import (
-            PLURAL_PREFIX_TOOL,
-            build_namespace_name,
-        )
+        from threetears.core.namespaces import build_tool_namespace_name
 
         user_id = uuid4()
         agent_id = uuid4()
@@ -555,8 +707,64 @@ class TestRbacEvaluatorAuthorizer:
             "1.0",
         )
 
-        assert ns_coll.last_get_by_name == build_namespace_name(
-            PLURAL_PREFIX_TOOL,
+        assert ns_coll.last_get_by_name == build_tool_namespace_name(
             "3tears.admin.customer_management",
             "1.0",
         )
+        assert ns_coll.last_get_by_name == "tools.3tears.admin.customer_management.1-0"
+
+
+class TestAMalformedToolNameDeniesRatherThanRaises:
+    """the dispatch envelope is untrusted, and this is the authorization hot path.
+
+    ``tool_name`` arrives on a proxy request. The namespace-name builder
+    REFUSES a name carrying an empty component, and correctly so -- no
+    registration could have produced one. But an exception escaping here
+    is worse than a deny in two ways: the caller gets an error instead of
+    a refusal it can read, and an authorizer that can raise is one whose
+    failure mode is not "denied".
+
+    So a name that cannot compose denies, which is the same answer as a
+    name that composes and matches no row.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["a..b", ".leading", "trailing.", "tools.already.rooted", "tools"],
+    )
+    async def test_a_malformed_tool_name_denies(self, tool_name: str) -> None:
+        ns_coll = _FakeNamespaceCollection(None)
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
+            namespace_collection=ns_coll,
+        )
+
+        result = await authorizer.is_authorized(str(uuid4()), str(uuid4()), tool_name, "1.0")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_tool_name_is_never_looked_up(self) -> None:
+        """no row can be named by it, so the lookup would be a wasted read."""
+        ns_coll = _FakeNamespaceCollection(None)
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
+            namespace_collection=ns_coll,
+        )
+
+        await authorizer.is_authorized(str(uuid4()), str(uuid4()), "a..b", "1.0")
+
+        assert ns_coll.last_get_by_name is None
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_version_denies(self) -> None:
+        ns_coll = _FakeNamespaceCollection(None)
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
+            namespace_collection=ns_coll,
+        )
+
+        result = await authorizer.is_authorized(str(uuid4()), str(uuid4()), "pentest.sqlmap", "")
+
+        assert result is False

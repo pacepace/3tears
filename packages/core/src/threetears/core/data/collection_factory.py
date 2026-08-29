@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_vector as _decode_vector, encode_vector as _encode_vector
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
@@ -298,18 +299,34 @@ def create_dynamic_collection(
         ) -> int:
             """persist entity data to L3 via upsert.
 
-            when original_timestamp is provided, performs optimistic
-            concurrency check before writing.
+            the generated statement is an unfenced ``INSERT ... ON CONFLICT (pk)
+            DO UPDATE``, so ``original_timestamp`` is accepted for interface
+            compatibility with the rest of the ``save_to_store`` seam and NOT
+            applied -- a dynamic collection carries no declared CAS column to
+            fence on. concurrent writers to one row therefore last-write-wins
+            here, unlike a ``SchemaBackedCollection`` over a ``cas_column``
+            schema.
+
+            the rows-affected count is read out of the backend's status tag by
+            the framework's :func:`~threetears.core.backends.protocol.parse_rowcount`,
+            which is what the raw-SQL L3 border exists for.
+            :meth:`BaseCollection.save_entity` raises on a 0, so the count is the
+            only thing standing between a write the store declined and a caller
+            told it landed. Testing the tag for truthiness instead answered 1 for
+            every tag a backend can return, ``"INSERT 0 0"`` included -- which is
+            what :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`
+            composes whenever the broker's reply carries no ``row_count``.
 
             :param data: entity data to persist
             :ptype data: dict[str, Any]
-            :param original_timestamp: expected date_updated for concurrency check
+            :param original_timestamp: accepted for seam compatibility; a dynamic
+                collection declares no CAS column, so no fence is applied
             :ptype original_timestamp: datetime | None
             :param conn: optional asyncpg-compatible connection that
                 overrides :attr:`l3_pool` for this single write so the
                 INSERT binds to the caller's transaction
             :ptype conn: Any
-            :return: number of rows affected
+            :return: number of rows affected, ``0`` when no L3 backend is wired
             :rtype: int
             """
             executor: Any = conn if conn is not None else self.l3_pool
@@ -319,9 +336,7 @@ def create_dynamic_collection(
                 _encode_vector(data.get(col, None)) if col in vector_columns else data.get(col, None)
                 for col in column_names
             ]
-            result_str = await executor.execute(upsert_sql, *values)
-            result = 1 if result_str else 0
-            return result
+            return parse_rowcount(await executor.execute(upsert_sql, *values))
 
         async def delete_from_store(self, entity_id: Any) -> None:
             """delete entity from L3 by primary key.

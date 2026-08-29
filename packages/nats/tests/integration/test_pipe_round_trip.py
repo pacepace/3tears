@@ -51,7 +51,8 @@ pytestmark = pytest.mark.integration
 
 
 _NS = "pipetest"
-_TOOL = "tools.scrape-zone_alpha.1-0-0"
+#: the tool-name NODE the owning pod holds; both ends derive their subjects from it.
+_OWNED_NODE = "scrape-zone_alpha"
 _POD_ID = "pod-7f3c"
 
 
@@ -91,7 +92,7 @@ async def test_multi_megabyte_payload_survives_the_pipe_byte_for_byte(nats_conta
     """a payload far larger than one frame comes out the other end unchanged."""
     payload = os.urandom(4 * 1024 * 1024)
     digest = hashlib.sha256(payload).hexdigest()
-    family = Subjects.hitl_forward_family(_TOOL)
+    family = Subjects.hitl_forward_family(_OWNED_NODE)
 
     async def handler(stream: PipeStream) -> None:
         await stream.send(payload)
@@ -100,18 +101,21 @@ async def test_multi_megabyte_payload_survives_the_pipe_byte_for_byte(nats_conta
         async with serve_pipe(
             owner,
             "display-1",
-            tool=_TOOL,
+            tool=_OWNED_NODE,
             pod_id=_POD_ID,
             handler=handler,
             family=family,
         ):
             endpoint = await attach_pipe(caller, "display-1", family=family)
-            # the reply carries the readable tool name, and the subject the
-            # caller then derives from it is the digest form -- the two are not
-            # interchangeable and this is where that split is exercised.
-            assert endpoint.tool == _TOOL
+            # the reply carries the readable NODE, and the subject the caller then derives
+            # from it is the digest of its ROOTED form -- the two are not interchangeable
+            # and this is where that split is exercised. rooted because the pod's grant on
+            # this subject is minted at connect from the bare node on its ``tool_pods`` row
+            # while the owner may hold either spelling, so ``Subjects.pipe`` normalizes both
+            # onto one digest.
+            assert endpoint.tool == _OWNED_NODE
             assert Subjects.pipe(endpoint.tool, endpoint.pod_id, endpoint.nonce, "down").path.split(".")[2] == (
-                hashlib.sha256(_TOOL.encode("utf-8")).hexdigest()
+                hashlib.sha256(Subjects.tool_provider_node(_OWNED_NODE).encode("utf-8")).hexdigest()
             )
 
             received = bytearray()
@@ -125,7 +129,7 @@ async def test_multi_megabyte_payload_survives_the_pipe_byte_for_byte(nats_conta
 
 async def test_bytes_flow_in_both_directions(nats_container: str) -> None:
     """the pipe is bidirectional: the caller's bytes reach the owner's handler."""
-    family = Subjects.hitl_forward_family(_TOOL)
+    family = Subjects.hitl_forward_family(_OWNED_NODE)
     seen: list[bytes] = []
 
     async def handler(stream: PipeStream) -> None:
@@ -137,7 +141,7 @@ async def test_bytes_flow_in_both_directions(nats_container: str) -> None:
         async with serve_pipe(
             owner,
             "duplex-1",
-            tool=_TOOL,
+            tool=_OWNED_NODE,
             pod_id=_POD_ID,
             handler=handler,
             family=family,
@@ -159,7 +163,7 @@ async def test_a_slow_consumer_stops_and_resumes_the_producers_reads(nats_contai
     window = 4 * chunk_bytes
     payload = os.urandom(20 * window)
     source = _CountingSource(payload, chunk_bytes)
-    family = Subjects.hitl_forward_family(_TOOL)
+    family = Subjects.hitl_forward_family(_OWNED_NODE)
 
     async def handler(stream: PipeStream) -> None:
         while data := await source.read():
@@ -169,7 +173,7 @@ async def test_a_slow_consumer_stops_and_resumes_the_producers_reads(nats_contai
         async with serve_pipe(
             owner,
             "slow-1",
-            tool=_TOOL,
+            tool=_OWNED_NODE,
             pod_id=_POD_ID,
             handler=handler,
             family=family,
@@ -212,13 +216,13 @@ async def test_credit_window_sizing_measurements(nats_container: str) -> None:
     reasoned about, because the alternative is a round number nobody can defend.
     """
     payload = os.urandom(8 * 1024 * 1024)
-    family = Subjects.hitl_forward_family(_TOOL)
+    family = Subjects.hitl_forward_family(_OWNED_NODE)
 
     async def bulk_handler(stream: PipeStream) -> None:
         await stream.send(payload)
 
     async with await _connect(nats_container, "owner") as owner, await _connect(nats_container, "caller") as caller:
-        async with serve_pipe(owner, "bulk-1", tool=_TOOL, pod_id=_POD_ID, handler=bulk_handler, family=family):
+        async with serve_pipe(owner, "bulk-1", tool=_OWNED_NODE, pod_id=_POD_ID, handler=bulk_handler, family=family):
             endpoint = await attach_pipe(caller, "bulk-1", family=family)
             started = time.perf_counter()
             total = 0
@@ -272,7 +276,7 @@ async def _measure_ack_round_trip(url: str, family: str) -> float:
         async with serve_pipe(
             owner,
             "ack-1",
-            tool=_TOOL,
+            tool=_OWNED_NODE,
             pod_id=_POD_ID,
             handler=handler,
             family=family,

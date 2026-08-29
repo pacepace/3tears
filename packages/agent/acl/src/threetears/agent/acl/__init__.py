@@ -76,6 +76,12 @@ public surface — persistence:
   rbac tables, GENERATED from the Collection schemas above. every
   process that evaluates locally needs it, and the hand-written
   copies drifted; see :mod:`threetears.agent.acl.tables`.
+- :func:`row_scope_for_customer` -- the ``row_scope`` partition rule
+  ``groups`` and ``namespaces`` share, stated once. both tables are
+  keyed on the composite ``(row_scope, <entity>_id)``, so a caller
+  addressing a row by ``get`` / ``delete`` / ``ensure`` needs the
+  partition value as well as the id, and this is where that value
+  comes from.
 
 callers wire concrete loaders against their persistence layer (or
 use :class:`CollectionMembershipLoader` /
@@ -152,6 +158,8 @@ from threetears.agent.acl.collections import (
     ImpersonationGateCollection,
     ImpersonationGateStatus,
     NamespaceCollection,
+    NamespaceRescope,
+    NamespaceRescopeRefused,
     RoleAssignmentCollection,
     RoleCollection,
 )
@@ -171,6 +179,7 @@ from threetears.agent.acl.entities import (
     NamespaceEntity,
     RoleAssignmentEntity,
     RoleEntity,
+    row_scope_for_customer,
 )
 from threetears.agent.acl.evaluator import (
     READ_FILE_MATCHING_PREFIX,
@@ -295,6 +304,8 @@ __all__ = [
     "NamespaceCollection",
     "NamespaceEntity",
     "NamespaceNotFound",
+    "NamespaceRescope",
+    "NamespaceRescopeRefused",
     "PermissionCatalog",
     "PermissionEscalation",
     "PLATFORM_BUILTIN_PRE_CHECK_TOOL_NAMES",
@@ -340,6 +351,7 @@ __all__ = [
     "held_actions_on",
     "register_rbac_l1_tables",
     "resolve_held_permissions",
+    "row_scope_for_customer",
     "three_scope_visibility_clause",
     "validate_permissions",
 ]

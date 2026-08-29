@@ -17,7 +17,7 @@ per-tool assignment rows
 are created by the deploying app at tool-registration time -- the
 3tears side does not write into ``role_assignments`` because the
 target namespace ids are only known once the tool's
-``platform.namespaces`` row exists, and that row is materialized
+``namespaces`` row exists, and that row is materialized
 hub-side (see
 :class:`3tears.hub.tools.namespace_emitter.ToolNamespaceEmitter`).
 

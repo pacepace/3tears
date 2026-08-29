@@ -104,7 +104,6 @@ def _idle_server() -> tuple[ToolServer, _BlockingTool]:
         namespace="3tears",
         nats_client=_SilentNats(),  # type: ignore[arg-type]
         pod_id=_POD,
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )

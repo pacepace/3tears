@@ -6,6 +6,201 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.29.0 -- 2026-08-29
+
+### Changed
+
+- `core`: **BREAKING -- the L3 broker reads the caller's principal off a
+  signature, never off the request body.** `NatsProxyL3Backend` takes an
+  `identity_token` PROVIDER and forwards the caller's hub-minted identity token
+  on every L3 request. The `agent_id` / `user_id` / `customer_id` fields the
+  seven L3 request models used to carry are gone, and the models forbid unknown
+  fields, so a caller can no longer name a principal it did not authenticate as.
+
+  **The hub half and this half must release together, and there is no shim.**
+  Against a new hub an old client sends no token and names a principal, and
+  every L3 operation fails validation twice -- required field missing, forbidden
+  field present. Against an old hub a new client sends a field it does not know.
+  Pin every consumer in one window.
+
+  A PROVIDER rather than a string, following `ToolServer(auth_token=...)`: the
+  token is short-lived and re-minted by its refresh loop, so a value captured at
+  construction is expired within the hour and every later call is refused by a
+  backend that still looks correctly wired. A backend built with no provider
+  raises at the call site rather than sending a request that cannot be
+  authorized.
+
+- `registry`: **the registry proves it is the registry, instead of asserting
+  it.** `build_registry_rbac_stack` gains an additive `identity_token` provider,
+  and refuses at WIRING TIME -- before a single Collection is built -- when it
+  has none. It previously put a `uuid5` constant naming no row in any table into
+  the request body, and the broker believed it.
+
+  What authenticates it is a per-principal Ed25519 key it signs a connect JWT
+  with; the hub verifies that signature and mints the token. So the key that can
+  mint any principal never leaves the hub, the broker keeps one verification
+  path, and the registry can prove it is the registry without being able to sign
+  as anything else.
+
+### Added
+
+- `registry`: `get_identity_signing_key_ref()` reads
+  `THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY_REF`, defaulting to
+  `env://THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY`, and
+  `THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY` names the
+  `module:callable` that supplies the provider -- the same factory-hook seam the
+  pod authenticator, limit guard and usage emitter already use. The handshake is
+  a HOST protocol (its subject, payload, principal store and verifier are all
+  the hub's), so this package names the knob and awaits what it resolves rather
+  than growing a hub-specific implementation.
+
+- `registry`: `RegistryIdentityUnavailableError`, raised by that refusal.
+
+- `core`: `namespaces.namespace_contains(node, name)` -- the ONE containment
+  rule for dot-segmented hierarchical names (`platform.namespaces.name` values,
+  and the mcp names those are built from). `name == node or
+  name.startswith(node + ".")`, so a node of `pentest` reaches `pentest.sqlmap`
+  and can never reach `pentestimposter.sqlmap`. Segment-awareness is
+  structural rather than conventional: it replaces a raw prefix test that
+  every caller compensated for by writing its VALUES with a trailing dot,
+  which left a value written without one silently wider than it looked.
+
+  Comparison is exact -- no case folding, no whitespace stripping, no
+  tolerance for a trailing separator, and an empty node contains nothing
+  rather than everything. A malformed node therefore grants NOTHING, which is
+  the fail-closed direction; refusing one belongs at write time, because this
+  function runs inside the rbac evaluator's inner loop where raising would
+  turn one bad row into a failure of every authorization question its caller
+  asks.
+
+- `agent-acl`: `ScopeType.SUBTREE`, a fourth role-assignment scope shape
+  answering "this node and everything under it". The three that existed reach
+  one exact namespace row, every namespace of one type inside one customer, or
+  everything -- so a grant meant as "the `tools.pentest` family" had to be
+  written as either a single row or every tool namespace the customer has.
+
+  The root is carried by the new `RoleAssignment.scope_namespace_name` and is a
+  NAME, not an id: a namespace id is `uuid5` over the unsanitized mcp name and
+  version, so a parent and its child have unrelated ids and an id cannot answer
+  a containment question at all -- and a subtree root need not be a
+  materialized `namespaces` row. Containment is delegated to
+  `threetears.core.namespaces.namespace_contains`.
+
+- `agent-acl`: `Namespace.name`, the canonical `platform.namespaces.name`
+  value. Optional and defaulting to `None`, so every existing construction site
+  compiles unchanged. Only `ScopeType.SUBTREE` reads it, and it reads it
+  FAIL-CLOSED: a namespace with no name is covered by no subtree assignment, so
+  a site that does not supply one narrows a subtree grant to nothing and can
+  never widen one.
+
+- `agent-acl`: `NamespaceCollection.list_ids_under_name(node)`, the expansion of
+  a subtree scope into a concrete id set for audit-snapshot paths. Membership is
+  decided in python by `namespace_contains` rather than by a SQL `LIKE`
+  pattern -- a second containment rule in SQL is a second place the segment
+  boundary can be got wrong, and a namespace name legally carries `_`, which is
+  a `LIKE` wildcard.
+
+  A subtree row's `row_scope` derives to `platform`, alongside `all` and a
+  customerless `type_customer`, because the scope names no customer -- the
+  caller's customer comes from the GROUP.
+
+  The deploying app owns the `role_assignments` DDL; the platform-side migration
+  that adds `scope_namespace_name` and widens both scope CHECK constraints must
+  land before a subtree row can be written.
+
+### Fixed
+
+- `iam`: DPoP proof `iat` freshness is adjudicated in ONE place. PyJWT's own
+  `iat` check (future-only, at decode's zero leeway) is switched off so this
+  module's `iat_window` is the single authority, and the future half is made
+  tolerant of sub-second clock skew. Previously a client whose clock led the
+  server's by a fraction of a second stamped `iat = now + 1` and had its proof
+  rejected -- a login failing on sub-second timing -- while the module
+  documented a sixty-second window and which of the two checks fired was
+  invisible from outside. `iat` remains a required claim.
+
+- `registry`: a tool pod's `allowed_namespaces` is compared on a SEGMENT
+  boundary. It was `tool.name.startswith(ns)`, with no notion of a segment, so
+  a pod granted `threetears` could register `threetearsimposter.anything`. Every
+  value compensated by carrying a trailing dot, which meant a namespace written
+  without one was a wider grant than it looked.
+
+  **Values must now be written WITHOUT a trailing separator** -- `pentest`, not
+  `pentest.` -- because a dotted value matches nothing under the new comparison.
+  Deploying apps that seed `tool_pods` rows must strip it.
+
+- `core`: a deferred write the durable tier declined is no longer counted as
+  flushed, and no longer passes in silence. `save_entity` treats a 0 rowcount
+  as a hard failure, so the synchronous path can never report a row it did not
+  persist; the deferred path replays the same write through `persist_to_store`
+  and both flush loops -- per-entity and atomic-batch -- discarded that
+  rowcount, counted the write, and evicted its buffer entry. The buffer entry
+  is the only copy, so the loss was permanent and nothing said so.
+
+  Eviction and the FK-aware retry budget are unchanged: a declined write is
+  reported, never replayed. The report is graded by what the collection says its
+  own 0 means -- error when it declares `emits_cas_fence` (a provable lost race,
+  reachable only through a buffer that already held rows when the table was
+  fenced, since a fenced collection whose table is configured for deferred flush
+  refuses to construct at all), debug when the table declares
+  `on_conflict="ignore"` and a 0 is the duplicate the policy exists to absorb,
+  and warning otherwise, where it is ambiguous.
+
+- `core`: a dynamic collection (`DataStore.create_table` /
+  `create_dynamic_collection`) reports the rows its L3 write actually affected.
+  `save_to_store` tested the asyncpg status tag for TRUTHINESS -- `1 if
+  result_str else 0` -- so `"INSERT 0 0"` and `"UPDATE 0"` both answered 1.
+  `save_entity` raises on a 0 and is what stops a declined write being reported
+  as a persisted one, so that read handed the caller a success for a row the
+  store never wrote. It now parses the tag with the framework's own
+  `parse_rowcount`, which exists for exactly this raw-SQL border.
+
+  A zero-row tag is reachable rather than theoretical: `NatsProxyL3Backend`
+  composes `"INSERT 0 0"` whenever the broker's reply carries no `row_count`,
+  so an agent pod reaching L3 through the broker was the exposed case.
+
+  Its `original_timestamp` argument is documented as accepted-and-not-applied
+  rather than described as an optimistic-concurrency check, which it never was:
+  the generated statement is an unfenced `INSERT ... ON CONFLICT DO UPDATE` and
+  the argument reached nothing. Implementing the fence would change the contract
+  for every existing dynamic table, so it is stated rather than added.
+
+  **A deploying app whose pods reach L3 through the broker may see new raises.**
+  A reply carrying no `row_count` previously read as a successful write and now
+  makes `save_entity` raise -- `RuntimeError` for a new entity,
+  `ConcurrentModificationError` otherwise. That is the point of the fix, and it
+  is how every `SchemaBackedCollection` has always behaved, so a raise appearing
+  here names a broker reply that was already losing writes silently.
+
+- **docs: prose no longer qualifies a hub table with the `platform` schema.**
+  The hub writes to the schema its `FOURTEENAIBOTS_DB_SCHEMA` setting names --
+  `aibots` on the compose stack. It used to be `platform`, and the hardcoded
+  default was removed because every consumer that forgot to read the setting
+  fell back to `platform`, which is correct on one deployment and wrong on every
+  other. The code was corrected then; the docstrings were not, and ~175 comment
+  and docstring lines across 50 modules went on saying `platform.namespaces`,
+  `platform.agents`, `platform.roles`. A downstream engineer read them and spent
+  three days querying a stale leftover schema before filing a bug against
+  working code.
+
+  Prose now names the bare table (`namespaces`), or names the owner in words
+  ("the hub's `usage_records` table") where the qualifier was carrying ownership
+  rather than a schema. No code, SQL literal or log message changed.
+  `tests/enforcement/test_no_stale_platform_schema_qualifier.py` is the guard,
+  and it encodes four exclusions on their own stated grounds: `system.platform.*`
+  NATS subjects, attribute access on a local variable named `platform`,
+  historical DDL that really did name a schema, and hostnames such as
+  `platform.invalid`.
+
+- `agent-memory`: the `memory_chunks` and `media_content` vector indexes drop
+  their `WHERE embedding IS NOT NULL` predicate. YugabyteDB does not support a
+  partial index on a vector column (yugabyte-db#26402): builds before
+  2025.2.4.0 accepted the DDL and produced a NON-FUNCTIONAL index, and
+  2025.2.4.0 refuses it outright. Dropping the predicate costs nothing -- an
+  hnsw index does not index a NULL vector, and a similarity scan skips NULL
+  embeddings either way.
+
+
 ## v0.28.0 -- 2026-08-24
 
 ### Added

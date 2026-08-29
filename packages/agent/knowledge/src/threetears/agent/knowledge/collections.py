@@ -1,8 +1,8 @@
 """Agent-side three-tier knowledge collections -- playbook entries + concepts.
 
 Re-implements the hub's playbook-entry / concept collections for the agent pod:
-the agent owns its OWN collections over the SAME ``platform.playbook_entries`` /
-``platform.concepts`` tables (reverse-importing the hub class is banned),
+the agent owns its OWN collections over the SAME ``playbook_entries`` /
+``concepts`` tables (reverse-importing the hub class is banned),
 constructed over the ``system.platform.rbac`` NATS proxy pool. Each schema OMITS
 the ``embedding`` column from the projection so the proxy pool never decodes a
 pgvector value on the hot per-turn list path; the similarity ranker fetches
@@ -269,7 +269,7 @@ def _row_to_concept_snapshot(row: dict[str, Any]) -> ConceptSnapshot:
 
 
 class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
-    """Agent-side three-tier collection over ``platform.playbook_entries``.
+    """Agent-side three-tier collection over the hub's ``playbook_entries``.
 
     Re-implements the hub's playbook-entry collection for the agent pod over the
     ``system.platform.rbac`` proxy pool. The schema OMITS the ``embedding`` column
@@ -391,7 +391,7 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
             if datasource_id is not None:
                 # KNW-77: gather across the origin link. the IN-set is {D, P}
                 # where P = D.origin_datasource_id (resolved by the correlated
-                # subquery over platform.datasources on the same rbac-read proxy
+                # subquery over the hub's ``datasources`` on the same rbac-read proxy
                 # pool -- a fresh per-call read, no module state). a NULL origin
                 # yields {D}, so an unlinked datasource keeps the single-anchor
                 # behaviour.
@@ -501,7 +501,7 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
 
 
 class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
-    """Agent-side three-tier collection over ``platform.concepts``.
+    """Agent-side three-tier collection over the hub's ``concepts``.
 
     Re-implements the hub's concept collection for the agent pod over the
     ``system.platform.rbac`` proxy pool. The schema OMITS the ``embedding`` column

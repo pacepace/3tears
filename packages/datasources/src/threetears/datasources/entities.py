@@ -1,23 +1,23 @@
 """capability-source entity definitions for the registry, schema-metadata, and table-template tables.
 
 each entity subclasses :class:`threetears.core.entities.base.BaseEntity`
-and matches the shape of the corresponding ``platform.*`` table:
+and matches the shape of the corresponding table in the platform schema:
 
 - :class:`CapabilitySourceEntity` -- the registered capability-source
-  row (``platform.datasources``). generalized from the former
+  row (``datasources``). generalized from the former
   datasource-only shape (Fork-1, gu-task-08): a ``kind`` discriminator
   (``datasource`` / ``api_import`` / ``mcp_import``) widens the same
   registry to hold API imports and MCP imports alongside database
   datasources. flat PK ``id``.
 - :class:`DataSourceTableEntity` -- discovered table row
-  (``platform.datasource_tables``). flat PK ``id``.
+  (``datasource_tables``). flat PK ``id``.
 - :class:`DataSourceColumnEntity` -- discovered column row
-  (``platform.datasource_columns``). flat PK ``id``; natural unique
+  (``datasource_columns``). flat PK ``id``; natural unique
   key ``(datasource_id, schema_name, table_name, column_name)``.
 - :class:`DataSourceRelationEntity` -- cross-table join metadata
-  (``platform.datasource_relations``). flat PK ``id``.
+  (``datasource_relations``). flat PK ``id``.
 - :class:`TableTemplateEntity` -- reusable table-shape definition
-  (``platform.table_templates``). composite PK ``(customer_id, id)``.
+  (``table_templates``). composite PK ``(customer_id, id)``.
 
 plus the discriminator + lifecycle enums:
 
@@ -61,7 +61,7 @@ __all__ = [
 class CapabilitySourceKind(StrEnum):
     """capability-source kind discriminator (Fork-1, gu-task-08).
 
-    the higher-level axis over the ``platform.datasources`` registry:
+    the higher-level axis over the ``datasources`` registry:
     it says WHETHER a row is a database datasource, an external API
     import, or an MCP import. distinct from :class:`DataSourceType`,
     which is the datasource DRIVER axis and applies only to
@@ -174,7 +174,7 @@ class CapabilitySourceEntity(BaseEntity):
     """capability-source entity representing a registered capability source.
 
     generalized from the former datasource-only entity (Fork-1,
-    gu-task-08): the SAME ``platform.datasources`` registry now holds
+    gu-task-08): the SAME ``datasources`` registry now holds
     database datasources, external API imports, and MCP imports,
     discriminated by the ``kind`` field
     (:class:`CapabilitySourceKind`). the shape is additive over the
@@ -196,7 +196,7 @@ class CapabilitySourceEntity(BaseEntity):
 
     extends :class:`BaseEntity` with capability-source field access. all
     field data lives in L1 cache, accessed via the parent collection
-    proxy. fields match ``platform.datasources``.
+    proxy. fields match ``datasources``.
 
     flat primary key ``id`` post-knowledge-task-08: the v016 migration
     rebuilt the table PK on ``id`` alone (dropping the v001 composite
@@ -223,7 +223,7 @@ class DataSourceTableEntity(BaseEntity):
 
     extends :class:`BaseEntity` with table-specific field access. all
     field data lives in L1 cache, accessed via the parent collection
-    proxy. fields match ``platform.datasource_tables``.
+    proxy. fields match ``datasource_tables``.
 
     :param data: initial field data dictionary
     :ptype data: dict[str, Any]
@@ -241,7 +241,7 @@ class DataSourceColumnEntity(BaseEntity):
 
     extends :class:`BaseEntity` with column-specific field access. all
     field data lives in L1 cache, accessed via the parent collection
-    proxy. fields match ``platform.datasource_columns``.
+    proxy. fields match ``datasource_columns``.
 
     :param data: initial field data dictionary
     :ptype data: dict[str, Any]
@@ -258,10 +258,10 @@ class DataSourceSchemaDigestEntity(BaseEntity):
     """materialized documented-schema digest for one datasource (schema-priming).
 
     extends :class:`BaseEntity`. one row per datasource in
-    ``platform.datasource_schema_digests``, holding the pre-derived
+    ``datasource_schema_digests``, holding the pre-derived
     structured projection of the datasource's DOCUMENTED tables and
     columns (the hub materializes it from
-    ``platform.datasource_tables`` + ``platform.datasource_columns``,
+    ``datasource_tables`` + ``datasource_columns``,
     keeping only rows whose ``description`` is non-null). agent pods read
     it BY PRIMARY KEY so the lookup is served from the hot L1 cache — the
     whole reason the digest is materialized rather than re-derived per
@@ -269,7 +269,7 @@ class DataSourceSchemaDigestEntity(BaseEntity):
 
     the primary key IS ``datasource_id`` (one row per datasource), so the
     agent addresses the digest by the datasource it already holds. fields
-    match ``platform.datasource_schema_digests``: ``datasource_id`` /
+    match ``datasource_schema_digests``: ``datasource_id`` /
     ``customer_id`` / ``tables`` (JSONB structured projection) /
     ``source_fingerprint`` (a content hash of the documented rows the
     digest was built from, for idempotent reconcile + observability) /
@@ -295,7 +295,7 @@ class DataSourceRelationEntity(BaseEntity):
 
     extends :class:`BaseEntity` with relation-specific field access. all
     field data lives in L1 cache, accessed via the parent collection
-    proxy. fields match ``platform.datasource_relations``.
+    proxy. fields match ``datasource_relations``.
 
     :param data: initial field data dictionary
     :ptype data: dict[str, Any]
@@ -316,13 +316,13 @@ class TableTemplateEntity(BaseEntity):
     ``BaseEntity`` derives that tuple from the collection's declared
     ``primary_key_columns``, so no override lives here and
     :attr:`BaseEntity.id` keeps returning the scalar template UUID.
-    fields match ``platform.table_templates``: id, customer_id, name,
+    fields match ``table_templates``: id, customer_id, name,
     description, caveats, date_created, date_updated.
 
     customer-scoping is a hard invariant: every template belongs to
     exactly one customer, the unique index on ``(customer_id, name)``
     keeps slug collisions inside a customer's namespace, and the
-    ``customer_id`` FK to ``platform.customers`` cascades on customer
+    ``customer_id`` FK to ``customers`` cascades on customer
     delete.
 
     :param data: initial field data dictionary; must carry both

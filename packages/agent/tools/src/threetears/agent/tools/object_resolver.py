@@ -15,9 +15,17 @@ tool server) needs no hub session of its own.
 Shape mirrors :class:`~threetears.core.security.jwks_provider.CachedHubJwksProvider`
 -- a pod-side hub caller, cached, fail-closed -- but NOT its refresh loop: an
 object's id -> key mapping is immutable once committed, so a resolved key never
-rotates. The cache is fill-on-resolve with bounded FIFO eviction, keyed by the
-VERIFIED ``(customer_id, object_id)`` (no cross-tenant reuse); failures are
-never cached.
+rotates. The cache is fill-on-resolve, keyed by the VERIFIED
+``(customer_id, object_id)`` (no cross-tenant reuse); failures are never cached.
+
+**Two caches, and which one you get is a property of the pod, not of this class.**
+A pod that declared Collection tables has a three-tier stack, and
+:class:`ToolServerBootstrap` hands this resolver the runtime's
+:class:`~threetears.agent.tools.object_resolution_collection.ObjectResolutionCollection`
+-- L1 in this process, L2 shared with every replica under the pod's own key scope, so a
+resolution one replica paid for serves all of them. A pod that declared none keeps the
+historical behaviour: a process-local ``dict`` with bounded FIFO eviction, which is a
+real cache for a single replica and no cache at all for the second one.
 
 Fail-closed: a transport error, a hub error reply (identity unverified / object
 not found), or a malformed success reply raises :class:`ResolveObjectError` and
@@ -38,6 +46,7 @@ from threetears.observe import get_logger
 
 __all__ = [
     "HubObjectResolver",
+    "ObjectResolutionCache",
     "ObjectResolveRequestModel",
     "ObjectResolveResponseModel",
     "ObjectResolver",
@@ -115,6 +124,40 @@ class ObjectResolveResponseModel(BaseModel):
     error_message: str | None = None
 
 
+class ObjectResolutionCache(Protocol):
+    """the two-tier store a resolved mapping is remembered in.
+
+    Declared structurally rather than imported so this module keeps no dependency on the
+    collection that satisfies it; the concrete implementation is
+    :class:`~threetears.agent.tools.object_resolution_collection.ObjectResolutionCollection`,
+    and a test may substitute anything of this shape.
+    """
+
+    async def lookup(self, customer_id: UUID, object_id: UUID) -> "ObjectHandle | None":
+        """return the remembered handle for a verified pair, or ``None`` on a miss.
+
+        :param customer_id: the VERIFIED owning customer
+        :ptype customer_id: UUID
+        :param object_id: the object whose stored key is wanted
+        :ptype object_id: UUID
+        :return: the handle, or ``None``
+        :rtype: ObjectHandle | None
+        """
+        ...
+
+    async def remember(self, customer_id: UUID, handle: "ObjectHandle") -> None:
+        """record a resolved handle so this pod's replicas need not re-resolve it.
+
+        :param customer_id: the VERIFIED owning customer
+        :ptype customer_id: UUID
+        :param handle: the resolved handle
+        :ptype handle: ObjectHandle
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+
 class ObjectResolver(Protocol):
     """resolves an object id to its stored key under the verified tenant.
 
@@ -149,17 +192,24 @@ class HubObjectResolver:
 
     a per-pod resolver the tool server self-provisions from its NATS client (it
     needs no S3 creds, unlike the object store) and installs on every call
-    scope. holds only the NATS client + a bounded id -> handle cache; there is
-    no background loop, because a committed object's id -> key mapping never
+    scope. holds only the NATS client + an id -> handle cache; there is no
+    background loop, because a committed object's id -> key mapping never
     changes.
 
     :param nats_client: connected canonical NATS wrapper client
     :ptype nats_client: NatsClient
     :param request_timeout_seconds: the resolve request/reply timeout in seconds
     :ptype request_timeout_seconds: float
-    :param cache_max: the most id -> handle mappings to retain before FIFO
-        eviction; keeps the cache bounded on a long-lived pod
+    :param cache_max: the most id -> handle mappings the fallback in-process
+        cache retains before FIFO eviction; keeps it bounded on a long-lived
+        pod. ignored when ``resolution_cache`` is supplied, which bounds itself
+        through the pod's L1 tier
     :ptype cache_max: int
+    :param resolution_cache: the pod's two-tier resolution store, when it has
+        one. supplied it REPLACES the in-process dict, so a mapping resolved on
+        one replica is served to every replica. ``None`` -> the historical
+        pod-local cache
+    :ptype resolution_cache: ObjectResolutionCache | None
     """
 
     def __init__(
@@ -168,13 +218,16 @@ class HubObjectResolver:
         *,
         request_timeout_seconds: float,
         cache_max: int = _DEFAULT_CACHE_MAX,
+        resolution_cache: ObjectResolutionCache | None = None,
     ) -> None:
         self._nc = nats_client
         self._timeout = request_timeout_seconds
         self._cache_max = cache_max
+        self._resolution_cache = resolution_cache
         # keyed by the VERIFIED (customer_id, object_id): a mapping resolved for
         # one tenant is never reused for another. insertion-ordered for FIFO
-        # eviction once the cap is reached.
+        # eviction once the cap is reached. unused when a resolution_cache was
+        # supplied -- its L1 tier is this, per process, plus a shared L2.
         self._cache: dict[tuple[UUID, UUID], ObjectHandle] = {}
 
     async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
@@ -197,8 +250,7 @@ class HubObjectResolver:
         :raises ResolveObjectError: transport failure, hub rejection, or a
             malformed success reply
         """
-        cache_key = (customer_id, object_id)
-        cached = self._cache.get(cache_key)
+        cached = await self._remembered(customer_id, object_id)
         if cached is not None:
             return cached
         request = ObjectResolveRequestModel(
@@ -229,7 +281,7 @@ class HubObjectResolver:
             summary=None,
             category=None,
         )
-        self._cache_put(cache_key, handle)
+        await self._remember(customer_id, handle)
         _log.debug(
             "resolved object id to stored key",
             # object_id is the safe handle; the s3_key is NOT logged (it embeds
@@ -237,6 +289,35 @@ class HubObjectResolver:
             extra={"extra_data": {"object_id": str(object_id)}},  # convert at border: resolve log extra_data
         )
         return handle
+
+    async def _remembered(self, customer_id: UUID, object_id: UUID) -> ObjectHandle | None:
+        """read the resolved handle back out of whichever cache this pod has.
+
+        :param customer_id: the VERIFIED owning customer
+        :ptype customer_id: UUID
+        :param object_id: the object id being resolved
+        :ptype object_id: UUID
+        :return: the cached handle, or ``None`` on a miss
+        :rtype: ObjectHandle | None
+        """
+        if self._resolution_cache is not None:
+            return await self._resolution_cache.lookup(customer_id, object_id)
+        return self._cache.get((customer_id, object_id))
+
+    async def _remember(self, customer_id: UUID, handle: ObjectHandle) -> None:
+        """record a freshly-resolved handle in whichever cache this pod has.
+
+        :param customer_id: the VERIFIED owning customer
+        :ptype customer_id: UUID
+        :param handle: the resolved handle
+        :ptype handle: ObjectHandle
+        :return: nothing
+        :rtype: None
+        """
+        if self._resolution_cache is not None:
+            await self._resolution_cache.remember(customer_id, handle)
+            return
+        self._cache_put((customer_id, handle.object_id), handle)
 
     def _cache_put(self, key: tuple[UUID, UUID], handle: ObjectHandle) -> None:
         """Store ``handle`` under ``key``, evicting the oldest entry when full.

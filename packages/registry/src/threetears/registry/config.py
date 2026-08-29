@@ -17,6 +17,7 @@ __all__ = [
     "get_heartbeat_check_interval",
     "get_heartbeat_max_misses",
     "get_heartbeat_timeout",
+    "get_identity_signing_key_ref",
     "get_jwks_request_timeout",
     "get_mcp_timeout",
     "get_proxy_assertion_signing_key_ref",
@@ -213,6 +214,36 @@ def get_proxy_assertion_signing_key_ref() -> str:
     return os.environ.get(
         "THREETEARS_REGISTRY_PROXY_ASSERTION_SIGNING_KEY_REF",
         "env://THREETEARS_PROXY_ASSERTION_SIGNING_KEY",
+    )
+
+
+def get_identity_signing_key_ref() -> str:
+    """read the secret reference to the registry's OWN Ed25519 identity signing key.
+
+    env var: ``THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY_REF`` (a ``scheme://locator``
+    secret reference); defaults to ``env://THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY``.
+
+    This is the registry's own credential and nothing else's: it signs a short-lived
+    connect JWT the HOST verifies against the public half stored on the registry's
+    principal row, and the host then mints the identity token every L3 request carries.
+    So the key that can mint an identity never leaves the host, and this one can sign
+    for exactly one principal.
+
+    Distinct from :func:`get_proxy_assertion_signing_key_ref`, which is a key the
+    registry SHARES with the host to sign proxy->pod assertions. Sharing that one is
+    correct because both ends need it; sharing this one would defeat the point.
+
+    The reference is resolved by whoever performs the handshake -- the host's
+    identity-token provider factory -- rather than here, because 3tears defines no
+    handshake protocol. This function only names the knob, so the name lives beside
+    every other ``THREETEARS_REGISTRY_*`` setting instead of in a host module.
+
+    :return: the secret reference
+    :rtype: str
+    """
+    return os.environ.get(
+        "THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY_REF",
+        "env://THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY",
     )
 
 

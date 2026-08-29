@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-mcp"
-version = "0.28.0"
+version = "0.29.0"
 description = "Shared MCP framework: McpServer + McpTool + PlatformHttpClient + per-tool RBAC backed by mcp_tool_grants and the task-02 epoch broadcast"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -21,10 +21,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.28.0,<0.29.0",
-    "3tears-epoch>=0.28.0,<0.29.0",
-    "3tears-nats>=0.28.0,<0.29.0",
-    "3tears-observe>=0.28.0,<0.29.0",
+    "3tears>=0.29.0,<0.30.0",
+    "3tears-epoch>=0.29.0,<0.30.0",
+    "3tears-nats>=0.29.0,<0.30.0",
+    "3tears-observe>=0.29.0,<0.30.0",
     "mcp>=1.27",
     "httpx>=0.27",
     "pydantic>=2",

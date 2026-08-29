@@ -49,7 +49,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
     composed at the transaction level by the calling tool, not
     row-level OCC on this collection.
 
-    three-tier-task-01 phase F: the paired ``platform.namespaces``
+    three-tier-task-01 phase F: the paired ``namespaces``
     write that lived on the old hand-rolled save_to_store moved to
     :class:`WorkspaceCreateTool._insert_all`, which persists the
     namespace via :meth:`NamespaceCollection.save_entity` after the

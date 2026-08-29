@@ -167,6 +167,11 @@ class MemoryAccessService:
                     customer_id=ns.customer_id,
                     namespace_type=ns.namespace_type,
                     owner_agent_id=owner_agent_id,
+                    name=getattr(ns, "name", None),
+                    # the ownership key. read through ``getattr`` for the
+                    # same reason ``name`` is: the rows reaching here come
+                    # from a duck-typed collection handle.
+                    owner_namespace=getattr(ns, "owner_namespace", None),
                 ),
                 action=ACTION_MEMORY_READ,
                 user_id=caller_user_id,

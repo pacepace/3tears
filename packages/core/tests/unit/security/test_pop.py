@@ -78,6 +78,48 @@ class TestProofOfPossession:
                 leeway_seconds=60,
             )
 
+    def test_future_iat_beyond_the_leeway_rejected(self) -> None:
+        """The window is two-sided: an unbounded future iat lets an attacker mint proofs
+        today for use after a key rotation.
+
+        The message is matched because this module's window is the only thing adjudicating
+        ``iat`` -- so "freshness" is the only wording a refusal can carry, and a bare
+        "something was raised" would pass equally when PyJWT's zero-leeway check refused
+        every future proof, one second included.
+        """
+        holder = Ed25519PrivateKey.generate()
+        jkt = jwk_thumbprint(holder.public_key())
+        with pytest.raises(IdentityTokenError, match="freshness"):
+            verify_pop_proof(
+                _proof(holder, iat=int(time.time()) + 3600),  # an hour ahead
+                expected_jkt=jkt,
+                access_token_hash="ath-1",
+                body_hash="bh-1",
+                leeway_seconds=60,
+            )
+
+    def test_iat_a_second_or_two_ahead_of_the_verifier_is_accepted(self) -> None:
+        """The admitted twin, and the case the agent->proxy hop actually hits.
+
+        The two ends are different machines, so the signer's clock leads the verifier's as
+        often as it lags. ``iat`` is an integer, so a lead of a fraction of a second still
+        stamps ``verifier_now + 1``; refusing that makes a call succeed or fail on sub-second
+        timing. Absorbing it is what ``leeway_seconds`` is for, and it is symmetric.
+        """
+        holder = Ed25519PrivateKey.generate()
+        jkt = jwk_thumbprint(holder.public_key())
+        for ahead in (1, 2, 55):
+            assert (
+                verify_pop_proof(
+                    _proof(holder, nonce=f"ahead-{ahead}", iat=int(time.time()) + ahead),
+                    expected_jkt=jkt,
+                    access_token_hash="ath-1",
+                    body_hash="bh-1",
+                    leeway_seconds=60,
+                )
+                == f"ahead-{ahead}"
+            )
+
     def test_non_eddsa_alg_rejected(self) -> None:
         # an HS256 proof must be rejected at the alg pin, before signature handling.
         forged = pyjwt.encode(

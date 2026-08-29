@@ -208,3 +208,69 @@ def test_the_audit_stream_an_agent_consumes_is_the_one_it_is_granted() -> None:
     assert f"{_NAMESPACE}-audit" in streams, (
         f"an agent pod is not granted the audit stream it declares ('{_NAMESPACE}-audit'); it holds {streams}."
     )
+
+
+#: representative ids per principal, so every member of the enum resolves to a concrete
+#: allow-list. Keyed by the enum itself: a member added without an entry raises a ``KeyError``
+#: in :func:`_permissions_for` rather than being quietly skipped by a hand-written roster.
+_IDS: dict[Principal, dict[str, str]] = {
+    Principal.AGENT_POD: {"agent_id": _AGENT_ID, "pod_id": _POD_ID},
+    Principal.TOOL_POD: {"pod_id": _POD_ID},
+    Principal.REGISTRY: {"conn_id": "conn-1"},
+    Principal.HUB: {"conn_id": "conn-1"},
+    Principal.GATEWAY: {"conn_id": "conn-1"},
+    Principal.CHANNEL_ADAPTER: {"conn_id": "conn-1"},
+    Principal.AGENT_ROUTER: {"conn_id": "conn-1"},
+    Principal.DATASET_EXECUTOR: {"conn_id": "conn-1"},
+}
+
+
+def _permissions_for(principal: Principal) -> object:
+    """resolve one principal's allow-list from its representative ids.
+
+    :param principal: the connection identity class
+    :ptype principal: Principal
+    :return: the resolved permissions
+    :rtype: PrincipalPermissions
+    """
+    return build_permissions(principal, **_IDS[principal])
+
+
+@pytest.mark.parametrize("principal", list(Principal))
+def test_the_collections_bucket_every_principal_holds_is_the_one_basecollection_opens(
+    principal: Principal,
+) -> None:
+    """The shared L2 bucket's grant and ``BaseCollection``'s own suffix must agree, for ALL.
+
+    Two properties in one assertion, and both belong here rather than in a unit test over one
+    principal.
+
+    **The name.** ``BaseCollection`` opens its L2 through
+    :meth:`~threetears.nats.kv.KvCapable.kv_bucket`, which takes a SUFFIX and layers the
+    connection's ``{namespace}-`` over it, so the bucket that materialises is
+    ``{ns}-collections``. Read out of ``L2_BUCKET_SUFFIX`` rather than restated, so a rename on
+    either side fails here instead of becoming a JetStream call that blocks to its deadline.
+
+    **The roster.** Every principal runs collections -- that is what stops L2 being a per-class
+    privilege -- so this is parametrized over ``list(Principal)`` and never over a list somebody
+    typed. A typed roster asserts "these principals" while reading as "every principal", and the
+    two diverge silently the moment a member is added. Several of this platform's collections are
+    ``L3 = None``, where L2 IS the store, so an ungranted principal there loses rows rather than
+    missing a cache.
+    """
+    from threetears.core.collections.base import BaseCollection
+
+    suffix = BaseCollection.L2_BUCKET_SUFFIX
+    assert "-" not in suffix and "_" not in suffix, (
+        f"{suffix!r} looks like it has baked in a namespace of its own; it is a SUFFIX that kv_bucket prefixes."
+    )
+    granted = kv_bucket_names(_permissions_for(principal))  # type: ignore[arg-type]
+    assert f"{_NAMESPACE}-{suffix}" in granted, (
+        f"{principal} is not granted the shared collections bucket "
+        f"('{_NAMESPACE}-{suffix}'); it holds {list(granted)}. Every L2 read and write from this "
+        f"principal would block to its deadline and read as an unreachable broker."
+    )
+    assert suffix not in granted, (
+        f"{principal}'s collections grant is the bare name {suffix!r}, which names a bucket no "
+        f"host opens through kv_bucket."
+    )

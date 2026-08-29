@@ -49,6 +49,7 @@ def _make_proxy(mock_nc: MagicMock) -> NatsProxyL3Backend:
         nats_client=mock_nc,
         namespace_prefix="test",
         agent_id="agent-123",
+        identity_token=lambda: "test-identity-token",
     )
 
 
@@ -123,6 +124,7 @@ class TestDefaultNamespace:
             nats_client=MagicMock(),
             namespace_prefix="ns",
             agent_id="abc-def",
+            identity_token=lambda: "test-identity-token",
         )
         assert proxy.default_namespace == "agents.abc-def"
 
@@ -132,8 +134,123 @@ class TestDefaultNamespace:
             namespace_prefix="ns",
             agent_id="abc-def",
             default_namespace="custom.namespace",
+            identity_token=lambda: "test-identity-token",
         )
         assert proxy.default_namespace == "custom.namespace"
+
+    def test_a_principal_with_no_agent_id_names_the_namespace_it_owns(self) -> None:
+        """a tool pod holds no agent id and must not have to invent one.
+
+        Its durable state lives under the interior provider node it owns
+        (``tools.survey_admin``), which is not derivable from any principal id --
+        so the namespace is supplied directly. Before this, the only way to build
+        the backend was to pass an agent id purely to satisfy the parameter and
+        then override the namespace it derived -- which is what the registry's
+        stack does -- so the derivation was computed and thrown away, and a
+        principal with no agent id had to invent one to get past the signature.
+        """
+        proxy = NatsProxyL3Backend(
+            nats_client=MagicMock(),
+            namespace_prefix="ns",
+            default_namespace="tools.survey_admin",
+            identity_token=lambda: "test-identity-token",
+        )
+        assert proxy.default_namespace == "tools.survey_admin"
+        assert proxy.agent_id is None
+
+    def test_neither_an_agent_id_nor_a_namespace_is_refused_at_construction(self) -> None:
+        """a backend with no namespace to send to fails HERE, not on first query.
+
+        ``default_namespace`` rides on every request, so a backend built without
+        one would send ``namespace=None`` and be refused by the broker on each
+        call -- an authorization-shaped error, far from the wiring that caused it.
+        """
+        with pytest.raises(ValueError):
+            NatsProxyL3Backend(
+                nats_client=MagicMock(),
+                namespace_prefix="ns",
+                identity_token=lambda: "test-identity-token",
+            )
+
+
+# ------------------------------------------------------------------
+# identity token provider
+# ------------------------------------------------------------------
+
+
+class TestIdentityTokenProvider:
+    """the client half of the verified-principal contract.
+
+    The broker reads the caller off a signed token and refuses a request
+    without one, so a backend that cannot produce a token must fail AT THE
+    CALL and send nothing. A request that leaves here unauthorizable is the
+    shape these tests exist to keep out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_provider_raises_and_sends_nothing(self) -> None:
+        """a backend built with no provider refuses rather than sending."""
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock()
+        proxy = NatsProxyL3Backend(
+            nats_client=mock_nc,
+            namespace_prefix="test",
+            agent_id="agent-123",
+        )
+
+        with pytest.raises(DataLayerUnavailableError, match="no identity_token provider"):
+            await proxy.fetch("SELECT 1")
+
+        mock_nc.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_token_raises_and_sends_nothing(self) -> None:
+        """an empty token is refused exactly as a missing one is."""
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock()
+        proxy = NatsProxyL3Backend(
+            nats_client=mock_nc,
+            namespace_prefix="test",
+            agent_id="agent-123",
+            identity_token=lambda: "",
+        )
+
+        with pytest.raises(DataLayerUnavailableError, match="returned an empty token"):
+            await proxy.fetch("SELECT 1")
+
+        mock_nc.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provider_is_read_on_every_request(self) -> None:
+        """the CURRENT token is forwarded, never one captured at construction.
+
+        The refresh loop re-mints in place, so a cached value is expired within
+        the hour and every later call then fails against the real broker.
+        """
+        tokens = iter(["token-1", "token-2"])
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock(
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 1,
+                }
+            )
+        )
+        proxy = NatsProxyL3Backend(
+            nats_client=mock_nc,
+            namespace_prefix="test",
+            agent_id="agent-123",
+            identity_token=lambda: next(tokens),
+        )
+
+        await proxy.fetch("SELECT 1")
+        await proxy.fetch("SELECT 2")
+
+        forwarded = [json.loads(call[0][1])["identity_token"] for call in mock_nc.request.call_args_list]
+        assert forwarded == ["token-1", "token-2"]
 
 
 # ------------------------------------------------------------------
@@ -534,7 +651,19 @@ class TestPayloadFormat:
         call_args = mock_nc.request.call_args
         payload = json.loads(call_args[0][1])
         assert "correlation_id" in payload
-        assert payload["agent_id"] == "agent-123"
+        # THE WIRE CONTRACT MOVED, and these two tests are the pin that moves with
+        # it. `agent_id` was SELF-ASSERTED identity: the broker fed it straight into
+        # its ACL check, so a caller could name any agent and be authorized as it. It
+        # is DELETED rather than validated -- a cross-check is a check somebody can
+        # forget -- and replaced by a token the broker verifies, reading the principal
+        # off the signed `sub`.
+        #
+        # LOCKSTEP with the hub's `broker/proxy.py`, whose models are `extra="forbid"`.
+        # Ship either half alone and every L3 op for every agent pod fails twice over:
+        # required field missing, forbidden field present. If this fails, the two repos
+        # have drifted and one of them is about to deploy alone.
+        assert payload["identity_token"] == "test-identity-token"
+        assert "agent_id" not in payload
         assert payload["namespace"] == "agents.agent-123"
         assert payload["operation"] == "select"
         assert payload["query"] == "SELECT * FROM foo WHERE id = $1"
@@ -624,7 +753,8 @@ class TestPayloadFormat:
         call_args = mock_nc.request.call_args
         payload = json.loads(call_args[0][1])
         assert "correlation_id" in payload
-        assert payload["agent_id"] == "agent-123"
+        assert payload["identity_token"] == "test-identity-token"
+        assert "agent_id" not in payload
         assert payload["namespace"] == "agents.agent-123"
         assert payload["transaction"] is False
         assert len(payload["queries"]) == 1
@@ -647,6 +777,7 @@ class TestPayloadFormat:
             namespace_prefix="test",
             agent_id="agent-123",
             timeout_ms=10000,
+            identity_token=lambda: "test-identity-token",
         )
 
         await proxy.fetch("SELECT 1")
@@ -724,6 +855,7 @@ class TestFetchDeserializesBytes:
             nats_client=mock_nc,
             namespace_prefix="3tears",
             agent_id="agent-test",
+            identity_token=lambda: "test-identity-token",
         )
 
         rows = await proxy.fetch("SELECT thread_id, checkpoint, type FROM checkpoints")
@@ -753,6 +885,7 @@ class TestFetchDeserializesBytes:
             nats_client=mock_nc,
             namespace_prefix="3tears",
             agent_id="agent-test",
+            identity_token=lambda: "test-identity-token",
         )
 
         row = await proxy.fetchrow("SELECT id, data FROM test WHERE id = $1", "r1")

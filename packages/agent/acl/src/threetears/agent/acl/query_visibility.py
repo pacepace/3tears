@@ -23,6 +23,12 @@ row whose scope admits ``X``:
   every other type's rows in the same customer.
 - ``scope_type='namespace'`` with ``scope_namespace_id`` whose
   namespace's ``customer_id=X`` admits ``X``
+- ``scope_type='subtree'`` admits NO customer here, deliberately. that
+  scope names a node in the namespace-NAME space, and the shapes it is
+  written against -- ``tools.*`` rows -- carry ``customer_id IS NULL``,
+  so it says nothing about which customer's rows a caller may LIST.
+  admitting a customer off a subtree grant would widen row visibility
+  on the strength of a grant that never mentioned one.
 
 the generator emits an ``EXISTS`` subquery joining
 ``role_assignments`` + ``group_members`` + ``namespaces``, parameterised

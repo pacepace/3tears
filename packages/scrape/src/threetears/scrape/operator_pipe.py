@@ -26,9 +26,14 @@ the operator is connected to, or this one.
 refuse on the same terms::
 
     async with claim_session(lease, session_id) as claim, serve_session(
-        nats, claim, display_api, session_state_key=key
-    ), serve_display(nats, claim, tool=tool, pod_id=pod_id, display=where):
+        nats, claim, display_api, session_state_key=key, owned_node=node
+    ), serve_display(nats, claim, owned_node=node, pod_id=pod_id, display=where):
         await claim.until_lost()
+
+``node`` is the value the pod's registration reply named
+(:attr:`threetears.agent.tools.server.ToolServer.owned_namespaces`), and BOTH halves take it:
+the control plane and the display stream ride separate families derived from the same node, so
+naming it on one and not the other leaves the other on a subject granted to nobody.
 
 A pod holding no claim never puts its display on a stream, and a claim lost under a live stream
 ends it. The second half is not a check written here: the relay already takes a stop signal for
@@ -88,7 +93,7 @@ async def serve_display(
     nats: NatsClient,
     claim: SessionClaim,
     *,
-    tool: str,
+    owned_node: str,
     pod_id: str,
     display: DisplayEndpoint,
     transport: DisplayTransport | None = None,
@@ -113,10 +118,14 @@ async def serve_display(
     :param claim: this pod's live claim on the session, which decides both the key served and
         whether an attach may be answered
     :ptype claim: SessionClaim
-    :param tool: this pod's registered tool namespace name, in readable form. It is the ONE input
-        the subject family and the stream subjects are derived from, so there is no second
-        identifier that can disagree with the tool this pod registered.
-    :ptype tool: str
+    :param owned_node: the tool-name NODE this pod owns -- ``pentest``, or the canonical
+        ``tools.pentest`` its registration reply carried back. It is the ONE input the subject
+        family and the stream subjects are derived from, so there is no second identifier that
+        can disagree with what this pod is granted. NOT a registered tool namespace name: those
+        are minted at registration, while the grants are minted at connect from the NODES on the
+        pod's ``tool_pods`` row, so a leaf-keyed family names a subject no grant covers -- and an
+        ungranted subscription receives nothing rather than raising.
+    :ptype owned_node: str
     :param pod_id: this pod's identifier, which leads the stream subjects and must be the one this
         pod's publish grant names
     :ptype pod_id: str
@@ -154,7 +163,7 @@ async def serve_display(
             extra={
                 "extra_data": {
                     "session_id": claim.session_id,
-                    "tool": tool,
+                    "owned_node": owned_node,
                     "pod_id": pod_id,
                     "nonce": stream.endpoint.nonce,
                 }
@@ -181,13 +190,13 @@ async def serve_display(
     async with serve_pipe(
         nats,
         claim.session_id,
-        tool=tool,
+        tool=owned_node,
         pod_id=pod_id,
         handler=_bridge,
         # Derived here rather than taken as a parameter, so a pod cannot serve under a family that
-        # names a tool other than the one it told the caller it is. The caller derives the same
-        # family from the same name, which is what makes the two ends meet at all.
-        family=Subjects.hitl_pipe_family(tool),
+        # names a node other than the one it owns. The caller derives the same family from the
+        # same node, which is what makes the two ends meet at all.
+        family=Subjects.hitl_pipe_family(owned_node),
         credit=credit,
         max_chunk=max_chunk,
     ):

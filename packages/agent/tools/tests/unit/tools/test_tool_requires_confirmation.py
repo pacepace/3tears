@@ -113,7 +113,6 @@ class TestRegistrationManifestStampsRequiresConfirmation:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_BaseStubTool())
@@ -131,7 +130,6 @@ class TestRegistrationManifestStampsRequiresConfirmation:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_IntrusiveTool(name="test.intrusive"))
@@ -151,7 +149,6 @@ class TestManifestRequiresConfirmationRoundTrip:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_IntrusiveTool(name="test.intrusive_roundtrip"))

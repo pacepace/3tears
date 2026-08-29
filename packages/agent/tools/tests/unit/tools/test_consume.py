@@ -282,7 +282,6 @@ async def test_tool_server_wires_injected_resolver_into_scope() -> None:
     resolver = _FakeResolver(handle=None)
     server = ToolServer(
         nats_url="nats://localhost:4222",
-        namespace_collection=None,
         object_resolver=resolver,  # type: ignore[arg-type]
     )
     request = CallRequest(

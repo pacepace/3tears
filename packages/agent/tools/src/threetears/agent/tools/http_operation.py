@@ -58,7 +58,7 @@ takes, and for the same reason.
 
 3tears CANNOT check *inter*-tool coherence: template collision across pods,
 prefix ownership within a customer, or whether a resolved tool has an ingress
-principal at all. those need the full ``platform.namespaces`` view, so they
+principal at all. those need the full ``namespaces`` view, so they
 belong to the Hub-side serving shard, which refuses on collision.
 
 **scalar coercion is a known, open gap, and it is NOT closed here.**

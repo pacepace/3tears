@@ -461,6 +461,7 @@ class TestRoleAssignmentLoadForGroups:
                 "scope_namespace_id": ns_id,
                 "scope_namespace_type": None,
                 "scope_customer_id": None,
+                "scope_namespace_name": None,
             },
         ]
         pool = AsyncMock()
@@ -472,6 +473,66 @@ class TestRoleAssignmentLoadForGroups:
         assert isinstance(ra, RoleAssignment)
         assert ra.scope_type == ScopeType.NAMESPACE
         assert ra.scope_namespace_id == ns_id
+        assert ra.scope_namespace_name is None
+
+    @pytest.mark.asyncio
+    async def test_carries_a_subtree_root_through_to_the_dataclass(self) -> None:
+        # a subtree row is invisible to the evaluator unless the loader
+        # selects and carries its root; the scope would silently cover
+        # nothing.
+        group_id = uuid7()
+        rows = [
+            {
+                "assignment_id": uuid7(),
+                "role_id": uuid7(),
+                "group_id": group_id,
+                "scope_type": "subtree",
+                "scope_namespace_id": None,
+                "scope_namespace_type": None,
+                "scope_customer_id": None,
+                "scope_namespace_name": "tools.pentest",
+            },
+        ]
+        pool = AsyncMock()
+        pool.fetch.return_value = rows
+        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        result = await coll.load_for_groups([group_id])
+        assert len(result) == 1
+        ra = result[0]
+        assert ra.scope_type == ScopeType.SUBTREE
+        assert ra.scope_namespace_name == "tools.pentest"
+
+    def test_the_schema_declares_the_subtree_root_column(self) -> None:
+        columns = {column.name for column in RoleAssignmentCollection.schema.columns}
+        assert "scope_namespace_name" in columns
+
+
+class TestNamespaceListIdsUnderName:
+    """``NamespaceCollection.list_ids_under_name`` expands a subtree root."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_node_and_its_descendants_only(self) -> None:
+        node_id = uuid7()
+        child_id = uuid7()
+        imposter_id = uuid7()
+        unrelated_id = uuid7()
+        pool = AsyncMock()
+        pool.fetch.return_value = [
+            {"namespace_id": node_id, "name": "tools.pentest"},
+            {"namespace_id": child_id, "name": "tools.pentest.sqlmap"},
+            {"namespace_id": imposter_id, "name": "tools.pentestimposter.sqlmap"},
+            {"namespace_id": unrelated_id, "name": "tools.dipp.thing"},
+        ]
+        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        result = await coll.list_ids_under_name("tools.pentest")
+        assert result == [node_id, child_id]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_node_expands_to_nothing(self) -> None:
+        pool = AsyncMock()
+        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        assert await coll.list_ids_under_name("") == []
+        pool.fetch.assert_not_awaited()
 
 
 class TestEnsureGroupRoleAssignment:

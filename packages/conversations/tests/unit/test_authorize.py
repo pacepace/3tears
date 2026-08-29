@@ -21,6 +21,8 @@ from threetears.agent.acl import (
     RoleAssignment,
     ScopeType,
 )
+from threetears.core.namespaces import build_agent_namespace_name
+
 from threetears.conversations import (
     ACTION_CONVERSATION_DELETE,
     ACTION_CONVERSATION_READ,
@@ -34,7 +36,7 @@ from threetears.conversations import (
 
 
 class _StubNamespaceEntity:
-    """duck-typed :class:`NamespaceEntity` with the four fields the evaluator reads.
+    """duck-typed :class:`NamespaceEntity` with the fields the evaluator reads.
 
     supports two construction shapes: kwarg-only (used by fixtures) and
     the production ``entity_class(data, is_new=..., collection=...)``
@@ -49,6 +51,7 @@ class _StubNamespaceEntity:
         namespace_type: str | None = None,
         owner_agent_id: UUID | None = None,
         customer_id: UUID | None = None,
+        owner_namespace: str | None = None,
         is_new: bool = False,
         collection: Any = None,
     ) -> None:
@@ -64,6 +67,8 @@ class _StubNamespaceEntity:
         :ptype owner_agent_id: UUID | None
         :param customer_id: owning customer UUID
         :ptype customer_id: UUID | None
+        :param owner_namespace: canonical name of the owning namespace
+        :ptype owner_namespace: str | None
         :param is_new: whether entity is new (unused)
         :ptype is_new: bool
         :param collection: parent collection (unused)
@@ -76,6 +81,7 @@ class _StubNamespaceEntity:
             self.namespace_type = data["namespace_type"]
             self.owner_agent_id = data["owner_agent_id"]
             self.customer_id = data["customer_id"]
+            self.owner_namespace = data.get("owner_namespace")
         else:
             assert id is not None
             assert namespace_type is not None
@@ -85,6 +91,13 @@ class _StubNamespaceEntity:
             self.namespace_type = namespace_type
             self.owner_agent_id = owner_agent_id
             self.customer_id = customer_id
+            # a real row records its owner as the NAMESPACE that owns
+            # it, and for an agent-owned row that is the agent's own
+            # namespace. defaulted rather than required so the fixtures
+            # that do not care keep their existing call shape.
+            self.owner_namespace = (
+                owner_namespace if owner_namespace is not None else build_agent_namespace_name(owner_agent_id)
+            )
 
 
 class _NamespaceCollectionFake:

@@ -22,7 +22,7 @@ namespace name to a row, :meth:`Role.actions_for`'s own parameter
 documentation reads "namespace type to look up", and
 :class:`~threetears.agent.acl.types.RoleAssignment` scopes to a namespace
 id or to a namespace type within a customer. so a declared resource type
-that is not a value ``platform.namespaces.namespace_type`` admits has
+that is not a value ``namespaces.namespace_type`` admits has
 nothing to bind to, and a role naming it can never be reached.
 
 **the action is the whole canonical action string**, spelled exactly as a
@@ -267,7 +267,7 @@ class ActionDescriptor(BaseModel):
 class ResourceTypeDescriptor(BaseModel):
     """one application's statement about one namespace type.
 
-    :attr:`resource_type` is the bare ``platform.namespaces.namespace_type``
+    :attr:`resource_type` is the bare ``namespaces.namespace_type``
     value a role uses as its permissions bucket key — the same string
     :meth:`~threetears.agent.acl.types.Role.actions_for` is called with.
     it is NOT prefixed by :attr:`application`; the module docstring gives

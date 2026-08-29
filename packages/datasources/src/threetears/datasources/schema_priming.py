@@ -81,7 +81,7 @@ class SchemaPrimingIntegration:
     async def datasource_ids(self) -> list[UUID]:
         """resolve (once) the agent's declared datasource names to ids.
 
-        reads ``platform.datasources`` over the proxy, scoped to the
+        reads the hub's ``datasources`` over the proxy, scoped to the
         declared names + active status + the live-access visibility model:
         the agent's OWN customer rows, PUBLIC shared rows, and RESTRICTED
         shared rows explicitly granted to this customer via
@@ -128,7 +128,7 @@ class SchemaPrimingIntegration:
             # NOT a bare `customer_id IS NULL` (which would leak RESTRICTED
             # shared datasources: both 'public' AND 'restricted' carry
             # customer_id NULL, but a restricted one is shared only with
-            # customers granted via platform.datasource_customers). admit:
+            # customers granted via datasource_customers). admit:
             # the agent's OWN customer rows, PUBLIC shared rows, and
             # RESTRICTED shared rows explicitly granted to this customer.
             rows = await pool.fetch(
