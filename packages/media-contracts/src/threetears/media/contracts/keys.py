@@ -99,7 +99,7 @@ def build_object_key(
 
     ``customer_id=None`` addresses a platform-shared object under
     :data:`SHARED_PREFIX` instead of a tenant. That is not a loophole in the
-    tenant isolation: ``platform.datasources.customer_id`` is itself nullable
+    tenant isolation: ``datasources.customer_id`` is itself nullable
     with NULL meaning platform-shared, so objects derived from such a row
     have no tenant to be scoped to, and forcing one would fork a single
     shared artifact into one copy per customer.

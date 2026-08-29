@@ -1,7 +1,7 @@
 """canonical namespace-name builder.
 
 namespace-task-01 phase 9.5 locks the shape of every
-``platform.namespaces.name`` value to the canonical form:
+``namespaces.name`` value to the canonical form:
 
     ``{plural_prefix}.<segment1>.<segment2>...``
 
@@ -44,11 +44,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from threetears.nats.subjects import sanitize_subject_segment
+from threetears.nats.subjects import Subjects, sanitize_subject_segment
 
 __all__ = [
     "HITL_NAMESPACE_TYPE",
     "NAMESPACE_NAME_SEPARATOR",
+    "PLATFORM_RBAC_READ_NAMESPACE",
     "PLURAL_PREFIX_AGENT",
     "PLURAL_PREFIX_API_KEY",
     "PLURAL_PREFIX_AUDIT",
@@ -67,8 +68,15 @@ __all__ = [
     "PLURAL_PREFIX_WORKSPACE",
     "PLURAL_PREFIX_BY_NAMESPACE_TYPE",
     "HitlSessionNamespace",
+    "ToolNamespaceName",
+    "build_agent_namespace_name",
     "build_hitl_namespace_name",
     "build_namespace_name",
+    "build_tool_namespace_name",
+    "build_tool_namespace_name_or_none",
+    "build_tool_provider_node_name",
+    "namespace_contains",
+    "parse_tool_namespace_name",
     "sanitize_segment",
 ]
 
@@ -123,7 +131,7 @@ HITL_NAMESPACE_TYPE = "hitl"
 #: mapping from singular ``namespace_type`` column value to the
 #: plural prefix that leads the canonical name. the full closed set
 #: is pinned by the CHECK constraint on
-#: ``platform.namespaces.namespace_type``; in the 3tears hub repo that
+#: ``namespaces.namespace_type``; in the 3tears hub repo that
 #: constraint lives in the squashed init at
 #: ``v001_initial_schema.sql`` (widened to admit ``knowledge`` by
 #: ``v011_knowledge_substrate``).
@@ -168,7 +176,7 @@ def sanitize_segment(value: str | UUID) -> str:
 
     **the delegation is a coincidence of rules, not one rule.** the callee's
     contract is "safe as a NATS subject token"; this function's is "safe as a
-    ``platform.namespaces.name`` segment", and those values are PERSISTED, so a
+    ``namespaces.name`` segment", and those values are PERSISTED, so a
     change to the sanitizer rewrites what new rows key on while old rows keep the
     old shape. the two rules agree on every character today, which is why sharing
     the implementation is right. if the subject rule ever widens -- a new NATS
@@ -212,14 +220,339 @@ def build_namespace_name(plural_prefix: str, *segments: str) -> str:
     return NAMESPACE_NAME_SEPARATOR.join(parts)
 
 
+#: canonical name of the system namespace the platform's query broker
+#: admits read-only traffic on, so that a statement bound to it resolves
+#: against the platform control-plane tables (``namespaces``, ``groups``,
+#: ``group_members``, ``roles``, ``role_assignments``) instead of the
+#: caller's own agent schema.
+#:
+#: **The middle segment is not a schema name, and reading it as one is the
+#: bug this constant exists to prevent.** The platform's control-plane
+#: tables live in whatever schema its deployment configures; on the shipped
+#: compose stack that is not ``platform``. What binds a statement to those
+#: tables is this NAME: the broker resolves the row it names and issues
+#: ``SET search_path`` from that row's own ``schema_name`` column, which the
+#: platform seeds from ``current_schema()``. So a caller passes this name
+#: and writes the BARE table name; a caller that instead writes a
+#: ``platform.``-qualified table name has hardcoded a schema the deployment
+#: may not have, and the statement can only fail there.
+#:
+#: Declared here, beside the other canonical namespace names, because it is
+#: asked for from packages that must not depend on each other -- the
+#: registry's rbac stack and the workspace tools both bind reads to it --
+#: and a second spelling of a routing key fails by resolving nothing.
+PLATFORM_RBAC_READ_NAMESPACE: str = build_namespace_name(PLURAL_PREFIX_SYSTEM, "platform", "rbac")
+
+
+def build_agent_namespace_name(agent_id: UUID) -> str:
+    """build the canonical name of an agent's OWN namespace row.
+
+    shape is ``agents.<canonical uuid>``. the uuid renders through
+    :func:`sanitize_segment`, which leaves it untouched -- the hyphens
+    in ``xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`` are not separators and
+    the value carries no ``.``.
+
+    this lives here, beside the generic builder, because it is asked
+    from BOTH sides of an ownership question and the two sides must
+    agree exactly. the hub WRITES this name when it provisions an
+    agent; the rbac evaluator READS it to find out which namespace row
+    a calling agent IS, so it can answer whether that row owns the
+    namespace under evaluation. a second spelling of the rule in either
+    place makes every ownership comparison miss, and it misses
+    SILENTLY -- an agent simply stops being recognised as the owner of
+    its own storage.
+
+    :param agent_id: agent unique identifier
+    :ptype agent_id: UUID
+    :return: canonical namespace name in the form ``agents.<uuid>``
+    :rtype: str
+    """
+    # convert at border: namespace name segment
+    return build_namespace_name(PLURAL_PREFIX_AGENT, str(agent_id))
+
+
+def namespace_contains(node: str, name: str) -> bool:
+    """true iff ``name`` is ``node`` itself or lives beneath it.
+
+    the ONE containment rule for dot-segmented hierarchical names in
+    this codebase -- ``namespaces.name`` values, and the mcp
+    names those are built from, which share the shape. every other
+    place that used to ask "is this name under that one" with a raw
+    prefix test delegates here.
+
+    the rule is::
+
+        name == node or name.startswith(node + NAMESPACE_NAME_SEPARATOR)
+
+    which is segment-aware BY CONSTRUCTION rather than by convention:
+    the only character that may follow the node is the separator
+    itself, so ``pentest`` reaches ``pentest.sqlmap`` and can never
+    reach ``pentestimposter.sqlmap``. a raw ``name.startswith(node)``
+    reaches both, which is why every tool-pod namespace value used to be
+    written with a trailing dot -- a value-level workaround for a gap in
+    the comparison. the workaround is not accommodated here: a
+    node written ``pentest.`` matches nothing, so the old shape fails
+    visibly instead of silently.
+
+    **comparison is exact.** no case folding, no whitespace stripping,
+    no tolerance for a trailing separator. a node carrying stray
+    whitespace or the wrong case therefore grants NOTHING, which is the
+    fail-closed direction; normalizing it would make the value grant
+    more than it says while its author reads it as written. refusing a
+    malformed node belongs at write time -- the platform's
+    ``role_assignments_scope_shape`` CHECK does that -- because this
+    function runs inside the rbac evaluator's inner loop, where raising
+    would turn one bad row into a failure of every authorization
+    question the caller asks.
+
+    an empty ``node`` contains NOTHING. under a raw prefix test it
+    would contain every name there is, so the emptiest possible value
+    would be the widest possible grant; the explicit refusal is what
+    stops that.
+
+    :param node: the container -- a name, or a bare plural prefix
+        (``tools``), written WITHOUT a trailing separator
+    :ptype node: str
+    :param name: the candidate name being tested for membership
+    :ptype name: str
+    :return: whether ``name`` is ``node`` or sits beneath it
+    :rtype: bool
+    """
+    result = False
+    if node and name:
+        result = name == node or name.startswith(node + NAMESPACE_NAME_SEPARATOR)
+    return result
+
+
 #: leading component every tool namespace name carries, and the one
 #: :func:`build_hitl_namespace_name` swaps out. structural rather than
-#: conventional: ``threetears.agent.tools.server.tool_namespace_name``
-#: renders its value through
-#: ``build_namespace_name(PLURAL_PREFIX_TOOL, mcp_name, version)``, so
-#: the prefix is there by construction and its absence means the caller
-#: passed something that is not a tool namespace name.
+#: conventional: :func:`build_tool_namespace_name` is the one place the
+#: prefix is applied, so its absence means the caller passed something
+#: that is not a tool namespace name.
 _TOOL_NAME_PREFIX = PLURAL_PREFIX_TOOL + NAMESPACE_NAME_SEPARATOR
+
+
+@dataclass(frozen=True, slots=True)
+class ToolNamespaceName:
+    """the components :func:`parse_tool_namespace_name` recovers.
+
+    the two fields are NOT symmetric in what they promise, and the
+    naming says so. ``mcp_name`` is EXACT -- it is the value the
+    builder was handed, character for character, which is what
+    un-flattening the name bought. ``version_segment`` is the
+    SANITIZED version as it appears in the name, and the natural
+    version it came from is NOT recoverable from it: ``1-0-0`` is
+    equally the sanitization of ``1.0.0`` and a literal ``1-0-0``.
+
+    a caller that needs the natural version reads it from the row's
+    ``metadata``, where the emitter persists it beside the mcp name.
+    the field is called ``version_segment`` rather than ``version`` so
+    that using it as a semver string reads wrong at the call site.
+
+    :ivar mcp_name: the tool's mcp name, exactly as built
+    :ivar version_segment: the sanitized version component
+    """
+
+    mcp_name: str
+    version_segment: str
+
+
+def build_tool_namespace_name(mcp_name: str, version: str) -> str:
+    """build the canonical ``namespaces.name`` for a tool row.
+
+    the shape is ``tools.<mcp_name>.<sanitized version>``. the mcp name
+    is interpolated VERBATIM -- its dots become segment boundaries
+    rather than being flattened to hyphens -- and the version is
+    sanitized and placed last.
+
+    **the mcp name is not sanitized, and that is the whole point.**
+    a flattened name renders ``pentest.sqlmap`` as
+    ``tools.pentest-sqlmap.<version>``, which is not under
+    ``tools.pentest`` by any segment-aware rule, so a subtree grant on
+    a provider node reaches none of its tools and
+    :func:`namespace_contains` has nothing to bite on. flattening also
+    COLLIDES: ``a.b`` and ``a-b`` render one name, so two distinct
+    tools share one row and one of them stops being addressable.
+
+    **the price, stated: the separator is now overloaded**, so the name
+    can no longer be split into a fixed number of components. the
+    grammar stays unambiguous only because the version is sanitized and
+    is ALWAYS the last component, which is what lets
+    :func:`parse_tool_namespace_name` recover the split right to left.
+    that invariant is the reason the two functions ship together and
+    are pinned against each other by an enforcement test.
+
+    **bulk deregistration by ``LIKE`` is now a SUBTREE sweep, not a
+    version sweep.** under the flattened shape
+    ``LIKE 'tools.<flattened-mcp>.%'`` could only match one tool's
+    versions, because no other row shared that component. under this
+    shape ``LIKE 'tools.a.b.%'`` matches ``tools.a.b.<version>`` AND
+    every version of a distinct tool named ``a.b.c``, so a
+    deregistration written that way deletes rows belonging to another
+    tool. delete by the exact name, or by ``(mcp_name, version)`` read
+    from ``metadata``; do not compose a prefix ``LIKE``.
+
+    :param mcp_name: tool mcp name (e.g. ``pentest.sqlmap``), which may
+        contain ``.`` and is interpolated unchanged
+    :ptype mcp_name: str
+    :param version: tool version (e.g. ``1.0`` or ``1.0.0``), sanitized
+        into the final component
+    :ptype version: str
+    :return: canonical namespace name string
+    :rtype: str
+    :raises ValueError: if ``mcp_name`` or ``version`` is empty, if
+        ``mcp_name`` carries an empty component, or if ``mcp_name`` is
+        already rooted at the ``tools`` prefix
+    """
+    if not mcp_name:
+        raise ValueError("mcp_name must be non-empty")
+    if not version:
+        raise ValueError("version must be non-empty")
+    # an already-rooted value is the caller passing a BUILT name back
+    # in. doubling it would mint ``tools.tools.*``, a row nothing
+    # resolves and nothing complains about, so refuse at the one layer
+    # that applies the prefix.
+    if namespace_contains(PLURAL_PREFIX_TOOL, mcp_name):
+        raise ValueError(
+            f"mcp_name is already rooted at {PLURAL_PREFIX_TOOL!r}: {mcp_name!r}",
+        )
+    if not all(mcp_name.split(NAMESPACE_NAME_SEPARATOR)):
+        raise ValueError(
+            f"mcp_name has an empty component: {mcp_name!r}",
+        )
+    return NAMESPACE_NAME_SEPARATOR.join(
+        (PLURAL_PREFIX_TOOL, mcp_name, sanitize_segment(version)),
+    )
+
+
+def build_tool_provider_node_name(stem: str) -> str:
+    """build the canonical ``namespaces.name`` of a tool PROVIDER node.
+
+    the shape is ``tools.<stem>``, where the stem is written exactly as a
+    tool pod's own declaration holds it (``tool_pods.declared_namespaces``
+    on the aibots hub) -- a NODE, with no trailing separator and no glob
+    (``pentest``, ``aibots.admin``). the
+    node lives in the same name space as the tools beneath it, so
+    :func:`namespace_contains` has something to bite on: ``tools.pentest``
+    contains ``tools.pentest.sqlmap.1-0-0`` and can never contain
+    ``tools.pentestimposter.anything``.
+
+    **it DELEGATES to** :meth:`threetears.nats.Subjects.tool_provider_node`
+    rather than composing the name here, and the direction is forced:
+    ``threetears.nats.subject_permissions`` mints a tool pod's
+    human-in-the-loop grants from these stems and cannot import this
+    module, because this module imports :mod:`threetears.nats.subjects`.
+    So the rooting rule lives in the lower package and this is its name in
+    the vocabulary the rest of the platform reads. Two spellings of it
+    would be a grant and a subscription that quietly address different
+    subjects, which is the exact defect that re-keying closed.
+
+    ``packages/core/tests/unit/test_tool_namespace_grammar.py`` pins the
+    delegate's prefix literal against :data:`PLURAL_PREFIX_TOOL`, so a
+    drift between the two packages fails there rather than in a silent
+    subject mismatch.
+
+    :param stem: the provider stem, with no trailing separator; an
+        already-rooted value is returned unchanged rather than doubled
+    :ptype stem: str
+    :return: canonical namespace name in the form ``tools.<stem>``
+    :rtype: str
+    :raises ValueError: if ``stem`` is empty, or is the bare ``tools``
+        prefix -- which names the whole tool tree rather than one provider
+    """
+    return Subjects.tool_provider_node(stem)
+
+
+def build_tool_namespace_name_or_none(mcp_name: str, version: str) -> str | None:
+    """build a tool namespace name, or ``None`` when the pair is malformed.
+
+    :func:`build_tool_namespace_name` REFUSES a malformed pair, which is
+    the right contract where the pair is AUTHORED -- an emitter, a seed,
+    a migration -- because a name nobody can build is a bug at its
+    source and should say so.
+
+    It is the wrong contract where the pair arrives from OUTSIDE: a URL
+    path segment split into candidates, a dispatch envelope's tool name,
+    an operator-typed column. There a malformed value is an ordinary
+    "no such tool", and raising turns a 404 into a 500 and turns a DENY
+    on the tool-dispatch hot path into an exception. Both are worse
+    answers than a miss, and the second is worse than the first.
+
+    So the catch is spelled ONCE, here, rather than at each of those
+    call sites -- where one of them would eventually be written as a
+    bare ``except``, or forgotten entirely and found by whoever sends
+    the first request carrying a doubled dot.
+
+    ``None`` rather than an empty string: an empty name is a lookup
+    value that means something (and :func:`namespace_contains` reads an
+    empty node as containing nothing), so it cannot double as "there is
+    no name".
+
+    :param mcp_name: tool mcp name, from an untrusted or arbitrary source
+    :ptype mcp_name: str
+    :param version: tool version, from an untrusted or arbitrary source
+    :ptype version: str
+    :return: the canonical namespace name, or ``None`` when the pair
+        cannot compose one
+    :rtype: str | None
+    """
+    result: str | None = None
+    try:
+        result = build_tool_namespace_name(mcp_name, version)
+    except ValueError:
+        result = None
+    return result
+
+
+def parse_tool_namespace_name(name: str) -> ToolNamespaceName:
+    """split a tool namespace name back into its components.
+
+    the inverse of :func:`build_tool_namespace_name` for the mcp name,
+    and a LOSSY inverse for the version -- see
+    :class:`ToolNamespaceName` for which half promises what.
+
+    the split runs RIGHT TO LEFT: the last component is the version,
+    and everything between the ``tools.`` prefix and it is the mcp
+    name, rejoined on the separator. that direction is not a
+    convenience. the mcp name may carry any number of dots, so counting
+    components from the left cannot find the boundary; the version
+    carries none, because the builder sanitizes it, so counting one
+    component from the right always can.
+
+    :param name: a canonical tool namespace name
+    :ptype name: str
+    :return: the recovered mcp name and sanitized version component
+    :rtype: ToolNamespaceName
+    :raises ValueError: if ``name`` is not a strict descendant of the
+        ``tools`` prefix, carries fewer than two components under it,
+        or carries an empty component
+    """
+    # a STRICT descendant: the bare prefix is not a tool namespace
+    # name, and neither is a provider node, so
+    # :func:`namespace_contains` -- which counts a node as containing
+    # itself -- is composed with an inequality.
+    if not (namespace_contains(PLURAL_PREFIX_TOOL, name) and name != PLURAL_PREFIX_TOOL):
+        raise ValueError(
+            f"name must start with {_TOOL_NAME_PREFIX!r}, got {name!r}",
+        )
+    components = name[len(_TOOL_NAME_PREFIX) :].split(NAMESPACE_NAME_SEPARATOR)
+    if not all(components):
+        raise ValueError(
+            f"name has an empty component: {name!r}",
+        )
+    if len(components) < 2:
+        # one component under the prefix is a PROVIDER node
+        # (``tools.pentest``), which names no tool and carries no
+        # version. reading it as one would hand back an empty mcp name
+        # and a version of ``pentest``.
+        raise ValueError(
+            f"name must carry at least two components under {_TOOL_NAME_PREFIX!r} "
+            f"(an mcp name and a version), got {name!r}",
+        )
+    return ToolNamespaceName(
+        mcp_name=NAMESPACE_NAME_SEPARATOR.join(components[:-1]),
+        version_segment=components[-1],
+    )
 
 
 def build_hitl_namespace_name(tool_namespace_name: str, customer_id: UUID) -> str:
@@ -227,11 +560,18 @@ def build_hitl_namespace_name(tool_namespace_name: str, customer_id: UUID) -> st
 
     the shape is the serving tool's namespace name with its plural
     prefix swapped for :data:`PLURAL_PREFIX_HITL` and the customer
-    appended, so ``tools.scrape-zone_alpha.1-0-0`` and a customer give
-    ``hitl.scrape-zone_alpha.1-0-0.<32 hex chars>``. the tool
+    appended, so ``tools.scrape.zone_alpha.1-0-0`` and a customer give
+    ``hitl.scrape.zone_alpha.1-0-0.<32 hex chars>``. the tool
     components are lifted verbatim out of the tool namespace name
     rather than rebuilt from an mcp name and a version, so the two
     rows cannot disagree about how a name was sanitized.
+
+    the tool half carries as many components as the mcp name has, and
+    they are splatted through rather than counted: an mcp name is
+    interpolated unflattened by
+    :func:`build_tool_namespace_name`, so ``a.b.c`` contributes three
+    components where ``a`` contributes one. nothing here depends on
+    how many there are.
 
     **both halves of the name are load-bearing, and each closes a
     different leak.**
@@ -274,11 +614,13 @@ def build_hitl_namespace_name(tool_namespace_name: str, customer_id: UUID) -> st
     exposure the name exists to prevent.
 
     two sessions share a name exactly when they share both the tool
-    namespace name and the customer. nothing stronger is claimed about
-    the mcp name behind it: :func:`sanitize_segment` maps ``.`` to
-    ``-`` one way, so two distinct mcp names can already collapse onto
-    one ``tools.`` name, and that is a property of the tool row rather
-    than something this builder could repair.
+    namespace name and the customer. the mcp name behind it no longer
+    collapses -- :func:`build_tool_namespace_name` interpolates it
+    verbatim, so ``a.b`` and ``a-b`` are distinct rows -- but the
+    VERSION still passes through :func:`sanitize_segment`, so two tool
+    rows whose versions differ only by a ``.`` against a ``-`` share
+    one name. that is a property of the tool row rather than something
+    this builder could repair.
 
     :param tool_namespace_name: the serving tool's canonical namespace
         name, as ``threetears.agent.tools.server.tool_namespace_name``
@@ -292,7 +634,11 @@ def build_hitl_namespace_name(tool_namespace_name: str, customer_id: UUID) -> st
         ``tools.`` prefix, or if any component after that prefix is
         empty
     """
-    if not tool_namespace_name.startswith(_TOOL_NAME_PREFIX):
+    # a STRICT descendant of ``tools``: the bare prefix is not itself a
+    # tool namespace name, so :func:`namespace_contains` -- which counts
+    # a node as containing itself -- is composed with an inequality
+    # rather than replaced by a second prefix test.
+    if not (namespace_contains(PLURAL_PREFIX_TOOL, tool_namespace_name) and tool_namespace_name != PLURAL_PREFIX_TOOL):
         raise ValueError(
             f"tool_namespace_name must start with {_TOOL_NAME_PREFIX!r}, got {tool_namespace_name!r}",
         )

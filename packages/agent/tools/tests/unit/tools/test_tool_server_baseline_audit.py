@@ -171,7 +171,6 @@ async def test_baseline_audit_emitted_on_success_path() -> None:
         nats_client=nats,
         pod_id="audit-pod",
         agent_id=owner_agent_id,
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -226,7 +225,10 @@ async def test_baseline_audit_subject_uses_namespace() -> None:
     """the published subject is ``{namespace}.audit.tool.call``."""
     set_default_namespace("proj")
     nats = _FakeNats()
-    server = ToolServer(namespace="proj", nats_client=nats, namespace_collection=None)
+    server = ToolServer(
+        namespace="proj",
+        nats_client=nats,
+    )
     server.register(_StubTool())
     msg = _make_msg(
         {
@@ -256,7 +258,6 @@ async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="audit-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -283,7 +284,6 @@ async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="audit-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -308,7 +308,6 @@ async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="audit-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -331,7 +330,10 @@ async def test_baseline_audit_outcome_failure_on_malformed_request() -> None:
     """malformed JSON emits a baseline envelope with minimal fields."""
     set_default_namespace("ns")
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
+    server = ToolServer(
+        namespace="ns",
+        nats_client=nats,
+    )
 
     msg = _make_msg(b"<<not valid json>>")
 
@@ -361,7 +363,6 @@ async def test_baseline_audit_skipped_when_no_nats_client() -> None:
     server = ToolServer(
         nats_url="nats://localhost:1234",
         namespace="ns",
-        namespace_collection=None,
     )
     server.register(_StubTool())
 
@@ -393,7 +394,6 @@ async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="audit-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -422,7 +422,10 @@ async def test_baseline_audit_correlation_id_lifted_from_context() -> None:
     """when CallContext carries a correlation_id, the envelope reuses it."""
     set_default_namespace("ns")
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
+    server = ToolServer(
+        namespace="ns",
+        nats_client=nats,
+    )
     server.register(_StubTool())
     correlation_id = uuid4()
     msg = _make_msg(
@@ -445,7 +448,10 @@ async def test_baseline_audit_correlation_id_synthesized_when_context_missing() 
     """no-context dispatch still emits with a freshly minted correlation id."""
     set_default_namespace("ns")
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
+    server = ToolServer(
+        namespace="ns",
+        nats_client=nats,
+    )
     server.register(_StubTool())
     msg = _make_msg(
         {
@@ -502,7 +508,6 @@ async def test_bound_user_assertion_restamps_actor_user_id() -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="ua-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -539,7 +544,6 @@ async def test_bound_user_assertion_builds_per_user_context_manager() -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="ua-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
         context_factory=_recording_factory(factory_calls),
@@ -575,7 +579,6 @@ async def test_absent_user_assertion_leaves_actor_none_and_no_context_manager() 
         namespace="ns",
         nats_client=nats,
         pod_id="ua-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
         context_factory=_recording_factory(factory_calls),
@@ -627,7 +630,6 @@ async def test_user_assertion_failclosed_denies(flavor: str) -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="ua-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -676,7 +678,6 @@ async def test_user_assertion_for_same_conversation_is_accepted() -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="ua-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -722,7 +723,6 @@ async def test_user_assertion_replayed_into_different_conversation_denies() -> N
         namespace="ns",
         nats_client=nats,
         pod_id="ua-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )
@@ -768,7 +768,6 @@ async def test_user_assertion_with_no_conversation_id_denies() -> None:
         namespace="ns",
         nats_client=nats,
         pod_id="ua-pod",
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )

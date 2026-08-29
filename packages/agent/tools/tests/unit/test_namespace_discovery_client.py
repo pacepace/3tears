@@ -1,11 +1,15 @@
 """tests for :class:`NamespaceDiscoveryClient`.
 
-covers the generalized ``{ns}.namespace.discover`` client shipped by
-namespace-task-01 Phase 1. the test double replaces the NATS client;
-assertions focus on the subject string the client publishes to, the
-request payload it serializes, and its translation of broker responses
-(success envelopes, error envelopes, malformed bytes, transport
-failures) into :class:`DiscoveryClientError` versus typed summaries.
+the client carries FORWARDED TOKENS rather than a self-asserted
+``agent_id`` / ``customer_id`` / ``user_id``: the broker reads the
+principal off a signature it verified in-process, so there is no field
+left on this request with which a caller could name somebody else.
+
+the test double replaces the NATS client; assertions focus on the
+subject string the client publishes to, the request payload it
+serializes, and its translation of broker responses (success
+envelopes, error envelopes, malformed bytes, transport failures) into
+:class:`DiscoveryClientError` versus typed summaries.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 
-from threetears.agent.workspace.discovery_client import (
+from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
     NamespaceDiscoveryClient,
     NamespaceDiscoveryRequest,
@@ -31,7 +35,7 @@ class _Reply:
     data: bytes
 
 
-# parity-exempt: NatsClient subset for the discovery-client unit test; production NatsClient is the full canonical wrapper but the discovery client only uses request_typed
+# parity-exempt: NatsClient subset for the discovery-client unit test; production NatsClient is the full canonical wrapper but the discovery client only uses request
 class _FakeNatsClient:
     """fake NATS client recording publish subjects + payloads.
 
@@ -101,9 +105,7 @@ async def test_discover_publishes_on_generalized_subject() -> None:
 
     await client.discover(
         correlation_id=uuid4(),
-        agent_id=uuid4(),
-        customer_id=uuid4(),
-        user_id=None,
+        identity_token="agent.token",
     )
 
     assert len(fake.calls) == 1
@@ -120,9 +122,7 @@ async def test_discover_payload_carries_namespace_type_filter() -> None:
 
     await client.discover(
         correlation_id=uuid4(),
-        agent_id=uuid4(),
-        customer_id=uuid4(),
-        user_id=None,
+        identity_token="agent.token",
         namespace_type="workspace",
     )
 
@@ -140,9 +140,7 @@ async def test_discover_unfiltered_payload_has_none_filter() -> None:
 
     await client.discover(
         correlation_id=uuid4(),
-        agent_id=uuid4(),
-        customer_id=uuid4(),
-        user_id=None,
+        identity_token="agent.token",
     )
 
     _subject, payload, _timeout = fake.calls[0]
@@ -176,9 +174,7 @@ async def test_discover_parses_summaries_from_success_envelope() -> None:
 
     items = await client.discover(
         correlation_id=uuid4(),
-        agent_id=agent_id,
-        customer_id=customer_id,
-        user_id=None,
+        identity_token="agent.token",
     )
 
     assert [item.name for item in items] == ["workspace.alpha", "memory.beta"]
@@ -194,9 +190,7 @@ async def test_discover_transport_failure_raises_client_error() -> None:
     with pytest.raises(DiscoveryClientError) as excinfo:
         await client.discover(
             correlation_id=uuid4(),
-            agent_id=uuid4(),
-            customer_id=uuid4(),
-            user_id=None,
+            identity_token="agent.token",
         )
     assert "nats unreachable" in str(excinfo.value)
 
@@ -210,9 +204,7 @@ async def test_discover_malformed_reply_raises_client_error() -> None:
     with pytest.raises(DiscoveryClientError):
         await client.discover(
             correlation_id=uuid4(),
-            agent_id=uuid4(),
-            customer_id=uuid4(),
-            user_id=None,
+            identity_token="agent.token",
         )
 
 
@@ -224,36 +216,107 @@ async def test_discover_requires_nats_client() -> None:
     with pytest.raises(DiscoveryClientError) as excinfo:
         await client.discover(
             correlation_id=uuid4(),
-            agent_id=uuid4(),
-            customer_id=uuid4(),
-            user_id=None,
+            identity_token="agent.token",
         )
     assert "no" in str(excinfo.value).lower() or "nats" in str(excinfo.value).lower()
 
 
 @pytest.mark.asyncio
-async def test_discover_carries_correlation_agent_user_customer_on_wire() -> None:
-    """every identity field from the caller round-trips into the payload."""
+async def test_discover_carries_correlation_and_both_tokens_on_wire() -> None:
+    """everything the caller supplies round-trips into the payload."""
     fake = _FakeNatsClient(reply_bytes=_success_bytes([]))
     client = NamespaceDiscoveryClient(nats_client=fake, namespace="ns")
 
     correlation_id = uuid4()
-    agent_id = uuid4()
-    customer_id = uuid4()
-    user_id = uuid4()
 
     await client.discover(
         correlation_id=correlation_id,
-        agent_id=agent_id,
-        customer_id=customer_id,
-        user_id=user_id,
+        identity_token="agent.token",
+        user_identity_token="user.assertion",
         namespace_type="memory",
     )
 
     _subject, payload, _timeout = fake.calls[0]
     parsed = NamespaceDiscoveryRequest.model_validate_json(payload)
     assert parsed.correlation_id == correlation_id
-    assert parsed.agent_id == agent_id
-    assert parsed.customer_id == customer_id
-    assert parsed.user_id == user_id
+    assert parsed.identity_token == "agent.token"
+    assert parsed.user_identity_token == "user.assertion"
     assert parsed.namespace_type == "memory"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_initiated_call_sends_no_user_assertion() -> None:
+    """no human in the loop means the user slot stays empty on the wire."""
+    fake = _FakeNatsClient(reply_bytes=_success_bytes([]))
+    client = NamespaceDiscoveryClient(nats_client=fake, namespace="ns")
+
+    await client.discover(
+        correlation_id=uuid4(),
+        identity_token="agent.token",
+    )
+
+    _subject, payload, _timeout = fake.calls[0]
+    parsed = NamespaceDiscoveryRequest.model_validate_json(payload)
+    assert parsed.identity_token == "agent.token"
+    assert parsed.user_identity_token is None
+
+
+class TestTheRequestCannotNameAnotherPrincipal:
+    """the hole this client shape closes, asserted rather than described."""
+
+    def test_the_request_declares_no_self_asserted_identity_field(self) -> None:
+        """no ``agent_id`` / ``customer_id`` / ``user_id`` to name anyone with."""
+        declared = set(NamespaceDiscoveryRequest.model_fields)
+        assert "agent_id" not in declared
+        assert "customer_id" not in declared
+        assert "user_id" not in declared
+
+    def test_a_request_naming_another_customer_does_not_carry_it(self) -> None:
+        """extra identity fields are dropped, never bound into the query."""
+        payload = (
+            '{"correlation_id": "0199a000-0000-7000-8000-000000000001", '
+            '"identity_token": "agent.token", '
+            '"customer_id": "0199a000-0000-7000-8000-0000000000ff", '
+            '"agent_id": "0199a000-0000-7000-8000-0000000000fe", '
+            '"user_id": "0199a000-0000-7000-8000-0000000000fd"}'
+        )
+        parsed = NamespaceDiscoveryRequest.model_validate_json(payload)
+        assert not hasattr(parsed, "customer_id")
+        assert not hasattr(parsed, "agent_id")
+        assert not hasattr(parsed, "user_id")
+
+
+@pytest.mark.asyncio
+async def test_a_broker_refusal_carries_its_code_to_the_caller() -> None:
+    """the error envelope's own code reaches the caller, not ``UNKNOWN``.
+
+    The refusal codes exist so a caller can branch -- "I forwarded no
+    credential" is a different thing from "the credential did not verify" --
+    and an error path that flattens both to ``UNKNOWN`` makes the distinction
+    unreachable. It used to: the envelope was re-parsed as the SUCCESS model,
+    which declares neither field, so every broker refusal read as ``UNKNOWN``.
+    """
+    envelope = (
+        b'{"success": false, "error_code": "IDENTITY_REQUIRED", '
+        b'"error_message": "namespace.discover requires a forwarded identity token"}'
+    )
+    fake = _FakeNatsClient(reply_bytes=envelope)
+    client = NamespaceDiscoveryClient(nats_client=fake, namespace="ns")
+
+    with pytest.raises(DiscoveryClientError) as excinfo:
+        await client.discover(correlation_id=uuid4(), identity_token="agent.token")
+
+    assert "IDENTITY_REQUIRED" in str(excinfo.value)
+    assert "requires a forwarded identity token" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_an_unparseable_body_still_reports_something_useful() -> None:
+    """a body that is neither envelope keeps the malformed-response detail."""
+    fake = _FakeNatsClient(reply_bytes=b"{}{")
+    client = NamespaceDiscoveryClient(nats_client=fake, namespace="ns")
+
+    with pytest.raises(DiscoveryClientError) as excinfo:
+        await client.discover(correlation_id=uuid4(), identity_token="agent.token")
+
+    assert "malformed discovery response" in str(excinfo.value)

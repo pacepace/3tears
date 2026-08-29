@@ -136,7 +136,6 @@ class TestRegistrationManifestStampsFlags:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_BaseStubTool())
@@ -158,7 +157,6 @@ class TestRegistrationManifestStampsFlags:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_SkillOnlyTool(name="test.skill_only"))
@@ -176,7 +174,6 @@ class TestRegistrationManifestStampsFlags:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_UnifiedSurfaceTool(name="test.unified"))
@@ -201,7 +198,6 @@ class TestRegistrationWarningWhenInvisible:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_NeverVisibleTool(name="test.never_visible"))
@@ -230,7 +226,6 @@ class TestRegistrationWarningWhenInvisible:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_BaseStubTool())
@@ -250,7 +245,6 @@ class TestRegistrationWarningWhenInvisible:
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            namespace_collection=None,
             nats_url="nats://test:4222",
         )
         server.register(_SkillOnlyTool(name="test.skill_only_no_warn"))

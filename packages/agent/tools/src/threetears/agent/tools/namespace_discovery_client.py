@@ -1,22 +1,36 @@
 """namespace discovery NATS request/reply client.
 
-thin helper around the ``{ns}.namespace.discover`` subject the broker
-subscribes to (see ``3tears.hub.broker.namespace_discovery``). used by
-:class:`~threetears.agent.workspace.tools.workspace_list.WorkspaceListTool`
-and :class:`~threetears.agent.workspace.tools.workspace_current.WorkspaceCurrentTool`
-to retrieve namespace-type rows a caller can see -- owned plus granted
-within the caller's customer -- without a local SELECT against the
-agent's own tables.
+thin helper around the ``{ns}.namespace.discover`` subject the hub's
+broker subscribes to. used by the workspace tools
+(:class:`~threetears.agent.workspace.tools.workspace_list.WorkspaceListTool`,
+:class:`~threetears.agent.workspace.tools.workspace_current.WorkspaceCurrentTool`)
+and by agent bootstrap's ``access.*`` translators to retrieve the
+namespace rows a caller can see -- owned plus granted within the
+caller's customer -- without a local SELECT against the agent's own
+tables.
 
-namespace-task-01 Phase 1 generalized the subject from the workspace-
-specific ``{ns}.workspace.discover`` to the resource-type-parameterized
-``{ns}.namespace.discover``. the request model carries an optional
-``namespace_type`` filter; ``None`` returns every row the caller can
-see regardless of type. callers that historically asked only for
-workspaces now pass ``namespace_type="workspace"`` explicitly; there
-is no back-compat alias for the old subject or the old request shape
--- per 3tears CLAUDE.md's NO BACKWARDS-COMPATIBILITY SHIMS rule the
-rename is a one-commit coordinated change across 3tears + 3tears.
+**identity is a FORWARDED TOKEN, never a request field.** the request
+carries the caller's hub-minted ``identity_token`` and, when a human
+is in the loop for this turn, the hub-minted ``user_identity_token``;
+the broker verifies both in-process and reads the principal off the
+signed claims. there is no ``agent_id`` / ``customer_id`` / ``user_id``
+on this request, so a caller cannot name a principal it did not
+authenticate as. both slots are optional and the broker refuses only
+when BOTH are empty -- an agent-initiated call legitimately forwards
+the agent leg alone.
+
+this module sits beside its two siblings
+(:mod:`threetears.agent.tools.object_resolver`,
+:mod:`threetears.agent.tools.engagement_resolver`) rather than in
+``threetears.agent.workspace``: all three are pod-side hub callers
+authenticating with the per-call token off the call context, and a
+tool pod holds ``3tears-agent-tools`` without holding the workspace
+package.
+
+**what discovery ANSWERS.** a namespace comes back when some role
+assignment's SCOPE covers it. it is never a statement that the caller
+may perform any particular action on it -- see
+:class:`NamespaceDiscoveryRequest` for why the two can differ.
 
 the client serializes a :class:`NamespaceDiscoveryRequest`, publishes
 to ``{namespace}.namespace.discover``, and parses the reply back into
@@ -28,7 +42,7 @@ the LLM.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -37,22 +51,21 @@ from threetears.observe import get_logger, traced
 __all__ = [
     "DiscoveryClientError",
     "NamespaceDiscoveryClient",
+    "NamespaceDiscoveryErrorEnvelope",
     "NamespaceDiscoveryRequest",
     "NamespaceDiscoveryResponse",
     "NamespaceDiscoverySummary",
+    "NamespaceTypeFilter",
 ]
-
-if TYPE_CHECKING:
-    pass
 
 log = get_logger(__name__)
 
 
 #: closed set of namespace_type values callers may filter on. matches
-#: the :class:`3tears.hub.broker.namespaces.NamespaceType` enum shipped
-#: alongside this module. carried as a ``Literal`` on the request model
-#: so an accidental new type fails parse at the producer site rather
-#: than silently returning an empty set.
+#: the ``NamespaceType`` enum the hub ships alongside this module.
+#: carried as a ``Literal`` on the request model so an accidental new
+#: type fails parse at the producer site rather than silently
+#: returning an empty set.
 NamespaceTypeFilter = Literal[
     "workspace",
     "agent",
@@ -70,28 +83,42 @@ NamespaceTypeFilter = Literal[
 class NamespaceDiscoveryRequest(BaseModel):
     """local wire request mirroring the broker handler's shape.
 
-    agent-workspace carries its own copy of the request/response models
-    instead of importing from 3tears.hub so the package boundary stays
-    clean -- the broker owns its handler models and this module owns the
-    client models; both sides agree on the JSON shape.
+    agent-tools carries its own copy of the request/response models
+    instead of importing from the hub so the package boundary stays
+    clean -- the broker owns its handler models and this module owns
+    the client models; both sides agree on the JSON shape.
+
+    **discovery answers a SCOPE question, never a permission one.** a
+    namespace is returned when a role assignment's scope covers it --
+    ``scope_type='namespace'`` naming that row, ``'type_customer'``
+    naming its type within the caller's customer, or ``'all'``. WHICH
+    role carried that assignment is not consulted, and nothing
+    constrains a namespace to one role: the only unique index on
+    ``role_assignments`` is on its bare ``id``, so two roles may be
+    granted on one namespace and they need not agree. a caller can
+    therefore see a namespace on the strength of one role's
+    assignment and still be refused the action it wanted, which the
+    per-call evaluator decides separately. treat a returned row as
+    "in scope", never as "permitted".
 
     :param correlation_id: request trace identifier bound into broker
         logs so a discovery call can be correlated back to the tool
         invocation that issued it
     :ptype correlation_id: UUID
-    :param agent_id: calling agent UUID; discovery returns every
-        namespace owned by this agent plus every one the agent holds a
-        grant on within the caller's customer (filtered further by
-        ``namespace_type`` when supplied)
-    :ptype agent_id: UUID
-    :param customer_id: calling customer UUID; discovery filters rows
-        to this customer in SQL so cross-customer rows never land in
-        the response
-    :ptype customer_id: UUID
-    :param user_id: invoking user UUID when the call is on behalf of
-        a specific user; ``None`` requests the admin/internal "every
-        grant-visible row" shape (handler variant)
-    :ptype user_id: UUID | None
+    :param identity_token: the caller's hub-minted identity token,
+        forwarded verbatim. the broker verifies it and takes the
+        calling agent and customer off the signed claims, so this
+        replaces what used to be a self-asserted ``agent_id`` /
+        ``customer_id`` pair. ``None`` only when a user assertion is
+        forwarded instead
+    :ptype identity_token: str | None
+    :param user_identity_token: the per-turn hub-minted user
+        assertion, when a human is in the loop. the broker verifies it,
+        binds it to the identity token's principal, and takes the
+        acting user off the signed claims. ``None`` for an
+        agent-initiated call with nobody in the loop, in which case the
+        user leg of the visibility query is skipped
+    :ptype user_identity_token: str | None
     :param namespace_type: optional closed-set filter. when ``None``
         discovery returns every visible namespace regardless of type;
         when set, only namespaces of that type are returned
@@ -99,9 +126,8 @@ class NamespaceDiscoveryRequest(BaseModel):
     """
 
     correlation_id: UUID
-    agent_id: UUID
-    customer_id: UUID
-    user_id: UUID | None = None
+    identity_token: str | None = None
+    user_identity_token: str | None = None
     namespace_type: NamespaceTypeFilter | None = None
 
 
@@ -140,6 +166,13 @@ class NamespaceDiscoverySummary(BaseModel):
 class NamespaceDiscoveryResponse(BaseModel):
     """successful response carrying the visible namespace set.
 
+    **every item is IN SCOPE of some grant, not necessarily
+    PERMITTED.** the query matches a role assignment's scope and never
+    consults which role carried it, and one namespace may carry
+    assignments from two roles that do not agree -- so a row here can
+    belong to a caller who is still refused the action it wanted. ask
+    the evaluator before acting on one.
+
     :param success: always True on success; present for symmetry with
         the error envelope so callers can branch on the single field
     :ptype success: bool
@@ -150,6 +183,28 @@ class NamespaceDiscoveryResponse(BaseModel):
 
     success: bool = True
     items: list[NamespaceDiscoverySummary] = Field(default_factory=list)
+
+
+class NamespaceDiscoveryErrorEnvelope(BaseModel):
+    """the broker's refusal envelope, mirroring its handler's error model.
+
+    parsed as its OWN model rather than re-parsed as
+    :class:`NamespaceDiscoveryResponse`, which declares neither field: doing
+    the latter flattened every broker refusal to ``UNKNOWN`` and made the
+    codes -- "no credential was forwarded" versus "the credential did not
+    verify" -- unreachable by any caller.
+
+    :param success: always False on a refusal
+    :ptype success: bool
+    :param error_code: the machine-readable code a caller branches on
+    :ptype error_code: str
+    :param error_message: human-readable description; never parsed
+    :ptype error_message: str
+    """
+
+    success: bool = False
+    error_code: str
+    error_message: str
 
 
 class DiscoveryClientError(RuntimeError):
@@ -206,9 +261,8 @@ class NamespaceDiscoveryClient:
         self,
         *,
         correlation_id: UUID,
-        agent_id: UUID,
-        customer_id: UUID,
-        user_id: UUID | None,
+        identity_token: str | None = None,
+        user_identity_token: str | None = None,
         namespace_type: NamespaceTypeFilter | None = None,
     ) -> list[NamespaceDiscoverySummary]:
         """issue one discovery request and return the caller's visible set.
@@ -220,16 +274,19 @@ class NamespaceDiscoveryClient:
         carries ``success=false`` and an error-code/message pair; this
         method translates that to :class:`DiscoveryClientError`.
 
+        the broker refuses a request carrying neither token, so a
+        caller holding no credential learns that here rather than
+        receiving somebody else's answer.
+
         :param correlation_id: trace identifier for this discovery call
         :ptype correlation_id: UUID
-        :param agent_id: calling agent UUID
-        :ptype agent_id: UUID
-        :param customer_id: calling customer UUID (must be set: the
-            broker filters on this in SQL and discovery is not valid
-            without it)
-        :ptype customer_id: UUID
-        :param user_id: invoking user UUID or ``None`` for admin-shape
-        :ptype user_id: UUID | None
+        :param identity_token: the caller's hub-minted identity token,
+            forwarded verbatim for the broker to verify
+        :ptype identity_token: str | None
+        :param user_identity_token: the per-turn hub-minted user
+            assertion when a human is in the loop; ``None`` for an
+            agent-initiated call
+        :ptype user_identity_token: str | None
         :param namespace_type: closed-set filter; ``None`` returns every
             visible namespace regardless of type
         :ptype namespace_type: NamespaceTypeFilter | None
@@ -244,9 +301,8 @@ class NamespaceDiscoveryClient:
             )
         request = NamespaceDiscoveryRequest(
             correlation_id=correlation_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            user_id=user_id,
+            identity_token=identity_token,
+            user_identity_token=user_identity_token,
             namespace_type=namespace_type,
         )
         subject = f"{self._namespace}.namespace.discover"
@@ -282,11 +338,9 @@ class NamespaceDiscoveryClient:
                 else "discovery returned success=false"
             )
             try:
-                envelope: dict[str, Any] = NamespaceDiscoveryResponse.model_validate_json(
-                    body,
-                ).model_dump()
-                error_code = str(envelope.get("error_code", error_code))
-                error_message = str(envelope.get("error_message", error_message))
+                envelope = NamespaceDiscoveryErrorEnvelope.model_validate_json(body)
+                error_code = envelope.error_code
+                error_message = envelope.error_message
             except Exception as exc:  # noqa: BLE001 -- the DiscoveryClientError below is the report
                 # Only enriching the message; the failure is raised either way. Logged so a
                 # generic "discovery returned success=false" is traceable to an unparseable body

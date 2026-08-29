@@ -387,6 +387,99 @@ def _resolve_batch_backend(
     return backend
 
 
+def _absorbs_conflicts(collection: Any) -> bool:
+    """Whether this collection's table declares that a conflicting row is absorbed.
+
+    ``on_conflict="ignore"`` generates ``ON CONFLICT (pk) DO NOTHING``, whose 0 rowcount
+    on a duplicate is the policy working rather than a write going missing. The policy is
+    declared on the schema for a ``SchemaBackedCollection`` and as a class attribute on a
+    ``DurableStoreCollection``, so both are consulted -- schema first, because a
+    schema-backed collection carries both and the schema is the one its SQL is generated
+    from.
+
+    Compared by equality against the literal policy so a mock collection, whose
+    auto-created attributes are truthy objects rather than strings, reads as declaring
+    nothing.
+
+    :param collection: the collection whose table policy is being read
+    :ptype collection: Any
+    :return: whether a 0 rowcount is this table's expected duplicate outcome
+    :rtype: bool
+    """
+    schema = getattr(collection, "schema", None)
+    policy = getattr(schema, "on_conflict", None) if schema is not None else None
+    if policy is None:
+        policy = getattr(collection, "on_conflict", None)
+    return policy == "ignore"
+
+
+def _write_landed(collection: Any, pending: PendingWrite, rows_affected: Any) -> bool:
+    """Report whether a flushed write actually landed a row, saying so when it did not.
+
+    ``save_entity`` treats a 0 rowcount as a hard failure, so the synchronous write path
+    can never report a row it did not persist. The deferred path replays the same write
+    through ``persist_to_store`` and its rowcount is the only statement the durable tier
+    makes about it -- a write the tier declined is evicted from the buffer either way, so
+    counting it as flushed and logging nothing turns a permanent loss into a success.
+
+    The collection answers what its own 0 means, so the report is graded rather than
+    uniform:
+
+    - ``emits_cas_fence`` says every write it generates carries a fence, so a 0 is
+      provably a lost race -- reported at error. Only reachable through a buffer that
+      already held rows when the table was fenced, because
+      ``SchemaBackedCollection._reject_deferred_flush_on_cas_null_safe`` refuses to
+      construct a fenced collection whose table is configured for deferred flush.
+    - ``on_conflict="ignore"`` says a conflicting row is absorbed on purpose, so a 0 is
+      the ordinary duplicate outcome -- reported at debug. Escalating it would put a
+      warning in the log for every duplicate the policy exists to absorb.
+    - Otherwise 0 is ambiguous, so it is reported at warning rather than escalated on a
+      guess.
+
+    Both flags are read defensively because a bare mock collection's auto-created
+    attributes are truthy objects: ``emits_cas_fence`` for identity, so a mock does not
+    read as fenced, and ``on_conflict`` by equality against the literal policy.
+
+    A count that is not ``0`` counts as landed, ``None`` included. A backend that
+    answers ``None`` violates ``save_to_store``'s ``-> int`` contract, and reading it as
+    a loss here would newly drop writes for a non-SQL ``DurableStore`` that has always
+    answered that way.
+
+    :param collection: the collection whose ``persist_to_store`` produced the count
+    :ptype collection: Any
+    :param pending: the buffered write, for the address the log has to carry
+    :ptype pending: PendingWrite
+    :param rows_affected: rows-affected count reported by the durable tier
+    :ptype rows_affected: Any
+    :return: whether the write may be counted as persisted
+    :rtype: bool
+    """
+    if rows_affected != 0:
+        return True
+    address = {
+        "table": pending.table_name,
+        "entity_id": str(pending.entity_id),
+        "rows_affected": rows_affected,
+    }
+    if getattr(collection, "emits_cas_fence", False) is True:
+        log.error(
+            "Deferred L3 write lost its CAS race and was dropped; the buffered payload "
+            "was decided under a fence value another writer has since moved",
+            extra={"extra_data": address},
+        )
+    elif _absorbs_conflicts(collection):
+        log.debug(
+            "Deferred L3 write matched an existing row on a table that absorbs conflicts",
+            extra={"extra_data": address},
+        )
+    else:
+        log.warning(
+            "Deferred L3 write affected no row and was dropped from the buffer; the durable tier took nothing for it",
+            extra={"extra_data": address},
+        )
+    return False
+
+
 async def _flush_batch_atomic(
     sorted_pending: list[PendingWrite],
     registry: CollectionRegistry,
@@ -404,7 +497,9 @@ async def _flush_batch_atomic(
     :ptype registry: CollectionRegistry
     :param backend: the shared backend exposing ``transaction()``.
     :ptype backend: Any
-    :return: number of entities persisted (the full batch on success).
+    :return: number of entities the durable tier took a row for. Less than the whole
+        batch when a write reported 0 rows; the transaction still commits and the
+        caller still acks the batch, so a declined write is reported, not replayed.
     :rtype: int
     """
     flushed = 0
@@ -414,8 +509,9 @@ async def _flush_batch_atomic(
             # _resolve_batch_backend already proved every table resolves to a
             # collection (and to this same backend); assert for the type-checker.
             assert collection is not None
-            await collection.persist_to_store(pw.data, conn=conn)
-            flushed += 1
+            rows_affected = await collection.persist_to_store(pw.data, conn=conn)
+            if _write_landed(collection, pw, rows_affected):
+                flushed += 1
     return flushed
 
 
@@ -452,9 +548,13 @@ async def _flush_per_entity(
             await write_buffer.ack(pw.table_name, pw.entity_id)
             continue
         try:
-            await collection.persist_to_store(pw.data)
-            flushed += 1
-            # durable write acked -> now safe to evict from the buffer.
+            rows_affected = await collection.persist_to_store(pw.data)
+            if _write_landed(collection, pw, rows_affected):
+                flushed += 1
+            # the durable tier answered -> safe to evict from the buffer either way. A
+            # declined write is not re-enqueued: the buffered payload is what the tier
+            # already refused, so replaying it refuses again, and an ``ON CONFLICT DO
+            # NOTHING`` no-op would burn the retry budget on every duplicate.
             await write_buffer.ack(pw.table_name, pw.entity_id)
         except Exception as exc:
             # FK violations are "my parent hasn't landed yet" -- treat

@@ -129,18 +129,16 @@ class BootstrapContext:
         lives in the consumer's agent package)
     :ivar namespace_collection: three-tier
         :class:`NamespaceCollection` constructed during the
-        three-tier stack phase. strategies that own a ToolServer
-        thread this into :class:`ToolServer` so
-        :meth:`register_tool` / :meth:`deregister_tool` materialize
-        ``platform.namespaces`` rows via
-        :meth:`NamespaceCollection.save_entity` /
-        :meth:`NamespaceCollection.delete`. strategies that build
-        workspace tools thread it into
-        :func:`register_workspace_tools` so
-        :class:`WorkspaceCreateTool` can emit the paired workspace
-        namespace row through the same Collection. typed ``Any`` at
-        the strategy-protocol boundary to keep this package free of
-        an upstream hub dependency (the concrete
+        three-tier stack phase. **NO TOOL WRITES THROUGH IT.** it used
+        to say strategies threaded it into the workspace tool factory
+        so :class:`WorkspaceCreateTool` could emit the paired workspace
+        namespace row; that write moved to the hub, and the factory's
+        ``namespace_collection`` key is now read by no builder.
+        ``ToolServer`` never received it either, for the same reason
+        stated the same way: the hub reconciles a pod's tool namespaces
+        off the registration manifest, under a verified signature.
+        typed ``Any`` at the strategy-protocol boundary to keep this
+        package free of an upstream hub dependency (the concrete
         :class:`NamespaceCollection` lives in the consumer package)
     :ivar context_integration: per-pod conversation-context integration
         handle (the consuming app's SDK's ``ContextIntegration``) constructed

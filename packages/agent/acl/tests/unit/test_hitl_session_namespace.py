@@ -68,7 +68,7 @@ ACTION_ATTACH = "hitl.attach"
 def _row(name: str, *, customer_id: UUID | None, namespace_type: str) -> Namespace:
     """build a namespace row whose id is derived from its name.
 
-    ``platform.namespaces`` rows are resolved by name, so two identical
+    ``namespaces`` rows are resolved by name, so two identical
     names are one row. deriving the id the same way makes a name
     collision show up here as a shared row rather than as two rows that
     happen to be distinct because the fixture minted two UUIDs.

@@ -592,12 +592,14 @@ def build_permissions(
     :ptype pod_id: str | None
     :param conn_id: a connection-unique id for the scoped inbox; defaults to ``pod_id``
     :ptype conn_id: str | None
-    :param tool_namespaces: the tool namespace names this pod is authorized to serve -- the
-        ``allowed_namespaces`` list on its tool-pods row, the same list
-        ``RegistrationHandler._authenticate_and_filter`` filters its manifest against. each entry
-        becomes one EXACT per-tool subject grant, so registration filtering and subject permissions
-        read from one source of truth. omitting it grants none of them (a pod that serves no
-        human-in-the-loop session needs none).
+    :param tool_namespaces: the tool-name NODES this pod OWNS -- resolved by the host from
+        its own ownership graph, the same answer
+        ``RegistrationHandler._authenticate_and_filter`` filters its manifest against. NODES,
+        never registered tool namespace names: each entry is rooted through
+        :meth:`threetears.nats.Subjects.tool_provider_node` and becomes one EXACT per-node
+        subject grant, so registration filtering and subject permissions read from one source of
+        truth. omitting it grants none of them (a pod that serves no human-in-the-loop session
+        needs none).
     :ptype tool_namespaces: Sequence[str] | None
     :param coordination_buckets: KV bucket SUFFIXES this agent declares for its own
         coordination primitives -- the ``coordination_buckets`` column on its ``agents``
@@ -723,6 +725,11 @@ def _agent_pod(
         # HITL: on a requires_confirmation tool pause the agent records a pending-approval marker
         # with the hub (forwarding its own identity token; the hub verifies + tenant-scopes).
         str(Subjects.hub_approval_record()),
+        # memory bootstrap: the agent asks the hub to materialize the ``memory`` namespace row
+        # for its OWN (agent, customer) pair. Granted here rather than left to the L3 write rail
+        # because no agent process writes the hub's ``namespaces`` table any more -- the hub verifies
+        # the forwarded identity token and refuses a request naming a pair that is not the token's.
+        str(Subjects.hub_memory_namespace_ensure()),
         # engagement selection, READ ONLY: the runtime resolves the conversation channel's default
         # engagement at the tool-call stamp seam. Without this the publish is refused at the
         # connection, the resolve soft-fails to "unbound", and a scan that should have authorized
@@ -881,12 +888,21 @@ def _tool_pod(
     ns = _ns()
     # human-in-the-loop session control plane: while a pod holds a display's claim it serves the
     # owner-routed session messages (open/complete a tab, read state, close the session) forwarded
-    # to it. one EXACT family literal per authorized tool, minted by hashing the SAME
-    # ``allowed_namespaces`` entries that filter the pod's registration. a coarse ``{ns}.forward.>``
+    # to it. one EXACT family literal per OWNED PROVIDER NODE, minted by hashing the SAME
+    # nodes that filter the pod's registration. a coarse ``{ns}.forward.>``
     # would instead let any tool pod serve any owner-routed key in the namespace, and since the key
     # segment is a digest of an arbitrary application string there is nothing else in the subject
     # left to discriminate on. SUBSCRIBE only: the owner answers on the requester's reply inbox
     # under ``allow_responses`` and never originates a forward.
+    #
+    # THE NODE IS THE KEY, AND IT USED TO BE THE TOOL LEAF. what the host resolves is bare NODES
+    # (``pentest``, ``aibots.admin``) and these grants are minted at CONNECT; a tool's registered
+    # namespace name (``tools.pentest.sqlmap.1-0-0``) is minted at REGISTRATION and does not exist
+    # yet here. The consumer used to derive its family from that leaf, so the grant named one
+    # digest and the pod subscribed another -- and an ungranted SUBSCRIBE is not a refusal anybody
+    # sees, it is a subscription that receives nothing forever. ``Subjects.tool_provider_node``
+    # roots both spellings onto one value; the pod learns the canonical form of its node on the
+    # registration reply (``RegistrationResponse.owned_namespaces``).
     # BOTH families per tool. a session's control plane and its display stream are owner-routed
     # on the same key, so they must derive different subjects or the queue group ``serve_owner``
     # uses would split one pod's messages between the two handlers.
@@ -907,6 +923,25 @@ def _tool_pod(
         str(Subjects.tools_register()),
         str(Subjects.tools_heartbeat(p)),  # own pod only
         str(Subjects.tools_discover()),  # polls discovery during wait_until_ready
+        # a tool pod acting ON A CALL forwards that call's identity token and needs
+        # nothing of its own. Writing its OWN durable state is the case that has no
+        # inbound token to forward -- nobody's behalf to act on -- so the pod presents
+        # its provisioned key here and receives a short-lived hub-minted token, the
+        # same handshake an agent pod performs. Its self-minted token is verified
+        # against the pod's stored public key, NOT the hub's JWKS, so it is not
+        # interchangeable with this one and cannot stand in for it on the L3 path.
+        str(Subjects.hub_handshake()),
+        # a tool pod that owns a provider namespace owns the schema behind it,
+        # and reaches it exactly as an agent reaches its own: over the L3 broker,
+        # carrying the hub-minted token the handshake above returns. The broker
+        # still decides -- it resolves the namespace, checks the caller's grant
+        # on it, and binds `search_path` to that namespace's schema, so these
+        # subjects buy reach and never authority. Without them every other half
+        # of provider storage is inert: the schema is provisioned, the grant is
+        # materialized, and the pod cannot send the request that would use them.
+        str(Subjects.l3_query()),
+        str(Subjects.l3_batch()),
+        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops, as the agent pod holds it
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify proxy assertions
         str(Subjects.audit_event("tool.call")),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
@@ -917,6 +952,15 @@ def _tool_pod(
         # its call's engagement_id -> the authorized target set (same forwarded
         # identity-token auth; the hub verifies + tenant-scopes). read-only.
         str(Subjects.hub_engagement_scope()),
+        # "which namespaces can my caller see". Same forwarded-token auth as the two
+        # resolves above, and that is the whole reason this grant is safe to hold: the
+        # hub reads the calling agent, customer and acting user off a signature it
+        # verifies in-process, and the request carries no field naming any of the three,
+        # so a pod holding this subject can ask about its caller and about nobody else.
+        # An answer is a customer's whole namespace inventory -- every name, id and
+        # owning agent -- which is why the subject must never accept a self-asserted
+        # customer. Read-only; the pod asks and the hub answers.
+        str(Subjects.namespace_discover()),
         # THE STANDING RESULT GRANT, and the reason this file changed at all. A scan tool runs for up
         # to 1200s while this connection is rebuilt every 60s to stay authenticated; the reply-inbox
         # right (``allow_responses``) belongs to the connection that received the call, so it is gone
@@ -1140,6 +1184,8 @@ def _hub(
         # (channel-router-forwarded) into an authorized approve/deny verdict on the resume rail.
         str(Subjects.hub_approval_record()),
         str(Subjects.hub_approval_resolve()),
+        # memory bootstrap: responds to an agent's memory-namespace ensure
+        str(Subjects.hub_memory_namespace_ensure()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),
@@ -1372,7 +1418,7 @@ def _agent_router(
             # that ``kv_bucket`` layers on. Matches the live ``aibots_agent_config`` bucket.
             #
             # READ-ONLY, and that is a rule rather than a trim: CLAUDE.md's Config Source-of-Truth
-            # makes ``platform.agents`` the source and this bucket a hot cache over it, written
+            # makes the hub's ``agents`` table the source and this bucket a hot cache over it, written
             # ONLY by the hub's admin endpoints. The router resolves a timeout from it and never
             # puts (``_config_kv`` is read at one site), and a KV read is a ``$JS.API`` request
             # rather than a ``$KV.`` publish, so withholding write authority costs it nothing.

@@ -1,7 +1,7 @@
 """Agent-side knowledge entity proxies -- concepts + playbook entries.
 
 The agent pod owns its OWN :class:`ConceptEntity` / :class:`PlaybookEntryEntity`
-proxies over the ``platform.concepts`` / ``platform.playbook_entries`` tables it
+proxies over the ``concepts`` / ``playbook_entries`` tables it
 reads through the ``system.platform.rbac`` NATS proxy pool. They are trivial
 :class:`~threetears.core.entities.base.BaseEntity` subclasses (a primary-key
 declaration only): the fields match the table shape one-to-one MINUS the
@@ -18,7 +18,7 @@ __all__ = ["ConceptEntity", "PlaybookEntryEntity"]
 
 
 class ConceptEntity(BaseEntity):
-    """Entity proxy over a ``platform.concepts`` row (agent side).
+    """Entity proxy over a hub ``concepts`` row (agent side).
 
     The governed term -> binding mapping (KNW-20 / D3). Fields: ``id`` /
     scope columns (``customer_id`` / ``user_id`` / ``visibility``) /
@@ -33,7 +33,7 @@ class ConceptEntity(BaseEntity):
 
 
 class PlaybookEntryEntity(BaseEntity):
-    """Entity proxy over a ``platform.playbook_entries`` row (agent side).
+    """Entity proxy over a hub ``playbook_entries`` row (agent side).
 
     The atomic, promotable knowledge unit (KNW-10). Fields: ``id`` /
     ``playbook_id`` / scope columns (``customer_id`` / ``user_id`` /

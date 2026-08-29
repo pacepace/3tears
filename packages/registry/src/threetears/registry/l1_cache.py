@@ -92,7 +92,7 @@ pod_heartbeats_table = Table(
 #
 # the registry's :class:`RbacEvaluatorAuthorizer` evaluates two-sided
 # tool-call decisions against a NATS-proxy NamespaceCollection (read
-# of ``platform.namespaces``) plus four rbac metadata Collections
+# of the hub's ``namespaces``) plus four rbac metadata Collections
 # (``groups`` / ``group_members`` / ``roles`` / ``role_assignments``).
 # the canonical schemas live on the :mod:`threetears.agent.acl`
 # collection classes, and the mirror is emitted from them rather than

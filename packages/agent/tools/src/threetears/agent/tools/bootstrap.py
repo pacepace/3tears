@@ -28,6 +28,14 @@ no one else's. it lives here rather than on ``ToolServer`` because this
 module owns the canonical start/stop scaffolding and already wires the
 health surface, while ``ToolServer`` is the MCP request handler and owns
 no cache concern.
+
+the stack now carries a payload rather than only an empty tier: the runtime's own
+:class:`~threetears.agent.tools.object_resolution_collection.ObjectResolutionCollection`
+is built here too and handed to the server, so a pod that declares collection tables
+gets a resolution cache shared with its replicas instead of a per-process dict. it is
+wired by the lifecycle owner rather than by the host pod on purpose -- it backs a
+resolver the host never constructs either, and a store the host has to remember to
+build is one the host will forget to build.
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ from typing import TYPE_CHECKING
 
 from threetears.core.collections import bind_collections_bucket
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.nats import Principal, kv_key_scope_for
 from threetears.observe import (
     HealthCheck,
@@ -50,7 +59,8 @@ from threetears.observe import (
     spawn_background,
 )
 
-from threetears.agent.tools.l1_cache import create_tool_pod_l1_backend
+from threetears.agent.tools.l1_cache import TOOL_POD_L1_DB_NAME, create_tool_pod_l1_backend
+from threetears.agent.tools.object_resolution_collection import ObjectResolutionCollection
 
 if TYPE_CHECKING:
     from sqlalchemy import MetaData
@@ -132,6 +142,7 @@ async def build_tool_pod_collection_stack(
     nats_client: "NatsClient",
     pod_id: str,
     l1_metadata: "MetaData",
+    l1_db_name: str = TOOL_POD_L1_DB_NAME,
 ) -> CollectionRegistry:
     """build one tool pod's L1 + L2 collection tiers, scoped to its own ``tool_pods.id``.
 
@@ -171,6 +182,15 @@ async def build_tool_pod_collection_stack(
     :ptype pod_id: str
     :param l1_metadata: the pod's declared Collection tables, mirrored into its L1 database
     :ptype l1_metadata: MetaData
+    :param l1_db_name: name of this process's in-memory L1 database. The default is right for
+        every deployment -- replicas are separate PROCESSES, and within one process every
+        collection must share one L1 tier, which is why the name is fixed rather than random.
+        Override it only where one process has to stand in for two replicas, which is a
+        cross-pod test: left at the default, both "replicas" resolve to one L1 database and a
+        read that was supposed to cross L2 is answered locally instead. The parameter one layer
+        down (:func:`~threetears.agent.tools.l1_cache.create_tool_pod_l1_backend`) exists for
+        the same reason; this passes it through rather than hiding it
+    :ptype l1_db_name: str
     :return: the configured registry, with its invalidation listener running
     :rtype: CollectionRegistry
     :raises ValueError: if ``pod_id`` is not a uuid, so no collision-free scope can be derived
@@ -190,7 +210,7 @@ async def build_tool_pod_collection_stack(
     await bind_collections_bucket(nats_client, component="tool-pod")
     registry = CollectionRegistry()
     registry.configure(
-        l1_backend=create_tool_pod_l1_backend(l1_metadata),
+        l1_backend=create_tool_pod_l1_backend(l1_metadata, db_name=l1_db_name),
         l2_client=nats_client,
         kv_key_scope=scope,
         l2_create_if_missing=False,
@@ -265,6 +285,7 @@ class ToolServerBootstrap:
         self._log_level = log_level
         self._collection_tables = collection_tables
         self._collection_registry: CollectionRegistry | None = None
+        self._object_resolutions: ObjectResolutionCollection | None = None
         if health_port is not None:
             self._health_port = health_port
         else:
@@ -285,6 +306,20 @@ class ToolServerBootstrap:
         :rtype: CollectionRegistry | None
         """
         return self._collection_registry
+
+    @property
+    def object_resolutions(self) -> ObjectResolutionCollection | None:
+        """the runtime's two-tier object-resolution store, once NATS is up.
+
+        ``None`` until the connection exists, and ``None`` forever for a pod that
+        declared no ``collection_tables``. Exposed for the same reason
+        :attr:`collection_registry` is: a host that wants to read or drop a mapping of
+        its own has one object to reach for rather than a second store of its own.
+
+        :return: the collection, or ``None`` when the pod holds no collections
+        :rtype: ObjectResolutionCollection | None
+        """
+        return self._object_resolutions
 
     def install_collection_stack(self, server: "ToolServer") -> None:
         """arrange for the pod's collection stack to be built the moment NATS is up.
@@ -317,11 +352,21 @@ class ToolServerBootstrap:
             :return: nothing
             :rtype: None
             """
-            self._collection_registry = await build_tool_pod_collection_stack(
+            registry = await build_tool_pod_collection_stack(
                 nats_client=nats_client,
                 pod_id=server.pod_id,
                 l1_metadata=tables,
             )
+            self._collection_registry = registry
+            # the runtime's OWN collection, wired here rather than by the host pod: it
+            # backs a resolver the pod never constructs either, and a store a host had
+            # to remember to build is one a host will forget to build.
+            self._object_resolutions = ObjectResolutionCollection(
+                registry,
+                DefaultCoreConfig(),
+                nats_client,
+            )
+            server.attach_object_resolution_cache(self._object_resolutions)
 
         server.add_connected_callback(_on_connected)
 

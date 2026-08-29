@@ -502,7 +502,7 @@ async def test_workspace_create_publishes_audit(
     # workspace_create publishes TWO events on success:
     # 1. WorkspaceCreateEvent on 3tears.workspaces.create (consumed by
     #    the hub-side ``WorkspaceNamespaceEmitter`` to upsert the
-    #    paired ``platform.namespaces`` row of type ``workspace``)
+    #    paired ``namespaces`` row of type ``workspace``)
     # 2. AuditEvent on ns.audit.workspace.create (this test's subject)
     audit_publishes = [(subj, payload) for subj, payload in nats.published if subj == "ns.audit.workspace.create"]
     assert len(audit_publishes) == 1, nats.published

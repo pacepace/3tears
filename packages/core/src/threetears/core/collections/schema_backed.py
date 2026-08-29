@@ -522,7 +522,24 @@ class Column:
         ``@spans_partitions`` to opt into multi-partition reads, or
         be allowlisted via ``partition_exempt_methods`` with an
         explicit rationale -- protects against the cross-partition
-        bleed class of bug
+        bleed class of bug.
+
+        **A partition column whose value is DERIVED from another column
+        can move, and no generated statement can move it.** ``namespaces
+        .row_scope`` is the live example -- it is ``platform`` exactly
+        when ``customer_id IS NULL`` -- so a row that gains a customer
+        changes its own primary key. :func:`~threetears.core.backends
+        .schema_sql.build_insert_sql` nominates the PK as its ``ON
+        CONFLICT`` arbiter, which then does not name the stored row,
+        while any SECONDARY unique index on the bare entity id still
+        does: the write becomes an unretryable ``UniqueViolationError``
+        rather than a conflict the upsert resolves. Such a move has to
+        be an explicit, deliberate method on the owning Collection
+        (:meth:`~threetears.agent.acl.NamespaceCollection.rescope`) --
+        it is deliberately NOT handled here, because a generic
+        "reconcile a conflicting id into whatever partition the writer
+        asked for" is precisely the cross-partition bleed the composite
+        key exists to prevent.
     :cvar nullable: when ``True``, missing values default to ``None``;
         ignored when ``partition=True`` (partition columns must be
         non-null by construction)
@@ -1531,9 +1548,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         buffer and is replayed later through ``persist_to_store``, which
         supplies NO ``original_timestamp``. on a ``cas_null_safe`` table that
         replay fences against ``NULL``, so it matches only a row nobody has
-        written since; against any row that DOES exist it affects 0 rows, and
-        the flush loop discards the rowcount. every deferred write to an
-        existing row would evaporate with nothing raised and nothing logged.
+        written since; against any row that DOES exist it affects 0 rows, which
+        the flush loop reports and evicts rather than retries. every deferred
+        write to an existing row would evaporate with nothing raised.
 
         cheap to detect at construction, so detect it there.
 

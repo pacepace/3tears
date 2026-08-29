@@ -59,7 +59,9 @@ _API_PORT = 8088
 _FORWARD_PORT = 5901
 
 _NS = "sidecarpipe"
-_TOOL = "tools.scrape-zone_alpha.1-0-0"
+#: the tool-name NODE the serving pod owns, as its ``tool_pods`` row holds it and as
+#: its registration reply names it. NOT a tool leaf: the grant is minted from the node.
+_OWNED_NODE = "tools.scrape"
 _POD_ID = "pod-7f3c"
 _SESSION = "operator-session-1"
 
@@ -235,7 +237,7 @@ async def test_a_real_display_is_driven_through_the_pipe(nats_container: str, di
     # The DISPLAY STREAM family, not the control plane's. A session is owner-routed twice on the
     # same key, so the two derive different families deliberately -- sharing one would put both
     # on a single subject and let the queue group split a pod's messages between two handlers.
-    family = Subjects.hitl_pipe_family(_TOOL)
+    family = Subjects.hitl_pipe_family(_OWNED_NODE)
     claim = SessionClaim(session_id=_SESSION)
 
     async def _where(session_id: str) -> tuple[str, int]:
@@ -243,7 +245,7 @@ async def test_a_real_display_is_driven_through_the_pipe(nats_container: str, di
         return display_address
 
     async with await _connect(nats_container, "pod") as pod, await _connect(nats_container, "hub") as hub:
-        async with serve_display(pod, claim, tool=_TOOL, pod_id=_POD_ID, display=_where):
+        async with serve_display(pod, claim, owned_node=_OWNED_NODE, pod_id=_POD_ID, display=_where):
             endpoint = await attach_pipe(hub, _SESSION, family=family, timeout=timedelta(seconds=10))
             async with open_pipe(hub, endpoint) as stream:
                 rfb = _PipeReader(stream)

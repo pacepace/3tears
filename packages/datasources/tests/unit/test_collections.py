@@ -61,7 +61,7 @@ def _make_registry_and_config() -> tuple[MagicMock, MagicMock]:
 
 
 class TestCapabilitySourceCollection:
-    """the registry collection wires to ``platform.datasources``."""
+    """the registry collection wires to ``datasources``."""
 
     def test_table_name(self) -> None:
         registry, config = _make_registry_and_config()

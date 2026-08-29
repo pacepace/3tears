@@ -10,7 +10,7 @@ import asyncio
 import os
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
@@ -52,8 +52,8 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.http_operation import RestAffordance
-from threetears.agent.tools.object_resolver import HubObjectResolver
-from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
+from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
+from threetears.core.namespaces import build_tool_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
 from threetears.core.security.identity_token import (
@@ -90,6 +90,7 @@ __all__ = [
     "HeartbeatMessage",
     "ProbeAck",
     "RegistrationManifest",
+    "RegistrationResponse",
     "ToolCallFailure",
     "ToolManifestEntry",
     "ToolServer",
@@ -100,20 +101,27 @@ __all__ = [
 
 
 def tool_namespace_name(mcp_name: str, version: str) -> str:
-    """build the canonical ``platform.namespaces.name`` for a tool row.
+    """build the canonical ``namespaces.name`` for a tool row.
 
-    namespace-task-01 phase 9.5 pins the canonical shape at
-    ``tools.<mcp_name>.<version>`` (plural prefix + dot separator +
-    dot-sanitized segments). :func:`build_namespace_name` replaces
-    any ``.`` inside a segment with ``-`` before interpolation — a
-    mcp name like ``example.admin.backup`` comes through as
-    ``example-admin-backup`` and a semver version like ``1.0.0``
-    comes through as ``1-0-0``. the resulting shape stays unambiguous
-    for cross-type lookups (no collision with a workspace-typed row
-    sharing the name), preserves per-version pinning (different
-    versions of the same tool remain distinct namespace rows), and
-    keeps bulk-delete-on-deregister expressible via a
-    ``LIKE 'tools.<sanitized-mcp>.%'`` pattern.
+    the canonical shape is ``tools.<mcp_name>.<sanitized version>``:
+    the mcp name is interpolated VERBATIM, so ``example.admin.backup``
+    contributes three components and the row sits under
+    ``tools.example.admin`` by the ordinary containment rule, while a
+    semver version like ``1.0.0`` is sanitized to ``1-0-0`` and placed
+    last. the shape stays unambiguous for cross-type lookups (no
+    collision with a workspace-typed row sharing the name) and
+    preserves per-version pinning.
+
+    a thin delegate to :func:`threetears.core.namespaces.build_tool_namespace_name`,
+    which owns the grammar and ships beside the parser that has to
+    agree with it. this name stays because it is what every caller
+    imports and because it says which KIND of namespace it builds; the
+    rule behind it lives in exactly one place.
+
+    **do not compose a ``LIKE 'tools.<mcp>.%'`` deregistration
+    pattern.** under the unflattened shape that matches every version
+    of a distinct tool named one segment deeper, so it deletes rows
+    belonging to another tool. the reasoning is on the callee.
 
     :param mcp_name: tool mcp name (e.g. ``example.admin.backup``)
     :ptype mcp_name: str
@@ -121,8 +129,11 @@ def tool_namespace_name(mcp_name: str, version: str) -> str:
     :ptype version: str
     :return: canonical namespace name string
     :rtype: str
+    :raises ValueError: if either argument is empty, if ``mcp_name``
+        carries an empty component, or if it is already rooted at the
+        ``tools`` prefix
     """
-    return build_namespace_name(PLURAL_PREFIX_TOOL, mcp_name, version)
+    return build_tool_namespace_name(mcp_name, version)
 
 
 def tool_namespace_id(
@@ -134,7 +145,7 @@ def tool_namespace_id(
 
     keying on the ``(mcp_name, version, agent_id_hex)`` triple makes
     concurrent register_tool racers on the same pod converge on the
-    same ``platform.namespaces.id`` so
+    same ``namespaces.id`` so
     :meth:`NamespaceCollection.save_entity` can resolve the replay
     through ``ON CONFLICT (id) DO UPDATE``. platform-built-in pods
     have ``agent_id=None`` and key on the literal string ``platform``
@@ -284,7 +295,7 @@ class ToolManifestEntry(BaseModel):
 
     The two visibility flags ride with each tool's manifest entry so
     the hub-side ``ToolNamespaceEmitter`` can stamp them onto the
-    ``platform.namespaces`` row it writes. Defaults match
+    ``namespaces`` row it writes. Defaults match
     :class:`~threetears.agent.tools.base_tool.TearsTool` so manifests
     composed by older callers that don't set the fields still land
     with the canonical "tool-eligible, not skill-eligible" shape.
@@ -357,7 +368,7 @@ class RegistrationManifest(BaseModel):
 
     ownership identity (``owner_agent_id`` / ``customer_id``) rides on
     the manifest so downstream namespace materialization can stamp
-    the right scope on each ``platform.namespaces`` row without
+    the right scope on each ``namespaces`` row without
     re-resolving the pod's identity from a separate auth lookup.
     agent-spun pods set both; platform-built-in pods (admin tools,
     datasource tool pod) leave both ``None`` and the namespace rows
@@ -388,6 +399,60 @@ class RegistrationManifest(BaseModel):
     bootstrap_token: str | None = None
     owner_agent_id: UUID | None = None
     customer_id: UUID | None = None
+
+
+class RegistrationResponse(BaseModel):
+    """the registry's reply to one registration manifest.
+
+    **Defined here, beside** :class:`RegistrationManifest`, **rather than in the registry
+    that builds it.** The two are one protocol, and the pod is the process that has to
+    parse this -- ``threetears.registry`` depends on ``threetears.agent.tools``, so a
+    response class living there could never be imported by the pod that receives it.
+    ``threetears.registry.registration`` re-exports it, so
+    ``from threetears.registry import RegistrationResponse`` is unchanged.
+
+    :param success: whether registration succeeded
+    :ptype success: bool
+    :param pod_id: identifier of pod that attempted registration
+    :ptype pod_id: str
+    :param registered_tools: list of full_name values successfully registered
+    :ptype registered_tools: list[str]
+    :param owned_namespaces: the canonical ``namespaces.name`` of every namespace this pod
+        OWNS -- ``tools.pentest`` for each tool-name NODE on its ``tool_pods`` row, or
+        ``agents.<uuid>`` for an agent-owned in-process pod. **Self-identity, and the pod
+        cannot work it out for itself**: its subject grants are minted at CONNECT from that
+        row, which it never sees, and the only values it does hold are tool LEAVES, which
+        cannot be reduced back to their node by any rule. DERIVED by the registry from the
+        verified auth context, never read off the manifest, so a pod cannot claim a
+        namespace it does not own. Empty when there is nothing to name.
+    :ptype owned_namespaces: list[str]
+    :param error: error message if registration failed
+    :ptype error: str | None
+    """
+
+    success: bool
+    pod_id: str
+    registered_tools: list[str] = []
+    owned_namespaces: list[str] = []
+    error: str | None = None
+
+
+#: how long a pod waits for the registration reply that names what it owns.
+#:
+#: DELIBERATELY LONGER than :data:`threetears.nats.DEFAULT_REQUEST_TIMEOUT` (5s), because the
+#: registry does not answer a registration until it has PROBED the registering pod back and
+#: waited out ``THREETEARS_REGISTRY_PROBE_TIMEOUT`` (3s by default). Under the default request
+#: timeout a pod would time out waiting for a reply the registry was still legitimately
+#: computing, and then log a warning that reads as a broken registry.
+#:
+#: That ordering is a round trip in each direction and works only because the probe is answered
+#: by the client's own dispatch task while :meth:`ToolServer.serve` awaits here -- see
+#: :meth:`ToolServer.handle_probe`, which is bound BEFORE the registration is published and does
+#: not touch the readiness event. Do not move the probe subscription after the registration.
+#:
+#: A wedged registry therefore delays readiness by this much, ONCE. The heartbeat re-asks while
+#: the answer is still unknown, so nothing is lost permanently.
+_IDENTITY_REPLY_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
 
 
 _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
@@ -751,7 +816,6 @@ class ToolServer:
     def __init__(
         self,
         *,
-        namespace_collection: Any,
         nats_url: str = "",
         namespace: str = "3tears",
         nats_user: str | None = None,
@@ -840,36 +904,19 @@ class ToolServer:
         :ptype nats_client: NatsClient | None
         :param agent_id: owning-agent UUID for this pod. stamped on
             the ``owner_agent_id`` axis of every baseline ``tool.call``
-            audit envelope emitted from :meth:`handle_call` and on
-            every tool namespace row emitted from
-            :meth:`register_tool`. ``None`` in platform-spun ToolServers
-            (platform built-in tool pods have no owning agent); each
-            namespace row then lands with ``owner_agent_id=NULL``
-            matching the ``shared``-type namespace shape.
+            audit envelope emitted from :meth:`handle_call`, and carried
+            on the registration manifest so the HUB-side
+            ``ToolNamespaceEmitter`` can scope the ``namespaces`` rows
+            it writes. ``None`` in platform-spun ToolServers (platform
+            built-in tool pods have no owning agent); each namespace row
+            then lands with ``owner_agent_id=NULL`` matching the
+            ``shared``-type namespace shape.
         :ptype agent_id: UUID | None
-        :param customer_id: owning-customer UUID stamped on every
-            tool namespace row emitted by :meth:`register_tool`.
-            paired with ``agent_id``: agent-spun pods carry both,
-            platform-spun pods carry neither and emit with
-            ``customer_id=NULL``.
+        :param customer_id: owning-customer UUID carried on the
+            registration manifest beside ``agent_id``: agent-spun pods
+            carry both, platform-spun pods carry neither and the hub
+            writes their rows with ``customer_id=NULL``.
         :ptype customer_id: UUID | None
-        :param namespace_collection: three-tier
-            :class:`NamespaceCollection` from the agent-side stack.
-            :meth:`register_tool` calls
-            :meth:`NamespaceCollection.save_entity` with a
-            :class:`NamespaceEntity` of type ``tool`` so the unified
-            rbac evaluator can resolve per-call authorization against
-            a first-class namespace id; :meth:`deregister_tool` calls
-            :meth:`NamespaceCollection.delete`. typed ``Any`` at this
-            boundary because :mod:`threetears.agent.tools` sits below
-            the consumer hub's broker namespaces in the import graph;
-            the concrete Collection is wired by the bootstrap caller.
-            ``None`` suppresses emission entirely — reserved for
-            in-process tests and standalone dev that never touch
-            ``platform.namespaces``; production callers MUST supply a
-            Collection or namespace materialization silently falls
-            behind and rbac resolution fails open.
-        :ptype namespace_collection: Any
         :param jwks_refresh: optional zero-arg coroutine triggering ONE
             immediate, debounced + rate-limited Hub JWKS refresh, returning
             whether it ran (typically
@@ -943,6 +990,12 @@ class ToolServer:
         self._nats_user = nats_user
         self._nats_password = nats_password
         self._pod_id = pod_id or str(uuid7())
+        # SELF-IDENTITY, learned from the registration reply and never derived locally.
+        # ``None`` is "not learned yet"; an empty tuple is a real answer, because a pod
+        # with no ``tool_pods`` row and no owning agent genuinely owns nothing. Collapsing
+        # the two would make "never asked" indistinguishable from "asked and told nothing",
+        # and only one of those is worth retrying.
+        self._owned_namespaces: tuple[str, ...] | None = None
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
         # per-key-identity connect credential provider (self-minted identity JWT). when set it is
@@ -959,7 +1012,6 @@ class ToolServer:
         # reactive Hub-rekey self-heal: ``serve()`` wires this to the owned provider's refresh_now
         # when self-provisioning; an injected-provider caller may pass one or leave it None (inert).
         self._jwks_refresh = jwks_refresh
-        self._namespace_collection = namespace_collection
         # the pod's single object store (None when no S3 configured); installed on
         # every per-call ToolCallScope so producing tools reach it ambiently.
         self._object_store = object_store
@@ -967,6 +1019,10 @@ class ToolServer:
         # serve() from the NATS client (needs no S3 creds), then installed on
         # every per-call ToolCallScope so consuming tools resolve ids ambiently.
         self._object_resolver = object_resolver
+        # the pod's two-tier resolution store, attached by the lifecycle owner once the
+        # collection stack exists (see attach_object_resolution_cache). None -> the
+        # self-provisioned resolver falls back to its own in-process cache.
+        self._object_resolution_cache: "ObjectResolutionCache | None" = None
         # the pod's single engagement-scope resolver; None here is self-provisioned
         # in serve() from the NATS client (needs no S3 creds), then installed on
         # every per-call ToolCallScope so tools re-authorize against the engagement.
@@ -1035,6 +1091,45 @@ class ToolServer:
         :rtype: None
         """
         self._connected_callbacks.append(callback)
+
+    def attach_object_resolution_cache(self, cache: "ObjectResolutionCache") -> None:
+        """hand the self-provisioned object resolver the pod's two-tier resolution store.
+
+        The second lifecycle-owner seam, and it exists for the same reason
+        :meth:`add_connected_callback` does: the store rides the pod's collection stack,
+        which only exists once the connection is up, while the resolver is built moments
+        later inside :meth:`serve`. ``ToolServerBootstrap`` calls this from its connected
+        callback, so the ordering is guaranteed rather than hoped for.
+
+        Read only where the resolver is SELF-PROVISIONED. A pod constructed with an
+        ``object_resolver`` of its own keeps it, caching and all: that resolver carries
+        whatever its owner chose, and swapping its cache out from under it here would
+        override a decision made elsewhere.
+
+        :param cache: the pod's resolution store, shared across its replicas through L2
+        :ptype cache: ObjectResolutionCache
+        :return: nothing
+        :rtype: None
+        """
+        self._object_resolution_cache = cache
+
+    @property
+    def owned_namespaces(self) -> tuple[str, ...] | None:
+        """the namespaces this pod OWNS, as its registration reply named them.
+
+        ``tools.pentest`` for each tool-name NODE on its ``tool_pods`` row, or
+        ``agents.<uuid>`` for an agent-owned in-process pod. This is the value the pod's
+        human-in-the-loop subject family must be keyed on: its grants were minted at
+        CONNECT from that same row, and the tool names it holds locally are LEAVES, which
+        no rule can reduce back to their node.
+
+        ``None`` until a registration has been published with ``learn_identity=True`` AND
+        answered. An empty tuple is a different thing: an answer that named nothing.
+
+        :return: the owned namespace names, or ``None`` when not learned yet
+        :rtype: tuple[str, ...] | None
+        """
+        return self._owned_namespaces
 
     @property
     def pod_id(self) -> str:
@@ -1423,9 +1518,14 @@ class ToolServer:
             # needs only NATS (the hub verifies the caller's identity_token +
             # owns the objects table), so -- unlike the object store -- the pod
             # does not have to be wired with S3 creds to resolve.
+            #
+            # the resolution cache is whatever the lifecycle owner attached above --
+            # the pod's two-tier store when it has a collection stack, ``None`` when
+            # it does not, in which case the resolver keeps its own in-process cache.
             self._object_resolver = HubObjectResolver(
                 self._nc,
                 request_timeout_seconds=get_object_resolve_request_timeout(),
+                resolution_cache=self._object_resolution_cache,
             )
         if self._engagement_resolver is None:
             # self-provision the engagement-scope resolver over this connection so
@@ -1463,7 +1563,9 @@ class ToolServer:
             extra={"extra_data": {"subject": probe_subject.path}},
         )
 
-        await self.publish_registration()
+        # the ONE place the pod asks who it is. a re-publish does not need to re-ask, so the
+        # round trip is paid once rather than on every heartbeat.
+        await self.publish_registration(learn_identity=True)
 
         self._ready_event.set()
 
@@ -1601,11 +1703,11 @@ class ToolServer:
         will include it. safe to call multiple times with the same
         tool; duplicate ``name@version`` keys overwrite.
 
-        The tool's ``platform.namespaces`` row is materialized by the
+        The tool's ``namespaces`` row is materialized by the
         HUB-side ``ToolNamespaceEmitter`` listening on
         ``{ns}.tools.register`` -- the manifest publish above is the
         canonical handoff. The hub owns this write because it has
-        direct access to ``platform.*`` tables; the previous
+        direct access to the platform schema's tables; the previous
         agent-side direct write through ``NamespaceCollection.save_entity``
         on the L3 NATS proxy (namespace-task-01 phase 2 /
         three-tier-task-01 phase F) hit
@@ -1638,12 +1740,16 @@ class ToolServer:
         before :meth:`serve` has connected NATS: the removal still
         happens and the publish step is skipped.
 
-        namespace-task-01 phase 2 / three-tier-task-01 phase F: on
-        successful removal, every paired tool ``platform.namespaces``
-        row for that family is deleted via
-        :meth:`NamespaceCollection.delete` so no stale namespace
-        stays in play after the tool leaves. deletion failures raise
-        so callers see the wiring gap.
+        **the pod deletes no ``namespaces`` row, and must not.** it
+        used to: a paired row was removed per ``name@version`` key
+        through :meth:`NamespaceCollection.delete`, which was passed a
+        BARE uuid against a collection keyed on the composite
+        ``(row_scope, namespace_id)`` -- so every deregister raised
+        ``ValueError: primary key arity mismatch`` and stale-tool
+        pruning threw. the write had already moved anyway: the hub
+        reconciles tool namespaces off this manifest, under a verified
+        signature, so the manifest publish below is the whole of what
+        deregistration owes the platform.
 
         :param tool_name: namespaced ``mcp_name`` (without the
             ``@version`` suffix) identifying the family of tool
@@ -1651,154 +1757,15 @@ class ToolServer:
         :ptype tool_name: str
         :return: true when one or more registrations were removed
         :rtype: bool
-        :raises Exception: when namespace row deletion fails
         """
-        removed_keys = [key for key in self._tools if key.startswith(f"{tool_name}@")]
         removed = self.unregister(tool_name)
         if removed and self._nc is not None:
             await self.publish_registration()
-        if removed:
-            await self._delete_tool_namespace(tool_name, removed_keys)
         return removed
 
-    async def _emit_tool_namespace(self, tool: TearsTool) -> None:
-        """upsert ``platform.namespaces`` row for a registered tool.
-
-        every registered tool materializes as a ``tool``-type namespace
-        so the unified rbac evaluator has a first-class id to evaluate
-        against in the Registry proxy hot path. row identity follows
-        the same naming convention as workspace namespace rows
-        (``<type>:<id>``): here the id is the tool's mcp_name plus
-        version, matching the dispatch key the Registry uses.
-
-        platform-built-in tools have ``agent_id=None`` and
-        ``customer_id=None``; the row lands with both owner columns
-        NULL so an admin grant can reach every customer. agent-spun
-        tools carry both, scoping the grant surface to the owning
-        customer.
-
-        writes through
-        :meth:`NamespaceCollection.save_entity` (three-tier-task-01
-        phase F): the Collection rides the agent's main NATS-proxy
-        pool so the broker admits the write under the caller's own
-        ``agent.<hex>`` namespace, and the paired uuid5 id keyed on
-        ``(mcp_name, version, agent_id_hex)`` lets concurrent
-        registrations converge via ``ON CONFLICT (id) DO UPDATE``.
-
-        :param tool: registered :class:`TearsTool`
-        :ptype tool: TearsTool
-        :return: nothing
-        :rtype: None
-        :raises Exception: when the Collection rejects the upsert;
-            raised unchanged so callers see the wiring gap
-        """
-        if self._namespace_collection is None:
-            return
-        schema = tool.mcp_schema()
-        name = tool_namespace_name(schema.name, schema.version)
-        now = datetime.now(UTC)
-        namespace_id = tool_namespace_id(
-            schema.name,
-            schema.version,
-            self._agent_id,
-        )
-        # natural-identity metadata: the canonical ``name`` column is
-        # sanitized (``tools.<sanitized-mcp>.<sanitized-version>``);
-        # operators write yaml ``access.tools`` patterns in the
-        # pre-sanitized form (``example.admin.*``) and downstream
-        # consumers (registry authorizer lookup, hub access
-        # materializer) match patterns against this metadata. keeping
-        # ``mcp_name`` / ``mcp_version`` on the row decouples the
-        # rbac surface from the sanitization rules and makes
-        # platform-wide pattern matching uniform across rows emitted
-        # by every code path (this server-side path, the hub-side
-        # ``ToolNamespaceEmitter``).
-        entity = self._namespace_collection.entity_class(
-            {
-                "namespace_id": namespace_id,
-                "name": name,
-                "namespace_type": "tool",
-                "owner_agent_id": self._agent_id,
-                "customer_id": self._customer_id,
-                "schema_name": None,
-                "metadata": {
-                    "mcp_name": schema.name,
-                    "mcp_version": schema.version,
-                },
-                "tool_eligible": bool(getattr(tool, "tool_eligible", True)),
-                "skill_eligible": bool(getattr(tool, "skill_eligible", False)),
-                "date_created": now,
-                "date_updated": now,
-            },
-            is_new=True,
-            collection=self._namespace_collection,
-        )
-        await self._namespace_collection.save_entity(entity)
-        log.info(
-            "emitted tool namespace",
-            extra={
-                "extra_data": {
-                    "tool_name": schema.name,
-                    "tool_version": schema.version,
-                    "namespace_name": name,
-                    "namespace_id": str(namespace_id),  # convert at border: emitted-tool-namespace log extra_data field
-                    "owner_agent_id": (str(self._agent_id) if self._agent_id is not None else None),
-                    "customer_id": (str(self._customer_id) if self._customer_id is not None else None),
-                }
-            },
-        )
-
-    async def _delete_tool_namespace(
-        self,
-        mcp_name: str,
-        removed_keys: list[str],
-    ) -> None:
-        """delete ``platform.namespaces`` rows for deregistered tool versions.
-
-        three-tier-task-01 phase F: translates the family-level
-        deregister into a sequence of
-        :meth:`NamespaceCollection.delete` calls, one per
-        ``name@version`` key removed from the in-memory registry. the
-        deterministic :func:`uuid5` derivation makes resolution a pure
-        client-side computation keyed on
-        ``(mcp_name, version, agent_id_hex)`` so no broker lookup is
-        needed before the delete.
-
-        :param mcp_name: tool mcp name (without version suffix)
-        :ptype mcp_name: str
-        :param removed_keys: ``name@version`` keys that were present
-            in the in-memory registry before :meth:`unregister` ran;
-            each produces one delete against the Collection
-        :ptype removed_keys: list[str]
-        :return: nothing
-        :rtype: None
-        :raises Exception: when the Collection rejects the delete
-        """
-        if self._namespace_collection is None:
-            return
-        for key in removed_keys:
-            _, _, version = key.partition("@")
-            namespace_id = tool_namespace_id(
-                mcp_name,
-                version,
-                self._agent_id,
-            )
-            await self._namespace_collection.delete(namespace_id)
-            log_namespace_id = str(namespace_id)  # convert at border: deleted-tool-namespace log extra_data field
-            log.info(
-                "deleted tool namespace",
-                extra={
-                    "extra_data": {
-                        "mcp_name": mcp_name,
-                        "tool_version": version,
-                        "namespace_id": log_namespace_id,
-                    }
-                },
-            )
-
     @traced()
-    async def publish_registration(self) -> None:
-        """publish registration manifest to NATS.
+    async def publish_registration(self, *, learn_identity: bool = False) -> None:
+        """publish registration manifest to NATS, optionally reading the reply.
 
         sends manifest containing all registered tool definitions
         to registration subject for discovery by registry. requires
@@ -1808,6 +1775,27 @@ class ToolServer:
         when you need to re-publish the current manifest without
         changing it (e.g. on registry recovery).
 
+        **``learn_identity`` asks the registry which namespace this pod OWNS**, and stores
+        the answer on :attr:`owned_namespaces`. The pod cannot work that out for itself:
+        its subject grants are minted at CONNECT from the tool-name NODES on its
+        ``tool_pods`` row, which it never sees, and the tool names it holds locally are
+        LEAVES that no rule reduces back to their node. The registry has just read that
+        row, so the reply is the one place the answer can come from.
+
+        **It is OFF by default, and that is the whole reason it is a parameter.** This
+        method is called on every heartbeat and on every dynamic register/deregister; a
+        round trip on each would turn a slow registry into a stalled pod. The identity is
+        learned once, at :meth:`serve`, and re-asked by the heartbeat only while it is
+        still unknown.
+
+        **Every failure of the ask degrades to a warning**, because a NATS request IS a
+        publish: the manifest has left this process before the reply is awaited, so a pod
+        that cannot hear the answer is in exactly the state it was in before this existed.
+
+        :param learn_identity: whether to await the reply and keep the namespaces it names
+        :ptype learn_identity: bool
+        :return: nothing
+        :rtype: None
         :raises RuntimeError: if called before ``serve`` connects NATS
         """
         nc = self._nc
@@ -1880,7 +1868,10 @@ class ToolServer:
         )
 
         subject = Subjects.tools_register()
-        await nc.publish(subject=subject, message=manifest)
+        if learn_identity:
+            await self._register_and_learn_identity(nc, subject, manifest)
+        else:
+            await nc.publish(subject=subject, message=manifest)
         log.debug(
             "published registration manifest",
             extra={
@@ -1890,6 +1881,67 @@ class ToolServer:
                     "tools_count": len(tools_list),
                 }
             },
+        )
+
+    async def _register_and_learn_identity(
+        self,
+        nc: NatsClient,
+        subject: Subject,
+        manifest: RegistrationManifest,
+    ) -> None:
+        """publish the manifest as a REQUEST and keep the self-identity its reply names.
+
+        The manifest is identical either way -- a request is a publish that also carries a
+        reply subject -- so the registration itself is unaffected by anything that happens
+        to the answer.
+
+        Failures are swallowed to a WARNING rather than raised, and the reason is which
+        failure this is: the registration SUCCEEDED (the manifest was published), and only
+        the identity is missing. Raising here would turn a working registration into a
+        failed startup over a value the pod ran without until now. A refused registration
+        is not treated as an identity either: its reply names nothing, and keeping the
+        previous answer over a refusal would report ownership the registry just denied.
+
+        :param nc: the connected client
+        :ptype nc: NatsClient
+        :param subject: the registration subject
+        :ptype subject: Subject
+        :param manifest: the manifest to send
+        :ptype manifest: RegistrationManifest
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            reply = await nc.request(
+                subject=subject,
+                message=manifest,
+                response_type=RegistrationResponse,
+                timeout=_IDENTITY_REPLY_TIMEOUT,
+            )
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the identity and never the registration. Logged with its type and message
+            log.warning(
+                "could not learn this pod's owned namespaces from the registration reply; "
+                "its human-in-the-loop family cannot be keyed on a node it was never told, so "
+                "any owner-routed session will subscribe successfully and receive nothing",
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                        "reason": type(exc).__name__,
+                        "detail": str(exc),
+                    }
+                },
+            )
+            return
+        if not reply.success:
+            log.warning(
+                "the registry refused this pod's registration, so it names no owned namespace",
+                extra={"extra_data": {"pod_id": self._pod_id, "error": reply.error}},
+            )
+            return
+        self._owned_namespaces = tuple(reply.owned_namespaces)
+        log.info(
+            "learned the namespaces this pod owns",
+            extra={"extra_data": {"pod_id": self._pod_id, "owned_namespaces": list(reply.owned_namespaces)}},
         )
 
     def _load_pod_jwks(self, tool_name: str) -> dict[str, Any]:
@@ -2930,7 +2982,10 @@ class ToolServer:
                     extra={"extra_data": {"error": str(exc)}},
                 )
             try:
-                await self.publish_registration()
+                # re-ask ONLY while the answer is still unknown: a pod that started before
+                # the registry did would otherwise never learn which node it owns, and the
+                # heartbeat is the only thing that runs again on its own.
+                await self.publish_registration(learn_identity=self._owned_namespaces is None)
             except Exception as exc:
                 log.warning(
                     "periodic re-registration failed",

@@ -41,7 +41,17 @@ if TYPE_CHECKING:
         MemoryAuthorizerDependencies,
         authorize_memory_access,
         ensure_memory_owner_assignment,
+        memory_namespace_id,
         memory_namespace_name,
+        memory_namespace_schema_name,
+    )
+    from threetears.agent.memory.namespace_client import (
+        HubMemoryNamespaceProvisioner,
+        MemoryNamespaceEnsureReply,
+        MemoryNamespaceEnsureRequest,
+        MemoryNamespaceProvisioner,
+        MemoryNamespaceRef,
+        MemoryNamespaceUnavailableError,
     )
     from threetears.agent.memory.collections import (
         ConsolidationCycleError,
@@ -111,6 +121,10 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ConsolidationResult": ("threetears.agent.memory.dream", "ConsolidationResult"),
     "DreamService": ("threetears.agent.memory.dream", "DreamService"),
     "ExtractionPrompts": ("threetears.agent.memory.prompts", "ExtractionPrompts"),
+    "HubMemoryNamespaceProvisioner": (
+        "threetears.agent.memory.namespace_client",
+        "HubMemoryNamespaceProvisioner",
+    ),
     "MEMORY_NAMESPACE_TYPE": ("threetears.agent.memory.authorize", "MEMORY_NAMESPACE_TYPE"),
     "MEMORY_OWNER_GROUP_PREFIX": ("threetears.agent.memory.authorize", "MEMORY_OWNER_GROUP_PREFIX"),
     "MEMORY_OWNER_ROLE_NAME": ("threetears.agent.memory.authorize", "MEMORY_OWNER_ROLE_NAME"),
@@ -134,6 +148,23 @@ _LAZY: dict[str, tuple[str, str]] = {
     "MemoryExtractor": ("threetears.agent.memory.extraction", "MemoryExtractor"),
     "MemoryInjectionMiddleware": ("threetears.agent.memory.middleware", "MemoryInjectionMiddleware"),
     "MemoryIntegration": ("threetears.agent.memory.integration", "MemoryIntegration"),
+    "MemoryNamespaceEnsureReply": (
+        "threetears.agent.memory.namespace_client",
+        "MemoryNamespaceEnsureReply",
+    ),
+    "MemoryNamespaceEnsureRequest": (
+        "threetears.agent.memory.namespace_client",
+        "MemoryNamespaceEnsureRequest",
+    ),
+    "MemoryNamespaceProvisioner": (
+        "threetears.agent.memory.namespace_client",
+        "MemoryNamespaceProvisioner",
+    ),
+    "MemoryNamespaceRef": ("threetears.agent.memory.namespace_client", "MemoryNamespaceRef"),
+    "MemoryNamespaceUnavailableError": (
+        "threetears.agent.memory.namespace_client",
+        "MemoryNamespaceUnavailableError",
+    ),
     "MemoryRecallInput": ("threetears.agent.memory.tools", "MemoryRecallInput"),
     "MemoryRefEntity": ("threetears.agent.memory.entities", "MemoryRefEntity"),
     "MemoryRefsCollection": ("threetears.agent.memory.collections", "MemoryRefsCollection"),
@@ -157,7 +188,12 @@ _LAZY: dict[str, tuple[str, str]] = {
     "load_memory_add_tool": ("threetears.agent.memory.tools", "load_memory_add_tool"),
     "load_memory_recall_tool": ("threetears.agent.memory.tools", "load_memory_recall_tool"),
     "load_memory_search_tool": ("threetears.agent.memory.tools", "load_memory_search_tool"),
+    "memory_namespace_id": ("threetears.agent.memory.authorize", "memory_namespace_id"),
     "memory_namespace_name": ("threetears.agent.memory.authorize", "memory_namespace_name"),
+    "memory_namespace_schema_name": (
+        "threetears.agent.memory.authorize",
+        "memory_namespace_schema_name",
+    ),
     "repoint_user": ("threetears.agent.memory.merge", "repoint_user"),
     "retrieve_memories": ("threetears.agent.memory.integration", "retrieve_memories"),
 }
@@ -173,6 +209,7 @@ __all__ = [
     "ConsolidationResult",
     "DreamService",
     "ExtractionPrompts",
+    "HubMemoryNamespaceProvisioner",
     "MEMORY_NAMESPACE_TYPE",
     "MEMORY_OWNER_GROUP_PREFIX",
     "MEMORY_OWNER_ROLE_NAME",
@@ -196,6 +233,11 @@ __all__ = [
     "MemoryExtractor",
     "MemoryInjectionMiddleware",
     "MemoryIntegration",
+    "MemoryNamespaceEnsureReply",
+    "MemoryNamespaceEnsureRequest",
+    "MemoryNamespaceProvisioner",
+    "MemoryNamespaceRef",
+    "MemoryNamespaceUnavailableError",
     "MemoryRecallInput",
     "MemoryRefEntity",
     "MemoryRefsCollection",
@@ -219,7 +261,9 @@ __all__ = [
     "load_memory_recall_tool",
     "load_memory_search_tool",
     "memory_consolidations_table",
+    "memory_namespace_id",
     "memory_namespace_name",
+    "memory_namespace_schema_name",
     "repoint_user",
     "retrieve_memories",
 ]

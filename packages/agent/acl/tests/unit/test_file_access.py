@@ -26,6 +26,8 @@ from threetears.agent.acl import (
     evaluate_file_access,
 )
 
+from threetears.core.namespaces import build_agent_namespace_name
+
 from ._fake_loaders import FakeStore, make_cache
 
 
@@ -35,11 +37,13 @@ def _ns_workspace() -> Namespace:
     :return: workspace namespace record
     :rtype: Namespace
     """
+    owner = uuid4()
     return Namespace(
         id=uuid4(),
         customer_id=uuid4(),
         namespace_type="workspace",
-        owner_agent_id=uuid4(),
+        owner_agent_id=owner,
+        owner_namespace=build_agent_namespace_name(owner),
     )
 
 
@@ -341,6 +345,7 @@ class TestOwnerShortCircuit:
             customer_id=uuid4(),
             namespace_type="workspace",
             owner_agent_id=agent,
+            owner_namespace=build_agent_namespace_name(agent),
         )
         store = FakeStore()
 
@@ -363,6 +368,7 @@ class TestOwnerShortCircuit:
             customer_id=uuid4(),
             namespace_type="workspace",
             owner_agent_id=agent,
+            owner_namespace=build_agent_namespace_name(agent),
         )
         store = FakeStore()
 
@@ -517,6 +523,7 @@ class TestUserAgentIntersection:
             customer_id=uuid4(),
             namespace_type="workspace",
             owner_agent_id=agent,
+            owner_namespace=build_agent_namespace_name(agent),
         )
 
         user_role = _role_with_actions(["read_file_matching:docs/**"])

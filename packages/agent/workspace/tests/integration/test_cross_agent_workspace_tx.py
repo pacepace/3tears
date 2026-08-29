@@ -8,10 +8,11 @@ real request-reply) and wires:
 - a minimal in-process ``l3.tx.*`` handler on the broker side that
   mirrors what :class:`3tears.hub.broker.proxy.QueryProxy` does for
   tx.begin / tx.execute / tx.fetchrow / tx.fetch / tx.commit:
-  resolves the request namespace, sets search_path to the namespace's
-  schema, pins a real asyncpg connection for the tx session, runs
-  DML + SELECT against the session's pinned connection, commits /
-  rolls back on completion.
+  verifies the forwarded identity token and reads the calling agent off
+  its signed ``sub``, resolves the request namespace, sets search_path to
+  the namespace's schema, pins a real asyncpg connection for the tx
+  session, runs DML + SELECT against the session's pinned connection,
+  commits / rolls back on completion.
 - the real :func:`_write_file_atomic` helper
 
 the test exercises:
@@ -39,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -50,6 +52,15 @@ import pytest
 import pytest_asyncio
 
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
+from threetears.core.security.identity_token import (
+    IdentityClaims,
+    IdentityTokenError,
+    build_jwks,
+    generate_signing_keypair,
+    jwk_thumbprint,
+    sign_identity_token,
+    verify_identity_token,
+)
 
 
 # canonical testcontainer harness from threetears.core; provides
@@ -66,6 +77,64 @@ def db_image() -> str:
 
 
 _SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+# ---------------------------------------------------------------------------
+# identity: the broker double reads the caller off a REAL signed token
+# ---------------------------------------------------------------------------
+#
+# the L3 broker no longer takes ``agent_id`` from the request body -- it verifies
+# a forwarded identity token and reads the principal off the signed ``sub``. the
+# double below does the same thing with the same library the hub verifies with,
+# rather than trusting a field. a double that accepted an unverified id would let
+# this suite pass while the client stopped sending a token at all, which is the
+# defect class the token exists to remove.
+
+_ISSUER_NAME = "hub"
+_SIGNING_KEY, _PUBLIC_KEY = generate_signing_keypair()
+_KID = jwk_thumbprint(_PUBLIC_KEY)
+_JWKS = build_jwks({_KID: _PUBLIC_KEY})
+_TOKEN_TTL_SECONDS = 600
+
+#: the customer every minted token carries. fixed rather than random so a test
+#: asserting a cross-customer refusal has something to differ from.
+_TEST_CUSTOMER_ID = UUID("019f6000-0000-7000-8000-0000000000fa")
+
+
+def _mint_identity_token(agent_id: UUID) -> str:
+    """mint a token whose signed ``sub`` is ``agent_id``.
+
+    :param agent_id: the principal the token attests to
+    :ptype agent_id: UUID
+    :return: a compact JWS the broker double verifies against :data:`_JWKS`
+    :rtype: str
+    """
+    issued_at = int(time.time())
+    claims = IdentityClaims(
+        sub=str(agent_id),
+        customer_id=str(_TEST_CUSTOMER_ID),
+        sid=str(uuid7()),
+        pod_id=str(uuid4()),
+        iss=_ISSUER_NAME,
+        iat=issued_at,
+        exp=issued_at + _TOKEN_TTL_SECONDS,
+    )
+    return sign_identity_token(claims, signing_key=_SIGNING_KEY, kid=_KID)
+
+
+def _token_provider(agent_id: UUID) -> Any:
+    """build the zero-arg provider :class:`NatsProxyL3Backend` calls per request.
+
+    a provider rather than a captured string, matching production: the token is
+    short-lived and re-minted, so the backend must read the current one on every
+    call.
+
+    :param agent_id: the principal every minted token attests to
+    :ptype agent_id: UUID
+    :return: a zero-arg callable returning a freshly minted token
+    :rtype: Any
+    """
+    return lambda: _mint_identity_token(agent_id)
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +349,26 @@ class _TxBroker:
         """
         req = json.loads(msg.data.decode("utf-8"))
         namespace = req["namespace"]
-        agent_id = UUID(req["agent_id"])
+        # the principal comes off the SIGNATURE, exactly as QueryProxy reads it --
+        # there is no ``agent_id`` on the envelope to read instead.
+        try:
+            claims = verify_identity_token(
+                req["identity_token"],
+                jwks=_JWKS,
+                issuer=_ISSUER_NAME,
+            )
+        except IdentityTokenError, KeyError:
+            await msg.respond(
+                json.dumps(
+                    {
+                        "success": False,
+                        "error_code": "IDENTITY_REFUSED",
+                        "error_message": "forwarded identity token did not verify",
+                    }
+                ).encode(),
+            )
+            return
+        agent_id = UUID(claims.sub)
         ns_row = self._namespaces.get(namespace)
         if ns_row is None:
             await msg.respond(
@@ -754,6 +842,7 @@ async def test_grantee_tx_writes_land_in_owner_schema(
         nats_client=bus,
         namespace_prefix="test",
         agent_id=str(agent_b),
+        identity_token=_token_provider(agent_b),
     )
 
     correlation_id = uuid7()
@@ -828,6 +917,7 @@ async def test_concurrent_tx_on_different_workspaces_no_cross_contamination(
         nats_client=bus,
         namespace_prefix="test",
         agent_id=str(agent_b),
+        identity_token=_token_provider(agent_b),
     )
     now = datetime.now(UTC).replace(tzinfo=None)
 
@@ -906,6 +996,7 @@ async def test_grantee_without_grant_is_denied_on_tx_begin(
         nats_client=bus,
         namespace_prefix="test",
         agent_id=str(random_agent),
+        identity_token=_token_provider(random_agent),
     )
 
     with pytest.raises(DataLayerUnavailableError) as excinfo:

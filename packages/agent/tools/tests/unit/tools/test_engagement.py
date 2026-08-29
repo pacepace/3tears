@@ -172,7 +172,6 @@ async def test_tool_server_wires_injected_engagement_resolver_into_scope() -> No
     resolver = _FakeResolver(scope=None)
     server = ToolServer(
         nats_url="nats://localhost:4222",
-        namespace_collection=None,
         engagement_resolver=resolver,  # type: ignore[arg-type]
     )
     request = CallRequest(

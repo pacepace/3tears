@@ -129,7 +129,6 @@ class TestToolServerNatsIntegration:
             namespace=namespace,
             pod_id=pod_id,
             heartbeat_interval=60.0,
-            namespace_collection=None,
             jwks_provider=_pod_jwks_provider,
         )
         tool = IntegrationStubTool()
@@ -215,7 +214,6 @@ class TestToolServerNatsIntegration:
             namespace=namespace,
             pod_id=composite_pod_id,
             heartbeat_interval=60.0,
-            namespace_collection=None,
             jwks_provider=_pod_jwks_provider,
         )
         tool = IntegrationStubTool()
@@ -288,7 +286,6 @@ class TestToolServerNatsIntegration:
             namespace=namespace,
             pod_id=pod_id,
             heartbeat_interval=0.1,
-            namespace_collection=None,
         )
         tool = IntegrationStubTool()
         server.register(tool)

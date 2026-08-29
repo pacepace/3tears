@@ -46,7 +46,7 @@ class Scope(StrEnum):
 
     derived from ``(customer_id, user_id)`` nullability — never stored
     as a column. the string values match the ``target_scope`` literals
-    on ``platform.promotion_requests`` so a promotion target reuses the
+    on the hub's ``promotion_requests`` so a promotion target reuses the
     same vocabulary.
 
     :cvar USER: customer_id set AND user_id set

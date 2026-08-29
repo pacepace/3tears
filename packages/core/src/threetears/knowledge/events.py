@@ -3,7 +3,7 @@
 correction harvesting (KNW-50..54) detects when a user corrects the
 agent in conversation and drafts a USER-scoped playbook entry or
 concept from the correction. the agent pod cannot write
-``platform.*`` directly — the broker's read-only carve-out admits the
+the hub's tables directly — the broker's read-only carve-out admits the
 agent only SELECT traffic against the knowledge tables, and the hub is
 the SOLE writer of platform-scoped rows (mirroring the
 ``WorkspaceCreateEvent`` -> ``WorkspaceNamespaceEmitter`` seam). so the
@@ -79,8 +79,8 @@ class KnowledgeDraftEvent(BaseModel):
     published on ``{ns}.knowledge.draft`` by the agent-side correction
     harvester after a turn produces a high-confidence correction. the
     hub-side emitter materializes ONE ``status='draft'`` row in
-    ``platform.playbook_entries`` (when ``target == 'entry'``) or
-    ``platform.concepts`` (when ``target == 'concept'``), born at USER
+    ``playbook_entries`` (when ``target == 'entry'``) or
+    ``concepts`` (when ``target == 'concept'``), born at USER
     scope from ``(customer_id, user_id)`` (D1). the row carries the turn
     provenance verbatim so an audit walks knowledge -> turn.
 

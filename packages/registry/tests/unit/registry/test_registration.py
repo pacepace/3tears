@@ -435,12 +435,23 @@ class _RecordingAuthenticator:
     """a ``ToolPodAuthenticator`` double that records the RAW token it was handed.
 
     admits exactly ``expected_token`` (proving the registry passes the token through UN-hashed --
-    a sha256 digest would never match), returning an auth ctx scoped to ``allowed_namespaces``.
+    a sha256 digest would never match), returning an auth ctx that OWNS ``owned_namespaces``.
+
+    ``provider_nodes`` reports the ownership graph. It defaults to this pod's own
+    nodes, rooted, because a pod's nodes are rows in that graph and the two must
+    not be able to disagree; a test that needs a node owned by SOMEBODY ELSE
+    passes ``other_nodes``.
     """
 
-    def __init__(self, expected_token: str, allowed_namespaces: list[str]) -> None:
+    def __init__(
+        self,
+        expected_token: str,
+        owned_namespaces: list[str],
+        other_nodes: list[str] | None = None,
+    ) -> None:
         self._expected = expected_token
-        self._allowed = allowed_namespaces
+        self._owned = owned_namespaces
+        self._other = other_nodes or []
         self.seen_tokens: list[str] = []
 
     async def verify_pod(self, token: str) -> "ToolPodAuth | None":
@@ -450,9 +461,20 @@ class _RecordingAuthenticator:
             result = ToolPodAuth(
                 pod_entity_id="pod-001",
                 name="recording-pod",
-                allowed_namespaces=self._allowed,
+                owned_namespaces=self._owned,
             )
         return result
+
+    async def provider_nodes(self) -> tuple[str, ...]:
+        from threetears.core.namespaces import build_tool_provider_node_name
+
+        nodes: list[str] = []
+        for stem in [*self._owned, *self._other]:
+            try:
+                nodes.append(build_tool_provider_node_name(stem))
+            except ValueError:
+                continue
+        return tuple(nodes)
 
 
 def _manifest_with_token(token: str | None, tools: list[dict[str, Any]] | None = None) -> RegistrationManifest:
@@ -468,7 +490,7 @@ class TestRegistrationHandlerAuthenticator:
     async def test_raw_token_admitted_and_registered(self) -> None:
         """a token the authenticator accepts registers the tools; the RAW token reaches verify_pod."""
         catalog = ToolCatalog()
-        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["threetears."])
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["threetears"])
         handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
         nc = _make_registry_nc()
         await handler.start(nc)
@@ -488,7 +510,7 @@ class TestRegistrationHandlerAuthenticator:
     async def test_invalid_token_denied(self) -> None:
         """a token the authenticator rejects fails registration with an auth error."""
         catalog = ToolCatalog()
-        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["threetears."])
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["threetears"])
         handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
         nc = _make_registry_nc()
         await handler.start(nc)
@@ -504,12 +526,47 @@ class TestRegistrationHandlerAuthenticator:
         assert catalog.get("threetears.calculator@1.0.0") is None
 
     @pytest.mark.asyncio
-    async def test_tokenless_manifest_admitted(self) -> None:
-        """a tokenless manifest (agent-owned in-process pod, authenticated at the NATS layer) is
-        ADMITTED without reaching the verifier -- the authenticator governs PLATFORM tool pods that
-        present a token, not agent-owned pods."""
+    async def test_tokenless_manifest_is_admitted_outside_every_owned_node(self) -> None:
+        """the agent-owned in-process pod: still admitted, still never verified.
+
+        It registers over its agent's own NATS connection, which the auth-callout
+        already authenticated per-key, so it presents no token and never reaches
+        the verifier. What it offers here sits under no provider node anybody
+        owns, which is the ordinary case for an agent's own tools.
+        """
         catalog = ToolCatalog()
-        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["threetears."])
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["threetears"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "myagent.summarize",
+                "version": "1.0.0",
+                "description": "an agent's own tool",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token(None, tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        assert auth.seen_tokens == []  # tokenless -> never reached the verifier
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True
+        assert reply.registered_tools == ["myagent.summarize@1.0.0"]
+
+    @pytest.mark.asyncio
+    async def test_tokenless_manifest_is_filtered_not_exempt(self) -> None:
+        """the path that used to return before any filtering ran.
+
+        A tokenless pod owns no provider node, so a name inside somebody else's
+        node is refused -- the whole point of this change. Paired above with the
+        name that IS admitted, so this is a filter rather than a blanket refusal.
+        """
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["threetears"])
         handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
         nc = _make_registry_nc()
         await handler.start(nc)
@@ -518,16 +575,17 @@ class TestRegistrationHandlerAuthenticator:
 
         await handler.handle_registration(msg)
 
-        assert auth.seen_tokens == []  # tokenless -> never reached the verifier
+        assert auth.seen_tokens == []  # still never verified: it holds no row to verify against
         reply = nc.publish_reply.call_args.kwargs["message"]
-        assert reply.success is True
-        assert reply.registered_tools == ["threetears.calculator@1.0.0"]
+        assert reply.success is False
+        assert "threetears.calculator" in reply.error
+        assert catalog.get("threetears.calculator@1.0.0") is None
 
     @pytest.mark.asyncio
-    async def test_tools_filtered_to_allowed_namespaces(self) -> None:
+    async def test_tools_filtered_to_owned_namespaces(self) -> None:
         """tools outside the pod's allowed namespaces are dropped; in-namespace tools survive."""
         catalog = ToolCatalog()
-        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["threetears."])
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["threetears"])
         handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
         nc = _make_registry_nc()
         await handler.start(nc)
@@ -554,3 +612,367 @@ class TestRegistrationHandlerAuthenticator:
         assert reply.success is True
         assert reply.registered_tools == ["threetears.calculator@1.0.0"]
         assert catalog.get("acme.secret@1.0.0") is None
+
+    @pytest.mark.asyncio
+    async def test_a_namespace_does_not_admit_a_prefix_sibling(self) -> None:
+        """``threetears`` admits its own children and NOT ``threetearsimposter``.
+
+        the pod's allow-list is a set of name NODES, compared on a
+        segment boundary. a raw prefix test admits any name that merely
+        begins with the same characters, which is why every value in
+        this column used to be written with a trailing dot -- a
+        value-level workaround this compares its way past.
+        """
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["threetears"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "threetears.calculator",
+                "version": "1.0.0",
+                "description": "a real child of the granted node",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "threetearsimposter.exfiltrate",
+                "version": "1.0.0",
+                "description": "shares the node's characters, not its segment",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True
+        assert reply.registered_tools == ["threetears.calculator@1.0.0"]
+        assert catalog.get("threetearsimposter.exfiltrate@1.0.0") is None
+
+    @pytest.mark.asyncio
+    async def test_the_node_itself_is_admitted(self) -> None:
+        """a tool named exactly the granted node registers.
+
+        the containment rule counts a node as containing itself, so a
+        pod granted ``acme`` may serve a tool literally called ``acme``.
+        """
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["acme"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "acme",
+                "version": "1.0.0",
+                "description": "the node itself",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True
+        assert reply.registered_tools == ["acme@1.0.0"]
+
+
+class TestRefusingEveryToolSaysWhichNodeItComparedAgainst:
+    """a pod that registers nothing is told what was compared, not just that it failed.
+
+    the refusal reaches the pod author as ``RegistrationResponse.error``,
+    and it used to read ``no tools authorized for this pod's namespaces``
+    -- true, and indistinguishable from a missing RBAC grant. the two
+    values that decide the outcome are the pod's own allow-list nodes and
+    the names it offered, so both belong in the sentence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_trailing_separator_node_is_named_in_the_refusal(self) -> None:
+        """``evd.`` matches nothing, and the refusal quotes it back."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["evd."])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "evd.hello",
+                "version": "1.0",
+                "description": "a tool under a node written with a trailing dot",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert "evd." in reply.error
+        assert "evd.hello" in reply.error
+
+    @pytest.mark.asyncio
+    async def test_a_glob_shaped_node_is_named_in_the_refusal(self) -> None:
+        """``evd.*`` is not a node; the refusal says which value failed."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["evd.*"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "evd.hello",
+                "version": "1.0",
+                "description": "a tool under a node written as a glob",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert "evd.*" in reply.error
+        assert "evd.hello" in reply.error
+
+
+class TestTheManifestFilterComparesTheMcpName:
+    """the manifest filter reads ``tool.name``, never a namespace name.
+
+    the two live in the same conceptual space and are easy to confuse.
+    a pod's declaration holds bare mcp-name NODES (``pentest``,
+    ``aibots.admin``, ``threetears``); ``tool.name`` is the mcp name a
+    pod offers (``pentest.sqlmap``). The canonical
+    ``namespaces.name`` -- ``tools.pentest.sqlmap.1-0`` -- is
+    a THIRD string, built downstream, and it never reaches this filter.
+
+    That distinction is what decides whether rooting the namespace name
+    at ``tools.`` starves registration. It does not: a rooted namespace
+    name would match none of these nodes, but the filter is not handed
+    one. These tests pin that, because the failure mode if it were
+    wrong is total -- ``_authenticate_and_filter`` rejects the WHOLE
+    manifest, so the builtin, pentest and admin tool servers would
+    register nothing at all, and the only signal is a log line on a
+    pod that then sits there healthy and empty.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_rooted_namespace_name_is_not_what_the_filter_compares(self) -> None:
+        # the A/B: the mcp name is admitted, and the namespace name
+        # built FROM it is not. if the filter ever started reading the
+        # namespace name, the first assertion would fail and this one
+        # would be the reason why.
+        from threetears.core.namespaces import build_tool_namespace_name
+
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["pentest"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "pentest.sqlmap",
+                "version": "1.0",
+                "description": "offered under its mcp name",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True
+        assert reply.registered_tools == ["pentest.sqlmap@1.0"]
+        # and the namespace name this tool will be given downstream is
+        # NOT a value any node in the allow-list contains.
+        namespace_name = build_tool_namespace_name("pentest.sqlmap", "1.0")
+        assert namespace_name == "tools.pentest.sqlmap.1-0"
+        assert not namespace_name.startswith("pentest")
+
+    @pytest.mark.asyncio
+    async def test_a_manifest_offering_a_rooted_name_is_refused(self) -> None:
+        # the inverse guard: a pod that mistakenly offered the built
+        # namespace name as its tool name must NOT be admitted by a
+        # node naming the provider, or the registry would route a call
+        # to a name no dispatcher resolves.
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["pentest"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "tools.pentest.sqlmap",
+                "version": "1.0",
+                "description": "a namespace name offered where an mcp name belongs",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert "tools.pentest.sqlmap" in reply.error
+
+    @pytest.mark.asyncio
+    async def test_every_live_pod_allow_list_still_admits_its_own_tools(self) -> None:
+        """the four platform pods' live declarations, exercised.
+
+        read off a running deployment. ``dipp`` is included in the
+        trailing-dot spelling it actually carries there, and it admits
+        NOTHING -- that is the earlier landing's deliberate visible
+        failure, asserted here so this landing cannot be blamed for it.
+        """
+        live_pods = {
+            "admin-tool-server": (["aibots.admin"], "aibots.admin.list_agents", True),
+            "builtin-tool-server": (["threetears"], "threetears.calculator", True),
+            "pentest-tool-server": (["pentest"], "pentest.sqlmap", True),
+            "dipp-tool-server": (["dipp."], "dipp.getthing", False),
+        }
+        for pod_name, (allowed, offered, expected) in live_pods.items():
+            catalog = ToolCatalog()
+            auth = _RecordingAuthenticator("the-jwt", owned_namespaces=allowed)
+            handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+            nc = _make_registry_nc()
+            await handler.start(nc)
+            tools = [
+                {
+                    "name": offered,
+                    "version": "1.0",
+                    "description": pod_name,
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+            ]
+            manifest = _manifest_with_token("the-jwt", tools=tools)
+            msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+            await handler.handle_registration(msg)
+
+            reply = nc.publish_reply.call_args.kwargs["message"]
+            assert reply.success is expected, f"{pod_name} offering {offered} under {allowed}"
+
+
+class TestNoRegistrationPathIsUnfiltered:
+    """the third path -- a handler built with no authenticator at all.
+
+    It used to ``return`` before any filtering, exactly as the tokenless path did.
+    It goes through the one rule now; its answer is permissive only because a
+    registry with no host to ask holds no ownership data, and that is stated
+    rather than special-cased.
+    """
+
+    #: the name this pair is argued over. A SINGLE-OWNER provider, deliberately:
+    #: ``threetears`` reads as the natural example and is the one stem that must
+    #: never appear here, because it is the FRAMEWORK namespace -- co-hosted by the
+    #: shared built-in pod and by every agent's in-process ToolServer -- and using
+    #: it as an ownable example is what produced a landing that refused every
+    #: agent's builtins. See
+    #: ``test_the_framework_namespace_has_no_single_owner.py``.
+    _TOOL = [
+        {
+            "name": "pentest.sqlmap",
+            "version": "1.0.0",
+            "description": "sqlmap tool",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+    ]
+
+    @pytest.mark.asyncio
+    async def test_open_mode_admits_because_the_graph_is_empty(self) -> None:
+        """no authenticator, no graph, nothing to enforce -- and no exemption either."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test")
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        msg = _make_nats_msg(_make_manifest(tools=self._TOOL).model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True
+        assert reply.registered_tools == ["pentest.sqlmap@1.0.0"]
+
+    @pytest.mark.asyncio
+    async def test_the_same_name_is_refused_once_the_graph_names_an_owner(self) -> None:
+        """the A/B that shows the previous test is permissive for its stated reason.
+
+        Same manifest, same tool name. The only difference is that a host is
+        present and reports a provider node containing the name, which the
+        registering pod does not own.
+        """
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=[], other_nodes=["pentest"])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        msg = _make_nats_msg(_manifest_with_token(None, tools=self._TOOL).model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert catalog.get("pentest.sqlmap@1.0.0") is None
+
+
+class TestAnUnreadableOwnershipGraphRefuses:
+    """a read that FAILS must not look like a graph with nothing in it.
+
+    An empty inventory admits every unbound pod. A host that cannot answer
+    therefore refuses the registration, which the pod retries on its next
+    heartbeat, rather than admitting a manifest nobody filtered.
+    """
+
+    class _BrokenDirectory:
+        """an authenticator whose graph read raises."""
+
+        async def verify_pod(self, token: str) -> "ToolPodAuth | None":
+            del token
+            return None
+
+        async def provider_nodes(self) -> tuple[str, ...]:
+            raise RuntimeError("the broker is down")
+
+    @pytest.mark.asyncio
+    async def test_a_failing_graph_read_refuses_the_registration(self) -> None:
+        """refused, and nothing written to the catalog."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=self._BrokenDirectory())
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        msg = _make_nats_msg(_manifest_with_token(None).model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert "ownership graph unavailable" in reply.error
+        assert catalog.get("threetears.calculator@1.0.0") is None
+
+    @pytest.mark.asyncio
+    async def test_a_working_graph_read_admits_the_same_manifest(self) -> None:
+        """the admitted twin: the refusal above is the failure, not the manifest."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", owned_namespaces=[])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        msg = _make_nats_msg(_manifest_with_token(None).model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True

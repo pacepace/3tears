@@ -206,9 +206,9 @@ def test_hitl_family_separates_tools_and_is_deterministic() -> None:
     assert alpha == Subjects.hitl_forward_family("tools.scrape-zone_alpha.1-0-0")
 
 
-def test_hitl_family_rejects_an_empty_tool_namespace_name() -> None:
-    """an empty tool name would collapse every tool onto one family."""
-    with pytest.raises(ValueError, match="tool_namespace_name must be non-empty"):
+def test_hitl_family_rejects_an_empty_owned_node() -> None:
+    """an empty node would collapse every provider onto one family."""
+    with pytest.raises(ValueError, match="owned_node must be non-empty"):
         Subjects.hitl_forward_family("")
 
 

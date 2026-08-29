@@ -12,9 +12,10 @@ vocabulary:
 - **principal** — the only grant principal is :class:`Group`. one row
   on :class:`RoleAssignment` carries one ``group_id``. there is no
   parallel "user grant" or "agent grant" path.
-- **scope** — what a single :class:`RoleAssignment` covers. three
-  shapes (see :class:`ScopeType`): one specific namespace, every
-  namespace of one type within one customer, or universal.
+- **scope** — what a single :class:`RoleAssignment` covers. four
+  shapes (see :class:`ScopeType`): one specific namespace, one
+  namespace-name node and everything beneath it, every namespace of
+  one type within one customer, or universal.
 - **role** — named bundle of permissions, shaped
   ``{resource_type: [action, ...]}``. wildcard ``"*"`` is permitted
   for type-agnostic roles.
@@ -30,6 +31,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Mapping
 from uuid import UUID
+
+from threetears.core.namespaces import namespace_contains
 
 __all__ = [
     "ActorType",
@@ -85,6 +88,15 @@ class ScopeType(StrEnum):
 
     :cvar NAMESPACE: assignment applies to one specific namespace,
         identified by :attr:`RoleAssignment.scope_namespace_id`.
+    :cvar SUBTREE: assignment applies to the namespace-name node in
+        :attr:`RoleAssignment.scope_namespace_name` and to every
+        namespace beneath it. covers "caller on the whole
+        ``tools.pentest`` family", which the other three cannot say:
+        NAMESPACE reaches one row and TYPE_CUSTOMER reaches every tool
+        namespace the customer has. the root is a NAME rather than an
+        id because containment is a statement about the name space --
+        ids are minted per row and carry no hierarchy, and a subtree
+        root need not be a materialized row at all.
     :cvar TYPE_CUSTOMER: assignment applies to every namespace of a
         given :attr:`RoleAssignment.scope_namespace_type` within
         :attr:`RoleAssignment.scope_customer_id`. covers "auditor on
@@ -94,6 +106,7 @@ class ScopeType(StrEnum):
     """
 
     NAMESPACE = "namespace"
+    SUBTREE = "subtree"
     TYPE_CUSTOMER = "type_customer"
     ALL = "all"
 
@@ -124,23 +137,51 @@ class Namespace:
 
     a namespace row carries the customer it belongs to, the type it
     represents (``workspace``, ``agent``, ``shared``, ``system``, ...),
-    and the agent that owns it. ownership short-circuits any grant
-    lookup: an agent always has full access to namespaces it owns.
+    and the namespace that owns it. ownership short-circuits any grant
+    lookup: a principal always has full access to namespaces its own
+    namespace owns.
 
-    :ivar id: namespace UUID; the primary key in ``platform.namespaces``
+    :ivar id: namespace UUID; the primary key in the hub's ``namespaces``
     :ivar customer_id: customer UUID this namespace belongs to, or
         ``None`` for a platform-scoped namespace (``customer_id IS NULL``)
     :ivar namespace_type: type discriminator string
         (``workspace``, ``agent``, ``shared``, ``system``, ...)
     :ivar owner_agent_id: UUID of the agent that owns the physical rows,
         or ``None`` for a namespace with no owning agent (datasource /
-        customer / knowledge / ...)
+        customer / knowledge / ...). it says which AGENT owns the rows
+        and is true wherever it is set; what it cannot say is that a
+        namespace is owned by something which is not an agent, which is
+        why it no longer decides authorization
+    :ivar owner_namespace: canonical NAME of the namespace row that
+        OWNS this one, or ``None`` when nothing owns it. this is the
+        ownership key the evaluator's short-circuit reads. it names a
+        namespace rather than an agent because a tool pod, a capability
+        source and an in-hub component own namespaces too and none of
+        them is an agent; one owner column covers all four without a
+        column per kind. it is a NAME rather than a row id because the
+        short-circuit must resolve with no i/o at all -- an agent pod's
+        sandboxed L3 has no ``namespaces`` table, so the owner-path
+        descriptors several packages build carry no row and could not
+        supply an id. a name the caller can derive from its own
+        identity is the only owner value answerable there. ``None``
+        matches NOTHING -- see
+        :func:`threetears.agent.acl.evaluator.evaluate_with_trail`
+    :ivar name: canonical ``namespaces.name`` value, or
+        ``None`` when the construction site had no name to supply (the
+        workspace file-access path builds this value out of a workspace
+        row rather than a namespace row). only
+        :attr:`ScopeType.SUBTREE` reads it, and it reads it
+        FAIL-CLOSED: a namespace with no name is covered by no subtree
+        assignment, so a site that does not supply one narrows a
+        subtree grant to nothing and can never widen one
     """
 
     id: UUID
     customer_id: UUID | None
     namespace_type: str
     owner_agent_id: UUID | None
+    name: str | None = None
+    owner_namespace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,7 +213,7 @@ class Group:
 class GroupMembership:
     """a single ``(group, member)`` pair.
 
-    materialized from ``platform.group_members``. the denormalized
+    materialized from the hub's ``group_members``. the denormalized
     ``customer_id`` mirrors the member's customer at write time and
     lets the membership loader cache by customer without a join back
     to the actor table.
@@ -195,7 +236,7 @@ class GroupMembership:
 class Role:
     """named bundle of ``{resource_type: [action, ...]}`` permissions.
 
-    permissions are stored as a JSONB column on ``platform.roles``;
+    permissions are stored as a JSONB column on the hub's ``roles``;
     this dataclass mirrors the shape after deserialization. the
     wildcard resource-type ``"*"`` (see
     :data:`WILDCARD_RESOURCE_TYPE`) is permitted for type-agnostic
@@ -270,6 +311,10 @@ class RoleAssignment:
 
     - :attr:`ScopeType.NAMESPACE` — ``scope_namespace_id`` set;
       ``scope_namespace_type`` and ``scope_customer_id`` ignored.
+    - :attr:`ScopeType.SUBTREE` — ``scope_namespace_name`` set to the
+      root node; every other scope_* field is ``None``. no customer is
+      carried, because the cross-customer wall is enforced separately
+      on the group's and the role's customer rather than by the scope.
     - :attr:`ScopeType.TYPE_CUSTOMER` — ``scope_namespace_type`` and
       ``scope_customer_id`` set; ``scope_namespace_id`` is ``None``.
     - :attr:`ScopeType.ALL` — every scope_* field is ``None``;
@@ -284,6 +329,8 @@ class RoleAssignment:
         type_customer-scope; else None
     :ivar scope_customer_id: customer UUID for type_customer-scope;
         else None
+    :ivar scope_namespace_name: root namespace-name node for
+        subtree-scope; else None
     """
 
     id: UUID
@@ -293,6 +340,7 @@ class RoleAssignment:
     scope_namespace_id: UUID | None
     scope_namespace_type: str | None
     scope_customer_id: UUID | None
+    scope_namespace_name: str | None = None
 
     def covers(self, namespace: Namespace) -> bool:
         """true iff this assignment's scope covers the given namespace.
@@ -300,6 +348,13 @@ class RoleAssignment:
         scope coverage rules:
 
         - ``namespace`` scope: ids must match exactly.
+        - ``subtree`` scope: the namespace's ``name`` must be the
+          assignment's root node or sit beneath it, decided by
+          :func:`threetears.core.namespaces.namespace_contains` — the
+          ONE containment implementation, segment-aware by
+          construction, so a root of ``pentest`` reaches
+          ``pentest.sqlmap`` and never ``pentestimposter.sqlmap``.
+          a missing root or a missing name denies.
         - ``type_customer`` scope: namespace_type must match AND
           customer_id must match. either side mismatch denies.
         - ``all`` scope: covers every namespace unconditionally.
@@ -314,6 +369,12 @@ class RoleAssignment:
             result = True
         elif self.scope_type == ScopeType.NAMESPACE:
             result = self.scope_namespace_id == namespace.id
+        elif self.scope_type == ScopeType.SUBTREE:
+            result = (
+                self.scope_namespace_name is not None
+                and namespace.name is not None
+                and namespace_contains(self.scope_namespace_name, namespace.name)
+            )
         elif self.scope_type == ScopeType.TYPE_CUSTOMER:
             result = (
                 self.scope_namespace_type == namespace.namespace_type

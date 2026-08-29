@@ -18,18 +18,33 @@ Unlike the registry's factory this one takes the caller's :class:`~sqlalchemy.Me
 pod's Collection-backed surfaces are defined by the pod, not by this package, so there is no fixed
 table set to declare here. What is fixed is the SHAPE -- one named in-memory database per process,
 every declared table mirrored into it before the backend is handed out.
+
+**The runtime's own tables are the exception, and they are added rather than expected.** The pod
+declares what IT holds; :func:`register_tool_pod_runtime_tables` adds what the RUNTIME holds --
+today, ``object_resolutions``, the two-tier store behind
+:class:`~threetears.agent.tools.object_resolver.HubObjectResolver`. It runs inside
+:func:`create_tool_pod_l1_backend` so a pod cannot forget it: a runtime table missing from L1 is
+not an error, it is a collection whose reads silently miss forever, which is the failure mode this
+whole surface exists to stop.
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-from sqlalchemy import MetaData
+from sqlalchemy import BigInteger, Column, MetaData, String, Table
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.observe import get_logger
 
-__all__ = ["TOOL_POD_L1_DB_NAME", "create_tool_pod_l1_backend"]
+from threetears.agent.tools.object_resolution_collection import OBJECT_RESOLUTIONS_TABLE
+
+__all__ = [
+    "TOOL_POD_L1_DB_NAME",
+    "create_tool_pod_l1_backend",
+    "register_tool_pod_runtime_tables",
+]
 
 log = get_logger(__name__)
 
@@ -39,8 +54,46 @@ log = get_logger(__name__)
 TOOL_POD_L1_DB_NAME: Final[str] = "tool_pod_l1_cache"
 
 
+def register_tool_pod_runtime_tables(metadata: MetaData) -> MetaData:
+    """declare every table the tool-pod runtime itself holds onto ``metadata``.
+
+    Idempotent, because a host may hold one :class:`~sqlalchemy.MetaData` for the life of the
+    process and hand it here more than once; a second ``Table(...)`` on the same name would raise
+    :class:`~sqlalchemy.exc.InvalidRequestError` rather than merge.
+
+    ``object_resolutions`` mirrors
+    :class:`~threetears.agent.tools.object_resolution_collection.ObjectResolutionCollection`: the
+    composite ``(customer_id, object_id)`` primary key is the collection's declared key, both
+    columns holding stringified UUIDs. There is no L3 table behind it -- the hub is the system of
+    record for an object's id -> key mapping, and this tier only remembers what it answered.
+
+    :param metadata: the metadata the pod's L1 database is built from
+    :ptype metadata: MetaData
+    :return: the same metadata, with the runtime's tables present
+    :rtype: MetaData
+    """
+    if OBJECT_RESOLUTIONS_TABLE not in metadata.tables:
+        Table(
+            OBJECT_RESOLUTIONS_TABLE,
+            metadata,
+            Column("customer_id", String(36), primary_key=True),
+            Column("object_id", String(36), primary_key=True),
+            Column("s3_key", String(2048), nullable=False),
+            Column("mime_type", String(255), nullable=False),
+            Column("size_bytes", BigInteger, nullable=False),
+            Column("summary", String(4096), nullable=True),
+            Column("category", String(255), nullable=True),
+            Column("date_created", TIMESTAMP(timezone=True), nullable=False),
+            Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
+        )
+    return metadata
+
+
 def create_tool_pod_l1_backend(metadata: MetaData, *, db_name: str = TOOL_POD_L1_DB_NAME) -> SQLiteBackend:
     """create and initialize the shared L1 backend for one tool-pod process.
+
+    The runtime's own tables are registered onto ``metadata`` first, so a pod that declared none
+    still gets a working L1 tier for the collections the runtime holds on its behalf.
 
     :param metadata: the pod's declared Collection tables, mirrored into the L1 database
     :ptype metadata: MetaData
@@ -50,6 +103,7 @@ def create_tool_pod_l1_backend(metadata: MetaData, *, db_name: str = TOOL_POD_L1
     :return: initialized backend, ready to pass as the registry's default L1 tier
     :rtype: SQLiteBackend
     """
+    register_tool_pod_runtime_tables(metadata)
     backend = SQLiteBackend(db_name=db_name)
     backend.initialize(metadata)
     log.info(

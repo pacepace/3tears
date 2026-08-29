@@ -3,17 +3,19 @@
 Intention reads and writes are agent-internal: the deliberation wake and
 the private tools run as the owning agent, and the presence API reads the
 agent's wants as the agent owner behind metallm's own JWT auth. So authz
-is exactly the evaluator's owner short-circuit
-(``caller_agent_id == owner_agent_id``, ``evaluator.py:194``): the agent
-owns its own intention namespace by construction, so every action is
+is exactly the evaluator's owner short-circuit, which compares the
+namespace's recorded ``owner_namespace`` against the name of the namespace
+the caller IS: the agent owns its own intention namespace by construction, so every action is
 allowed grant-free with no acl migration, no seed row, and no
-``platform.namespaces`` write.
+hub-side ``namespaces`` write.
 
 ``namespace_type`` is a free string in 3tears (``acl/types.py``), NOT a
 constrained enum, and the owner descriptor is built deterministically
 in-process, so ``"intention"`` needs no acl schema change. The descriptor
-mirrors memory's :class:`_OwnerMemoryNamespace`; the thin wrapper reuses
-the generic :func:`~threetears.agent.acl.authorize_on_entity` primitive.
+mirrors memory's
+:class:`~threetears.agent.memory.namespace_client.MemoryNamespaceRef`; the thin
+wrapper reuses the generic
+:func:`~threetears.agent.acl.authorize_on_entity` primitive.
 
 **User isolation is NOT RBAC.** Every metallm user shares one
 ``agent_id``, so the owner short-circuit sees every user's wants --
@@ -35,6 +37,7 @@ from threetears.agent.acl import (
     AclCache,
     authorize_on_entity,
 )
+from threetears.core.namespaces import build_agent_namespace_name
 from threetears.observe import get_logger
 
 __all__ = [
@@ -121,8 +124,9 @@ class _OwnerIntentionNamespace:
     Exposes exactly the four fields :func:`authorize_on_entity` reads
     (``id``, ``customer_id``, ``namespace_type``, ``owner_agent_id``),
     built deterministically in-process WITHOUT reading or creating a
-    ``platform.namespaces`` row. Mirrors memory's
-    :class:`_OwnerMemoryNamespace`: the agent's sandboxed L3 search_path
+    hub-side ``namespaces`` row. Mirrors memory's
+    :class:`~threetears.agent.memory.namespace_client.MemoryNamespaceRef`:
+    the agent's sandboxed L3 search_path
     is its own schema, which has no ``namespaces`` table, so the
     evaluator's owner short-circuit must resolve from the descriptor's
     fields alone -- no row need exist.
@@ -132,6 +136,7 @@ class _OwnerIntentionNamespace:
     customer_id: UUID
     owner_agent_id: UUID
     namespace_type: str = INTENTION_NAMESPACE_TYPE
+    owner_namespace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +192,7 @@ async def authorize_intention_access(
         id=_intention_namespace_id(agent_id, customer_id),
         customer_id=customer_id,
         owner_agent_id=agent_id,
+        owner_namespace=build_agent_namespace_name(agent_id),
     )
     try:
         await authorize_on_entity(

@@ -375,3 +375,65 @@ class TestTimestamptzColumns:
 
         assert isinstance(restored["date_created"], datetime)
         assert restored["date_created"] == aware
+
+
+class _TaggingPool(FakeAsyncpgPool):
+    """A pool whose ``execute`` returns a caller-chosen asyncpg status tag."""
+
+    def __init__(self, tag: str) -> None:
+        super().__init__()
+        self._tag = tag
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        self.executed.append((sql, args))
+        return self._tag
+
+
+class TestDynamicSaveReportsTheRealRowcount:
+    """A dynamic collection's ``save_to_store`` reports rows affected, not tag truthiness.
+
+    ``BaseCollection.save_entity`` reads this count and raises when it is 0, which is the
+    only thing standing between a write the store declined and a caller told it landed.
+    Reading the status tag for truthiness answers 1 for every tag a backend can return,
+    ``"INSERT 0 0"`` included -- which is what the NATS L3 proxy composes whenever the
+    broker's reply carries no ``row_count``, so a zero-row write was reported as a
+    persisted one. (A dynamic collection's own SQL is an unconditional ``ON CONFLICT
+    DO UPDATE``, so on a direct pool it always affects one row; the proxy is the exposed
+    case.)
+    """
+
+    @pytest.mark.parametrize(
+        ("tag", "expected"),
+        [
+            ("INSERT 0 1", 1),
+            ("INSERT 0 0", 0),
+            ("UPDATE 3", 3),
+            ("UPDATE 0", 0),
+            ("", 0),
+        ],
+    )
+    async def test_rowcount_comes_from_the_status_tag(self, tag: str, expected: int) -> None:
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=_TaggingPool(tag))
+        collection = create_dynamic_collection(
+            table_def=_widgets_table(),
+            registry=registry,
+            config=DefaultCoreConfig(collection_flush="ALWAYS"),
+        )
+
+        affected = await collection.save_to_store({"id": "w1", "name": "widget", "score": 1})
+
+        assert affected == expected
+
+    async def test_no_l3_pool_still_reports_nothing_written(self) -> None:
+        """the wiring gap keeps its existing answer -- ``save_entity`` raises on it."""
+        registry = CollectionRegistry()
+        collection = create_dynamic_collection(
+            table_def=_widgets_table(),
+            registry=registry,
+            config=DefaultCoreConfig(collection_flush="ALWAYS"),
+        )
+
+        affected = await collection.save_to_store({"id": "w1", "name": "widget", "score": 1})
+
+        assert affected == 0

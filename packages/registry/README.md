@@ -19,7 +19,7 @@ Tool dispatch authorization lives behind the `AgentToolAuthorizer` protocol. Imp
 
 Production deployments wire `RbacEvaluatorAuthorizer` (in `threetears.registry.rbac_authorizer`) which delegates to the unified rbac evaluator from `threetears.agent.acl`:
 
-- The platform-side `ToolNamespaceEmitter` listens on `{ns}.tools.register` and upserts a `platform.namespaces` row of type `tool` per tool in every `RegistrationManifest`. The canonical `name` shape is `tools.<sanitized-mcp-name>.<sanitized-version>` (per `build_namespace_name`); `metadata` carries the pre-sanitized natural-identity fields `mcp_name` / `mcp_version` / `pod_id` so downstream pattern matching (the access materializer's agent.yaml `access.tools` patterns) does not need to reverse the sanitization rules.
+- The platform-side `ToolNamespaceEmitter` listens on `{ns}.tools.register` and upserts a `namespaces` row of type `tool` per tool in every `RegistrationManifest`. The canonical `name` shape is `tools.<sanitized-mcp-name>.<sanitized-version>` (per `build_namespace_name`); `metadata` carries the pre-sanitized natural-identity fields `mcp_name` / `mcp_version` / `pod_id` so downstream pattern matching (the access materializer's agent.yaml `access.tools` patterns) does not need to reverse the sanitization rules.
 - The authorizer resolves the tool namespace via an injected `NamespaceCollection`. The signature is `is_authorized(agent_id, user_id, tool_name, tool_version)`. The implementation builds the canonical lookup key via `build_namespace_name(PLURAL_PREFIX_TOOL, tool_name, tool_version)` rather than passing the raw `mcp_name` directly, so the lookup matches the row the emitter wrote.
 - `evaluate_decision` resolves the two-sided grant chain: user side (groups the invoking user is in) intersected with agent side (groups the calling agent is in, short-circuited by namespace ownership). The decision is cached in `threetears.agent.acl.AclCache` with TTL + fine-grained invalidation; cross-process rbac mutations purge the cache promptly via the `acl.{membership,assignment,role}.invalidate` subjects the `RegistryRbacStack` subscribes to on startup.
 
@@ -43,11 +43,22 @@ python -m threetears.registry
 
 Reads `THREETEARS_NATS_URL` (defaults to `nats://localhost:4222`) and `THREETEARS_NATS_SUBJECT_NAMESPACE` (the NATS subject namespace).
 
-By default the entry point wires `RbacEvaluatorAuthorizer` against a self-contained `RegistryRbacStack` (NATS-proxy `NamespaceCollection` + four rbac metadata Collections + `AclCache` + invalidation subscribers). The proxy collections read through the platform broker's `system.platform.rbac` carve-out, so no direct DB credentials are needed. The registry is self-sufficient in any deployment with a reachable platform broker. Optional knobs:
+By default the entry point wires `RbacEvaluatorAuthorizer` against a self-contained `RegistryRbacStack` (NATS-proxy `NamespaceCollection` + four rbac metadata Collections + `AclCache` + invalidation subscribers). The proxy collections read through the platform broker's `system.platform.rbac` carve-out, so no direct DB credentials are needed. Optional knobs:
 
 - `THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true` -- bypass the rbac stack entirely (dev only).
 - `THREETEARS_REGISTRY_FORCE_DENY_ALL=true` -- kill switch for misconfigured deployments.
 - `THREETEARS_REGISTRY_ACL_TTL_SECONDS` -- override the AclCache TTL (default 60s).
+
+### The registry's identity, which is REQUIRED
+
+The broker resolves the caller of an L3 request from a **signed identity token** and refuses a request carrying none, so the registry must be able to prove who it is. `build_registry_rbac_stack` therefore takes an `identity_token` provider and raises `RegistryIdentityUnavailableError` without one -- at WIRING, not on the first query, because a backend built without a token looks built and then fails every read from wherever happens to touch L3 first.
+
+3tears defines no handshake protocol (the subject, the payload, the principal store and the verifier are all the host's), so the provider is supplied out-of-band, exactly like the three factories below it:
+
+- `THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY` -- a `module:callable` dotted path to an async factory `Callable[[NatsClient], Awaitable[Callable[[], str | None]]]`, awaited once the connection is up. It must return a **provider**, not a token: the token is short-lived and re-minted in place, and a captured value is expired within the hour.
+- `THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY_REF` -- the `scheme://locator` reference to the registry's own Ed25519 private key, default `env://THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY`. 3tears only names the knob; the host's factory resolves it, because only the host knows what to do with it.
+
+Unlike the other three hooks this one has no weaker-but-working default. Unset means the stack refuses to build, because a broker that refuses an unidentified request leaves nothing to fall back to.
 
 Dispatch flow:
 

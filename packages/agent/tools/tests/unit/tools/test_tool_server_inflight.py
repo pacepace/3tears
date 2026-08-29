@@ -58,7 +58,9 @@ def _malformed_msg() -> IncomingMessage:
 @pytest.mark.asyncio
 async def test_render_metrics_exposes_inflight_gauge_at_baseline() -> None:
     """a fresh pod's /metrics body carries the gauge at ``0``."""
-    server = ToolServer(nats_url="nats://stub", namespace_collection=None)
+    server = ToolServer(
+        nats_url="nats://stub",
+    )
     assert _inflight_value(server) == 0.0
 
 
@@ -70,7 +72,9 @@ async def test_handle_call_returns_gauge_to_baseline_on_clean_path() -> None:
     branch's reply + audit are no-ops and the call completes cleanly
     through the bracket.
     """
-    server = ToolServer(nats_url="nats://stub", namespace_collection=None)
+    server = ToolServer(
+        nats_url="nats://stub",
+    )
     await server.handle_call(_malformed_msg())
     assert _inflight_value(server) == 0.0
 
@@ -85,7 +89,9 @@ async def test_handle_call_returns_gauge_to_baseline_on_exception() -> None:
     """
     nats = AsyncMock()
     nats.publish_reply.side_effect = RuntimeError("publish boom")
-    server = ToolServer(nats_client=nats, namespace_collection=None)
+    server = ToolServer(
+        nats_client=nats,
+    )
 
     with pytest.raises(RuntimeError, match="publish boom"):
         await server.handle_call(_malformed_msg())

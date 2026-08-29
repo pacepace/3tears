@@ -1,57 +1,58 @@
 """
-agent-workspace v003: backfill platform.namespaces for every workspace row.
+agent-workspace v003: RETIRED. the workspace namespace backfill no longer runs.
 
-workspace-task-19 (WS-ACL-11) makes every workspace a platform-level
-namespace via shared primary key:
-``workspaces.workspace_id == namespaces.namespace_id`` (post-v0.8.0
-shard 04.6 rename; pre-rename these columns were both bare ``id``).
-``namespaces.namespace_type = 'workspace'``. v003 heals existing
-per-agent schemas so every row in ``<agent_schema>.workspaces`` is
-paired with a matching row in ``platform.namespaces``.
+**What it did.** workspace-task-19 (WS-ACL-11) made every workspace a
+namespace via shared primary key -- ``workspaces.workspace_id ==
+namespaces.namespace_id``, ``namespace_type = 'workspace'``. v003 healed
+pre-task-19 history by reading ``<agent_schema>.workspaces`` and inserting a
+matching row into the hub's ``namespaces`` table, joining the hub's
+``agents`` table for the customer, from a connection whose ``search_path``
+was bound to the AGENT schema. To reach a second schema from there, SQL has
+to name it -- and the statement named ``platform``.
 
-**Scope:** this runs in the per-agent schema via search_path. it is
-one of the rare agent-scope migrations that deliberately writes into
-the platform schema — a one-time data translation, not a cross-package
-reach in the "hot path" sense the migration guide warns against.
-future ``workspace_create`` flows insert the namespace row inside the
-same transaction as the workspace row; this migration heals pre-task-19
-history so both inserts converge on the same invariant.
+**Why the body is gone rather than corrected.** Three separate reasons, each
+sufficient on its own:
 
-**Per-schema identity:** ``current_schema()`` returns the agent's own
-schema name because the L3 broker binds ``search_path`` before the
-runner calls this function. we stamp that value into
-``namespaces.schema_name`` so non-owner queries against a shared
-workspace route back to this agent via the broker's namespace machinery.
+1. **The schema name it hardcoded is not a fact about any deployment.** The
+   hub writes to whatever ``FOURTEENAIBOTS_DB_SCHEMA`` names -- ``aibots`` on
+   the compose stack. The hardcoded ``platform`` default was removed from the
+   hub precisely because it is correct on one deployment and wrong on every
+   other, and this statement was the last executable copy of it left in this
+   repo. Against a deployment naming its schema anything else, the statement
+   does not degrade: it raises a ``relation ... does not exist`` error naming
+   the removed default, and fails agent provisioning.
 
-**Customer linkage:** the v014 platform migration populates
-``agents.customer_id`` as a hard NOT NULL. we join through
-``platform.agents`` to resolve the customer every namespace row carries.
+2. **The correct name cannot be threaded in.** A migration body's only
+   argument is a :class:`~threetears.core.data.store.DataStore`, and a
+   DataStore knows one schema -- its own ``agent_<hex>``. The hub's schema
+   name lives in a hub setting this library must not read, the migration
+   runner deliberately hardcodes no schema names ("that stays the caller's
+   responsibility"), and the hub's own agent-migration connection sets
+   ``search_path`` to the agent schema plus ``public``, so an unqualified
+   ``namespaces`` cannot resolve either. Threading it would mean changing the
+   signature of every migration callable in the family.
 
-**Namespace name:** the ``name`` column on ``platform.namespaces`` is
-UNIQUE. we avoid collisions with existing ``agent.<uuid>`` names by
-prefixing with ``workspace.``: the full namespace name becomes
-``workspace.<workspace_uuid>``. this is the form workspace tools will
-ask the broker to route against.
+3. **The write moved, and an agent must not do it.** The paired namespace row
+   for a workspace is now emitted by ``workspace_create`` as an event and
+   WRITTEN BY THE HUB, which owns direct database access; the agent-side L3
+   proxy cannot reach the hub's tables at all. A migration that heals toward
+   an invariant somebody else maintains, through a door that is closed, has
+   nothing to do.
 
-**Idempotency:** the ``INSERT ... ON CONFLICT (namespace_id) DO NOTHING``
-clause guarantees replay safety. if a future ``workspace_create`` has
-already inserted the namespace row for a given workspace, this
-migration skips it silently. the migration also self-skips workspaces
-whose customer cannot be resolved via ``agents.customer_id`` (should
-not happen after v014, but the WHERE-clause avoids NULL-constraint
-violations on any edge case).
+**Why the version number survives.** Renumbering is what
+``_verify_ledger_identity`` exists to catch: shift v004 down into 3 and any
+database carrying the old ledger reads the shifted version as already applied
+and never runs its body. The runner walks ``sorted(package.versions)`` and
+tolerates gaps, but a number that has ever meant one thing must not come to
+mean another. So 3 stays claimed, by a body that does nothing and says so.
 
-**Column-name compatibility (v0.8.0 shard 04.6).** This migration
-references both the source ``workspaces.id`` column (its rename to
-``workspace_id`` is performed by v005 LATER in this package's
-sequence, so v003 sees the bare ``id``) and the target
-``platform.namespaces.namespace_id`` column (renamed at the
-platform/Alembic side as part of v0.8.0). Future schemas where
-v005 has run should never re-trigger v003 because the bookkeeping
-row in ``_schema_migrations`` makes it a no-op. New deployments
-that run this migration top-to-bottom see ``workspaces.id``
-present (created by v001) and ``platform.namespaces.namespace_id``
-present (platform DDL).
+**What it means to apply this today.** Nothing, and that is not a silence --
+it is logged. Nothing applies it either: the hub retired the per-package
+agent-scope chains in favour of one squashed package (``hub_agent_squash``),
+and this package's ``register`` has no production caller in any repo -- its
+only importer is a test. Whether an older hub release ever composed it is not
+knowable from here and does not matter, because that retirement was taken
+pre-GA, when there were no production agent schemas to have run it against.
 """
 
 from __future__ import annotations
@@ -64,46 +65,22 @@ __all__ = ["workspace_namespace_backfill"]
 log = get_logger(__name__)
 
 
-_BACKFILL_NAMESPACES_FROM_WORKSPACES_SQL = """
-INSERT INTO platform.namespaces (
-    namespace_id,
-    name,
-    namespace_type,
-    owner_agent_id,
-    schema_name,
-    customer_id,
-    metadata,
-    date_created,
-    date_updated
-)
-SELECT
-    w.id,
-    'workspace.' || w.id::text AS name,
-    'workspace' AS namespace_type,
-    w.agent_id AS owner_agent_id,
-    current_schema() AS schema_name,
-    a.customer_id,
-    jsonb_build_object('workspace_name', w.name) AS metadata,
-    w.date_created,
-    w.date_updated
-  FROM workspaces w
-  JOIN platform.agents a ON a.id = w.agent_id
- WHERE w.date_deleted IS NULL
-ON CONFLICT (namespace_id) DO NOTHING
-"""
-
-
 async def workspace_namespace_backfill(store: DataStore) -> None:
     """
-    insert one platform.namespaces row per live workspace in this schema.
+    no-op. the workspace namespace backfill was retired; see the module docstring.
 
-    writes into ``platform.namespaces`` from the per-agent schema bound
-    to ``search_path``. idempotent via ``ON CONFLICT (id) DO NOTHING`` so
-    replay during recovery — or concurrent ``workspace_create`` paths
-    that landed the namespace row first — is safe.
+    executes no statement. the row this once inserted is written by the hub
+    off ``workspace_create``'s emitted event, and the cross-schema statement
+    it used to issue could only name the hub's schema by hardcoding one.
 
-    :param store: DataStore bound to per-agent schema via search_path
+    :param store: DataStore bound to per-agent schema via search_path;
+        deliberately unused
     :ptype store: DataStore
+    :return: nothing
+    :rtype: None
     """
-    log.info("backfilling platform.namespaces rows for live workspaces")
-    await store.execute(_BACKFILL_NAMESPACES_FROM_WORKSPACES_SQL)
+    _ = store
+    log.info(
+        "agent-workspace v003 is retired and applies nothing: the paired namespace row for a "
+        "workspace is written by the hub off workspace_create's emitted event",
+    )

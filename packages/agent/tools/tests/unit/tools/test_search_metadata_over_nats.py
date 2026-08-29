@@ -115,7 +115,6 @@ def _server(nats: _FakeNats, *, status_code: int = 200) -> ToolServer:
         namespace=_NS,
         nats_client=nats,  # type: ignore[arg-type]
         pod_id=_POD,
-        namespace_collection=None,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=_PodReplayGuard(),
     )

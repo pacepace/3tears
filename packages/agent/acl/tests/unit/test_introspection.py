@@ -40,6 +40,8 @@ from threetears.agent.acl import (
     evaluate_with_trail,
 )
 
+from threetears.core.namespaces import build_agent_namespace_name
+
 from ._fake_loaders import FakeStore, make_cache
 
 
@@ -65,6 +67,7 @@ def _ns(
         customer_id=customer_id,
         namespace_type=namespace_type,
         owner_agent_id=owner_agent_id,
+        owner_namespace=build_agent_namespace_name(owner_agent_id),
     )
 
 

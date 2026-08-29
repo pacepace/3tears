@@ -99,7 +99,7 @@ class FsReadTool(TearsTool):
         :param agent_id: identifier of agent owning workspace
         :ptype agent_id: UUID
         :param db_pool: asyncpg-like pool used by
-            :func:`enrich_workspace_identity` for the platform.namespaces
+            :func:`enrich_workspace_identity` for the hub's ``namespaces``
             lookup; ``None`` lets the tool run without the enrichment
             pass (tests, bootstrap)
         :ptype db_pool: Any

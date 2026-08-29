@@ -255,7 +255,6 @@ async def test_tool_server_wires_store_into_scope() -> None:
     store = _FakeStore()
     server = ToolServer(
         nats_url="nats://localhost:4222",
-        namespace_collection=None,
         object_store=store,  # type: ignore[arg-type]
     )
     request = CallRequest(
@@ -270,7 +269,9 @@ async def test_tool_server_wires_store_into_scope() -> None:
 
 async def test_tool_server_default_scope_has_no_store() -> None:
     """A server wired without a store yields scopes with object_store=None."""
-    server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
+    server = ToolServer(
+        nats_url="nats://localhost:4222",
+    )
     request = CallRequest(tool_name="t", tool_version="1.0.0", arguments={})
     scope = await server._build_call_scope(request)  # noqa: SLF001 -- wiring seam: default server yields a storeless scope
     assert scope.object_store is None
