@@ -73,8 +73,7 @@ _CREATE_MC_MEDIA_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mc_media ON media_con
 
 _CREATE_MC_EMBEDDING_IDX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_mc_embedding "
-    "ON media_content USING hnsw (embedding public.vector_cosine_ops) "
-    "WHERE embedding IS NOT NULL"
+    "ON media_content USING hnsw (embedding public.vector_cosine_ops)"
 )
 
 _CREATE_MC_SEARCH_VECTOR_IDX_SQL = (

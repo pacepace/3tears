@@ -49,8 +49,7 @@ _CREATE_CHUNKS_MEDIA_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_chunks_media ON m
 
 _CREATE_CHUNKS_EMBEDDING_IDX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_chunks_embedding "
-    "ON memory_chunks USING hnsw (embedding public.vector_cosine_ops) "
-    "WHERE embedding IS NOT NULL"
+    "ON memory_chunks USING hnsw (embedding public.vector_cosine_ops)"
 )
 
 _CREATE_CHUNKS_SEARCH_VECTOR_IDX_SQL = (
