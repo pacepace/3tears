@@ -6,7 +6,55 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.29.0 -- 2026-08-29
+
+### Changed
+
+- `core`: **BREAKING -- the L3 broker reads the caller's principal off a
+  signature, never off the request body.** `NatsProxyL3Backend` takes an
+  `identity_token` PROVIDER and forwards the caller's hub-minted identity token
+  on every L3 request. The `agent_id` / `user_id` / `customer_id` fields the
+  seven L3 request models used to carry are gone, and the models forbid unknown
+  fields, so a caller can no longer name a principal it did not authenticate as.
+
+  **The hub half and this half must release together, and there is no shim.**
+  Against a new hub an old client sends no token and names a principal, and
+  every L3 operation fails validation twice -- required field missing, forbidden
+  field present. Against an old hub a new client sends a field it does not know.
+  Pin every consumer in one window.
+
+  A PROVIDER rather than a string, following `ToolServer(auth_token=...)`: the
+  token is short-lived and re-minted by its refresh loop, so a value captured at
+  construction is expired within the hour and every later call is refused by a
+  backend that still looks correctly wired. A backend built with no provider
+  raises at the call site rather than sending a request that cannot be
+  authorized.
+
+- `registry`: **the registry proves it is the registry, instead of asserting
+  it.** `build_registry_rbac_stack` gains an additive `identity_token` provider,
+  and refuses at WIRING TIME -- before a single Collection is built -- when it
+  has none. It previously put a `uuid5` constant naming no row in any table into
+  the request body, and the broker believed it.
+
+  What authenticates it is a per-principal Ed25519 key it signs a connect JWT
+  with; the hub verifies that signature and mints the token. So the key that can
+  mint any principal never leaves the hub, the broker keeps one verification
+  path, and the registry can prove it is the registry without being able to sign
+  as anything else.
+
 ### Added
+
+- `registry`: `get_identity_signing_key_ref()` reads
+  `THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY_REF`, defaulting to
+  `env://THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY`, and
+  `THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY` names the
+  `module:callable` that supplies the provider -- the same factory-hook seam the
+  pod authenticator, limit guard and usage emitter already use. The handshake is
+  a HOST protocol (its subject, payload, principal store and verifier are all
+  the hub's), so this package names the knob and awaits what it resolves rather
+  than growing a hub-specific implementation.
+
+- `registry`: `RegistryIdentityUnavailableError`, raised by that refusal.
 
 - `core`: `namespaces.namespace_contains(node, name)` -- the ONE containment
   rule for dot-segmented hierarchical names (`platform.namespaces.name` values,
@@ -61,6 +109,15 @@ packages (bumped in lock-step).
   land before a subtree row can be written.
 
 ### Fixed
+
+- `iam`: DPoP proof `iat` freshness is adjudicated in ONE place. PyJWT's own
+  `iat` check (future-only, at decode's zero leeway) is switched off so this
+  module's `iat_window` is the single authority, and the future half is made
+  tolerant of sub-second clock skew. Previously a client whose clock led the
+  server's by a fraction of a second stamped `iat = now + 1` and had its proof
+  rejected -- a login failing on sub-second timing -- while the module
+  documented a sixty-second window and which of the two checks fired was
+  invisible from outside. `iat` remains a required claim.
 
 - `registry`: a tool pod's `allowed_namespaces` is compared on a SEGMENT
   boundary. It was `tool.name.startswith(ns)`, with no notion of a segment, so
@@ -135,55 +192,13 @@ packages (bumped in lock-step).
   historical DDL that really did name a schema, and hostnames such as
   `platform.invalid`.
 
-## v0.29.0 -- 2026-08-26
-
-### Changed
-
-- `core`: **BREAKING -- the L3 broker reads the caller's principal off a
-  signature, never off the request body.** `NatsProxyL3Backend` takes an
-  `identity_token` PROVIDER and forwards the caller's hub-minted identity token
-  on every L3 request. The `agent_id` / `user_id` / `customer_id` fields the
-  seven L3 request models used to carry are gone, and the models forbid unknown
-  fields, so a caller can no longer name a principal it did not authenticate as.
-
-  **The hub half and this half must release together, and there is no shim.**
-  Against a new hub an old client sends no token and names a principal, and
-  every L3 operation fails validation twice -- required field missing, forbidden
-  field present. Against an old hub a new client sends a field it does not know.
-  Pin every consumer in one window.
-
-  A PROVIDER rather than a string, following `ToolServer(auth_token=...)`: the
-  token is short-lived and re-minted by its refresh loop, so a value captured at
-  construction is expired within the hour and every later call is refused by a
-  backend that still looks correctly wired. A backend built with no provider
-  raises at the call site rather than sending a request that cannot be
-  authorized.
-
-- `registry`: **the registry proves it is the registry, instead of asserting
-  it.** `build_registry_rbac_stack` gains an additive `identity_token` provider,
-  and refuses at WIRING TIME -- before a single Collection is built -- when it
-  has none. It previously put a `uuid5` constant naming no row in any table into
-  the request body, and the broker believed it.
-
-  What authenticates it is a per-principal Ed25519 key it signs a connect JWT
-  with; the hub verifies that signature and mints the token. So the key that can
-  mint any principal never leaves the hub, the broker keeps one verification
-  path, and the registry can prove it is the registry without being able to sign
-  as anything else.
-
-### Added
-
-- `registry`: `get_identity_signing_key_ref()` reads
-  `THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY_REF`, defaulting to
-  `env://THREETEARS_REGISTRY_IDENTITY_SIGNING_KEY`, and
-  `THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY` names the
-  `module:callable` that supplies the provider -- the same factory-hook seam the
-  pod authenticator, limit guard and usage emitter already use. The handshake is
-  a HOST protocol (its subject, payload, principal store and verifier are all
-  the hub's), so this package names the knob and awaits what it resolves rather
-  than growing a hub-specific implementation.
-
-- `registry`: `RegistryIdentityUnavailableError`, raised by that refusal.
+- `agent-memory`: the `memory_chunks` and `media_content` vector indexes drop
+  their `WHERE embedding IS NOT NULL` predicate. YugabyteDB does not support a
+  partial index on a vector column (yugabyte-db#26402): builds before
+  2025.2.4.0 accepted the DDL and produced a NON-FUNCTIONAL index, and
+  2025.2.4.0 refuses it outright. Dropping the predicate costs nothing -- an
+  hnsw index does not index a NULL vector, and a similarity scan skips NULL
+  embeddings either way.
 
 
 ## v0.28.0 -- 2026-08-24
