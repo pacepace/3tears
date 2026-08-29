@@ -7,7 +7,7 @@ and MVT encoding — all in application code.
 
 Every off-the-shelf tile server (Martin, pg_tileserv, Tegola) assumes
 PostGIS in the database and calls `ST_AsMVT`. YugabyteDB ships no postgis
-extension — verified empirically against `yugabytedb/yugabyte:2025.2.1.0-b141`,
+extension — verified empirically against `yugabytedb/yugabyte:2025.2.5.2-b5`,
 where `CREATE EXTENSION postgis` fails outright with no control file on the
 image. There is therefore no `ST_Intersects`, no `ST_Simplify`, and no
 `ST_AsMVT` to call.
