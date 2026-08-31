@@ -68,6 +68,36 @@ __all__ = [
 log = get_logger(__name__)
 
 
+def _caller_membership_predicate(param_offset: int) -> str:
+    """render the caller-reaches-this-group predicate, nesting included.
+
+    a caller reaches a granting group DIRECTLY, or through ONE level of
+    group nesting (group-in-group membership, depth capped at
+    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` = 2): the granting group may
+    instead contain a group the caller is a direct member of. the
+    evaluator resolves nested grants at authorization time, so a
+    visibility clause that stopped at direct membership would hide rows
+    a caller is authorized to reach -- the two must name the same rows.
+    one private helper so both public clause builders emit the identical
+    predicate and cannot drift.
+
+    :param param_offset: the ``$N`` placeholder bound to the caller's user id
+    :ptype param_offset: int
+    :return: boolean SQL expression over the ``gm`` join alias
+    :rtype: str
+    """
+    return f"""(
+                (gm.member_type = 'user' AND gm.member_id = ${param_offset})
+             OR (gm.member_type = 'group' AND EXISTS (
+                    SELECT 1
+                      FROM group_members gm2
+                     WHERE gm2.group_id = gm.member_id
+                       AND gm2.member_type = 'user'
+                       AND gm2.member_id = ${param_offset}
+                ))
+           )"""
+
+
 def caller_visible_customer_clause(
     *,
     user_id: UUID,
@@ -137,8 +167,7 @@ def caller_visible_customer_clause(
           FROM role_assignments ra
           JOIN group_members gm ON gm.group_id = ra.group_id
           LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
-         WHERE gm.member_type = 'user'
-           AND gm.member_id = ${param_offset}
+         WHERE {_caller_membership_predicate(param_offset)}
            AND (
                 ra.scope_type = 'all'
              OR (ra.scope_type = 'type_customer'
@@ -248,8 +277,7 @@ def caller_visible_customers_query(
       FROM role_assignments ra
       JOIN group_members gm ON gm.group_id = ra.group_id
       LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
-     WHERE gm.member_type = 'user'
-       AND gm.member_id = ${param_offset}"""
+     WHERE {_caller_membership_predicate(param_offset)}"""
     return sql, [user_id]
 
 
