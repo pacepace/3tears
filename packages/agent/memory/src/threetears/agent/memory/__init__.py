@@ -53,6 +53,11 @@ if TYPE_CHECKING:
         MemoryNamespaceRef,
         MemoryNamespaceUnavailableError,
     )
+    from threetears.agent.memory.retrieval_scope import (
+        RetrievalScope,
+        build_scope_conditions,
+        scope_matches_nothing,
+    )
     from threetears.agent.memory.collections import (
         ConsolidationCycleError,
         MediaCollection,
@@ -133,6 +138,9 @@ _LAZY: dict[str, tuple[str, str]] = {
     "MediaContentEntity": ("threetears.agent.memory.entities", "MediaContentEntity"),
     "MediaEntity": ("threetears.agent.memory.entities", "MediaEntity"),
     "MemoriesCollection": ("threetears.agent.memory.collections", "MemoriesCollection"),
+    "RetrievalScope": ("threetears.agent.memory.retrieval_scope", "RetrievalScope"),
+    "build_scope_conditions": ("threetears.agent.memory.retrieval_scope", "build_scope_conditions"),
+    "scope_matches_nothing": ("threetears.agent.memory.retrieval_scope", "scope_matches_nothing"),
     "MemoryAccessDenied": ("threetears.agent.memory.authorize", "MemoryAccessDenied"),
     "MemoryAccessService": ("threetears.agent.memory.access", "MemoryAccessService"),
     "MemoryAddInput": ("threetears.agent.memory.tools", "MemoryAddInput"),
@@ -218,6 +226,9 @@ __all__ = [
     "MediaContentEntity",
     "MediaEntity",
     "MemoriesCollection",
+    "RetrievalScope",
+    "build_scope_conditions",
+    "scope_matches_nothing",
     "MemoryAccessDenied",
     "MemoryAccessService",
     "MemoryAddInput",

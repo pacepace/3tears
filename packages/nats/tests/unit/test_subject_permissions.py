@@ -28,6 +28,7 @@ from threetears.nats.subject_permissions import (
     capability_declares,
     kv_bucket_names,
     kv_key_scope_for,
+    kv_key_scope_for_service,
 )
 from threetears.nats.subjects import Subjects, set_default_namespace
 
@@ -801,6 +802,45 @@ class TestPrincipalRoster:
             ids.pop("pod_id")  # refused for this principal: the pod id is spoofable here
         scope = kv_key_scope_for(principal, **ids)
         assert scope
+
+
+class TestConsumerServiceKvKeyScope:
+    """A consumer service that owns its own NATS account can now produce a legal scope.
+
+    ``kv_key_scope_for`` dispatches on :class:`Principal`, which enumerates 3tears' own bus
+    identities -- a third-party service is none of them, so before this producer existed the
+    only options were adopting a member it is not (``hub``, which an operator reading bucket
+    keys will misattribute) or inventing an id in 3tears' namespace (``tool_pod``, where config
+    drift silently orphans the L2 cache). The ``svc-`` prefix keeps the value out of the
+    ``Principal`` grant surface entirely: no resolver answers for it, and none has to.
+    """
+
+    def test_scope_leads_with_svc_and_carries_the_service_name(self) -> None:
+        assert kv_key_scope_for_service("scriob") == "svc-scriob"
+
+    def test_same_name_yields_the_same_scope_across_calls(self) -> None:
+        # the scope is the SHARING boundary: replicas of one service must land on one scope
+        # or L2 stops being a cross-pod cache, so the name is the only input.
+        assert kv_key_scope_for_service("scriob") == kv_key_scope_for_service("scriob")
+
+    def test_two_service_names_yield_two_scopes(self) -> None:
+        assert kv_key_scope_for_service("scriob") != kv_key_scope_for_service("other")
+
+    def test_empty_service_name_raises(self) -> None:
+        # fail closed, same rule as the pod principals: a bare fallback value would land
+        # every misconfigured service on one shared scope.
+        with pytest.raises(ValueError, match="non-empty"):
+            kv_key_scope_for_service("")
+
+    def test_name_outside_the_scope_grammar_raises(self) -> None:
+        # sanitizing instead of raising would be non-injective ("a.b" and "a-b" collapse),
+        # and two services sharing one scope is the outcome key scoping exists to prevent.
+        with pytest.raises(ValueError, match="grammar|match"):
+            kv_key_scope_for_service("my.service")
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_no_service_scope_can_shadow_a_bare_principal(self, principal: Principal) -> None:
+        assert kv_key_scope_for_service(principal.value) != principal.value
 
 
 class TestDeadletterGrant:

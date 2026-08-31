@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-tools"
-version = "0.29.0"
+version = "0.30.0"
 description = "Tool framework for LLM agents -- routing, execution, and builtin tools"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,19 +22,19 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.29.0,<0.30.0",
-    "3tears-agent-audit>=0.29.0,<0.30.0",
-    "3tears-agent-memory>=0.29.0,<0.30.0",
-    "3tears-langgraph>=0.29.0,<0.30.0",
-    "3tears-media-contracts>=0.29.0,<0.30.0",
+    "3tears>=0.30.0,<0.31.0",
+    "3tears-agent-audit>=0.30.0,<0.31.0",
+    "3tears-agent-memory>=0.30.0,<0.31.0",
+    "3tears-langgraph>=0.30.0,<0.31.0",
+    "3tears-media-contracts>=0.30.0,<0.31.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
-    "3tears-nats[client]>=0.29.0,<0.30.0",
-    "3tears-observe>=0.29.0,<0.30.0",
+    "3tears-nats[client]>=0.30.0,<0.31.0",
+    "3tears-observe>=0.30.0,<0.31.0",
     # [standalone]: the fetch half of the search seam. Extract reads
     # candidate-derived URLs under a byte cap, which the traced client cannot
     # do -- see threetears.agent.tools.search_transport for the split.
-    "3tears-search[standalone]>=0.29.0,<0.30.0",
+    "3tears-search[standalone]>=0.30.0,<0.31.0",
     "langchain-core",
     "httpx",
     "prometheus-client>=0.20",
@@ -46,7 +46,7 @@ Repository = "https://github.com/pacepace/3tears"
 [project.optional-dependencies]
 calculator = ["simpleeval"]
 units = ["pint"]
-fetch = ["3tears-search[extract]>=0.29.0,<0.30.0"]
+fetch = ["3tears-search[extract]>=0.30.0,<0.31.0"]
 pdf = ["PyMuPDF"]
 docx = ["python-docx"]
 xlsx = ["openpyxl"]
@@ -55,7 +55,7 @@ vision = [
 ]
 ocr = ["pytesseract", "pdf2image"]
 document = ["PyMuPDF", "python-docx", "openpyxl"]
-all = ["simpleeval", "pint", "3tears-search[extract]>=0.29.0,<0.30.0", "PyMuPDF", "python-docx", "openpyxl", "pytesseract", "pdf2image", "Pillow"]
+all = ["simpleeval", "pint", "3tears-search[extract]>=0.30.0,<0.31.0", "PyMuPDF", "python-docx", "openpyxl", "pytesseract", "pdf2image", "Pillow"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]

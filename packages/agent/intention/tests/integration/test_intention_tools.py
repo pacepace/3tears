@@ -73,6 +73,10 @@ def _authorizer() -> IntentionAuthorizerDependencies:
             _ = agent_id
             return ()
 
+        async def load_for_group(self, group_id: uuid.UUID) -> tuple[Any, ...]:
+            _ = group_id
+            return ()
+
     class _EmptyGrantLoader:
         async def load_assignments_for_groups(self, group_ids: Any, namespace: Any) -> tuple[Any, ...]:
             _ = group_ids, namespace

@@ -787,3 +787,46 @@ class TestNamespaceListAllIds:
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.list_all_ids()
         assert result == ids
+
+
+class TestGroupMembershipCycleGuard:
+    """``membership_would_cycle`` keeps group-in-group edges acyclic.
+
+    a cycle cannot loop resolution -- the read-time walk is depth-capped
+    -- but the row is nonsense, and removing one edge of a cycle would
+    silently change which grants an entire organization reaches. writers
+    call this before inserting a ``member_type='group'`` row.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_group_inside_itself_is_a_cycle_with_no_io(self) -> None:
+        """self-membership refuses before any pool call."""
+        pool = AsyncMock()
+        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        group = uuid7()
+        assert await coll.membership_would_cycle(group_id=group, member_group_id=group) is True
+        pool.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_two_edge_cycle_is_detected(self) -> None:
+        """adding A into B when B is already inside A closes the loop."""
+        group_a = uuid7()
+        group_b = uuid7()
+        pool = AsyncMock()
+        # children of B: A already holds B, so walking DOWN from B finds... B's
+        # children include nothing; walking from the CANDIDATE member (B) finds
+        # its children -- the fake answers one level: B's group-children = {A}? no:
+        # the edge that exists is (group_id=A, member=B) -> children of A is B.
+        # candidate insert: (group_id=B, member=A). walk starts at A; A's
+        # children = {B}; B == target group -> cycle.
+        pool.fetch.return_value = [{"member_id": group_b}]
+        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        assert await coll.membership_would_cycle(group_id=group_b, member_group_id=group_a) is True
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_edge_is_not_a_cycle(self) -> None:
+        """a child with no group-children accepts a parent cleanly."""
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        assert await coll.membership_would_cycle(group_id=uuid7(), member_group_id=uuid7()) is False

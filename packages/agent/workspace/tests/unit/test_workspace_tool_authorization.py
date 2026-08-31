@@ -113,6 +113,16 @@ class _CountingMembershipLoader:
         self.load_for_agent_count += 1
         return ()
 
+    async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
+        """return parent-group memberships -- none; these fixtures use flat groups.
+
+        :param group_id: child group UUID
+        :ptype group_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        return ()
+
 
 class _EmptyGrantLoader:
     """grant loader stub yielding no assignments / roles / groups.

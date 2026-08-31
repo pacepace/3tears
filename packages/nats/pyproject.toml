@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-nats"
-version = "0.29.0"
+version = "0.30.0"
 description = "Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.29.0,<0.30.0",
+    "3tears-observe>=0.30.0,<0.31.0",
     "pydantic>=2.10",
 ]
 

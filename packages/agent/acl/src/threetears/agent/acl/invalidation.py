@@ -39,11 +39,15 @@ class MembershipInvalidatePayload(BaseModel):
     translator updates its grants). subscribers drop that actor's
     membership-layer cache entry.
 
-    :ivar actor_type: ``"user"`` or ``"agent"``
+    :ivar actor_type: ``"user"``, ``"agent"`` or ``"group"`` -- a group
+        edge change (a ``member_type='group'`` row added or removed)
+        invalidates the CHILD group's own membership entry and nothing
+        else; every actor entry beneath it stays valid because the walk
+        happens at read
     :ivar actor_id: actor UUID (deserialized at validation time)
     """
 
-    actor_type: Literal["user", "agent"]
+    actor_type: Literal["user", "agent", "group"]
     actor_id: UUID
 
 

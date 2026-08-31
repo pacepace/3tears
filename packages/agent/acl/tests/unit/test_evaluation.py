@@ -40,6 +40,7 @@ from threetears.agent.acl import (
     evaluate_decision,
     evaluate_with_trail,
 )
+from threetears.agent.acl.cache import ActorMembershipKey
 from threetears.agent.acl.evaluator import _agent_owns_namespace
 
 from threetears.core.namespaces import build_agent_namespace_name
@@ -1477,3 +1478,155 @@ class TestOwnershipIsANamespace:
         # namespace name can never equal an interior provider node
         for _ in range(5):
             assert _agent_owns_namespace(namespace, uuid4()) is False
+
+
+class TestGroupInGroupMembership:
+    """a group may be a member of a group, resolved at read, depth-capped.
+
+    the EVD shape: user -> org group -> state group, where the grant sits
+    on the state group. one membership row per person, one row per licensed
+    state. resolution WALKS at read (never expands at write), so changing
+    the org group's parents invalidates exactly one cache key.
+    """
+
+    async def test_a_user_reaches_a_grant_through_a_parent_group(self) -> None:
+        """user in org group, org group member of state group, grant on state."""
+        customer = uuid4()
+        user = uuid4()
+        namespace = _ns(customer_id=customer, owner_agent_id=None)
+
+        reader = _role(name="Reader", permissions={"workspace": ["read"]})
+        org = _group(name="durp-com", customer_id=customer)
+        state = _group(name="states-PA", customer_id=customer)
+        store = FakeStore()
+        store.add_role(reader)
+        store.add_group(org)
+        store.add_group(state)
+        store.add_membership(
+            GroupMembership(group_id=org.id, member_type=MemberType.USER, member_id=user, customer_id=customer)
+        )
+        store.add_membership(
+            GroupMembership(group_id=state.id, member_type=MemberType.GROUP, member_id=org.id, customer_id=customer)
+        )
+        store.add_assignment(
+            _assignment(role=reader, group=state, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
+        )
+
+        ctx = EvaluationContext(namespace=namespace, action="read", user_id=user)
+        result = await evaluate_with_trail(ctx, cache=make_cache(store))
+        assert result.decision is True
+
+    async def test_the_depth_cap_stops_the_walk(self) -> None:
+        """user -> A -> B -> C with the grant on C only: beyond depth 2, denied."""
+        customer = uuid4()
+        user = uuid4()
+        namespace = _ns(customer_id=customer, owner_agent_id=None)
+
+        reader = _role(name="Reader", permissions={"workspace": ["read"]})
+        group_a = _group(name="A", customer_id=customer)
+        group_b = _group(name="B", customer_id=customer)
+        group_c = _group(name="C", customer_id=customer)
+        store = FakeStore()
+        store.add_role(reader)
+        for g in (group_a, group_b, group_c):
+            store.add_group(g)
+        store.add_membership(
+            GroupMembership(group_id=group_a.id, member_type=MemberType.USER, member_id=user, customer_id=customer)
+        )
+        store.add_membership(
+            GroupMembership(
+                group_id=group_b.id, member_type=MemberType.GROUP, member_id=group_a.id, customer_id=customer
+            )
+        )
+        store.add_membership(
+            GroupMembership(
+                group_id=group_c.id, member_type=MemberType.GROUP, member_id=group_b.id, customer_id=customer
+            )
+        )
+        store.add_assignment(
+            _assignment(role=reader, group=group_c, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
+        )
+
+        ctx = EvaluationContext(namespace=namespace, action="read", user_id=user)
+        result = await evaluate_with_trail(ctx, cache=make_cache(store))
+        assert result.decision is False
+
+    async def test_a_parent_group_of_another_customer_does_not_leak(self) -> None:
+        """the customer wall applies to the walked edge exactly as to a direct one."""
+        customer = uuid4()
+        other_customer = uuid4()
+        user = uuid4()
+        namespace = _ns(customer_id=customer, owner_agent_id=None)
+
+        reader = _role(name="Reader", permissions={"workspace": ["read"]})
+        org = _group(name="org", customer_id=customer)
+        foreign_state = _group(name="foreign-state", customer_id=other_customer)
+        store = FakeStore()
+        store.add_role(reader)
+        store.add_group(org)
+        store.add_group(foreign_state)
+        store.add_membership(
+            GroupMembership(group_id=org.id, member_type=MemberType.USER, member_id=user, customer_id=customer)
+        )
+        # the group-edge row carries the OTHER customer, so the wall drops it.
+        store.add_membership(
+            GroupMembership(
+                group_id=foreign_state.id, member_type=MemberType.GROUP, member_id=org.id, customer_id=other_customer
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader, group=foreign_state, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id
+            )
+        )
+
+        ctx = EvaluationContext(namespace=namespace, action="read", user_id=user)
+        result = await evaluate_with_trail(ctx, cache=make_cache(store))
+        assert result.decision is False
+
+    async def test_the_walk_reads_through_the_group_keyed_cache_layer(self) -> None:
+        """a parent lookup is cached under ("group", group_id), not under the user.
+
+        the issue's whole point: changing durp-com's parents must invalidate
+        exactly one key, and every user's own membership entry stays valid
+        because it never contained the group's contents.
+        """
+        customer = uuid4()
+        user = uuid4()
+        namespace = _ns(customer_id=customer, owner_agent_id=None)
+
+        reader = _role(name="Reader", permissions={"workspace": ["read"]})
+        org = _group(name="org", customer_id=customer)
+        state = _group(name="state", customer_id=customer)
+        store = FakeStore()
+        store.add_role(reader)
+        store.add_group(org)
+        store.add_group(state)
+        store.add_membership(
+            GroupMembership(group_id=org.id, member_type=MemberType.USER, member_id=user, customer_id=customer)
+        )
+        store.add_membership(
+            GroupMembership(group_id=state.id, member_type=MemberType.GROUP, member_id=org.id, customer_id=customer)
+        )
+        store.add_assignment(
+            _assignment(role=reader, group=state, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
+        )
+        cache = make_cache(store)
+        ctx = EvaluationContext(namespace=namespace, action="read", user_id=user)
+        assert (await evaluate_with_trail(ctx, cache=cache)).decision is True
+
+        # the org group's parent set is cached under its own key.
+        group_entry = cache.get_membership(ActorMembershipKey(actor_kind="group", actor_id=org.id))
+        assert group_entry is not None
+        # the user's entry holds only the DIRECT membership -- no expansion.
+        user_entry = cache.get_membership(ActorMembershipKey(actor_kind="user", actor_id=user))
+        assert user_entry is not None
+        assert all(m.member_type is MemberType.USER for m in user_entry.memberships)
+
+        # dropping ONE key -- the group's -- forces a re-walk that sees a changed
+        # parent set, while the user's entry was never touched.
+        cache.invalidate_membership(ActorMembershipKey(actor_kind="group", actor_id=org.id))
+        store.memberships = [
+            m for m in store.memberships if not (m.member_type is MemberType.GROUP and m.member_id == org.id)
+        ]
+        assert (await evaluate_with_trail(ctx, cache=cache)).decision is False
