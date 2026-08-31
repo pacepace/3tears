@@ -398,6 +398,16 @@ def _build_deps(
             _ = agent_id
             return memberships_for_agent
 
+        async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
+            """return parent-group memberships -- none; flat groups here.
+
+            :param group_id: child group UUID
+            :ptype group_id: UUID
+            :return: empty tuple
+            :rtype: tuple[GroupMembership, ...]
+            """
+            return ()
+
     class _GrantLoader:
         """in-memory grant loader keyed on group UUID."""
 

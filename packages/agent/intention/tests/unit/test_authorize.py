@@ -39,6 +39,10 @@ class _EmptyMembershipLoader:
         _ = agent_id
         return ()
 
+    async def load_for_group(self, group_id: UUID) -> tuple[Any, ...]:
+        _ = group_id
+        return ()
+
 
 class _EmptyGrantLoader:
     """grant loader returning no assignments / roles / groups."""

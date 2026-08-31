@@ -6,6 +6,71 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.30.0 -- 2026-08-31
+
+### Added
+
+- `agent-acl`: **group-in-group membership, depth 2.** `MemberType.GROUP` is a
+  legal member type on a group edge: a group placed inside another group grants
+  the parent's permissions to the child's members. Resolution stays walk-at-read
+  (never expand-at-write): the evaluator expands a caller's direct groups
+  through their parents at evaluation time, bounded by the new
+  `MAX_GROUP_MEMBERSHIP_DEPTH` (2 -- direct membership is depth 1, one level of
+  parents is depth 2), so invalidating one group's parent edges touches ONE
+  cache key. Parent memberships are cached under the child group's own key in
+  the existing membership layer and cross the same customer wall every other
+  membership does.
+
+  New surface: `MembershipLoader.load_for_group` (implemented by
+  `CollectionMembershipLoader`; every fake loader needs the method -- return
+  `()` for flat-group fixtures), `GroupMemberCollection.load_for_group`, and
+  `GroupMemberCollection.membership_would_cycle`, which writers MUST consult
+  before inserting a group-into-group edge: a cycle would make membership
+  resolution order-dependent, and the guard refuses self-edges without IO.
+  `AclInvalidation.actor_type` widens to `"user" | "agent" | "group"`.
+
+  The platform DDL's `member_type` CHECK and the hub's group-member schemas
+  need their own additive change to ACCEPT group edges end to end; this
+  release ships the evaluation half.
+
+- `agent-memory`: **scoped retrieval.** `hybrid_search`, `search_by_semantic`
+  and `search_by_fts` accept an optional `scope: RetrievalScope | None` --
+  an eligibility predicate over the corpus (`tags_any`, `tags_all`,
+  `restrict_to_ids`, `exclude_ids`) applied INSIDE the candidate scan of every
+  arm, before `ORDER BY ... LIMIT`, so top-k comes back full from the eligible
+  subset rather than silently under-filling, and the FTS arm cannot leak a row
+  the vector arm excluded. `scope=None` is byte-identical to before; every
+  existing call site is untouched. The `tags` predicates finally use the
+  v025 `idx_memories_tags` GIN index, which had shipped with no reader.
+
+  **Empty is not absent**: `restrict_to_ids=frozenset()` (and empty
+  `tags_any` / `tags_all` tuples) mean NOTHING is eligible and return `[]` --
+  never "no constraint". On an allow-list use case the permissive reading turns
+  an empty grant into a full-corpus read. `scope_matches_nothing` and
+  `build_scope_conditions` are exported for callers composing their own SQL.
+  Note for raw callers: jsonb params bind RAW Python objects (the connection's
+  codec serializes); a pre-`json.dumps`ed string double-encodes and matches
+  nothing.
+
+- `nats`: **`kv_key_scope_for_service`** -- an L2 key scope a third-party
+  consumer service that owns its own NATS account can legally produce
+  (`kv_key_scope_for_service("scriob")` -> `"svc-scriob"`).
+  `kv_key_scope_for` dispatches on `Principal`, which enumerates 3tears' own
+  bus identities; a consumer service is none of them, and adopting a member it
+  is not (`hub` was the least-wrong candidate) misleads an operator reading
+  bucket keys. The `svc-` prefix sits outside the `Principal` grant surface
+  entirely. Validates against `KV_KEY_SCOPE_GRAMMAR` and refuses rather than
+  sanitizes (sanitizing is non-injective, and two services collapsing onto one
+  scope is the outcome key scoping exists to prevent); an empty name raises.
+
+### Changed
+
+- `agent-acl`: the `managed_key` removal note on `GroupCollection` now carries
+  a warning for deploying apps that author their own `groups` DDL with a
+  non-unique `name`: do not follow the note into `get_by_name` for privilege
+  derivation -- resolving a privilege tier through a mutable, non-unique label
+  is a privilege-escalation shape. Keep an app-owned immutable handle instead.
+
 ## v0.29.0 -- 2026-08-29
 
 ### Changed

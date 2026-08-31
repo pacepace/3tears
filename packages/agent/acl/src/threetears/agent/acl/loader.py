@@ -52,7 +52,9 @@ class MembershipLoader(Protocol):
     the evaluator calls :meth:`load_for_user` for the user side of an
     intersection and :meth:`load_for_agent` for the agent side; the
     two sides never cross-pollinate even when a group has mixed
-    membership.
+    membership. :meth:`load_for_group` serves BOTH sides' depth-capped
+    parent walk -- a group edge is side-agnostic; which side it counts
+    for is decided by the actor whose walk reached it.
     """
 
     async def load_for_user(self, user_id: UUID) -> tuple[GroupMembership, ...]:
@@ -71,6 +73,23 @@ class MembershipLoader(Protocol):
 
         :param agent_id: agent UUID to resolve
         :ptype agent_id: UUID
+        :return: tuple of memberships
+        :rtype: tuple[GroupMembership, ...]
+        """
+
+    async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
+        """return every membership row naming ``group_id`` as a GROUP member.
+
+        these are the PARENT groups of ``group_id``, consumed by the
+        evaluator's depth-capped walk
+        (:data:`~threetears.agent.acl.types.MAX_GROUP_MEMBERSHIP_DEPTH`)
+        and cached under the child group's own membership key -- one
+        group's parent set invalidates independently of every actor
+        beneath it, which is the property the read-time walk exists to
+        keep.
+
+        :param group_id: child group UUID to resolve
+        :ptype group_id: UUID
         :return: tuple of memberships
         :rtype: tuple[GroupMembership, ...]
         """

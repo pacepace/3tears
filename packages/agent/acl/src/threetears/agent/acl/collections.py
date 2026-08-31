@@ -69,6 +69,7 @@ from threetears.agent.acl.entities import (
     row_scope_for_customer,
 )
 from threetears.agent.acl.types import (
+    MAX_GROUP_MEMBERSHIP_DEPTH,
     GroupMembership,
     MemberType,
     Role,
@@ -177,6 +178,16 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     resolved relative to the ASKER, so it could not express "that specific
     customer's group" at all. removed in groups-task-01; ``name`` and
     ``group_id`` are the handles.
+
+    WARNING for deploying apps that author their own ``groups`` DDL: the
+    ``name``-is-unique premise above holds for the PLATFORM DDL, not
+    necessarily for yours. an app that deliberately made ``name``
+    non-unique (so admins can type "Editors" twice) and hung privilege
+    derivation on the removed handle must NOT follow this note into
+    :meth:`get_by_name` -- resolving a privilege tier through a mutable,
+    non-unique label is a privilege-escalation shape. keep an app-owned
+    immutable handle column and resolve through that instead; one
+    consumer already does.
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
@@ -611,6 +622,92 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
                 for row in rows
             ]
         return result
+
+    async def load_for_group(
+        self,
+        group_id: UUID,
+    ) -> list[GroupMembership]:
+        """resolve ``group_id`` to the memberships naming it as a GROUP member.
+
+        each returned row's own ``group_id`` is a PARENT group the child
+        belongs to -- the edges the evaluator's depth-capped walk
+        follows.
+
+        :param group_id: child group UUID to resolve
+        :ptype group_id: UUID
+        :return: list of memberships naming ``group_id`` as a group
+            member
+        :rtype: list[GroupMembership]
+        """
+        result: list[GroupMembership] = []
+        if self.l3_pool is not None:
+            rows = await self.l3_pool.fetch(
+                """
+                SELECT group_id, member_type, member_id, customer_id
+                  FROM group_members
+                 WHERE member_type = 'group'
+                   AND member_id = $1
+                """,
+                group_id,
+            )
+            result = [
+                GroupMembership(
+                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
+                    member_type=MemberType(row["member_type"]),
+                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
+                    customer_id=_coerce_uuid(row["customer_id"]),
+                )
+                for row in rows
+            ]
+        return result
+
+    async def membership_would_cycle(
+        self,
+        *,
+        group_id: UUID,
+        member_group_id: UUID,
+    ) -> bool:
+        """true when adding ``member_group_id`` into ``group_id`` closes a cycle.
+
+        a group inside itself is refused outright; beyond that, the
+        check asks whether ``group_id`` is already reachable from
+        ``member_group_id`` by walking group edges DOWNWARD (children of
+        children), out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` levels.
+        cheap by construction: the cap bounds the walk, and writers are
+        expected to call this BEFORE inserting a ``member_type='group'``
+        row -- an admin surface that skips it can still write a cycle,
+        which resolution then tolerates (the read-time walk is
+        depth-capped so a cycle cannot loop it), but the row is
+        nonsense and this is the guard that keeps it out.
+
+        :param group_id: parent group receiving the new member
+        :ptype group_id: UUID
+        :param member_group_id: child group being added as a member
+        :ptype member_group_id: UUID
+        :return: whether the insert would create a membership cycle
+        :rtype: bool
+        """
+        cycles = group_id == member_group_id
+        if not cycles and self.l3_pool is not None:
+            frontier: set[UUID] = {member_group_id}
+            for _ in range(MAX_GROUP_MEMBERSHIP_DEPTH):
+                if not frontier:
+                    break
+                rows = await self.l3_pool.fetch(
+                    """
+                    SELECT member_id
+                      FROM group_members
+                     WHERE member_type = 'group'
+                       AND group_id = ANY($1::uuid[])
+                    """,
+                    list(frontier),
+                )
+                children = {child for row in rows if (child := _coerce_uuid(row["member_id"])) is not None}
+                if group_id in children:
+                    cycles = True
+                    break
+                frontier = children
+        return cycles
 
     async def list_by_group(
         self,

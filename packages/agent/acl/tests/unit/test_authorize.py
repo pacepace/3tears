@@ -117,6 +117,16 @@ class _CountingFakeStore(FakeStore):
         self.agent_membership_calls += 1
         return await super().load_for_agent(agent_id)
 
+    async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
+        """return parent-group memberships -- none; these fixtures use flat groups.
+
+        :param group_id: child group UUID
+        :ptype group_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        return ()
+
     async def load_assignments_for_groups(
         self,
         group_ids: tuple[UUID, ...],
@@ -402,6 +412,9 @@ class TestCacheHitRate:
             agent_id=None,
             cache=cache,
         )
-        # one membership entry + one per-namespace assignment entry
-        assert cache.membership_size == 1
+        # the user's own membership entry, plus the walked group's parent-set
+        # entry cached under its OWN ("group", id) key -- the group-in-group
+        # walk reads through the cache even when the group has no parents,
+        # so its (empty) parent set is a first-class entry.
+        assert cache.membership_size == 2
         assert cache.group_namespace_size == 1

@@ -104,6 +104,7 @@ from threetears.agent.acl.types import (
     Group,
     GroupMembership,
     LimitingSide,
+    MAX_GROUP_MEMBERSHIP_DEPTH,
     MemberType,
     Namespace,
     Role,
@@ -587,6 +588,11 @@ async def _resolve_side(
         namespace=namespace,
     )
     eligible_group_ids = tuple(_unique_ordered(m.group_id for m in eligible))
+    eligible_group_ids = await _expand_group_parents(
+        direct_group_ids=eligible_group_ids,
+        namespace=namespace,
+        cache=cache,
+    )
     if not eligible_group_ids:
         return frozenset(), ()
 
@@ -668,6 +674,66 @@ async def _resolve_group_for_namespace(
         namespace=namespace,
     )
     return actions, trails
+
+
+async def _expand_group_parents(
+    *,
+    direct_group_ids: tuple[UUID, ...],
+    namespace: Namespace,
+    cache: AclCache,
+) -> tuple[UUID, ...]:
+    """widen a side's group set through group-in-group edges, at read.
+
+    an actor's DIRECT groups are depth 1; each further round adds the
+    PARENT groups those groups are members of, up to
+    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` levels total. the walk reads
+    through the membership cache under each child group's OWN key
+    (``("group", group_id)``), never expanding into any actor's entry --
+    changing one group's parents invalidates exactly one key and every
+    actor entry beneath it stays valid, which is the invalidation
+    property the read-time walk exists to keep.
+
+    every walked edge passes the same eligibility filter a direct
+    membership does (the row must name the child as a GROUP member and
+    must clear the cross-customer wall), so nesting cannot widen what a
+    direct membership could not.
+
+    :param direct_group_ids: the side's depth-1 group ids, order
+        preserved
+    :ptype direct_group_ids: tuple[UUID, ...]
+    :param namespace: namespace under evaluation, for the customer wall
+    :ptype namespace: Namespace
+    :param cache: shared :class:`AclCache` carrying loaders + layers
+    :ptype cache: AclCache
+    :return: direct ids plus reachable parent ids, deterministic order
+    :rtype: tuple[UUID, ...]
+    """
+    seen: dict[UUID, None] = dict.fromkeys(direct_group_ids)
+    frontier: tuple[UUID, ...] = direct_group_ids
+    for _ in range(MAX_GROUP_MEMBERSHIP_DEPTH - 1):
+        if not frontier:
+            break
+        next_frontier: list[UUID] = []
+        for group_id in frontier:
+            membership_key = ActorMembershipKey(actor_kind="group", actor_id=group_id)
+            entry = cache.get_membership(membership_key)
+            if entry is not None:
+                parent_rows = entry.memberships
+            else:
+                parent_rows = await cache.membership_loader.load_for_group(group_id)
+                cache.put_membership(membership_key, parent_rows)
+            eligible_parents = _filter_memberships(
+                memberships=tuple(parent_rows),
+                actor_id=group_id,
+                member_type=MemberType.GROUP,
+                namespace=namespace,
+            )
+            for row in eligible_parents:
+                if row.group_id not in seen:
+                    seen[row.group_id] = None
+                    next_frontier.append(row.group_id)
+        frontier = tuple(next_frontier)
+    return tuple(seen)
 
 
 def _filter_memberships(

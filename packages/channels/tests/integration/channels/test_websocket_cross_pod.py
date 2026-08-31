@@ -80,6 +80,16 @@ class _FakeStore:
     async def load_for_agent(self, agent_id: UUID) -> tuple[GroupMembership, ...]:
         return tuple(m for m in self.memberships if m.member_type == MemberType.AGENT and m.member_id == agent_id)
 
+    async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
+        """return parent-group memberships -- none; these fixtures use flat groups.
+
+        :param group_id: child group UUID
+        :ptype group_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        return ()
+
     async def load_assignments_for_groups(
         self, group_ids: tuple[UUID, ...], namespace: Namespace
     ) -> tuple[RoleAssignment, ...]:

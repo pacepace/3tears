@@ -60,6 +60,11 @@ from threetears.agent.memory.authorize import (
     authorize_memory_access,
     ensure_memory_owner_assignment,
 )
+from threetears.agent.memory.retrieval_scope import (
+    RetrievalScope,
+    build_scope_conditions,
+    scope_matches_nothing,
+)
 from threetears.agent.memory.entities import (
     MediaContentEntity,
     MediaEntity,
@@ -1181,6 +1186,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         fts_max_len: int = 500,
         date_after: datetime | None = None,
         date_before: datetime | None = None,
+        scope: RetrievalScope | None = None,
     ) -> list[dict[str, Any]]:
         """parallel vector + FTS hybrid search across the memories table.
 
@@ -1228,10 +1234,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype fts_min_len: int
         :param fts_max_len: truncation length for FTS queries
         :ptype fts_max_len: int
+        :param scope: optional eligibility predicate applied inside BOTH
+            arms' candidate scans (:class:`RetrievalScope`); ``None`` is
+            today's behaviour, an empty allow-list or tag tuple returns
+            ``[]`` (fail-closed, never fail-open)
+        :ptype scope: RetrievalScope | None
         :return: ranked candidate list, top_k entries
         :rtype: list[dict[str, Any]]
         """
-        if self.l3_pool is None:
+        if self.l3_pool is None or scope_matches_nothing(scope):
             return []
         embedding_str = json.dumps(embedding)
 
@@ -1254,6 +1265,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         if date_before is not None:
             vec_date_clause += f" AND date_created <= ${param_offset + 2 + len(vec_extra_params)}"
             vec_extra_params.append(date_before)
+        vec_scope_fragments, vec_scope_params, _ = build_scope_conditions(
+            scope, next_param=param_offset + 2 + len(vec_extra_params)
+        )
+        for fragment in vec_scope_fragments:
+            vec_date_clause += f" AND {fragment}"
+        vec_extra_params.extend(vec_scope_params)
         vec_where = f"WHERE {scope_conditions}"
         limit_param = f"${param_offset + 1}"
 
@@ -1320,6 +1337,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             if date_before is not None:
                 fts_date_clause += f" AND date_created <= ${fts_param_offset + 2 + len(fts_extra_params)}"
                 fts_extra_params.append(date_before)
+            fts_retrieval_fragments, fts_retrieval_params, _ = build_scope_conditions(
+                scope, next_param=fts_param_offset + 2 + len(fts_extra_params)
+            )
+            for fragment in fts_retrieval_fragments:
+                fts_date_clause += f" AND {fragment}"
+            fts_extra_params.extend(fts_retrieval_params)
             fts_where = f"WHERE {fts_scope_conditions}"
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query is not primary-key-
@@ -1467,6 +1490,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         type_filter: str | None = None,
         date_after: datetime | None = None,
         date_before: datetime | None = None,
+        scope: RetrievalScope | None = None,
     ) -> list[dict[str, Any]]:
         """semantic (vector-only) search for the add/search memory tools.
 
@@ -1498,10 +1522,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype date_after: datetime | None
         :param date_before: inclusive upper bound on ``date_created``
         :ptype date_before: datetime | None
+        :param scope: optional eligibility predicate applied inside the
+            candidate scan (:class:`RetrievalScope`); an empty allow-list
+            or tag tuple returns ``[]``, fail-closed
+        :ptype scope: RetrievalScope | None
         :return: list of row dicts with ``similarity`` field
         :rtype: list[dict[str, Any]]
         """
-        if self.l3_pool is None:
+        if self.l3_pool is None or scope_matches_nothing(scope):
             return []
         embedding_str = json.dumps(embedding)
         params: list[Any] = [embedding_str, agent_id, user_id]
@@ -1519,6 +1547,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             conditions.append(f"date_created <= ${param_idx}")
             params.append(date_before)
             param_idx += 1
+        scope_fragments, scope_extra_params, param_idx = build_scope_conditions(scope, next_param=param_idx)
+        conditions.extend(scope_fragments)
+        params.extend(scope_extra_params)
         conditions.append("embedding IS NOT NULL")
         where_clause = " AND ".join(conditions)
         # ``embedding IS NOT NULL`` guard: ``NULL <=> vector`` is NULL,
@@ -1567,6 +1598,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         type_filter: str | None = None,
         date_after: datetime | None = None,
         date_before: datetime | None = None,
+        scope: RetrievalScope | None = None,
     ) -> list[dict[str, Any]]:
         """FTS keyword search for the add/search memory tools.
 
@@ -1593,10 +1625,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype date_after: datetime | None
         :param date_before: inclusive upper bound on ``date_created``
         :ptype date_before: datetime | None
+        :param scope: optional eligibility predicate applied inside the
+            candidate scan (:class:`RetrievalScope`); an empty allow-list
+            or tag tuple returns ``[]``, fail-closed
+        :ptype scope: RetrievalScope | None
         :return: list of row dicts
         :rtype: list[dict[str, Any]]
         """
-        if self.l3_pool is None:
+        if self.l3_pool is None or scope_matches_nothing(scope):
             return []
         conditions = [
             "agent_id = $2",
@@ -1617,6 +1653,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             conditions.append(f"date_created <= ${idx}")
             params.append(date_before)
             idx += 1
+        scope_fragments, scope_extra_params, idx = build_scope_conditions(scope, next_param=idx)
+        conditions.extend(scope_fragments)
+        params.extend(scope_extra_params)
         where = " AND ".join(conditions)
         # DELIBERATE-RECALL by design (§3), mirroring search_by_semantic:
         # the agent-invoked memory_search keyword leg applies NO salience
