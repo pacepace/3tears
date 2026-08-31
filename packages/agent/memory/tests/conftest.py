@@ -213,6 +213,16 @@ class _PermissiveMembershipLoader:
             ),
         )
 
+    async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
+        """return parent-group memberships -- none; these fixtures use flat groups.
+
+        :param group_id: child group UUID
+        :ptype group_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        return ()
+
 
 class _PermissiveGrantLoader:
     """GrantLoader that surfaces one all-actions role for every namespace.

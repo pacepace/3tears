@@ -147,6 +147,17 @@ class FakeStore:
         result = tuple(m for m in self.memberships if m.member_type == MemberType.AGENT and m.member_id == agent_id)
         return result
 
+    async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
+        """return every membership row whose member is the group.
+
+        :param group_id: child group UUID to resolve
+        :ptype group_id: UUID
+        :return: tuple of memberships
+        :rtype: tuple[GroupMembership, ...]
+        """
+        result = tuple(m for m in self.memberships if m.member_type == MemberType.GROUP and m.member_id == group_id)
+        return result
+
     # ---------- GrantLoader -----------------------------------------
 
     async def load_assignments_for_groups(

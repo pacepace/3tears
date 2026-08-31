@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Final
 from typing import Mapping
 from uuid import UUID
 
@@ -77,10 +78,26 @@ class MemberType(StrEnum):
         intersection evaluation
     :cvar AGENT: agent member; contributes to the agent side of an
         intersection evaluation
+    :cvar GROUP: group member -- the CHILD group named by ``member_id``
+        belongs to the parent :class:`Group`, so everything the parent
+        is granted reaches the child's members transitively. resolution
+        WALKS these edges at read, capped at
+        :data:`MAX_GROUP_MEMBERSHIP_DEPTH`; nothing is expanded at
+        write, which is what keeps cache invalidation per-group (see
+        ``cache.py``'s membership layer)
     """
 
     USER = "user"
     AGENT = "agent"
+    GROUP = "group"
+
+
+#: how many membership levels resolution walks: an actor's DIRECT groups
+#: are depth 1, those groups' parent groups are depth 2. a deliberate
+#: named constant rather than a magic number -- raising it is expected
+#: (the shape it serves today is user -> org group -> state group), and
+#: a small cap keeps cycle handling cheap and evaluator cost predictable.
+MAX_GROUP_MEMBERSHIP_DEPTH: Final[int] = 2
 
 
 class ScopeType(StrEnum):

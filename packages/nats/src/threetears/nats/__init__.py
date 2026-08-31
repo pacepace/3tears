@@ -144,6 +144,7 @@ from threetears.nats.subject_permissions import (
     inbox_prefix_for,
     kv_bucket_names,
     kv_key_scope_for,
+    kv_key_scope_for_service,
 )
 from threetears.nats.subjects import (
     PipeDirection,
@@ -351,6 +352,7 @@ __all__ = [
     "inbox_prefix_for",
     "kv_bucket_names",
     "kv_key_scope_for",
+    "kv_key_scope_for_service",
     # NATS v2 user-JWT minting (decentralized auth)
     "account_public_key",
     "generate_account_seed",

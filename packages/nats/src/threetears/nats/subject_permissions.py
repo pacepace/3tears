@@ -514,6 +514,55 @@ def kv_key_scope_for(
     return principal.value
 
 
+#: leads every consumer-service scope. distinct from every :class:`Principal` value by
+#: construction, so an operator reading keys in the collections bucket can tell a third-party
+#: service's keyspace from any of 3tears' own identities at a glance.
+_SERVICE_SCOPE_PREFIX: Final[str] = "svc"
+
+
+def kv_key_scope_for_service(service: str) -> str:
+    """the L2 key scope a third-party consumer service's collections write under.
+
+    :func:`kv_key_scope_for` dispatches on :class:`Principal`, which enumerates 3tears' own
+    bus identities -- a consumer service that owns its own NATS account is none of them, and
+    adopting a member it is not misleads the operator reading bucket keys (``Principal``'s
+    docstring: adopting a member is a grant-surface change). this producer sits outside that
+    surface entirely: no resolver answers for a ``svc-`` scope and none has to, because the
+    consumer authenticates and grants inside its own account.
+
+    **the scope is the sharing boundary, not the connection.** replicas of one service must
+    resolve to one scope or L2 stops being a cross-pod cache, so the deployment-stable service
+    name is the only input -- never a connection or pod id.
+
+    the name is validated rather than sanitized: mapping ``.`` to ``-`` (as subject
+    sanitization does) is non-injective, and two services collapsing onto one scope is the
+    exact outcome key scoping exists to prevent.
+
+    :param service: deployment-stable service name, e.g. ``"scriob"``; must already match
+        :data:`KV_KEY_SCOPE_GRAMMAR`
+    :ptype service: str
+    :return: the scope segment, ``svc-{service}``, matching :data:`KV_KEY_SCOPE_GRAMMAR`
+    :rtype: str
+    :raises ValueError: if service is empty, if the rendered scope falls outside
+        :data:`KV_KEY_SCOPE_GRAMMAR`, or if it would collide with a bare :class:`Principal`
+        value
+    """
+    if not service:
+        raise ValueError(
+            "consumer service kv key scope requires a non-empty service name; a bare fallback "
+            "would land every misconfigured service on one shared scope"
+        )
+    scope = f"{_SERVICE_SCOPE_PREFIX}-{service}"
+    if scope in _BARE_PRINCIPAL_SCOPES:
+        raise ValueError(
+            f"consumer service kv key scope {scope!r} collides with a bare principal value; "
+            f"an infra principal would then share a scope with a consumer service"
+        )
+    if not KV_KEY_SCOPE_GRAMMAR.match(scope):
+        raise ValueError(f"kv key scope {scope!r} does not match {KV_KEY_SCOPE_GRAMMAR.pattern}")
+    return scope
+
+
 def _pod_scope(principal: Principal, scope_id: str) -> str:
     """compose and validate one pod principal's scope segment.
 

@@ -9,8 +9,12 @@ three explicit layers (do not unify; the layers exist so invalidation
 fans out correctly):
 
 - **membership layer** — keyed by ``("user", user_id)`` /
-  ``("agent", agent_id)``; value is the tuple of group ids the actor
-  belongs to. invalidated by membership-change events.
+  ``("agent", agent_id)`` / ``("group", group_id)``; value is the tuple
+  of membership rows the actor holds. the ``group`` kind holds a child
+  group's PARENT groups for the depth-capped group-in-group walk --
+  deliberately its own key, never expanded into any actor's entry, so
+  changing one group's parents invalidates exactly one key. invalidated
+  by membership-change events.
 - **assignment-per-namespace layer** — keyed by
   ``(group_id, namespace_id)``; value is the action set that group
   contributes for the specific namespace, plus the trail rows that
@@ -69,8 +73,9 @@ log = get_logger(__name__)
 class ActorMembershipKey:
     """key into the membership layer.
 
-    :ivar actor_kind: ``"user"`` or ``"agent"`` — drives the loader
-        method called on miss
+    :ivar actor_kind: ``"user"``, ``"agent"`` or ``"group"`` — drives
+        the loader method called on miss (``"group"`` resolves a child
+        group's parent groups for the depth-capped walk)
     :ivar actor_id: caller UUID
     """
 

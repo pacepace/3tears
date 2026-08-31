@@ -187,6 +187,19 @@ class _FakeMembershipLoader:
         """
         return self._agents.get(agent_id, ())
 
+    async def load_for_group(
+        self,
+        group_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """return parent-group fixture memberships -- none, in these tests.
+
+        :param group_id: child group UUID
+        :ptype group_id: UUID
+        :return: empty tuple; registry authorizer tests use flat groups
+        :rtype: tuple[GroupMembership, ...]
+        """
+        return ()
+
 
 # parity-with: threetears.agent.acl.loader.GrantLoader
 class _FakeGrantLoader:
