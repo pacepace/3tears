@@ -312,3 +312,30 @@ def test_visible_customers_query_respects_param_offset() -> None:
     sql, params = caller_visible_customers_query(user_id=uuid4(), param_offset=3)
     assert "gm.member_id = $3" in sql
     assert len(params) == 1
+
+
+def test_caller_clause_reaches_through_one_nesting_level() -> None:
+    """the fragment carries the group-hop arm, and it binds the same caller.
+
+    group-in-group membership resolves at authorization time, so the
+    visibility fragment must name the nested caller too. pinned here so an
+    edit that drops the hop fails loud; the semantics are proved against a
+    real database in ``integration/test_query_visibility_nesting.py``.
+    """
+    fragment, _ = caller_visible_customer_clause(
+        user_id=uuid4(),
+        customer_id_column="t.customer_id",
+        scope_namespace_type="thing",
+    )
+    assert "gm.member_type = 'group'" in fragment
+    assert "gm2.group_id = gm.member_id" in fragment
+    assert "gm2.member_type = 'user'" in fragment
+    assert fragment.count("$1") >= 2
+
+
+def test_customers_query_reaches_through_one_nesting_level() -> None:
+    """the aggregate customers query carries the identical group-hop arm."""
+    sql, _ = caller_visible_customers_query(user_id=uuid4())
+    assert "gm.member_type = 'group'" in sql
+    assert "gm2.group_id = gm.member_id" in sql
+    assert "gm2.member_type = 'user'" in sql

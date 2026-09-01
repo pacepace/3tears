@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.30.1 -- 2026-08-31
+
+### Fixed
+
+- `agent-acl`: **the caller-visibility SQL walks group nesting.** 0.30.0's
+  group-in-group membership resolves nested grants at authorization time,
+  but `caller_visible_customer_clause` and `caller_visible_customers_query`
+  (and the two clause builders composed from them) stopped at direct
+  membership -- so a caller in a nested group was AUTHORIZED for rows a
+  visibility-filtered listing hid. Both builders now emit one shared
+  predicate carrying a one-level group hop, matching the evaluator's
+  `MAX_GROUP_MEMBERSHIP_DEPTH = 2` exactly: proved against a real database
+  in both directions, including the negative control that a two-edge chain
+  resolves nowhere. No API change; the fragment's bind contract is
+  untouched.
+
 ## v0.30.0 -- 2026-08-31
 
 ### Added
