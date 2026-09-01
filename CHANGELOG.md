@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.30.1 -- 2026-08-31
+
 ### Fixed
 
 - `agent-acl`: **the caller-visibility SQL walks group nesting.** 0.30.0's
