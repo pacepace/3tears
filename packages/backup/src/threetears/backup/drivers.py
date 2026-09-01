@@ -18,7 +18,14 @@ from typing import ClassVar, Protocol, runtime_checkable
 
 from threetears.backup.process import feed_stdin, stream_stdout
 
-__all__ = ["DbDumpDriver", "PostgresDriver", "YugabyteDriver", "detect_driver", "driver_for_version"]
+__all__ = [
+    "DbDumpDriver",
+    "PostgresDriver",
+    "YugabyteDriver",
+    "detect_driver",
+    "driver_by_name",
+    "driver_for_version",
+]
 
 #: the marker Yugabyte stamps into ``version()`` (e.g. "... (YugabyteDB 2.20 ... -YB-...)").
 _YUGABYTE_MARKER = "-YB-"
@@ -38,6 +45,21 @@ class DbDumpDriver(ABC):
     @abstractmethod
     def restore_argv(self, dsn: str) -> list[str]:
         """Argv that restores into ``dsn`` from stdin."""
+
+    def dump_globals_argv(self, dsn: str) -> list[str]:
+        """Argv that dumps cluster GLOBALS (roles, grants, tablespaces) to stdout as plain SQL.
+
+        Globals live outside any single database, so a per-database dump never captures them —
+        a restored cluster without them has every table and none of the roles that own or may
+        read them. Deliberately NOT abstract: existing driver subclasses predate cluster
+        backups, and a new abstract method would break their construction. A driver that never
+        overrides it refuses at call time instead.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement a globals dump")
+
+    def restore_sql_argv(self, dsn: str) -> list[str]:
+        """Argv that executes plain SQL from stdin against ``dsn`` (globals restore path)."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement SQL replay")
 
     def dump(
         self, dsn: str, *, env: Mapping[str, str] | None = None, timeout: float | None = None
@@ -70,6 +92,12 @@ class PostgresDriver(DbDumpDriver):
         # a fresh (empty) target — the verifier's temp db — so no --clean is needed; fail loudly.
         return ["pg_restore", "--dbname", dsn, "--no-owner", "--no-privileges", "--exit-on-error"]
 
+    def dump_globals_argv(self, dsn: str) -> list[str]:
+        return ["pg_dumpall", "--dbname", dsn, "--globals-only", "--no-role-passwords"]
+
+    def restore_sql_argv(self, dsn: str) -> list[str]:
+        return ["psql", "--dbname", dsn, "--quiet", "--set", "ON_ERROR_STOP=1"]
+
 
 class YugabyteDriver(DbDumpDriver):
     """YugabyteDB via ``ysql_dump`` (plain SQL) + ``ysqlsh``."""
@@ -83,6 +111,31 @@ class YugabyteDriver(DbDumpDriver):
     def restore_argv(self, dsn: str) -> list[str]:
         # ysqlsh reads SQL from stdin; ON_ERROR_STOP makes a bad statement a non-zero exit.
         return ["ysqlsh", "--dbname", dsn, "--quiet", "--set", "ON_ERROR_STOP=1"]
+
+    def dump_globals_argv(self, dsn: str) -> list[str]:
+        # Yugabyte ships its own dumpall fork; role passwords are deliberately excluded on both
+        # drivers — a backup must not become a credential store.
+        return ["ysql_dumpall", "--dbname", dsn, "--globals-only", "--no-role-passwords"]
+
+    def restore_sql_argv(self, dsn: str) -> list[str]:
+        return ["ysqlsh", "--dbname", dsn, "--quiet", "--set", "ON_ERROR_STOP=1"]
+
+
+def driver_by_name(name: str) -> DbDumpDriver:
+    """Construct the driver a manifest names.
+
+    A restore must run the SAME driver that wrote the dump — the two formats are not
+    interchangeable (custom-archive vs gzipped plain SQL) — so the manifest records the name and
+    restores resolve it here rather than trusting whatever driver the restoring process happens
+    to hold.
+
+    :param name: a driver's ``name`` classvar, as stored in a manifest.
+    :raises ValueError: on a name no driver claims.
+    """
+    for cls in (PostgresDriver, YugabyteDriver):
+        if cls.name == name:
+            return cls()
+    raise ValueError(f"no dump driver named {name!r}")
 
 
 def driver_for_version(version: str) -> DbDumpDriver:
