@@ -36,8 +36,9 @@ from threetears.backup.drivers import DbDumpDriver, driver_by_name, driver_for_v
 from threetears.backup.gzip import gunzip_stream, gzip_stream
 from threetears.backup.manifest import BackupManifest, DatabaseDump, TableCount, manifest_key
 from threetears.backup.process import feed_stdin, stream_stdout
+from threetears.backup.retention import BackupRecord, GfsRetention, RetentionDecision
 
-__all__ = ["ClusterBackup", "ManifestNotFoundError", "replace_database"]
+__all__ = ["ClusterBackup", "ManifestNotFoundError", "SetDeleteNotAllowedError", "replace_database"]
 
 log = get_logger(__name__)
 
@@ -59,6 +60,10 @@ _TABLES_SQL = """
 
 class ManifestNotFoundError(LookupError):
     """No stored manifest carries the requested backup id."""
+
+
+class SetDeleteNotAllowedError(RuntimeError):
+    """A destructive set operation was attempted while ``config.allow_delete`` is False."""
 
 
 @runtime_checkable
@@ -260,6 +265,57 @@ class ClusterBackup:
         await feed_stdin(
             driver.restore_sql_argv(admin_dsn), stream, env=self._env, timeout=self._config.dump_timeout_seconds
         )
+
+    # ------------------------------------------------------------------ retention / delete
+
+    async def plan_retention(self) -> RetentionDecision:
+        """Compute (without deleting) which SETS the GFS policy would keep vs prune.
+
+        The unit of retention is the whole set — a manifest and every dump it names live and
+        die together, because a set missing one database is not a smaller backup, it is a
+        broken one.
+        """
+        manifests = await self.list_manifests()
+        records = [
+            BackupRecord(key=str(m.backup_id), created_at=m.created_at, size_bytes=m.total_size_bytes)
+            for m in manifests
+        ]
+        return GfsRetention.from_config(self._config).select(records)
+
+    async def apply_retention(self) -> RetentionDecision:
+        """Prune whole sets outside the GFS policy. Requires ``allow_delete``.
+
+        :raises SetDeleteNotAllowedError: when ``config.allow_delete`` is False.
+        """
+        if not self._config.allow_delete:
+            raise SetDeleteNotAllowedError("retention prune requires config.allow_delete=True")
+        decision = await self.plan_retention()
+        for record in decision.delete:
+            await self.delete_set(UUID(record.key))
+        log.info(
+            "set retention pruned",
+            extra={"extra_data": {"deleted": len(decision.delete), "kept": len(decision.keep)}},
+        )
+        return decision
+
+    async def delete_set(self, backup_id: UUID) -> None:
+        """Delete one whole set — every dump, the globals, then the manifest LAST.
+
+        Order matters the same way it does on write: the manifest asserts a complete set, so
+        it must be the last thing standing, never a survivor pointing at deleted dumps.
+
+        :raises SetDeleteNotAllowedError: when ``config.allow_delete`` is False.
+        :raises ManifestNotFoundError: when no manifest carries ``backup_id``.
+        """
+        if not self._config.allow_delete:
+            raise SetDeleteNotAllowedError("delete requires config.allow_delete=True")
+        manifest = await self.get_manifest(backup_id)
+        for dump in manifest.databases:
+            await self._store.delete(dump.key)
+        if manifest.globals_key is not None:
+            await self._store.delete(manifest.globals_key)
+        await self._store.delete(manifest_key(self._config.prefix, backup_id))
+        log.info("backup set deleted", extra={"extra_data": {"backup_id": str(backup_id)}})
 
     # ------------------------------------------------------------------ internals
 

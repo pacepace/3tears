@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.31.0 -- 2026-09-01
+
 ### Added
 
 - `backup`: **cluster backup sets with manifests.** `ClusterBackup` backs up a
@@ -43,6 +45,16 @@ packages (bumped in lock-step).
   order-independent sum-of-row-hashes checksum. Every table gets a named
   status (`matched` / `drifted` / `failed` / `missing_live` / `extra_live`);
   the report's `ok` fails only on drift beyond the caller's tolerance.
+- `backup`: **set-grain retention and deletion.** `ClusterBackup.plan_retention`
+  / `apply_retention` apply the GFS policy to whole SETS, and `delete_set`
+  removes one — dumps first, globals, manifest LAST, so a manifest never
+  survives pointing at deleted dumps. Both destructive paths are gated on
+  `allow_delete` (`SetDeleteNotAllowedError`).
+- `object-store`: **ambient AWS credentials.** `S3ObjectStore` and
+  `build_s3_object_store` accept omitted credentials — `None` defers to the
+  default AWS chain (environment, IRSA web-identity, instance metadata), the
+  shape a pod under an IAM role for its service account uses, where no static
+  key exists to reference.
 - `backup`: drivers gain `dump_globals_argv` / `restore_sql_argv` (default
   implementations raise rather than being abstract, so existing driver
   subclasses keep constructing) and `driver_by_name`.

@@ -43,10 +43,13 @@ class S3ObjectStore:
     :param endpoint_url: S3 endpoint (e.g. ``http://minio:9000``); ``None``
         uses the AWS default endpoint
     :ptype endpoint_url: str | None
-    :param access_key: access key id
-    :ptype access_key: str
-    :param secret_key: secret access key
-    :ptype secret_key: str
+    :param access_key: access key id; ``None`` defers to the ambient AWS credential
+        chain (environment, IRSA web-identity token, instance metadata) — the shape a
+        pod running under an IAM role for its service account uses, where no static
+        key exists to pass
+    :ptype access_key: str | None
+    :param secret_key: secret access key; ``None`` as for ``access_key``
+    :ptype secret_key: str | None
     :param bucket: target bucket name
     :ptype bucket: str
     :param region: AWS region (MinIO ignores it; AWS S3 requires it)
@@ -63,9 +66,9 @@ class S3ObjectStore:
         self,
         *,
         endpoint_url: str | None,
-        access_key: str,
-        secret_key: str,
-        bucket: str,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        bucket: str = "",
         region: str = "us-east-1",
         part_size_bytes: int = _DEFAULT_PART_SIZE,
         session: Any = None,

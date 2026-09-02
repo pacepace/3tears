@@ -184,6 +184,33 @@ class TestClusterBackupSet:
             await conn.close()
 
 
+class TestSetRetentionAndDelete:
+    async def test_delete_requires_allow_delete_and_removes_the_whole_set(
+        self, seeded: Any, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """a set dies whole — dumps, globals, manifest last — and only when allowed."""
+        import asyncio  # noqa: PLC0415
+
+        from threetears.backup.cluster import SetDeleteNotAllowedError  # noqa: PLC0415
+
+        admin_dsn, *_ = seeded
+        root: Path = tmp_path_factory.mktemp("retention-store")
+        locked = BackupConfig(passphrase=SecretStr("p"), encryption_work_factor=_TEST_WORK_FACTOR)
+        cluster = ClusterBackup(locked, FilesystemObjectStore(root), asyncpg.connect)
+        manifest = await cluster.create_backup(admin_dsn)
+        with pytest.raises(SetDeleteNotAllowedError):
+            await cluster.delete_set(manifest.backup_id)
+        unlocked = BackupConfig(passphrase=SecretStr("p"), allow_delete=True, encryption_work_factor=_TEST_WORK_FACTOR)
+        cluster = ClusterBackup(unlocked, FilesystemObjectStore(root), asyncpg.connect)
+        decision = await cluster.plan_retention()
+        assert len(decision.keep) == 1 and not decision.delete
+        await cluster.delete_set(manifest.backup_id)
+        assert await cluster.list_manifests() == []
+        remaining = [entry.key async for entry in FilesystemObjectStore(root).list_entries("")]
+        assert remaining == []
+        del asyncio
+
+
 class TestSelectiveRestore:
     @pytest.fixture()
     async def drifted(self, backup_set: Any) -> Any:
@@ -238,9 +265,7 @@ class TestSelectiveRestore:
     async def test_a_raw_where_predicate_selects_what_no_vocabulary_fits(self, drifted: Any) -> None:
         scratch_dsn, alpha_dsn, ids = drifted
         restore = SelectiveRestore(asyncpg.connect, scratch_dsn, alpha_dsn)
-        plan = await restore.plan(
-            RowSelection(table="things", where="name = $1", where_params=("thing-0",))
-        )
+        plan = await restore.plan(RowSelection(table="things", where="name = $1", where_params=("thing-0",)))
         assert plan.write_count == 1  # the mangled row, found by CONTENT rather than by id
         await restore.apply(plan)
         live = await asyncpg.connect(alpha_dsn)

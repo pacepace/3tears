@@ -8,7 +8,12 @@ ranges, or date ranges from a restored scratch database with a plan/apply dry-ru
 sides off at the backup moment so post-backup growth is expected rather than failure.
 """
 
-from threetears.backup.cluster import ClusterBackup, ManifestNotFoundError, replace_database
+from threetears.backup.cluster import (
+    ClusterBackup,
+    ManifestNotFoundError,
+    SetDeleteNotAllowedError,
+    replace_database,
+)
 from threetears.backup.compare import (
     ComparisonReport,
     DriftComparator,
@@ -67,6 +72,7 @@ __all__ = [
     "RetentionDecision",
     "RowSelection",
     "SelectionTooLargeError",
+    "SetDeleteNotAllowedError",
     "SelectiveRestore",
     "SelectiveRestorePlan",
     "TableComparison",
