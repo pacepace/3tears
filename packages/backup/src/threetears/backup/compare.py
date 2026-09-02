@@ -142,7 +142,9 @@ class DriftComparator:
     :param restored_dsn: the scratch database the backup was restored into.
     :param live_dsn: the running database it is compared against.
     :param cutoff_columns: creation-timestamp column names recognized for the time cutoff, in
-        preference order. The platform convention is ``date_created``.
+        preference order. The platform convention is ``date_created``; the bare ``timestamp``
+        (audit-event shape) sits last, and every candidate is type-checked against
+        ``timestamptz`` before use, so a non-time column of that name cannot be misused.
     :param tolerance_fraction: per-table row drift tolerated before a table FAILS —
         ``|backup - live|`` may be up to this fraction of the backup count (with
         ``tolerance_rows`` as an absolute floor so tiny tables aren't held to zero).
@@ -155,7 +157,7 @@ class DriftComparator:
         restored_dsn: str,
         live_dsn: str,
         *,
-        cutoff_columns: tuple[str, ...] = ("date_created", "created_at", "date_added"),
+        cutoff_columns: tuple[str, ...] = ("date_created", "created_at", "date_added", "timestamp"),
         tolerance_fraction: float = 0.01,
         tolerance_rows: int = 5,
     ) -> None:

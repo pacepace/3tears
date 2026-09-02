@@ -48,6 +48,13 @@ _ENCRYPTED_CONTENT_TYPE = "application/octet-stream"
 #: dumping ``template0`` outright fails (it refuses connections by design).
 _EXCLUDED_DATABASES = frozenset({"template0", "template1"})
 
+#: transient databases this toolchain itself creates (selective-restore scratch copies, the
+#: verifier's temp databases). backing them up would make a backup contain the scratch of the
+#: previous restore -- unbounded self-reference -- and one caught MID-DROP hangs the
+#: enumeration connect outright (measured against yugabyte, whose async tablet reaping keeps
+#: a dropped database listed for a while).
+_EXCLUDED_PREFIXES = ("scratch_restore_", "verify_restore_")
+
 _DATABASES_SQL = "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname"
 _TABLES_SQL = """
     SELECT table_schema, table_name
@@ -333,7 +340,12 @@ class ClusterBackup:
             rows = await conn.fetch(_DATABASES_SQL)
         finally:
             await conn.close()
-        return [row["datname"] for row in rows if row["datname"] not in _EXCLUDED_DATABASES]
+        return [
+            row["datname"]
+            for row in rows
+            if row["datname"] not in _EXCLUDED_DATABASES
+            and not row["datname"].startswith(_EXCLUDED_PREFIXES)
+        ]
 
     async def _inventory(self, db_dsn: str) -> tuple[TableCount, ...]:
         """Exact per-table row counts at dump time — estimates would poison later verification."""

@@ -53,3 +53,15 @@ class TestGlobalsArgv:
         for driver in (PostgresDriver(), YugabyteDriver()):
             argv = driver.restore_sql_argv("postgresql://h/db")
             assert "ON_ERROR_STOP=1" in argv
+
+
+class TestClusterEnumeration:
+    def test_toolchain_transient_databases_are_never_backed_up(self) -> None:
+        """scratch and verify databases are the toolchain's own; enumerating them
+        makes a backup contain the previous restore's scratch, and one caught
+        mid-drop hangs the enumeration connect."""
+        from threetears.backup.cluster import _EXCLUDED_PREFIXES  # noqa: PLC0415
+
+        assert "scratch_restore_x".startswith(_EXCLUDED_PREFIXES)
+        assert "verify_restore_x".startswith(_EXCLUDED_PREFIXES)
+        assert not "aibots".startswith(_EXCLUDED_PREFIXES)
