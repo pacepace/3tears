@@ -343,8 +343,7 @@ class ClusterBackup:
         return [
             row["datname"]
             for row in rows
-            if row["datname"] not in _EXCLUDED_DATABASES
-            and not row["datname"].startswith(_EXCLUDED_PREFIXES)
+            if row["datname"] not in _EXCLUDED_DATABASES and not row["datname"].startswith(_EXCLUDED_PREFIXES)
         ]
 
     async def _inventory(self, db_dsn: str) -> tuple[TableCount, ...]:
