@@ -6,6 +6,67 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.31.0 -- 2026-09-01
+
+### Added
+
+- `backup`: **cluster backup sets with manifests.** `ClusterBackup` backs up a
+  whole cluster in one call: databases are ENUMERATED from the cluster at
+  backup time (coverage by construction — an agent- or tool-created database
+  nobody listed is captured anyway), cluster globals (roles, grants; never
+  role passwords) are dumped alongside, and a `BackupManifest` — written LAST,
+  so its existence asserts a complete set — records the set's stable uuid7 id,
+  its driver, a per-table row inventory taken at dump time, and a SHA-256 of
+  each plaintext dump. Restores resolve the driver FROM the manifest
+  (`driver_by_name`), closing the latent hazard where the object key encoded a
+  driver nothing read back and a gzipped plain-SQL dump could be fed to
+  `pg_restore`. Everything still writes through `EncryptedObjectStore` by
+  construction.
+- `backup`: **selective restore.** `SelectiveRestore` brings back ROWS, not
+  databases: restore a set's database into a scratch db (the machinery the
+  verifier already trusts), then select by explicit ids, an id RANGE (uuid7
+  ids are time-ordered and the uuid type compares bytewise, so an id range IS
+  a creation-time range), a date range over a named timestamp column, the
+  whole table, or a raw SQL `where` predicate with bind params — the escape
+  hatch for the selection no fixed vocabulary fits, safe BY PLACEMENT: it
+  executes only against the throwaway scratch snapshot, and its rows still
+  flow through the same classification, bounds, and structured upsert as
+  every other vocabulary. The plan/apply split is the safety model: `plan()` only reads,
+  classifying every row as insert / update / identical against live; `apply()`
+  upserts exactly the plan's insert+update rows in one transaction. Composite
+  primary keys (the platform's `(customer_id, id)` shape) demand an explicit
+  `id_column`; oversized selections refuse with `SelectionTooLargeError`
+  rather than quietly rewriting a table; unsafe identifiers are refused.
+- `backup`: **drift-tolerant restore drills.** `DriftComparator` compares a
+  restored backup against the LIVE database, cutting both sides off at the
+  backup's own timestamp — via a recognized creation-timestamp column, or via
+  `uuid7_upper_bound(as_of)` on uuid-keyed tables — so post-backup growth is
+  invisible rather than failure. Content is compared with an
+  order-independent sum-of-row-hashes checksum. Every table gets a named
+  status (`matched` / `drifted` / `failed` / `missing_live` / `extra_live`);
+  the report's `ok` fails only on drift beyond the caller's tolerance.
+- `backup`: **set-grain retention and deletion.** `ClusterBackup.plan_retention`
+  / `apply_retention` apply the GFS policy to whole SETS, and `delete_set`
+  removes one — dumps first, globals, manifest LAST, so a manifest never
+  survives pointing at deleted dumps. Both destructive paths are gated on
+  `allow_delete` (`SetDeleteNotAllowedError`).
+- `object-store`: **ambient AWS credentials.** `S3ObjectStore` and
+  `build_s3_object_store` accept omitted credentials — `None` defers to the
+  default AWS chain (environment, IRSA web-identity, instance metadata), the
+  shape a pod under an IAM role for its service account uses, where no static
+  key exists to reference.
+- `backup`: drivers gain `dump_globals_argv` / `restore_sql_argv` (default
+  implementations raise rather than being abstract, so existing driver
+  subclasses keep constructing) and `driver_by_name`.
+
+  Proven end to end against real PostgreSQL: enumeration finds unlisted
+  databases, the globals dump captures roles, one row comes back by id, an id
+  range resurrects a deleted row, the uuid7 cutoff hides newborn rows from
+  the drill, and gross divergence fails the report while tolerable drift only
+  reports. The Yugabyte driver's argv is unit-pinned; its end-to-end proof
+  runs where the ysql client tools exist (the hub's drill against a real
+  cluster), stated rather than implied.
+
 ## v0.30.1 -- 2026-08-31
 
 ### Fixed
