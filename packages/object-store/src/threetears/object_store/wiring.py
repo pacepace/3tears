@@ -30,8 +30,8 @@ def build_s3_object_store(
     *,
     endpoint_url: str | None,
     bucket: str,
-    access_key_ref: str,
-    secret_key_ref: str,
+    access_key_ref: str | None = None,
+    secret_key_ref: str | None = None,
     region: str = "us-east-1",
     session: Any = None,
 ) -> S3ObjectStore:
@@ -43,10 +43,12 @@ def build_s3_object_store(
     :param bucket: target bucket name
     :ptype bucket: str
     :param access_key_ref: secret reference for the access key id
-        (``env://VAR`` / ``k8s://path``); resolved here
-    :ptype access_key_ref: str
-    :param secret_key_ref: secret reference for the secret access key; resolved here
-    :ptype secret_key_ref: str
+        (``env://VAR`` / ``k8s://path``); resolved here. ``None`` defers to the
+        ambient AWS credential chain (environment, IRSA, instance metadata)
+    :ptype access_key_ref: str | None
+    :param secret_key_ref: secret reference for the secret access key; resolved
+        here, ``None`` as for ``access_key_ref``
+    :ptype secret_key_ref: str | None
     :param region: AWS region (MinIO ignores it; AWS S3 requires it)
     :ptype region: str
     :param session: aioboto3 session passthrough for tests; ``None`` lets the
@@ -57,8 +59,8 @@ def build_s3_object_store(
     :raises SecretResolutionError: when either credential reference is malformed,
         names an unknown/unimplemented scheme, or cannot be resolved
     """
-    access_key = resolve_secret(access_key_ref).get_secret_value()
-    secret_key = resolve_secret(secret_key_ref).get_secret_value()
+    access_key = resolve_secret(access_key_ref).get_secret_value() if access_key_ref is not None else None
+    secret_key = resolve_secret(secret_key_ref).get_secret_value() if secret_key_ref is not None else None
     store = S3ObjectStore(
         endpoint_url=endpoint_url,
         access_key=access_key,

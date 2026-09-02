@@ -104,3 +104,15 @@ def test_missing_env_ref_raises() -> None:
             access_key_ref="env://DEFINITELY_UNSET_S3_KEY_XYZ",
             secret_key_ref="env://ALSO_UNSET_S3_SECRET_XYZ",
         )
+
+
+def test_omitted_credential_refs_defer_to_the_ambient_chain() -> None:
+    """no refs -> no static keys: boto's default chain (env, IRSA, IMDS) decides.
+
+    the shape a pod under an IAM role for its service account uses — there is no
+    static key to reference, and passing None through to the client is exactly
+    how boto is told to resolve credentials itself.
+    """
+    store = build_s3_object_store(endpoint_url=None, bucket="backups")
+    assert store._access_key is None  # noqa: SLF001 -- pinning what reaches the client
+    assert store._secret_key is None  # noqa: SLF001

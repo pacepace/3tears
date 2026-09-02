@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-wake"
-version = "0.30.1"
+version = "0.31.0"
 description = "Long-running-agent foundation -- wake schedules, fires, webhook subscriptions"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,14 +22,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.30.0,<0.31.0",
-    "3tears-agent-skills>=0.30.0,<0.31.0",
-    "3tears-observe>=0.30.0,<0.31.0",
+    "3tears>=0.31.0,<0.32.0",
+    "3tears-agent-skills>=0.31.0,<0.32.0",
+    "3tears-observe>=0.31.0,<0.32.0",
     # The cross-pod tick pump (lock + due-scan + CAS-claim + reschedule math)
     # lives in the generic scheduled-jobs core since S-2; wake's tick is a thin
     # adapter over it. The transitive ``3tears-nats`` dep (cross-pod lock) now
     # belongs to that core, not to wake.
-    "3tears-scheduled-jobs>=0.30.0,<0.31.0",
+    "3tears-scheduled-jobs>=0.31.0,<0.32.0",
     "uuid-utils",
     # APScheduler is used as a pure utility by the cron-expression validator
     # (``tools/validators.py`` -- ``CronTrigger.from_crontab``; lazy local
