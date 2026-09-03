@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.32.0 -- 2026-09-03
+
+### Added
+
+- `iam`: **a lost reply is no longer read as refresh-token theft.**
+  `rotate_refresh_token` gains an optional `replay_grace` cache
+  (`ReplayGraceCache`/`ReplayGraceEntry`). Reuse detection revokes the entire
+  session family on a second redemption, on the assumption that a legitimate
+  client never replays a token it has exchanged — which is false when the
+  client never RECEIVED the reply: a laptop suspended mid-request, a network
+  changed while moving, a tab discarded. It still holds the old token, replays
+  it on waking, and is logged out for being unlucky rather than attacked
+  (observed doing exactly that against a real session in cobalt dev). A replay
+  inside the cache's short TTL is now answered with the SAME pair the lost
+  reply carried — but only once it has proven possession of the key bound in
+  `cnf`, which the check order already validates at step 6 and a thief holding
+  only the token bytes cannot do. Outside the window, under any other holder
+  key, or with no cache supplied, the family is revoked exactly as before, so
+  every existing caller keeps today's behaviour.
+
+
 ## v0.31.0 -- 2026-09-01
 
 ### Added
