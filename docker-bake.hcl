@@ -9,9 +9,11 @@
 # Invocation MUST be from THIS directory (the 3tears repo root) because
 # buildx resolves a target's `context` relative to the bake file's
 # directory. Running from anywhere else (or via a symlink at the parent)
-# breaks the `../<repo>` paths. The hub repo ships scripts/dev-build.sh
+# breaks the `../<repo>` paths. The hub repo ships scripts/dev-build-local.sh
 # which handles the cd plus the `--allow=fs.read=..` flag buildx
 # requires for contexts that read from outside the bake-file directory.
+# (The hub's scripts/dev-build.sh is the RELEASED-mode build and does not
+# use this file at all — it needs no 3tears checkout.)
 #
 # Targets and groups:
 #   docker buildx bake threetears-base   # just the framework base
@@ -40,7 +42,7 @@ variable "VERSION" {
   # without any per-Dockerfile string to keep in sync. The Dockerfile ARG
   # defaults are now neutral standalone-build fallbacks only -- bake always
   # injects the resolved value via ``args``.
-  default = "v0.31.0"
+  default = "v0.32.0"
 }
 
 # Registry namespace every image is tagged under and every base image is

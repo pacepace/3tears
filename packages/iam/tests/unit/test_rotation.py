@@ -9,6 +9,8 @@ import pytest
 
 from threetears.iam.rotation import (
     RefreshTokenLedger,
+    ReplayGraceCache,
+    ReplayGraceEntry,
     RotationError,
     SessionLifetimeCaps,
     SessionRevoker,
@@ -63,6 +65,22 @@ class _Revoker:
 
     async def is_session_revoked(self, sid: str) -> bool:
         return sid in self.revoked
+
+
+class _GraceCache:
+    """In-memory replay-grace cache with no TTL of its own -- a test drops entries by hand.
+
+    # parity-with: threetears.iam.rotation.ReplayGraceCache
+    """
+
+    def __init__(self) -> None:
+        self.entries: dict[str, ReplayGraceEntry] = {}
+
+    async def remember(self, jti: str, *, pair: TokenPair, holder_key: str) -> None:
+        self.entries[jti] = ReplayGraceEntry(pair=pair, holder_key=holder_key)
+
+    async def recall(self, jti: str) -> ReplayGraceEntry | None:
+        return self.entries.get(jti)
 
 
 def _pair(**overrides: Any) -> TokenPair:
@@ -536,4 +554,178 @@ async def test_lifetime_caps_can_be_resolved_per_session() -> None:
             signer=_SIGNER,
             ledger=_Ledger(),
             lifetime_caps=caps_for,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Replay grace: a lost response is not a theft signal.
+# ---------------------------------------------------------------------------
+
+
+def _refresh_jti(pair: TokenPair) -> str:
+    """The jti the ledger redeems -- read off the REFRESH token.
+
+    `TokenPair.claims` is the ACCESS token's claims (see its docstring), whose jti is a
+    different value entirely; keying a grace lookup on it would silently never match.
+    """
+    return verify_session_token(pair.refresh_token, verifier=_VERIFIER, expected_type=TokenType.REFRESH).jti
+
+
+def test_the_grace_cache_double_satisfies_its_protocol() -> None:
+    assert isinstance(_GraceCache(), ReplayGraceCache)
+
+
+async def test_a_successful_rotation_remembers_its_pair_under_the_redeemed_jti() -> None:
+    original = _pair()
+    grace = _GraceCache()
+    rotated = await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=_Ledger(),
+        holder_key=_THUMBPRINT,
+        replay_grace=grace,
+    )
+    remembered = grace.entries[_refresh_jti(original)]
+    assert remembered.pair.refresh_token == rotated.refresh_token
+    assert remembered.holder_key == _THUMBPRINT
+
+
+async def test_a_replay_within_grace_returns_the_same_pair_and_does_not_revoke() -> None:
+    # The laptop slept (or the network dropped) between the server rotating and the client
+    # storing the reply, so the client presents the same token again. It proved possession
+    # of the bound key to get here, which a thief holding only the token bytes cannot do.
+    original = _pair()
+    ledger, revoker, grace = _Ledger(), _Revoker(), _GraceCache()
+    first = await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=ledger,
+        revoker=revoker,
+        holder_key=_THUMBPRINT,
+        replay_grace=grace,
+    )
+    second = await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=ledger,
+        revoker=revoker,
+        holder_key=_THUMBPRINT,
+        replay_grace=grace,
+    )
+    assert second.refresh_token == first.refresh_token
+    assert second.access_token == first.access_token
+    # The session survives: this was the legitimate holder all along.
+    assert original.claims.sid not in revoker.revoked
+
+
+async def test_a_replay_outside_grace_still_revokes_the_family() -> None:
+    # The cache is TTL-bounded; once the entry is gone the replay is indistinguishable from
+    # theft again, and the original response stands unchanged.
+    original = _pair()
+    ledger, revoker, grace = _Ledger(), _Revoker(), _GraceCache()
+    await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=ledger,
+        revoker=revoker,
+        holder_key=_THUMBPRINT,
+        replay_grace=grace,
+    )
+    grace.entries.clear()  # what the store's TTL does on its own
+    with pytest.raises(RotationError, match="already been used"):
+        await rotate_refresh_token(
+            original.refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=ledger,
+            revoker=revoker,
+            holder_key=_THUMBPRINT,
+            replay_grace=grace,
+        )
+    assert original.claims.sid in revoker.revoked
+
+
+async def test_a_grace_entry_recorded_under_another_key_is_not_honoured() -> None:
+    # Defence in depth. Step 6 already refuses a mismatched proof before redemption, so this
+    # can only arise from a cache serving an entry that was never this holder's -- which
+    # must read as theft, not as grace.
+    original = _pair()
+    ledger, revoker, grace = _Ledger(), _Revoker(), _GraceCache()
+    rotated = await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=ledger,
+        revoker=revoker,
+        holder_key=_THUMBPRINT,
+        replay_grace=grace,
+    )
+    grace.entries[_refresh_jti(original)] = ReplayGraceEntry(pair=rotated, holder_key="someone-elses-key")
+    with pytest.raises(RotationError, match="already been used"):
+        await rotate_refresh_token(
+            original.refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=ledger,
+            revoker=revoker,
+            holder_key=_THUMBPRINT,
+            replay_grace=grace,
+        )
+    assert original.claims.sid in revoker.revoked
+
+
+async def test_without_a_grace_cache_reuse_behaves_exactly_as_before() -> None:
+    # The parameter is additive: a deployment that supplies nothing keeps the original
+    # revoke-the-family response, which is what every existing caller gets.
+    original = _pair()
+    ledger, revoker = _Ledger(), _Revoker()
+    await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=ledger,
+        revoker=revoker,
+        holder_key=_THUMBPRINT,
+    )
+    with pytest.raises(RotationError, match="already been used"):
+        await rotate_refresh_token(
+            original.refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=ledger,
+            revoker=revoker,
+            holder_key=_THUMBPRINT,
+        )
+    assert original.claims.sid in revoker.revoked
+
+
+async def test_post_redemption_checks_still_run_on_a_grace_replay() -> None:
+    # A subject who lost the right to hold the session must not get it back by replaying.
+    original = _pair()
+    ledger, grace = _Ledger(), _GraceCache()
+    await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=ledger,
+        holder_key=_THUMBPRINT,
+        replay_grace=grace,
+    )
+
+    async def _deny(_claims: Any) -> str:
+        return "principal is blocked."
+
+    with pytest.raises(RotationError, match="principal is blocked"):
+        await rotate_refresh_token(
+            original.refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=ledger,
+            holder_key=_THUMBPRINT,
+            replay_grace=grace,
+            post_redemption_checks=(_deny,),
         )

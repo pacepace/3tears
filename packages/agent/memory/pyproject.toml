@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-memory"
-version = "0.31.0"
+version = "0.32.0"
 description = "Memory system for LLM agents -- extraction, retrieval, hybrid search, and MMR reranking"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,11 +22,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.31.0,<0.32.0",
-    "3tears-agent-acl>=0.31.0,<0.32.0",
-    "3tears-langgraph>=0.31.0,<0.32.0",
-    "3tears-nats>=0.31.0,<0.32.0",
-    "3tears-observe>=0.31.0,<0.32.0",
+    "3tears>=0.32.0,<0.33.0",
+    "3tears-agent-acl>=0.32.0,<0.33.0",
+    "3tears-langgraph>=0.32.0,<0.33.0",
+    "3tears-nats>=0.32.0,<0.33.0",
+    "3tears-observe>=0.32.0,<0.33.0",
     "pgvector",
     "uuid-utils",  # uuid7 ids (memory.tools, .dream, .extraction)
     "langchain-core",
