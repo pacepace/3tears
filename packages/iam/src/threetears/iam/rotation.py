@@ -2,10 +2,21 @@
 
 Presenting a valid refresh token issues a new pair and invalidates the one
 presented. Presenting a refresh token that has ALREADY been rotated away is the
-theft signal: a legitimate client never replays a token it has already
-exchanged, so a second redemption means two parties hold the same token and one
-of them stole it. The response is to revoke the entire session family, forcing
-re-authentication -- which the attacker cannot do and the real user can.
+theft signal: a second redemption ordinarily means two parties hold the same
+token and one of them stole it. The response is to revoke the entire session
+family, forcing re-authentication -- which the attacker cannot do and the real
+user can.
+
+**With one exception, and it is not a hole.** A legitimate client also replays
+when it never RECEIVED the reply -- a laptop suspended mid-request, a network
+changed while moving, a tab discarded. It still holds the old token because the
+new one never reached it. Without :class:`ReplayGraceCache` that user is logged
+out for being unlucky rather than for being attacked, and the logs read as
+theft. Supplying one lets a replay be answered with the SAME pair the lost reply
+carried, for a few tens of seconds, and only when the replay proves possession
+of the key bound in ``cnf`` -- which step 6 has already checked and a thief
+holding only the token bytes cannot do. Outside that window, or under any other
+key, the family is revoked exactly as before.
 
 **The check order is load-bearing.** Each step is placed where it is for a
 reason, and reordering them reintroduces a specific bug:
@@ -75,6 +86,8 @@ __all__ = [
     "LifetimeCapsSource",
     "RefreshGate",
     "RefreshTokenLedger",
+    "ReplayGraceCache",
+    "ReplayGraceEntry",
     "RotationError",
     "SessionLifetimeCaps",
     "SessionRevoker",
@@ -153,6 +166,54 @@ class SessionRevoker(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayGraceEntry:
+    """What a rotation issued, kept briefly so its holder can ask for it twice.
+
+    :ivar pair: the pair the original redemption minted -- returned verbatim to a replay
+        inside the grace window, so the client ends up holding exactly what it would have
+        held had the first reply arrived.
+    :ivar holder_key: the ``cnf`` thumbprint the original redeemer proved. A replay must
+        prove the SAME key; an entry recorded under any other is not this holder's and is
+        treated as reuse.
+    """
+
+    pair: TokenPair
+    holder_key: str
+
+
+@runtime_checkable
+class ReplayGraceCache(Protocol):
+    """Short-lived memory of what each redemption issued, so a LOST REPLY is not read as theft.
+
+    Reuse detection assumes a legitimate client never replays a token it has exchanged.
+    That is false in one ordinary case: the server redeems the token and mints the reply,
+    and the reply never arrives -- a laptop suspended mid-request, a network changed on the
+    move, a tab discarded. The client still holds the old token, presents it again, and a
+    detector without this cache revokes the whole family and logs the user out for being
+    unlucky rather than for being attacked.
+
+    What makes honouring the replay safe is that it happens AFTER step 6: the caller has
+    already proven possession of the key bound in ``cnf``, which a thief holding only the
+    token bytes cannot do. The replay is therefore the same client, and it is handed the
+    same pair -- no new grant, no extended lifetime, nothing the first reply would not have
+    given it.
+
+    **Implementations MUST bound entries by a short TTL** (tens of seconds -- long enough
+    to cover a lost reply, short enough that a token copied off the wire is useless by the
+    time it is used). The window is the store's own, not this module's: outside it, `recall`
+    simply misses and the original revoke-the-family response stands.
+    """
+
+    async def remember(self, jti: str, *, pair: TokenPair, holder_key: str) -> None:
+        """Record what redeeming ``jti`` issued, under the holder key that redeemed it."""
+        ...
+
+    async def recall(self, jti: str) -> ReplayGraceEntry | None:
+        """Return what ``jti`` issued, or ``None`` once the window has closed."""
+        ...
+
+
 async def rotate_refresh_token(
     refresh_token: str,
     *,
@@ -162,6 +223,7 @@ async def rotate_refresh_token(
     revoker: SessionRevoker | None = None,
     holder_key: HolderKeySource | None = None,
     lifetime_caps: LifetimeCapsSource | None = None,
+    replay_grace: ReplayGraceCache | None = None,
     pre_redemption_checks: Sequence[RefreshGate] = (),
     post_redemption_checks: Sequence[RefreshGate] = (),
     access_ttl: timedelta = DEFAULT_ACCESS_TTL,
@@ -193,6 +255,12 @@ async def rotate_refresh_token(
     :param lifetime_caps: how long the session may live. Pass a resolver where the caps come
         from per-tenant policy, which cannot be read until ``customer_id`` is known.
     :ptype lifetime_caps: LifetimeCapsSource | None
+    :param replay_grace: brief memory of what each redemption issued, so a client whose
+        reply was LOST (a suspended laptop, a network changed mid-request) is handed that
+        same reply again instead of having its session revoked for replaying. Safe because
+        the replay has already proven possession of the bound holder key at step 6. ``None``
+        keeps the original behaviour exactly: every replay is reuse.
+    :ptype replay_grace: ReplayGraceCache | None
     :param pre_redemption_checks: additional deny rules, run in order at step 4 -- after the
         standing revocation and lifetime checks, before the proof of possession, and before
         anything has been consumed. This is where a deployment's own revocation shapes
@@ -234,20 +302,28 @@ async def rotate_refresh_token(
 
     # 7. Redemption -- the only consuming step.
     if not await ledger.redeem(claims.jti):
-        # Already spent. A legitimate client never replays a token it has exchanged, so two
-        # parties hold this one and the session is compromised.
-        log.warning(
-            "refresh token reuse detected; revoking the session family",
-            extra={"extra_data": {"sid": claims.sid}},
-        )
-        if revoker is not None:
-            await revoker.revoke_session(claims.sid)
-        raise RotationError("refresh token has already been used.")
+        # Already spent. Two readings: the holder never received the reply and is asking
+        # again, or two parties hold this token. `_replayed_within_grace` separates them by
+        # the one thing a thief cannot forge -- the holder key proven at step 6.
+        replayed = await _replayed_within_grace(claims, resolved_cnf, replay_grace)
+        if replayed is None:
+            log.warning(
+                "refresh token reuse detected; revoking the session family",
+                extra={"extra_data": {"sid": claims.sid}},
+            )
+            if revoker is not None:
+                await revoker.revoke_session(claims.sid)
+            raise RotationError("refresh token has already been used.")
+        # The same client, handed the same pair the lost reply carried. Deny rules that run
+        # against an already-spent token still apply: a subject who lost the right to hold
+        # this session must not recover it by replaying.
+        await _run_gates(post_redemption_checks, claims)
+        return replayed
 
     # 8. Deny rules that must run against an already-spent token.
     await _run_gates(post_redemption_checks, claims)
 
-    return mint_token_pair(
+    pair = mint_token_pair(
         subject=claims.sub,
         session_id=claims.sid,
         issuer=claims.iss,
@@ -270,6 +346,34 @@ async def rotate_refresh_token(
         refresh_ttl=refresh_ttl,
         now=moment,
     )
+    if replay_grace is not None:
+        # Filed under the jti just REDEEMED -- the one a lost reply leaves the client still
+        # holding, and therefore the one it will present again.
+        await replay_grace.remember(claims.jti, pair=pair, holder_key=resolved_cnf)
+    return pair
+
+
+async def _replayed_within_grace(
+    claims: SessionClaims,
+    resolved_cnf: str,
+    replay_grace: ReplayGraceCache | None,
+) -> TokenPair | None:
+    """The pair a lost reply carried, when this replay is provably its holder, else ``None``.
+
+    ``None`` means "treat as reuse": no cache configured, the window has closed, or the
+    entry belongs to another holder key -- which cannot arise from step 6 alone and so must
+    read as theft rather than as grace.
+    """
+    if replay_grace is None:
+        return None
+    entry = await replay_grace.recall(claims.jti)
+    if entry is None or entry.holder_key != resolved_cnf:
+        return None
+    log.info(
+        "refresh token replayed inside the grace window; returning the issued pair",
+        extra={"extra_data": {"sid": claims.sid}},
+    )
+    return entry.pair
 
 
 async def _run_gates(gates: Sequence[RefreshGate], claims: SessionClaims) -> None:
