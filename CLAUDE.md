@@ -63,12 +63,53 @@ uv sync                    # install all packages in dev mode
 |---|---|
 | `./scripts/test.sh` | Run tests (all packages, or specify one: `./scripts/test.sh core`) |
 | `./scripts/test-sidecar.sh` | Run the nodriver sidecar's own tests. Separate because nodriver is AGPL-3.0 and never enters the workspace venv, so `test.sh` carries `--ignore` for the sidecar and cannot run these. Separate but not optional -- `check-all.sh` runs it, and until it existed a ruff autofix wrote a syntax error into `hitl.py` that passed lint, mypy and the entire workspace suite |
-| `./scripts/test-integration.sh` | Run the integration tests, which `test.sh` deliberately excludes (`-m "not integration"`). **`check-all.sh` does NOT run these** -- they spin real NATS/Postgres containers and need Docker, so folding them into the default gate would break it wherever Docker is absent. Run them before any PR: cross-pod behaviour lives entirely here, and a green `check-all.sh` says nothing about it. `project-state.yaml` lists this as the third declared test command, so recorded evidence that omits it covers two suites out of three |
+| `./scripts/test-integration.sh` | Run the integration tests, which `test.sh` deliberately excludes (`-m "not integration"`). **`check-all.sh` does NOT run these** -- they spin real NATS/Postgres containers and need Docker, so folding them into the default gate would break it wherever Docker is absent. **CI CANNOT RUN THESE -- GitHub Actions has no Docker -- so YOU run them LOCALLY before any commit or PR.** Nothing else will, ever. Cross-pod behaviour lives entirely here, and a green `check-all.sh` says nothing about it. See the section below for what a pass actually looks like. `project-state.yaml` lists this as the third declared test command, so recorded evidence that omits it covers two suites out of three |
 | `./scripts/lint.sh` | Run ruff check + format check (`--fix` to auto-fix) |
 | `./scripts/typecheck.sh` | Run mypy on all packages |
 | `./scripts/check-all.sh` | Run lint + typecheck + tests |
 
 Extra args pass through: `./scripts/test.sh core -v -x`
+
+## ⚠️ INTEGRATION TESTS RUN LOCALLY, AND A SKIP IS NOT A PASS
+
+`./scripts/test-integration.sh` is the only thing that exercises cross-pod
+behaviour, and **no CI run anywhere executes it** -- GitHub Actions has no
+Docker. If you did not run it on this machine, it did not run. Run it before
+any commit or PR, not only before a release.
+
+**Exit 0 is not evidence.** The suite exits 0 with tests skipped, so a skipped
+test reads exactly like a passing one in the summary line. Run it as
+`./scripts/test-integration.sh -rs` and account for every skip in the list.
+
+This is not hypothetical. `test_a_real_display_is_driven_through_the_pipe` was
+unpassable on every machine for three weeks after the 2026-08-18 change that
+made the sidecar's `BIND_HOST` default to loopback -- correct for the shipping
+Kubernetes shape, wrong for a testcontainer, which has its own network
+namespace. Nobody saw it, because the test skips when the sidecar image is
+absent and CI never runs the suite at all. **The skip that hid the breakage was
+also the reason nobody noticed.** It was found only when a release stopped to
+ask why 35 tests were skipping.
+
+**Build the sidecar image first**, or its integration tests skip:
+
+```bash
+docker buildx bake --file docker-bake.hcl nodriver-sidecar \
+  --set nodriver-sidecar.platform=linux/amd64 --load
+```
+
+The bake target is multi-platform and the local `docker` driver refuses that
+("Multi-platform build is not supported for the docker driver"), hence the
+`--set ... platform` and `--load`. A bare `docker buildx bake nodriver-sidecar`
+exits non-zero having built nothing -- and piping it through `tee` masks that
+exit code, which is how it looked like it had worked.
+
+Skips that ARE legitimate on a dev box, because they need credentials or tools
+this repo does not ship: the Redshift live tests (`OTS_REDSHIFT_PASSWORD`), the
+backup suites (`pg_dump`/`pg_restore`/`psql` on PATH), and one deliberate
+manual microbenchmark. Anything else is a test you have turned off by accident.
+
+When reporting results, state the pass count AND the remaining skips with their
+reasons. "Integration green" on its own is not a report.
 
 ## Structure
 
