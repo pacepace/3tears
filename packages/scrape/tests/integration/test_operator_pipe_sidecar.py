@@ -127,6 +127,15 @@ async def display_address() -> AsyncIterator[tuple[str, int]]:
     """
     _docker_or_skip()
     container = DockerContainer(_IMAGE).with_exposed_ports(_API_PORT, _FORWARD_PORT)
+    # The API binds LOOPBACK by default (entrypoint.sh, BIND_HOST), which is right for the
+    # shipping shape -- Kubernetes, where the front-door container shares the pod's network
+    # namespace. A testcontainer has its OWN namespace, so loopback makes the published port
+    # unreachable and the health wait below fails with "Server disconnected without sending a
+    # response" after its full two minutes. docker-compose.yml widens it for the same reason
+    # and says so; this must too. Without it this test could not pass at all after the
+    # 2026-08-18 change to a loopback default, and nothing noticed because it skips for want
+    # of the image on any machine that has not built one.
+    container.with_env("BIND_HOST", "0.0.0.0")
     # Chromium is started by the entrypoint whatever this test does with it, and the Docker
     # default of 64 MB of shared memory crashes its renderer on a real page.
     container.with_kwargs(shm_size="1g")
