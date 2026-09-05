@@ -1679,3 +1679,127 @@ class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
         # weeks. Asserted because the comment claiming it was the only thing holding it: deleting
         # the `await proc.wait()` left the whole suite green.
         assert reaped == [True], "the killed child was never reaped, so it lingers as a zombie"
+
+
+class TestRenderPathHealsAfterHitl:
+    """The regression guard for the live wedge (2026-09-05).
+
+    A HITL session's isolated contexts live in the ONE Chromium the render path also drives, and
+    disposing one was observed to leave that browser unable to open a fresh ``/v1/render`` tab --
+    every render timed out until the container was restarted. ``hitl.SessionManager`` now calls
+    ``main._heal_render_path_after_hitl`` after any dispose; these pin that it probes the render
+    path and relaunches the browser exactly when that probe is wedged, and not otherwise.
+
+    No real Chromium: ``main.uc.start`` is faked so a "relaunch" hands back another fake browser,
+    exactly the seam ``main._browser`` is already faked at everywhere else in this file.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fast_and_quiet(self, monkeypatch: pytest.MonkeyPatch):
+        # The probe waits this long before calling a wedge a wedge; a real 15s would make the
+        # wedged-browser test glacial, and the timeout value is not what is under test.
+        monkeypatch.setattr(main, "_HITL_HEALTHCHECK_TIMEOUT_SECONDS", 0.05)
+
+        async def _no_hide() -> None:
+            return None
+
+        # Iconifying a window needs a live X display and window manager; irrelevant to the heal.
+        monkeypatch.setattr(main, "_hide_the_idle_window", _no_hide)
+        # No live session by default, so a relaunch is permitted -- the tests that need a session
+        # holding tabs override this.
+        monkeypatch.setattr(main, "_sessions", SimpleNamespace(current=lambda: None))
+        yield
+
+    @staticmethod
+    def _healthy_browser() -> _FakeBrowser:
+        return _FakeBrowser(tab=_FakeTab(html="<html></html>", url="https://example.com", response_status=200))
+
+    async def test_a_healthy_render_path_is_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A browser that still renders must not be torn down -- the probe is not a reset button."""
+        healthy = self._healthy_browser()
+        main._browser = healthy
+        main._ready = True
+
+        started: list[bool] = []
+
+        async def _must_not_start(**_kwargs: object) -> _FakeBrowser:
+            started.append(True)
+            return self._healthy_browser()
+
+        monkeypatch.setattr(main.uc, "start", _must_not_start)
+
+        await main._heal_render_path_after_hitl()
+
+        assert main._browser is healthy, "a healthy browser was needlessly replaced"
+        assert started == [], "the browser was relaunched despite the render path being healthy"
+        assert main._ready is True
+
+    async def test_a_wedged_render_path_is_relaunched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The wedge itself: the probe hangs, so the browser is swapped for a fresh, working one."""
+        wedged = _FakeBrowser(hang=True)
+        main._browser = wedged
+        main._ready = True
+
+        fresh = self._healthy_browser()
+
+        async def _fake_start(**_kwargs: object) -> _FakeBrowser:
+            return fresh
+
+        monkeypatch.setattr(main.uc, "start", _fake_start)
+
+        await main._heal_render_path_after_hitl()
+
+        assert main._browser is fresh, "the wedged browser was not relaunched"
+        assert main._browser is not wedged
+        assert main._ready is True, "the fresh browser was left not-ready after its warm-up"
+
+    async def test_a_wedged_browser_is_not_relaunched_under_a_live_session_with_tabs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Withheld when it would drop an operator's open tabs.
+
+        A relaunch drops every context, so completing ONE tab of a multi-tab session must not
+        reap the others here. The wedge is real, but those tabs ride the same wedged browser and
+        are the session's own close (or the reaper) to clean up once the operator is done.
+        """
+        wedged = _FakeBrowser(hang=True)
+        main._browser = wedged
+        main._ready = True
+
+        monkeypatch.setattr(main, "_sessions", SimpleNamespace(current=lambda: SimpleNamespace(tabs={"t": object()})))
+
+        started: list[bool] = []
+
+        async def _must_not_start(**_kwargs: object) -> _FakeBrowser:
+            started.append(True)
+            return self._healthy_browser()
+
+        monkeypatch.setattr(main.uc, "start", _must_not_start)
+
+        await main._heal_render_path_after_hitl()
+
+        assert main._browser is wedged, "an operator's open tabs were dropped by a relaunch here"
+        assert started == [], "the browser was relaunched while a live session still held tabs"
+
+    async def test_healing_with_no_browser_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Before startup there is nothing to probe, and the healer must not raise trying."""
+        main._browser = None
+
+        async def _must_not_start(**_kwargs: object) -> _FakeBrowser:
+            raise AssertionError("uc.start was called with no browser to heal")
+
+        monkeypatch.setattr(main.uc, "start", _must_not_start)
+
+        await main._heal_render_path_after_hitl()  # must simply return
+
+        assert main._browser is None
+
+
+def test_the_healer_is_wired_onto_the_session_manager() -> None:
+    """The mechanism only works if the manager actually calls into it.
+
+    Deliberately outside ``TestRenderPathHealsAfterHitl`` so its autouse fixture (which swaps
+    ``main._sessions`` for a stub) does not hide the real object -- this asserts the wiring
+    ``main`` performs at import, which is what makes every dispose path reach the healer.
+    """
+    assert main._sessions.on_browser_dirtied is main._heal_render_path_after_hitl

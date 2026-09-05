@@ -47,7 +47,7 @@ import os
 import secrets
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -476,6 +476,7 @@ class SessionManager:
         browser_provider: Callable[[], Any] | None = None,
         max_slots: int = DEFAULT_MAX_SLOTS,
         ttl_seconds: float = DEFAULT_SESSION_TTL_SECONDS,
+        on_browser_dirtied: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """
         :param vnc: the display lifecycle a session opens and closes
@@ -486,11 +487,22 @@ class SessionManager:
         :ptype max_slots: int
         :param ttl_seconds: hard lifetime; the reaper closes a session past it
         :ptype ttl_seconds: float
+        :param on_browser_dirtied: awaited, best-effort, after any path disposes one or more of
+            this session's isolated browser contexts (a tab completing, a session closing, a
+            reap). It exists because those contexts share the ONE Chromium the ``/v1/render``
+            path also drives, and disposing a HITL context has been observed live to leave that
+            shared browser unable to open a fresh render tab until the container is restarted --
+            so the owner is given a hook to confirm the render path survived and repair it if it
+            did not. Settable after construction too, since ``main`` builds this at import time
+            and only has the healer once its own render helpers are defined.
+        :ptype on_browser_dirtied: Callable[[], Awaitable[None]] | None
         """
         self._vnc = vnc if vnc is not None else VncLifecycle()
         self._browser_provider = browser_provider
         self._max_slots = max_slots
         self._ttl_seconds = ttl_seconds
+        #: See the constructor parameter. Public so ``main`` can wire it after building this.
+        self.on_browser_dirtied = on_browser_dirtied
         self._session: HitlSession | None = None
         self._reaper: asyncio.Task[None] | None = None
         # Every mutation of _session and its tabs runs under this. Slot accounting is a
@@ -742,6 +754,10 @@ class SessionManager:
             len(session.tabs),
             session.max_slots,
         )
+        # Outside the lock, on purpose: the healer drives the shared browser (a render, and a
+        # relaunch if that render is wedged), which is exactly the CDP work `complete_tab`
+        # keeps out of the critical section so a stuck browser cannot defeat the TTL.
+        await self._notify_browser_dirtied()
         return tab
 
     async def close(self, session: HitlSession | None = None) -> None:
@@ -758,6 +774,10 @@ class SessionManager:
                 await self._vnc.stop()
                 return
             await self._close_locked(target)
+        # A session's contexts were just disposed, so confirm the shared render path survived
+        # them. Outside the lock for the same reason as `complete_tab`: the healer drives the
+        # browser and a wedged one must not block whatever called teardown.
+        await self._notify_browser_dirtied()
 
     async def reap(self, *, now: float | None = None) -> bool:
         """Close the session if its hard TTL has passed. Returns whether it did.
@@ -778,7 +798,11 @@ class SessionManager:
                 len(session.tabs),
             )
             await self._close_locked(session)
-            return True
+        # The reaper disposes contexts too, so it must heal the shared render path just like an
+        # operator-driven close does -- otherwise a session that timed out silently wedges every
+        # later /v1/render. Outside the lock, matching `close`.
+        await self._notify_browser_dirtied()
+        return True
 
     async def _close_locked(self, session: HitlSession) -> None:
         """Teardown, with the lock already held."""
@@ -805,6 +829,23 @@ class SessionManager:
                 tab.tab_id,
                 extra={"extra_data": {"tab_id": tab.tab_id, "target_id": tab.target_id}},
             )
+
+    async def _notify_browser_dirtied(self) -> None:
+        """Tell the owner a HITL context was just disposed, best-effort.
+
+        The one Chromium these contexts live in is also what ``/v1/render`` drives, and
+        disposing a HITL context has been observed to leave that shared browser unable to open
+        a new render tab. This is the seam where the owner gets to check and repair it. A hook
+        that raises must never turn a completed tab or a torn-down session into an error -- the
+        human's work is already done and the display is already gone by the time this runs.
+        """
+        hook = self.on_browser_dirtied
+        if hook is None:
+            return
+        try:
+            await hook()
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the render-path health hook is a post-teardown courtesy; its failure must not surface as a failed completion or a failed close, and it logs its own detail below
+            log.exception("hitl: the post-dispose render-path health hook failed")
 
     async def _export_state(self, tab: HitlTab) -> dict[str, Any] | None:
         """Read the cookies and origin storage a human's work left in *tab*'s context.

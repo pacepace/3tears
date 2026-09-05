@@ -1,6 +1,6 @@
 [project]
 name = "nodriver-sidecar"
-version = "0.2.0"
+version = "0.2.1"
 description = "Thin HTTP wrapper around nodriver + Xvfb -- AGPL-3.0, never imported into 3tears-scrape's MIT tree."
 requires-python = ">=3.12"
 dependencies = [

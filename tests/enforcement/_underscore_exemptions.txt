@@ -605,6 +605,46 @@ packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsN
 packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_chromium_is_launched_on_a_blank_page#0:_browser_args
 # rationale: the subprocess boundary's TIMEOUT arm, which is a different claim: a hung call must KILL its child, because wait_for cancels the await and not the process -- a leaked process for the life of a long-running unattended container
 packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_a_hung_window_manager_call_is_killed_rather_than_abandoned#0:_wm_output
+# rationale: arranges the healthy case by planting a fake browser in the sidecar's module-global shared-browser slot; that global IS the thing the healer decides about, and there is no setter for it -- the container owns exactly one browser and only its own startup writes it
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_healthy_render_path_is_left_alone#0:_browser
+# rationale: arranges the readiness flag alongside the browser so the healer sees a fully started container rather than a half-warmed one; the flag is module-global state with no accessor and the assertion below is that a no-op heal leaves it alone
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_healthy_render_path_is_left_alone#0:_ready
+# rationale: invokes the healer itself, which is the unit under test; it is module-private because nothing outside the container may call it -- it is wired onto the session manager at import and reached only through a dispose
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_healthy_render_path_is_left_alone#0:_heal_render_path_after_hitl
+# rationale: asserts the healthy browser is still the SAME object after the probe -- the probe must not be a reset button, and identity of the module-global slot is the only way to observe that no relaunch happened
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_healthy_render_path_is_left_alone#1:_browser
+# rationale: asserts the readiness flag survived a no-op heal; a heal that cleared it would take the container out of service on a healthy browser, which no public surface would reveal at this seam
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_healthy_render_path_is_left_alone#1:_ready
+# rationale: plants a hanging fake in the module-global browser slot to reproduce the wedge the fix exists for; a real wedged Chromium cannot be produced at this seam, so the global is the injection point
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_render_path_is_relaunched#0:_browser
+# rationale: sets the readiness flag so the wedged browser is reached as a started container would reach it, not as a cold start the healer would skip
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_render_path_is_relaunched#0:_ready
+# rationale: invokes the healer on the wedged browser -- the central claim of the fix, and the function is container-private for the reason given at its other call sites
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_render_path_is_relaunched#0:_heal_render_path_after_hitl
+# rationale: asserts the module-global slot now holds the FRESH browser, which is how a relaunch is observed: the swap happens in that global and nothing else reports it
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_render_path_is_relaunched#1:_browser
+# rationale: asserts the same slot no longer holds the wedged browser -- the negative half, which catches a heal that appended a browser rather than replacing the one that renders
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_render_path_is_relaunched#2:_browser
+# rationale: asserts the readiness flag is back to True after the relaunch's warm-up; a relaunch that left it False would heal the wedge and then fail every healthcheck, which is the same outage under a different name
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_render_path_is_relaunched#1:_ready
+# rationale: plants the wedged browser for the withheld-relaunch case; the relaunch decision reads this global, so the scenario cannot be set up anywhere else
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_browser_is_not_relaunched_under_a_live_session_with_tabs#0:_browser
+# rationale: sets readiness so the withholding is tested on a started container, matching the state a live operator session actually implies
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_browser_is_not_relaunched_under_a_live_session_with_tabs#0:_ready
+# rationale: invokes the healer while a live session still holds tabs, the case where it must decline to act; the function is container-private for the reason given at its other call sites
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_browser_is_not_relaunched_under_a_live_session_with_tabs#0:_heal_render_path_after_hitl
+# rationale: asserts the wedged browser is STILL in the slot -- a relaunch here would drop every context and take an operator's other open tabs with it, and the unchanged global is the only evidence it was withheld
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_a_wedged_browser_is_not_relaunched_under_a_live_session_with_tabs#1:_browser
+# rationale: clears the module-global slot to reproduce the pre-startup window, where a dispose hook can fire with nothing to probe; None is only reachable by writing the global directly
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_healing_with_no_browser_is_a_no_op#0:_browser
+# rationale: invokes the healer with no browser present, pinning that it returns rather than raising into a dispose path that ignores its result; the function is container-private as at its other call sites
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_healing_with_no_browser_is_a_no_op#0:_heal_render_path_after_hitl
+# rationale: asserts the slot is still None, so the no-op did not construct a browser as a side effect of being asked to heal one that does not exist
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderPathHealsAfterHitl.test_healing_with_no_browser_is_a_no_op#1:_browser
+# rationale: names the healer as the expected hook value; the whole mechanism is dead unless this exact function is the one the manager holds, and comparing identity requires the private name
+packages/scrape/sidecar/tests/test_render_contract.py:test_the_healer_is_wired_onto_the_session_manager#0:_heal_render_path_after_hitl
+# rationale: reads the container's real module-global SessionManager to assert main wired the hook onto it at import; a stub would prove nothing here, which is why this test sits outside the class whose fixture swaps that global
+packages/scrape/sidecar/tests/test_render_contract.py:test_the_healer_is_wired_onto_the_session_manager#0:_sessions
 
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
 packages/scrape/tests/test_collections.py:test_target_falls_back_to_in_memory_dict_when_no_l3_configured#0:_rows
