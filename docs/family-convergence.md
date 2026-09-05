@@ -310,10 +310,12 @@ shape the extraction:
   independently of the SQL text. No query in the port carries an environment
   predicate of its own.
 
-  **One prerequisite this bullet named is still open:** `universe` is not
-  generalised to `scope`. The package holds 33 `universe_id` references and no
-  `scope_id`, so the port is carved under host vocabulary. See the gap list at the
-  end of this section.
+  **The prerequisite this bullet named has since been met** (re-checked 2026-09-05;
+  it read "still open -- 33 `universe_id` references and no `scope_id`" until then).
+  `universe` is generalised to `scope` everywhere that travels: `identity.py` stamps
+  `scope_id`, and the analysis tree carries no `universe_id` at all. The name survives
+  only in discodon's own host-resident modules, which is where the requirement leaves
+  it. So the port is no longer carved under host vocabulary. discodon #2397.
 - **The analysis *core* is dependency-free; the analysis *generator* is
   not.** `analysis/bundle.py` and its models are stdlib + pydantic as
   claimed. `analysis/generator.py` imports the host's OpenRouter client and
@@ -326,11 +328,18 @@ shape the extraction:
   - if the coupling still fights, gen extracts last -- it gates nothing, and
     open question 3 already contemplates folding it.
 
-  **Status 2026-08-20.** The narrow completion protocol exists -- 
+  **Status 2026-09-05** (was 2026-08-20). The narrow completion protocol exists --
   `discodon/eval/provider.py` declares `CompletionClient` and `CompletionResult`
-  as Protocols, and it is a registered contract surface. The package still imports
-  `discodon.llm`; the remaining edges are enumerated (discodon #2402 -- #2407) rather
-  than closed.
+  as Protocols, and it is a registered contract surface. **The generator no longer
+  imports the host's client** (discodon #2403), and the analysis tree as a whole
+  reaches nothing outside `discodon.eval` -- `analysis/` is at the full rule with
+  zero debt, so this bullet's premise is discharged. Four of the six enumerated
+  `discodon.llm` edges are closed (#2402, #2403, #2404, #2407); the two that remain
+  are in discodon's host-wiring modules, not the contracts candidates. The protocol
+  also gained a **failure half** the original bullet did not anticipate:
+  `ProviderFailure` plus a host-injected describer, whose default withholds
+  everything and says why -- so a host that wires nothing loses diagnostic text
+  rather than leaking a provider's response envelope into a stored row.
 - **Budget machinery is port-shaped already, and the reshape once asked for
   here is withdrawn (2026-08-19).** `EvalRunCostCap` carries a literal
   `record()`/`exceeded` pair; the daily budget mixin returns a host
@@ -407,10 +416,13 @@ contract**: they are what a real consumer built, and cutting the packages agains
 |---|---|---|
 | `SweepableValue` carries no `display` or `scale` | a readable memo, and a true-spacing axis, for any consumer whose levers are scalars | **Built** -- `discodon/eval/host/values.py`: `content_hash`, a required `display` never derived from the hash, and `scale` in three kinds (`nominal`, `ordinal(rank)`, `interval(value, unit?)`, the last deriving its own display). R9's shape as written |
 | No declared pooling boundary; a pooled composite carries no dimension basis | evaluating subjects that have no self-description | **Built** -- all three R11 obligations. `SubjectSnapshot` carries `subject_id` and `subject_label` as separate `min_length=1` fields; `ScoreRecord.dimension_basis` refuses a value that arrives without its basis, and a basis that arrives without a value; `subject_key_instabilities` warns at population level on one key under two labels or one label under two keys |
-| `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | **Half built** -- the shared-contract half shipped (`EvalAnalysis.scope_ids`, `Observation.scope_id`). What is left is `AnalysisContextBundle.universe_id` and `identity.py`'s `id_universe` parameter, held as shrink-only allowlisted debt under a pinned ceiling rather than as unrecorded coupling. discodon #2397, whose own scope-out declares the run/storage-layer `id_universe` host-resident |
-| Package still imports `discodon.llm` | R1 holding for the analysis generator | **Open**, as recorded -- discodon #2402 -- #2407 |
+| `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | **Built** (2026-09-05; read "half built" until then) -- `identity.py` stamps `scope_id` and the analysis tree carries no `universe_id`. `id_universe` survives only in discodon's host-resident modules, which #2397's own scope-out declares host-resident. Nothing that travels binds under host vocabulary any more |
+| Package still imports `discodon.llm` | R1 holding for the analysis generator | **Discharged for the generator** (2026-09-05) -- #2403 closed and `discodon/eval/analysis/` now reaches nothing outside `discodon.eval`, at the full rule with zero debt. Four of six edges closed (#2402, #2403, #2404, #2407); #2405 and #2393 remain, both in host-wiring modules. #2402 was ruled the *other* way on evidence: `run_judge_llm` is eval core, and a host calling it is the seam working |
 | R8's input registry not built | R10's controllability map, which derives from it | **Built** -- `discodon/eval/host/sweepables.py`: the `lever` / `apparatus` / `label` classification, a `SHARED_CORE` holding only what every LLM product has, and a registration that refuses an `apparatus` input stating no `confounds` prose (*"a bare name is a label"*). The host extends it rather than editing it -- `DISCODON_SWEEPABLE_REGISTRY = SHARED_CORE.extend(...)` |
-| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | **Two axes of four** -- fidelity as before, and **controllability now gates**: campaign authoring asks `HostProfile.controllable` and refuses a design declaring an axis the host has not registered, naming it. `representable` and `observable` have no production caller. discodon #2412, with #2433 and #2421 on the two unreached predicates |
+| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | **Three axes of four** (2026-09-05; read "two" until R12 landed) -- fidelity, controllability, and now **representability**: R12's world registry is built across eight chunks, `representable()` has production callers, and #2421 and #2412 are both closed. Only `observable` still has a predicate and no caller. discodon #2433 |
+| Eval does not own its model base (R2) | eval-contracts installing without `discodon.models` | **Open**, first recorded 2026-09-05. Seven contract modules inherit `discodon.models.base`, and R1's test cannot see it. Evidence and module list: [`eval-extraction-discodon-requirements.md` R2](eval-extraction-discodon-requirements.md). discodon #2468 |
+| Configuration does not arrive as values (R7) | the same install | **Open**, first recorded 2026-09-05. `budget.py` and `metering.py` import `discodon.config`; R1's test cannot see this one either. [`eval-extraction-discodon-requirements.md` R7](eval-extraction-discodon-requirements.md). discodon #2468 |
+| A host tool type is a field on a stored eval model (R4) | the observation schema being host-free | **Open.** The reach is in the stored schema, not only in an import, which is what distinguishes it from the rest. [`eval-extraction-discodon-requirements.md` R4](eval-extraction-discodon-requirements.md). discodon #2406 |
 
 ### 4.3 Prompt management -- identity from discodon; durable tier from scriob's pattern
 
