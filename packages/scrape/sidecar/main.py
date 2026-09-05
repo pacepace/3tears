@@ -913,6 +913,87 @@ def _browser_args() -> list[str]:
     return args
 
 
+#: Budget for the post-HITL render-path health probe. One real navigation to the warm-up URL,
+#: so the warm-up's own timeout is the right shape; when the shared browser is genuinely wedged
+#: this is how long the probe waits before deciding to relaunch.
+_HITL_HEALTHCHECK_TIMEOUT_SECONDS = _WARMUP_TIMEOUT_SECONDS
+
+#: Serialises a browser relaunch against another relaunch. Two HITL contexts disposing back to
+#: back would otherwise both find the render path wedged and both try to relaunch, and the
+#: second would stop the browser the first just started. An in-flight /v1/render is NOT held off
+#: by this -- it reads `_browser` directly -- but a relaunch only happens when that path was
+#: already failing, so there is nothing working to interrupt.
+_relaunch_lock = asyncio.Lock()
+
+
+async def _relaunch_browser() -> None:
+    """Stop the shared Chromium and start a fresh one, then warm it up and re-hide its idle window.
+
+    The recovery of last resort for the render path. A browser left wedged by a disposed HITL
+    context (see :func:`_heal_render_path_after_hitl`) is replaced wholesale rather than nursed,
+    because the wedge is in Chromium's own window/target state and a new process is the one thing
+    guaranteed to clear it -- the same effect a ``docker restart`` had, without the restart.
+
+    Marks the sidecar not-ready across the swap so ``/healthz`` tells the truth while it happens;
+    :func:`_warm_up` sets it ready again once the new browser has proven it can render.
+    """
+    global _browser, _ready
+    _ready = False
+    old = _browser
+    if old is not None:
+        try:
+            old.stop()
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the old browser is being discarded precisely because it is wedged; a failure to stop it cleanly must not stop the replacement from coming up
+            log.warning("hitl: stopping the wedged browser before relaunch failed; replacing it anyway", exc_info=True)
+    _browser = await uc.start(
+        headless=False,
+        browser_executable_path=CHROMIUM_PATH,
+        user_data_dir=_USER_DATA_DIR,
+        sandbox=False,
+        browser_args=_browser_args(),
+    )
+    await _warm_up()
+    await _hide_the_idle_window()
+    log.info("hitl: the shared browser was relaunched and the render path is healthy again")
+
+
+async def _heal_render_path_after_hitl() -> None:
+    """Confirm ``/v1/render`` still works after a HITL context was disposed, and relaunch if not.
+
+    Wired onto :attr:`hitl.SessionManager.on_browser_dirtied`, so it runs after a tab completes,
+    a session closes, or the reaper drops one. The HITL isolated contexts share the ONE Chromium
+    the render path drives, and disposing one has been observed live to leave that browser unable
+    to open a fresh render tab -- every subsequent ``/v1/render`` times out until the container is
+    restarted. This probes the render path with one real navigation and, only if that navigation
+    is wedged, relaunches the browser to clear it.
+
+    The probe is the same operation a render performs, so a healthy browser answers it in about a
+    second and nothing further happens. A relaunch drops every context including any tabs a live
+    session still holds -- but it only runs when the probe already failed, which means those tabs
+    are riding a wedged browser and are lost either way. So it is withheld while a session still
+    holds tabs: nothing there is recoverable, but neither is it this healer's call to reap a
+    session the operator has not finished with. On that path the wedge is logged and left for the
+    session's own close (or the reaper) to heal once the tabs are gone.
+    """
+    async with _relaunch_lock:
+        if _browser is None:
+            return
+        try:
+            await asyncio.wait_for(_render(_WARMUP_URL, None), timeout=_HITL_HEALTHCHECK_TIMEOUT_SECONDS)
+            return
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any failure of the probe render (a timeout, a driver crash, a stale target) is the wedge this exists to catch; the specific class does not change the response, which is to relaunch
+            log.warning("hitl: the render path did not answer after a HITL context was disposed: %s", exc)
+        session = _sessions.current()
+        if session is not None and session.tabs:
+            log.error(
+                "hitl: the render path is wedged but a live session still holds %d tab(s); "
+                "leaving the relaunch to its close so an operator's open tabs are not dropped here",
+                len(session.tabs),
+            )
+            return
+        await _relaunch_browser()
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     global _browser
@@ -1096,6 +1177,12 @@ async def healthz() -> dict[str, str | None]:
 # --------------------------------------------------------------------------
 
 _sessions = hitl.SessionManager(browser_provider=lambda: _browser)
+# Disposing a HITL context can leave the shared browser unable to serve /v1/render (observed
+# live: every render times out until a container restart). The session manager cannot fix that
+# itself -- it holds no render path and imports nothing of one -- so it calls back here after any
+# dispose and this heals it. Set after construction because the healer needs `_render`, defined
+# above, and the manager is built at import time.
+_sessions.on_browser_dirtied = _heal_render_path_after_hitl
 _vnc = _sessions.vnc
 
 

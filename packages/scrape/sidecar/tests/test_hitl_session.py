@@ -608,3 +608,75 @@ class TestCredentialsAreNotRenderable:
         rendered = repr(session)
         assert "live-httponly-value" not in rendered
         assert "super-secret-bearer" not in rendered
+
+
+class TestBrowserDirtiedHook:
+    """The render path shares the one Chromium these contexts live in.
+
+    Disposing a HITL context has been observed live to leave that shared browser unable to open
+    a fresh ``/v1/render`` tab until the container is restarted. The session manager cannot fix
+    that itself -- it holds no render path -- so it calls ``on_browser_dirtied`` after every path
+    that disposes a context, and ``main`` wires the healer onto it. These tests pin that the hook
+    fires on each of those paths, and that a hook which raises never turns a completed tab or a
+    torn-down session into an error.
+    """
+
+    async def test_completing_a_tab_dirties_the_browser(self, manager: SessionManager) -> None:
+        calls: list[int] = []
+        manager.on_browser_dirtied = lambda: calls.append(1) or _noop()  # type: ignore[func-returns-value]
+
+        session = await manager.open(now=1000.0)
+        a = await manager.open_tab(session, target_id="a", url="https://a.example")
+        assert calls == [], "the hook fired before any context was disposed"
+
+        await manager.complete_tab(session, a.tab_id)
+        assert calls == [1], "completing a tab did not signal that the shared browser needs a health check"
+
+    async def test_closing_a_session_dirties_the_browser(self, manager: SessionManager) -> None:
+        calls: list[int] = []
+        manager.on_browser_dirtied = lambda: calls.append(1) or _noop()  # type: ignore[func-returns-value]
+
+        session = await manager.open(now=1000.0)
+        await manager.open_tab(session, target_id="a", url="https://a.example")
+        await manager.close(session)
+        assert calls == [1], "closing a session did not signal that the shared browser needs a health check"
+
+    async def test_reaping_an_expired_session_dirties_the_browser(self, manager: SessionManager) -> None:
+        calls: list[int] = []
+        manager.on_browser_dirtied = lambda: calls.append(1) or _noop()  # type: ignore[func-returns-value]
+
+        session = await manager.open(now=1000.0)
+        await manager.open_tab(session, target_id="a", url="https://a.example")
+
+        reaped = await manager.reap(now=1000.0 + 200.0)
+        assert reaped is True
+        assert calls == [1], "the reaper disposed the contexts but never asked for the render path to be healed"
+
+    async def test_a_reap_that_finds_nothing_does_not_dirty_the_browser(self, manager: SessionManager) -> None:
+        calls: list[int] = []
+        manager.on_browser_dirtied = lambda: calls.append(1) or _noop()  # type: ignore[func-returns-value]
+
+        await manager.open(now=1000.0)
+        reaped = await manager.reap(now=1000.0 + 10.0)  # well within the TTL
+        assert reaped is False
+        assert calls == [], "a reap that disposed nothing still asked the render path to be healed"
+
+    async def test_a_hook_that_raises_does_not_fail_the_completion(self, manager: SessionManager) -> None:
+        async def _boom() -> None:
+            raise RuntimeError("healer blew up")
+
+        manager.on_browser_dirtied = _boom
+
+        session = await manager.open(now=1000.0)
+        a = await manager.open_tab(session, target_id="a", url="https://a.example")
+
+        # The human's work is already done and its state exported by this point; a healer that
+        # blows up must not lose them the completion.
+        completed = await manager.complete_tab(session, a.tab_id)
+        assert completed.tab_id == a.tab_id
+        assert session.free_slots() == session.max_slots
+
+
+async def _noop() -> None:
+    """An awaitable that does nothing, for lambda-shaped hook recorders above."""
+    return None
