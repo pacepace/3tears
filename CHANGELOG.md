@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.32.1 -- 2026-09-05
+
+### Fixed
+
+- **scrape/sidecar:** the shared Chromium no longer wedges the plain
+  `/v1/render` path after a HITL operator context is disposed. The
+  sidecar shares one browser between renders and HITL sessions; a
+  disposed HITL window (which had been the active one) left a
+  subsequent `createTarget(new_window=false)` render with no valid
+  active window, hanging until a container restart. `SessionManager`
+  now fires an `on_browser_dirtied` hook after every context dispose
+  (complete_tab / close / reap); the sidecar probes the render path and
+  relaunches the shared browser only if it is actually wedged, never
+  while a live session still holds tabs. Sidecar image version 0.2.1.
+
 ## v0.32.0 -- 2026-09-03
 
 ### Added
