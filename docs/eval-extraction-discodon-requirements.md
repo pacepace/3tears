@@ -1,6 +1,6 @@
 # Eval extraction: requirements for discodon
 
-**Status:** Requirements -- 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening); R9 and R11 reconciled against the discodon Wave 2 rulings 2026-08-20; **every per-requirement status re-checked against discodon's tree 2026-08-24** -- R8, R9 and R11 are now built, and R10 has two axes of four. **No requirement changed; only what is true of the consumer did.**
+**Status:** Requirements -- 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening); R9 and R11 reconciled against the discodon Wave 2 rulings 2026-08-20; every per-requirement status re-checked against discodon's tree 2026-08-24; **re-checked again 2026-09-05** -- **R12 is built** (so R10 has three axes of four, not two), R5 is built, and R2, R7, R4 and R10's `observable` axis are the entire remainder. R2, R3, R4 and R7 gained statuses they had never carried, which is why three of them read as new problems and are not. **No requirement has ever changed; only what is true of the consumer has.**
 **For:** discodon, next release
 **Why now:** the eval packages
 ([`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon))
@@ -108,6 +108,17 @@ extraction. Keep `forbid` now; record it as a decision the first cross-repo
 consumer has to revisit, so it is a choice on the record rather than a default
 nobody examined.
 
+**Status: not built** (first checked 2026-09-05 -- this requirement had carried no status
+line at all, which is why it reads as a new finding and is not). Seven modules on the
+contract surface still inherit `discodon.models.base`: `identity.py`, `models.py`,
+`result_condition.py`, `usage_capture.py`, `metrics.py`, `reporting.py` and
+`viz/models.py`. **R1's test does not see it**, and that is the point worth carrying: the
+discodon canary approximates "no `discodon.*` outside `discodon.eval`" by scanning four
+named host packages (`discodon.llm`, `discodon.tools`, `discodon.db`,
+`discodon.database_adapter`), and `discodon.models` is not among them. So R1 goes green
+over R2 exactly the way R8's own preamble says R1 goes green over concept coupling --
+the same failure, one axis over. Tracked as discodon **#2468**, together with R7.
+
 ## R3 -- eval owns its usage record
 
 **Property.** The scope set does not import `discodon.llm.usage`. Eval defines
@@ -124,6 +135,11 @@ applies to `cost_usd: float | None`.
 crosses the boundary as `None` and not `0`, and that a reported zero crosses as
 `0`.
 
+**Status: built** (first checked 2026-09-05). The name `LLMUsage` does not appear anywhere
+under `discodon/eval/`. Eval accounts in its own `CallUsage`, and the host adapts at the
+boundary. This requirement was met at some point without anyone recording it, which is the
+reason the four statusless requirements were all checked at once.
+
 ## R4 -- the cognitive-hints type crosses; the collector does not
 
 **Property.** `models.py` holds cognitive hints as a type eval owns.
@@ -136,6 +152,13 @@ Today the snapshot model imports both, which is what makes a 3,188-line module
 depend on the tool subsystem.
 
 **Verify.** Covered by R1 once the collector call moves to the caller.
+
+**Status: not built** (first checked 2026-09-05). `discodon/eval/models.py` imports both
+names from `discodon.tools.cognitive_hints` and declares
+`tool_cognitive_hints: dict[str, CognitiveStyleHints]` as a pydantic field on a **stored**
+model, so this is the one remaining reach that is in the observation schema rather than
+only in an import. It is the last entry in discodon's import-canary debt register that
+belongs to the contracts scope set. Tracked as discodon **#2406**.
 
 ## R5 -- external-call spend is reported by the caller, in provider-agnostic units
 
@@ -212,15 +235,22 @@ units; and one that a zero-money provider (a self-hosted search) and a provider
 with no declared rate produce distinguishable rows rather than both reading as
 free.
 
-**Status: not built, now tracked** -- discodon #2447, filed 2026-08-24. Worth
-stating plainly, because this requirement had gone quiet: discodon still prices
-external calls from ONE card for one provider (`ExternalCallPricing`, resolved at
-launch from the research tool's `search_depth`), every external call lands in one
-anonymous `external` role, and a self-hosted zero-money call is indistinguishable
-from an unpriced one. A sibling issue (#2399) retires the duplicated credit table
-and leaves all of that standing, which is how the gap survived four days of Wave 2
-work without appearing in any plan or design as either built or deferred. The three
-tests above are that issue's acceptance list verbatim.
+**Status: built** -- discodon, 2026-08-29 (#2447 and #2399, both closed; this line read
+"not built, now tracked" until 2026-09-05). `discodon/eval/host/spend.py` declares
+`ExternalSpend`, and the shape is the one this requirement asked for: the **caller**
+describes what it consumed, carrying `provider`, `provider_units` and a **bare**
+`provider_unit` naming that unit as the provider calls it, from which the module composes
+the `<provider>:<unit>` pair this repo's `Spend` already enforces. Calls nobody declared a
+rate for get a bucket of their own rather than being pooled with zero-money ones, which is
+the third of the three tests above. The module's own header states the defect that bought
+it -- a `web_search` at `basic` billed at the research tool's `advanced` rate -- and the
+general form of the fix: **a caller cannot mis-bill a call it is describing.**
+
+What the requirement got right and is worth keeping for the next one: the gap had gone
+quiet for four days of Wave 2 without appearing in any plan or design as either built or
+deferred, and it only surfaced because this document re-checked its own statuses against
+the tree rather than against the last reading. The three tests above shipped as that
+issue's acceptance list verbatim.
 
 ## R6 -- do NOT converge the eval cost cap onto `BudgetPort`
 
@@ -262,6 +292,17 @@ arguments. `budget.py` and `metering.py` do not import `discodon.config`; the
 host resolves configuration and passes the values in.
 
 **Verify.** Covered by R1.
+
+**Status: not built** (first checked 2026-09-05). `budget.py` and `metering.py` both import
+`discodon.config`, each through a `from_config` classmethod plus a pair of
+`resolve_effective_ceiling` / `resolve_ceiling_origin` helpers that read it. **"Covered by
+R1" is not true as written**, for the same reason R2's status gives: `discodon.config` is
+not one of the four packages the discodon canary scans, so R1 is green over R7 as well.
+Exactly two requirements delegate their verification to R1 in those words, R4 and this
+one, and **only R4's delegation actually holds** (`discodon.tools` is scanned, and models.py
+is on the debt register because of it). So the clause is worth writing as "covered by R1
+*provided R1 scans the package in question*" wherever it is used again. Tracked as
+discodon **#2468**, together with R2.
 
 ## R8 -- the lever vocabulary is host-declared, not enumerated in eval
 
@@ -534,7 +575,7 @@ absent from the input registry is reported as uncontrollable without a second
 list being maintained; and the fidelity axis is covered by a test that the eval
 and production paths reach one construction function, not by an entry anywhere.
 
-**Status: two axes of four are built** (re-checked 2026-08-24). The fidelity axis exists in discodon and
+**Status: three axes of four are built** (re-checked 2026-09-05; this line read "two" until R12 landed). The fidelity axis exists in discodon and
 works as prescribed -- production and eval reach one construction function, and
 `fidelity.py` proves it by **walking the source**, not by counting calls at
 runtime. A runtime assertion passes just as happily once a third path is added.
@@ -549,15 +590,19 @@ the registry itself, so there is one authoritative answer to "is this controllab
 and not two free to disagree. This is the derive-don't-maintain clause working as
 written: no second list exists.
 
-**Still not built: representability and observability.** Both have predicates on the
-host profile and **no production caller**, which is the state most easily mistaken for
-done. Representability's mechanism is now designed: **R12** replaces the bare-name
-`WorldSeedSchema` slot with the world registry, and discodon
-`.prawduct/artifacts/design-eval-world-contract.md` carries the design. Tracked as
-discodon **#2421** (first host implementation) and **#2412** (the gate) -- #2412 keeps
-R10's own constraints (derive rather than maintain; the unit is a precondition, not an
-area; fidelity stays a test and gains no map entry) -- with **#2433** on the unreached
-predicates.
+**Representability is built** (2026-09-05). **R12** replaced the bare-name
+`WorldSeedSchema` slot with the world registry, and discodon built it out across eight
+chunks -- the record and the registry, the shape-derived conformance kit, precondition
+carriage, the run-time algebra, and the authoring-time refusal. `representable()` now
+has production callers, and R12's own status below carries the detail. discodon **#2421**
+(first host implementation) and **#2412** (the gate) are closed; #2412 kept R10's own
+constraints as written (derive rather than maintain; the unit is a precondition, not an
+area; fidelity stays a test and gains no map entry).
+
+**Still not built: observability.** `observable()` has a predicate on the host profile
+and **no production caller**, which is the state most easily mistaken for done -- and it
+is now the only one of the four in it. discodon **#2433**. Note it does not carry
+discodon's `tag:extraction` label, so it is invisible in that repo's extraction view.
 
 ## R11 -- the subject key declares the pooling boundary; the engine discloses the basis
 
@@ -679,12 +724,25 @@ dimension (R10's gate, now with a registry to resolve against); a run whose asse
 precondition did not hold at t=0 is recorded and excluded, never silently scored; and
 declared and witnessed observations never pool.
 
-**Status: designed, not built** -- discodon
-`.prawduct/artifacts/design-eval-world-contract.md`, owner-ruled 2026-08-27, paper-walked
-against metallm, samsung-frame-art-loader and scriob before any code. The record shape,
-the two-level algebra, the shape-derived conformance table, and the integration seams
-(stimulus-not-variant, replay identity, name-set versioning) live there. Discodon is the
-first host implementation (#2421); the gate is #2412. Requirement precedes code.
+**Status: built** -- discodon, 2026-08-28 (this line read "designed, not built" until then).
+The design is `.prawduct/artifacts/design-eval-world-contract.md`, owner-ruled 2026-08-27
+and paper-walked against metallm, samsung-frame-art-loader and scriob **before any code** --
+requirement preceded code, as this requirement asked. It then built out across eight chunks
+on `build-plan-world-contract.md` (complete, archived): the rulings and the binding table;
+the record and the registry through both the host profile and a toy host; the conformance
+kit with obligations derived from shape; precondition carriage and static resolution; the
+toolworld carrier, so the runner seeds *through* the registry rather than beside it; the
+persona and research carriers with the t=0 assertion; the run-time algebra with `seeded` x
+`perceived` derived and witnessed state disclosed; and the authoring-time and run-assembly
+refusals. discodon #2421 (first host implementation) and #2412 (the gate) are both closed.
+
+**Two things to take from how it landed, since they are the reusable part.** The registry
+being the seeding path rather than a description of one held under construction: the runner
+seeds through it, so an empty registry stays the checkable claim this requirement wanted.
+And the refusals were built as this document specified them -- `seed` without `read` is
+refused, and the live instance this document named, discodon's `music_catalog`, no longer
+has that shape: it registers as `music.catalog` carrying both handles, `music.seed_catalog`
+and `music.read_catalog`. The refusal is what put the second one there.
 
 ## Two host norms that do not cross into the package
 
