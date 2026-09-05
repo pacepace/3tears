@@ -42,7 +42,7 @@ variable "VERSION" {
   # without any per-Dockerfile string to keep in sync. The Dockerfile ARG
   # defaults are now neutral standalone-build fallbacks only -- bake always
   # injects the resolved value via ``args``.
-  default = "v0.32.0"
+  default = "v0.32.1"
 }
 
 # Registry namespace every image is tagged under and every base image is
