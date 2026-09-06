@@ -73,6 +73,13 @@ packages (bumped in lock-step).
   `ScheduleType` and `MissedFirePolicy` already mirror theirs. `set_status`
   derives its validation from it, so the two cannot drift.
 
+- **core:** `TracedHttpClient` accepts an optional `event_hooks` mapping,
+  forwarded to the underlying httpx client. It is the on-response feedback
+  channel a consumer needs to observe each response's status/latency -- e.g.
+  to drive a status-driven rate-limit backoff (a 429/402 on-report hook) that
+  the client's own bounded 5xx retry does not model. Backward-compatible:
+  omitting it wires nothing, byte-identical to prior behaviour.
+
 ## v0.32.1 -- 2026-09-05
 
 ### Fixed
