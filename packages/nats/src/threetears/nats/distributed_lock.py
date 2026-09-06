@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import secrets
 from datetime import timedelta
 from typing import Final
 
@@ -185,15 +186,20 @@ async def nats_distributed_lock(
             f"distinct bucket_name to vary TTL."
         )
         raise ValueError(msg)
-    acquired = await bucket.create(key=key, value=b"1")
+    # This holder's identity, written as the entry's value. The release fences on
+    # it rather than on a revision number: see the `finally` below for why a
+    # revision cannot answer "is this still mine".
+    #
+    # A nonce rather than a uuid7, deliberately: this identifies one HOLD, not an
+    # entity, so it is never stored, joined, or ordered, and the repo's
+    # time-ordered-id convention has nothing to say about it. Hex so an operator
+    # reading a stuck lock out of the bucket sees something legible.
+    holder_token = secrets.token_hex(16).encode()
+    acquired = await bucket.create(key=key, value=holder_token)
     if acquired is None:
         raise LockHeld(f"lock already held: {key}")
 
     heartbeat_seconds = heartbeat.total_seconds()
-    # The revision this holder last wrote. Every release is fenced on it, so a holder whose
-    # lock expired underneath it cannot delete the entry its successor now owns -- see the
-    # `finally` below.
-    held_revision = acquired
 
     async def _heartbeat() -> None:
         """Refresh the KV entry until cancelled, or until this holder has held too long.
@@ -210,7 +216,6 @@ async def nats_distributed_lock(
         and lets the TTL do it -- loudly, at ERROR, because a lock released under a live
         body is a real event a human needs to see.
         """
-        nonlocal held_revision
         deadline = asyncio.get_running_loop().time() + _MAX_HOLD.total_seconds()
         try:
             while True:
@@ -231,7 +236,7 @@ async def nats_distributed_lock(
                         },
                     )
                     return
-                held_revision = await bucket.put(key=key, value=b"1")
+                await bucket.put(key=key, value=holder_token)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - boundary: log + let TTL expire the lock
@@ -258,16 +263,31 @@ async def nats_distributed_lock(
         # manager protocol.
         await asyncio.gather(hb_task, return_exceptions=True)
         try:
-            # FENCED on the revision this holder last wrote. An unconditional delete is a
-            # correctness bug whenever the lock did not survive the body: if the heartbeat
-            # died, or stopped at the maximum hold, the TTL expires the key and another pod
-            # acquires it -- and a plain delete then removes the SUCCESSOR's lock, handing
-            # the same key to a third holder while the second still believes it owns it.
-            # With the fence, a stale holder's cleanup no-ops instead.
-            await bucket.delete(key=key, revision=held_revision)
+            # FENCED on IDENTITY, not on sequence. An unconditional delete is a correctness
+            # bug whenever the lock did not survive the body: if the heartbeat died, or
+            # stopped at the maximum hold, the TTL expires the key and another pod acquires
+            # it -- and a plain delete then removes the SUCCESSOR's lock, handing the same
+            # key to a third holder while the second still believes it owns it.
+            #
+            # Fencing on "the revision this holder last wrote" was the first answer and it
+            # is not sound, because a holder can be BEHIND its own writes. The heartbeat
+            # recorded a revision by assigning the result of its renewal, so a cancellation
+            # delivered after the write landed but before that assignment -- a window one
+            # network round trip wide -- left the holder one revision short of the entry it
+            # owned. The fence then refused its owner's own release and the lock sat there
+            # for its whole TTL while every other pod waited: the very outcome the fence
+            # exists to prevent, reached from the other side.
+            #
+            # The token answers the question the revision was standing in for. The
+            # heartbeat is already cancelled and awaited above, so nothing of ours can
+            # write between this read and the delete, and the delete stays fenced on the
+            # revision just read, so anything ELSE that writes in between still wins.
+            entry = await bucket.get_entry(key=key)
+            if entry is not None and entry[0] == holder_token:
+                await bucket.delete(key=key, revision=entry[1])
         except KvError as exc:
             log.debug(
                 "nats_distributed_lock: cleanup delete failed (key already gone, or the lock "
-                "moved to another holder and the revision fence refused)",
+                "moved to another holder and the identity fence refused)",
                 extra={"extra_data": {"key": key, "bucket": bucket_name, "error": str(exc)}},
             )
