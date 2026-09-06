@@ -29,7 +29,7 @@ from threetears.core.config import DEFAULT_HTTP_TIMEOUT_SECONDS
 from threetears.observe import retry_with_backoff, traced
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from typing import Any
 
     from threetears.core.egress import EgressDriver
@@ -168,6 +168,7 @@ class TracedHttpClient:
         max_backoff: float = 8.0,
         transport: httpx.AsyncBaseTransport | None = None,
         egress: EgressDriver | None = None,
+        event_hooks: dict[str, list[Callable[..., Any]]] | None = None,
     ) -> None:
         """capture config and open the single underlying httpx client.
 
@@ -190,6 +191,15 @@ class TracedHttpClient:
             given, because it is the test seam and a test that pinned a
             transport must not have it replaced by ambient configuration
         :ptype egress: EgressDriver | None
+        :param event_hooks: optional httpx ``event_hooks`` mapping
+            (``{"request": [...], "response": [...]}``) forwarded to the
+            underlying client. The on-response feedback channel a consumer
+            needs to observe each response's status/latency -- e.g. to drive a
+            status-driven rate-limit backoff (a 429/402 on-report hook) that
+            this client's own bounded retry does not model. The hooks observe;
+            they must not consume the response body (httpx re-reads it). None
+            (the default) wires nothing, byte-identical to prior behaviour
+        :ptype event_hooks: dict[str, list[Callable[..., Any]]] | None
         :return: nothing
         :rtype: None
         :raises ValueError: when ``upstream_base_url`` is empty
@@ -210,6 +220,7 @@ class TracedHttpClient:
             base_url=upstream_base_url,
             timeout=timeout,
             transport=resolved_transport,
+            event_hooks=event_hooks if event_hooks is not None else {},
         )
 
     @property

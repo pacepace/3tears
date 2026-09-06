@@ -452,3 +452,52 @@ class TestTheAttemptCountIsVisibleToACallerThatMustAccountForIt:
         async with _client(transport, max_attempts=5) as client:
             response = await client.request("GET", "/thing")
         assert response.extensions[ATTEMPTS_EXTENSION] == calls[0] == 2
+
+
+async def test_event_hooks_observe_the_429_the_client_returns() -> None:
+    """A 429 is a 4xx: this client returns it un-retried (429 handling is the
+    throttle's job, not the transport's). The injected response hook still fires
+    on it -- exactly the seam a status-driven backoff needs: the hook sees the
+    429, feeds the throttle's on_report, and the caller gets the 429 back."""
+    transport, calls = _sequenced_transport([429])
+    seen_statuses: list[int] = []
+
+    async def _on_response(response: httpx.Response) -> None:
+        seen_statuses.append(response.status_code)
+
+    async with _client(transport, event_hooks={"response": [_on_response]}) as client:
+        response = await client.request("GET", "/limited")
+
+    assert response.status_code == 429  # returned un-retried (4xx)
+    assert calls[0] == 1
+    assert seen_statuses == [429]  # the hook observed it -> throttle can back off
+
+
+async def test_event_hooks_fire_on_every_retried_attempt() -> None:
+    """On a 5xx retry, the response hook fires per attempt -- the consumer sees
+    every response, not just the final one."""
+    transport, _calls = _sequenced_transport([500, 500, 200])
+    seen_statuses: list[int] = []
+    requests_seen: list[str] = []
+
+    async def _on_request(request: httpx.Request) -> None:
+        requests_seen.append(request.method)
+
+    async def _on_response(response: httpx.Response) -> None:
+        seen_statuses.append(response.status_code)
+
+    hooks = {"request": [_on_request], "response": [_on_response]}
+    async with _client(transport, event_hooks=hooks) as client:
+        response = await client.request("GET", "/flaky")
+
+    assert response.status_code == 200
+    assert seen_statuses == [500, 500, 200]  # fired on every attempt
+    assert requests_seen == ["GET", "GET", "GET"]
+
+
+async def test_no_event_hooks_is_byte_identical_default() -> None:
+    """Omitting event_hooks wires nothing -- the pre-enhancement behaviour."""
+    transport, _calls = _sequenced_transport([200])
+    async with _client(transport) as client:
+        response = await client.request("GET", "/thing")
+    assert response.status_code == 200
