@@ -6,6 +6,73 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.33.0 -- 2026-09-06
+
+### Fixed
+
+- **nats: a lock could outlive the holder that released it.** `nats_distributed_lock`
+  fenced its release on "the revision this holder last wrote", recorded by
+  assigning the result of each heartbeat renewal. A holder can be BEHIND its own
+  writes: a cancellation delivered after a renewal's write landed but before that
+  assignment -- a window one network round trip wide, entered by any body
+  finishing near a heartbeat boundary -- left the holder one revision short of the
+  entry it owned. The fence then refused its owner's own release, and the lock sat
+  there for its whole TTL with every other pod waiting. That is the exact outcome
+  the fence was written to prevent, reached from the other side.
+
+  The release now fences on IDENTITY. Each hold writes an opaque token as the
+  entry's value and every renewal rewrites the same one; the release reads the
+  entry and deletes only if the token is still its own, fenced on the revision it
+  just read. The heartbeat is already cancelled and awaited by then, so nothing of
+  this holder's can write in between, and anything else that does still wins. A
+  successor's lock is as safe as before -- safer, since the check no longer depends
+  on the departing holder having kept count.
+
+  Surfaced as an intermittent unit-test failure. The timing-based waits in that
+  suite are now event-driven, so the next occurrence of anything like it fails
+  every run instead of one in several.
+
+### Added
+
+- **scheduled-jobs: an operator-facing surface on the job stores.** A tick pump
+  is a thing someone has to be able to see and steer, and until now the only way
+  to do any of it was hand-written SQL against `scheduled_jobs` -- which is what
+  consumers' runbooks told their operators to do. Six additions, all
+  payload-agnostic and all exercised against a real engine:
+
+  - `ScheduledJobCollection.list_jobs(kinds=, statuses=, limit=, offset=)` --
+    cross-partition enumeration, status-blind by default because a paused or
+    expired job is usually the one being looked for. Distinct from
+    `list_for_partition`: a seeder that mints one partition per schedule is the
+    normal shape, so a partition-scoped read enumerates one job rather than a
+    deployment. `None` means unfiltered and an empty sequence matches nothing,
+    the same contract `list_due_for_tick` already applies to `kinds`. Ordering is
+    total so `offset` paging cannot repeat or skip a row.
+  - `ScheduledJobCollection.count_jobs(kinds=, statuses=)` -- sizes that listing
+    under identical filter semantics.
+  - `ScheduledJobCollection.set_status(...)` -- pause and resume. Writes `status`
+    and `date_updated` and nothing else; leaving `next_fire_at` untouched is what
+    makes resuming restore the schedule rather than restart it, and a backlog is
+    then the missed-fire policy's business.
+  - `ScheduledJobCollection.update_schedule(...)` -- retunes cadence and moves the
+    next fire to match, recomputing through `compute_next_fire_at` so a retune
+    cannot drift from the engine's own maths and a config the schedule type
+    rejects raises rather than being stored. `schedule_type` and
+    `missed_fire_policy` are read from the row, never taken from the caller.
+  - `ScheduledJobCollection.request_immediate_fire(...)` -- brings an active job's
+    next fire forward. A request, not a fire: the engine still claims the row
+    through its own CAS, so it cannot double-fire or bypass concurrency control.
+    Refuses a paused job rather than firing one an operator believes is stopped.
+  - `JobFireCollection.latest_for_jobs(job_ids)` -- newest fire per job in one
+    query, replacing the N+1 an admin listing would otherwise make against a
+    table that grows with every tick. A job that never fired is absent rather
+    than mapped to `None`.
+
+- **scheduled-jobs: `ScheduleStatus`** (`types.py`) -- the `active` / `paused` /
+  `expired` vocabulary, mirroring the `scheduled_jobs` CHECK constraint the way
+  `ScheduleType` and `MissedFirePolicy` already mirror theirs. `set_status`
+  derives its validation from it, so the two cannot drift.
+
 ## v0.32.1 -- 2026-09-05
 
 ### Fixed

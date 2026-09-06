@@ -26,6 +26,7 @@ __all__ = [
     "JobTrigger",
     "MissedFirePolicy",
     "ScheduleFireStatus",
+    "ScheduleStatus",
     "ScheduleType",
 ]
 
@@ -81,6 +82,27 @@ ScheduleFireStatus = Literal[
     "dispatching",
     "succeeded",
     "failed",
+]
+
+
+# ``status`` column on the default store's ``scheduled_jobs`` table,
+# mirroring its CHECK constraint. The tick engine's due-scan admits
+# ``'active'`` alone, so the other two are both ways of saying "do not
+# fire this", distinguished by who decided:
+#
+# - ``'active'`` -- eligible to fire when ``next_fire_at`` arrives.
+# - ``'paused'`` -- an operator stopped it. ``next_fire_at`` is left
+#   where it was, so resuming restores the schedule rather than
+#   restarting it; a boot-time insert-if-absent ensure will not revive a
+#   paused row, which is why pausing is the supported way to stop a
+#   schedule and deleting the row is not.
+# - ``'expired'`` -- the schedule itself is finished (a one-shot that
+#   fired, a terminal ``relative_delay``). Reached by the engine, not by
+#   an operator.
+ScheduleStatus = Literal[
+    "active",
+    "paused",
+    "expired",
 ]
 
 
