@@ -42,18 +42,9 @@ def get_config() -> DefaultCoreConfig:
     return _test_config
 
 
-@pytest.fixture(autouse=True)
-def _neutralize_ssrf_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the existing render/extract tests hermetic under the SSRF guard.
-
-    The guard (on by default) resolves the target host, so tests using the
-    real placeholder domain ``example.gov`` would otherwise do live DNS (and
-    fail offline). This patches the tool module's ``_ssrf_block_reason`` to
-    allow every URL. The dedicated ``TestSsrfGuard`` tests below hold a direct
-    reference to the real function (imported at module load), so they exercise
-    the genuine logic unaffected by this patch.
-    """
-    monkeypatch.setattr("threetears.scrape.tool._ssrf_block_reason", lambda _url: None)
+# The SSRF guard is neutralized suite-wide by the autouse fixture in conftest.py
+# (`_no_live_dns_in_ssrf_guard`), so the render/extract tests here stay hermetic.
+# TestSsrfGuard below opts back in via @pytest.mark.real_ssrf_guard.
 
 
 _ROW_STRATEGY = {
@@ -1868,14 +1859,16 @@ class TestExecuteKeepsItsSingleExit:
         )
 
 
+@pytest.mark.real_ssrf_guard
 class TestSsrfGuard:
     """The SSRF guard: _ssrf_block_reason itself, and ScrapeTool refusing a
     blocked target unless block_private_hosts=False.
 
-    These tests hold the module-level reference to the REAL _ssrf_block_reason
-    (imported at load), so the autouse _neutralize_ssrf_guard fixture — which
-    patches the tool module's attribute — does not affect the direct-function
-    tests. The execute-level tests re-install the real function on the module.
+    Marked real_ssrf_guard so the conftest autouse neutralizer does NOT patch the
+    guard off for this class -- these tests are the guard's own coverage. (The
+    direct-function tests also hold the module-level reference imported at load,
+    so they'd work regardless; the marker is what lets the execute-level tests
+    exercise the real guard through ScrapeTool.execute.)
     """
 
     @pytest.mark.parametrize(
@@ -1905,8 +1898,7 @@ class TestSsrfGuard:
         assert _ssrf_block_reason("http://evil.example.com/") is not None
 
     @pytest.mark.asyncio
-    async def test_execute_refuses_a_blocked_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("threetears.scrape.tool._ssrf_block_reason", _ssrf_block_reason)  # restore real
+    async def test_execute_refuses_a_blocked_target(self) -> None:
         recipe_collection, extraction_collection = _collections()
         tool = ScrapeTool(
             recipe_collection=recipe_collection,
@@ -1919,9 +1911,8 @@ class TestSsrfGuard:
         assert "refused" in (result.error or "")
 
     @pytest.mark.asyncio
-    async def test_execute_allows_private_target_when_guard_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_execute_allows_private_target_when_guard_disabled(self) -> None:
         """block_private_hosts=False opts a deployment that scrapes internal targets out of the guard."""
-        monkeypatch.setattr("threetears.scrape.tool._ssrf_block_reason", _ssrf_block_reason)  # restore real
         recipe_collection, extraction_collection = _collections()
         url = "http://127.0.0.1/warn"
         target_id = _derive_target_id(url, {"employer": "str", "affected_count": "int"})
