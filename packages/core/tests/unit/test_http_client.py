@@ -275,6 +275,28 @@ async def test_get_and_post_convenience() -> None:
     assert seen[1][0] == "POST"
 
 
+async def test_head_issues_a_head_request() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.method)
+        return httpx.Response(200, headers={"Content-Length": "4096"})
+
+    async with _client(httpx.MockTransport(handler)) as client:
+        response = await client.head("/thing")
+    assert response.status_code == 200
+    assert response.headers["Content-Length"] == "4096"
+    assert seen == ["HEAD"]
+
+
+async def test_head_forwards_follow_redirects() -> None:
+    async with _client(_redirecting_transport(), follow_redirects=False) as client:
+        followed = await client.head("/start", follow_redirects=True)
+        not_followed = await client.head("/start")
+    assert followed.status_code == 200
+    assert not_followed.status_code == 302
+
+
 async def test_span_emitted_and_no_header_leak() -> None:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor

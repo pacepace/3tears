@@ -113,6 +113,8 @@ packages (bumped in lock-step).
     whose host is not one value. A circuit breaker cannot pair with it (it
     keys fault-isolation on one upstream); the empty string stays rejected, so
     `None` is the sole, deliberate "no fixed upstream" signal.
+  - `head()` -- a body-less reachability/metadata probe, the natural sibling
+    of `get`/`post`, delegating to `request` with the same retry/breaking.
 
 ## v0.32.1 -- 2026-09-05
 
