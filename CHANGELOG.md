@@ -98,6 +98,22 @@ packages (bumped in lock-step).
   whose whole-body retry suits API responses; supports a `Range` header for
   partial fetches.
 
+- **core:** `TracedHttpClient` gains four passthroughs so it can front the
+  full range of upstreams a consumer's own bespoke httpx clients used to,
+  letting those clients be retired onto the one traced transport. All are
+  backward-compatible (their defaults reproduce prior behaviour):
+  - client-level default `headers` (an API key or `User-Agent` an upstream
+    keys on), applied to every request; a per-call `headers` merges over them.
+  - `follow_redirects` -- a client-level default plus a per-call override on
+    `get`/`post`/`request`/`stream`.
+  - form-encoded `data` on `post`/`request`, for an endpoint that reads a POST
+    form rather than JSON.
+  - `upstream_base_url=None` -- a client with no fixed upstream, driven by
+    absolute per-request URLs, for a shared client fronting several endpoints
+    whose host is not one value. A circuit breaker cannot pair with it (it
+    keys fault-isolation on one upstream); the empty string stays rejected, so
+    `None` is the sole, deliberate "no fixed upstream" signal.
+
 ## v0.32.1 -- 2026-09-05
 
 ### Fixed

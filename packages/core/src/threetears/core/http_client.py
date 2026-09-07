@@ -136,8 +136,13 @@ class TracedHttpClient:
     and retains no header/secret in a long-lived field.
 
     :param upstream_base_url: root URL of the upstream service; relative
-        request paths are joined onto it
-    :ptype upstream_base_url: str
+        request paths are joined onto it. ``None`` opens a client with no
+        fixed upstream, for a caller that passes absolute URLs per request
+        (a shared client fronting several endpoints, whose host is not one
+        value). A circuit breaker cannot be paired with ``None``: the breaker
+        keys fault-isolation on one upstream, and there is no one upstream to
+        key it on
+    :ptype upstream_base_url: str | None
     :param circuit_breaker: optional injected breaker guarding this
         upstream; ``None`` disables circuit breaking (tests, upstreams that
         need no isolation)
@@ -161,7 +166,7 @@ class TracedHttpClient:
     def __init__(
         self,
         *,
-        upstream_base_url: str,
+        upstream_base_url: str | None,
         circuit_breaker: CircuitBreakerLike | None = None,
         timeout: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
         max_attempts: int = 3,
@@ -170,11 +175,15 @@ class TracedHttpClient:
         transport: httpx.AsyncBaseTransport | None = None,
         egress: EgressDriver | None = None,
         event_hooks: dict[str, list[Callable[..., Any]]] | None = None,
+        headers: Mapping[str, str] | None = None,
+        follow_redirects: bool = False,
     ) -> None:
         """capture config and open the single underlying httpx client.
 
-        :param upstream_base_url: root URL of the upstream service
-        :ptype upstream_base_url: str
+        :param upstream_base_url: root URL of the upstream service, or
+            ``None`` for a client with no fixed upstream (absolute request
+            paths, no circuit breaker)
+        :ptype upstream_base_url: str | None
         :param circuit_breaker: optional injected breaker
         :ptype circuit_breaker: CircuitBreakerLike | None
         :param timeout: per-request timeout in seconds
@@ -201,27 +210,44 @@ class TracedHttpClient:
             they must not consume the response body (httpx re-reads it). None
             (the default) wires nothing, byte-identical to prior behaviour
         :ptype event_hooks: dict[str, list[Callable[..., Any]]] | None
+        :param headers: optional client-level default headers applied to
+            every request (e.g. an API key or a ``User-Agent`` an upstream
+            keys on). Per-call ``headers`` merge over these, matching httpx.
+            ``None`` (the default) sends no default headers
+        :ptype headers: Mapping[str, str] | None
+        :param follow_redirects: whether the client follows 3xx redirects by
+            default (httpx defaults to ``False``). A per-call ``follow_redirects``
+            overrides this for one request
+        :ptype follow_redirects: bool
         :return: nothing
         :rtype: None
-        :raises ValueError: when ``upstream_base_url`` is empty
+        :raises ValueError: when ``upstream_base_url`` is the empty string
+            (pass ``None`` for a deliberately unfixed upstream), or when a
+            ``circuit_breaker`` is paired with a ``None`` ``upstream_base_url``
         """
-        if not upstream_base_url:
-            raise ValueError("upstream_base_url must be non-empty")
+        if upstream_base_url == "":
+            raise ValueError("upstream_base_url must be non-empty; pass None for a client with no fixed upstream")
+        if upstream_base_url is None and circuit_breaker is not None:
+            raise ValueError(
+                "a circuit_breaker keys fault-isolation on one upstream; it cannot pair with upstream_base_url=None"
+            )
         self._circuit_breaker = circuit_breaker
         self._max_attempts = max_attempts
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
-        self._host = httpx.URL(upstream_base_url).host
+        self._host = httpx.URL(upstream_base_url).host if upstream_base_url else None
         self._egress = egress
         # An explicit transport wins. It is the documented test seam, and a test that binds a
         # transport is asserting on what this client does with it -- letting a configured
         # egress override that would make the seam conditional on deployment config.
         resolved_transport = transport if transport is not None else (egress.httpx_transport() if egress else None)
         self._client = httpx.AsyncClient(
-            base_url=upstream_base_url,
+            base_url=upstream_base_url if upstream_base_url is not None else "",
             timeout=timeout,
             transport=resolved_transport,
             event_hooks=event_hooks if event_hooks is not None else {},
+            headers=dict(headers) if headers else None,
+            follow_redirects=follow_redirects,
         )
 
     @property
@@ -269,8 +295,10 @@ class TracedHttpClient:
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, Any] | None = None,
         content: bytes | None = None,
+        data: Mapping[str, Any] | None = None,
         json: Any = None,
         timeout: float | None = None,
+        follow_redirects: bool | None = None,
     ) -> httpx.Response:
         """perform one upstream request with tracing, retry, and breaking.
 
@@ -294,6 +322,10 @@ class TracedHttpClient:
         :ptype params: Mapping[str, Any] | None
         :param content: optional raw request body bytes
         :ptype content: bytes | None
+        :param data: optional form-encoded request body
+            (``application/x-www-form-urlencoded``); mutually exclusive with
+            ``content``/``json`` per httpx
+        :ptype data: Mapping[str, Any] | None
         :param json: optional JSON request body
         :ptype json: Any
         :param timeout: per-call override of the client's configured timeout,
@@ -301,6 +333,9 @@ class TracedHttpClient:
             what remains of it. ``None`` uses the configured value. Bounds each
             attempt; the retry schedule is unchanged
         :ptype timeout: float | None
+        :param follow_redirects: per-call override of the client's redirect
+            policy; ``None`` uses the client-level default
+        :ptype follow_redirects: bool | None
         :return: full upstream response (caller inspects any non-2xx; not
             raised on 4xx/5xx except retry exhaustion). carries the attempt
             count under :data:`ATTEMPTS_EXTENSION` in ``extensions``
@@ -334,11 +369,15 @@ class TracedHttpClient:
                     headers=dict(headers) if headers else None,
                     params=dict(params) if params else None,
                     content=content,
+                    data=dict(data) if data else None,
                     json=json,
                     # httpx's own sentinel, not None: None is a MEANINGFUL value there
                     # (wait forever), so passing it through for "caller said nothing"
                     # would turn an unstated timeout into no timeout at all.
                     timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+                    # Same sentinel discipline: httpx reads None as an explicit "do not
+                    # follow", so "caller said nothing" must defer to the client default.
+                    follow_redirects=follow_redirects if follow_redirects is not None else httpx.USE_CLIENT_DEFAULT,
                 )
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 transport_error = exc
@@ -363,16 +402,21 @@ class TracedHttpClient:
             max_backoff=self._max_backoff,
         )
 
+        # host for the span/error: the response's when one arrived, else the path's own host
+        # (absolute in the no-base-url case), so a connect-error exhaustion still names WHERE.
+        request_host = captured.request.url.host if captured is not None else (httpx.URL(path).host or None)
         self._record_span_attributes(
             method=method,
             status_code=captured.status_code if captured is not None else None,
+            host=request_host,
         )
 
         if not succeeded or captured is None:
             status = captured.status_code if captured is not None else None
             body = captured.content if captured is not None else b""
             raise UpstreamHttpError(
-                f"upstream request to {self._host} failed after {self._max_attempts} attempts",
+                f"upstream request to {self._host or request_host or 'the upstream'} "
+                f"failed after {self._max_attempts} attempts",
                 status_code=status,
                 body=body,
             ) from transport_error
@@ -388,6 +432,7 @@ class TracedHttpClient:
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, Any] | None = None,
         timeout: float | None = None,
+        follow_redirects: bool | None = None,
     ) -> httpx.Response:
         """GET ``path`` (delegates to :meth:`request`).
 
@@ -400,10 +445,15 @@ class TracedHttpClient:
         :param timeout: per-call timeout override in seconds; None uses the
             configured value
         :ptype timeout: float | None
+        :param follow_redirects: per-call redirect-policy override; None uses
+            the client-level default
+        :ptype follow_redirects: bool | None
         :return: full upstream response
         :rtype: httpx.Response
         """
-        return await self.request("GET", path, headers=headers, params=params, timeout=timeout)
+        return await self.request(
+            "GET", path, headers=headers, params=params, timeout=timeout, follow_redirects=follow_redirects
+        )
 
     async def post(
         self,
@@ -412,8 +462,10 @@ class TracedHttpClient:
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, Any] | None = None,
         content: bytes | None = None,
+        data: Mapping[str, Any] | None = None,
         json: Any = None,
         timeout: float | None = None,
+        follow_redirects: bool | None = None,
     ) -> httpx.Response:
         """POST ``path`` (delegates to :meth:`request`).
 
@@ -425,11 +477,16 @@ class TracedHttpClient:
         :ptype params: Mapping[str, Any] | None
         :param content: optional raw request body bytes
         :ptype content: bytes | None
+        :param data: optional form-encoded request body
+        :ptype data: Mapping[str, Any] | None
         :param json: optional JSON request body
         :ptype json: Any
         :param timeout: per-call timeout override in seconds; None uses the
             configured value
         :ptype timeout: float | None
+        :param follow_redirects: per-call redirect-policy override; None uses
+            the client-level default
+        :ptype follow_redirects: bool | None
         :return: full upstream response
         :rtype: httpx.Response
         """
@@ -439,8 +496,10 @@ class TracedHttpClient:
             headers=headers,
             params=params,
             content=content,
+            data=data,
             json=json,
             timeout=timeout,
+            follow_redirects=follow_redirects,
         )
 
     @asynccontextmanager
@@ -452,6 +511,7 @@ class TracedHttpClient:
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, Any] | None = None,
         timeout: float | None = None,
+        follow_redirects: bool | None = None,
     ) -> AsyncIterator[httpx.Response]:
         """Stream a response body without buffering it -- for bulk downloads.
 
@@ -484,6 +544,9 @@ class TracedHttpClient:
             configured value. Bounds establishing the response; the caller's own
             iteration of the body is not bounded by it
         :ptype timeout: float | None
+        :param follow_redirects: per-call redirect-policy override; None uses
+            the client-level default
+        :ptype follow_redirects: bool | None
         :return: an async context manager yielding the open streaming response
         :rtype: AsyncIterator[httpx.Response]
         :raises CircuitOpenError: when the injected breaker is OPEN
@@ -508,6 +571,7 @@ class TracedHttpClient:
                 headers=dict(headers) if headers else None,
                 params=dict(params) if params else None,
                 timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+                follow_redirects=follow_redirects if follow_redirects is not None else httpx.USE_CLIENT_DEFAULT,
             )
             try:
                 resp = await cm.__aenter__()
@@ -537,15 +601,18 @@ class TracedHttpClient:
             initial_backoff=self._initial_backoff,
             max_backoff=self._max_backoff,
         )
+        request_host = response.request.url.host if response is not None else (httpx.URL(path).host or None)
         self._record_span_attributes(
             method=method,
             status_code=response.status_code if response is not None else None,
+            host=request_host,
         )
 
         if not succeeded or stream_cm is None or response is None:
             status = response.status_code if response is not None else None
             raise UpstreamHttpError(
-                f"upstream stream to {self._host} failed after {self._max_attempts} attempts",
+                f"upstream stream to {self._host or request_host or 'the upstream'} "
+                f"failed after {self._max_attempts} attempts",
                 status_code=status,
                 body=error_body,
             ) from transport_error
@@ -556,7 +623,7 @@ class TracedHttpClient:
         finally:
             await stream_cm.__aexit__(None, None, None)
 
-    def _record_span_attributes(self, *, method: str, status_code: int | None) -> None:
+    def _record_span_attributes(self, *, method: str, status_code: int | None, host: str | None = None) -> None:
         """set host/method/status on the active span; never a header value.
 
         no-op when OpenTelemetry is not installed (import guarded). only
@@ -569,6 +636,10 @@ class TracedHttpClient:
         :param status_code: final upstream status, or ``None`` when no
             response was received
         :ptype status_code: int | None
+        :param host: per-request host, used when the client has no fixed
+            upstream (``upstream_base_url=None``); falls back to the client's
+            configured host
+        :ptype host: str | None
         :return: nothing
         :rtype: None
         """
@@ -578,7 +649,9 @@ class TracedHttpClient:
         except ImportError:
             return
         span = trace.get_current_span()
-        span.set_attribute("http.host", self._host)
+        recorded_host = host or self._host
+        if recorded_host is not None:
+            span.set_attribute("http.host", recorded_host)
         span.set_attribute("http.method", method)
         if status_code is not None:
             span.set_attribute("http.status_code", status_code)

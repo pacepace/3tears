@@ -579,3 +579,146 @@ async def test_stream_passes_range_header() -> None:
         async with client.stream("GET", "/probe", headers={"Range": "bytes=0-0"}) as response:
             assert response.status_code == 206
     assert seen == ["bytes=0-0"]
+
+
+# ---------------------------------------------------------------------------
+# client-level default headers -- an API key / User-Agent an upstream keys on,
+# wired once at construction rather than threaded through every call site.
+# ---------------------------------------------------------------------------
+
+
+async def test_client_headers_apply_to_every_request() -> None:
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        return httpx.Response(200, text="ok")
+
+    async with _client(httpx.MockTransport(handler), headers={"X-Api-Key": "k", "User-Agent": "faidh/1"}) as client:
+        await client.get("/a")
+        await client.get("/b")
+    assert seen[0]["x-api-key"] == "k"
+    assert seen[0]["user-agent"] == "faidh/1"
+    assert seen[1]["x-api-key"] == "k"  # not just the first request
+
+
+async def test_per_call_headers_merge_over_client_defaults() -> None:
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        return httpx.Response(200, text="ok")
+
+    async with _client(httpx.MockTransport(handler), headers={"X-Api-Key": "default", "X-Keep": "yes"}) as client:
+        await client.get("/a", headers={"X-Api-Key": "override"})
+    assert seen[0]["x-api-key"] == "override"  # per-call wins
+    assert seen[0]["x-keep"] == "yes"  # untouched client default still present
+
+
+# ---------------------------------------------------------------------------
+# follow_redirects -- client-level default plus per-call override.
+# ---------------------------------------------------------------------------
+
+
+def _redirecting_transport() -> httpx.MockTransport:
+    """302 at /start -> 200 at /final, so following is observable by the final body."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/final":
+            return httpx.Response(200, text="arrived")
+        return httpx.Response(302, headers={"Location": "/final"})
+
+    return httpx.MockTransport(handler)
+
+
+async def test_does_not_follow_redirects_by_default() -> None:
+    async with _client(_redirecting_transport()) as client:
+        response = await client.get("/start")
+    assert response.status_code == 302  # httpx default, unchanged
+
+
+async def test_client_level_follow_redirects() -> None:
+    async with _client(_redirecting_transport(), follow_redirects=True) as client:
+        response = await client.get("/start")
+    assert response.status_code == 200
+    assert response.text == "arrived"
+
+
+async def test_per_call_follow_redirects_overrides_client_default() -> None:
+    async with _client(_redirecting_transport(), follow_redirects=False) as client:
+        response = await client.get("/start", follow_redirects=True)
+    assert response.status_code == 200
+    assert response.text == "arrived"
+
+
+# ---------------------------------------------------------------------------
+# form-encoded body -- the shape an endpoint that reads a POST form needs.
+# ---------------------------------------------------------------------------
+
+
+async def test_post_sends_form_encoded_data() -> None:
+    seen: list[tuple[bytes, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.content, request.headers.get("content-type", "")))
+        return httpx.Response(200, text="ok")
+
+    async with _client(httpx.MockTransport(handler)) as client:
+        await client.post("/form", data={"searchType": "0", "loc": "TX"})
+    body, content_type = seen[0]
+    assert b"searchType=0" in body
+    assert b"loc=TX" in body
+    assert "application/x-www-form-urlencoded" in content_type
+
+
+# ---------------------------------------------------------------------------
+# upstream_base_url=None -- a shared client fronting several endpoints, driven
+# by absolute per-request URLs, with no single host to key a breaker on.
+# ---------------------------------------------------------------------------
+
+
+async def test_no_base_url_accepts_absolute_urls() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="ok")
+
+    client = TracedHttpClient(
+        upstream_base_url=None,
+        transport=httpx.MockTransport(handler),
+        initial_backoff=0.0,
+        max_backoff=0.0,
+    )
+    async with client:
+        r1 = await client.get("https://alpha.example/one")
+        r2 = await client.get("https://beta.example/two")
+    assert r1.status_code == r2.status_code == 200
+    assert seen == ["https://alpha.example/one", "https://beta.example/two"]  # two different hosts, one client
+
+
+async def test_no_base_url_exhaustion_names_the_actual_host() -> None:
+    """With no fixed host, the exhaustion error still names WHERE it failed --
+    derived from the request that was actually sent, not a client-wide constant."""
+    transport, _calls = _raising_transport(httpx.ConnectError("refused"))
+    client = TracedHttpClient(
+        upstream_base_url=None, transport=transport, initial_backoff=0.0, max_backoff=0.0, max_attempts=2
+    )
+    async with client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            await client.get("https://gamma.example/x")
+    assert "gamma.example" in str(exc_info.value)
+
+
+def test_none_base_url_rejects_a_circuit_breaker() -> None:
+    """A breaker isolates ONE upstream; with no fixed upstream it cannot key its
+    state, so pairing the two is a construction error, not a silent no-op."""
+    with pytest.raises(ValueError, match="circuit_breaker"):
+        TracedHttpClient(upstream_base_url=None, circuit_breaker=_BreakerSpy())
+
+
+def test_empty_string_base_url_still_rejected() -> None:
+    """The empty string is a mistake (a caller meant a URL); None is the deliberate
+    'no fixed upstream' signal. They must not collapse into the same path."""
+    with pytest.raises(ValueError, match="non-empty"):
+        TracedHttpClient(upstream_base_url="")
