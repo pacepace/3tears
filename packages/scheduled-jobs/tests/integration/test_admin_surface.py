@@ -605,3 +605,69 @@ class TestLatestForJobs:
             assert await fires.latest_for_jobs([]) == {}
         finally:
             await pool.close()
+
+
+class TestGetByJobId:
+    """Resolving a bare job id to its row, and to its partition."""
+
+    async def test_it_finds_a_job_without_knowing_its_partition(self, pg_schema: tuple[str, str]) -> None:
+        """The partition is the thing being looked up, so it cannot be an input.
+
+        An admin surface has only the id -- out of a URL or an operator's
+        clipboard -- and needs the partition back before it can call any of the
+        partition-scoped mutators.
+        """
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            jobs, _ = _build_stores(pool)
+            await _seed_job(pool, kind="decoy")
+            partition, job = await _seed_job(pool, kind="wanted", name="the-one")
+            await _seed_job(pool, kind="another_decoy")
+
+            found = await jobs.get_by_job_id(job)
+
+            assert found is not None
+            assert found.job_id == job
+            assert found.partition_key == partition
+            assert found.kind == "wanted"
+        finally:
+            await pool.close()
+
+    async def test_an_unknown_id_is_none(self, pg_schema: tuple[str, str]) -> None:
+        """A miss is the caller's 404, not an exception."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            jobs, _ = _build_stores(pool)
+            await _seed_job(pool)
+            assert await jobs.get_by_job_id(_new_uuid()) is None
+        finally:
+            await pool.close()
+
+    async def test_the_partition_it_returns_drives_the_mutators(self, pg_schema: tuple[str, str]) -> None:
+        """The round trip an admin endpoint actually makes.
+
+        Looking the job up and then pausing it with the partition that lookup
+        returned is the whole reason this method exists; a partition that did
+        not match would make the pause a silent no-op.
+        """
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            jobs, _ = _build_stores(pool)
+            _, job = await _seed_job(pool)
+
+            found = await jobs.get_by_job_id(job)
+            assert found is not None
+            changed = await jobs.set_status(
+                partition_key=found.partition_key,
+                job_id=found.job_id,
+                status="paused",
+                now=datetime.now(UTC),
+            )
+
+            assert changed is True
+            assert await pool.fetchval("SELECT status FROM scheduled_jobs WHERE job_id = $1", job) == "paused"
+        finally:
+            await pool.close()

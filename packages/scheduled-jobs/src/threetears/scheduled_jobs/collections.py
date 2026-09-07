@@ -463,6 +463,43 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
             result = [ScheduledJobEntity(dict(row), is_new=False, collection=self) for row in rows]
         return result
 
+    async def get_by_job_id(self, job_id: UUID) -> ScheduledJobEntity | None:
+        """Fetch one job by its bare ``job_id``, without knowing its partition.
+
+        ``job_id`` carries its own UNIQUE constraint (it is what
+        ``job_fires.job_id`` references), so it addresses a row on its
+        own. An admin surface has only that id -- it comes out of a URL
+        or an operator's clipboard, not out of a partition-aware
+        listing -- and the partition is what this returns so the caller
+        can then use the partition-scoped mutators.
+
+        Prefer :meth:`get` wherever the partition IS known: it is
+        partition-scoped and cache-addressable, and this is neither.
+
+        :param job_id: the job's unique id
+        :ptype job_id: UUID
+        :return: the job, or ``None`` when no row carries that id
+        :rtype: ScheduledJobEntity | None
+        """
+        result: ScheduledJobEntity | None = None
+        if self.l3_pool is not None:
+            # __SPANS_PARTITIONS__: resolving a bare job_id to its row is a
+            # lookup ACROSS partitions by definition -- the partition is the
+            # thing being looked up. Bounded to one row by the column's own
+            # UNIQUE constraint. The column list is written out literally so
+            # the partition-column enforcement walker sees ``partition_key``
+            # as a static literal.
+            row = await self.l3_pool.fetchrow(
+                "SELECT partition_key, job_id, kind, payload, schedule_type, "
+                "schedule_config, status, next_fire_at, last_fired_at, "
+                "missed_fire_policy, name, date_created, date_updated "
+                "FROM scheduled_jobs WHERE job_id = $1",
+                job_id,
+            )
+            if row is not None:
+                result = ScheduledJobEntity(dict(row), is_new=False, collection=self)
+        return result
+
     async def count_jobs(
         self,
         *,
