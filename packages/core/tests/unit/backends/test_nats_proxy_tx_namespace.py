@@ -15,10 +15,12 @@ the broker package's ``tests/unit/hub/broker/test_tx_namespace_routing.py``.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from threetears.nats import Subject
 
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.exceptions import DataLayerUnavailableError
@@ -32,17 +34,18 @@ __all__ = [
 TX_ID = "019d9a00-0000-7000-8000-000000000000"
 
 
-def _make_reply(data: dict[str, Any]) -> MagicMock:
-    """build mock NATS reply message with JSON payload.
+def _make_reply(data: dict[str, Any]) -> bytes:
+    """build a broker reply payload.
+
+    ``NatsClient.request_raw`` returns the response BYTES, unlike nats-py's
+    ``request``, which returned a message object the caller read ``.data`` off.
 
     :param data: response payload dict
     :ptype data: dict[str, Any]
-    :return: mock reply with ``.data`` attribute
-    :rtype: MagicMock
+    :return: JSON-encoded reply payload
+    :rtype: bytes
     """
-    reply = MagicMock()
-    reply.data = json.dumps(data).encode("utf-8")
-    return reply
+    return json.dumps(data).encode("utf-8")
 
 
 class _ScriptedReplyPlan:
@@ -68,27 +71,33 @@ class _ScriptedReplyPlan:
 
     async def __call__(
         self,
-        subject: str,
+        *,
+        subject: Subject,
         payload: bytes,
-        timeout: float = 0,
-    ) -> MagicMock:
-        """mock coroutine for ``nc.request``.
+        timeout: timedelta | None = None,
+    ) -> bytes:
+        """mock coroutine for ``NatsClient.request_raw``.
 
-        :param subject: subject argument passed by the proxy
-        :ptype subject: str
+        Keyword-only, taking a :class:`~threetears.nats.Subject` and returning
+        BYTES -- the wrapper's shape, not nats-py's positional ``request`` that
+        returned a message object.
+
+        :param subject: subject token passed by the proxy
+        :ptype subject: Subject
         :param payload: raw bytes payload
         :ptype payload: bytes
         :param timeout: ignored in tests
-        :ptype timeout: float
-        :return: pre-built reply
-        :rtype: MagicMock
+        :ptype timeout: timedelta | None
+        :return: pre-built reply payload
+        :rtype: bytes
         :raises AssertionError: when a subject is called out of order
         """
         del timeout
-        assert self._entries, f"no reply scripted for {subject}"
+        path = subject.path
+        assert self._entries, f"no reply scripted for {path}"
         expected_subject, response = self._entries.pop(0)
-        assert subject == expected_subject, f"expected {expected_subject!r}, got {subject!r}"
-        self.calls.append((subject, json.loads(payload.decode("utf-8"))))
+        assert path == expected_subject, f"expected {expected_subject!r}, got {path!r}"
+        self.calls.append((path, json.loads(payload.decode("utf-8"))))
         return _make_reply(response)
 
 
@@ -119,7 +128,7 @@ async def test_transaction_with_namespace_ships_namespace_in_begin_payload() -> 
         ],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:
@@ -142,7 +151,7 @@ async def test_transaction_without_namespace_uses_default() -> None:
         ],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:
@@ -165,7 +174,7 @@ async def test_pool_transaction_wrapper_threads_namespace() -> None:
         ],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.transaction(namespace="workspace.xyz") as conn:
@@ -192,7 +201,7 @@ async def test_per_statement_namespace_inside_tx_rejected_on_execute() -> None:
         ],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     with pytest.raises(ValueError, match="per-statement namespace"):
@@ -215,7 +224,7 @@ async def test_per_statement_namespace_inside_tx_rejected_on_fetchrow() -> None:
         ],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     with pytest.raises(ValueError, match="per-statement namespace"):
@@ -237,7 +246,7 @@ async def test_per_statement_namespace_inside_tx_rejected_on_fetch() -> None:
         ],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     with pytest.raises(ValueError, match="per-statement namespace"):
@@ -265,7 +274,7 @@ async def test_tx_namespace_unauthorized_surfaces_as_data_layer_error() -> None:
         ],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     with pytest.raises(DataLayerUnavailableError) as excinfo:
@@ -307,7 +316,7 @@ async def test_fetchval_outside_a_transaction_returns_the_first_column() -> None
         [("test.l3.query", {"success": True, "rows": [{"count": 7, "other": "ignored"}]})],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:
@@ -334,7 +343,7 @@ async def test_fetchval_inside_a_transaction_routes_through_the_tx() -> None:
         ],
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:
@@ -350,7 +359,7 @@ async def test_fetchval_returns_none_on_an_empty_result() -> None:
     """empty is None, matching asyncpg -- not an IndexError."""
     plan = _ScriptedReplyPlan([("test.l3.query", {"success": True, "rows": []})])
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:

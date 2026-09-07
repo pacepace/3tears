@@ -6,6 +6,68 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.34.0 -- 2026-09-07
+
+### Fixed
+
+- **scheduled-jobs: every fire recorded a null latency.** `JobFireResult.latency_ms`
+  was documented from the start as an optional fixup the dispatcher may capture, and
+  no dispatcher in any consumer ever captured one -- `job_fires.latency_ms` was a
+  column that existed and never held a value, on every fire of every kind. The tick
+  engine is the only participant that knows when the callback started and stopped,
+  so it measures, on the monotonic clock. A dispatcher that reports its own figure
+  still wins: it may know a truer one, having timed the work rather than the call.
+
+  The raising path is the sharper half. It hardcoded `latency_ms=None`, discarding
+  the number on the path where it says the most: how long a fire ran before it blew
+  up separates "refused immediately" from "ground for a minute and then timed out".
+
+- **backup: a temp database that failed to drop was abandoned after one attempt, and
+  the failure replaced the caller's own error.** `make_temp_db_provisioner`'s DROP ran
+  in a bare `finally`, so an exception there REPLACED whatever the body was raising:
+  a real restore failure surfaced to the operator as a cleanup timeout with the actual
+  cause gone. Yugabyte's timeout means "still reaping", not "cannot drop", so the drop
+  typically succeeds seconds later; giving up on the first attempt also leaked a
+  database whose tablets count against the cluster's replica ceiling, which makes the
+  NEXT verification more likely to fail the same way. Now retried with a linear
+  backoff, and cleanup never fails the work it was cleaning up after.
+
+  The temp database's name was minted from `uuid7().hex[:12]` -- the 48-bit
+  millisecond timestamp, which carries no randomness -- so two verifiers starting in
+  the same millisecond minted the same name and the second CREATE failed with
+  "already exists". It takes the random tail now.
+
+- **core: `NatsProxyL3Backend` consumed the nats-py surface instead of the canonical
+  wrapper.** Its `nats_client` parameter was typed `Any` and called
+  `request(subject_str, bytes, timeout=)` directly, so every caller holding a
+  `NatsClient` passed its `.raw` escape hatch to satisfy it -- three sites in the
+  agent SDK, each with a comment saying it was waiting on this, and one inside
+  `threetears.registry` that no one had noticed. Requests now go through
+  `NatsClient.request_raw`, which turns transport failures into the typed
+  `RequestTimeoutError` / `NoRespondersError` / `RequestError` the rest of the
+  platform already handles.
+
+  **Breaking for anyone passing a bare nats-py client**: that now fails at the call
+  site with `AttributeError: request_raw`. Pass the wrapper. There is no dual path.
+  Typing the parameter is what found the registry caller; `Any` is what let four
+  sites accumulate.
+
+### Added
+
+- **observe: `configure_logging` no longer lets the AWS SDK follow a DEBUG root
+  level.** It sets the ROOT level, so at DEBUG botocore narrates every request twice
+  and prints the SigV4 CanonicalRequest, the StringToSign, and the full
+  `Authorization: AWS4-HMAC-SHA256 Credential=... Signature=...` header for each one.
+  3tears ships the S3 object store that makes those calls, so every consumer
+  inherited it: one backup writes an object per database plus a manifest, and a
+  nightly run buried the lifecycle lines the process owns under thousands of lines of
+  signing trace while putting request signatures into whatever collects the logs.
+
+  The libraries in the new `NOISY_LIBRARY_LOGGERS` are held at INFO, and only when
+  the root is below INFO -- at INFO or higher the root is already quieter, and
+  clamping then would RAISE their verbosity. Pass `quiet_noisy_libraries=False` when
+  you are debugging one of them and want the trace.
+
 ## v0.33.0 -- 2026-09-06
 
 ### Fixed

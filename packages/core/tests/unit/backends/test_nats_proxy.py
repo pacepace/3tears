@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
+from threetears.nats import Subject
 
 from threetears.core.backends.nats_proxy import (
     NatsProxyL3Backend,
@@ -24,17 +25,19 @@ from threetears.core.exceptions import DataLayerUnavailableError
 # ------------------------------------------------------------------
 
 
-def _make_reply(data: dict) -> MagicMock:  # type: ignore[type-arg]
-    """build mock NATS reply message.
+def _make_reply(data: dict) -> bytes:  # type: ignore[type-arg]
+    """build a broker reply payload.
+
+    ``NatsClient.request_raw`` returns the response BYTES, unlike nats-py's
+    ``request``, which returns a message object the caller reads ``.data`` off.
+    The proxy consumes the wrapper now, so this returns bytes directly.
 
     :param data: response payload dict
     :ptype data: dict
-    :return: mock reply with .data attribute
-    :rtype: MagicMock
+    :return: JSON-encoded reply payload
+    :rtype: bytes
     """
-    reply = MagicMock()
-    reply.data = json.dumps(data).encode("utf-8")
-    return reply
+    return json.dumps(data).encode("utf-8")
 
 
 def _make_proxy(mock_nc: MagicMock) -> NatsProxyL3Backend:
@@ -191,7 +194,7 @@ class TestIdentityTokenProvider:
     async def test_no_provider_raises_and_sends_nothing(self) -> None:
         """a backend built with no provider refuses rather than sending."""
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock()
+        mock_nc.request_raw = AsyncMock()
         proxy = NatsProxyL3Backend(
             nats_client=mock_nc,
             namespace_prefix="test",
@@ -201,13 +204,13 @@ class TestIdentityTokenProvider:
         with pytest.raises(DataLayerUnavailableError, match="no identity_token provider"):
             await proxy.fetch("SELECT 1")
 
-        mock_nc.request.assert_not_called()
+        mock_nc.request_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_token_raises_and_sends_nothing(self) -> None:
         """an empty token is refused exactly as a missing one is."""
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock()
+        mock_nc.request_raw = AsyncMock()
         proxy = NatsProxyL3Backend(
             nats_client=mock_nc,
             namespace_prefix="test",
@@ -218,7 +221,7 @@ class TestIdentityTokenProvider:
         with pytest.raises(DataLayerUnavailableError, match="returned an empty token"):
             await proxy.fetch("SELECT 1")
 
-        mock_nc.request.assert_not_called()
+        mock_nc.request_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_provider_is_read_on_every_request(self) -> None:
@@ -229,7 +232,7 @@ class TestIdentityTokenProvider:
         """
         tokens = iter(["token-1", "token-2"])
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -249,7 +252,9 @@ class TestIdentityTokenProvider:
         await proxy.fetch("SELECT 1")
         await proxy.fetch("SELECT 2")
 
-        forwarded = [json.loads(call[0][1])["identity_token"] for call in mock_nc.request.call_args_list]
+        forwarded = [
+            json.loads(call.kwargs["payload"])["identity_token"] for call in mock_nc.request_raw.call_args_list
+        ]
         assert forwarded == ["token-1", "token-2"]
 
 
@@ -262,7 +267,7 @@ class TestFetch:
     @pytest.mark.asyncio
     async def test_fetch_returns_rows(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -277,12 +282,12 @@ class TestFetch:
         rows = await proxy.fetch("SELECT * FROM foo WHERE id = $1", "abc")
 
         assert rows == [{"id": "abc"}, {"id": "def"}]
-        mock_nc.request.assert_awaited_once()
+        mock_nc.request_raw.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_fetch_empty_rows(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -301,7 +306,7 @@ class TestFetch:
     @pytest.mark.asyncio
     async def test_fetch_subject_built_correctly(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -315,14 +320,14 @@ class TestFetch:
 
         await proxy.fetch("SELECT 1")
 
-        call_args = mock_nc.request.call_args
-        subject = call_args[0][0]
+        call_args = mock_nc.request_raw.call_args
+        subject = call_args.kwargs["subject"].path
         assert subject == "test.l3.query"
 
     @pytest.mark.asyncio
     async def test_fetch_with_custom_namespace(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -337,8 +342,8 @@ class TestFetch:
         rows = await proxy.fetch("SELECT 1", namespace="custom.ns")
 
         assert rows == [{"x": 1}]
-        call_args = mock_nc.request.call_args
-        payload = json.loads(call_args[0][1])
+        call_args = mock_nc.request_raw.call_args
+        payload = json.loads(call_args.kwargs["payload"])
         assert payload["namespace"] == "custom.ns"
 
 
@@ -351,7 +356,7 @@ class TestFetchrow:
     @pytest.mark.asyncio
     async def test_fetchrow_returns_first_row(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -370,7 +375,7 @@ class TestFetchrow:
     @pytest.mark.asyncio
     async def test_fetchrow_returns_none_for_empty(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -396,7 +401,7 @@ class TestFetchval:
     @pytest.mark.asyncio
     async def test_fetchval_returns_first_column_of_first_row(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -415,7 +420,7 @@ class TestFetchval:
     @pytest.mark.asyncio
     async def test_fetchval_returns_none_for_empty(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -441,7 +446,7 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_execute_returns_row_count(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -462,7 +467,7 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_execute_returns_zero_for_null_row_count(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -483,7 +488,7 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_execute_detects_insert_operation(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -497,8 +502,8 @@ class TestExecute:
 
         await proxy.execute("INSERT INTO foo (a) VALUES ($1)", "val")
 
-        call_args = mock_nc.request.call_args
-        payload = json.loads(call_args[0][1])
+        call_args = mock_nc.request_raw.call_args
+        payload = json.loads(call_args.kwargs["payload"])
         assert payload["operation"] == "insert"
 
 
@@ -511,7 +516,7 @@ class TestExecuteBatch:
     @pytest.mark.asyncio
     async def test_execute_batch_returns_results(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -533,14 +538,14 @@ class TestExecuteBatch:
         )
 
         assert len(results) == 2
-        call_args = mock_nc.request.call_args
-        subject = call_args[0][0]
+        call_args = mock_nc.request_raw.call_args
+        subject = call_args.kwargs["subject"].path
         assert subject == "test.l3.batch"
 
     @pytest.mark.asyncio
     async def test_execute_batch_error_raises(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": False,
@@ -561,7 +566,7 @@ class TestExecuteBatch:
     @pytest.mark.asyncio
     async def test_execute_batch_auto_detects_operation(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -578,8 +583,8 @@ class TestExecuteBatch:
             ]
         )
 
-        call_args = mock_nc.request.call_args
-        payload = json.loads(call_args[0][1])
+        call_args = mock_nc.request_raw.call_args
+        payload = json.loads(call_args.kwargs["payload"])
         assert payload["queries"][0]["operation"] == "delete"
 
 
@@ -592,7 +597,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_acl_denied_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": False,
@@ -609,7 +614,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_nats_timeout_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(side_effect=TimeoutError("request timed out"))
+        mock_nc.request_raw = AsyncMock(side_effect=TimeoutError("request timed out"))
         proxy = _make_proxy(mock_nc)
 
         with pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
@@ -618,7 +623,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_nats_connection_error_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(side_effect=ConnectionError("no route to host"))
+        mock_nc.request_raw = AsyncMock(side_effect=ConnectionError("no route to host"))
         proxy = _make_proxy(mock_nc)
 
         with pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
@@ -634,7 +639,7 @@ class TestPayloadFormat:
     @pytest.mark.asyncio
     async def test_query_payload_contains_required_fields(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -648,8 +653,8 @@ class TestPayloadFormat:
 
         await proxy.fetch("SELECT * FROM foo WHERE id = $1", "abc")
 
-        call_args = mock_nc.request.call_args
-        payload = json.loads(call_args[0][1])
+        call_args = mock_nc.request_raw.call_args
+        payload = json.loads(call_args.kwargs["payload"])
         assert "correlation_id" in payload
         # THE WIRE CONTRACT MOVED, and these two tests are the pin that moves with
         # it. `agent_id` was SELF-ASSERTED identity: the broker fed it straight into
@@ -674,7 +679,7 @@ class TestPayloadFormat:
     async def test_customer_scope_emits_conv_customer_id(self) -> None:
         """fetch(customer_scope=...) ships the scope as conv_customer_id (broker-isolation-task-01)."""
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply({"success": True, "rows": [], "row_count": None, "duration_ms": 1})
         )
         proxy = _make_proxy(mock_nc)
@@ -686,27 +691,27 @@ class TestPayloadFormat:
             customer_scope=scope,
         )
 
-        payload = json.loads(mock_nc.request.call_args[0][1])
+        payload = json.loads(mock_nc.request_raw.call_args.kwargs["payload"])
         assert payload["conv_customer_id"] == str(scope)
 
     @pytest.mark.asyncio
     async def test_no_customer_scope_omits_conv_customer_id(self) -> None:
         """default-off: with no customer_scope the wire payload carries no conv_customer_id."""
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply({"success": True, "rows": [], "row_count": None, "duration_ms": 1})
         )
         proxy = _make_proxy(mock_nc)
 
         await proxy.fetch("SELECT * FROM foo WHERE id = $1", "abc")
 
-        payload = json.loads(mock_nc.request.call_args[0][1])
+        payload = json.loads(mock_nc.request_raw.call_args.kwargs["payload"])
         assert "conv_customer_id" not in payload
 
     @pytest.mark.asyncio
     async def test_params_are_serialized(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -726,15 +731,15 @@ class TestPayloadFormat:
             dt,
         )
 
-        call_args = mock_nc.request.call_args
-        payload = json.loads(call_args[0][1])
+        call_args = mock_nc.request_raw.call_args
+        payload = json.loads(call_args.kwargs["payload"])
         assert payload["params"][0] == str(uid)
         assert payload["params"][1] == dt.isoformat()
 
     @pytest.mark.asyncio
     async def test_batch_payload_contains_required_fields(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -750,8 +755,8 @@ class TestPayloadFormat:
             transaction=False,
         )
 
-        call_args = mock_nc.request.call_args
-        payload = json.loads(call_args[0][1])
+        call_args = mock_nc.request_raw.call_args
+        payload = json.loads(call_args.kwargs["payload"])
         assert "correlation_id" in payload
         assert payload["identity_token"] == "test-identity-token"
         assert "agent_id" not in payload
@@ -762,7 +767,7 @@ class TestPayloadFormat:
     @pytest.mark.asyncio
     async def test_custom_timeout_ms(self) -> None:
         mock_nc = MagicMock()
-        mock_nc.request = AsyncMock(
+        mock_nc.request_raw = AsyncMock(
             return_value=_make_reply(
                 {
                     "success": True,
@@ -782,11 +787,11 @@ class TestPayloadFormat:
 
         await proxy.fetch("SELECT 1")
 
-        call_args = mock_nc.request.call_args
-        payload = json.loads(call_args[0][1])
+        call_args = mock_nc.request_raw.call_args
+        payload = json.loads(call_args.kwargs["payload"])
         assert payload["timeout_ms"] == 10000
-        nats_timeout = call_args[1].get("timeout") or call_args[0][2]
-        assert nats_timeout == 12.0
+        # a timedelta now, not a float of seconds: that is request_raw's contract
+        assert call_args.kwargs["timeout"].total_seconds() == 12.0
 
 
 # -- row deserialization tests (bytes round-trip) --
@@ -847,9 +852,7 @@ class TestFetchDeserializesBytes:
             ],
             "duration_ms": 5,
         }
-        mock_reply = MagicMock()
-        mock_reply.data = json.dumps(response_data).encode()
-        mock_nc.request = AsyncMock(return_value=mock_reply)
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps(response_data).encode())
 
         proxy = NatsProxyL3Backend(
             nats_client=mock_nc,
@@ -877,9 +880,7 @@ class TestFetchDeserializesBytes:
             ],
             "duration_ms": 3,
         }
-        mock_reply = MagicMock()
-        mock_reply.data = json.dumps(response_data).encode()
-        mock_nc.request = AsyncMock(return_value=mock_reply)
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps(response_data).encode())
 
         proxy = NatsProxyL3Backend(
             nats_client=mock_nc,
@@ -920,24 +921,34 @@ class _ScriptedReplyPlan:
         self._entries = list(entries)
         self.calls: list[tuple[str, dict]] = []
 
-    async def __call__(self, subject: str, payload: bytes, timeout: float = 0):
-        """mock coroutine for ``nc.request``.
+    async def __call__(
+        self,
+        *,
+        subject: Subject,
+        payload: bytes,
+        timeout: timedelta | None = None,
+    ) -> bytes:
+        """mock coroutine for ``NatsClient.request_raw``.
 
-        :param subject: subject argument passed by the proxy
-        :ptype subject: str
+        Keyword-only, taking a :class:`~threetears.nats.Subject` and returning
+        BYTES -- the wrapper's shape, not nats-py's positional ``request``.
+
+        :param subject: subject token passed by the proxy
+        :ptype subject: Subject
         :param payload: raw bytes payload
         :ptype payload: bytes
         :param timeout: ignored
-        :ptype timeout: float
-        :return: pre-built reply
-        :rtype: MagicMock
+        :ptype timeout: timedelta | None
+        :return: pre-built reply payload
+        :rtype: bytes
         :raises AssertionError: when a subject is called out of order
         """
         del timeout
-        assert self._entries, f"no reply scripted for {subject}"
+        path = subject.path
+        assert self._entries, f"no reply scripted for {path}"
         expected_subject, response = self._entries.pop(0)
-        assert subject == expected_subject, f"expected {expected_subject!r}, got {subject!r}"
-        self.calls.append((subject, json.loads(payload.decode("utf-8"))))
+        assert path == expected_subject, f"expected {expected_subject!r}, got {path!r}"
+        self.calls.append((path, json.loads(payload.decode("utf-8"))))
         return _make_reply(response)
 
 
@@ -950,7 +961,7 @@ async def test_acquire_outside_tx_routes_to_l3_query() -> None:
         ]
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:
@@ -972,7 +983,7 @@ async def test_transaction_happy_path_commits() -> None:
         ]
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:
@@ -1006,7 +1017,7 @@ async def test_transaction_exception_rolls_back() -> None:
         ]
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     class _Boom(RuntimeError):
@@ -1033,7 +1044,7 @@ async def test_transaction_fetchrow_routes_through_tx_id() -> None:
         ]
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:
@@ -1061,7 +1072,7 @@ async def test_transaction_begin_failure_raises() -> None:
         ]
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     with pytest.raises(DataLayerUnavailableError) as excinfo:
@@ -1083,7 +1094,7 @@ async def test_nested_transaction_rejected() -> None:
         ]
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     with pytest.raises(RuntimeError, match="nested transactions"):
@@ -1112,7 +1123,7 @@ async def test_dangling_tx_rolled_back_on_connection_close() -> None:
         ]
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     async with proxy.acquire() as conn:
@@ -1147,7 +1158,7 @@ async def test_transaction_commit_failure_raises() -> None:
         ]
     )
     mock_nc = MagicMock()
-    mock_nc.request = plan
+    mock_nc.request_raw = plan
     proxy = _make_proxy(mock_nc)
 
     with pytest.raises(DataLayerUnavailableError) as excinfo:

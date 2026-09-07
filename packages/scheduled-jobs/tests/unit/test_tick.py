@@ -21,6 +21,8 @@ Cases:
 
 from __future__ import annotations
 
+import itertools
+
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -508,3 +510,97 @@ class TestDriftRecorded:
 
         assert len(observed) == 1
         assert observed[0] >= 89.0  # the tick's ``now`` is slightly after _now(); drift is at least ~90s
+
+
+class TestFireLatencyIsMeasuredByTheEngine:
+    """Every fire records how long its dispatch took, whether or not the dispatcher timed it.
+
+    ``JobFireResult.latency_ms`` has always been documented as an optional fixup
+    the dispatcher may capture, and in practice no dispatcher captured it: every
+    consumer of this package left it ``None``, so `job_fires.latency_ms` was a
+    column that existed and never held a value. The engine is the one place that
+    knows when the callback started and stopped, so it measures, and a dispatcher
+    that reports its own figure still wins.
+    """
+
+    async def test_engine_fills_latency_when_the_dispatcher_reports_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            return JobFireResult(status="succeeded")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+
+        assert len(fires.succeeded) == 1
+        measured = fires.succeeded[0]["latency_ms"]
+        assert measured is not None
+        assert measured >= 0
+
+    async def test_a_dispatcher_that_measured_its_own_latency_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The engine measures the callback; a dispatcher may know a truer figure."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            return JobFireResult(status="succeeded", latency_ms=4242)
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert fires.succeeded[0]["latency_ms"] == 4242
+
+    async def test_a_raising_callback_still_records_how_long_it_ran(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The failure path had no result to read a latency from, and recorded None.
+
+        How long a fire ran before it blew up is the more interesting number, not
+        the less: it separates "refused immediately" from "ground for a minute and
+        then timed out".
+        """
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            raise RuntimeError("boom")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+
+        assert len(fires.failed) == 1
+        assert fires.failed[0]["latency_ms"] is not None
+        assert fires.failed[0]["latency_ms"] >= 0
+
+    async def test_a_returned_failure_records_latency_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            return JobFireResult(status="failed", error="downstream rejected")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert fires.failed[0]["latency_ms"] is not None
+
+    async def test_latency_reflects_the_time_the_callback_actually_took(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Measured on the monotonic clock, so a wall-clock step cannot produce a negative.
+
+        Driven through a fake clock rather than a real sleep: a timing assertion
+        that waits is the kind that fails once a month on a loaded CI box.
+        """
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        # A clock that advances a fixed 0.25s on every read, rather than a scripted
+        # list. The engine's start mark and its elapsed read are consecutive calls
+        # (the callback below reads no clock), so the fire measures exactly one
+        # step whatever else in the tick reads the clock before or after. A scripted
+        # list would pin this test to the tick's internal call count and break on
+        # any unrelated timing change.
+        step = itertools.count()
+        monkeypatch.setattr(tick_mod.time, "monotonic", lambda: next(step) * 0.25)
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            return JobFireResult(status="succeeded")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert fires.succeeded[0]["latency_ms"] == 250

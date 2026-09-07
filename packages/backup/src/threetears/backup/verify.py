@@ -14,6 +14,7 @@ asyncpg-backed defaults for integration use.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -39,6 +40,13 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: how many times the temp-database drop is attempted before the database is
+#: declared orphaned. see :func:`_drop_database_best_effort` for why one is too few.
+_TEMP_DB_DROP_ATTEMPTS = 4
+
+#: linear backoff unit between drop attempts, multiplied by the attempt number.
+_TEMP_DB_DROP_BACKOFF_SECONDS = 5.0
 
 #: yields the dsn of a fresh, empty temporary database, and tears it down on exit.
 TempDbProvisioner = Callable[[], AbstractAsyncContextManager[str]]
@@ -127,7 +135,11 @@ def make_temp_db_provisioner(
 
     @asynccontextmanager
     async def provision() -> AsyncIterator[str]:
-        database = f"{name_prefix}{uuid7().hex[:12]}"
+        # The TAIL of the hex, not the head. uuid7's leading 12 hex digits are the
+        # 48-bit millisecond timestamp and carry no randomness at all, so two
+        # verifiers starting in the same millisecond mint the SAME name and the
+        # second CREATE DATABASE fails with "already exists".
+        database = f"{name_prefix}{uuid7().hex[-12:]}"
         admin = await connect(admin_dsn)
         try:
             await admin.execute(f'CREATE DATABASE "{database}"')
@@ -136,13 +148,61 @@ def make_temp_db_provisioner(
         try:
             yield _swap_database(admin_dsn, database)
         finally:
+            await _drop_database_best_effort(admin_dsn, database, connect=connect)
+
+    return provision
+
+
+async def _drop_database_best_effort(
+    admin_dsn: str,
+    database: str,
+    *,
+    connect: Callable[[str], Awaitable[Any]],
+) -> None:
+    """Drop a temp database, retrying a slow reap, and never raising.
+
+    Two failure modes this exists for, both seen on Yugabyte.
+
+    A ``DROP DATABASE`` can time out while the cluster reaps the database's
+    tablets asynchronously. That timeout means "still reaping", not "cannot
+    drop", so the drop typically succeeds seconds later. Giving up on the first
+    attempt leaves the database behind, and its tablets count against the
+    cluster's replica ceiling -- which makes the NEXT verification more likely to
+    fail the same way. The leak compounds.
+
+    Worse, this runs in the ``finally`` of the provisioning context manager. An
+    exception raised there REPLACES whatever the body was raising, so a real
+    restore failure surfaced to the operator as a cleanup timeout with the actual
+    cause gone. Cleanup never fails the work it was cleaning up after: the final
+    failure is logged, naming the orphan, and swallowed.
+
+    :param admin_dsn: dsn with rights to DROP DATABASE
+    :ptype admin_dsn: str
+    :param database: the temp database to drop
+    :ptype database: str
+    :param connect: an async connect callable (``asyncpg.connect``)
+    :ptype connect: Callable[[str], Awaitable[Any]]
+    :return: nothing
+    :rtype: None
+    """
+    for attempt in range(1, _TEMP_DB_DROP_ATTEMPTS + 1):
+        try:
             cleanup = await connect(admin_dsn)
             try:
                 await cleanup.execute(f'DROP DATABASE IF EXISTS "{database}"')
             finally:
                 await cleanup.close()
-
-    return provision
+        except Exception:  # noqa: BLE001 - cleanup must not fail the work it follows
+            if attempt == _TEMP_DB_DROP_ATTEMPTS:
+                log.warning(
+                    "temp database drop failed; it is orphaned and must be dropped manually",
+                    extra={"extra_data": {"database": database, "attempts": attempt}},
+                    exc_info=True,
+                )
+                break
+            await asyncio.sleep(_TEMP_DB_DROP_BACKOFF_SECONDS * attempt)
+        else:
+            break
 
 
 def count_tables(*, connect: Callable[[str], Awaitable[Any]]) -> Assertions:
