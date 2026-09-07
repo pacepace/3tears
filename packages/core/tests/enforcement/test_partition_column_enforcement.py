@@ -154,6 +154,16 @@ _EXEMPT_LITERAL_FRAGMENTS: tuple[tuple[str, str], ...] = (
         "JOIN agent_wake_schedules ws ON wf.schedule_id = ws.schedule_id",
         "per-user-rate-limit-aggregate",
     ),
+    # rationale: sizing the operator-facing scheduled-job listing, which
+    # is cross-partition by construction -- a seeder mints one partition
+    # per schedule, so a partition-scoped count would report 1 for a
+    # deployment of any size. The listing it sizes
+    # (ScheduledJobCollection.list_jobs) spans partitions for the same
+    # reason and passes the walker only because count(*) is the one
+    # projection with no column list to carry ``partition_key`` in. The
+    # count MUST apply the same filters as that listing or it mis-pages
+    # whoever trusts it.
+    ("SELECT count(*) FROM scheduled_jobs", "admin-listing-page-size"),
 )
 
 

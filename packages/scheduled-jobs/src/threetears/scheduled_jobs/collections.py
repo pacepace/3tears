@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, get_args
 from uuid import UUID
 
 from threetears.core.collections.base import BaseCollection
@@ -38,6 +38,8 @@ from threetears.core.serialization import (
 from threetears.observe import get_logger
 
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
+from threetears.scheduled_jobs.reschedule import compute_next_fire_at
+from threetears.scheduled_jobs.types import ScheduleStatus
 
 __all__ = [
     "REAPED_DISPATCH_ERROR",
@@ -47,6 +49,11 @@ __all__ = [
 
 
 log = get_logger(__name__)
+
+
+# Derived from the Literal rather than restated, so a status added to the
+# vocabulary cannot be silently rejected by the validation in front of it.
+_SCHEDULE_STATUSES: frozenset[str] = frozenset(get_args(ScheduleStatus))
 
 
 # Field-type hints used when L2 cache rounds a row through JSON. The
@@ -388,6 +395,311 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         )
         return [ScheduledJobEntity(dict(row), is_new=False, collection=self) for row in rows]
 
+    async def list_jobs(
+        self,
+        *,
+        kinds: Sequence[str] | None = None,
+        statuses: Sequence[str] | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[ScheduledJobEntity]:
+        """Return jobs across every partition, for an operator-facing view.
+
+        Distinct from :meth:`list_due_for_tick`, which the engine uses and
+        which admits ``status='active'`` and a reached ``next_fire_at``
+        only. This one is status-blind by default, because a paused or
+        expired job is usually the one an operator is looking for.
+
+        Distinct from :meth:`list_for_partition` because every job may
+        carry its OWN ``partition_key`` -- a seeder that mints one
+        partition per schedule is the normal shape, so a
+        partition-scoped read enumerates a single job rather than a
+        deployment.
+
+        ``None`` means unfiltered; an empty sequence matches NOTHING, the
+        same contract :meth:`list_due_for_tick` applies to ``kinds``.
+        Widening an explicit empty list to "everything" would turn a
+        caller that computed zero kinds into one operating on the whole
+        deployment.
+
+        Ordering is total (``kind``, then ``name``, then ``job_id``) so
+        paging with ``offset`` cannot repeat or skip a row.
+
+        :param kinds: restrict to these kinds, or ``None`` for every kind
+        :ptype kinds: Sequence[str] | None
+        :param statuses: restrict to these statuses, or ``None`` for every
+            status
+        :ptype statuses: Sequence[str] | None
+        :param limit: page size
+        :ptype limit: int
+        :param offset: rows to skip, for paging
+        :ptype offset: int
+        :return: matching jobs, ordered deterministically
+        :rtype: list[ScheduledJobEntity]
+        """
+        result: list[ScheduledJobEntity] = []
+        if self.l3_pool is not None and kinds != [] and statuses != []:
+            # __SPANS_PARTITIONS__: an admin view enumerates a deployment,
+            # and each job may hold its own partition, so the partition
+            # predicate cannot apply here by construction -- the same
+            # exemption list_due_for_tick carries, for the same reason.
+            # The column list is written out literally (not interpolated)
+            # so the partition-column enforcement walker sees
+            # ``partition_key`` as a static literal.
+            rows = await self.l3_pool.fetch(
+                "SELECT partition_key, job_id, kind, payload, schedule_type, "
+                "schedule_config, status, next_fire_at, last_fired_at, "
+                "missed_fire_policy, name, date_created, date_updated "
+                "FROM scheduled_jobs "
+                "WHERE ($1::text[] IS NULL OR kind = ANY($1)) "
+                "AND ($2::text[] IS NULL OR status = ANY($2)) "
+                "ORDER BY kind ASC, name ASC NULLS LAST, job_id ASC "
+                "LIMIT $3 OFFSET $4",
+                list(kinds) if kinds is not None else None,
+                list(statuses) if statuses is not None else None,
+                limit,
+                offset,
+            )
+            result = [ScheduledJobEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return result
+
+    async def get_by_job_id(self, job_id: UUID) -> ScheduledJobEntity | None:
+        """Fetch one job by its bare ``job_id``, without knowing its partition.
+
+        ``job_id`` carries its own UNIQUE constraint (it is what
+        ``job_fires.job_id`` references), so it addresses a row on its
+        own. An admin surface has only that id -- it comes out of a URL
+        or an operator's clipboard, not out of a partition-aware
+        listing -- and the partition is what this returns so the caller
+        can then use the partition-scoped mutators.
+
+        Prefer :meth:`get` wherever the partition IS known: it is
+        partition-scoped and cache-addressable, and this is neither.
+
+        :param job_id: the job's unique id
+        :ptype job_id: UUID
+        :return: the job, or ``None`` when no row carries that id
+        :rtype: ScheduledJobEntity | None
+        """
+        result: ScheduledJobEntity | None = None
+        if self.l3_pool is not None:
+            # __SPANS_PARTITIONS__: resolving a bare job_id to its row is a
+            # lookup ACROSS partitions by definition -- the partition is the
+            # thing being looked up. Bounded to one row by the column's own
+            # UNIQUE constraint. The column list is written out literally so
+            # the partition-column enforcement walker sees ``partition_key``
+            # as a static literal.
+            row = await self.l3_pool.fetchrow(
+                "SELECT partition_key, job_id, kind, payload, schedule_type, "
+                "schedule_config, status, next_fire_at, last_fired_at, "
+                "missed_fire_policy, name, date_created, date_updated "
+                "FROM scheduled_jobs WHERE job_id = $1",
+                job_id,
+            )
+            if row is not None:
+                result = ScheduledJobEntity(dict(row), is_new=False, collection=self)
+        return result
+
+    async def count_jobs(
+        self,
+        *,
+        kinds: Sequence[str] | None = None,
+        statuses: Sequence[str] | None = None,
+    ) -> int:
+        """Count jobs matching the same filters :meth:`list_jobs` applies.
+
+        Exists so a paging caller can size the result set without
+        fetching it. The filter semantics are deliberately identical:
+        a count computed under different rules than the listing would
+        mis-page whoever trusted it.
+
+        :param kinds: restrict to these kinds, or ``None`` for every kind
+        :ptype kinds: Sequence[str] | None
+        :param statuses: restrict to these statuses, or ``None`` for every
+            status
+        :ptype statuses: Sequence[str] | None
+        :return: number of matching jobs
+        :rtype: int
+        """
+        total = 0
+        if self.l3_pool is not None and kinds != [] and statuses != []:
+            # __SPANS_PARTITIONS__: counts what list_jobs would return, so
+            # it carries the same cross-partition exemption.
+            counted = await self.l3_pool.fetchval(
+                "SELECT count(*) FROM scheduled_jobs "
+                "WHERE ($1::text[] IS NULL OR kind = ANY($1)) "
+                "AND ($2::text[] IS NULL OR status = ANY($2))",
+                list(kinds) if kinds is not None else None,
+                list(statuses) if statuses is not None else None,
+            )
+            total = int(counted or 0)
+        return total
+
+    async def set_status(
+        self,
+        *,
+        partition_key: UUID,
+        job_id: UUID,
+        status: str,
+        now: datetime,
+    ) -> bool:
+        """Move one job between ``active`` / ``paused`` / ``expired``.
+
+        Writes ``status`` and ``date_updated`` and NOTHING ELSE. Leaving
+        ``next_fire_at`` alone is the property the whole pause/resume
+        story rests on: resuming restores the schedule the operator
+        paused rather than restarting it from now. A backlog that built
+        up while paused is then the missed-fire policy's business, which
+        is where that decision already lives.
+
+        Pausing is the supported way to stop a schedule; deleting the row
+        is not, because a boot-time insert-if-absent ensure recreates a
+        deleted row and will not revive a paused one.
+
+        :param partition_key: partition column value
+        :ptype partition_key: UUID
+        :param job_id: target job
+        :ptype job_id: UUID
+        :param status: one of the values pinned by
+            :data:`threetears.scheduled_jobs.types.ScheduleStatus`
+        :ptype status: str
+        :param now: instant written as ``date_updated``
+        :ptype now: datetime
+        :return: ``True`` when a row changed, ``False`` when none matched
+        :rtype: bool
+        :raises ValueError: when ``status`` is not a known status
+        """
+        if status not in _SCHEDULE_STATUSES:
+            msg = f"unknown status {status!r}; expected one of {sorted(_SCHEDULE_STATUSES)}"
+            raise ValueError(msg)
+        changed = None
+        if self.l3_pool is not None:
+            # cache-bypass: targeted UPDATE; the row cache is invalidated
+            # naturally on the next partition-aware fetch.
+            changed = await self.l3_pool.fetchval(
+                "UPDATE scheduled_jobs SET status = $1, date_updated = $2 "
+                "WHERE partition_key = $3 AND job_id = $4 "
+                "RETURNING job_id",
+                status,
+                now,
+                partition_key,
+                job_id,
+            )
+        return changed is not None
+
+    async def update_schedule(
+        self,
+        *,
+        partition_key: UUID,
+        job_id: UUID,
+        schedule_config: dict[str, Any],
+        now: datetime,
+    ) -> bool:
+        """Retune one job's cadence and move its next fire to match.
+
+        Writing ``schedule_config`` alone would leave the OLD cadence's
+        ``next_fire_at`` standing, so the change would not take effect
+        until that fire came and went. The new next fire is computed by
+        :func:`~threetears.scheduled_jobs.reschedule.compute_next_fire_at`
+        -- the same function the tick engine reschedules with, so a
+        retune cannot drift from the engine's own maths, and a config the
+        schedule type rejects raises here rather than being stored and
+        failing at fire time.
+
+        ``schedule_type`` and ``missed_fire_policy`` are read from the
+        ROW, never taken from the caller: a caller-supplied type could
+        disagree with the stored one and write a next fire the engine
+        would never have produced.
+
+        :param partition_key: partition column value
+        :ptype partition_key: UUID
+        :param job_id: target job
+        :ptype job_id: UUID
+        :param schedule_config: the new per-schedule-type config payload
+        :ptype schedule_config: dict[str, Any]
+        :param now: instant the recompute anchors on, and ``date_updated``
+        :ptype now: datetime
+        :return: ``True`` when a row changed, ``False`` when none matched
+        :rtype: bool
+        :raises ValueError: when the config is malformed for the row's
+            schedule type
+        """
+        updated = False
+        if self.l3_pool is not None:
+            # cache-bypass: reads the discriminators the recompute needs
+            # before a targeted UPDATE; the row cache cannot answer the
+            # read-then-write as one operation.
+            row = await self.l3_pool.fetchrow(
+                "SELECT schedule_type, missed_fire_policy, last_fired_at "
+                "FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2",
+                partition_key,
+                job_id,
+            )
+            if row is not None:
+                next_fire_at = compute_next_fire_at(
+                    row["schedule_type"],
+                    schedule_config,
+                    row["missed_fire_policy"],
+                    row["last_fired_at"],
+                    now,
+                )
+                changed = await self.l3_pool.fetchval(
+                    "UPDATE scheduled_jobs "
+                    "SET schedule_config = $1, next_fire_at = $2, date_updated = $3 "
+                    "WHERE partition_key = $4 AND job_id = $5 "
+                    "RETURNING job_id",
+                    schedule_config,
+                    next_fire_at,
+                    now,
+                    partition_key,
+                    job_id,
+                )
+                updated = changed is not None
+        return updated
+
+    async def request_immediate_fire(
+        self,
+        *,
+        partition_key: UUID,
+        job_id: UUID,
+        now: datetime,
+    ) -> bool:
+        """Bring an active job's next fire forward to ``now``.
+
+        A request, not a fire: the tick engine still claims the row
+        through its own CAS on the next pass, so this cannot double-fire
+        a job or bypass the engine's concurrency control.
+
+        Refuses a job that is not ``active``. Firing a schedule an
+        operator believes is stopped is the wrong default -- the caller
+        resumes it first, which is a decision someone takes deliberately
+        rather than a side effect of asking for one run.
+
+        :param partition_key: partition column value
+        :ptype partition_key: UUID
+        :param job_id: target job
+        :ptype job_id: UUID
+        :param now: the instant to bring the fire forward to
+        :ptype now: datetime
+        :return: ``True`` when the job was brought forward, ``False`` when
+            no active row matched
+        :rtype: bool
+        """
+        requested = None
+        if self.l3_pool is not None:
+            # cache-bypass: targeted UPDATE guarded on status; the row
+            # cache is invalidated naturally on the next partition-aware
+            # fetch.
+            requested = await self.l3_pool.fetchval(
+                "UPDATE scheduled_jobs SET next_fire_at = $1, date_updated = $1 "
+                "WHERE partition_key = $2 AND job_id = $3 AND status = 'active' "
+                "RETURNING job_id",
+                now,
+                partition_key,
+                job_id,
+            )
+        return requested is not None
+
     async def claim_and_reschedule(
         self,
         *,
@@ -647,6 +959,46 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
             fire_id,
         )
         return None
+
+    async def latest_for_jobs(
+        self,
+        job_ids: Sequence[UUID],
+    ) -> dict[UUID, JobFireEntity]:
+        """Return the newest fire for each of ``job_ids``, in ONE query.
+
+        An admin listing shows N jobs each with its last verdict, and
+        calling :meth:`list_for_job` per row makes that N+1 round trips
+        against a table that grows with every tick of every schedule.
+
+        A job that has never fired is ABSENT from the result rather than
+        mapped to ``None``: absence is already the caller's signal, and a
+        null entry would need the same check plus a way to tell it from a
+        fire whose fields happen to be empty.
+
+        :param job_ids: the jobs whose latest fire to read
+        :ptype job_ids: Sequence[UUID]
+        :return: newest fire per job, keyed by ``job_id``, omitting jobs
+            that have never fired
+        :rtype: dict[UUID, JobFireEntity]
+        """
+        result: dict[UUID, JobFireEntity] = {}
+        if self.l3_pool is not None and job_ids:
+            # __SPANS_PARTITIONS__: the jobs an admin view lists may each
+            # hold their own partition, so the partition predicate cannot
+            # apply; the query is bounded by an explicit job-id list
+            # instead. The column list is written out literally so the
+            # partition-column enforcement walker sees ``partition_key``
+            # as a static literal.
+            rows = await self.l3_pool.fetch(
+                "SELECT DISTINCT ON (job_id) "
+                "partition_key, fire_id, job_id, scheduled_fire_at, "
+                "actual_fired_at, status, output, latency_ms, error, date_created "
+                "FROM job_fires WHERE job_id = ANY($1) "
+                "ORDER BY job_id, actual_fired_at DESC",
+                list(job_ids),
+            )
+            result = {row["job_id"]: JobFireEntity(dict(row), is_new=False, collection=self) for row in rows}
+        return result
 
     async def reap_stale_dispatching(
         self,

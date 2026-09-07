@@ -6,6 +6,131 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.33.0 -- 2026-09-06
+
+### Fixed
+
+- **nats: a lock could outlive the holder that released it.** `nats_distributed_lock`
+  fenced its release on "the revision this holder last wrote", recorded by
+  assigning the result of each heartbeat renewal. A holder can be BEHIND its own
+  writes: a cancellation delivered after a renewal's write landed but before that
+  assignment -- a window one network round trip wide, entered by any body
+  finishing near a heartbeat boundary -- left the holder one revision short of the
+  entry it owned. The fence then refused its owner's own release, and the lock sat
+  there for its whole TTL with every other pod waiting. That is the exact outcome
+  the fence was written to prevent, reached from the other side.
+
+  The release now fences on IDENTITY. Each hold writes an opaque token as the
+  entry's value and every renewal rewrites the same one; the release reads the
+  entry and deletes only if the token is still its own, fenced on the revision it
+  just read. The heartbeat is already cancelled and awaited by then, so nothing of
+  this holder's can write in between, and anything else that does still wins. A
+  successor's lock is as safe as before -- safer, since the check no longer depends
+  on the departing holder having kept count.
+
+  Surfaced as an intermittent unit-test failure. The timing-based waits in that
+  suite are now event-driven, so the next occurrence of anything like it fails
+  every run instead of one in several.
+
+### Added
+
+- **scheduled-jobs: an operator-facing surface on the job stores.** A tick pump
+  is a thing someone has to be able to see and steer, and until now the only way
+  to do any of it was hand-written SQL against `scheduled_jobs` -- which is what
+  consumers' runbooks told their operators to do. Six additions, all
+  payload-agnostic and all exercised against a real engine:
+
+  - `ScheduledJobCollection.list_jobs(kinds=, statuses=, limit=, offset=)` --
+    cross-partition enumeration, status-blind by default because a paused or
+    expired job is usually the one being looked for. Distinct from
+    `list_for_partition`: a seeder that mints one partition per schedule is the
+    normal shape, so a partition-scoped read enumerates one job rather than a
+    deployment. `None` means unfiltered and an empty sequence matches nothing,
+    the same contract `list_due_for_tick` already applies to `kinds`. Ordering is
+    total so `offset` paging cannot repeat or skip a row.
+  - `ScheduledJobCollection.count_jobs(kinds=, statuses=)` -- sizes that listing
+    under identical filter semantics.
+  - `ScheduledJobCollection.set_status(...)` -- pause and resume. Writes `status`
+    and `date_updated` and nothing else; leaving `next_fire_at` untouched is what
+    makes resuming restore the schedule rather than restart it, and a backlog is
+    then the missed-fire policy's business.
+  - `ScheduledJobCollection.update_schedule(...)` -- retunes cadence and moves the
+    next fire to match, recomputing through `compute_next_fire_at` so a retune
+    cannot drift from the engine's own maths and a config the schedule type
+    rejects raises rather than being stored. `schedule_type` and
+    `missed_fire_policy` are read from the row, never taken from the caller.
+  - `ScheduledJobCollection.request_immediate_fire(...)` -- brings an active job's
+    next fire forward. A request, not a fire: the engine still claims the row
+    through its own CAS, so it cannot double-fire or bypass concurrency control.
+    Refuses a paused job rather than firing one an operator believes is stopped.
+  - `ScheduledJobCollection.get_by_job_id(job_id)` -- resolves a bare `job_id`
+    to its row and, crucially, to its partition. `job_id` carries its own UNIQUE
+    constraint, so it addresses a row alone; an admin surface has only that id
+    (out of a URL or an operator's clipboard) and needs the partition back
+    before it can call any of the partition-scoped mutators above. Prefer `get`
+    wherever the partition is already known -- that one is partition-scoped and
+    cache-addressable, and this is neither.
+  - `JobFireCollection.latest_for_jobs(job_ids)` -- newest fire per job in one
+    query, replacing the N+1 an admin listing would otherwise make against a
+    table that grows with every tick. A job that never fired is absent rather
+    than mapped to `None`.
+
+- **scheduled-jobs: `ScheduleStatus`** (`types.py`) -- the `active` / `paused` /
+  `expired` vocabulary, mirroring the `scheduled_jobs` CHECK constraint the way
+  `ScheduleType` and `MissedFirePolicy` already mirror theirs. `set_status`
+  derives its validation from it, so the two cannot drift.
+
+- **core:** `TracedHttpClient` accepts an optional `event_hooks` mapping,
+  forwarded to the underlying httpx client. It is the on-response feedback
+  channel a consumer needs to observe each response's status/latency -- e.g.
+  to drive a status-driven rate-limit backoff (a 429/402 on-report hook) that
+  the client's own bounded 5xx retry does not model. Backward-compatible:
+  omitting it wires nothing, byte-identical to prior behaviour.
+
+- **core:** `TracedHttpClient.stream()` -- an async-context-manager for bulk
+  downloads that does not buffer the body. Tracing, bounded retry, and circuit
+  breaking apply to *establishing* the response (headers): 5xx/connect/timeout
+  retry, a 4xx is yielded un-retried, exhaustion raises `UpstreamHttpError`.
+  Once the response is yielded, its body is streamed by the caller
+  (`aiter_bytes`), so a multi-hundred-MB dataset (ZIP/CSV/masterfile) never
+  lands in memory -- and no retry fires once streaming starts, since a
+  half-read body cannot be safely retried. Complements `request()`/`get()`,
+  whose whole-body retry suits API responses; supports a `Range` header for
+  partial fetches.
+
+- **core:** `TracedHttpClient` gains four passthroughs so it can front the
+  full range of upstreams a consumer's own bespoke httpx clients used to,
+  letting those clients be retired onto the one traced transport. All are
+  backward-compatible (their defaults reproduce prior behaviour):
+  - client-level default `headers` (an API key or `User-Agent` an upstream
+    keys on), applied to every request; a per-call `headers` merges over them.
+  - `follow_redirects` -- a client-level default plus a per-call override on
+    `get`/`post`/`request`/`stream`.
+  - form-encoded `data` on `post`/`request`, for an endpoint that reads a POST
+    form rather than JSON.
+  - `upstream_base_url=None` -- a client with no fixed upstream, driven by
+    absolute per-request URLs, for a shared client fronting several endpoints
+    whose host is not one value. A circuit breaker cannot pair with it (it
+    keys fault-isolation on one upstream); the empty string stays rejected, so
+    `None` is the sole, deliberate "no fixed upstream" signal.
+  - `head()` -- a body-less reachability/metadata probe, the natural sibling
+    of `get`/`post`, delegating to `request` with the same retry/breaking.
+
+- **core:** `TracedHttpClient` now retries `httpx.RemoteProtocolError` (a
+  server that disconnects without sending a response) alongside connect
+  errors, timeouts, and 5xx. The request never received an answer, so
+  re-issuing it is safe -- and it is the exact transient class several
+  consumers hand-rolled their own retry loops to survive, which is what this
+  client exists to absorb. `request()` and `stream()` both cover it.
+
+- **scrape:** `DocumentDriver` accepts an injected `TracedHttpClient` (not only
+  an `httpx.AsyncClient`) and maps its `UpstreamHttpError` exhaustion to the same
+  `DocumentDriverError("transport")` a raw httpx transport failure yields. It
+  drives an injected client through `.get`/`.aclose` alone, so a caller that
+  wants its PDF fetch to share the throttle/egress of its traced client can pass
+  it straight in. Backward-compatible: the self-constructed per-call client is
+  unchanged.
+
 ## v0.32.1 -- 2026-09-05
 
 ### Fixed
