@@ -210,7 +210,15 @@ marimo/_lsp/
 __marimo__/
 
 # Claude Code local state
-.claude/
+# .claude/* rather than .claude/ so the one file below can be re-included:
+# git never descends into an excluded DIRECTORY, so a negation inside one is
+# silently dead. Excluding the contents instead leaves the directory readable.
+.claude/*
+# Prawduct install reference. Committed on purpose: it is what enables the
+# plugin for anyone who clones this repo. Without it the governance hooks run
+# only on a machine that already has prawduct installed, and a new developer
+# gets none of them.
+!.claude/settings.json
 
 # prawduct session evidence (local governance artifacts, never shipped)
 .prawduct/

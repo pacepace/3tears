@@ -8,15 +8,27 @@ this transparently without knowing queries are proxied.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
 
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
+
+# Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
+# `threetears.core.collections` MUST import with nats-py absent -- that is the
+# whole point of the `[client]` extra, and `test_l1_surface_imports_without_the_client`
+# holds it. A plain `from threetears.nats import NatsClient` triggers the package's
+# lazy loader and raises at import time on an L1-only install. `subjects` pulls in
+# no client, so it is safe eagerly; the annotation needs no runtime object because
+# this module has `from __future__ import annotations`.
+from threetears.nats.subjects import Subject
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from threetears.nats import NatsClient
 
 __all__ = ["NatsProxyL3Backend"]
 
@@ -181,8 +193,8 @@ class NatsProxyL3Backend:
     :ivar timeout_ms: query-side timeout threaded into outgoing
         envelopes and used to compute the NATS-level response timeout
 
-    :param nats_client: connected NATS client
-    :ptype nats_client: Any
+    :param nats_client: connected NATS client wrapper
+    :ptype nats_client: NatsClient
     :param namespace_prefix: NATS subject namespace prefix
     :ptype namespace_prefix: str
     :param agent_id: agent UUID string, or ``None`` for a principal that is not
@@ -210,7 +222,7 @@ class NatsProxyL3Backend:
 
     def __init__(
         self,
-        nats_client: Any,
+        nats_client: NatsClient,
         namespace_prefix: str,
         agent_id: str | None = None,
         default_namespace: str | None = None,
@@ -236,8 +248,20 @@ class NatsProxyL3Backend:
         and why passing a made-up one to satisfy the parameter -- which is what a
         sentinel id was for -- is no longer necessary.
 
-        :param nats_client: connected NATS client
-        :ptype nats_client: Any
+        :param nats_client: connected :class:`~threetears.nats.NatsClient`.
+
+            The canonical wrapper, NOT a bare nats-py client. This parameter was
+            typed ``Any`` and consumed the nats-py surface directly, so callers
+            holding a wrapper passed its ``.raw`` escape hatch to satisfy it --
+            three sites in the agent SDK did exactly that, each with a comment
+            saying it was waiting on this migration. Requests now go through
+            ``request_raw``, which turns transport failures into the typed
+            ``RequestTimeoutError`` / ``NoRespondersError`` / ``RequestError`` the
+            rest of the platform already handles, instead of raw nats-py
+            exceptions. Passing a bare nats-py client now fails at the call site
+            with ``AttributeError: request_raw``, which is the intended break --
+            there is no dual path.
+        :ptype nats_client: NatsClient
         :param namespace_prefix: NATS subject namespace prefix
         :ptype namespace_prefix: str
         :param agent_id: agent UUID string, or ``None`` when this principal is
@@ -571,8 +595,12 @@ class NatsProxyL3Backend:
         nats_timeout = (self.timeout_ms / 1000) + 2
 
         try:
-            reply = await self._nc.request(subject, payload_bytes, timeout=nats_timeout)
-            result: dict[str, Any] = json.loads(reply.data)
+            reply = await self._nc.request_raw(
+                subject=Subject.raw(subject),
+                payload=payload_bytes,
+                timeout=timedelta(seconds=nats_timeout),
+            )
+            result: dict[str, Any] = json.loads(reply)
         except Exception as exc:
             raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
 

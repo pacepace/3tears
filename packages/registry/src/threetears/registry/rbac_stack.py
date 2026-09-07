@@ -339,7 +339,10 @@ def build_registry_rbac_stack(
     registry = CollectionRegistry()
 
     rbac_pool = NatsProxyL3Backend(
-        nats_client=nats_client.raw,
+        # the WRAPPER, not `.raw`. The backend consumed the nats-py surface
+        # directly until it was migrated to `NatsClient.request_raw`, and every
+        # caller reached for the escape hatch to satisfy an `Any` parameter.
+        nats_client=nats_client,
         namespace_prefix=subject_namespace,
         agent_id=str(REGISTRY_SERVICE_SENTINEL_AGENT_ID),
         default_namespace=PLATFORM_RBAC_READ_NAMESPACE,

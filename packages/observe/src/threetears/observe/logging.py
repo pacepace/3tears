@@ -28,6 +28,7 @@ from types import FrameType
 from typing import Any
 
 __all__ = [
+    "NOISY_LIBRARY_LOGGERS",
     "ContextFormatter",
     "ThreeTearsLogger",
     "add_filter",
@@ -301,11 +302,29 @@ def get_logger(name: str) -> ThreeTearsLogger:
     return logger  # type: ignore[return-value]
 
 
+#: Libraries whose DEBUG output is voluminous and, in the AWS SDK's case, discloses
+#: credentials. ``configure_logging`` sets the ROOT level, so without this these
+#: follow a consumer's DEBUG setting: botocore narrates every request twice and
+#: prints the SigV4 CanonicalRequest, the StringToSign, and the full
+#: ``Authorization: AWS4-HMAC-SHA256 Credential=... Signature=...`` header for each
+#: one. 3tears ships the S3 object store that makes those calls, so every consumer
+#: inherits it. Nothing in the platform reads AWS SDK debug output, and a failed
+#: call still raises a ``ClientError`` carrying the detail.
+NOISY_LIBRARY_LOGGERS: tuple[str, ...] = (
+    "botocore",
+    "aiobotocore",
+    "boto3",
+    "s3transfer",
+    "urllib3",
+)
+
+
 def configure_logging(
     level: str = "INFO",
     *,
     color: bool | None = None,
     strip_prefixes: list[str] | None = None,
+    quiet_noisy_libraries: bool = True,
 ) -> None:
     """Configure the ``threetears`` logger hierarchy with structured output.
 
@@ -320,6 +339,10 @@ def configure_logging(
     :param strip_prefixes: path prefixes to strip from log file paths
         (e.g. ``["myapp/src/"]``).  Appended to the global
         ``path_strip_prefixes`` list.
+    :param quiet_noisy_libraries: hold the libraries in
+        :data:`NOISY_LIBRARY_LOGGERS` at INFO instead of letting them follow a
+        DEBUG root level.  Default ``True``.  Pass ``False`` when you are
+        debugging one of those libraries and genuinely want its trace.
     """
     if strip_prefixes:
         for p in strip_prefixes:
@@ -347,6 +370,13 @@ def configure_logging(
     # Also set the threetears hierarchy level
     tt_root = logging.getLogger("threetears")
     tt_root.setLevel(level_val)
+
+    # Only below INFO. At INFO or higher the root is already quieter than the
+    # clamp, and setting INFO here would RAISE these libraries' verbosity above a
+    # WARNING root -- the opposite of the point.
+    if quiet_noisy_libraries and level_val < logging.INFO:
+        for noisy in NOISY_LIBRARY_LOGGERS:
+            logging.getLogger(noisy).setLevel(logging.INFO)
 
 
 def configure_third_party_logging(name: str, level: str | None = None) -> None:

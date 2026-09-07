@@ -365,3 +365,48 @@ class TestRepresentativeException:
         second = ValueError("second")
         group = BaseExceptionGroup("two", [first, second])
         assert representative_exception(group) is first
+
+
+class TestNoisyThirdPartyLoggersAreClamped:
+    """``configure_logging`` sets the ROOT level, so third-party libraries follow it.
+
+    At DEBUG that is not a verbosity preference, it is a disclosure. botocore
+    narrates every request twice and prints the SigV4 CanonicalRequest, the
+    StringToSign, and the full ``Authorization: AWS4-HMAC-SHA256 Credential=...
+    Signature=...`` header for each one. 3tears ships the S3 object store that
+    makes those calls, so every consumer inherits it: one backup writes an object
+    per database plus a manifest, and a nightly run buries the lifecycle lines the
+    process actually owns under thousands of lines of signing trace while putting
+    request signatures into whatever collects the logs.
+    """
+
+    def test_aws_sdk_loggers_do_not_follow_the_root_level_to_debug(self) -> None:
+        configure_logging(level="DEBUG")
+        assert logging.getLogger().level == logging.DEBUG
+        for name in ("botocore", "aiobotocore", "boto3", "s3transfer", "urllib3"):
+            assert logging.getLogger(name).level == logging.INFO, name
+
+    def test_threetears_loggers_are_untouched_by_the_clamp(self) -> None:
+        """The clamp is aimed at libraries we do not own, never at our own output."""
+        configure_logging(level="DEBUG")
+        assert logging.getLogger("threetears").level == logging.DEBUG
+
+    def test_the_clamp_can_be_declined(self) -> None:
+        """Someone debugging a signing failure needs the trace the clamp removes."""
+        for name in ("botocore", "aiobotocore", "boto3", "s3transfer", "urllib3"):
+            logging.getLogger(name).setLevel(logging.NOTSET)
+        configure_logging(level="DEBUG", quiet_noisy_libraries=False)
+        for name in ("botocore", "aiobotocore", "boto3", "s3transfer", "urllib3"):
+            assert logging.getLogger(name).level == logging.NOTSET, name
+
+    def test_a_level_below_info_is_left_alone(self) -> None:
+        """At INFO or higher the root level is already quieter than the clamp.
+
+        Setting INFO on those loggers then would RAISE their verbosity above a
+        WARNING root, which is the opposite of the point.
+        """
+        for name in ("botocore", "aiobotocore", "boto3", "s3transfer", "urllib3"):
+            logging.getLogger(name).setLevel(logging.NOTSET)
+        configure_logging(level="WARNING")
+        for name in ("botocore", "aiobotocore", "boto3", "s3transfer", "urllib3"):
+            assert logging.getLogger(name).level == logging.NOTSET, name
