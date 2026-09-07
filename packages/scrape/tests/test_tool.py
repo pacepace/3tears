@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -25,7 +26,7 @@ from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeReci
 from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.robots import RobotsGate
 from threetears.scrape.driver import NavStep, RenderedPage
-from threetears.scrape.tool import ScrapeTool, _derive_target_id
+from threetears.scrape.tool import ScrapeTool, _derive_target_id, _ssrf_block_reason
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
@@ -39,6 +40,20 @@ def get_registry() -> CollectionRegistry:
 
 def get_config() -> DefaultCoreConfig:
     return _test_config
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_ssrf_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the existing render/extract tests hermetic under the SSRF guard.
+
+    The guard (on by default) resolves the target host, so tests using the
+    real placeholder domain ``example.gov`` would otherwise do live DNS (and
+    fail offline). This patches the tool module's ``_ssrf_block_reason`` to
+    allow every URL. The dedicated ``TestSsrfGuard`` tests below hold a direct
+    reference to the real function (imported at module load), so they exercise
+    the genuine logic unaffected by this patch.
+    """
+    monkeypatch.setattr("threetears.scrape.tool._ssrf_block_reason", lambda _url: None)
 
 
 _ROW_STRATEGY = {
@@ -1851,3 +1866,74 @@ class TestExecuteKeepsItsSingleExit:
             f"sentinel for an error string, or a variable like `escalation` for a fuller result, "
             f"and let the tail return it."
         )
+
+
+class TestSsrfGuard:
+    """The SSRF guard: _ssrf_block_reason itself, and ScrapeTool refusing a
+    blocked target unless block_private_hosts=False.
+
+    These tests hold the module-level reference to the REAL _ssrf_block_reason
+    (imported at load), so the autouse _neutralize_ssrf_guard fixture — which
+    patches the tool module's attribute — does not affect the direct-function
+    tests. The execute-level tests re-install the real function on the module.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://127.0.0.1/x",  # loopback
+            "http://localhost/x",  # loopback by name
+            "http://10.1.2.3/x",  # private
+            "http://192.168.0.1/x",  # private
+            "http://169.254.169.254/latest/meta-data/",  # cloud metadata (link-local)
+            "ftp://example.com/x",  # disallowed scheme
+            "file:///etc/passwd",  # disallowed scheme
+            "not-a-url",  # no scheme/host
+        ],
+    )
+    def test_blocks_dangerous_urls(self, url: str) -> None:
+        assert _ssrf_block_reason(url) is not None
+
+    def test_allows_public_ip_literal(self) -> None:
+        # An IP literal resolves without a network lookup; 8.8.8.8 is public.
+        assert _ssrf_block_reason("https://8.8.8.8/robots.txt") is None
+
+    def test_blocks_hostname_resolving_to_private(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A public-looking hostname resolving to a private address (DNS rebinding)."""
+        fake = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.0.0.5", 80))]
+        monkeypatch.setattr("threetears.scrape.tool.socket.getaddrinfo", lambda *a, **k: fake)
+        assert _ssrf_block_reason("http://evil.example.com/") is not None
+
+    @pytest.mark.asyncio
+    async def test_execute_refuses_a_blocked_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("threetears.scrape.tool._ssrf_block_reason", _ssrf_block_reason)  # restore real
+        recipe_collection, extraction_collection = _collections()
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+            api_key="k",
+        )
+        result = await tool.execute(url="http://127.0.0.1:8420/x", field_schema={"employer": "str"})
+        assert result.success is False
+        assert "refused" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_execute_allows_private_target_when_guard_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """block_private_hosts=False opts a deployment that scrapes internal targets out of the guard."""
+        monkeypatch.setattr("threetears.scrape.tool._ssrf_block_reason", _ssrf_block_reason)  # restore real
+        recipe_collection, extraction_collection = _collections()
+        url = "http://127.0.0.1/warn"
+        target_id = _derive_target_id(url, {"employer": "str", "affected_count": "int"})
+        await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML, final_url=url)},
+            api_key="k",
+            block_private_hosts=False,
+        )
+        result = await tool.execute(url=url, field_schema={"employer": "str", "affected_count": "int"})
+        # Reached the fetch/extract path (recipe reuse, no network) rather than being SSRF-refused.
+        assert result.success is True
+        assert result.metadata["validation_status"] == "validated"

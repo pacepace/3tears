@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Security
+
+- **scrape: `ScrapeTool` now guards against SSRF by default.** The tool fetches a
+  caller-supplied `url`, so without a guard a caller (or a compromised upstream
+  influencing the URL) could point it at `127.0.0.1`, a private `10.x`/`192.168.x`
+  service, or the `169.254.169.254` cloud-metadata endpoint. `execute()` now
+  refuses (as an INPUT-gate error) any non-http(s) scheme or any host that
+  RESOLVES to a private/loopback/link-local/reserved address — every resolved
+  address is checked, so a public hostname rebinding to an internal one is caught
+  too. Secure by default; a deployment that deliberately scrapes internal targets
+  constructs `ScrapeTool(..., block_private_hosts=False)` to opt out.
+
 ## v0.33.0 -- 2026-09-06
 
 ### Fixed
