@@ -29,6 +29,7 @@ import httpx
 import pytest
 from _driver_log_helpers import driver_warnings
 from threetears.agent.tools.document import DocumentResult, DocumentSection, OcrConfig
+from threetears.core.http_client import TracedHttpClient
 
 from threetears.scrape.driver import RenderedPage
 from threetears.scrape.drivers.document import (
@@ -453,6 +454,30 @@ class TestDocumentDriver:
             raise httpx.ConnectError("connection refused", request=request)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        driver = DocumentDriver(client=client)
+
+        with pytest.raises(DocumentDriverError) as exc_info:
+            await driver.render("https://example.gov/warn.xlsx")
+
+        assert exc_info.value.code == "transport"
+        await client.aclose()
+
+    async def test_render_maps_injected_traced_client_exhaustion_to_transport_error(self) -> None:
+        """An injected TracedHttpClient (a caller sharing its throttle/egress) retries
+        the transient class itself and raises UpstreamHttpError on exhaustion; the driver
+        must map that to the same DocumentDriverError('transport') it gives for a raw
+        httpx transport failure, not let it escape as a foreign exception type."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        client = TracedHttpClient(
+            upstream_base_url=None,
+            transport=httpx.MockTransport(handler),
+            max_attempts=1,
+            initial_backoff=0.0,
+            max_backoff=0.0,
+        )
         driver = DocumentDriver(client=client)
 
         with pytest.raises(DocumentDriverError) as exc_info:

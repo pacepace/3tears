@@ -123,6 +123,14 @@ packages (bumped in lock-step).
   consumers hand-rolled their own retry loops to survive, which is what this
   client exists to absorb. `request()` and `stream()` both cover it.
 
+- **scrape:** `DocumentDriver` accepts an injected `TracedHttpClient` (not only
+  an `httpx.AsyncClient`) and maps its `UpstreamHttpError` exhaustion to the same
+  `DocumentDriverError("transport")` a raw httpx transport failure yields. It
+  drives an injected client through `.get`/`.aclose` alone, so a caller that
+  wants its PDF fetch to share the throttle/egress of its traced client can pass
+  it straight in. Backward-compatible: the self-constructed per-call client is
+  unchanged.
+
 ## v0.32.1 -- 2026-09-05
 
 ### Fixed
