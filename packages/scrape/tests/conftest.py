@@ -56,3 +56,25 @@ def _no_live_robots_fetch(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
         return _fetch
 
     monkeypatch.setattr("threetears.scrape.robots._default_fetch_via", _offline)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_dns_in_ssrf_guard(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralize ScrapeTool's SSRF guard so the unit suite stays off the network.
+
+    ``ScrapeTool`` fetches a caller-supplied URL, so (with ``block_private_hosts``
+    on by default) ``execute()`` resolves the target host via
+    ``socket.getaddrinfo`` -- a live DNS lookup. Most of this suite uses
+    non-resolvable test hosts (``a.example``, ``example.gov``), so on a
+    network-isolated unit runner that lookup hangs, and even locally it refuses
+    the fetch and breaks tests whose subject is robots/session, not SSRF. Same
+    "keep the unit suite off the network" rationale as ``_no_live_robots_fetch``.
+
+    Opt out with ``@pytest.mark.real_ssrf_guard`` when the guard itself is under
+    test -- ``test_tool.py``'s ``TestSsrfGuard`` does, and exercises the real
+    ``_ssrf_block_reason`` (its direct-function tests hold the imported reference
+    regardless of this patch).
+    """
+    if request.node.get_closest_marker("real_ssrf_guard") is not None:
+        return
+    monkeypatch.setattr("threetears.scrape.tool._ssrf_block_reason", lambda _url: None)

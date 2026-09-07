@@ -467,6 +467,10 @@ markers = [
     # suite-wide and never executed, so the code binding a robots read to the configured exit
     # had no test that could fail when it regressed.
     "real_robots_fetch: exercise the real robots default fetcher rather than the offline stub",
+    # Opts a test out of the scrape suite's autouse SSRF-guard neutralizer, for the few whose
+    # subject IS the guard. Without the opt-out the guard's live socket.getaddrinfo runs in a
+    # network-isolated unit runner and hangs; neutralized by default, exercised only here.
+    "real_ssrf_guard: exercise the real ScrapeTool SSRF guard rather than the neutralized stub",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level
