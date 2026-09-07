@@ -185,6 +185,8 @@ def _ssrf_block_reason(url: str) -> str | None:
         try:
             ip = ipaddress.ip_address(ip_text)
         except ValueError:
+            # NOSILENT: a getaddrinfo entry that isn't a parseable IP literal can't be
+            # range-classified; skip it and check the remaining resolved addresses.
             continue
         if (
             ip.is_private
