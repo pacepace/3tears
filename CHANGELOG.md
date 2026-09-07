@@ -63,6 +63,13 @@ packages (bumped in lock-step).
     next fire forward. A request, not a fire: the engine still claims the row
     through its own CAS, so it cannot double-fire or bypass concurrency control.
     Refuses a paused job rather than firing one an operator believes is stopped.
+  - `ScheduledJobCollection.get_by_job_id(job_id)` -- resolves a bare `job_id`
+    to its row and, crucially, to its partition. `job_id` carries its own UNIQUE
+    constraint, so it addresses a row alone; an admin surface has only that id
+    (out of a URL or an operator's clipboard) and needs the partition back
+    before it can call any of the partition-scoped mutators above. Prefer `get`
+    wherever the partition is already known -- that one is partition-scoped and
+    cache-addressable, and this is neither.
   - `JobFireCollection.latest_for_jobs(job_ids)` -- newest fire per job in one
     query, replacing the N+1 an admin listing would otherwise make against a
     table that grows with every tick. A job that never fired is absent rather
