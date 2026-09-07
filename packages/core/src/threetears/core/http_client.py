@@ -22,6 +22,7 @@ the three concerns are reused, never hand-rolled:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
@@ -29,7 +30,7 @@ from threetears.core.config import DEFAULT_HTTP_TIMEOUT_SECONDS
 from threetears.observe import retry_with_backoff, traced
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
     from typing import Any
 
     from threetears.core.egress import EgressDriver
@@ -441,6 +442,119 @@ class TracedHttpClient:
             json=json,
             timeout=timeout,
         )
+
+    @asynccontextmanager
+    async def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> AsyncIterator[httpx.Response]:
+        """Stream a response body without buffering it -- for bulk downloads.
+
+        Tracing, retry, and circuit breaking apply to *establishing* the
+        response (sending the request and reading its headers), exactly as
+        :meth:`request` does: connect errors, timeouts, and 5xx retry with
+        bounded backoff; a 4xx is yielded to the caller un-retried and does not
+        touch the breaker; on exhaustion :class:`UpstreamHttpError` is raised.
+        Once a response is yielded its body is NOT read here -- the caller
+        iterates it (``aiter_bytes`` / ``aiter_raw``), so a multi-hundred-MB
+        download never lands in memory. That is the whole point, and the reason
+        this is separate from :meth:`request`, whose bounded retry re-reads the
+        whole body per attempt: retrying is safe only up to the moment the body
+        starts streaming, so no retry happens once the caller holds the stream.
+
+        Use for large or unbounded downloads (a dataset ZIP/CSV, a masterfile);
+        use :meth:`request`/:meth:`get` for API responses whose body is small
+        enough to buffer and whose failure should be retried whole.
+
+        :param method: HTTP verb (typically ``GET``)
+        :ptype method: str
+        :param path: request path joined onto ``upstream_base_url``
+        :ptype path: str
+        :param headers: optional per-call headers (e.g. a ``Range`` header for a
+            partial fetch); never retained, never traced/logged
+        :ptype headers: Mapping[str, str] | None
+        :param params: optional query-string parameters
+        :ptype params: Mapping[str, Any] | None
+        :param timeout: per-call timeout override in seconds; None uses the
+            configured value. Bounds establishing the response; the caller's own
+            iteration of the body is not bounded by it
+        :ptype timeout: float | None
+        :return: an async context manager yielding the open streaming response
+        :rtype: AsyncIterator[httpx.Response]
+        :raises CircuitOpenError: when the injected breaker is OPEN
+        :raises UpstreamHttpError: when establishing the response fails every
+            attempt (5xx / connect / timeout) up to ``max_attempts``
+        """
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.check()
+
+        stream_cm: Any = None
+        response: httpx.Response | None = None
+        error_body = b""
+        attempts = 0
+        transport_error: BaseException | None = None
+
+        async def _open_once() -> None:
+            nonlocal stream_cm, response, error_body, attempts, transport_error
+            attempts += 1
+            cm = self._client.stream(
+                method,
+                path,
+                headers=dict(headers) if headers else None,
+                params=dict(params) if params else None,
+                timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+            )
+            try:
+                resp = await cm.__aenter__()
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                transport_error = exc
+                if self._circuit_breaker is not None:
+                    self._circuit_breaker.record_failure()
+                raise
+            if resp.status_code >= 500:
+                # Read the (small) error body for the exhaustion error, then close
+                # this failed stream before retrying so nothing is left open.
+                error_body = await resp.aread()
+                response = resp
+                await cm.__aexit__(None, None, None)
+                if self._circuit_breaker is not None:
+                    self._circuit_breaker.record_failure()
+                raise _Retryable
+            if resp.status_code < 400 and self._circuit_breaker is not None:
+                self._circuit_breaker.record_success()
+            stream_cm = cm
+            response = resp
+
+        succeeded = await retry_with_backoff(
+            _open_once,
+            name=_SPAN_NAME,
+            max_attempts=self._max_attempts,
+            initial_backoff=self._initial_backoff,
+            max_backoff=self._max_backoff,
+        )
+        self._record_span_attributes(
+            method=method,
+            status_code=response.status_code if response is not None else None,
+        )
+
+        if not succeeded or stream_cm is None or response is None:
+            status = response.status_code if response is not None else None
+            raise UpstreamHttpError(
+                f"upstream stream to {self._host} failed after {self._max_attempts} attempts",
+                status_code=status,
+                body=error_body,
+            ) from transport_error
+
+        response.extensions[ATTEMPTS_EXTENSION] = attempts
+        try:
+            yield response
+        finally:
+            await stream_cm.__aexit__(None, None, None)
 
     def _record_span_attributes(self, *, method: str, status_code: int | None) -> None:
         """set host/method/status on the active span; never a header value.

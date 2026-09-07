@@ -87,6 +87,17 @@ packages (bumped in lock-step).
   the client's own bounded 5xx retry does not model. Backward-compatible:
   omitting it wires nothing, byte-identical to prior behaviour.
 
+- **core:** `TracedHttpClient.stream()` -- an async-context-manager for bulk
+  downloads that does not buffer the body. Tracing, bounded retry, and circuit
+  breaking apply to *establishing* the response (headers): 5xx/connect/timeout
+  retry, a 4xx is yielded un-retried, exhaustion raises `UpstreamHttpError`.
+  Once the response is yielded, its body is streamed by the caller
+  (`aiter_bytes`), so a multi-hundred-MB dataset (ZIP/CSV/masterfile) never
+  lands in memory -- and no retry fires once streaming starts, since a
+  half-read body cannot be safely retried. Complements `request()`/`get()`,
+  whose whole-body retry suits API responses; supports a `Range` header for
+  partial fetches.
+
 ## v0.32.1 -- 2026-09-05
 
 ### Fixed
