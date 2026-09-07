@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -25,7 +26,7 @@ from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeReci
 from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.robots import RobotsGate
 from threetears.scrape.driver import NavStep, RenderedPage
-from threetears.scrape.tool import ScrapeTool, _derive_target_id
+from threetears.scrape.tool import ScrapeTool, _derive_target_id, _ssrf_block_reason
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
@@ -39,6 +40,11 @@ def get_registry() -> CollectionRegistry:
 
 def get_config() -> DefaultCoreConfig:
     return _test_config
+
+
+# The SSRF guard is neutralized suite-wide by the autouse fixture in conftest.py
+# (`_no_live_dns_in_ssrf_guard`), so the render/extract tests here stay hermetic.
+# TestSsrfGuard below opts back in via @pytest.mark.real_ssrf_guard.
 
 
 _ROW_STRATEGY = {
@@ -1851,3 +1857,74 @@ class TestExecuteKeepsItsSingleExit:
             f"sentinel for an error string, or a variable like `escalation` for a fuller result, "
             f"and let the tail return it."
         )
+
+
+@pytest.mark.real_ssrf_guard
+class TestSsrfGuard:
+    """The SSRF guard: _ssrf_block_reason itself, and ScrapeTool refusing a
+    blocked target unless block_private_hosts=False.
+
+    Marked real_ssrf_guard so the conftest autouse neutralizer does NOT patch the
+    guard off for this class -- these tests are the guard's own coverage. (The
+    direct-function tests also hold the module-level reference imported at load,
+    so they'd work regardless; the marker is what lets the execute-level tests
+    exercise the real guard through ScrapeTool.execute.)
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://127.0.0.1/x",  # loopback
+            "http://localhost/x",  # loopback by name
+            "http://10.1.2.3/x",  # private
+            "http://192.168.0.1/x",  # private
+            "http://169.254.169.254/latest/meta-data/",  # cloud metadata (link-local)
+            "ftp://example.com/x",  # disallowed scheme
+            "file:///etc/passwd",  # disallowed scheme
+            "not-a-url",  # no scheme/host
+        ],
+    )
+    def test_blocks_dangerous_urls(self, url: str) -> None:
+        assert _ssrf_block_reason(url) is not None
+
+    def test_allows_public_ip_literal(self) -> None:
+        # An IP literal resolves without a network lookup; 8.8.8.8 is public.
+        assert _ssrf_block_reason("https://8.8.8.8/robots.txt") is None
+
+    def test_blocks_hostname_resolving_to_private(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A public-looking hostname resolving to a private address (DNS rebinding)."""
+        fake = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.0.0.5", 80))]
+        monkeypatch.setattr("threetears.scrape.tool.socket.getaddrinfo", lambda *a, **k: fake)
+        assert _ssrf_block_reason("http://evil.example.com/") is not None
+
+    @pytest.mark.asyncio
+    async def test_execute_refuses_a_blocked_target(self) -> None:
+        recipe_collection, extraction_collection = _collections()
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+            api_key="k",
+        )
+        result = await tool.execute(url="http://127.0.0.1:8420/x", field_schema={"employer": "str"})
+        assert result.success is False
+        assert "refused" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_execute_allows_private_target_when_guard_disabled(self) -> None:
+        """block_private_hosts=False opts a deployment that scrapes internal targets out of the guard."""
+        recipe_collection, extraction_collection = _collections()
+        url = "http://127.0.0.1/warn"
+        target_id = _derive_target_id(url, {"employer": "str", "affected_count": "int"})
+        await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML, final_url=url)},
+            api_key="k",
+            block_private_hosts=False,
+        )
+        result = await tool.execute(url=url, field_schema={"employer": "str", "affected_count": "int"})
+        # Reached the fetch/extract path (recipe reuse, no network) rather than being SSRF-refused.
+        assert result.success is True
+        assert result.metadata["validation_status"] == "validated"

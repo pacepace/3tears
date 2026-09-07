@@ -29,9 +29,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import ipaddress
 import json
+import socket
 from enum import StrEnum
 from typing import Any
+from urllib.parse import urlparse
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import get_logger
@@ -142,6 +145,61 @@ def _derive_target_id(url: str, field_schema: dict[str, Any]) -> str:
     return f"adhoc_{digest[:16]}"
 
 
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
+
+def _ssrf_block_reason(url: str) -> str | None:
+    """Return a reason to REFUSE fetching *url*, or ``None`` if it is allowed.
+
+    ``ScrapeTool`` fetches a caller-supplied URL, so without a guard it is an
+    SSRF vector: a caller (or a compromised upstream that influences the URL)
+    can point it at ``127.0.0.1``, a private ``10.x``/``192.168.x`` service, or
+    a cloud metadata endpoint (``169.254.169.254``). This refuses any non-
+    http(s) scheme and any host that RESOLVES to a private/loopback/link-local/
+    reserved address. Every resolved address is checked, so a public-looking
+    hostname that resolves to an internal address (DNS rebinding) is caught too.
+
+    Callers that deliberately scrape internal targets construct
+    :class:`ScrapeTool` with ``block_private_hosts=False`` to opt out.
+
+    :param url: the caller-supplied target URL.
+    :ptype url: str
+    :return: a human-readable refusal reason, or ``None`` when the URL is a
+        public http(s) target safe to fetch.
+    :rtype: str | None
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        return f"scheme {parsed.scheme!r} is not allowed (only http/https)"
+    host = parsed.hostname
+    if not host:
+        return "URL has no host"
+    port = parsed.port or (443 if scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        return f"host {host!r} does not resolve ({exc})"
+    for info in infos:
+        ip_text = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_text)
+        except ValueError:
+            # NOSILENT: a getaddrinfo entry that isn't a parseable IP literal can't be
+            # range-classified; skip it and check the remaining resolved addresses.
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return f"host {host!r} resolves to non-public address {ip_text} (private/loopback/link-local/reserved)"
+    return None
+
+
 class ScrapeTool(TearsTool):
     """Ad-hoc "fetch this URL, extract these fields" tool, backed by 3tears-scrape.
 
@@ -164,6 +222,7 @@ class ScrapeTool(TearsTool):
         egress: EgressDriver | str | None = None,
         egress_registry: EgressRegistry | None = None,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+        block_private_hosts: bool = True,
     ) -> None:
         """
         :param recipe_collection: shared recipe store for the eval loop's self-healing reuse
@@ -213,6 +272,13 @@ class ScrapeTool(TearsTool):
         :ptype api_key: str
         :param default_timeout: seconds to wait for a render when the caller doesn't specify one
         :ptype default_timeout: float
+        :param block_private_hosts: when ``True`` (the default, secure), refuse a
+            target ``url`` whose scheme isn't http/https or whose host resolves to
+            a private/loopback/link-local/reserved address — the tool fetches a
+            caller-supplied URL, so this closes the SSRF surface (internal
+            services, ``169.254.169.254`` metadata) by default. Set ``False`` only
+            for a deployment that deliberately scrapes internal targets.
+        :ptype block_private_hosts: bool
         """
         self._recipe_collection = recipe_collection
         self._extraction_collection = extraction_collection
@@ -247,6 +313,7 @@ class ScrapeTool(TearsTool):
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
+        self._block_private_hosts = block_private_hosts
 
     def mcp_name(self) -> str:
         """Return the namespaced tool name.
@@ -654,6 +721,14 @@ class ScrapeTool(TearsTool):
         url = kwargs.get("url") or ""
         if not url:
             error, declined_by = "url is required", _Gate.INPUT
+
+        # SSRF guard: the target URL is caller-supplied, so refuse a private/
+        # loopback/link-local target (or a non-http scheme) before any fetch,
+        # unless this tool was built with block_private_hosts=False.
+        if error is None and self._block_private_hosts:
+            ssrf_reason = _ssrf_block_reason(url)
+            if ssrf_reason is not None:
+                error, declined_by = f"refused: {ssrf_reason}", _Gate.INPUT
 
         schema: FieldSchema = {}
         raw_schema = kwargs.get("field_schema") or {}

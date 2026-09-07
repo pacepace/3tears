@@ -537,6 +537,18 @@ async def _dispatch_one(
         },
     )
 
+    # The engine is the only participant that knows when the callback started and
+    # stopped, so it measures. ``JobFireResult.latency_ms`` was documented from the
+    # start as an optional fixup the dispatcher may capture, and no dispatcher in
+    # any consumer ever captured one -- ``job_fires.latency_ms`` was a column that
+    # existed and never held a value, on every fire of every kind. A dispatcher
+    # that DOES report a figure still wins: it may know a truer one, having timed
+    # the work rather than the call.
+    #
+    # Monotonic, not wall-clock: a clock step during a long fire must not be able
+    # to produce a negative duration.
+    dispatch_started = time.monotonic()
+
     try:
         result = await dispatch_callback(trigger, fire_id)
     except Exception as exc:  # noqa: BLE001 - boundary: per-fire isolation
@@ -556,7 +568,7 @@ async def _dispatch_one(
             schedule.partition_key,
             fire_id,
             error=str(exc),
-            latency_ms=None,
+            latency_ms=_elapsed_ms(dispatch_started),
         )
         emitter.inc_fire(status="failed", schedule_type=schedule.schedule_type)
         emitter.inc_failure(reason="handler_exception")
@@ -571,7 +583,7 @@ async def _dispatch_one(
             schedule.partition_key,
             fire_id,
             error=result.error or "dispatch returned status='failed' without an error string",
-            latency_ms=result.latency_ms,
+            latency_ms=_resolve_latency_ms(result, dispatch_started),
         )
         emitter.inc_fire(status="failed", schedule_type=schedule.schedule_type)
         emitter.inc_failure(reason="handler_exception")
@@ -582,9 +594,36 @@ async def _dispatch_one(
         fire_id,
         status=result.status,
         output=result.output,
-        latency_ms=result.latency_ms,
+        latency_ms=_resolve_latency_ms(result, dispatch_started),
     )
     emitter.inc_fire(status=result.status, schedule_type=schedule.schedule_type)
+
+
+def _elapsed_ms(started: float) -> int:
+    """Milliseconds since a monotonic start mark, floored at zero.
+
+    :param started: the :func:`time.monotonic` reading taken before the work
+    :ptype started: float
+    :return: elapsed milliseconds, never negative
+    :rtype: int
+    """
+    return max(0, round((time.monotonic() - started) * 1000))
+
+
+def _resolve_latency_ms(result: JobFireResult, started: float) -> int:
+    """Prefer the dispatcher's own latency, falling back to what the engine measured.
+
+    A dispatcher that reports a figure timed the work; the engine can only time the
+    call. Where they differ the dispatcher is the better witness, so it wins.
+
+    :param result: the dispatch callback's return value
+    :ptype result: JobFireResult
+    :param started: the :func:`time.monotonic` reading taken before the callback
+    :ptype started: float
+    :return: latency in milliseconds
+    :rtype: int
+    """
+    return result.latency_ms if result.latency_ms is not None else _elapsed_ms(started)
 
 
 def _generate_fire_id() -> UUID:
