@@ -455,6 +455,40 @@ class TracedHttpClient:
             "GET", path, headers=headers, params=params, timeout=timeout, follow_redirects=follow_redirects
         )
 
+    async def head(
+        self,
+        path: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
+        follow_redirects: bool | None = None,
+    ) -> httpx.Response:
+        """HEAD ``path`` (delegates to :meth:`request`).
+
+        A body-less reachability/metadata probe (does the resource exist, what
+        does it report in headers) without transferring it. Retry/breaking apply
+        exactly as for :meth:`get`; a 4xx is returned un-raised.
+
+        :param path: request path joined onto ``upstream_base_url``
+        :ptype path: str
+        :param headers: optional per-call request headers
+        :ptype headers: Mapping[str, str] | None
+        :param params: optional query-string parameters
+        :ptype params: Mapping[str, Any] | None
+        :param timeout: per-call timeout override in seconds; None uses the
+            configured value
+        :ptype timeout: float | None
+        :param follow_redirects: per-call redirect-policy override; None uses
+            the client-level default
+        :ptype follow_redirects: bool | None
+        :return: full upstream response (headers only; body empty for a HEAD)
+        :rtype: httpx.Response
+        """
+        return await self.request(
+            "HEAD", path, headers=headers, params=params, timeout=timeout, follow_redirects=follow_redirects
+        )
+
     async def post(
         self,
         path: str,
