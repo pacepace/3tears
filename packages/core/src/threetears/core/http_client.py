@@ -11,7 +11,8 @@ the three concerns are reused, never hand-rolled:
   so every call emits an OTel span (zero-cost when OTel is absent).
 - retry -- :func:`threetears.observe.retry_with_backoff` drives bounded
   exponential backoff over the per-attempt closure; transient failures
-  (connect errors, timeouts, HTTP 5xx) retry, 4xx does not.
+  (connect errors, timeouts, a server disconnect with no response, HTTP 5xx)
+  retry, 4xx does not.
 - circuit breaking -- a
   :class:`threetears.models.circuit_breaker.CircuitBreaker` is *injected*
   through the structural :class:`CircuitBreakerLike` protocol so this module
@@ -306,10 +307,11 @@ class TracedHttpClient:
         OPEN breaker raises ``CircuitOpenError`` which propagates untouched
         (no request sent, no failure recorded). the request itself runs
         under :func:`threetears.observe.retry_with_backoff`: connect
-        errors, timeouts, and 5xx responses retry with bounded backoff; a
-        4xx response is returned to the caller un-retried and does not touch
-        the breaker. on exhaustion :class:`UpstreamHttpError` is raised
-        carrying the last status/body. never raises on 4xx.
+        errors, timeouts, a server disconnect without a response
+        (``RemoteProtocolError``), and 5xx responses retry with bounded
+        backoff; a 4xx response is returned to the caller un-retried and does
+        not touch the breaker. on exhaustion :class:`UpstreamHttpError` is
+        raised carrying the last status/body. never raises on 4xx.
 
         :param method: HTTP verb (GET / POST / PATCH / DELETE / ...)
         :ptype method: str
@@ -379,7 +381,7 @@ class TracedHttpClient:
                     # follow", so "caller said nothing" must defer to the client default.
                     follow_redirects=follow_redirects if follow_redirects is not None else httpx.USE_CLIENT_DEFAULT,
                 )
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
                 transport_error = exc
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
@@ -551,7 +553,8 @@ class TracedHttpClient:
 
         Tracing, retry, and circuit breaking apply to *establishing* the
         response (sending the request and reading its headers), exactly as
-        :meth:`request` does: connect errors, timeouts, and 5xx retry with
+        :meth:`request` does: connect errors, timeouts, a server disconnect
+        without a response (``RemoteProtocolError``), and 5xx retry with
         bounded backoff; a 4xx is yielded to the caller un-retried and does not
         touch the breaker; on exhaustion :class:`UpstreamHttpError` is raised.
         Once a response is yielded its body is NOT read here -- the caller
@@ -609,7 +612,7 @@ class TracedHttpClient:
             )
             try:
                 resp = await cm.__aenter__()
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
                 transport_error = exc
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()

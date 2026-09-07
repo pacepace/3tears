@@ -116,6 +116,13 @@ packages (bumped in lock-step).
   - `head()` -- a body-less reachability/metadata probe, the natural sibling
     of `get`/`post`, delegating to `request` with the same retry/breaking.
 
+- **core:** `TracedHttpClient` now retries `httpx.RemoteProtocolError` (a
+  server that disconnects without sending a response) alongside connect
+  errors, timeouts, and 5xx. The request never received an answer, so
+  re-issuing it is safe -- and it is the exact transient class several
+  consumers hand-rolled their own retry loops to survive, which is what this
+  client exists to absorb. `request()` and `stream()` both cover it.
+
 ## v0.32.1 -- 2026-09-05
 
 ### Fixed

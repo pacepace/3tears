@@ -198,6 +198,33 @@ async def test_exhaustion_chains_a_connect_error_as_the_cause() -> None:
     assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
 
 
+async def test_retries_remote_protocol_error_then_succeeds() -> None:
+    """A server that disconnects without sending a response is a transient
+    failure -- the request never got an answer, so re-issuing it is safe and
+    is what a hand-rolled caller loop used to do. Now the client does it."""
+    calls = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response")
+        return httpx.Response(200, text="ok")
+
+    async with _client(httpx.MockTransport(handler), max_attempts=3) as client:
+        response = await client.request("GET", "/flaky")
+    assert response.status_code == 200
+    assert calls[0] == 2  # the disconnect was retried
+
+
+async def test_remote_protocol_error_exhaustion_chains_the_cause() -> None:
+    transport, _calls = _raising_transport(httpx.RemoteProtocolError("disconnected"))
+    async with _client(transport, max_attempts=2) as client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            await client.request("GET", "/dead")
+    assert exc_info.value.status_code is None
+    assert isinstance(exc_info.value.__cause__, httpx.RemoteProtocolError)
+
+
 async def test_5xx_exhaustion_has_no_transport_cause() -> None:
     """A 5xx is a RESPONSE; there is no transport exception to chain."""
     transport, _calls = _sequenced_transport([500])
