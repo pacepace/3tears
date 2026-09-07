@@ -501,3 +501,81 @@ async def test_no_event_hooks_is_byte_identical_default() -> None:
     async with _client(transport) as client:
         response = await client.request("GET", "/thing")
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# stream() -- bulk-download seam (retry on establishment, body not buffered)
+# ---------------------------------------------------------------------------
+
+
+def _streaming_transport(status: int, body: bytes) -> httpx.MockTransport:
+    """A transport that returns *body* as a streamable response."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=status, content=body)
+
+    return httpx.MockTransport(handler)
+
+
+async def test_stream_yields_body_in_chunks() -> None:
+    payload = b"x" * (256 * 1024)  # 256 KiB, iterated not buffered by the client
+    transport = _streaming_transport(200, payload)
+    async with _client(transport) as client, client.stream("GET", "/big.zip") as response:
+        assert response.status_code == 200
+        assembled = b"".join([chunk async for chunk in response.aiter_bytes()])
+    assert assembled == payload
+
+
+async def test_stream_retries_5xx_establishment_then_succeeds() -> None:
+    transport, calls = _sequenced_transport([503, 200])
+    async with _client(transport) as client, client.stream("GET", "/flaky") as response:
+        body = await response.aread()
+    assert response.status_code == 200
+    assert calls[0] == 2  # the 503 establishment retried
+    assert body == b"body-200"
+
+
+async def test_stream_all_5xx_raises_upstream_error_with_status() -> None:
+    transport, _calls = _sequenced_transport([500, 500, 500])
+    with pytest.raises(UpstreamHttpError) as exc_info:
+        async with _client(transport) as client:
+            async with client.stream("GET", "/down"):
+                pass  # pragma: no cover -- establishment never succeeds
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.body == b"body-500"  # the error body was read before closing
+
+
+async def test_stream_returns_4xx_un_retried() -> None:
+    transport, calls = _sequenced_transport([404])
+    async with _client(transport) as client, client.stream("GET", "/missing") as response:
+        assert response.status_code == 404
+    assert calls[0] == 1  # a 4xx is not retried
+
+
+async def test_stream_retries_connect_error_then_succeeds() -> None:
+    calls = [0]
+    real = _streaming_transport(200, b"recovered")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise httpx.ConnectError("boom")
+        return real.handler(request)  # type: ignore[attr-defined]
+
+    async with _client(httpx.MockTransport(handler)) as client, client.stream("GET", "/x") as response:
+        body = await response.aread()
+    assert calls[0] == 2
+    assert body == b"recovered"
+
+
+async def test_stream_passes_range_header() -> None:
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("Range"))
+        return httpx.Response(206, content=b"partial")
+
+    async with _client(httpx.MockTransport(handler)) as client:
+        async with client.stream("GET", "/probe", headers={"Range": "bytes=0-0"}) as response:
+            assert response.status_code == 206
+    assert seen == ["bytes=0-0"]
