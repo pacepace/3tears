@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Security
+
+- **scrape: `ScrapeTool` now logs SSRF-guard refusals.** The guard (added in
+  0.34.0) refuses private/loopback/link-local/non-http targets before any fetch,
+  but did so silently — it rode the input-gate, which returns the error to the
+  caller without logging. An SSRF refusal is a security event (something tried
+  to reach a non-public address) worth a host-side trace for monitoring, so it
+  now emits a `WARNING` naming the refused URL and reason. Behavior is otherwise
+  unchanged.
+
 ## v0.34.0 -- 2026-09-07
 
 ### Security
