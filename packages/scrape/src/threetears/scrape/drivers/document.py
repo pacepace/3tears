@@ -34,6 +34,7 @@ from threetears.agent.tools.document import (
     render_pdf_pages_to_images,
 )
 from threetears.core.egress import EgressDriver
+from threetears.core.http_client import TracedHttpClient, UpstreamHttpError
 from threetears.observe import get_logger
 
 from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
@@ -305,16 +306,19 @@ class DocumentDriver(ScrapeDriver):
     def __init__(
         self,
         *,
-        client: httpx.AsyncClient | None = None,
+        client: httpx.AsyncClient | TracedHttpClient | None = None,
         ocr_config: OcrConfig | None = None,
         force_images: bool = False,
         merge_wrapped_table_rows: bool = False,
         egress: EgressDriver | None = None,
     ) -> None:
         """
-        :param client: an already-constructed httpx client to reuse (test
-            injection); a fresh one is created per call when omitted.
-        :ptype client: httpx.AsyncClient | None
+        :param client: an already-constructed client to reuse (test injection,
+            or a caller sharing its throttle/egress) -- an ``httpx.AsyncClient``
+            or a ``TracedHttpClient``, both of which this driver drives through
+            ``.get`` / ``.aclose`` alone. A fresh ``httpx.AsyncClient`` is created
+            per call when omitted.
+        :ptype client: httpx.AsyncClient | TracedHttpClient | None
         :param ocr_config: OCR fallback config for scanned PDF pages, passed
             straight through to ``parse_document``.
         :ptype ocr_config: OcrConfig | None
@@ -415,7 +419,10 @@ class DocumentDriver(ScrapeDriver):
         try:
             try:
                 response = await client.get(url)
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            except (httpx.ConnectError, httpx.TimeoutException, UpstreamHttpError) as exc:
+                # UpstreamHttpError: an injected TracedHttpClient already retried the
+                # transient class (connect/timeout/RemoteProtocolError/5xx) and gave up;
+                # the self-constructed httpx client raises the raw httpx errors.
                 log.warning("document driver transport failure", extra={"extra_data": {"url": url, "error": str(exc)}})
                 raise DocumentDriverError("transport", str(exc)) from exc
         finally:

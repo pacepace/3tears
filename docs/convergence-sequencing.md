@@ -585,12 +585,13 @@ discodon's NATS convergence and sits outside this sequence.)
   Nothing moves out of discodon and no package is published; the lift becomes
   mechanical once it holds.
 
-  **Held as of 2026-08-24**, re-checked against discodon's tree. In place: R1's
+  **Nearly held as of 2026-09-05**, re-checked against discodon's tree, and the
+  prior reading of this list (2026-08-24) was stale in four of its five outstanding
+  bullets -- discodon shipped three build plans between those dates. In place: R1's
   boundary test and its totality assertion; the `DocumentStore` port with its
   YugabyteDB adapter; the narrow completion protocol (`CompletionClient` /
   `CompletionResult`); R10's fidelity axis; an installable chart/spec package with
-  a host-supplied palette. **And, since the 2026-08-20 reading of this list,
-  discodon's Wave 2 built four more of it:**
+  a host-supplied palette. Built during discodon's Wave 2:
 
   - **`SweepableValue`'s `display` and `scale`** (R9) -- built, with `scale` in
     three kinds rather than a bare ordinal.
@@ -599,34 +600,69 @@ discodon's NATS convergence and sits outside this sequence.)
   - **R8's input registry** -- built, with `confounds` prose refused-if-absent on
     apparatus registrations.
   - **R10's controllability gate** -- built, and it fires at campaign authoring.
-    Two of R10's four axes now exist.
+
+  And built since, on discodon's world-contract and eval-extraction-convergence
+  plans -- both complete and archived, 21 chunks between them:
+
+  - **R12, the world registry** -- built, not merely designed: the record and the
+    registry, the shape-derived conformance kit, precondition carriage and static
+    resolution, the run-time `seeded` x `perceived` algebra with witnessed state
+    disclosed, and the authoring-time and run-assembly refusals. discodon #2421
+    (first host implementation) and #2412 (the gate) are both closed. **R10's
+    representability axis therefore exists too** -- three of its four axes are
+    built, not two.
+  - **R5's external-spend generalisation** -- built. `ExternalSpend` carries
+    `provider` and a bare `provider_unit`, composes the `<provider>:<unit>` pair
+    this repo's `Spend` already uses, and keeps calls nobody declared a rate for in
+    a bucket of their own rather than pooling them with zero-money ones. discodon
+    #2447, #2399.
+  - **`universe` -> `scope`** -- done for everything that travels. `identity.py`
+    stamps `scope_id`, and the analysis tree carries no `universe_id`; the name
+    survives only in discodon's own host-resident modules, which is where the
+    requirement leaves it. discodon #2397.
+  - **The `discodon.llm` edges** -- four of the six closed (#2402, #2403, #2404,
+    #2407), and #2402 was ruled the *other* way on evidence: `run_judge_llm` is eval
+    core, and a host calling it is the seam working. Two remain, #2405 and #2393,
+    both in discodon's host-wiring modules rather than in the contracts candidates.
+  - Two ports the earlier list did not anticipate: a **provider-failure port**
+    (`ProviderFailure` plus an injected describer, whose default withholds
+    everything and says why) and a **`TraceSink` port**, which took the eval
+    engine's span semantics out of discodon's observability package, where no
+    import scan could see them.
 
   Shapes and evidence per item are in
   [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon).
   Take them as the contract: they are what a real consumer built.
 
-  Outstanding:
+  **Outstanding -- three requirements and one axis, and that is the whole list.**
+  Measured on discodon's tree 2026-09-05 by walking every module under
+  `discodon/eval/` for a `discodon.*` import outside `discodon.eval`, excluding
+  `discodon/eval/adapters/`, which is the declared host half an extraction deletes:
 
-  - **Representability is designed, not built** -- R12 (the world registry) replaces
-    the bare-name `WorldSeedSchema` slot; design at discodon
-    `.prawduct/artifacts/design-eval-world-contract.md` (owner-ruled 2026-08-27,
-    paper-walked against metallm, samsung-frame-art-loader and scriob). discodon
-    #2421 is the first host implementation, #2412 the gate.
-  - **`universe` → `scope`** -- half done. The shared-contract half shipped
-    (`scope_ids`, `Observation.scope_id`); `AnalysisContextBundle.universe_id` and
-    `identity.py`'s `id_universe` remain, as shrink-only allowlisted debt under a
-    pinned ceiling. discodon #2397. Binding eval-contracts before it lands still
-    means binding two names under provisional vocabulary.
-  - **The package still imports `discodon.llm`** -- discodon #2402 -- #2407. This is
-    now the only *unbounded* item on the list.
-  - **R10's remaining two axes** -- `representable` and `observable` have predicates
-    on the host profile and no production caller. discodon #2412, #2433, #2421.
-  - **R5's external-spend generalisation** -- new to this list. discodon's eval still
-    prices external calls from ONE card for one provider, with no provider identity
-    on the row, so a zero-money self-hosted call and an unpriced one read alike. The
-    search side of the vocabulary already exists here (`Spend.provider_unit`); the
-    consumer side does not. discodon #2447. It was neither built nor recorded as
-    deferred until 2026-08-24, which is why it appears now rather than earlier.
+  - **R2 -- eval owns its model base.** Seven contract modules still inherit
+    `discodon.models.base` (`identity`, `models`, `result_condition`,
+    `usage_capture`, `metrics`, `reporting`, `viz/models`). discodon **#2468**.
+  - **R7 -- configuration arrives as values.** `budget.py` and `metering.py` still
+    import `discodon.config`. Same issue, #2468.
+  - **R4 -- the cognitive-hints type crosses, the collector does not.**
+    `models.py` declares a host tool type as a pydantic field on a *stored* model,
+    so this one sits in the observation schema rather than merely in an import.
+    discodon **#2406**.
+  - **R10's fourth axis, `observable`** -- the predicate exists on the host profile
+    and has no production caller. discodon **#2433**.
+
+  Nothing else on the contract surface reaches the host: `discodon/eval/host/` and
+  `discodon/eval/analysis/` are at the full rule with zero debt, `viz/` carries the
+  one R2 reach above, and discodon's no-host-names canary sits at a **zero-entry**
+  allowlist -- no host noun anywhere in the declared shared contract.
+
+  **The reciprocal deferral is now the binding constraint, and half of it is ours.**
+  discodon's `EVAL_SYSTEM.md` §6 defers the physical package split until "a second
+  real consumer pulls on it", while this phase waits on discodon's in-tree boundary
+  -- which is four items from complete. Neither document moves on its own once
+  discodon closes them. `packages/` in this repo holds no `eval*` today, so the next
+  move after R2/R4/R7 is 3tears cutting `3tears-eval-contracts` and discodon
+  consuming its own extraction, per this phase's second bullet.
 
 **Checkpoint:** discodon running on the extracted packages; the eval
 contracts ratified per

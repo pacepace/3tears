@@ -9,6 +9,8 @@ live in ``tests/integration/test_distributed_lock_round_trip.py``.
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Callable
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -18,6 +20,43 @@ from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.nats import distributed_lock as distributed_lock_module
 from threetears.nats import LockHeld, NatsKvBucket, nats_distributed_lock
 from threetears.nats.errors import KvError
+
+
+# Heartbeat cadences in these tests are milliseconds, and a fixed
+# ``asyncio.sleep`` long enough to cover N of them on an idle machine is
+# not long enough under a loaded event loop -- the whole workspace suite
+# running alongside is exactly that. Waiting for the CONDITION instead of
+# for a duration makes the outcome independent of how promptly the
+# scheduler gets round to the heartbeat task, while still finishing in
+# milliseconds when it does.
+#
+# Only positive waits ("this must happen") use this. A negative assertion
+# ("this must NOT happen") cannot wait for its condition and keeps an
+# explicit sleep, which load can only make more generous.
+async def _wait_until(
+    predicate: Callable[[], bool],
+    *,
+    what: str,
+    timeout: float = 5.0,
+) -> None:
+    """Await until ``predicate`` holds, or fail saying what never happened.
+
+    :param predicate: condition to poll
+    :ptype predicate: Callable[[], bool]
+    :param what: description used in the timeout message
+    :ptype what: str
+    :param timeout: seconds to wait before failing
+    :ptype timeout: float
+    :return: nothing
+    :rtype: None
+    :raises AssertionError: when the predicate does not hold in time
+    """
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            msg = f"timed out after {timeout}s waiting for {what}"
+            raise AssertionError(msg)
+        await asyncio.sleep(0.001)
 
 
 # parity-exempt: minimal Entry dataclass for the distributed-lock unit tests carrying only value+revision; mirrors test_kv.py:_FakeEntry exemption
@@ -216,10 +255,16 @@ async def test_heartbeat_refreshes_key() -> None:
         ttl=timedelta(seconds=1),
         heartbeat=timedelta(milliseconds=30),
     ):
-        await asyncio.sleep(0.12)
-    # at least 2 refreshes in 120ms with 30ms cadence
+        await _wait_until(
+            lambda: len(fake_kv.put_calls) >= 2,
+            what="two heartbeat refreshes",
+        )
     assert len(fake_kv.put_calls) >= 2
-    assert all(call == ("job", b"1") for call in fake_kv.put_calls)
+    # Every renewal rewrites the SAME value the acquire created: that value is
+    # the holder's identity, and the release fences on it, so a heartbeat that
+    # wrote anything else would hand the lock away mid-hold.
+    created_token = fake_kv.create_calls[0][1]
+    assert all(call == ("job", created_token) for call in fake_kv.put_calls)
 
 
 @pytest.mark.asyncio
@@ -436,10 +481,14 @@ async def test_heartbeat_failure_does_not_break_release() -> None:
     fake_kv = _FakeKv()
 
     original_put = fake_kv.put
+    attempted: list[str] = []
 
     async def failing_put(key: str, value: bytes) -> int:
         # first put after acquire is the heartbeat refresh; raise so the
-        # branch that logs + lets the TTL expire fires.
+        # branch that logs + lets the TTL expire fires. the attempt is
+        # recorded because the raise means ``put_calls`` never grows, so
+        # it is the only evidence the heartbeat actually ran.
+        attempted.append(key)
         raise RuntimeError("broker down")
 
     fake_kv.put = failing_put  # type: ignore[assignment, method-assign]
@@ -450,8 +499,7 @@ async def test_heartbeat_failure_does_not_break_release() -> None:
         ttl=timedelta(seconds=1),
         heartbeat=timedelta(milliseconds=20),
     ):
-        # give the heartbeat enough time to fail at least once
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: bool(attempted), what="the heartbeat to fail once")
     # release path still runs
     assert fake_kv.delete_calls == ["job"]
     # restore (defensive; the fake is per-test anyway)
@@ -481,6 +529,9 @@ class TestALockAStuckHolderCannotKeepForever:
             async with nats_distributed_lock(
                 client, "wedged", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
             ):
+                # a negative assertion cannot wait for its condition, so this
+                # one stays a sleep: several heartbeat intervals of slack, and
+                # a loaded loop only ever grants MORE of them.
                 await asyncio.sleep(0.05)
                 renewals_while_wedged = len(fake_kv.put_calls)
 
@@ -505,7 +556,10 @@ class TestALockAStuckHolderCannotKeepForever:
         async with nats_distributed_lock(
             client, "healthy", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
         ):
-            await asyncio.sleep(0.05)
+            await _wait_until(
+                lambda: bool(fake_kv.put_calls),
+                what="a heartbeat from a healthy holder",
+            )
 
         assert fake_kv.put_calls, "a healthy holder inside the maximum hold stopped being renewed"
 
@@ -566,9 +620,100 @@ class TestALockAStuckHolderCannotKeepForever:
         async with nats_distributed_lock(
             client, "renewed", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
         ):
-            await asyncio.sleep(0.05)
-            assert fake_kv.put_calls, "precondition: at least one heartbeat renewed the entry"
+            await _wait_until(
+                lambda: bool(fake_kv.put_calls),
+                what="a heartbeat to renew the entry",
+            )
 
         assert "renewed" not in fake_kv.store, (
             "the release was fenced on a stale revision, so a renewed lock was never cleaned up"
+        )
+
+
+# parity-exempt: KeyValue subset whose put lands the write and THEN suspends, so a cancellation can be delivered between the two; used only to force the release race
+class _SlowAckKv(_FakeKv):
+    """A KV whose ``put`` writes and then waits for an acknowledgement.
+
+    Real brokers behave this way -- the write lands and the ack travels back
+    over a network the caller is suspended on -- and the in-memory
+    :class:`_FakeKv` cannot express the gap because its ``put`` never
+    suspends. Every cancellation-versus-write ordering question needs it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.put_landed = asyncio.Event()
+        self.release_ack = asyncio.Event()
+
+    async def put(self, key: str, value: bytes) -> int:
+        self.put_calls.append((key, value))
+        self.next_revision += 1
+        self.store[key] = (value, self.next_revision)
+        self.put_landed.set()
+        await self.release_ack.wait()
+        return self.next_revision
+
+
+class TestAHolderReleasesALockItRenewedMidFlight:
+    """The release must survive a heartbeat cancelled between write and ack."""
+
+    @pytest.mark.asyncio
+    async def test_the_lock_does_not_outlive_a_body_that_exited_mid_renewal(self) -> None:
+        """A body finishing while a renewal is in flight still releases the lock.
+
+        The holder recorded the revision it had written by assigning the result
+        of the renewal, so a cancellation delivered after the write landed but
+        before that assignment left the holder one revision behind the entry it
+        owned. The fenced delete then refused, and the lock sat there for its
+        whole TTL with every other pod waiting -- the exact outcome the fence
+        exists to prevent, reached from the other side.
+
+        In production the gap is a network round trip, so any body finishing
+        near a heartbeat boundary lands in it.
+
+        :return: nothing
+        :rtype: None
+        """
+        fake_kv = _SlowAckKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "raced",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=5),
+        ):
+            await _wait_until(
+                fake_kv.put_landed.is_set,
+                what="a renewal write to land but not yet be acknowledged",
+            )
+        fake_kv.release_ack.set()
+        await _wait_until(
+            lambda: "raced" not in fake_kv.store,
+            what="the lock to be released",
+            timeout=1.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_it_still_refuses_to_delete_a_successors_lock(self) -> None:
+        """The fix must not weaken the fence into an unconditional delete.
+
+        Identity, not sequence, is what the release checks -- so a key that
+        moved to another holder survives however many revisions ago this holder
+        last wrote.
+        """
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "handover",
+            heartbeat=timedelta(seconds=30),
+        ):
+            fake_kv.next_revision += 1
+            fake_kv.store["handover"] = (b"a-successors-token", fake_kv.next_revision)
+            successor_revision = fake_kv.next_revision
+
+        assert fake_kv.store.get("handover") == (b"a-successors-token", successor_revision), (
+            "the departing holder deleted a key that had already moved to another holder"
         )
