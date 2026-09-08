@@ -42,13 +42,14 @@ import json
 import re
 import time
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4, uuid7
 
 import asyncpg
 import pytest
+from threetears.nats import Subject
 import pytest_asyncio
 
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
@@ -184,29 +185,35 @@ class _InMemoryNatsBus:
         self._handlers[subject] = cb
         return MagicMock()
 
-    async def request(
+    async def request_raw(
         self,
-        subject: str,
+        *,
+        subject: Subject,
         payload: bytes,
-        timeout: float = 5.0,
-    ) -> Any:
-        """route a request to the subject's handler and return its reply.
+        timeout: timedelta | None = None,
+    ) -> bytes:
+        """route a request to the subject's handler and return its reply payload.
 
-        :param subject: NATS subject to dispatch on
-        :ptype subject: str
+        Mirrors ``NatsClient.request_raw``: keyword-only, taking a
+        :class:`~threetears.nats.Subject` and returning BYTES. The backend under
+        test consumes the wrapper, not nats-py's positional ``request`` that
+        returned a message object.
+
+        :param subject: subject token to dispatch on
+        :ptype subject: Subject
         :param payload: JSON-encoded bytes payload
         :ptype payload: bytes
-        :param timeout: request timeout seconds
-        :ptype timeout: float
-        :return: mock reply with ``.data`` bytes
-        :rtype: Any
+        :param timeout: ignored in tests
+        :ptype timeout: timedelta | None
+        :return: reply payload bytes
+        :rtype: bytes
         :raises asyncio.TimeoutError: when no handler is registered for
             the subject (matches real NATS behavior)
         """
         del timeout
-        handler = self._handlers.get(subject)
+        handler = self._handlers.get(subject.path)
         if handler is None:
-            raise asyncio.TimeoutError(f"no handler for {subject}")
+            raise asyncio.TimeoutError(f"no handler for {subject.path}")
         reply_holder: dict[str, bytes] = {}
 
         class _Msg:
@@ -235,9 +242,7 @@ class _InMemoryNatsBus:
 
         msg = _Msg(payload)
         await handler(msg)
-        reply_msg = MagicMock()
-        reply_msg.data = reply_holder.get("data", b"{}")
-        return reply_msg
+        return reply_holder.get("data", b"{}")
 
 
 # ---------------------------------------------------------------------------

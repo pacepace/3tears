@@ -728,6 +728,10 @@ class ScrapeTool(TearsTool):
         if error is None and self._block_private_hosts:
             ssrf_reason = _ssrf_block_reason(url)
             if ssrf_reason is not None:
+                # Log the refusal: unlike a benign input error (missing url/schema), an SSRF
+                # refusal is a security event -- something tried to reach a non-public address,
+                # worth a host-side trace for monitoring, not just a returned error.
+                log.warning("scrape tool: SSRF guard refused url=%r -- %s", url, ssrf_reason)
                 error, declined_by = f"refused: {ssrf_reason}", _Gate.INPUT
 
         schema: FieldSchema = {}
