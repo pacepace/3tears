@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 from types import SimpleNamespace
 from typing import Any
@@ -1909,6 +1910,23 @@ class TestSsrfGuard:
         result = await tool.execute(url="http://127.0.0.1:8420/x", field_schema={"employer": "str"})
         assert result.success is False
         assert "refused" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_execute_logs_a_warning_when_it_refuses(self, caplog: pytest.LogCaptureFixture) -> None:
+        """An SSRF refusal is a security event: it must leave a host-side WARNING
+        trace, not only a returned error (unlike a benign input-validation error)."""
+        recipe_collection, extraction_collection = _collections()
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+            api_key="k",
+        )
+        with caplog.at_level(logging.WARNING, logger="threetears.scrape.tool"):
+            await tool.execute(url="http://127.0.0.1:8420/x", field_schema={"employer": "str"})
+        assert any(
+            rec.levelno == logging.WARNING and "SSRF guard refused" in rec.getMessage() for rec in caplog.records
+        ), "expected a WARNING naming the SSRF refusal"
 
     @pytest.mark.asyncio
     async def test_execute_allows_private_target_when_guard_disabled(self) -> None:
