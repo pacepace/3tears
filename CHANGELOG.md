@@ -4,6 +4,39 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.37.0 -- 2026-09-09
+
+### Fixed
+
+- **backup: a restore no longer starves the tool it is feeding.** The pipeline
+  took turns: the object store idled while gunzip ran, gunzip idled while the
+  database committed, and a `drain()` after every chunk pinned the chain to
+  whichever stage was slowest at that instant. Measured on a 3 GB dump, the same
+  restore ran at 3.7 MB/s fed from a local file and about 200 KB/s through this
+  pipeline. The tool was starved, not slow.
+
+  A byte-bounded read-ahead now sits between the two so the stages overlap. Bytes
+  rather than chunks because chunk sizes vary with compressibility and the
+  constraint is memory: these pods have no room to spool a dump to disk, so
+  read-ahead is a window rather than a copy.
+
+- **backup: an S3 read no longer times out because its CONSUMER paused.**
+  Botocore defaults `read_timeout` to 60 seconds, which is sane for a
+  request/response call and wrong for a streaming read: the clock runs between the
+  consumer's reads, not during the transfer. A restore feeds a database that stops
+  to commit, so a pause past the ceiling truncated the body and surfaced as
+  `ContentLengthError: received N of M bytes` -- a corrupt-looking failure with a
+  healthy object behind it. Observed on a 469 MB dump: 36 MB read, then a commit
+  outlasted the default and the stream died.
+
+### Added
+
+- **`ReadAhead`, `READ_AHEAD_BYTES` and `fill_read_ahead`** in
+  `threetears.backup.process`. `asyncio.Queue` bounds by item COUNT, which is the
+  wrong unit when one item is a megabyte and the next a kilobyte.
+
+- **`S3ObjectStore(read_timeout_seconds=...)`**, default 900.
+
 ## v0.36.0 -- 2026-09-09
 
 ### Fixed

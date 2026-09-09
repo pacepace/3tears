@@ -6,12 +6,13 @@ These exercise the real streaming/error paths (a subprocess is spawned) without 
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
-from threetears.backup.process import BackupToolError, feed_stdin, stream_stdout
+from threetears.backup.process import BackupToolError, ReadAhead, feed_stdin, fill_read_ahead, stream_stdout
 
 
 async def _emit(data: bytes, *, chunk: int = 4) -> AsyncIterator[bytes]:
@@ -148,3 +149,50 @@ async def test_feed_stdin_timeout_kills_a_hung_child() -> None:
     with pytest.raises(BackupToolError, match="timed out"):
         await feed_stdin(["sh", "-c", "sleep 5"], _emit(b"tiny"), timeout=0.3)
     assert asyncio.get_running_loop().time() - started < 3
+
+
+class TestTheReadAheadBuffer:
+    """the pipeline must not take turns.
+
+    Without read-ahead the object store idles while gunzip runs, gunzip idles while the database
+    commits, and a `drain()` after every chunk pins the chain to whichever stage is slowest at
+    that instant. Measured on a 3 GB dump: the same restore ran at 3.7 MB/s fed from a local file
+    and about 200 KB/s fed through this pipeline. The tool was starved, not slow.
+    """
+
+    async def test_it_bounds_by_bytes_not_by_chunk_count(self) -> None:
+        """chunk sizes vary with compressibility, and the scarce resource here is memory."""
+        buffer = ReadAhead(max_bytes=10)
+        await buffer.put(b"1234567890")
+
+        parked = asyncio.ensure_future(buffer.put(b"more"))
+        await asyncio.sleep(0)
+        assert not parked.done(), "a full buffer must hold the producer"
+
+        assert await buffer.get() == b"1234567890"
+        await asyncio.wait_for(parked, timeout=1)
+
+    async def test_a_producer_failure_reaches_the_consumer(self) -> None:
+        """a read error must not read as a clean end of stream, or a partial restore looks whole."""
+        buffer = ReadAhead(max_bytes=1024)
+
+        async def failing() -> AsyncIterator[bytes]:
+            yield b"first"
+            raise ConnectionResetError("the object store hung up")
+
+        filler = asyncio.ensure_future(fill_read_ahead(buffer, failing()))
+        assert await buffer.get() == b"first"
+        with pytest.raises(ConnectionResetError):
+            await buffer.get()
+        await filler
+
+    async def test_closing_releases_a_producer_parked_on_a_full_buffer(self) -> None:
+        """otherwise cancelling the filler deadlocks against the buffer it is waiting on."""
+        buffer = ReadAhead(max_bytes=4)
+        await buffer.put(b"1234")
+        parked = asyncio.ensure_future(buffer.put(b"5678"))
+        await asyncio.sleep(0)
+        assert not parked.done()
+
+        await buffer.close()
+        await asyncio.wait_for(parked, timeout=1)
