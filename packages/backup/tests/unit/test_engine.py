@@ -56,6 +56,7 @@ class _FakeDriverBase(DbDumpDriver):
         *,
         env: Mapping[str, str] | None = None,
         timeout: float | None = None,
+        copy_rows_per_transaction: int | None = None,
     ) -> None:
         buf = bytearray()
         async for chunk in source:

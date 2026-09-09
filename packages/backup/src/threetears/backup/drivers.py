@@ -12,6 +12,7 @@ actual dump/restore streams through the shared subprocess plumbing in :mod:`thre
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from typing import ClassVar, Protocol, runtime_checkable
@@ -52,6 +53,20 @@ class DbDumpDriver(ABC):
     def restore_argv(self, dsn: str) -> list[str]:
         """Argv that restores into ``dsn`` from stdin."""
 
+    def restore_pg_options(self, *, copy_rows_per_transaction: int | None = None) -> str:
+        """libpq options the RESTORE session needs, as a ``PGOPTIONS`` fragment.
+
+        Empty by default: a driver that needs nothing adds nothing, and the caller's environment
+        is then passed through untouched.
+
+        :param copy_rows_per_transaction: rows a bulk COPY may commit at once, or None for the
+            server's own default
+        :ptype copy_rows_per_transaction: int | None
+        :return: a ``PGOPTIONS`` fragment, or the empty string
+        :rtype: str
+        """
+        return ""
+
     def dump_globals_argv(self, dsn: str) -> list[str]:
         """Argv that dumps cluster GLOBALS (roles, grants, tablespaces) to stdout as plain SQL.
 
@@ -89,8 +104,23 @@ class DbDumpDriver(ABC):
         *,
         env: Mapping[str, str] | None = None,
         timeout: float | None = None,
+        copy_rows_per_transaction: int | None = None,
     ) -> None:
-        """Restore ``source`` (a dump stream) into ``dsn`` (bounded by ``timeout`` seconds)."""
+        """Restore ``source`` (a dump stream) into ``dsn`` (bounded by ``timeout`` seconds).
+
+        :param copy_rows_per_transaction: how many rows a bulk COPY may commit at once. See
+            :meth:`YugabyteDriver.restore_pg_options` for why an unbounded one is a problem.
+        :ptype copy_rows_per_transaction: int | None
+        """
+        options = self.restore_pg_options(copy_rows_per_transaction=copy_rows_per_transaction)
+        if options:
+            # `feed_stdin` passes a mapping straight to the child as its WHOLE environment, so
+            # building one from the fragment alone would drop PATH and the caller's PG* vars.
+            # And PGOPTIONS is a space-separated list, so a caller that already set one keeps it.
+            merged = dict(env) if env is not None else dict(os.environ)
+            prior = merged.get("PGOPTIONS", "").strip()
+            merged["PGOPTIONS"] = f"{prior} {options}".strip()
+            env = merged
         await feed_stdin(self.restore_argv(dsn), source, env=env, timeout=timeout)
 
 
@@ -143,6 +173,43 @@ class YugabyteDriver(DbDumpDriver):
     def restore_argv(self, dsn: str) -> list[str]:
         # ysqlsh reads SQL from stdin; ON_ERROR_STOP makes a bad statement a non-zero exit.
         return ["ysqlsh", "--dbname", dsn, "--quiet", "--set", "ON_ERROR_STOP=1"]
+
+    def restore_pg_options(self, *, copy_rows_per_transaction: int | None = None) -> str:
+        """Bound how much one bulk COPY commits at a time.
+
+        THE BUG THIS EXISTS FOR took every restore down on a real cluster, and the error it
+        produced named none of this. Yugabyte batches ``COPY`` by
+        ``yb_default_copy_from_rows_per_transaction`` -- a ROW COUNT, default 20000, with no
+        regard for how big a row is. Measured on one live set: the LangGraph ``checkpoints``
+        tables average 115 KB per row and peak near 196 KB, so the default asks the server to
+        commit a 2.3 GB transaction. The tserver's whole inbound RPC read buffer is about
+        365 MB (5% of a 6.8 GB hard limit, shared with every other caller), so it refuses:
+
+            Service unavailable: Call rejected due to memory pressure:
+            yb.tserver.TabletServerService.Write
+
+        and the client sees only the follow-on, ``Predecessor request for N was not applied``,
+        against whichever table it happened to reach. That is why it looked non-deterministic
+        and why no server log named a cause.
+
+        The right bound is BYTES. Yugabyte only offers rows, so the value has to be chosen
+        assuming rows are large: at the 196 KB worst case observed, 100 rows is about 20 MB,
+        which leaves the buffer room for everything else on the node. Measured on the same
+        3 GB dump: 20000 and 1000 both failed, 100 restored cleanly in 812s.
+
+        It costs time -- more transactions, more round trips -- and that is the trade. A slow
+        restore that finishes beats a fast one that does not.
+
+        :param copy_rows_per_transaction: rows one COPY may commit at once, or None to leave
+            the server's own default in force
+        :ptype copy_rows_per_transaction: int | None
+        :return: the ``PGOPTIONS`` fragment, or empty when the default is being left alone
+        :rtype: str
+        """
+        options = ""
+        if copy_rows_per_transaction is not None and copy_rows_per_transaction > 0:
+            options = f"-c yb_default_copy_from_rows_per_transaction={copy_rows_per_transaction}"
+        return options
 
     def dump_globals_argv(self, dsn: str) -> list[str]:
         # Yugabyte ships its own dumpall fork; role passwords are deliberately excluded on both
