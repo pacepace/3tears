@@ -42,6 +42,50 @@ def test_yugabyte_argv() -> None:
     assert "ON_ERROR_STOP=1" in driver.restore_argv("postgresql://u@h/tmp")
 
 
+@pytest.mark.parametrize("driver", [PostgresDriver(), YugabyteDriver()])
+def test_dump_argv_omits_snapshot_when_none_was_exported(driver: PostgresDriver | YugabyteDriver) -> None:
+    """no snapshot must mean no flag, not an empty one.
+
+    `--snapshot=` with nothing after it is not "use the default"; the dump tool takes it as a
+    snapshot id of the empty string and refuses to start.
+    """
+    assert not any(arg.startswith("--snapshot") for arg in driver.dump_argv("postgresql://u@h/db"))
+
+
+@pytest.mark.parametrize("driver", [PostgresDriver(), YugabyteDriver()])
+def test_dump_argv_joins_the_exported_snapshot(driver: PostgresDriver | YugabyteDriver) -> None:
+    """the dump must read the instant the inventory counted, not one of its own.
+
+    This is the whole fix: without the flag the tool picks its own snapshot whenever it happens
+    to start, so every row written between the count and the dump lands in the bytes and not in
+    the manifest -- and the dry run that compares them reports a mismatch for ordinary traffic.
+    """
+    argv = driver.dump_argv("postgresql://u@h/db", snapshot="0000ABCD-1-1")
+    assert "--snapshot=0000ABCD-1-1" in argv
+
+
+def test_yugabyte_leaves_serializable_deferrable_when_importing_a_snapshot() -> None:
+    """without this every dump on Yugabyte fails, and no Postgres test can see it.
+
+    Yugabyte's ysql_dump defaults serializable-deferrable ON where upstream pg_dump makes it
+    opt-in, and Yugabyte refuses `SET TRANSACTION SNAPSHOT` in a serializable transaction:
+    "cannot export/import snapshot in SERIALIZABLE Isolation Level". Confirmed against a live
+    2026.1.0.0 cluster, where a valid exported id was refused until the flag was added.
+    """
+    argv = YugabyteDriver().dump_argv("postgresql://u@h/db", snapshot="abc-def")
+    assert "--no-serializable-deferrable" in argv
+
+
+def test_yugabyte_keeps_its_default_when_no_snapshot_is_imported() -> None:
+    """the flag is bought for the snapshot, so it is not spent without one.
+
+    Serializable-deferrable waits for a view free of serialization anomalies. Dropping it
+    unconditionally would weaken every dump to buy something only the snapshot path needs.
+    """
+    argv = YugabyteDriver().dump_argv("postgresql://u@h/db")
+    assert "--no-serializable-deferrable" not in argv
+
+
 @pytest.mark.parametrize(
     ("version", "expected"),
     [(_PG_VERSION, "postgres"), (_YB_VERSION, "yugabyte")],

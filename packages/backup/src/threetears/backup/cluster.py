@@ -6,7 +6,8 @@ list), and cluster globals (roles, grants) that live outside every database and 
 per-database dump. :class:`ClusterBackup` closes both: it ENUMERATES the databases from the cluster
 itself at backup time — coverage by construction, never by list — dumps each one plus the globals,
 and writes a :class:`~threetears.backup.manifest.BackupManifest` recording the set's stable uuid7
-id, its driver, and a per-table row inventory taken at dump time.
+id, its driver, and a per-table row inventory counted INSIDE the snapshot each dump was taken
+under, so the manifest describes the bytes it names rather than the database beside them.
 
 The manifest is written last, so its existence asserts a complete set. Restores resolve the driver
 FROM the manifest (:func:`~threetears.backup.drivers.driver_by_name`) — the format that wrote a
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast, runtime_checkable
 from urllib.parse import urlparse, urlunparse
@@ -55,6 +57,19 @@ _EXCLUDED_DATABASES = frozenset({"template0", "template1"})
 # broke every backup on a live cluster for weeks.
 
 _DATABASES_SQL = "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname"
+
+#: The inventory and the dump must see ONE instant. This transaction holds it: repeatable read
+#: fixes the session's view, `pg_export_snapshot` publishes it, and the dump tool joins it with
+#: `--snapshot`. It is held until the dump has finished streaming, which is a CHOICE rather than
+#: a requirement -- see `_inventory_snapshot` for what it buys and what it costs.
+_BEGIN_SNAPSHOT_SQL = "BEGIN ISOLATION LEVEL REPEATABLE READ"
+#: The session is deliberately idle for the whole dump, which is exactly the shape an
+#: idle-transaction reaper kills. SET LOCAL, so it expires with the transaction and no other work
+#: on this connection inherits it. Both timeouts are 0 on our clusters today; this makes the hold
+#: safe on a cluster or pooler where they are not, without anyone having to remember why.
+_HOLD_OPEN_SQL = "SET LOCAL idle_in_transaction_session_timeout = 0"
+_EXPORT_SNAPSHOT_SQL = "SELECT pg_export_snapshot()"
+_ROLLBACK_SQL = "ROLLBACK"
 _TABLES_SQL = """
     SELECT table_schema, table_name
       FROM information_schema.tables
@@ -84,6 +99,7 @@ class SetDeleteNotAllowedError(RuntimeError):
 
 @runtime_checkable
 class _Connection(Protocol):
+    async def execute(self, query: str) -> object: ...
     async def fetch(self, query: str) -> list[Any]: ...
     async def fetchval(self, query: str) -> object: ...
     async def close(self) -> None: ...
@@ -161,6 +177,17 @@ class ClusterBackup:
         databases = await self._list_databases(admin_dsn)
         set_root = f"{self._config.prefix}/{moment:%Y/%m/%d}/{moment:%Y%m%dT%H%M%SZ}-{backup_id.hex[:12]}"
 
+        log.info(
+            "cluster backup: starting",
+            extra={
+                "extra_data": {
+                    "backup_id": str(backup_id),
+                    "driver": driver.name,
+                    "databases": len(databases),
+                }
+            },
+        )
+
         globals_key = f"{set_root}/globals.sql.gz.enc"
         await self._store.put(
             globals_key,
@@ -172,6 +199,10 @@ class ClusterBackup:
                 )
             ),
             content_type=_ENCRYPTED_CONTENT_TYPE,
+        )
+        log.info(
+            "cluster backup: globals dumped",
+            extra={"extra_data": {"backup_id": str(backup_id), "key": globals_key}},
         )
 
         # ONE SICK DATABASE MUST NOT COST THE CLUSTER ITS BACKUP. This loop used
@@ -187,16 +218,51 @@ class ClusterBackup:
         # short.
         dumps: list[DatabaseDump] = []
         failures: list[DatabaseFailure] = []
-        for database in databases:
+        for position, database in enumerate(databases, start=1):
+            # Logged per database, before the work rather than after it. A cluster backup is
+            # minutes of silence otherwise, and an operator watching one has exactly one
+            # decision to make -- keep waiting, or intervene -- which needs to know WHICH
+            # database is slow and how many are left.
+            log.info(
+                "cluster backup: database starting",
+                extra={
+                    "extra_data": {
+                        "backup_id": str(backup_id),
+                        "database": database,
+                        "position": position,
+                        "of": len(databases),
+                    }
+                },
+            )
             try:
                 db_dsn = replace_database(admin_dsn, database)
-                tables = await self._inventory(db_dsn)
                 suffix = "dump" if driver.compressed else "dump.gz"
                 key = f"{set_root}/{database}.{driver.name}.{suffix}.enc"
-                raw = driver.dump(db_dsn, env=self._env, timeout=self._config.dump_timeout_seconds)
-                hashing = _HashingStream(raw)
-                stream: AsyncIterator[bytes] = hashing if driver.compressed else gzip_stream(hashing)
-                await self._store.put(key, stream, content_type=_ENCRYPTED_CONTENT_TYPE)
+                async with self._inventory_snapshot(db_dsn, backup_id=backup_id, database=database) as (
+                    tables,
+                    snapshot,
+                ):
+                    consistent = snapshot is not None
+                    log.info(
+                        "cluster backup: inventory taken",
+                        extra={
+                            "extra_data": {
+                                "backup_id": str(backup_id),
+                                "database": database,
+                                "tables": len(tables),
+                                "snapshot_synchronized": consistent,
+                            }
+                        },
+                    )
+                    raw = driver.dump(
+                        db_dsn,
+                        env=self._env,
+                        timeout=self._config.dump_timeout_seconds,
+                        snapshot=snapshot,
+                    )
+                    hashing = _HashingStream(raw)
+                    stream: AsyncIterator[bytes] = hashing if driver.compressed else gzip_stream(hashing)
+                    await self._store.put(key, stream, content_type=_ENCRYPTED_CONTENT_TYPE)
                 size = await self._size_of(key)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
                 # Deliberately broad, and deliberately NOT BaseException: the dump
@@ -208,7 +274,7 @@ class ClusterBackup:
                 # and CancelledError is a BaseException, so it passes through.
                 log.exception(
                     "cluster backup: database FAILED to dump; the set will be incomplete",
-                    extra={"extra_data": {"database": database}},
+                    extra={"extra_data": {"backup_id": str(backup_id), "database": database}},
                 )
                 failures.append(DatabaseFailure(database=database, error=f"{type(exc).__name__}: {exc}"))
                 continue
@@ -219,11 +285,20 @@ class ClusterBackup:
                     size_bytes=size,
                     sha256=hashing.hexdigest,
                     tables=tables,
+                    inventory_snapshot_consistent=consistent,
                 )
             )
             log.info(
                 "cluster backup: database dumped",
-                extra={"extra_data": {"database": database, "key": key, "tables": len(tables)}},
+                extra={
+                    "extra_data": {
+                        "backup_id": str(backup_id),
+                        "database": database,
+                        "key": key,
+                        "tables": len(tables),
+                        "size_bytes": size,
+                    }
+                },
             )
 
         if not dumps:
@@ -302,6 +377,20 @@ class ClusterBackup:
         if dump is None:
             raise LookupError(f"backup {manifest.backup_id} holds no database named {database!r}")
         driver = driver_by_name(manifest.driver)
+        # A restore is the longest silence in the system -- one measured run spent 13m34s
+        # between claiming the operation and its first line of output, which is
+        # indistinguishable from a wedge to whoever is watching. Say what is starting.
+        log.info(
+            "cluster restore: replaying dump",
+            extra={
+                "extra_data": {
+                    "backup_id": str(manifest.backup_id),
+                    "database": database,
+                    "driver": driver.name,
+                    "size_bytes": dump.size_bytes,
+                }
+            },
+        )
         stream = self._store.open_read(dump.key)
         if not driver.compressed:
             stream = gunzip_stream(stream)
@@ -405,19 +494,140 @@ class ClusterBackup:
         skip = set(transient)
         return [name for name in named if name not in skip]
 
-    async def _inventory(self, db_dsn: str) -> tuple[TableCount, ...]:
-        """Exact per-table row counts at dump time — estimates would poison later verification."""
-        conn = await self._connect(db_dsn)
-        try:
-            tables = await conn.fetch(_TABLES_SQL)
-            counts: list[TableCount] = []
-            for row in tables:
-                schema, table = row["table_schema"], row["table_name"]
-                count = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')
-                counts.append(TableCount(schema=schema, table=table, row_count=int(cast(int, count))))
-        finally:
-            await conn.close()
+    async def _count_tables(self, conn: _Connection) -> tuple[TableCount, ...]:
+        """Exact per-table row counts on ``conn``: estimates would poison later verification.
+
+        :param conn: the connection to count on; its transaction state decides which instant
+            these counts describe, which is the whole point of the caller holding one.
+        :ptype conn: _Connection
+        :return: one count per base table, schema-qualified
+        :rtype: tuple[TableCount, ...]
+        """
+        tables = await conn.fetch(_TABLES_SQL)
+        counts: list[TableCount] = []
+        for row in tables:
+            schema, table = row["table_schema"], row["table_name"]
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')
+            counts.append(TableCount(schema=schema, table=table, row_count=int(cast(int, count))))
         return tuple(counts)
+
+    @asynccontextmanager
+    async def _inventory_snapshot(
+        self, db_dsn: str, *, backup_id: UUID, database: str
+    ) -> AsyncIterator[tuple[tuple[TableCount, ...], str | None]]:
+        """Count every table inside one snapshot and hold that snapshot open for the dump.
+
+        THE BUG THIS EXISTS FOR shipped and was found on a live cluster. The counts used to be
+        taken on their own connection and the dump started afterwards under a snapshot of its
+        own, so the manifest described the database at count time while the bytes described it
+        at dump time. Every row written in between was in the dump and not in the count, and a
+        dry run -- which compares a restored copy against the manifest that names it -- reported
+        a mismatch for ordinary write traffic. Two audit tables, each off by one, on a cluster
+        doing almost nothing. Under real load that verdict is noise, and noise is how a genuinely
+        short restore gets waved through.
+
+        The snapshot is not always available. When the export fails the database is still dumped,
+        with counts taken beside it and ``None`` returned so the caller can record that the
+        inventory is unsynchronized. Refusing the dump would be the wrong trade: the dump is the
+        artifact and the count only describes it.
+
+        WHAT THIS COSTS, because it is not free and the next person deserves the number. The
+        connection sits idle in transaction for the whole dump: 13m34s on one measured run. A
+        server or pooler enforcing ``idle_in_transaction_session_timeout`` will close it, and
+        Yugabyte expires read snapshots at ``timestamp_history_retention_interval_sec`` (900s on
+        our clusters), a ceiling the dump tool's own transaction was always subject to but which
+        this now starts counting from the inventory rather than the dump.
+
+        It also holds ACCESS SHARE on every table it counted for that whole window, so DDL
+        against them blocks until the dump finishes. The dump tool takes the same locks for the
+        same duration, so this widens an existing window rather than opening a new one.
+
+        Strictly, the exporter only has to outlive the IMPORT, not the dump. Holding to stream
+        exhaustion is deliberate conservatism: there is no way to observe the moment the dump
+        tool imports, so the alternative is a race with silent corruption on the losing side.
+        Releasing early would want a signal from the dump tool that does not exist. The cleanup
+        is best-effort precisely so that losing this connection late costs nothing.
+
+        :param db_dsn: dsn of the database to inventory
+        :ptype db_dsn: str
+        :param backup_id: the set being taken, carried so the warning below can be correlated
+        :ptype backup_id: UUID
+        :param database: the database being inventoried, for the same reason
+        :ptype database: str
+        :yield: the counts, and the exported snapshot id or None when it could not be exported
+        :rtype: AsyncIterator[tuple[tuple[TableCount, ...], str | None]]
+        """
+        conn = await self._connect(db_dsn)
+        snapshot: str | None = None
+        try:
+            try:
+                # The BEGIN is inside the guard, not before it. A pooler that refuses explicit
+                # transaction control would otherwise cost this database its dump entirely,
+                # which is the trade this method exists to refuse.
+                await conn.execute(_BEGIN_SNAPSHOT_SQL)
+                await conn.execute(_HOLD_OPEN_SQL)
+                exported = await conn.fetchval(_EXPORT_SNAPSHOT_SQL)
+                if exported is None:
+                    # str(None) is "None", a perfectly truthy id that would reach the dump tool
+                    # as `--snapshot=None`. A missing id takes the same path as a refused one.
+                    raise ValueError("pg_export_snapshot() returned no snapshot id")
+                snapshot = str(exported)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
+                # Deliberately broad because this package has no database driver to name an
+                # exception type FROM: the connection is injected as a callable so asyncpg stays
+                # out of the hard dependencies (see the module docstring), and the driver's own
+                # error classes are therefore unreachable here. The failure is recorded in the
+                # manifest, not swallowed.
+                log.warning(
+                    "cluster backup: snapshot export unavailable; inventory will not be synchronized with the dump",
+                    extra={
+                        "extra_data": {
+                            "backup_id": str(backup_id),
+                            "database": database,
+                            "error": str(exc),
+                        }
+                    },
+                )
+                snapshot = None
+                # `snapshot` is still None here, which is what stops the post-yield teardown
+                # issuing a second ROLLBACK outside any transaction.
+                await self._end_transaction_quietly(conn)
+            counts = await self._count_tables(conn)
+            try:
+                yield counts, snapshot
+            finally:
+                # Best effort, and that is the point. By the time this runs the dump has already
+                # been hashed and stored, so a connection the server closed underneath us -- an
+                # idle-in-transaction timeout, a pooler cutoff -- must not turn a backup that
+                # SUCCEEDED into a recorded failure whose key is orphaned in the store.
+                if snapshot is not None:
+                    await self._end_transaction_quietly(conn)
+        finally:
+            await self._close_quietly(conn)
+
+    async def _end_transaction_quietly(self, conn: _Connection) -> None:
+        """Roll back if there is anything to roll back, swallowing a dead connection.
+
+        :param conn: the inventory connection
+        :ptype conn: _Connection
+        """
+        try:
+            await conn.execute(_ROLLBACK_SQL)
+        except Exception:  # prawduct:allow prawduct/broad-except -- see the call sites
+            # Logged, never raised: every caller is cleaning up after work that already
+            # committed to the object store.
+            log.warning("cluster backup: could not end the inventory transaction", exc_info=True)
+
+    async def _close_quietly(self, conn: _Connection) -> None:
+        """Close the connection without letting a close failure fail a finished dump.
+
+        :param conn: the inventory connection
+        :ptype conn: _Connection
+        """
+        try:
+            await conn.close()
+        except Exception:  # prawduct:allow prawduct/broad-except -- see the call site
+            log.warning("cluster backup: could not close the inventory connection", exc_info=True)
 
     async def _read_manifest(self, key: str) -> BackupManifest:
         chunks = [chunk async for chunk in self._store.open_read(key)]

@@ -41,7 +41,7 @@ def manifest_key(prefix: str, backup_id: UUID) -> str:
 
 @dataclass(frozen=True, slots=True)
 class TableCount:
-    """One table's row count at dump time — the unit of the coverage inventory."""
+    """One table's row count in the dump's own snapshot: the unit of the coverage inventory."""
 
     schema: str
     table: str
@@ -59,6 +59,14 @@ class DatabaseDump:
     #: stream is byte-identical to what the dump tool produced.
     sha256: str
     tables: tuple[TableCount, ...] = field(default_factory=tuple)
+    #: True when ``tables`` was counted inside the very snapshot the dump was taken under, so
+    #: the inventory describes THESE bytes exactly and any difference on restore is a defect.
+    #: False when the snapshot could not be exported and the counts were taken beside the dump
+    #: rather than within it. Then a row written during the dump is in the bytes and not in the
+    #: count, and only a SHORTFALL on restore means anything. Defaults False so a manifest
+    #: written before this field existed is read the conservative way rather than the flattering
+    #: one.
+    inventory_snapshot_consistent: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +146,11 @@ class BackupManifest:
                     "key": dump.key,
                     "size_bytes": dump.size_bytes,
                     "sha256": dump.sha256,
+                    # No version bump for this one. A reader that does not know the field
+                    # defaults it False and so treats the counts as unsynchronized, which is the
+                    # cautious reading -- unlike `failed_databases`, where the unaware reading
+                    # was the flattering one and had to be refused.
+                    "inventory_snapshot_consistent": dump.inventory_snapshot_consistent,
                     "tables": [{"schema": t.schema, "table": t.table, "row_count": t.row_count} for t in dump.tables],
                 }
                 for dump in self.databases
@@ -176,6 +189,7 @@ class BackupManifest:
                     key=dump["key"],
                     size_bytes=dump["size_bytes"],
                     sha256=dump["sha256"],
+                    inventory_snapshot_consistent=bool(dump.get("inventory_snapshot_consistent", False)),
                     tables=tuple(
                         TableCount(schema=t["schema"], table=t["table"], row_count=t["row_count"])
                         for t in dump.get("tables", ())
