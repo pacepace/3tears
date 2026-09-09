@@ -4,7 +4,39 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.35.0 -- 2026-09-08
+
+### Fixed
+
+- **backup: one sick database no longer costs the cluster its backup.** The dump
+  loop had no handler, so a single database the dump tool could not read aborted
+  the whole set — the cluster was left with NO backups at all, not the healthy
+  dumps and a gap. Observed in production: a database whose `pg_namespace` had
+  lost its DocDB tablet failed `ysql_dump` the moment it enumerated schemas, and
+  every scheduled backup died with it for weeks. A failing database is now
+  isolated and recorded; the healthy ones still dump. A set where NOTHING dumped
+  raises `ClusterBackupError` rather than writing an empty manifest that
+  retention would count as a backup.
+
+- **backup: the transient-database list was too narrow, and is now config.**
+  `_EXCLUDED_PREFIXES` named only the two forms this toolchain generates
+  (`scratch_restore_`, `verify_restore_`), so a hand-made `scratch_probe_hub2`
+  was enumerated like real data — and it was the wedged one. The list moves onto
+  `BackupConfig.transient_database_prefixes`, widens to `scratch_`, and a
+  deployment can adjust it without waiting for a release. Skipped databases are
+  logged rather than passed over in silence.
+
+### Added
+
+- **`BackupManifest.failed_databases` and `.is_complete`**, plus the
+  `DatabaseFailure` record and `ClusterBackupError`. A set that quietly omitted a
+  database would present as a complete backup of a cluster it does not cover, and
+  the first anyone would hear of it is a restore coming up short.
+
+- **Manifest format version 2.** Deliberately a version bump rather than an
+  optional field: a reader that did not understand `failed_databases` would
+  report a partial set as complete. Version 1 manifests still read, and read as
+  complete — truthfully, since a v1 writer aborted on any failure.
 
 ### Security
 
