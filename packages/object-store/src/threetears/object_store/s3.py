@@ -36,6 +36,15 @@ _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 #: sweep batches to this ceiling.
 _DELETE_BATCH_SIZE = 1000
 
+#: Socket read ceiling for one response read. Botocore defaults this to 60 seconds, which is a
+#: sane ceiling for a request/response call and a WRONG one for a streaming read: the clock runs
+#: between the consumer's reads, not during the transfer. A restore feeds its bytes to a database
+#: that stops to commit, so a pause longer than the ceiling truncates the body and surfaces as
+#: `ContentLengthError: received N of M bytes` -- a corrupt-looking failure with a healthy object
+#: behind it. Observed on a 469 MB dump: 36 MB read, then a commit outlasted the default and the
+#: stream died.
+_DEFAULT_READ_TIMEOUT_SECONDS = 900.0
+
 
 class S3ObjectStore:
     """Streaming ObjectStore over an S3-compatible backend.
@@ -60,6 +69,11 @@ class S3ObjectStore:
     :param session: aioboto3 session to use; defaults to a fresh
         ``aioboto3.Session()``. Injectable so tests can supply a fake client.
     :ptype session: Any
+    :param read_timeout_seconds: socket read ceiling for a single response read. Botocore's
+        default is 60, which truncates any streaming read whose CONSUMER pauses longer than
+        that -- and a restore's consumer is a database committing transactions, which routinely
+        does. See the constant below.
+    :ptype read_timeout_seconds: float
     """
 
     def __init__(
@@ -72,9 +86,11 @@ class S3ObjectStore:
         region: str = "us-east-1",
         part_size_bytes: int = _DEFAULT_PART_SIZE,
         session: Any = None,
+        read_timeout_seconds: float = _DEFAULT_READ_TIMEOUT_SECONDS,
     ) -> None:
         if part_size_bytes < _MIN_PART_SIZE:
             raise ValueError("part_size_bytes must be >= 5 MiB (S3 multipart minimum)")
+        self._read_timeout_seconds = read_timeout_seconds
         self._endpoint_url = endpoint_url
         self._access_key = access_key
         self._secret_key = secret_key
@@ -95,7 +111,10 @@ class S3ObjectStore:
             aws_access_key_id=self._access_key,
             aws_secret_access_key=self._secret_key,
             region_name=self._region,
-            config=BotoConfig(signature_version="s3v4"),
+            config=BotoConfig(
+                signature_version="s3v4",
+                read_timeout=self._read_timeout_seconds,
+            ),
         )
 
     async def ensure_bucket(self) -> None:
