@@ -4,6 +4,45 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.36.0 -- 2026-09-09
+
+### Fixed
+
+- **backup: a restore no longer asks the server to commit gigabytes at once.**
+  Yugabyte batches `COPY` by `yb_default_copy_from_rows_per_transaction`, a ROW
+  COUNT (default 20000) with no regard for how big a row is. On a live 3 GB set
+  whose LangGraph `checkpoints` rows averaged 115 KB and peaked near 196 KB, the
+  default asked for a 2.3 GB transaction against a tserver whose entire inbound
+  RPC read buffer is about 365 MB. The server refused the write:
+
+      Service unavailable: Call rejected due to memory pressure:
+      yb.tserver.TabletServerService.Write
+
+  and the client saw only the follow-on, `Predecessor request for N was not
+  applied`, against whichever table the load happened to reach. That is why the
+  failure looked non-deterministic, landed on different tables each run, and left
+  no server log naming a cause. Every restore of that set failed, which means the
+  backups could not be verified and could not have been used.
+
+  Restores now bound the batch. Measured on that same set: 20000 and 1000 both
+  failed under memory pressure, 100 restored cleanly in 812s.
+
+### Added
+
+- **`BackupConfig.restore_copy_rows_per_transaction`**, default 100. The right
+  bound is BYTES and Yugabyte only offers rows, so the default assumes rows are
+  large: 100 is roughly 20 MB even at the worst case measured. Raise it for narrow
+  rows if a restore is too slow. The failure mode of raising it too far is a
+  refused write, not corruption.
+
+- **`DbDumpDriver.restore_pg_options`**, and `copy_rows_per_transaction` on
+  `restore()`. The fragment composes into `PGOPTIONS` rather than replacing the
+  environment: `feed_stdin` passes a mapping to the child as its WHOLE
+  environment, so building one from the fragment alone would drop `PATH` and the
+  caller's `PG*` variables, password included. A caller's existing `PGOPTIONS` is
+  added to, never overwritten. Drivers whose server has no such knob return
+  nothing and their environment is passed through untouched.
+
 ## v0.35.1 -- 2026-09-08
 
 ### Fixed

@@ -394,7 +394,13 @@ class ClusterBackup:
         stream = self._store.open_read(dump.key)
         if not driver.compressed:
             stream = gunzip_stream(stream)
-        await driver.restore(target_dsn, stream, env=self._env, timeout=self._config.dump_timeout_seconds)
+        await driver.restore(
+            target_dsn,
+            stream,
+            env=self._env,
+            timeout=self._config.dump_timeout_seconds,
+            copy_rows_per_transaction=self._config.restore_copy_rows_per_transaction,
+        )
         log.info(
             "cluster restore: database restored",
             extra={"extra_data": {"backup_id": str(manifest.backup_id), "database": database}},

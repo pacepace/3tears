@@ -36,6 +36,9 @@ class BackupConfig:
     :param dump_timeout_seconds: wall-clock ceiling for a dump/restore subprocess (> 0).
     :param encryption_work_factor: scrypt cost N for the per-object key (power of two > 1); the
         default is deployment-grade, lower it only to trade brute-force resistance for speed.
+    :param restore_copy_rows_per_transaction: how many rows one bulk COPY may commit at a time
+        during a restore. Configurable because the safe value depends on how big the rows are,
+        which is a property of the data rather than of this package.
     :param transient_database_prefixes: name prefixes for databases that are THROWAWAY restore
         targets rather than data. A backup that dumps one is backing up a copy of another
         database it already dumped, and paying for it twice; the defaults are the prefixes this
@@ -50,6 +53,18 @@ class BackupConfig:
     allow_delete: bool = False
     dump_timeout_seconds: int = 3600
     encryption_work_factor: int = 2**18
+    #: Yugabyte batches COPY by ROW COUNT (`yb_default_copy_from_rows_per_transaction`,
+    #: default 20000) with no regard for row size, and a restore of blob-heavy rows then asks
+    #: the server to commit a transaction far larger than its inbound RPC buffer, which it
+    #: refuses. Measured on a live 3 GB set whose `checkpoints` rows averaged 115 KB and peaked
+    #: near 196 KB: 20000 and 1000 both failed under memory pressure, 100 restored cleanly.
+    #:
+    #: 100 rows is roughly 20 MB even at that worst case, against a tserver read buffer of
+    #: about 365 MB shared with every other caller. Raise it for narrow rows if a restore is
+    #: too slow; the failure mode of raising it too far is a refused write, not corruption.
+    #:
+    #: Ignored by drivers whose server has no such knob -- vanilla Postgres among them.
+    restore_copy_rows_per_transaction: int = 100
     #: Matched case-sensitively against the start of the database name. The
     #: defaults name the prefixes THIS package (`verify_restore_`) and its
     #: callers (`scratch_restore_`, and `scratch_` broadly) create when they need
