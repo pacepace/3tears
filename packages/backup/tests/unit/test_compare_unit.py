@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pydantic import SecretStr
+
+from threetears.backup.config import BackupConfig
+
 from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
@@ -59,9 +63,19 @@ class TestClusterEnumeration:
     def test_toolchain_transient_databases_are_never_backed_up(self) -> None:
         """scratch and verify databases are the toolchain's own; enumerating them
         makes a backup contain the previous restore's scratch, and one caught
-        mid-drop hangs the enumeration connect."""
-        from threetears.backup.cluster import _EXCLUDED_PREFIXES  # noqa: PLC0415
+        mid-drop hangs the enumeration connect.
 
-        assert "scratch_restore_x".startswith(_EXCLUDED_PREFIXES)
-        assert "verify_restore_x".startswith(_EXCLUDED_PREFIXES)
-        assert not "aibots".startswith(_EXCLUDED_PREFIXES)
+        The list moved from a module constant onto BackupConfig, so a deployment
+        can widen it without a release -- which mattered: the constant named only
+        the two forms this toolchain generates, and a hand-made
+        `scratch_probe_hub2` matched none of them, was enumerated, had wedged,
+        and took every backup on a live cluster down with it.
+        """
+        prefixes = BackupConfig(passphrase=SecretStr("x" * 16)).transient_database_prefixes
+
+        assert "scratch_restore_x".startswith(prefixes)
+        assert "verify_restore_x".startswith(prefixes)
+        # the one the old narrow list let through
+        assert "scratch_probe_hub2".startswith(prefixes)
+        assert not "aibots".startswith(prefixes)
+        assert not "dipp".startswith(prefixes)

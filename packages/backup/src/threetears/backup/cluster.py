@@ -48,12 +48,11 @@ _ENCRYPTED_CONTENT_TYPE = "application/octet-stream"
 #: dumping ``template0`` outright fails (it refuses connections by design).
 _EXCLUDED_DATABASES = frozenset({"template0", "template1"})
 
-#: transient databases this toolchain itself creates (selective-restore scratch copies, the
-#: verifier's temp databases). backing them up would make a backup contain the scratch of the
-#: previous restore -- unbounded self-reference -- and one caught MID-DROP hangs the
-#: enumeration connect outright (measured against yugabyte, whose async tablet reaping keeps
-#: a dropped database listed for a while).
-_EXCLUDED_PREFIXES = ("scratch_restore_", "verify_restore_")
+# Which databases are transient now lives on BackupConfig
+# (`transient_database_prefixes`), so a deployment can widen it without a
+# release. It was a module constant naming only the two prefixes THIS toolchain
+# generates, which is why a hand-made `scratch_probe_hub2` sailed past it and
+# broke every backup on a live cluster for weeks.
 
 _DATABASES_SQL = "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname"
 _TABLES_SQL = """
@@ -392,11 +391,19 @@ class ClusterBackup:
             rows = await conn.fetch(_DATABASES_SQL)
         finally:
             await conn.close()
-        return [
-            row["datname"]
-            for row in rows
-            if row["datname"] not in _EXCLUDED_DATABASES and not row["datname"].startswith(_EXCLUDED_PREFIXES)
-        ]
+        named = [row["datname"] for row in rows if row["datname"] not in _EXCLUDED_DATABASES]
+        transient = [name for name in named if name.startswith(self._config.transient_database_prefixes)]
+        if transient:
+            # Logged rather than passed over in silence: a scratch that is still
+            # here is debris from a drill or a restore that did not finish
+            # tidying, and the only reason anyone ever found the one that had
+            # wedged this cluster's backups was reading an error it caused.
+            log.info(
+                "cluster backup: skipping transient databases",
+                extra={"extra_data": {"skipped": transient}},
+            )
+        skip = set(transient)
+        return [name for name in named if name not in skip]
 
     async def _inventory(self, db_dsn: str) -> tuple[TableCount, ...]:
         """Exact per-table row counts at dump time — estimates would poison later verification."""

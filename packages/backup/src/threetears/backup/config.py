@@ -36,6 +36,10 @@ class BackupConfig:
     :param dump_timeout_seconds: wall-clock ceiling for a dump/restore subprocess (> 0).
     :param encryption_work_factor: scrypt cost N for the per-object key (power of two > 1); the
         default is deployment-grade, lower it only to trade brute-force resistance for speed.
+    :param transient_database_prefixes: name prefixes for databases that are THROWAWAY restore
+        targets rather than data. A backup that dumps one is backing up a copy of another
+        database it already dumped, and paying for it twice; the defaults are the prefixes this
+        package and its callers generate.
     """
 
     passphrase: SecretStr
@@ -46,6 +50,14 @@ class BackupConfig:
     allow_delete: bool = False
     dump_timeout_seconds: int = 3600
     encryption_work_factor: int = 2**18
+    #: Matched case-sensitively against the start of the database name. The
+    #: defaults name the prefixes THIS package (`verify_restore_`) and its
+    #: callers (`scratch_restore_`, and `scratch_` broadly) create when they need
+    #: somewhere to replay a dump. Excluding them is not an optimisation: a
+    #: throwaway restore target is, by construction, a partial copy of a database
+    #: the set already contains, and dumping it back into the same set doubles
+    #: the storage to preserve nothing.
+    transient_database_prefixes: tuple[str, ...] = ("scratch_", "verify_restore_")
 
     def __post_init__(self) -> None:
         if not self.prefix or self.prefix != self.prefix.strip("/"):

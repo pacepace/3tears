@@ -99,6 +99,63 @@ async def cluster(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[tup
         yield admin_dsn, ClusterBackup(_config("itest"), store, asyncpg.connect), sick
 
 
+class TestTransientDatabasesAreNotData:
+    """a throwaway restore target has no business in a backup set.
+
+    The set already contains the database a scratch was restored FROM, so
+    dumping the scratch stores a second partial copy and pays twice to preserve
+    nothing. And they are the databases most likely to be broken: half created,
+    half dropped, or wedged mid-reap.
+
+    In production a leftover `scratch_probe_hub2` -- wedged, its `pg_namespace`
+    unreadable -- was enumerated by every backup and took the whole set down
+    with it. Excluding it is why the WEDGED case below matters more than the
+    healthy one.
+    """
+
+    async def test_a_scratch_database_is_not_dumped(self, cluster: tuple[str, ClusterBackup, str]) -> None:
+        admin_dsn, backup, _sick = cluster
+        conn = await asyncpg.connect(admin_dsn)
+        try:
+            await conn.execute('CREATE DATABASE "scratch_probe_deadbeef"')
+        finally:
+            await conn.close()
+
+        manifest = await backup.create_backup(admin_dsn)
+
+        dumped = {dump.database for dump in manifest.databases}
+        # `scratch_probe_`, deliberately: the prefix list used to name only the two
+        # forms this toolchain generates, so a hand-made probe database matched
+        # nothing and was dumped -- which is exactly how a wedged one took a live
+        # cluster's backups down.
+        assert "scratch_probe_deadbeef" not in dumped
+        # and NOT by being recorded as a failure -- it was never attempted.
+        assert "scratch_probe_deadbeef" not in {f.database for f in manifest.failed_databases}
+
+    async def test_a_wedged_scratch_database_cannot_break_the_backup(
+        self, cluster: tuple[str, ClusterBackup, str]
+    ) -> None:
+        """the production failure, reproduced: an unreachable scratch left lying around.
+
+        Before the exclusion this database was enumerated, failed to dump, and --
+        with no isolation -- aborted the entire cluster's backup. It must now be
+        invisible to the backup entirely.
+        """
+        admin_dsn, backup, _sick = cluster
+        conn = await asyncpg.connect(admin_dsn)
+        try:
+            await conn.execute('CREATE DATABASE "scratch_probe_wedged"')
+            await conn.execute('ALTER DATABASE "scratch_probe_wedged" WITH ALLOW_CONNECTIONS false')
+        finally:
+            await conn.close()
+
+        manifest = await backup.create_backup(admin_dsn)
+
+        assert "scratch_probe_wedged" not in {d.database for d in manifest.databases}
+        assert "scratch_probe_wedged" not in {f.database for f in manifest.failed_databases}
+        assert manifest.databases, "the healthy databases were lost to a scratch that should not have been touched"
+
+
 class TestOneSickDatabaseDoesNotCostTheClusterItsBackup:
     async def test_the_healthy_databases_still_dump(self, cluster: tuple[str, ClusterBackup, str]) -> None:
         admin_dsn, backup, sick = cluster
