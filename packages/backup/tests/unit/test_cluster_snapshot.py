@@ -1,0 +1,206 @@
+"""Unit tests: the inventory and the dump must describe ONE instant.
+
+THE BUG THIS EXISTS FOR shipped, and a live cluster found it rather than a test. The row counts
+were taken on their own connection and the dump started afterwards under a snapshot of its own,
+so the manifest described the database at count time and the bytes described it at dump time.
+A dry run compares a restored copy against the manifest that names it, so every row written in
+between read as a coverage mismatch -- two audit tables, each off by one, on a cluster doing
+almost nothing. Under load that verdict is noise, and noise is how a genuinely short restore
+gets waved through.
+
+These tests pin the wiring without a database: that the snapshot is exported inside the
+transaction, that the counts are taken while it is held, that the SAME id reaches the dump tool,
+and that a cluster which cannot export one is still backed up -- with the manifest saying so.
+
+The dump subprocess is the only thing faked. Both modules that launch one are patched, because
+`cluster` imports `stream_stdout` directly for the globals dump while `drivers` uses its own.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
+
+import pytest
+from pydantic import SecretStr
+
+from threetears.backup import cluster as cluster_module
+from threetears.backup import drivers as drivers_module
+from threetears.backup.cluster import ClusterBackup
+from threetears.backup.config import BackupConfig
+from threetears.backup.manifest import BackupManifest
+from threetears.object_store.filesystem import FilesystemObjectStore
+
+_PG_VERSION = "PostgreSQL 16.3 on aarch64-apple-darwin, compiled by clang"
+_SNAPSHOT_ID = "00000003-0000001B-1"
+_DATABASE = "app"
+_ROWS = 3
+
+
+class _SnapshotUnavailable(RuntimeError):
+    """what a server without snapshot export raises, from this package's point of view.
+
+    The real one is the injected driver's error class, which this package cannot name: the
+    connection arrives as a callable so asyncpg stays out of the hard dependencies.
+    """
+
+
+# parity-with: threetears.backup.cluster._Connection
+class _RecordingConnection:
+    """answers the cluster's queries and records the order they arrived in."""
+
+    def __init__(self, *, export_fails: bool = False) -> None:
+        self.export_fails = export_fails
+        #: every statement this connection saw, in order -- the assertion surface for
+        #: "counted INSIDE the transaction" is ordering, not any single call.
+        self.log: list[str] = []
+
+    async def execute(self, query: str) -> object:
+        self.log.append(query)
+        return None
+
+    async def fetch(self, query: str) -> list[Any]:
+        self.log.append(query)
+        if "pg_database" in query:
+            return [{"datname": _DATABASE}]
+        return [{"table_schema": "public", "table_name": "widgets"}]
+
+    async def fetchval(self, query: str) -> object:
+        self.log.append(query)
+        if query == "SELECT version()":
+            return _PG_VERSION
+        if query == "SELECT pg_export_snapshot()":
+            if self.export_fails:
+                raise _SnapshotUnavailable("pg_export_snapshot is not enabled on this server")
+            return _SNAPSHOT_ID
+        return _ROWS
+
+    async def close(self) -> None:
+        self.log.append("CLOSE")
+
+
+@pytest.fixture
+def dump_argv() -> Iterator[list[list[str]]]:
+    """capture every dump argv instead of launching a dump tool.
+
+    :yield: the argv of each subprocess the backup would have run
+    :rtype: Iterator[list[list[str]]]
+    """
+    captured: list[list[str]] = []
+
+    def fake_stream_stdout(argv: list[str], **_: object) -> AsyncIterator[bytes]:
+        captured.append(argv)
+
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"-- dump\n"
+
+        return chunks()
+
+    original_drivers = drivers_module.stream_stdout
+    original_cluster = cluster_module.stream_stdout
+    drivers_module.stream_stdout = fake_stream_stdout  # type: ignore[assignment]
+    cluster_module.stream_stdout = fake_stream_stdout  # type: ignore[assignment]
+    try:
+        yield captured
+    finally:
+        drivers_module.stream_stdout = original_drivers  # type: ignore[assignment]
+        cluster_module.stream_stdout = original_cluster  # type: ignore[assignment]
+
+
+async def _run_backup(tmp_path: Any, connection: _RecordingConnection) -> BackupManifest:
+    """take a backup against the recording connection.
+
+    :param tmp_path: pytest temp directory for the object store
+    :param connection: the connection every step will be answered by
+    :ptype connection: _RecordingConnection
+    :return: the written manifest
+    :rtype: BackupManifest
+    """
+
+    async def connect(_dsn: str) -> _RecordingConnection:
+        return connection
+
+    config = BackupConfig(
+        passphrase=SecretStr("test-passphrase-not-a-real-one"), prefix="utest", encryption_work_factor=2**4
+    )
+    backup = ClusterBackup(config, FilesystemObjectStore(str(tmp_path)), connect)
+    return await backup.create_backup("postgresql://u@h/postgres")
+
+
+class TestTheDumpJoinsTheInventorySnapshot:
+    async def test_the_exported_snapshot_reaches_the_dump_tool(self, tmp_path: Any, dump_argv: list[list[str]]) -> None:
+        connection = _RecordingConnection()
+        await _run_backup(tmp_path, connection)
+
+        database_dump = next(argv for argv in dump_argv if "--dbname" in argv and "--globals-only" not in argv)
+        assert f"--snapshot={_SNAPSHOT_ID}" in database_dump
+
+    async def test_the_counts_are_taken_inside_the_transaction(self, tmp_path: Any, dump_argv: list[list[str]]) -> None:
+        """ordering IS the contract -- a count after the rollback describes a different instant."""
+        connection = _RecordingConnection()
+        await _run_backup(tmp_path, connection)
+
+        begin = connection.log.index("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        export = connection.log.index("SELECT pg_export_snapshot()")
+        count = connection.log.index('SELECT count(*) FROM "public"."widgets"')
+        rollback = len(connection.log) - 1 - connection.log[::-1].index("ROLLBACK")
+        assert begin < export < count < rollback
+
+    async def test_the_snapshot_outlives_the_dump(self, tmp_path: Any, dump_argv: list[list[str]]) -> None:
+        """an exported snapshot dies with its transaction, so the rollback must come last.
+
+        Rolling back before the dump has finished streaming leaves the dump tool holding an id
+        the server has already forgotten, and it fails outright.
+        """
+        connection = _RecordingConnection()
+        await _run_backup(tmp_path, connection)
+
+        assert connection.log[-2:] == ["ROLLBACK", "CLOSE"]
+
+    async def test_the_manifest_records_that_the_inventory_is_synchronized(
+        self, tmp_path: Any, dump_argv: list[list[str]]
+    ) -> None:
+        manifest = await _run_backup(tmp_path, _RecordingConnection())
+
+        assert [d.inventory_snapshot_consistent for d in manifest.databases] == [True]
+
+
+class TestAClusterWithoutSnapshotExportIsStillBackedUp:
+    """losing a database's backup to protect a row count would be the wrong trade.
+
+    The dump is the artifact; the count only describes it. So the backup proceeds and the
+    manifest carries the fact that its inventory was taken beside the dump rather than within
+    it -- the data carrying what it is missing, so no reader has to infer it.
+    """
+
+    async def test_the_backup_still_happens(self, tmp_path: Any, dump_argv: list[list[str]]) -> None:
+        manifest = await _run_backup(tmp_path, _RecordingConnection(export_fails=True))
+
+        assert [d.database for d in manifest.databases] == [_DATABASE]
+        assert manifest.is_complete
+
+    async def test_the_manifest_says_the_inventory_is_unsynchronized(
+        self, tmp_path: Any, dump_argv: list[list[str]]
+    ) -> None:
+        manifest = await _run_backup(tmp_path, _RecordingConnection(export_fails=True))
+
+        assert [d.inventory_snapshot_consistent for d in manifest.databases] == [False]
+
+    async def test_no_snapshot_flag_is_passed_to_the_dump_tool(self, tmp_path: Any, dump_argv: list[list[str]]) -> None:
+        """`--snapshot=` with nothing after it is a snapshot id of the empty string, not a default."""
+        await _run_backup(tmp_path, _RecordingConnection(export_fails=True))
+
+        database_dump = next(argv for argv in dump_argv if "--dbname" in argv and "--globals-only" not in argv)
+        assert not any(arg.startswith("--snapshot") for arg in database_dump)
+
+    async def test_the_failed_transaction_is_rolled_back_before_counting(
+        self, tmp_path: Any, dump_argv: list[list[str]]
+    ) -> None:
+        """a failed statement leaves the transaction aborted, and every count in it would fail too."""
+        connection = _RecordingConnection(export_fails=True)
+        await _run_backup(tmp_path, connection)
+
+        export = connection.log.index("SELECT pg_export_snapshot()")
+        rollback = connection.log.index("ROLLBACK")
+        count = connection.log.index('SELECT count(*) FROM "public"."widgets"')
+        assert export < rollback < count
