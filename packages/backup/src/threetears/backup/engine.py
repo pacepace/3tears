@@ -102,7 +102,13 @@ class BackupEngine:
         stream = self._store.open_read(key)
         if not self._driver.compressed:
             stream = gunzip_stream(stream)
-        await self._driver.restore(target_dsn, stream, env=self._env, timeout=self._config.dump_timeout_seconds)
+        await self._driver.restore(
+            target_dsn,
+            stream,
+            env=self._env,
+            timeout=self._config.dump_timeout_seconds,
+            copy_rows_per_transaction=self._config.restore_copy_rows_per_transaction,
+        )
         log.info("backup restored", extra={"extra_data": {"key": key, "driver": self._driver.name}})
 
     async def list_backups(self) -> list[BackupRecord]:
