@@ -29,11 +29,20 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+from collections import deque
+from contextlib import suppress
 from collections.abc import AsyncIterator, Mapping
 
 from threetears.observe import get_logger
 
-__all__ = ["BackupToolError", "feed_stdin", "stream_stdout"]
+__all__ = [
+    "READ_AHEAD_BYTES",
+    "BackupToolError",
+    "ReadAhead",
+    "feed_stdin",
+    "fill_read_ahead",
+    "stream_stdout",
+]
 
 log = get_logger(__name__)
 
@@ -186,6 +195,82 @@ async def feed_stdin(
         )
 
 
+#: How many bytes of decrypted, decompressed dump may sit between the object store and the
+#: restore tool.
+#:
+#: Without a buffer the stages take turns: the store idles while gunzip runs, gunzip idles while
+#: the database commits, and `drain()` after every chunk pins the whole chain to whichever stage
+#: is slowest at that instant. Measured on a 3 GB dump, the same restore ran at 3.7 MB/s fed from
+#: a local file and about 200 KB/s fed through this pipeline -- the tool was starved, not slow.
+#:
+#: Bounded in BYTES rather than chunks because chunk sizes vary with compressibility, and the
+#: constraint here is memory: these pods have no room to spool a dump to disk, so read-ahead has
+#: to be a window, not a copy.
+READ_AHEAD_BYTES = 64 * 1024 * 1024
+
+
+class ReadAhead:
+    """A byte-bounded hand-off between a producer coroutine and a consumer.
+
+    `asyncio.Queue` bounds by item COUNT, which is the wrong unit when one item can be a
+    megabyte and the next a kilobyte. This bounds by summed length instead, so the ceiling means
+    what an operator reading it thinks it means.
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        self._max_bytes = max_bytes
+        self._chunks: deque[bytes] = deque()
+        self._size = 0
+        self._closed = False
+        self._failure: BaseException | None = None
+        self._room = asyncio.Condition()
+
+    async def put(self, chunk: bytes) -> None:
+        """Add a chunk, waiting while the buffer is full."""
+        async with self._room:
+            await self._room.wait_for(lambda: self._size < self._max_bytes or self._closed)
+            if self._closed:
+                return
+            self._chunks.append(chunk)
+            self._size += len(chunk)
+            self._room.notify_all()
+
+    async def get(self) -> bytes | None:
+        """Take the next chunk, or None once the producer has finished.
+
+        :raises BaseException: whatever the producer failed with, so a read error surfaces to
+            the caller rather than looking like a clean end of stream.
+        """
+        async with self._room:
+            await self._room.wait_for(lambda: self._chunks or self._closed)
+            if self._chunks:
+                chunk = self._chunks.popleft()
+                self._size -= len(chunk)
+                self._room.notify_all()
+                return chunk
+            if self._failure is not None:
+                raise self._failure
+            return None
+
+    async def close(self, failure: BaseException | None = None) -> None:
+        """Signal that no more chunks are coming, optionally carrying the producer's failure."""
+        async with self._room:
+            self._closed = True
+            self._failure = failure
+            self._room.notify_all()
+
+
+async def fill_read_ahead(buffer: ReadAhead, source: AsyncIterator[bytes]) -> None:
+    """Drain ``source`` into ``buffer`` until it ends or raises."""
+    try:
+        async for chunk in source:
+            await buffer.put(chunk)
+    except BaseException as exc:  # noqa: BLE001 -- re-raised to the consumer through the buffer
+        await buffer.close(exc)
+    else:
+        await buffer.close()
+
+
 async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[bytes]) -> bool:
     """Write ``source`` into the child's stdin.
 
@@ -193,8 +278,13 @@ async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[by
     """
     assert proc.stdin is not None
     fully_fed = True
+    buffer = ReadAhead(READ_AHEAD_BYTES)
+    filler = asyncio.ensure_future(fill_read_ahead(buffer, source))
     try:
-        async for chunk in source:
+        while True:
+            chunk = await buffer.get()
+            if chunk is None:
+                break
             proc.stdin.write(chunk)
             await proc.stdin.drain()
         # The child cannot have finished reading yet: EOF is delivered by the close() below, and a
@@ -219,6 +309,19 @@ async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[by
             extra={"extra_data": {"pid": proc.pid, "error": str(exc), "error_type": type(exc).__name__}},
         )
         fully_fed = False
+    finally:
+        # The filler holds the object store's read open. A consumer that stopped early -- a dead
+        # child, a cancellation, a timeout -- must not leave it pulling the rest of a multi-gigabyte
+        # object into a buffer nobody will drain. Closing first unblocks a producer parked on a
+        # full buffer, so the cancel lands rather than deadlocking against it.
+        await buffer.close()
+        # A real producer failure already reached the consumer through `buffer.close(failure)`
+        # and was raised out of `get()`. This await only reaps the task.
+        filler.cancel()
+        # NOSILENT: awaiting a task we just cancelled raises CancelledError by definition, and
+        # that is the acknowledgement rather than an error.
+        with suppress(asyncio.CancelledError):
+            await filler
     # wait for the child to finish INSIDE the timed region, so ``timeout`` bounds the whole
     # restore (a child that reads its stdin fast but then processes for a long time is still capped).
     await proc.wait()
