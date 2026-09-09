@@ -10,6 +10,7 @@ sides off at the backup moment so post-backup growth is expected rather than fai
 
 from threetears.backup.cluster import (
     ClusterBackup,
+    ClusterBackupError,
     ManifestNotFoundError,
     SetDeleteNotAllowedError,
     replace_database,
@@ -30,7 +31,7 @@ from threetears.backup.drivers import (
     driver_for_version,
 )
 from threetears.backup.engine import BackupEngine, DeleteNotAllowedError
-from threetears.backup.manifest import BackupManifest, DatabaseDump, TableCount, manifest_key
+from threetears.backup.manifest import BackupManifest, DatabaseDump, DatabaseFailure, TableCount, manifest_key
 from threetears.backup.process import BackupToolError
 from threetears.backup.retention import (
     BackupRecord,
@@ -59,8 +60,10 @@ __all__ = [
     "BackupRecord",
     "BackupToolError",
     "ClusterBackup",
+    "ClusterBackupError",
     "ComparisonReport",
     "DatabaseDump",
+    "DatabaseFailure",
     "DbDumpDriver",
     "DeleteNotAllowedError",
     "DriftComparator",

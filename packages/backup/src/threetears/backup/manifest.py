@@ -62,6 +62,22 @@ class DatabaseDump:
 
 
 @dataclass(frozen=True, slots=True)
+class DatabaseFailure:
+    """One database the set could NOT dump, and why.
+
+    Recorded rather than skipped. A set that quietly omitted a database would
+    present as a complete backup of a cluster it does not cover, and the first
+    time anyone learned otherwise would be a restore that came up missing --
+    which is the one moment there is no way back.
+    """
+
+    database: str
+    #: the dump tool's own words, kept verbatim: a catalog error names the object
+    #: that is broken, and paraphrasing it loses the only lead an operator has.
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
 class BackupManifest:
     """The identity and inventory of one backup set.
 
@@ -79,6 +95,19 @@ class BackupManifest:
     driver: str
     databases: tuple[DatabaseDump, ...]
     globals_key: str | None = None
+    #: databases this set tried and failed to dump. Empty is the normal case and
+    #: the only one that makes the set complete.
+    failed_databases: tuple[DatabaseFailure, ...] = field(default_factory=tuple)
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether every database in the cluster made it into this set.
+
+        An INCOMPLETE set is still worth keeping -- five databases restored beats
+        none -- but it must never be mistaken for a full one, so every reader
+        that reports on a set is expected to ask.
+        """
+        return not self.failed_databases
 
     @property
     def total_size_bytes(self) -> int:
@@ -93,11 +122,16 @@ class BackupManifest:
     def to_json(self) -> bytes:
         """Serialize for storage (stable field order, UTF-8)."""
         payload = {
-            "version": 1,
+            # 2 adds `failed_databases`. Deliberately a VERSION bump rather than
+            # an optional field: a reader that did not understand it would report
+            # a partial set as a complete backup, and this file's own from_json
+            # already holds that refusing beats silently misreading.
+            "version": 2,
             "backup_id": str(self.backup_id),
             "created_at": self.created_at.isoformat(),
             "driver": self.driver,
             "globals_key": self.globals_key,
+            "failed_databases": [{"database": f.database, "error": f.error} for f in self.failed_databases],
             "databases": [
                 {
                     "database": dump.database,
@@ -120,7 +154,7 @@ class BackupManifest:
         """
         payload = json.loads(raw.decode("utf-8"))
         version = payload.get("version")
-        if version != 1:
+        if version not in (1, 2):
             raise ValueError(f"unknown manifest version {version!r}")
         created = datetime.fromisoformat(payload["created_at"])
         if created.tzinfo is None:
@@ -130,6 +164,12 @@ class BackupManifest:
             created_at=created,
             driver=payload["driver"],
             globals_key=payload.get("globals_key"),
+            # A version-1 manifest predates partial sets: it was written by a
+            # writer that aborted the whole backup on any failure, so a set that
+            # exists at all covered every database. Absent means none, truthfully.
+            failed_databases=tuple(
+                DatabaseFailure(database=f["database"], error=f["error"]) for f in payload.get("failed_databases", ())
+            ),
             databases=tuple(
                 DatabaseDump(
                     database=dump["database"],

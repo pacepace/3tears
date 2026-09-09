@@ -34,7 +34,7 @@ from threetears.observe import get_logger
 from threetears.backup.config import BackupConfig
 from threetears.backup.drivers import DbDumpDriver, driver_by_name, driver_for_version
 from threetears.backup.gzip import gunzip_stream, gzip_stream
-from threetears.backup.manifest import BackupManifest, DatabaseDump, TableCount, manifest_key
+from threetears.backup.manifest import BackupManifest, DatabaseDump, DatabaseFailure, TableCount, manifest_key
 from threetears.backup.process import feed_stdin, stream_stdout
 from threetears.backup.retention import BackupRecord, GfsRetention, RetentionDecision
 
@@ -48,12 +48,11 @@ _ENCRYPTED_CONTENT_TYPE = "application/octet-stream"
 #: dumping ``template0`` outright fails (it refuses connections by design).
 _EXCLUDED_DATABASES = frozenset({"template0", "template1"})
 
-#: transient databases this toolchain itself creates (selective-restore scratch copies, the
-#: verifier's temp databases). backing them up would make a backup contain the scratch of the
-#: previous restore -- unbounded self-reference -- and one caught MID-DROP hangs the
-#: enumeration connect outright (measured against yugabyte, whose async tablet reaping keeps
-#: a dropped database listed for a while).
-_EXCLUDED_PREFIXES = ("scratch_restore_", "verify_restore_")
+# Which databases are transient now lives on BackupConfig
+# (`transient_database_prefixes`), so a deployment can widen it without a
+# release. It was a module constant naming only the two prefixes THIS toolchain
+# generates, which is why a hand-made `scratch_probe_hub2` sailed past it and
+# broke every backup on a live cluster for weeks.
 
 _DATABASES_SQL = "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname"
 _TABLES_SQL = """
@@ -67,6 +66,16 @@ _TABLES_SQL = """
 
 class ManifestNotFoundError(LookupError):
     """No stored manifest carries the requested backup id."""
+
+
+class ClusterBackupError(RuntimeError):
+    """the set could not be taken at all.
+
+    Distinct from an INCOMPLETE set, which is a real backup carrying a record of
+    what it is missing. This is raised only when no database dumped, where a
+    manifest would be an empty set wearing a backup's name -- and retention
+    would go on to count it as one.
+    """
 
 
 class SetDeleteNotAllowedError(RuntimeError):
@@ -165,17 +174,44 @@ class ClusterBackup:
             content_type=_ENCRYPTED_CONTENT_TYPE,
         )
 
+        # ONE SICK DATABASE MUST NOT COST THE CLUSTER ITS BACKUP. This loop used
+        # to have no handler at all, so a single database the dump tool could not
+        # read aborted the whole set and left the cluster with NOTHING -- not
+        # five dumps and a gap, nothing. Observed: one database whose
+        # `pg_namespace` had lost its DocDB tablet took down every scheduled
+        # backup, and the cluster went unbacked-up until somebody read the error.
+        #
+        # A failure is RECORDED, never skipped. A set that quietly omitted a
+        # database would present as a complete backup of a cluster it does not
+        # cover, and the first anyone would hear of it is a restore coming up
+        # short.
         dumps: list[DatabaseDump] = []
+        failures: list[DatabaseFailure] = []
         for database in databases:
-            db_dsn = replace_database(admin_dsn, database)
-            tables = await self._inventory(db_dsn)
-            suffix = "dump" if driver.compressed else "dump.gz"
-            key = f"{set_root}/{database}.{driver.name}.{suffix}.enc"
-            raw = driver.dump(db_dsn, env=self._env, timeout=self._config.dump_timeout_seconds)
-            hashing = _HashingStream(raw)
-            stream: AsyncIterator[bytes] = hashing if driver.compressed else gzip_stream(hashing)
-            await self._store.put(key, stream, content_type=_ENCRYPTED_CONTENT_TYPE)
-            size = await self._size_of(key)
+            try:
+                db_dsn = replace_database(admin_dsn, database)
+                tables = await self._inventory(db_dsn)
+                suffix = "dump" if driver.compressed else "dump.gz"
+                key = f"{set_root}/{database}.{driver.name}.{suffix}.enc"
+                raw = driver.dump(db_dsn, env=self._env, timeout=self._config.dump_timeout_seconds)
+                hashing = _HashingStream(raw)
+                stream: AsyncIterator[bytes] = hashing if driver.compressed else gzip_stream(hashing)
+                await self._store.put(key, stream, content_type=_ENCRYPTED_CONTENT_TYPE)
+                size = await self._size_of(key)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
+                # Deliberately broad, and deliberately NOT BaseException: the dump
+                # tool fails in as many ways as the databases it reads (a catalog
+                # inconsistency, a permission, a timeout, the store refusing a
+                # put), and every one of them should cost that database and no
+                # other. Cancellation is different -- a drained pod must abandon
+                # the whole set, not record every remaining database as broken --
+                # and CancelledError is a BaseException, so it passes through.
+                log.exception(
+                    "cluster backup: database FAILED to dump; the set will be incomplete",
+                    extra={"extra_data": {"database": database}},
+                )
+                failures.append(DatabaseFailure(database=database, error=f"{type(exc).__name__}: {exc}"))
+                continue
             dumps.append(
                 DatabaseDump(
                     database=database,
@@ -190,24 +226,39 @@ class ClusterBackup:
                 extra={"extra_data": {"database": database, "key": key, "tables": len(tables)}},
             )
 
+        if not dumps:
+            # Nothing was backed up. A manifest here would be an empty set
+            # wearing a backup's name, and retention would count it as one.
+            raise ClusterBackupError(
+                "cluster backup produced no database dumps; every database failed: "
+                + "; ".join(f"{f.database} ({f.error})" for f in failures)
+            )
+
         manifest = BackupManifest(
             backup_id=backup_id,
             created_at=moment,
             driver=driver.name,
             databases=tuple(dumps),
             globals_key=globals_key,
+            failed_databases=tuple(failures),
         )
         await self._store.put(
             manifest_key(self._config.prefix, backup_id),
             _one_chunk(manifest.to_json()),
             content_type="application/json",
         )
-        log.info(
-            "cluster backup complete",
+        # INCOMPLETE is not "complete with a note". It is its own outcome, and it
+        # is logged at a level somebody pages on, because a cluster whose backups
+        # silently stopped covering a database is one restore away from finding
+        # out the hard way.
+        log_at = log.info if manifest.is_complete else log.error
+        log_at(
+            "cluster backup complete" if manifest.is_complete else "cluster backup INCOMPLETE: some databases failed",
             extra={
                 "extra_data": {
                     "backup_id": str(backup_id),
                     "databases": len(dumps),
+                    "failed_databases": [f.database for f in failures],
                     "tables": manifest.table_total,
                 }
             },
@@ -340,11 +391,19 @@ class ClusterBackup:
             rows = await conn.fetch(_DATABASES_SQL)
         finally:
             await conn.close()
-        return [
-            row["datname"]
-            for row in rows
-            if row["datname"] not in _EXCLUDED_DATABASES and not row["datname"].startswith(_EXCLUDED_PREFIXES)
-        ]
+        named = [row["datname"] for row in rows if row["datname"] not in _EXCLUDED_DATABASES]
+        transient = [name for name in named if name.startswith(self._config.transient_database_prefixes)]
+        if transient:
+            # Logged rather than passed over in silence: a scratch that is still
+            # here is debris from a drill or a restore that did not finish
+            # tidying, and the only reason anyone ever found the one that had
+            # wedged this cluster's backups was reading an error it caused.
+            log.info(
+                "cluster backup: skipping transient databases",
+                extra={"extra_data": {"skipped": transient}},
+            )
+        skip = set(transient)
+        return [name for name in named if name not in skip]
 
     async def _inventory(self, db_dsn: str) -> tuple[TableCount, ...]:
         """Exact per-table row counts at dump time — estimates would poison later verification."""
