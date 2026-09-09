@@ -41,7 +41,7 @@ def manifest_key(prefix: str, backup_id: UUID) -> str:
 
 @dataclass(frozen=True, slots=True)
 class TableCount:
-    """One table's row count in the dump's own snapshot — the unit of the coverage inventory."""
+    """One table's row count in the dump's own snapshot: the unit of the coverage inventory."""
 
     schema: str
     table: str
@@ -62,7 +62,7 @@ class DatabaseDump:
     #: True when ``tables`` was counted inside the very snapshot the dump was taken under, so
     #: the inventory describes THESE bytes exactly and any difference on restore is a defect.
     #: False when the snapshot could not be exported and the counts were taken beside the dump
-    #: rather than within it — then a row written during the dump is in the bytes and not in the
+    #: rather than within it. Then a row written during the dump is in the bytes and not in the
     #: count, and only a SHORTFALL on restore means anything. Defaults False so a manifest
     #: written before this field existed is read the conservative way rather than the flattering
     #: one.

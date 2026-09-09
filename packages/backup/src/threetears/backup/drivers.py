@@ -124,9 +124,19 @@ class YugabyteDriver(DbDumpDriver):
     compressed: ClassVar[bool] = False  # ysql_dump emits plain SQL — gzip it
 
     def dump_argv(self, dsn: str, *, snapshot: str | None = None) -> list[str]:
-        # ysql_dump is Yugabyte's fork of pg_dump and carries --snapshot with it.
         argv = ["ysql_dump", "--dbname", dsn, "--no-owner", "--no-privileges"]
         if snapshot is not None:
+            # Yugabyte's fork defaults serializable-deferrable ON, where upstream pg_dump makes
+            # it opt-in, and Yugabyte then REFUSES `SET TRANSACTION SNAPSHOT` in a serializable
+            # transaction: "cannot export/import snapshot in SERIALIZABLE Isolation Level".
+            # Without this flag every dump on Yugabyte fails outright while the same code passes
+            # against Postgres, so no Postgres-backed test can see it.
+            #
+            # The trade is deliberate. Serializable-deferrable waits for a view free of
+            # serialization anomalies; importing the inventory's snapshot instead gives the dump
+            # the exact instant its row counts describe. For a backup whose verification compares
+            # against that inventory, the same instant is the property that matters.
+            argv.append("--no-serializable-deferrable")
             argv.append(f"--snapshot={snapshot}")
         return argv
 
