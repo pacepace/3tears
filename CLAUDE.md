@@ -179,9 +179,22 @@ Extra args pass through: `./scripts/test.sh core -v -x`
 
 **Why the sidecar is separate.** nodriver is AGPL-3.0 and never enters the workspace venv, so `test.sh` carries `--ignore` for the sidecar and cannot run these. Separate but not optional: `check-all.sh` runs it. Until it existed, a ruff autofix wrote a syntax error into `hitl.py` that passed lint, mypy, and the entire workspace suite.
 
-**Why integration tests are separate.** `test.sh` excludes them with `-m "not integration"`. `check-all.sh` does not run them either: they spin real NATS and Postgres containers and need Docker, so folding them into the default gate would break it wherever Docker is absent.
+**Why integration tests are separate.** `test.sh` excludes them with `-m "not integration"`. `check-all.sh` does not run them either: they spin real NATS and Postgres containers and need Docker, so folding them into the default gate would break it wherever Docker is absent. **CI cannot run them at all — GitHub Actions has no Docker — so nothing but you, locally, ever executes them.**
 
 **Run them before any PR.** Cross-pod behaviour lives entirely there, and a green `check-all.sh` says nothing about it. `project-state.yaml` lists this as the third declared test command, so recorded evidence that omits it covers two suites out of three.
+
+**A skip is not a pass.** The suite exits 0 with tests skipped, so a skipped test reads exactly like a passing one in the summary line. Run it as `./scripts/test-integration.sh -rs` and account for every skip. This is not hypothetical: `test_a_real_display_is_driven_through_the_pipe` was unpassable on every machine for three weeks after the 2026-08-18 change that defaulted the sidecar's `BIND_HOST` to loopback (correct for the shipping Kubernetes shape, wrong for a testcontainer with its own network namespace). Nobody saw it, because the test skips when the sidecar image is absent and CI never runs the suite at all — the skip that hid the breakage was also the reason nobody noticed. It surfaced only when a release stopped to ask why 35 tests were skipping.
+
+**Build the sidecar image first**, or its integration tests skip:
+
+```bash
+docker buildx bake --file docker-bake.hcl nodriver-sidecar \
+  --set nodriver-sidecar.platform=linux/amd64 --load
+```
+
+The bake target is multi-platform and the local `docker` driver refuses that ("Multi-platform build is not supported for the docker driver"), hence `--set ... platform` and `--load`. A bare `docker buildx bake nodriver-sidecar` exits non-zero having built nothing — and piping it through `tee` masks that exit code, which is how it looked like it had worked.
+
+**Legitimate skips on a dev box** (they need credentials or tools this repo does not ship): the Redshift live tests (`OTS_REDSHIFT_PASSWORD`), the backup suites (`pg_dump`/`pg_restore`/`psql` on PATH), and one deliberate manual microbenchmark. Anything else is a test you have turned off by accident. When reporting results, state the pass count AND the remaining skips with their reasons — "integration green" on its own is not a report.
 
 ## Conventions
 
