@@ -60,9 +60,14 @@ _DATABASES_SQL = "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER 
 
 #: The inventory and the dump must see ONE instant. This transaction holds it: repeatable read
 #: fixes the session's view, `pg_export_snapshot` publishes it, and the dump tool joins it with
-#: `--snapshot`. The transaction stays open for the whole dump because an exported snapshot dies
-#: with the session that exported it.
+#: `--snapshot`. It is held until the dump has finished streaming, which is a CHOICE rather than
+#: a requirement -- see `_inventory_snapshot` for what it buys and what it costs.
 _BEGIN_SNAPSHOT_SQL = "BEGIN ISOLATION LEVEL REPEATABLE READ"
+#: The session is deliberately idle for the whole dump, which is exactly the shape an
+#: idle-transaction reaper kills. SET LOCAL, so it expires with the transaction and no other work
+#: on this connection inherits it. Both timeouts are 0 on our clusters today; this makes the hold
+#: safe on a cluster or pooler where they are not, without anyone having to remember why.
+_HOLD_OPEN_SQL = "SET LOCAL idle_in_transaction_session_timeout = 0"
 _EXPORT_SNAPSHOT_SQL = "SELECT pg_export_snapshot()"
 _ROLLBACK_SQL = "ROLLBACK"
 _TABLES_SQL = """
@@ -233,7 +238,10 @@ class ClusterBackup:
                 db_dsn = replace_database(admin_dsn, database)
                 suffix = "dump" if driver.compressed else "dump.gz"
                 key = f"{set_root}/{database}.{driver.name}.{suffix}.enc"
-                async with self._inventory_snapshot(db_dsn) as (tables, snapshot):
+                async with self._inventory_snapshot(db_dsn, backup_id=backup_id, database=database) as (
+                    tables,
+                    snapshot,
+                ):
                     consistent = snapshot is not None
                     log.info(
                         "cluster backup: inventory taken",
@@ -504,7 +512,9 @@ class ClusterBackup:
         return tuple(counts)
 
     @asynccontextmanager
-    async def _inventory_snapshot(self, db_dsn: str) -> AsyncIterator[tuple[tuple[TableCount, ...], str | None]]:
+    async def _inventory_snapshot(
+        self, db_dsn: str, *, backup_id: UUID, database: str
+    ) -> AsyncIterator[tuple[tuple[TableCount, ...], str | None]]:
         """Count every table inside one snapshot and hold that snapshot open for the dump.
 
         THE BUG THIS EXISTS FOR shipped and was found on a live cluster. The counts used to be
@@ -540,6 +550,10 @@ class ClusterBackup:
 
         :param db_dsn: dsn of the database to inventory
         :ptype db_dsn: str
+        :param backup_id: the set being taken, carried so the warning below can be correlated
+        :ptype backup_id: UUID
+        :param database: the database being inventoried, for the same reason
+        :ptype database: str
         :yield: the counts, and the exported snapshot id or None when it could not be exported
         :rtype: AsyncIterator[tuple[tuple[TableCount, ...], str | None]]
         """
@@ -551,6 +565,7 @@ class ClusterBackup:
                 # transaction control would otherwise cost this database its dump entirely,
                 # which is the trade this method exists to refuse.
                 await conn.execute(_BEGIN_SNAPSHOT_SQL)
+                await conn.execute(_HOLD_OPEN_SQL)
                 exported = await conn.fetchval(_EXPORT_SNAPSHOT_SQL)
                 if exported is None:
                     # str(None) is "None", a perfectly truthy id that would reach the dump tool
@@ -565,9 +580,17 @@ class ClusterBackup:
                 # manifest, not swallowed.
                 log.warning(
                     "cluster backup: snapshot export unavailable; inventory will not be synchronized with the dump",
-                    extra={"extra_data": {"dsn_database": urlparse(db_dsn).path.lstrip("/"), "error": str(exc)}},
+                    extra={
+                        "extra_data": {
+                            "backup_id": str(backup_id),
+                            "database": database,
+                            "error": str(exc),
+                        }
+                    },
                 )
                 snapshot = None
+                # `snapshot` is still None here, which is what stops the post-yield teardown
+                # issuing a second ROLLBACK outside any transaction.
                 await self._end_transaction_quietly(conn)
             counts = await self._count_tables(conn)
             try:
@@ -577,7 +600,8 @@ class ClusterBackup:
                 # been hashed and stored, so a connection the server closed underneath us -- an
                 # idle-in-transaction timeout, a pooler cutoff -- must not turn a backup that
                 # SUCCEEDED into a recorded failure whose key is orphaned in the store.
-                await self._end_transaction_quietly(conn)
+                if snapshot is not None:
+                    await self._end_transaction_quietly(conn)
         finally:
             await self._close_quietly(conn)
 

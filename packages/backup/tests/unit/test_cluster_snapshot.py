@@ -56,7 +56,9 @@ class _RecordingConnection:
         begin_fails: bool = False,
         rollback_fails: bool = False,
         export_returns_none: bool = False,
+        close_fails: bool = False,
     ) -> None:
+        self.close_fails = close_fails
         self.export_fails = export_fails
         self.export_returns_none = export_returns_none
         self.begin_fails = begin_fails
@@ -93,6 +95,12 @@ class _RecordingConnection:
 
     async def close(self) -> None:
         self.log.append("CLOSE")
+        # Only the INVENTORY connection, which is the one that held a transaction across the
+        # dump and so the one a reaper closes. This fake answers for every connection the backup
+        # opens, including the short-lived version and database-list ones -- failing those would
+        # test that a backup dies before it starts, which is both true and beside the point.
+        if self.close_fails and any(q.startswith("SELECT count(*)") for q in self.log):
+            raise _SnapshotUnavailable("connection already gone")
 
 
 @pytest.fixture
@@ -248,6 +256,45 @@ class TestCleanupNeverDestroysAFinishedDump:
         assert [d.database for d in manifest.databases] == [_DATABASE]
         assert manifest.is_complete
         assert not manifest.failed_databases
+
+    async def test_a_close_that_fails_does_not_lose_the_dump(self, tmp_path: Any, dump_argv: list[list[str]]) -> None:
+        """the other half of the same guarantee, and it was the untested one.
+
+        Ending the transaction had a test and closing the connection did not, so deleting the
+        swallow around `close` left the suite green while a dead connection could still turn a
+        stored dump into a recorded failure.
+        """
+        manifest = await _run_backup(tmp_path, _RecordingConnection(close_fails=True))
+
+        assert [d.database for d in manifest.databases] == [_DATABASE]
+        assert manifest.is_complete
+        assert not manifest.failed_databases
+
+
+class TestOnlyWhatWasOpenedIsTornDown:
+    async def test_a_degraded_path_does_not_roll_back_twice(self, tmp_path: Any, dump_argv: list[list[str]]) -> None:
+        """the export handler already ended the transaction, so the teardown must not repeat it.
+
+        A second ROLLBACK lands outside any transaction. Postgres answers with a warning rather
+        than an error, so it costs nothing but noise -- on exactly the degraded path where the
+        logs are being read closely.
+        """
+        connection = _RecordingConnection(export_fails=True)
+        await _run_backup(tmp_path, connection)
+
+        assert connection.log.count("ROLLBACK") == 1
+
+    async def test_the_hold_is_protected_before_the_snapshot_is_exported(
+        self, tmp_path: Any, dump_argv: list[list[str]]
+    ) -> None:
+        """the session is deliberately idle for the dump, which is what a reaper kills."""
+        connection = _RecordingConnection()
+        await _run_backup(tmp_path, connection)
+
+        begin = connection.log.index("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        hold = connection.log.index("SET LOCAL idle_in_transaction_session_timeout = 0")
+        export = connection.log.index("SELECT pg_export_snapshot()")
+        assert begin < hold < export
 
 
 class TestAMissingIdIsNotAnId:
