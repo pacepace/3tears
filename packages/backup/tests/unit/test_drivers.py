@@ -18,6 +18,8 @@ from threetears.backup.drivers import (
 )
 
 _PG_VERSION = "PostgreSQL 16.3 on aarch64-apple-darwin, compiled by clang"
+
+
 def _empty_stream() -> AsyncIterator[bytes]:
     """a dump stream the fake never reads; the environment is what these assert on.
 
