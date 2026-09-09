@@ -102,3 +102,39 @@ def test_naive_created_at_is_read_as_utc() -> None:
     raw = _manifest().to_json().replace(b"+00:00", b"")
     parsed = BackupManifest.from_json(raw)
     assert parsed.created_at.tzinfo is not None
+
+
+def test_a_synchronized_inventory_survives_the_round_trip() -> None:
+    """the flag decides how strictly a verifier may compare, so it has to reach the reader.
+
+    Without this test, dropping the key from `to_json` keeps the whole suite green while every
+    stored backup silently reads back as unsynchronized -- and every dry run quietly weakens
+    from an exact comparison to a shortfall check, which is the failure that hides a loss.
+    """
+    manifest = _manifest()
+    synchronized = replace(
+        manifest,
+        databases=tuple(replace(d, inventory_snapshot_consistent=True) for d in manifest.databases),
+    )
+
+    reread = BackupManifest.from_json(synchronized.to_json())
+
+    assert [d.inventory_snapshot_consistent for d in reread.databases] == [True] * len(manifest.databases)
+
+
+def test_a_manifest_written_before_the_flag_existed_reads_as_unsynchronized() -> None:
+    """absent must mean the cautious answer, never the flattering one.
+
+    Every backup taken before this field shipped WAS counted outside the dump's snapshot, so
+    False is not a fallback here -- it is the truth about those sets.
+    """
+    raw = _manifest().to_json()
+    assert b"inventory_snapshot_consistent" in raw
+
+    stripped = json.loads(raw.decode("utf-8"))
+    for dump in stripped["databases"]:
+        del dump["inventory_snapshot_consistent"]
+
+    reread = BackupManifest.from_json(json.dumps(stripped).encode("utf-8"))
+
+    assert not any(d.inventory_snapshot_consistent for d in reread.databases)

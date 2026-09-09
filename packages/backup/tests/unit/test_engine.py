@@ -26,15 +26,23 @@ class _FakeDriverBase(DbDumpDriver):
         self.restored: bytes | None = None
         self.restored_dsn: str | None = None
 
-    def dump_argv(self, dsn: str) -> list[str]:
+    def dump_argv(self, dsn: str, *, snapshot: str | None = None) -> list[str]:
         return ["true"]
 
     def restore_argv(self, dsn: str) -> list[str]:
         return ["true"]
 
     def dump(
-        self, dsn: str, *, env: Mapping[str, str] | None = None, timeout: float | None = None
+        self,
+        dsn: str,
+        *,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        snapshot: str | None = None,
     ) -> AsyncIterator[bytes]:
+        # Matches the production signature deliberately: a fake that keeps the OLD shape swallows
+        # the snapshot silently, so every test that goes through it proves the pre-change
+        # behaviour while reading like it covers the new one.
         return self._emit()
 
     async def _emit(self) -> AsyncIterator[bytes]:

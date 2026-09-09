@@ -49,14 +49,28 @@ class _SnapshotUnavailable(RuntimeError):
 class _RecordingConnection:
     """answers the cluster's queries and records the order they arrived in."""
 
-    def __init__(self, *, export_fails: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        export_fails: bool = False,
+        begin_fails: bool = False,
+        rollback_fails: bool = False,
+        export_returns_none: bool = False,
+    ) -> None:
         self.export_fails = export_fails
+        self.export_returns_none = export_returns_none
+        self.begin_fails = begin_fails
+        self.rollback_fails = rollback_fails
         #: every statement this connection saw, in order -- the assertion surface for
         #: "counted INSIDE the transaction" is ordering, not any single call.
         self.log: list[str] = []
 
     async def execute(self, query: str) -> object:
         self.log.append(query)
+        if query == "BEGIN ISOLATION LEVEL REPEATABLE READ" and self.begin_fails:
+            raise _SnapshotUnavailable("this pooler does not allow explicit transaction control")
+        if query == "ROLLBACK" and self.rollback_fails:
+            raise _SnapshotUnavailable("connection closed by the server")
         return None
 
     async def fetch(self, query: str) -> list[Any]:
@@ -72,6 +86,8 @@ class _RecordingConnection:
         if query == "SELECT pg_export_snapshot()":
             if self.export_fails:
                 raise _SnapshotUnavailable("pg_export_snapshot is not enabled on this server")
+            if self.export_returns_none:
+                return None
             return _SNAPSHOT_ID
         return _ROWS
 
@@ -204,3 +220,53 @@ class TestAClusterWithoutSnapshotExportIsStillBackedUp:
         rollback = connection.log.index("ROLLBACK")
         count = connection.log.index('SELECT count(*) FROM "public"."widgets"')
         assert export < rollback < count
+
+
+class TestCleanupNeverDestroysAFinishedDump:
+    """by the time the transaction is ended the dump is hashed and in the store.
+
+    A connection the server closed underneath us -- an idle-in-transaction timeout, a pooler
+    cutoff -- is a cleanup problem, not a backup problem. Letting it raise would turn a backup
+    that SUCCEEDED into a recorded failure and orphan its key in the object store, which is the
+    worst of both: the bytes are paid for and the manifest disowns them.
+    """
+
+    async def test_a_pooler_that_refuses_begin_still_gets_a_backup(
+        self, tmp_path: Any, dump_argv: list[list[str]]
+    ) -> None:
+        """the trade this refuses: losing a database's dump to protect a row count."""
+        manifest = await _run_backup(tmp_path, _RecordingConnection(begin_fails=True))
+
+        assert [d.database for d in manifest.databases] == [_DATABASE]
+        assert [d.inventory_snapshot_consistent for d in manifest.databases] == [False]
+
+    async def test_a_rollback_that_fails_does_not_lose_the_dump(
+        self, tmp_path: Any, dump_argv: list[list[str]]
+    ) -> None:
+        manifest = await _run_backup(tmp_path, _RecordingConnection(rollback_fails=True))
+
+        assert [d.database for d in manifest.databases] == [_DATABASE]
+        assert manifest.is_complete
+        assert not manifest.failed_databases
+
+
+class TestAMissingIdIsNotAnId:
+    """`str(None)` is "None" -- a perfectly truthy id that the dump tool would be handed.
+
+    The synchronized/unsynchronized decision is reconstructed from `snapshot is not None`, so
+    anything that manufactures a non-None value out of a missing one reports a set as verified
+    exactly when nothing was synchronized at all.
+    """
+
+    async def test_a_null_snapshot_id_takes_the_unsynchronized_path(
+        self, tmp_path: Any, dump_argv: list[list[str]]
+    ) -> None:
+        manifest = await _run_backup(tmp_path, _RecordingConnection(export_returns_none=True))
+
+        assert [d.inventory_snapshot_consistent for d in manifest.databases] == [False]
+
+    async def test_the_string_none_never_reaches_the_dump_tool(self, tmp_path: Any, dump_argv: list[list[str]]) -> None:
+        await _run_backup(tmp_path, _RecordingConnection(export_returns_none=True))
+
+        database_dump = next(argv for argv in dump_argv if "--dbname" in argv and "--globals-only" not in argv)
+        assert not any(arg.startswith("--snapshot") for arg in database_dump)
