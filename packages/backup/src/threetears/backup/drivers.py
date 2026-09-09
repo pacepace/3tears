@@ -39,8 +39,14 @@ class DbDumpDriver(ABC):
     compressed: ClassVar[bool]
 
     @abstractmethod
-    def dump_argv(self, dsn: str) -> list[str]:
-        """Argv that dumps ``dsn`` to stdout."""
+    def dump_argv(self, dsn: str, *, snapshot: str | None = None) -> list[str]:
+        """Argv that dumps ``dsn`` to stdout, optionally under an exported snapshot.
+
+        ``snapshot`` is the id returned by ``pg_export_snapshot()`` in another session, and it
+        pins the dump to that session's instant. Without it the dump picks its own snapshot when
+        it happens to start, which is a DIFFERENT instant from any inventory taken beside it --
+        so the counts describe one database state and the bytes describe another.
+        """
 
     @abstractmethod
     def restore_argv(self, dsn: str) -> list[str]:
@@ -62,10 +68,19 @@ class DbDumpDriver(ABC):
         raise NotImplementedError(f"{type(self).__name__} does not implement SQL replay")
 
     def dump(
-        self, dsn: str, *, env: Mapping[str, str] | None = None, timeout: float | None = None
+        self,
+        dsn: str,
+        *,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        snapshot: str | None = None,
     ) -> AsyncIterator[bytes]:
-        """Stream a dump of ``dsn`` as bytes (bounded by ``timeout`` seconds when given)."""
-        return stream_stdout(self.dump_argv(dsn), env=env, timeout=timeout)
+        """Stream a dump of ``dsn`` as bytes (bounded by ``timeout`` seconds when given).
+
+        The exported snapshot lives only as long as the transaction that made it, so a caller
+        passing one must keep that transaction open until this stream is exhausted.
+        """
+        return stream_stdout(self.dump_argv(dsn, snapshot=snapshot), env=env, timeout=timeout)
 
     async def restore(
         self,
@@ -85,8 +100,11 @@ class PostgresDriver(DbDumpDriver):
     name: ClassVar[str] = "postgres"
     compressed: ClassVar[bool] = True  # pg_dump custom format is zlib-compressed already
 
-    def dump_argv(self, dsn: str) -> list[str]:
-        return ["pg_dump", "--dbname", dsn, "--format=custom", "--no-owner", "--no-privileges"]
+    def dump_argv(self, dsn: str, *, snapshot: str | None = None) -> list[str]:
+        argv = ["pg_dump", "--dbname", dsn, "--format=custom", "--no-owner", "--no-privileges"]
+        if snapshot is not None:
+            argv.append(f"--snapshot={snapshot}")
+        return argv
 
     def restore_argv(self, dsn: str) -> list[str]:
         # a fresh (empty) target — the verifier's temp db — so no --clean is needed; fail loudly.
@@ -105,8 +123,12 @@ class YugabyteDriver(DbDumpDriver):
     name: ClassVar[str] = "yugabyte"
     compressed: ClassVar[bool] = False  # ysql_dump emits plain SQL — gzip it
 
-    def dump_argv(self, dsn: str) -> list[str]:
-        return ["ysql_dump", "--dbname", dsn, "--no-owner", "--no-privileges"]
+    def dump_argv(self, dsn: str, *, snapshot: str | None = None) -> list[str]:
+        # ysql_dump is Yugabyte's fork of pg_dump and carries --snapshot with it.
+        argv = ["ysql_dump", "--dbname", dsn, "--no-owner", "--no-privileges"]
+        if snapshot is not None:
+            argv.append(f"--snapshot={snapshot}")
+        return argv
 
     def restore_argv(self, dsn: str) -> list[str]:
         # ysqlsh reads SQL from stdin; ON_ERROR_STOP makes a bad statement a non-zero exit.

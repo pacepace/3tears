@@ -4,6 +4,51 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.35.1 -- 2026-09-08
+
+### Fixed
+
+- **backup: the manifest now describes the dump it names.** The per-table row
+  counts were taken on their own connection and the dump ran afterwards under a
+  snapshot of its own — two different instants. Every row written in between was
+  in the bytes and not in the count, so a dry run, which compares a restored copy
+  against the manifest that names it, reported a coverage mismatch for ordinary
+  write traffic. Found on a live cluster: two audit tables, each one row over, on
+  a cluster doing almost nothing. Under real load that verdict is noise, and
+  noise is how a genuinely short restore gets waved through.
+
+  The inventory is now counted inside one `REPEATABLE READ` transaction whose
+  snapshot is exported with `pg_export_snapshot()` and handed to the dump tool as
+  `--snapshot`, and that transaction is held open until the dump has finished
+  streaming — an exported snapshot dies with the session that made it.
+
+### Added
+
+- **`DbDumpDriver.dump_argv(dsn, *, snapshot=None)`** and the matching keyword on
+  `dump()`, on both drivers. `ysql_dump` is Yugabyte's fork of `pg_dump` and
+  carries `--snapshot` with it.
+
+- **`DatabaseDump.inventory_snapshot_consistent`.** True when the counts were
+  taken inside the dump's own snapshot, so any difference on restore is a defect
+  and a verifier may compare exactly. False when the server would not export a
+  snapshot and the counts were taken beside the dump — then a surplus proves
+  nothing and only a shortfall does. A database that cannot export a snapshot is
+  still dumped: the dump is the artifact, the count only describes it.
+
+  No manifest version bump. A reader that does not know the field defaults it
+  False and so treats the counts as unsynchronized, which is the cautious
+  reading — unlike `failed_databases`, where the unaware reading was the
+  flattering one and had to be refused.
+
+### Changed
+
+- **Backup and restore say what they are doing while they do it.** A cluster
+  backup logs its start, the globals dump, and each database as it begins,
+  is inventoried and lands; a restore logs the replay before it starts rather
+  than only on success. One measured run spent 13m34s between claiming an
+  operation and its first line of output, which is indistinguishable from a
+  wedge to whoever is watching it.
+
 ## v0.35.0 -- 2026-09-08
 
 ### Fixed
