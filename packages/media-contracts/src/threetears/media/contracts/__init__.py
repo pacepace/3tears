@@ -50,6 +50,7 @@ from threetears.media.contracts.protocols import (
     ObjectStore,
     TextProvider,
     TranscriptionProvider,
+    ReferenceVisionProvider,
     VisionProvider,
 )
 
@@ -73,6 +74,7 @@ __all__ = [
     "ObjectStore",
     "TextProvider",
     "TranscriptionProvider",
+    "ReferenceVisionProvider",
     "VisionProvider",
     "build_object_key",
     "sanitize_segment",

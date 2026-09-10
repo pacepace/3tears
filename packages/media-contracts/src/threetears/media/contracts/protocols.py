@@ -25,6 +25,7 @@ __all__ = [
     "ImageGenerationBackend",
     "MediaInfo",
     "MediaStorage",
+    "ReferenceVisionProvider",
     "ObjectHandle",
     "ObjectListing",
     "ObjectStore",
@@ -241,6 +242,46 @@ class VisionProvider(Protocol):
         :ptype image_data: bytes
         :param mime_type: image MIME type
         :ptype mime_type: str
+        :param prompt: analysis prompt
+        :ptype prompt: str
+        :return: analysis result text
+        :rtype: str
+        """
+        ...
+
+
+@runtime_checkable
+class ReferenceVisionProvider(Protocol):
+    """Protocol for image analysis by OBJECT REFERENCE, not raw bytes.
+
+    A vision backend that resolves the image itself -- a gateway-backed
+    provider that names the object on the model wire and lets the platform
+    stream the bytes at the model boundary -- implements this instead of
+    :class:`VisionProvider`. The bytes never reach the calling pod, so a
+    provider on this protocol needs no object-store credentials and puts no
+    image on the message bus.
+
+    Additive and separate from :class:`VisionProvider` on purpose: a
+    bytes-taking backend and a reference-taking backend are different
+    capabilities, and a consumer (:mod:`threetears.agent.tools.builtin.analyze_media`)
+    detects which it holds with :func:`isinstance` and routes accordingly. A
+    provider may implement either; a reference-only backend does not have to
+    pretend it can accept bytes it cannot honour.
+
+    Several object ids analyse together in ONE turn, so a multi-image question
+    reaches a vision model as a single interleaved message rather than N
+    separate calls.
+    """
+
+    async def analyze_ref(
+        self,
+        object_ids: list[UUID],
+        prompt: str,
+    ) -> str:
+        """Analyze one or more referenced images and return a text answer.
+
+        :param object_ids: catalogued object ids to analyse together, in order
+        :ptype object_ids: list[UUID]
         :param prompt: analysis prompt
         :ptype prompt: str
         :return: analysis result text

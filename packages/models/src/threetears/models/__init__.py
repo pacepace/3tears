@@ -73,6 +73,7 @@ from threetears.models.preprocessing import (
     format_vision_content,
     format_vision_reference_content,
     is_object_reference_block,
+    object_reference_block,
     parse_object_reference_block,
     preprocess_messages,
 )
@@ -180,6 +181,7 @@ __all__ = [
     "lookup_price",
     "match_price",
     "merge_chunks",
+    "object_reference_block",
     "parse_chunk",
     "parse_object_reference_block",
     "preprocess_messages",

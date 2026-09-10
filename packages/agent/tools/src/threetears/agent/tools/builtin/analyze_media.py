@@ -32,6 +32,7 @@ from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolR
 from threetears.agent.tools.protocols import (
     MediaInfo,
     MediaStorage,
+    ReferenceVisionProvider,
     TextProvider,
     TranscriptionProvider,
     VisionProvider,
@@ -62,7 +63,7 @@ class AnalyzerConfig:
     """
 
     name: str
-    vision: VisionProvider | None = None
+    vision: VisionProvider | ReferenceVisionProvider | None = None
     text: TextProvider | None = None
     transcription: TranscriptionProvider | None = None
     supported_categories: set[str] = field(
@@ -619,6 +620,13 @@ class AnalyzeMediaTool(TearsTool):
         """
         assert acfg.vision is not None
 
+        # Reference path: a vision backend that resolves the image itself (a
+        # gateway-backed provider) takes object ids, not bytes. all images go in
+        # ONE turn, the bytes never reach this pod, and no object-store creds are
+        # needed here. bytes-taking backends fall through to the download path.
+        if isinstance(acfg.vision, ReferenceVisionProvider):
+            return await self._handle_vision_by_reference(media_ids, acfg.vision, question, analyzer_name)
+
         from threetears.agent.tools.builtin.image_prep import (
             prepare_image_for_vision,
         )
@@ -679,6 +687,67 @@ class AnalyzeMediaTool(TearsTool):
             return _tool_error("vision model invocation", str(exc))
 
         # Persist description for single-media analysis
+        return await self._finalize_vision(media_ids, result_text, analyzer_name)
+
+    async def _handle_vision_by_reference(
+        self,
+        media_ids: list[str],
+        vision: ReferenceVisionProvider,
+        question: str,
+        analyzer_name: str,
+    ) -> str:
+        """analyse referenced images without ever holding their bytes.
+
+        the reference-vision backend (a gateway-backed provider) takes the
+        object ids and resolves the images itself at the model boundary, so
+        this pod streams no bytes and needs no object-store credentials. all
+        images go in ONE turn, matching the multi-image message the platform
+        supports.
+
+        :param media_ids: media UUID strings, used verbatim as object ids
+        :ptype media_ids: list[str]
+        :param vision: the reference-vision backend
+        :ptype vision: ReferenceVisionProvider
+        :param question: prompt for the vision model
+        :ptype question: str
+        :param analyzer_name: display name of the analyzer
+        :ptype analyzer_name: str
+        :return: vision response (with optional display-url hint) or error string
+        :rtype: str
+        """
+        suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
+        prompt = f"{question}{suffix}"
+        object_ids = [UUID(mid) for mid in media_ids]
+        try:
+            result_text = await vision.analyze_ref(object_ids, prompt)
+        except Exception as exc:
+            _log.error(
+                "Reference vision invocation failed",
+                extra={"extra_data": {"analyzer": analyzer_name, "error": str(exc)}},
+            )
+            return _tool_error("vision model invocation", str(exc))
+        return await self._finalize_vision(media_ids, result_text, analyzer_name)
+
+    async def _finalize_vision(
+        self,
+        media_ids: list[str],
+        result_text: str,
+        analyzer_name: str,
+    ) -> str:
+        """persist a single-image description and append a display-url hint.
+
+        shared close-out for both vision paths (bytes and reference) so the
+        persistence + display-hint behaviour has one implementation.
+
+        :param media_ids: the analysed media UUID strings
+        :ptype media_ids: list[str]
+        :param result_text: the vision model's answer
+        :ptype result_text: str
+        :param analyzer_name: display name of the analyzer, stored as model_name
+        :ptype analyzer_name: str
+        :return: the answer, with a markdown display hint when a URL builder exists
+        :rtype: str
+        """
         if result_text and len(media_ids) == 1 and self._user_id:
             try:
                 await self._storage.store_content(
@@ -696,12 +765,12 @@ class AnalyzeMediaTool(TearsTool):
 
             await self._fire_callback(media_ids[0], "description", result_text)
 
-        # Include display hint if the host app provides a URL builder
+        result = result_text
         if len(media_ids) == 1 and self._media_url_fn:
             url = self._media_url_fn(media_ids[0])
             if url:
-                return f"{result_text}\n\nTo display this image in your response, use: ![description]({url})"
-        return result_text
+                result = f"{result_text}\n\nTo display this image in your response, use: ![description]({url})"
+        return result
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """analyze media items using configured providers.

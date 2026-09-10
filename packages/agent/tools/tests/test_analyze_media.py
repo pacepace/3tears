@@ -33,6 +33,19 @@ class FakeVisionProvider:
         return self.response
 
 
+# parity-with: threetears.agent.tools.protocols.ReferenceVisionProvider
+class FakeReferenceVisionProvider:
+    """A reference-taking vision backend: records object ids, never sees bytes."""
+
+    def __init__(self, response: str = "A referenced square."):
+        self.response = response
+        self.analyze_ref_calls: list[tuple[list, str]] = []
+
+    async def analyze_ref(self, object_ids: list, prompt: str) -> str:
+        self.analyze_ref_calls.append((list(object_ids), prompt))
+        return self.response
+
+
 # parity-with: threetears.agent.tools.protocols.TextProvider
 class FakeTextProvider:
     """Records calls and returns canned responses."""
@@ -706,3 +719,39 @@ class TestNoUserIdMode:
 
         assert "No user result." in result
         assert len(storage.store_calls) == 0  # Nothing stored
+
+
+class TestReferenceVisionRouting:
+    """a ReferenceVisionProvider is routed by reference; bytes are never downloaded."""
+
+    async def test_image_goes_through_analyze_ref_not_download(self) -> None:
+        """analyze_media calls analyze_ref with the object id and never downloads bytes."""
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"))  # no bytes registered
+        vision = FakeReferenceVisionProvider("a referenced cat")
+        tool = _make_tool(storage, vision=vision)
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "what is this", "analyzer": "TestVision"})
+
+        assert "a referenced cat" in result
+        # routed by reference: analyze_ref saw the object id
+        assert vision.analyze_ref_calls
+        object_ids, prompt = vision.analyze_ref_calls[0]
+        assert object_ids == [mid]
+        assert "what is this" in prompt
+
+    async def test_two_images_analyse_together_in_one_call(self) -> None:
+        """several referenced images go to analyze_ref in ONE call, in order."""
+        storage = FakeMediaStorage()
+        id_a, id_b = uuid4(), uuid4()
+        storage.add_media(id_a, MediaInfo(id_a, "image", "image/jpeg"))
+        storage.add_media(id_b, MediaInfo(id_b, "image", "image/jpeg"))
+        vision = FakeReferenceVisionProvider()
+        tool = _make_tool(storage, vision=vision)
+
+        await tool.ainvoke({"media_ids": [str(id_a), str(id_b)], "question": "compare", "analyzer": "TestVision"})
+
+        assert len(vision.analyze_ref_calls) == 1
+        object_ids, _ = vision.analyze_ref_calls[0]
+        assert object_ids == [id_a, id_b]

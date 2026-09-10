@@ -35,6 +35,7 @@ __all__ = [
     "format_vision_content",
     "format_vision_reference_content",
     "is_object_reference_block",
+    "object_reference_block",
     "parse_object_reference_block",
     "preprocess_messages",
 ]
@@ -254,6 +255,28 @@ class ObjectReference:
     mime_type: str
 
 
+def object_reference_block(object_id: UUID, mime_type: str) -> dict[str, str]:
+    """constructs content block naming a catalogued object by id and mime type.
+
+    the lower-level builder: a caller that holds only the object id and mime
+    (a gateway-backed vision provider) uses this directly, without a full
+    :class:`ObjectHandle`. :func:`format_object_reference_block` is the
+    handle-taking convenience over it.
+
+    :param object_id: catalogued object identifier
+    :ptype object_id: UUID
+    :param mime_type: MIME type of the stored bytes
+    :ptype mime_type: str
+    :return: content block with type, object_id (string form) and mime_type
+    :rtype: dict[str, str]
+    """
+    return {
+        "type": OBJECT_REFERENCE_BLOCK_TYPE,
+        "object_id": str(object_id),
+        "mime_type": mime_type,
+    }
+
+
 def format_object_reference_block(handle: ObjectHandle) -> dict[str, str]:
     """constructs content block naming catalogued object instead of its bytes.
 
@@ -262,11 +285,7 @@ def format_object_reference_block(handle: ObjectHandle) -> dict[str, str]:
     :return: content block with type, object_id (string form) and mime_type
     :rtype: dict[str, str]
     """
-    return {
-        "type": OBJECT_REFERENCE_BLOCK_TYPE,
-        "object_id": str(handle.object_id),
-        "mime_type": handle.mime_type,
-    }
+    return object_reference_block(handle.object_id, handle.mime_type)
 
 
 def format_vision_reference_content(

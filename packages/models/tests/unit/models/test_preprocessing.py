@@ -26,6 +26,7 @@ from threetears.models.preprocessing import (
     format_vision_content,
     format_vision_reference_content,
     is_object_reference_block,
+    object_reference_block,
     parse_object_reference_block,
     preprocess_messages,
 )
@@ -261,3 +262,22 @@ class TestFormatObjectReferenceBlock:
             parse_object_reference_block(
                 {"type": OBJECT_REFERENCE_BLOCK_TYPE, "object_id": "not-a-uuid", "mime_type": "image/png"}
             )
+
+
+class TestObjectReferenceBlockDirect:
+    """object_reference_block builds the block from id + mime, no handle needed."""
+
+    def test_builds_from_id_and_mime(self) -> None:
+        """the direct builder produces the same block shape as the handle version."""
+        object_id = UUID("0192f3a0-0000-7000-8000-000000000009")
+        block = object_reference_block(object_id, "image/webp")
+        assert block == {
+            "type": OBJECT_REFERENCE_BLOCK_TYPE,
+            "object_id": "0192f3a0-0000-7000-8000-000000000009",
+            "mime_type": "image/webp",
+        }
+
+    def test_handle_version_delegates_to_it(self) -> None:
+        """format_object_reference_block(handle) equals object_reference_block(id, mime)."""
+        block = format_object_reference_block(_make_handle())
+        assert block == object_reference_block(_make_handle().object_id, "image/png")
