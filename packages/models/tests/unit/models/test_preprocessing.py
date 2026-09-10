@@ -21,6 +21,7 @@ from threetears.models.preprocessing import (
     OBJECT_REFERENCE_BLOCK_TYPE,
     ObjectReference,
     enforce_alternating_roles,
+    format_image_block,
     format_object_reference_block,
     format_vision_content,
     format_vision_reference_content,
@@ -182,6 +183,10 @@ class TestFormatVisionContent:
         url = url_block["url"]
         assert url.startswith("data:image/png;base64,")
         assert base64.b64decode(url.split(",", 1)[1]) == b"abc"
+
+    def test_image_block_alone_matches_first_block_of_vision_content(self) -> None:
+        """the single-block builder is what the two-block helper composes."""
+        assert format_image_block(b"abc", "image/png") == format_vision_content(b"abc", "image/png", "x")[0]
 
 
 def _make_handle() -> ObjectHandle:

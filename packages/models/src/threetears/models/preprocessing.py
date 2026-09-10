@@ -30,6 +30,7 @@ __all__ = [
     "OBJECT_REFERENCE_BLOCK_TYPE",
     "ObjectReference",
     "enforce_alternating_roles",
+    "format_image_block",
     "format_object_reference_block",
     "format_vision_content",
     "format_vision_reference_content",
@@ -185,6 +186,32 @@ def _merge_message_run(run: list[BaseMessage]) -> BaseMessage | None:
     return None
 
 
+def format_image_block(
+    image_bytes: bytes,
+    mime_type: str,
+) -> dict[str, str | dict[str, str]]:
+    """constructs single image content block carrying bytes as base64 data URI.
+
+    the ``image_url`` dialect is the one every LangChain provider adapter
+    accepts: ``langchain-openai`` passes it through, and
+    ``langchain-anthropic`` converts it to Anthropic's ``source`` block.
+    one builder, so a message composing several images in caller order
+    never has to slice a text block off a two-block helper.
+
+    :param image_bytes: raw image bytes to encode
+    :ptype image_bytes: bytes
+    :param mime_type: MIME type of image (e.g. "image/png")
+    :ptype mime_type: str
+    :return: image_url content block
+    :rtype: dict[str, str | dict[str, str]]
+    """
+    b64_string = base64.b64encode(image_bytes).decode("utf-8")
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime_type};base64,{b64_string}"},
+    }
+
+
 def format_vision_content(
     image_bytes: bytes,
     mime_type: str,
@@ -204,13 +231,8 @@ def format_vision_content(
     :return: list of two content blocks (image_url and text)
     :rtype: list[dict[str, str | dict[str, str]]]
     """
-    b64_string = base64.b64encode(image_bytes).decode("utf-8")
-
     return [
-        {
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime_type};base64,{b64_string}"},
-        },
+        format_image_block(image_bytes, mime_type),
         {
             "type": "text",
             "text": prompt,
