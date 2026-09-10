@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+from uuid import UUID
 
+import pytest
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -12,11 +14,18 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from threetears.media.contracts import ObjectHandle
 from threetears.models.capabilities import ModelCapabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.preprocessing import (
+    OBJECT_REFERENCE_BLOCK_TYPE,
+    ObjectReference,
     enforce_alternating_roles,
+    format_object_reference_block,
     format_vision_content,
+    format_vision_reference_content,
+    is_object_reference_block,
+    parse_object_reference_block,
     preprocess_messages,
 )
 
@@ -173,3 +182,77 @@ class TestFormatVisionContent:
         url = url_block["url"]
         assert url.startswith("data:image/png;base64,")
         assert base64.b64decode(url.split(",", 1)[1]) == b"abc"
+
+
+def _make_handle() -> ObjectHandle:
+    """build an ``ObjectHandle`` with a fixed id for reference tests.
+
+    :return: handle naming a catalogued PNG
+    :rtype: ObjectHandle
+    """
+    return ObjectHandle(
+        object_id=UUID("0192f3a0-0000-7000-8000-000000000001"),
+        s3_key="cust/conv/image/2026/09/10/0192f3a0-0000-7000-8000-000000000001/a.png",
+        mime_type="image/png",
+        size_bytes=3,
+    )
+
+
+class TestFormatObjectReferenceBlock:
+    """tests for the reference block that stands in for image bytes."""
+
+    def test_block_carries_type_id_and_mime_only(self) -> None:
+        """the block names the object and its mime type and nothing else."""
+        block = format_object_reference_block(_make_handle())
+        assert block == {
+            "type": OBJECT_REFERENCE_BLOCK_TYPE,
+            "object_id": "0192f3a0-0000-7000-8000-000000000001",
+            "mime_type": "image/png",
+        }
+
+    def test_block_never_carries_the_key(self) -> None:
+        """the storage key stays off the block so a caller cannot name one."""
+        block = format_object_reference_block(_make_handle())
+        assert "s3_key" not in block
+        assert not any("cust/conv" in str(v) for v in block.values())
+
+    def test_vision_reference_content_pairs_block_with_prompt(self) -> None:
+        """reference content mirrors ``format_vision_content``: reference then text."""
+        result = format_vision_reference_content(_make_handle(), "describe")
+        assert len(result) == 2
+        assert result[0]["type"] == OBJECT_REFERENCE_BLOCK_TYPE
+        assert result[1] == {"type": "text", "text": "describe"}
+
+    def test_is_object_reference_block_recognises_only_its_type(self) -> None:
+        """the predicate matches the reference type and nothing else."""
+        assert is_object_reference_block(format_object_reference_block(_make_handle()))
+        assert not is_object_reference_block({"type": "text", "text": "x"})
+        assert not is_object_reference_block({"type": "image_url", "image_url": {"url": "data:"}})
+        assert not is_object_reference_block("plain string")
+
+    def test_parse_round_trips_the_handle_fields(self) -> None:
+        """parsing a formatted block yields the id as a UUID and the mime type."""
+        ref = parse_object_reference_block(format_object_reference_block(_make_handle()))
+        assert ref == ObjectReference(
+            object_id=UUID("0192f3a0-0000-7000-8000-000000000001"),
+            mime_type="image/png",
+        )
+
+    def test_parse_rejects_wrong_type(self) -> None:
+        """a text block is not a reference, and parsing it says so."""
+        with pytest.raises(ValueError, match="object_reference"):
+            parse_object_reference_block({"type": "text", "text": "x"})
+
+    def test_parse_rejects_missing_mime(self) -> None:
+        """a reference without a mime type is malformed, not defaulted."""
+        with pytest.raises(ValueError, match="mime_type"):
+            parse_object_reference_block(
+                {"type": OBJECT_REFERENCE_BLOCK_TYPE, "object_id": "0192f3a0-0000-7000-8000-000000000001"}
+            )
+
+    def test_parse_rejects_non_uuid_id(self) -> None:
+        """an object id that is not a UUID is malformed, not passed through."""
+        with pytest.raises(ValueError, match="object_id"):
+            parse_object_reference_block(
+                {"type": OBJECT_REFERENCE_BLOCK_TYPE, "object_id": "not-a-uuid", "mime_type": "image/png"}
+            )

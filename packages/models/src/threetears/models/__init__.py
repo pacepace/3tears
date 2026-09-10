@@ -65,8 +65,14 @@ from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.errors import friendly_api_error, identify_provider
 from threetears.models.factory import create_chat_model, create_embedding_model
 from threetears.models.preprocessing import (
+    OBJECT_REFERENCE_BLOCK_TYPE,
+    ObjectReference,
     enforce_alternating_roles,
+    format_object_reference_block,
     format_vision_content,
+    format_vision_reference_content,
+    is_object_reference_block,
+    parse_object_reference_block,
     preprocess_messages,
 )
 from threetears.models.price_lookup import (
@@ -136,7 +142,9 @@ __all__ = [
     "ModelStatus",
     "ModelTier",
     "ModelType",
+    "OBJECT_REFERENCE_BLOCK_TYPE",
     "OPENROUTER_MODELS_URL",
+    "ObjectReference",
     "OpenRouterPriceSource",
     "PriceLookup",
     "PriceSource",
@@ -156,11 +164,14 @@ __all__ = [
     "enforce_alternating_roles",
     "fetch_provider_models",
     "filter_invalid_tool_calls",
+    "format_object_reference_block",
     "format_vision_content",
+    "format_vision_reference_content",
     "friendly_api_error",
     "get_capabilities",
     "get_capability_override",
     "identify_provider",
+    "is_object_reference_block",
     "is_valid_tool_name",
     "list_capabilities",
     "list_provider_models",
@@ -168,6 +179,7 @@ __all__ = [
     "match_price",
     "merge_chunks",
     "parse_chunk",
+    "parse_object_reference_block",
     "preprocess_messages",
     "register_capabilities",
     "register_capability_override",
