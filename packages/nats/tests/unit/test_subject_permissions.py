@@ -465,6 +465,17 @@ class TestBootCompleteness:
         assert f"{_NS}.gateway.stream.*.*" in gw.publish
         assert f"{_NS}.gateway.stream.*" not in gw.publish
 
+    def test_gateway_can_publish_object_resolve_for_media(self) -> None:
+        # a completion carrying a media reference forwards the CALLER'S identity
+        # token to the hub's object-resolve responder; the gateway must be able to
+        # publish it. mirrors the tool-pod consume grant, and the hub answers it.
+        gw = _build(Principal.GATEWAY)
+        assert f"{_NS}.hub.object.resolve" in gw.publish
+        hub = _build(Principal.HUB)
+        assert f"{_NS}.hub.object.resolve" in hub.subscribe
+        # the gateway produces no objects: it never publishes the commit twin.
+        assert f"{_NS}.hub.object.commit" not in gw.publish
+
     def test_registry_forward_wildcard_spans_two_token_agent_pods(self) -> None:
         # the registry router forwards proxied calls / probes to ``tools.internal.{pod_id}``. once an
         # agent in-process pod registers under the two-token ``{agent_id}.{instance}`` composite, a

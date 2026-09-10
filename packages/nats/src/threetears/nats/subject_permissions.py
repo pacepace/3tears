@@ -1337,6 +1337,14 @@ def _gateway(
     publish = (
         f"{ns}.gateway.stream.*.*",  # streams tokens back for any in-flight completion ({agent_id}.{correlation_id})
         str(Subjects.hub_usage_track()),
+        # Path-2 consume: a completion carrying a media reference forwards the
+        # CALLER'S identity token to the hub's object-resolve responder, which
+        # verifies it and returns the customer-scoped key (the same forwarded-token
+        # auth a consuming tool pod uses). the gateway cannot verify the caller's
+        # session itself -- sessions live in the hub's own kv scope -- so this is
+        # the seam that keeps media resolution customer-safe. NOT hub_object_commit:
+        # the gateway produces no objects.
+        str(Subjects.hub_object_resolve()),
         _deadletter(ns),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
