@@ -154,6 +154,7 @@ class BootstrapContext:
         consuming app's SDK dependency (the concrete ``ContextIntegration`` lives
         in the consumer's agent package)
     :ivar engagement_provider: per-pod active-engagement provider handle
+    :ivar models: per-role chat models for provider-backed in-process builtins
         (the consuming app's SDK's ``EngagementProvider``) constructed during the
         three-tier stack phase. a strategy that owns an in-process
         :class:`ToolServer` binds it into the context-bound
@@ -179,6 +180,11 @@ class BootstrapContext:
     knowledge_integration: Any = None
     context_integration: Any = None
     engagement_provider: Any = None
+    # per-role chat models (role name -> chat model), for provider-backed
+    # builtins the strategy constructs in-process (e.g. analyze_media's vision
+    # provider over the gateway-proxied model). ``None`` / empty leaves such
+    # builtins unregistered. host-app types, hence Any.
+    models: Any = None
 
 
 @runtime_checkable
