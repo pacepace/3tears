@@ -4,6 +4,66 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.39.0 -- 2026-09-11
+
+### Added
+
+- **A tool pod can call a platform tool, the way it queries a datasource.**
+  `_tool_pod` in `threetears.nats.subject_permissions` now publishes
+  `{ns}.tools.call`, the subject the registry answers. The request names no
+  principal, so the subject buys reach and never authority: the registry
+  verifies the forwarded hub-minted token and the per-call proof of possession
+  at the door and evaluates the pod's OWN `tool.call` grant on the tool's
+  namespace. The hub half -- the `declared_tools` row that materializes that
+  grant, and the build path admitting a pod principal -- lands in the hub.
+
+- **The registry door admits a tool pod.** `CallProxy._verify_identity` reads a
+  token whose `customer_id` claim is the platform sentinel as
+  `customer_id=None` and marks the verified principal a tool pod; a UUID claim
+  is an agent and carries no mark; any other non-UUID claim still fails closed
+  as `TOOL_IDENTITY_UNVERIFIED`. The mark rides to the authorizer beside the
+  ids, because a pod's principal id and an agent's are both UUIDs and only the
+  signed claim says which kind this one is.
+
+- **`PLATFORM_CUSTOMER_SENTINEL`** in `threetears.core.security`: the one
+  spelling of the `"aibots-platform"` customer claim a platform principal's
+  token carries, which the hub mints and the SDK presents and which each used
+  to spell for itself. Deliberately not a UUID, and that is what bounds the
+  token: every reader that parses the claim as a customer refuses a tool pod on
+  it.
+
+- **`threetears.registry.client`.** `ToolCallClient` publishes the registry's
+  own `ProxyCallRequest` on the call subject with the caller's identity as a
+  FORWARDED TOKEN read from a provider on every call and a proof of possession
+  minted by a caller-supplied signer (`PopSignerProtocol`, the shape the SDK's
+  `PopSigner` already has), and returns the registry's `ProxyCallResponse` or
+  raises `ToolCallError` carrying the registry's -- or the tool's -- refusal
+  code. Synchronous, on the caller's own inbox; its default deadline sits above
+  the registry's forward budget by `CALL_TIMEOUT_MARGIN_SECONDS`, pinned by a
+  test, so a slow tool comes back as the registry's `TOOL_TIMEOUT` rather than
+  the client's own transport fault.
+
+### Changed
+
+- **`AgentToolAuthorizer.is_authorized` takes a required keyword,
+  `principal_is_tool_pod`.** `RbacEvaluatorAuthorizer` evaluates a marked
+  principal with no user on its own grant alone -- exactly as the L3 broker and
+  the hub's datasource authorizer evaluate the same principal -- and refuses an
+  unmarked (agent) principal with no user exactly as before. Every implementer
+  and every fake grows the keyword; it is required rather than defaulted so a
+  fake that predates it fails loudly under the parity walker instead of passing
+  on the wrong protocol.
+
+### Fixed
+
+- **A durable forward whose result waiter could not open killed the dispatch
+  task silently.** `CallProxy._forward_call_durable` opened its JetStream
+  waiter outside any guard, so a bus missing the result stream raised out of the
+  task with the reply subject unanswered, and the caller learned nothing until
+  its own deadline. The open is now guarded: a failure there answers
+  `TOOL_UNAVAILABLE`, the retryable code, because the waiter opens BEFORE the
+  call is dispatched and so the call never reached a pod.
+
 ## v0.38.0 -- 2026-09-10
 
 ### Added

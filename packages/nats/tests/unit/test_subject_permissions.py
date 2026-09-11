@@ -390,6 +390,26 @@ class TestBootCompleteness:
         assert f"{_NS}.datasource.*.query" not in pod.subscribe
         assert f"{_NS}.datasource.*.query" in _build(Principal.HUB).subscribe
 
+    def test_tool_pod_may_call_a_tool(self) -> None:
+        """a tool pod granted a platform tool reaches it the way an agent does.
+
+        the registry answers ``{ns}.tools.call``, verifies the forwarded hub-minted
+        token and the per-call proof of possession at the door, and evaluates the
+        pod's OWN ``tool.call`` grant on the tool's namespace. the request names no
+        principal, so holding the subject buys reach and never authority: the pod
+        may ask for any tool, and the registry refuses every one it was not granted.
+
+        publish only. the registry subscribes; a pod never answers a tool call on
+        this subject -- it answers proxied calls on its own internal subject.
+
+        :return: none
+        :rtype: None
+        """
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert str(Subjects.tools_call()) in pod.publish
+        assert str(Subjects.tools_call()) not in pod.subscribe
+        assert str(Subjects.tools_call()) in _build(Principal.REGISTRY).subscribe
+
     def test_tool_pod_may_handshake_for_a_token_of_its_own(self) -> None:
         """a tool pod writing its OWN state has no inbound token to forward.
 

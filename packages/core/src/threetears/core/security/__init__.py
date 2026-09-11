@@ -28,6 +28,7 @@ from threetears.core.security.identity_minter import (
     static_token_provider,
 )
 from threetears.core.security.identity_token import (
+    PLATFORM_CUSTOMER_SENTINEL,
     IdentityClaims,
     IdentityKeyNotFoundError,
     IdentityTokenError,
@@ -80,6 +81,7 @@ __all__ = [
     "seal",
     # identity tokens
     "DEFAULT_IDENTITY_TTL_SECONDS",
+    "PLATFORM_CUSTOMER_SENTINEL",
     "CachedHubJwksProvider",
     "IdentityClaims",
     "IdentityKeyNotFoundError",

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.core.security.identity_token import (
+    PLATFORM_CUSTOMER_SENTINEL,
     IdentityClaims,
     IdentityKeyNotFoundError,
     IdentityTokenError,
@@ -551,7 +552,7 @@ class CallProxy:
 
     async def _verify_identity(
         self, request: "ProxyCallRequest"
-    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None"]:
+    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None", bool]:
         """verify the Hub-issued identity token and re-stamp the VERIFIED identity.
 
         the heart of the platform-auth fix: authorization + forwarding must act on an
@@ -561,15 +562,23 @@ class CallProxy:
 
         verification is UNCONDITIONAL and fail-closed (caller guarantees ``request.context`` and
         ``context.agent_id`` present): verify; on success return the re-stamped request; on ANY
-        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>)`` so the dispatcher rejects
-        the call without forwarding. there is no off/warn passthrough -- a call the proxy cannot
-        authenticate never reaches the tool pod on the self-asserted envelope.
+        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>, False)`` so the dispatcher
+        rejects the call without forwarding. there is no off/warn passthrough -- a call the proxy
+        cannot authenticate never reaches the tool pod on the self-asserted envelope.
+
+        the third value is the one fact about the principal that the ids do not carry: whether
+        the token names a TOOL POD. the hub mints a tool pod's token with the platform customer
+        sentinel in place of a customer UUID, because a tool pod has no customer; that claim is
+        read here, off the SIGNED token, as ``customer_id=None`` plus the mark. any other
+        non-UUID customer claim still fails closed -- the sentinel is the one value the hub mints
+        on purpose, and a garbage claim is a malformed token, not a platform principal.
 
         :param request: the parsed call request (its context carries the identity token)
         :ptype request: ProxyCallRequest
-        :return: ``(possibly re-stamped request, error response or None)``. a non-None response
-            means the caller must reject the call without dispatching
-        :rtype: tuple[ProxyCallRequest, ProxyCallResponse | None]
+        :return: ``(possibly re-stamped request, error response or None, principal is a tool
+            pod)``. a non-None response means the caller must reject the call without
+            dispatching
+        :rtype: tuple[ProxyCallRequest, ProxyCallResponse | None, bool]
         """
         context = request.context
         assert context is not None  # guaranteed by the caller's agent_id presence check
@@ -590,7 +599,12 @@ class CallProxy:
             # user), the system principal for a hub-originated call. the bound user-assertion below
             # may override it with the per-turn verified user.
             agent_id_value = UUID(claims.sub)
-            customer_id_value = UUID(claims.customer_id)
+            # a tool pod's token carries the platform sentinel where a customer UUID would be,
+            # because ``tool_pods`` has no customer: it is read as NO customer, and the principal
+            # is marked so the authorizer evaluates it on its own grant. the comparison is exact,
+            # so a non-UUID claim that is not the sentinel still fails closed on the UUID parse.
+            principal_is_tool_pod = claims.customer_id == PLATFORM_CUSTOMER_SENTINEL
+            customer_id_value: UUID | None = None if principal_is_tool_pod else UUID(claims.customer_id)
             user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
@@ -614,7 +628,7 @@ class CallProxy:
                 error_code="TOOL_IDENTITY_UNVERIFIED",
                 context=context,
             )
-            return request, response
+            return request, response, False
 
         # the verified user identity DEFAULTS to the handshake token's user_id: ``None`` for an
         # agent handshake token (one per pod; it CANNOT carry the per-turn user), the system
@@ -691,7 +705,7 @@ class CallProxy:
                     error_code="TOOL_USER_IDENTITY_UNVERIFIED",
                     context=context,
                 )
-                return request, response
+                return request, response, False
 
         verified_context = context.model_copy(
             update={
@@ -700,7 +714,7 @@ class CallProxy:
                 "customer_id": customer_id_value,
             }
         )
-        return request.model_copy(update={"context": verified_context}), None
+        return request.model_copy(update={"context": verified_context}), None, principal_is_tool_pod
 
     async def _verify_pop(self, request: "ProxyCallRequest") -> "ProxyCallResponse | None":
         """verify the per-call proof-of-possession against the token's holder-key binding.
@@ -830,7 +844,7 @@ class CallProxy:
         # verify the Hub-issued identity token and re-stamp the VERIFIED identity onto the
         # request BEFORE authorization + forwarding, so RBAC and the tool pod act on an
         # authenticated identity rather than the self-asserted envelope. unconditional + fail-closed.
-        verified_request, identity_error = await self._verify_identity(request)
+        verified_request, identity_error, principal_is_tool_pod = await self._verify_identity(request)
         if identity_error is not None:
             if msg.reply_subject is not None:
                 await self._nc.publish_reply(
@@ -965,27 +979,33 @@ class CallProxy:
                 return
 
         if self._authorizer is not None:
+            # the tool-pod mark rides beside the ids because the ids cannot carry it: a pod's
+            # principal id and an agent's are both UUIDs, and only the verified token's customer
+            # claim says which kind this one is. the authorizer admits a pod on its own grant
+            # and refuses an agent with no user; the mark is what tells those two apart.
             authorized = await self._authorizer.is_authorized(
                 agent_id_log,
                 user_id_log,
                 request.tool_name,
                 request.tool_version,
+                principal_is_tool_pod=principal_is_tool_pod,
             )
             if not authorized:
                 response = ProxyCallResponse(
                     success=False,
                     content="",
-                    error=f"agent not authorized for tool {request.tool_name}",
+                    error=f"principal not authorized for tool {request.tool_name}",
                     error_code="TOOL_NOT_AUTHORIZED",
                     context=request.context,
                 )
                 await self._answer(msg, response, delivery_subject)
                 log.warning(
-                    "agent tool call denied",
+                    "tool call denied",
                     extra={
                         "extra_data": {
                             "agent_id": agent_id_log,
                             "user_id": user_id_log,
+                            "principal_is_tool_pod": principal_is_tool_pod,
                             "tool_name": request.tool_name,
                             "correlation_id": correlation_id_log,
                         }
@@ -1345,11 +1365,36 @@ class CallProxy:
             result_subject=result_subject.path,
             effective_timeout=effective_timeout,
         )
-        waiter = await self._nc.jetstream_result_waiter(
-            subject=result_subject,
-            stream=result_stream_name(),
-            wait_budget=timedelta(seconds=effective_timeout),
-        )
+        try:
+            waiter = await self._nc.jetstream_result_waiter(
+                subject=result_subject,
+                stream=result_stream_name(),
+                wait_budget=timedelta(seconds=effective_timeout),
+            )
+        except Exception as exc:  # noqa: BLE001 -- every failure becomes a typed response, never a hang
+            # the waiter is opened BEFORE the call is dispatched, so a failure here means the call
+            # never reached a pod: TOOL_UNAVAILABLE, the retryable answer. left uncaught it killed
+            # the dispatch task with the reply subject unanswered, and the caller learned nothing
+            # until its own deadline -- a stream missing from a bus read as a dead tool.
+            log.warning(
+                "durable result waiter could not open; the call was never dispatched",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "stream": result_stream_name(),
+                        "detail": str(exc),
+                    }
+                },
+            )
+            return ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"durable result stream unavailable; the call was not dispatched: {exc}",
+                error_code="TOOL_UNAVAILABLE",
+                context=request.context,
+            )
         try:
             accept_error = await self._await_pod_accept(
                 pod_id=pod_id,

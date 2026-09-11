@@ -34,6 +34,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
 __all__ = [
+    "PLATFORM_CUSTOMER_SENTINEL",
     "IdentityClaims",
     "IdentityKeyNotFoundError",
     "IdentityTokenError",
@@ -70,6 +71,23 @@ _ALG = "EdDSA"
 # claims that MUST be present for a token to be trusted. user_id is intentionally absent — an
 # agent acting on its own behalf (no human in the loop) carries no user_id.
 _REQUIRED_CLAIMS = ("iss", "sub", "customer_id", "sid", "pod_id", "iat", "exp")
+
+#: the ``customer_id`` claim a PLATFORM principal's token carries in place of a customer.
+#:
+#: ``customer_id`` is required on every token (above), and a tool pod has no customer to
+#: stamp: it is a platform-shared principal, not a customer-scoped one. The hub mints this
+#: literal onto a tool pod's identity token, the pod presents the same literal on its
+#: self-minted connect token, and a verifier that reads ``customer_id`` as a customer treats it
+#: as "no customer" -- the registry proxy maps it to ``customer_id=None`` and marks the
+#: principal a tool pod, so the tool-call authorizer evaluates the pod on its own grant.
+#:
+#: **It is deliberately NOT a UUID, and that is what bounds the token.** Every reader that
+#: parses the claim as a customer UUID refuses a tool pod on it: a customer-scoped read cannot
+#: be steered to any customer, and a user assertion -- always minted for a customer UUID --
+#: can never bind to this principal. Spelled ONCE here; the hub and the SDK import it rather
+#: than carrying their own copy, because a second spelling is a discriminator that silently
+#: stops discriminating.
+PLATFORM_CUSTOMER_SENTINEL = "aibots-platform"
 
 
 class IdentityTokenError(Exception):
