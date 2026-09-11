@@ -25,6 +25,10 @@ public surface (per shard DS-07-10):
 - namespace helpers -- :data:`DATASOURCE_NAMESPACE_TYPE`,
   :func:`datasource_namespace_id`, :func:`datasource_namespace_name`
 - agent.yaml-facing config -- :class:`DatasourceConfig`
+- the query wire -- :class:`DatasourceQueryClient`,
+  :class:`DatasourceQueryRequest`, :class:`DatasourceQueryResponse`,
+  :class:`DatasourceQueryError`: how a process holding no warehouse
+  credential queries a hub-served datasource on its own identity
 
 driver implementations live in the ``drivers`` subpackage and are
 imported lazily via the factory:
@@ -96,6 +100,12 @@ from threetears.datasources.namespace import (
     datasource_namespace_id,
     datasource_namespace_name,
 )
+from threetears.datasources.query_client import (
+    DatasourceQueryClient,
+    DatasourceQueryError,
+    DatasourceQueryRequest,
+    DatasourceQueryResponse,
+)
 from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
 __all__ = [
@@ -126,6 +136,10 @@ __all__ = [
     "DataSourceTableEntity",
     "DataSourceType",
     "DatasourceConfig",
+    "DatasourceQueryClient",
+    "DatasourceQueryError",
+    "DatasourceQueryRequest",
+    "DatasourceQueryResponse",
     "IntrospectionDiff",
     "PostgresConnectionConfig",
     "RedshiftConnectionConfig",
