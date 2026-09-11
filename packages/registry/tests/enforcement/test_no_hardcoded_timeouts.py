@@ -26,7 +26,7 @@ _PACKAGES_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 _SCAN_DIRS: list[tuple[str, Path]] = [
     ("registry", _PACKAGES_ROOT / "registry" / "src"),
-    ("agent-tools", _PACKAGES_ROOT / "agent-tools" / "src"),
+    ("agent-tools", _PACKAGES_ROOT / "agent" / "tools" / "src"),
     ("core", _PACKAGES_ROOT / "core" / "src"),
     ("observe", _PACKAGES_ROOT / "observe" / "src"),
 ]

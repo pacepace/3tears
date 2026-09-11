@@ -188,7 +188,7 @@ def _user_assertion(
     priv: Any,
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID,
     exp_delta: int = 3600,
     conversation_id: UUID | None = None,
@@ -574,8 +574,10 @@ class TestDispatchToolPodPrincipal:
 
     @pytest.mark.asyncio
     async def test_a_pod_presenting_a_user_assertion_is_refused(self, hub: tuple[Any, dict[str, Any]]) -> None:
-        # a user assertion is always minted for a customer UUID, so it can never bind to a principal
-        # whose customer claim is the sentinel: a pod cannot borrow a user by attaching one.
+        # the assertion is minted with the pod's own sub AND the sentinel customer, so the customer
+        # binding check -- which compares claim strings -- would admit it. only the explicit refusal of
+        # any assertion on a pod token can turn this call away, which is the rule under test: a pod
+        # acts on nobody's behalf and cannot borrow a user by attaching one.
         priv, jwks = hub
         pod_id, conv = uuid7(), uuid7()
         nc = await self._drive(
@@ -588,7 +590,11 @@ class TestDispatchToolPodPrincipal:
                 envelope_agent=uuid7(),
                 conversation_id=conv,
                 user_assertion=_user_assertion(
-                    priv, sub=pod_id, customer_id=uuid7(), user_id=uuid7(), conversation_id=conv
+                    priv,
+                    sub=pod_id,
+                    customer_id=PLATFORM_CUSTOMER_SENTINEL,
+                    user_id=uuid7(),
+                    conversation_id=conv,
                 ),
             ),
         )

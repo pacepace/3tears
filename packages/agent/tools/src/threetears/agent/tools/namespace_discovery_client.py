@@ -48,6 +48,8 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from threetears.observe import get_logger, traced
 
+from threetears.agent.tools.config import get_namespace_discovery_request_timeout
+
 __all__ = [
     "DiscoveryClientError",
     "NamespaceDiscoveryClient",
@@ -232,16 +234,18 @@ class NamespaceDiscoveryClient:
     :param namespace: broker subject namespace prefix (from
         ``THREETEARS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str
-    :param timeout_seconds: per-call request timeout in seconds;
-        defaults to 5.0 to match other broker request/reply helpers
-    :ptype timeout_seconds: float
+    :param timeout_seconds: per-call request timeout in seconds; ``None``
+        reads :func:`threetears.agent.tools.config.get_namespace_discovery_request_timeout`,
+        the config layer that owns the default for this and the other broker
+        request/reply helpers
+    :ptype timeout_seconds: float | None
     """
 
     def __init__(
         self,
         nats_client: Any,
         namespace: str,
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float | None = None,
     ) -> None:
         """bind the client to a NATS handle + broker subject namespace.
 
@@ -249,12 +253,23 @@ class NamespaceDiscoveryClient:
         :ptype nats_client: Any
         :param namespace: broker subject namespace prefix
         :ptype namespace: str
-        :param timeout_seconds: per-call request timeout in seconds
-        :ptype timeout_seconds: float
+        :param timeout_seconds: per-call request timeout in seconds, or ``None`` for the config default
+        :ptype timeout_seconds: float | None
         """
         self._nats_client = nats_client
         self._namespace = namespace
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = (
+            timeout_seconds if timeout_seconds is not None else get_namespace_discovery_request_timeout()
+        )
+
+    @property
+    def timeout_seconds(self) -> float:
+        """the per-call request timeout this client resolved at construction.
+
+        :return: timeout in seconds
+        :rtype: float
+        """
+        return self._timeout_seconds
 
     @traced
     async def discover(

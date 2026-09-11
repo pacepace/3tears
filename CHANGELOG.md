@@ -101,6 +101,21 @@ packages (bumped in lock-step).
   `TOOL_UNAVAILABLE`, the retryable code, because the waiter opens BEFORE the
   call is dispatched and so the call never reached a pod.
 
+- **The hardcoded-timeout gate never scanned agent-tools.** It listed
+  `packages/agent-tools/src`, which does not exist (the package lives at
+  `packages/agent/tools/src`), and skipped a missing directory silently, so the
+  gate read green over a package it had never opened. The path is corrected,
+  and the three literals it then found now come from the config layer the gate
+  allows: `threetears.agent.tools.config` gains `get_deliver_timeout`
+  (`DELIVER_TIMEOUT_SECONDS`), `get_report_timeout` (`REPORT_TIMEOUT_SECONDS`)
+  and `get_namespace_discovery_request_timeout`
+  (`THREETEARS_TOOLSERVER_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT`), with the same
+  defaults as before. A non-positive override of the two tool timeouts falls
+  back to the default as it did, and now says so in a warning.
+  `NamespaceDiscoveryClient(timeout_seconds=)` defaults to `None`, reads the
+  config layer when omitted, and exposes the resolved value as
+  `timeout_seconds`.
+
 ## v0.38.0 -- 2026-09-10
 
 ### Added
