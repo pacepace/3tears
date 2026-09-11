@@ -18,6 +18,8 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from threetears.datasources.query_client import (
+    DEFAULT_QUERY_TIMEOUT_SECONDS,
+    QUERY_STATEMENT_TIMEOUT_SECONDS,
     DatasourceQueryClient,
     DatasourceQueryError,
     DatasourceQueryRequest,
@@ -212,8 +214,38 @@ class TestSend:
         assert fake.calls[0]["timeout"] == timedelta(seconds=12.5)
 
 
+class TestDeadlineOrdering:
+    """the hub cancels a statement before the client stops listening."""
+
+    def test_statement_timeout_sits_under_the_client_deadline(self) -> None:
+        """a stuck warehouse must surface as the hub's typed refusal, not a transport fault.
+
+        if the client gave up first its ``REQUEST_FAILED`` would steer a retry
+        that stacks a second statement on the one still running; the margin is
+        what the cancel and the refusal need to travel back.
+        """
+        assert QUERY_STATEMENT_TIMEOUT_SECONDS < DEFAULT_QUERY_TIMEOUT_SECONDS
+        assert DEFAULT_QUERY_TIMEOUT_SECONDS - QUERY_STATEMENT_TIMEOUT_SECONDS >= 10
+
+    @pytest.mark.asyncio
+    async def test_default_deadline_is_the_documented_one(self) -> None:
+        """a client built with no explicit timeout waits exactly the default."""
+        fake = _FakeNatsClient(reply=_rows(uuid7(), []))
+        await _client(fake).query("ds", "SELECT 1")
+        assert fake.calls[0]["timeout"] == timedelta(seconds=DEFAULT_QUERY_TIMEOUT_SECONDS)
+
+
 class TestRefusesToSendWithoutIdentity:
     """an unauthenticatable request is refused here, before the bus sees it."""
+
+    @pytest.mark.asyncio
+    async def test_empty_datasource_name_raises_before_any_publish(self) -> None:
+        """an empty name composes no subject, and that is the client's error to name."""
+        fake = _FakeNatsClient(reply=_rows(uuid7(), []))
+        with pytest.raises(DatasourceQueryError) as exc_info:
+            await _client(fake).query("", "SELECT 1")
+        assert exc_info.value.error_code == "INVALID_DATASOURCE_NAME"
+        assert fake.calls == []
 
     @pytest.mark.asyncio
     async def test_empty_token_raises_before_any_publish(self) -> None:

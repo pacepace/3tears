@@ -28,6 +28,15 @@ packages (bumped in lock-step).
   token's principal. Serves a program: rows only, no markdown, no honesty
   imperatives; a program that wants the model-facing rendering calls the tool.
 
+- **`Subjects.datasource_query_wildcard()`**, the `{ns}.datasource.*.query`
+  pattern the hub subscribes once and the tool pod is granted, so neither
+  grant hand-types the subject.
+
+- `QUERY_STATEMENT_TIMEOUT_SECONDS` beside `DEFAULT_QUERY_TIMEOUT_SECONDS` in
+  the query client, pinned below it by a test: the hub's responder imports the
+  statement timeout, so a stuck warehouse always comes back as the hub's
+  `QUERY_TIMEOUT` and never as the client's transport failure.
+
 - `3tears-datasources` now depends on `3tears-nats` (no `[client]` extra: the
   grammar, error types and client protocol import without nats-py).
 

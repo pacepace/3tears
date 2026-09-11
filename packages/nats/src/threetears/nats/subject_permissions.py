@@ -996,11 +996,10 @@ def _tool_pod(
         # door, and evaluates the pod's own grant on that datasource's namespace. The request
         # names no principal, so this subject buys reach and never authority -- which is what
         # makes a wildcard over the NAME segment safe to hold: the pod may ask about any
-        # datasource, and the hub refuses every one it was not granted. Hand-typed for the
-        # reason ``l3.tx.*`` is: ``Subjects.datasource_query`` mints one concrete subject per
-        # name, and these grants are minted at connect, before the pod knows which
-        # datasources an operator will declare for it.
-        f"{ns}.datasource.*.query",
+        # datasource, and the hub refuses every one it was not granted. A pattern rather
+        # than per-name literals because these grants are minted at connect, before the pod
+        # knows which datasources an operator will declare for it.
+        str(Subjects.datasource_query_wildcard()),
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify proxy assertions
         str(Subjects.audit_event("tool.call")),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
@@ -1253,7 +1252,7 @@ def _hub(
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
         f"{ns}.l3.tx.*",
-        f"{ns}.datasource.*.query",
+        str(Subjects.datasource_query_wildcard()),  # answers every datasource's query subject
         str(Subjects.tools_register()),  # materializes tool namespace rows
         str(Subjects.workspaces_create()),
         str(Subjects.knowledge_draft()),

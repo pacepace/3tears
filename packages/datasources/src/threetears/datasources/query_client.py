@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
+    "QUERY_STATEMENT_TIMEOUT_SECONDS",
     "DatasourceQueryClient",
     "DatasourceQueryError",
     "DatasourceQueryRequest",
@@ -64,12 +65,25 @@ log = get_logger(__name__)
 
 #: how long one query may take, end to end, before the client gives up.
 #:
-#: longer than the wrapper's default request deadline because a warehouse read
-#: is not a control-plane round trip: the hub's own read tool budgets minutes,
-#: and a client that times out first leaves the hub finishing a query nobody
-#: will collect. shorter than the hub's read statement timeout so the client
-#: still reports a stuck warehouse as a timeout rather than hanging with it.
+#: a plain request/reply on the caller's own connection, and that connection is
+#: rebuilt on every NATS re-authentication: a reply that lands after the
+#: connection that asked is gone lands nowhere. the platform's re-auth cadence
+#: is tuned so a request of this length completes on one connection; a longer
+#: budget would need the durable result rail the tool path uses, which this
+#: wire deliberately does not carry.
 DEFAULT_QUERY_TIMEOUT_SECONDS: float = 120.0
+
+#: how long the hub lets one statement run on the warehouse before it cancels.
+#:
+#: BELOW the client deadline by a margin, and that ordering is the whole point:
+#: a stuck warehouse comes back as the hub's ``QUERY_TIMEOUT`` refusal, which
+#: names the cause, rather than as the client's ``REQUEST_FAILED``, which cannot
+#: tell a slow warehouse from a dead bus and steers a retry that stacks a second
+#: statement on the first. the margin is what the cancel, the refusal envelope
+#: and the reply need to travel while the caller is still listening. lives here
+#: beside the client deadline so the two cannot drift apart; the hub's responder
+#: imports it rather than choosing its own.
+QUERY_STATEMENT_TIMEOUT_SECONDS: int = 100
 
 
 class DatasourceQueryRequest(BaseModel):
@@ -114,24 +128,31 @@ class DatasourceQueryResponse(BaseModel):
 
     :param success: whether the query ran
     :ptype success: bool
-    :param rows: result rows, one dict per row, empty on refusal
+    :param rows: result rows, one dict per row, empty on refusal. a ``bytes``
+        column arrives hex-encoded, the hub's convention for every JSON wire
+        it serves rows on; decode with ``bytes.fromhex``
     :ptype rows: list[dict[str, Any]]
     :param row_count: how many rows ``rows`` carries
     :ptype row_count: int
+    :param truncated: whether the hub cut the result at its row cap, so
+        ``rows`` is a prefix of what the query produced
+    :ptype truncated: bool
     :param error_code: the machine-readable refusal code, ``None`` on success
     :ptype error_code: str | None
     :param error_message: the human-readable refusal, never parsed
     :ptype error_message: str | None
-    :param correlation_id: the request's id, echoed
-    :ptype correlation_id: UUID
+    :param correlation_id: the request's id, echoed; ``None`` when the hub
+        could not parse the request and so never saw one
+    :ptype correlation_id: UUID | None
     """
 
     success: bool
     rows: list[dict[str, Any]] = Field(default_factory=list)
     row_count: int = 0
+    truncated: bool = False
     error_code: str | None = None
     error_message: str | None = None
-    correlation_id: UUID
+    correlation_id: UUID | None = None
 
 
 class DatasourceQueryError(RuntimeError):
@@ -250,10 +271,16 @@ class DatasourceQueryClient:
         :ptype correlation_id: UUID | None
         :return: result rows, one dict per row
         :rtype: list[dict[str, Any]]
-        :raises DatasourceQueryError: when no identity token is available, when
-            the hub refuses (its code rides on the exception), or when the bus
-            fails to deliver a decodable reply
+        :raises DatasourceQueryError: when the datasource name is empty, when
+            no identity token is available, when the hub refuses (its code
+            rides on the exception), or when the bus fails to deliver a
+            decodable reply
         """
+        if not datasource_name:
+            raise DatasourceQueryError(
+                "INVALID_DATASOURCE_NAME",
+                "a datasource query needs the datasource's name; an empty name composes no subject",
+            )
         request = DatasourceQueryRequest(
             correlation_id=correlation_id if correlation_id is not None else uuid7(),
             identity_token=self.forwarded_identity_token(),
