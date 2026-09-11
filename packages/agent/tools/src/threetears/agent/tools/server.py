@@ -1302,6 +1302,21 @@ class ToolServer:
         """
         return self._owns_nats_connection
 
+    @property
+    def is_ready(self) -> bool:
+        """return whether serve() has bound its call and probe subjects and published once.
+
+        the non-blocking twin of :meth:`wait_ready`. a caller that publishes the manifest
+        itself must not do so before this is true: the registry probes a newly named
+        endpoint the moment the manifest arrives, a probe to a subject nothing has bound
+        yet fails, and a later publish does not probe an endpoint the registry already
+        holds -- so the endpoint stays pending until the pod's next heartbeat.
+
+        :return: true once serve() has subscribed and published its first registration
+        :rtype: bool
+        """
+        return self._ready_event.is_set()
+
     async def wait_ready(self, timeout: float | None = None) -> None:
         """block until serve() has subscribed to NATS and published registration.
 

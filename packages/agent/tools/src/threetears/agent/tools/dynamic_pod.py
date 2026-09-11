@@ -325,14 +325,25 @@ class DynamicToolPod(ABC, Generic[SpecT]):
 
     @traced
     async def register_spec(self, spec: SpecT) -> None:
-        """build + register a spec's tools and re-publish when connected.
+        """build + register a spec's tools, make sure they are served, and announce them once.
 
-        builds the spec's tools via :meth:`build_tools`, registers them on
-        the ToolServer, and -- only when the server is connected --
-        publishes the updated manifest once (the startup serve publishes
-        the full manifest, so a registration before connect must not
-        publish). safe to call before :meth:`start` has built the server:
-        the guard makes it a no-op.
+        builds the spec's tools via :meth:`build_tools`, registers them on the ToolServer,
+        and ensures the serve loop is running, because ``serve()`` is what subscribes the
+        pod's call and probe subjects. the manifest is then announced by whichever party
+        can do it safely:
+
+        - a spec that built no tools changes nothing a manifest carries, so nothing is
+          published;
+        - when the serve loop has already bound its subjects
+          (:attr:`~threetears.agent.tools.server.ToolServer.is_ready`) and the connection
+          is up, this publishes the updated manifest;
+        - otherwise the serve loop publishes it: it subscribes first and then publishes the
+          manifest as it stands, these tools included. publishing here first would name the
+          new endpoints before their probe subject exists. the registry's one probe would
+          fail, and since it does not probe an endpoint it already holds, the loop's own
+          publish would not probe again, leaving the tools pending until the next heartbeat.
+
+        safe to call before :meth:`start` has built the server: the guard makes it a no-op.
 
         :param spec: spec to build + register tools for
         :ptype spec: SpecT
@@ -344,32 +355,28 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             return
         built = await self.build_tools(spec)
         self._register_built(built)
-        # BEFORE publishing, not after. The registry probes the pod's own
-        # subject the moment it receives a manifest, so publishing first races
-        # a probe against a subscription that does not exist yet -- and a lost
-        # race is not retried: the tools stay PENDING for good.
         serving = self._ensure_serving()
-        if built.key in self._tool_names and server.is_connected:
+        if not built.tools:
+            log.info(
+                "dynamic tool pod spec built no tools; manifest unchanged: key=%s pod_id=%s",
+                built.key,
+                self._pod_id,
+            )
+        elif server.is_ready and server.is_connected:
             await server.publish_registration()
             log.info(
-                "dynamic tool pod spec registered: key=%s pod_id=%s serving=%s",
+                "dynamic tool pod spec registered: key=%s pod_id=%s",
+                built.key,
+                self._pod_id,
+            )
+        else:
+            log.info(
+                "dynamic tool pod spec registered before its serve loop bound its subjects; the loop "
+                "announces it once bound: key=%s pod_id=%s serving=%s",
                 built.key,
                 self._pod_id,
                 serving,
             )
-            if not serving:
-                # The manifest is published and the pod cannot answer. Said
-                # here because the only other evidence is a probe WARNING in
-                # the registry's log, minutes later, in a different container --
-                # which is how this went unnoticed: this message claimed
-                # success while the tools were unreachable.
-                log.warning(
-                    "dynamic tool pod published a manifest it cannot serve: key=%s pod_id=%s; "
-                    "the registry's reachability probe will find no responders and leave these "
-                    "tools pending",
-                    built.key,
-                    self._pod_id,
-                )
 
     @traced
     async def deregister_spec(self, key: str) -> bool:

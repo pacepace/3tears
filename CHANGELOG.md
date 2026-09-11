@@ -93,6 +93,21 @@ packages (bumped in lock-step).
 
 ### Fixed
 
+- **A dynamic tool pod announced a new spec's tools before it could answer for
+  them.** `DynamicToolPod.register_spec` published the manifest as soon as the
+  connection was up, including when that same call had just started the serve
+  loop. The registry probes a newly named endpoint once, on arrival, and does
+  not probe an endpoint it already holds, so the probe reached a subject nothing
+  had bound and the loop's own publish did not retry it: the tools stayed
+  `pending` until the next heartbeat. It now publishes only when the server is
+  ready (`ToolServer.is_ready`, below) and connected, and otherwise leaves the
+  announcement to the serve loop, which subscribes first. A spec that built no
+  tools no longer publishes at all, since it changes nothing a manifest carries.
+
+- **`ToolServer.is_ready`** is new: the non-blocking twin of `wait_ready`, true
+  once `serve()` has bound its call and probe subjects and published once. Code
+  that publishes a manifest itself checks it first.
+
 - **A durable forward whose result waiter could not open killed the dispatch
   task silently.** `CallProxy._forward_call_durable` opened its JetStream
   waiter outside any guard, so a bus missing the result stream raised out of the
