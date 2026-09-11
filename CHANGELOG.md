@@ -4,6 +4,45 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.38.0 -- 2026-09-10
+
+### Added
+
+- **A tool pod can query a datasource, the way it queries L3.** `_tool_pod` in
+  `threetears.nats.subject_permissions` now publishes `{ns}.datasource.*.query`,
+  the subject the hub already subscribes for every datasource it serves. The
+  wildcard is the datasource NAME segment and is safe to hold because the request
+  names no principal: the hub verifies the forwarded hub-minted token at the door
+  and evaluates the pod's own grant on that datasource's namespace, so the subject
+  buys reach and never authority. The hub half -- the responder, and the
+  `declared_datasources` row that materializes the grant -- lands in the hub.
+
+- **`threetears.datasources.query_client`.** `DatasourceQueryClient` publishes a
+  typed `DatasourceQueryRequest` on that subject with the caller's identity as a
+  FORWARDED TOKEN read from a provider on every call, and returns a
+  `DatasourceQueryResult` -- the rows plus `truncated`, set when the hub cut the
+  result at its row cap, so a caller deriving state from a full read can refuse a
+  prefix rather than treat the missing rows as absent -- or raises
+  `DatasourceQueryError` carrying the hub's refusal code. One wire model for both
+  ends: the hub's responder imports these same classes, so the two sides cannot
+  drift the way a hand-copied mirror does. The request forbids unknown fields for
+  the reason the L3 request models do -- a stale client sending `agent_id` beside
+  a valid token must be refused at the border, never silently authorized as the
+  token's principal. Serves a program: rows only, no markdown, no honesty
+  imperatives; a program that wants the model-facing rendering calls the tool.
+
+- **`Subjects.datasource_query_wildcard()`**, the `{ns}.datasource.*.query`
+  pattern the hub subscribes once and the tool pod is granted, so neither
+  grant hand-types the subject.
+
+- `QUERY_STATEMENT_TIMEOUT_SECONDS` beside `DEFAULT_QUERY_TIMEOUT_SECONDS` in
+  the query client, pinned below it by a test: the hub's responder imports the
+  statement timeout, so a stuck warehouse always comes back as the hub's
+  `QUERY_TIMEOUT` and never as the client's transport failure.
+
+- `3tears-datasources` now depends on `3tears-nats` (no `[client]` extra: the
+  grammar, error types and client protocol import without nats-py).
+
 ## v0.37.0 -- 2026-09-09
 
 ### Fixed

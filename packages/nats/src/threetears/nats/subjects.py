@@ -1841,6 +1841,23 @@ class Subjects:
             raise ValueError("datasource name must be non-empty")
         return Subject(path=f"{_ns()}.datasource.{sanitize_subject_segment(name)}.query", kind="point")
 
+    @classmethod
+    def datasource_query_wildcard(cls) -> Subject:
+        """pattern spanning every datasource's query subject.
+
+        the hub subscribes it once and reads the datasource off the matched
+        subject, so a datasource added or removed at runtime needs no
+        subscribe or unsubscribe of its own. a tool pod is granted it as a
+        publish pattern: the grant is minted at connect, before the pod knows
+        which datasources an operator will declare for it, and it buys reach
+        and never authority -- the hub verifies the forwarded token and
+        evaluates the pod's grant on each datasource's namespace.
+
+        :return: subject ``{ns}.datasource.*.query``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.datasource.*.query", kind="pattern")
+
     # ------------------------------------------------------------------
     # cache invalidation
     # ------------------------------------------------------------------
