@@ -52,7 +52,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger, traced
@@ -110,14 +110,27 @@ class DatasourceQueryRequest(BaseModel):
     :param correlation_id: trace id echoed back on the reply and bound into the
         hub's logs, so one query can be followed from the caller to the driver
     :ptype correlation_id: UUID
+    identity is carried as :class:`~pydantic.SecretStr`, not plain ``str``. the
+    two fields are bearer tokens: a plain-``str`` field would surface the token
+    in a ``repr``, a log line, or a pydantic ``ValidationError`` (which echoes
+    the offending input), which is the leak the platform's "log the expiry,
+    never the token" rule exists to prevent. ``SecretStr`` redacts all of those
+    to ``'**********'``. The wire is unaffected: a JSON field serializer emits
+    the real token, because :meth:`threetears.nats.NatsClient.request` sends the
+    request via ``model_dump_json()`` and the hub reads the token off the
+    signed claims, so the value MUST cross verbatim.
+
+    :param correlation_id: trace id echoed back on the reply and bound into the
+        hub's logs, so one query can be followed from the caller to the driver
+    :ptype correlation_id: UUID
     :param identity_token: the caller's hub-minted identity token, forwarded
         verbatim; the hub verifies it and takes the principal off the signed
         claims
-    :ptype identity_token: str
+    :ptype identity_token: SecretStr
     :param user_identity_token: the per-turn hub-minted user assertion when a
         human is in the loop; ``None`` for a call with nobody's behalf to act
         on, in which case the hub evaluates the principal's own grants alone
-    :ptype user_identity_token: str | None
+    :ptype user_identity_token: SecretStr | None
     :param query: the sql to run; the hub admits SELECT and nothing else
     :ptype query: str
     :param params: positional query parameters, JSON-native values only
@@ -127,10 +140,26 @@ class DatasourceQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     correlation_id: UUID
-    identity_token: str
-    user_identity_token: str | None = None
+    identity_token: SecretStr
+    user_identity_token: SecretStr | None = None
     query: str
     params: list[Any] = Field(default_factory=list)
+
+    @field_serializer("identity_token", "user_identity_token", when_used="json")
+    def _emit_token_on_the_wire(self, value: SecretStr | None) -> str | None:
+        """emit the real token for JSON, so the hub receives it verbatim.
+
+        ``SecretStr`` would otherwise serialize to ``'**********'``, which would
+        travel the bus and fail every authorization as if the grant were wrong.
+        this runs ONLY for JSON (``when_used="json"``), so ``repr`` and a python
+        ``model_dump`` keep redacting; only the wire sees the secret.
+
+        :param value: the held token, or ``None`` for an absent user assertion
+        :ptype value: SecretStr | None
+        :return: the plaintext token, or ``None``
+        :rtype: str | None
+        """
+        return value.get_secret_value() if value is not None else None
 
 
 class DatasourceQueryResponse(BaseModel):
@@ -324,8 +353,10 @@ class DatasourceQueryClient:
             )
         request = DatasourceQueryRequest(
             correlation_id=correlation_id if correlation_id is not None else uuid7(),
-            identity_token=self.forwarded_identity_token(),
-            user_identity_token=user_identity_token,
+            # wrap at the border: the field is SecretStr so the token cannot leak through a repr or
+            # a validation error; the JSON serializer re-emits the real value for the wire.
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            user_identity_token=SecretStr(user_identity_token) if user_identity_token is not None else None,
             query=query,
             params=list(params) if params is not None else [],
         )

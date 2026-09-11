@@ -150,6 +150,34 @@ class TestRequestShape:
         assert parsed == request
         assert parsed.correlation_id == cid
 
+    def test_tokens_are_masked_in_repr_but_verbatim_on_the_wire(self) -> None:
+        """the bearer tokens redact in ``repr`` yet cross the JSON wire unchanged.
+
+        the field type is ``SecretStr`` so a token cannot leak through a ``repr``,
+        a log line, or a ``ValidationError``; the JSON serializer re-emits the real
+        value because the hub reads the principal off the signed token and the bus
+        sends the request via ``model_dump_json()``. a masked token on the wire would
+        fail every authorization as if the grant were wrong.
+        """
+        secret = "eyJ.identity.forwarded"
+        user_secret = "eyJ.user.assertion"
+        request = DatasourceQueryRequest(
+            correlation_id=uuid7(),
+            identity_token=secret,
+            user_identity_token=user_secret,
+            query="SELECT 1",
+        )
+
+        # masked everywhere a human or a log might see it
+        assert secret not in repr(request)
+        assert request.identity_token.get_secret_value() == secret
+
+        # verbatim on the JSON wire the bus actually sends
+        wire = request.model_dump_json()
+        assert secret in wire
+        assert user_secret in wire
+        assert "**********" not in wire
+
 
 class TestSend:
     """what the client puts on the bus."""
@@ -180,8 +208,9 @@ class TestSend:
 
         sent = fake.calls[0]["message"]
         assert isinstance(sent, DatasourceQueryRequest)
-        assert sent.identity_token == _TOKEN
-        assert sent.user_identity_token == "user.assertion"
+        assert sent.identity_token.get_secret_value() == _TOKEN
+        assert sent.user_identity_token is not None
+        assert sent.user_identity_token.get_secret_value() == "user.assertion"
         assert sent.query == "SELECT * FROM t WHERE id = $1"
         assert sent.params == [42]
         assert sent.correlation_id == cid
@@ -196,7 +225,7 @@ class TestSend:
         await client.query("ds", "SELECT 1")
         await client.query("ds", "SELECT 1")
 
-        assert [c["message"].identity_token for c in fake.calls] == ["first", "second"]
+        assert [c["message"].identity_token.get_secret_value() for c in fake.calls] == ["first", "second"]
 
     @pytest.mark.asyncio
     async def test_mints_a_correlation_id_when_none_is_given(self) -> None:
