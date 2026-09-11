@@ -290,5 +290,5 @@ async def test_tool_server_wires_injected_resolver_into_scope() -> None:
         arguments={},
         context=CallContext(customer_id=_CUSTOMER),
     )
-    scope = await server._build_call_scope(request)  # noqa: SLF001 -- wiring seam: server propagates its resolver to the per-call scope
+    scope = await server._build_call_scope(request, principal_is_tool_pod=False)  # noqa: SLF001 -- wiring seam: server propagates its resolver to the per-call scope
     assert scope.object_resolver is resolver

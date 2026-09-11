@@ -29,14 +29,16 @@ _POD_ID = "test-pod"
 
 
 class _ScopeRecordingTool(TearsTool):
-    """echoes its arguments and records the call scope's context it ran under."""
+    """echoes its arguments and records the call scope's context and tool-pod mark it ran under."""
 
     def __init__(self) -> None:
         self.contexts: list[Any] = []
+        self.marks: list[bool | None] = []
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         scope = current_scope()
         self.contexts.append(scope.context if scope is not None else None)
+        self.marks.append(scope.principal_is_tool_pod if scope is not None else None)
         return ToolResult(success=True, content=json.dumps(kwargs))
 
     def mcp_schema(self) -> MCPToolDefinition:
@@ -110,10 +112,13 @@ class TestATooPodPrincipalReachesTheTool:
         assert context.agent_id == pod_id  # the VERIFIED principal, re-stamped
         assert context.customer_id is None  # the sentinel was read as no customer
         assert context.user_id is None
+        # the scope says so explicitly, so a tool admitting a userless caller never has to
+        # infer a pod from a missing customer
+        assert tool.marks == [True]
 
     @pytest.mark.asyncio
     async def test_a_customer_uuid_token_still_stamps_its_customer(self) -> None:
-        """the A/B: the same gate over an agent's token keeps the customer."""
+        """the A/B: the same gate over an agent's token keeps the customer, and marks no pod."""
         server, tool, rec = _server()
         agent_id, customer_id = uuid4(), uuid4()
 
@@ -122,6 +127,22 @@ class TestATooPodPrincipalReachesTheTool:
         assert rec.replies[-1][1].success is True
         assert tool.contexts[0].agent_id == agent_id
         assert tool.contexts[0].customer_id == customer_id
+        assert tool.marks == [False]
+
+
+class TestTheToolPodMarkIsNeverDefaultedOn:
+    def test_a_scope_the_server_did_not_build_marks_no_pod(self) -> None:
+        """a hand-built scope with an agent and no customer is still not a pod.
+
+        That is exactly the shape a tool would misread as a pod if it inferred the mark from
+        the missing customer, so the field must default to the refusing answer.
+        """
+        from threetears.agent.tools.call_scope import ToolCallScope
+        from threetears.agent.tools.context_envelope import CallContext
+
+        scope = ToolCallScope(context=CallContext(agent_id=uuid4()))
+
+        assert scope.principal_is_tool_pod is False
 
 
 class TestATooPodPrincipalCannotBorrowAUser:

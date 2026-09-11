@@ -34,6 +34,14 @@ packages (bumped in lock-step).
   registry logs the platform-principal reading at INFO so an operator can see
   it happened from a line rather than from a missing customer tag.
 
+- **The call scope says whether the verified caller is a tool pod.**
+  `ToolCallScope.principal_is_tool_pod` is set by `ToolServer` from the principal
+  it verified and is `False` on every scope the server did not build. A tool that
+  admits a caller with no user -- a pod on its own grant -- reads this rather than
+  inferring a pod from a missing customer, which a hand-built scope can carry by
+  accident. `ToolServer._verify_identity` returns the mark as a third value, and
+  `_build_call_scope` takes it as a required keyword.
+
 - **`PLATFORM_CUSTOMER_SENTINEL`** in `threetears.core.security`: the one
   spelling of the `"aibots-platform"` customer claim a platform principal's
   token carries, which the hub mints and the SDK presents and which each used
