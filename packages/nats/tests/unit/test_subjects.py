@@ -348,6 +348,13 @@ def test_datasource_query() -> None:
     assert Subjects.datasource_query("redshift_prod").path == ("3tears.datasource.redshift_prod.query")
 
 
+def test_datasource_query_wildcard_spans_every_name() -> None:
+    """the hub's one subscription and the pod's one grant are the same pattern."""
+    pattern = Subjects.datasource_query_wildcard()
+    assert pattern.path == "3tears.datasource.*.query"
+    assert pattern.kind == "pattern"
+
+
 def test_datasource_query_rejects_empty() -> None:
     """datasource_query requires non-empty name."""
     with pytest.raises(ValueError):

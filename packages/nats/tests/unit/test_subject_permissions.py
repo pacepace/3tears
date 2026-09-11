@@ -309,7 +309,18 @@ class TestBootCompleteness:
             # hub.object.resolve is boot-critical for the Path-2 consume path: a
             # consuming tool that cannot publish it fails closed at the bus and
             # the whole resolve->stream capability goes silently inert.
-            (Principal.TOOL_POD, [f"{_NS}.tools.register", f"{_NS}.hub.jwks", f"{_NS}.hub.object.resolve"]),
+            (
+                Principal.TOOL_POD,
+                [
+                    f"{_NS}.tools.register",
+                    f"{_NS}.hub.jwks",
+                    f"{_NS}.hub.object.resolve",
+                    # a pod granted a datasource reaches it over this subject and nothing
+                    # else; without it the grant is materialized and the query is refused
+                    # at the connection.
+                    f"{_NS}.datasource.*.query",
+                ],
+            ),
             (
                 # the router forward grant is ``tools.internal.>`` (not ``.*``) so it spans BOTH
                 # single-token tool pods and two-token agent in-process pods.
@@ -358,6 +369,26 @@ class TestBootCompleteness:
         """
         perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert any(p.endswith(".l3.tx.*") for p in perm.publish)
+
+    def test_tool_pod_may_query_a_datasource(self) -> None:
+        """a tool pod granted a datasource reaches it the way it reaches L3.
+
+        the hub answers ``{ns}.datasource.{name}.query`` for every datasource it
+        serves, verifies the forwarded hub-minted token at the door, and evaluates
+        the pod's own grant on the datasource namespace. the request names no
+        principal, so holding the subject buys reach and never authority -- which
+        is what makes a wildcard over the NAME segment safe: the pod can ask about
+        any datasource, and the hub refuses every one it was not granted.
+
+        publish only. the hub subscribes; a pod never answers a datasource query.
+
+        :return: none
+        :rtype: None
+        """
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert f"{_NS}.datasource.*.query" in pod.publish
+        assert f"{_NS}.datasource.*.query" not in pod.subscribe
+        assert f"{_NS}.datasource.*.query" in _build(Principal.HUB).subscribe
 
     def test_tool_pod_may_handshake_for_a_token_of_its_own(self) -> None:
         """a tool pod writing its OWN state has no inbound token to forward.
