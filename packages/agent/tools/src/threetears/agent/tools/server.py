@@ -61,6 +61,7 @@ from threetears.core.security.identity_token import (
     IdentityKeyNotFoundError,
     IdentityTokenError,
     canonical_call_hash,
+    principal_from_claims,
     verify_identity_token,
 )
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
@@ -2062,12 +2063,17 @@ class ToolServer:
             # OVERWRITE the envelope's claimed identity with the verified token. a captured token
             # re-pointed at a forged agent / customer, or stripped of its identity to skip a
             # comparison, runs under the token's TRUE identity -- never the self-asserted one.
-            # these UUID conversions live INSIDE the try so a malformed-but-signed non-UUID claim
-            # fails closed (rejects) rather than escaping as an uncaught ValueError. user_id DEFAULTS
-            # to the handshake token's: ``None`` for a per-pod agent handshake token (it CANNOT carry
-            # the per-turn user); the bound user-assertion below may override it.
-            agent_id_value = UUID(claims.sub)
-            customer_id_value = UUID(claims.customer_id)
+            # the principal is read through the ONE reading the registry's door uses, INSIDE the
+            # try so a malformed-but-signed claim fails closed (rejects) rather than escaping as an
+            # uncaught ValueError: a tool pod's token carries the platform customer sentinel, read
+            # as no customer, and this gate MIRRORS the registry in admitting it -- a pod the
+            # registry authorized on its own grant must not be refused here by a parse the registry
+            # already decided against. user_id DEFAULTS to the handshake token's: ``None`` for a
+            # per-pod handshake token (it CANNOT carry the per-turn user); the bound user-assertion
+            # below may override it.
+            principal = principal_from_claims(claims)
+            agent_id_value = principal.principal_id
+            customer_id_value = principal.customer_id
             user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
@@ -2082,6 +2088,29 @@ class ToolServer:
         # the handshake token verified above, so ``context`` is non-None (the try raised + returned
         # otherwise). re-narrow for the type checker.
         assert context is not None
+
+        if principal.is_tool_pod:
+            # the same decision the registry's door logs, mirrored here so a dispatch under a
+            # platform principal is visible from a line and not from a missing customer tag.
+            log.info(
+                "pod identity verified as a platform principal; customer claim read as none",
+                extra={"extra_data": {"agent_id": str(principal.principal_id), "tool_name": request.tool_name}},
+            )
+            if context.user_identity_token:
+                # MIRRORS the registry: a pod acts on nobody's behalf, so a user assertion on a
+                # pod token is malformed by definition, refused at the sink rather than left to
+                # the claim-equality binding below, which would admit one minted with the sentinel.
+                log.warning(
+                    "pod user-assertion presented on a tool pod token; rejecting call",
+                    extra={
+                        "extra_data": {
+                            "reason": "IdentityTokenError",
+                            "detail": "a tool pod acts on nobody's behalf; a user assertion on a pod token is malformed",
+                            "tool_name": request.tool_name,
+                        }
+                    },
+                )
+                return request, "user-assertion verification failed (IdentityTokenError)"
 
         # MIRROR THE PROXY's user-assertion gate (registry/proxy.py ``_verify_identity``): a
         # user-driven turn's tool call ALSO carries a Hub-minted, cnf-LESS user-assertion

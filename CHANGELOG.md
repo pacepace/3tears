@@ -17,31 +17,47 @@ packages (bumped in lock-step).
   namespace. The hub half -- the `declared_tools` row that materializes that
   grant, and the build path admitting a pod principal -- lands in the hub.
 
-- **The registry door admits a tool pod.** `CallProxy._verify_identity` reads a
-  token whose `customer_id` claim is the platform sentinel as
-  `customer_id=None` and marks the verified principal a tool pod; a UUID claim
-  is an agent and carries no mark; any other non-UUID claim still fails closed
-  as `TOOL_IDENTITY_UNVERIFIED`. The mark rides to the authorizer beside the
-  ids, because a pod's principal id and an agent's are both UUIDs and only the
-  signed claim says which kind this one is.
+- **The registry door and the serving pod's mirror gate admit a tool pod, and
+  read the same principal.** `threetears.core.security.principal_from_claims`
+  is the ONE reading of who a verified token names: a `VerifiedPrincipal`
+  carrying the principal id, the customer (`None` for a platform principal),
+  whether it is a tool pod, and the customer claim verbatim.
+  `CallProxy._verify_identity` reads it and hands it to the authorizer AND to
+  the proxy-assertion mint, which re-mints the claim verbatim -- the sentinel
+  for a pod -- rather than skipping the assertion for a caller with no
+  customer, so a pod's forwarded call is signed like every other.
+  `ToolServer._verify_identity` reads it the same way, so the pod that
+  re-verifies the forwarded token admits the sentinel the registry admitted
+  instead of failing a UUID parse on it. Any other non-UUID customer claim
+  still fails closed at both doors, and both doors refuse a user assertion
+  presented on a tool pod's token outright: a pod acts on nobody's behalf. The
+  registry logs the platform-principal reading at INFO so an operator can see
+  it happened from a line rather than from a missing customer tag.
 
 - **`PLATFORM_CUSTOMER_SENTINEL`** in `threetears.core.security`: the one
   spelling of the `"aibots-platform"` customer claim a platform principal's
   token carries, which the hub mints and the SDK presents and which each used
-  to spell for itself. Deliberately not a UUID, and that is what bounds the
-  token: every reader that parses the claim as a customer refuses a tool pod on
-  it.
+  to spell for itself. Deliberately not a UUID; which doors refuse it is a
+  property of each door -- a customer-scoped read or a user-assertion binding
+  refuses a tool pod on it, the tool-call gates read it through
+  `principal_from_claims` and evaluate the pod alone.
 
 - **`threetears.registry.client`.** `ToolCallClient` publishes the registry's
   own `ProxyCallRequest` on the call subject with the caller's identity as a
   FORWARDED TOKEN read from a provider on every call and a proof of possession
   minted by a caller-supplied signer (`PopSignerProtocol`, the shape the SDK's
   `PopSigner` already has), and returns the registry's `ProxyCallResponse` or
-  raises `ToolCallError` carrying the registry's -- or the tool's -- refusal
-  code. Synchronous, on the caller's own inbox; its default deadline sits above
-  the registry's forward budget by `CALL_TIMEOUT_MARGIN_SECONDS`, pinned by a
-  test, so a slow tool comes back as the registry's `TOOL_TIMEOUT` rather than
-  the client's own transport fault.
+  raises `ToolCallError`. The error's code is the registry's or the tool's
+  refusal code, or one of the four the client mints itself:
+  `INVALID_TOOL_NAME`, `INVALID_TOOL_VERSION`, `NO_IDENTITY_TOKEN` (each
+  refused before the bus) and `REQUEST_FAILED` (the bus, not the registry, said
+  no). Synchronous, on the caller's own inbox; its default deadline is the
+  registry's `PLATFORM_DEFAULT_CALL_TIMEOUT` (now public on
+  `threetears.registry.config`) plus `CALL_TIMEOUT_MARGIN_SECONDS`, pinned by a
+  test, so a tool that runs past the default budget comes back as the
+  registry's `TOOL_TIMEOUT` rather than the client's own transport fault. A
+  tool whose declared `timeout_seconds` exceeds the default needs `timeout`
+  raised to match.
 
 ### Changed
 
@@ -49,10 +65,23 @@ packages (bumped in lock-step).
   `principal_is_tool_pod`.** `RbacEvaluatorAuthorizer` evaluates a marked
   principal with no user on its own grant alone -- exactly as the L3 broker and
   the hub's datasource authorizer evaluate the same principal -- and refuses an
-  unmarked (agent) principal with no user exactly as before. Every implementer
-  and every fake grows the keyword; it is required rather than defaulted so a
-  fake that predates it fails loudly under the parity walker instead of passing
-  on the wrong protocol.
+  unmarked (agent) principal with no user exactly as before. Every implementer,
+  every fake AND every caller grows the keyword: a caller that resolves a real
+  user for the principal it names -- the hub's REST OpenAPI ingress is one --
+  passes `principal_is_tool_pod=False`. It is required rather than defaulted so
+  a fake or caller that predates it fails loudly instead of passing on the
+  wrong protocol.
+
+- **`CallProxy._verify_identity` returns the `VerifiedPrincipal` as its third
+  value** (it returned a pair). A host that reaches through a subclass to drive
+  the verifier directly unpacks three.
+
+- **The hardcoded-timeout gate reads annotated constants.**
+  `packages/registry/tests/enforcement/test_no_hardcoded_timeouts.py` walked
+  plain assignments only, so `X_TIMEOUT: float = 30.0` passed the gate whose
+  purpose is to refuse it. It now walks both spellings, and its narrow
+  exceptions are consulted for constants; the client's margin is the one
+  allowlisted literal, with its reason beside it.
 
 ### Fixed
 

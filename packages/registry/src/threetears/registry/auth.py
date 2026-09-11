@@ -1,7 +1,7 @@
 """authentication and authorization protocols for tool registry.
 
 defines protocols that host applications implement to provide
-tool pod verification and agent tool access control. the registry
+tool pod verification and tool access control for every caller. the registry
 uses these to enforce security without depending on specific
 persistence implementations.
 

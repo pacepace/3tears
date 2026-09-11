@@ -65,6 +65,7 @@ _NS = "itest"
 _ISS = "hub"
 _KID = "kid-1"
 _TOOL = "probe.echo"
+_OTHER_TOOL = "probe.other"
 _VERSION = "1.0"
 _SERVING_POD = "serving-pod"
 
@@ -204,7 +205,13 @@ def _authorizer_granting(pod_id: UUID, namespace_id: UUID) -> RbacEvaluatorAutho
             groups={group_id: Group(id=group_id, name="tool-pod-access:pod", customer_id=None)},
         ),
     )
-    rows = {build_tool_namespace_name(_TOOL, _VERSION): _StubToolNamespace(id=namespace_id)}
+    # a SECOND registered tool the grant does not cover, so the refusal below comes from the
+    # evaluator's per-namespace decision and not from the namespace-miss branch that answers
+    # the same code for a tool nobody registered.
+    rows = {
+        build_tool_namespace_name(_TOOL, _VERSION): _StubToolNamespace(id=namespace_id),
+        build_tool_namespace_name(_OTHER_TOOL, _VERSION): _StubToolNamespace(id=uuid7()),
+    }
     return RbacEvaluatorAuthorizer(acl_cache=cache, namespace_collection=_FakeNamespaceCollection(rows))
 
 
@@ -289,9 +296,10 @@ async def test_a_tool_pod_calls_a_tool_through_the_real_proxy_with_no_user(nats_
             assert forwarded.user_id is None
             assert received[0].arguments == {"text": "hi"}
 
-            # the same pod asking for a tool its grant does not cover is refused at the authorizer.
+            # the same pod asking for a REGISTERED tool its grant does not cover is refused by the
+            # evaluator's per-namespace decision.
             with pytest.raises(ToolCallError) as excinfo:
-                await granted.call("probe.other", _VERSION, {})
+                await granted.call(_OTHER_TOOL, _VERSION, {})
             assert excinfo.value.error_code == "TOOL_NOT_AUTHORIZED"
 
             # a proof minted for another body is refused at the pop gate, before any authorizer.

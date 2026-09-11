@@ -38,11 +38,15 @@ is a grant to fix, the second is a bus to look at. A TOOL's own refusal
 (``success=False`` from the pod) raises through the same type with the tool's
 code, so one ``except`` covers the whole call.
 
-**Synchronous, on the caller's own inbox.** No durable reply is requested: a tool
-pod holds no grant on the result family, and the verbs this client exists for
-answer in milliseconds. A tool that runs longer than the registry's forward
-budget comes back as the registry's ``TOOL_TIMEOUT``, not as a transport fault,
-because the client's own deadline sits above that budget on purpose.
+**Synchronous, on the caller's own inbox.** No durable reply is requested: the
+caller-side reply family the registry's delivery gate admits is
+``Subjects.tools_reply_agent_subtree``, which a tool pod is granted neither to
+publish nor to subscribe, and the verbs this client exists for answer in
+milliseconds. The client's default deadline sits above the registry's DEFAULT
+forward budget on purpose, so a tool that runs past that budget comes back as
+the registry's ``TOOL_TIMEOUT`` rather than as a transport fault; a tool whose
+own declared ``timeout_seconds`` exceeds the default needs ``timeout`` raised to
+match, or its slow answer reads as ``REQUEST_FAILED`` here.
 """
 
 from __future__ import annotations
@@ -57,6 +61,7 @@ from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger, traced
 
+from threetears.registry.config import PLATFORM_DEFAULT_CALL_TIMEOUT
 from threetears.registry.proxy import ProxyCallRequest, ProxyCallResponse
 
 if TYPE_CHECKING:
@@ -80,15 +85,18 @@ log = get_logger(__name__)
 #: turn every slow tool into the client's own ``REQUEST_FAILED``, which cannot tell
 #: a slow tool from a dead bus and steers a retry that stacks a second call on
 #: the first. the margin is what the registry's refusal envelope needs to travel
-#: back while the caller is still listening.
+#: back while the caller is still listening. a literal by design: it is not a
+#: timeout of anything, it is the slack between two, and the hardcoded-timeout
+#: gate allowlists it by name for that reason.
 CALL_TIMEOUT_MARGIN_SECONDS: float = 10.0
 
 #: how long one call may take, end to end, before the client gives up.
 #:
-#: the registry's platform default forward budget plus the margin above; pinned
-#: above :func:`threetears.registry.config.get_call_timeout` by a test so the two
-#: cannot drift into the wrong order.
-DEFAULT_CALL_TIMEOUT_SECONDS: float = 120.0 + CALL_TIMEOUT_MARGIN_SECONDS
+#: the registry's platform default forward budget, taken from the config layer
+#: that owns it, plus the margin above; a test pins the sum above
+#: :func:`threetears.registry.config.get_call_timeout` so the two cannot drift
+#: into the wrong order.
+DEFAULT_CALL_TIMEOUT_SECONDS: float = PLATFORM_DEFAULT_CALL_TIMEOUT + CALL_TIMEOUT_MARGIN_SECONDS
 
 
 class PopSignerProtocol(Protocol):
@@ -167,8 +175,9 @@ class ToolCallClient:
     :ptype nats_client: NatsClient
     :param principal_id: this process's principal id, the ``sub`` the hub
         minted its token for; a tool pod's ``tool_pods.id``. carried on the
-        envelope because the registry routes on it before verifying, and
-        overwritten by the registry with the token's ``sub`` after
+        envelope because the registry refuses a request whose context names no
+        principal before it verifies anything, and overwritten by the registry
+        with the token's ``sub`` once it has
     :ptype principal_id: UUID
     :param identity_token: zero-arg provider returning this process's CURRENT
         hub-minted identity token, read on every call; the holder's bound
@@ -210,7 +219,7 @@ class ToolCallClient:
         self._pop_signer = pop_signer
         self._timeout = timeout if isinstance(timeout, timedelta) else timedelta(seconds=float(timeout))
 
-    def forwarded_identity_token(self) -> str:
+    def _forwarded_identity_token(self) -> str:
         """the CURRENT hub-minted identity token to forward on a call.
 
         read through the provider on every call, never cached: the token is
@@ -275,7 +284,7 @@ class ToolCallClient:
                 "INVALID_TOOL_VERSION",
                 "a tool call needs the tool's mcp_version; an empty version names no tool",
             )
-        token = self.forwarded_identity_token()
+        token = self._forwarded_identity_token()
         effective_correlation_id = correlation_id if correlation_id is not None else uuid7()
         effective_arguments = dict(arguments) if arguments else {}
         # the proof binds the body EXACTLY as the registry will recompute it: the tool name, the

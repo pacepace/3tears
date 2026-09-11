@@ -26,6 +26,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn
+from uuid import UUID
 
 import jwt
 from threetears.observe import get_logger
@@ -38,10 +39,12 @@ __all__ = [
     "IdentityClaims",
     "IdentityKeyNotFoundError",
     "IdentityTokenError",
+    "VerifiedPrincipal",
     "build_jwks",
     "canonical_call_hash",
     "generate_signing_keypair",
     "jwk_thumbprint",
+    "principal_from_claims",
     "sign_identity_token",
     "verify_identity_token",
 ]
@@ -76,18 +79,74 @@ _REQUIRED_CLAIMS = ("iss", "sub", "customer_id", "sid", "pod_id", "iat", "exp")
 #:
 #: ``customer_id`` is required on every token (above), and a tool pod has no customer to
 #: stamp: it is a platform-shared principal, not a customer-scoped one. The hub mints this
-#: literal onto a tool pod's identity token, the pod presents the same literal on its
-#: self-minted connect token, and a verifier that reads ``customer_id`` as a customer treats it
-#: as "no customer" -- the registry proxy maps it to ``customer_id=None`` and marks the
-#: principal a tool pod, so the tool-call authorizer evaluates the pod on its own grant.
+#: literal onto a tool pod's identity token and the pod presents the same literal on its
+#: self-minted connect token.
 #:
-#: **It is deliberately NOT a UUID, and that is what bounds the token.** Every reader that
-#: parses the claim as a customer UUID refuses a tool pod on it: a customer-scoped read cannot
-#: be steered to any customer, and a user assertion -- always minted for a customer UUID --
-#: can never bind to this principal. Spelled ONCE here; the hub and the SDK import it rather
-#: than carrying their own copy, because a second spelling is a discriminator that silently
-#: stops discriminating.
+#: **It is deliberately NOT a UUID, and which readers refuse it is a property of each door,
+#: not of the claim.** A door that scopes a read to a customer -- a customer-scoped query,
+#: a user-assertion binding (a user assertion is minted for a customer UUID) -- refuses a
+#: tool pod on it, and must. A door that admits a principal on its OWN grant -- the registry's
+#: tool-call gate and the serving pod's mirror of it -- reads it through
+#: :func:`principal_from_claims` as "no customer" and evaluates the pod alone. Both are
+#: deliberate, and a reader that neither refuses nor reads it through that function is a
+#: reader that has not decided. Spelled ONCE here; the hub and the SDK import it rather than
+#: carrying their own copy, because a second spelling is a discriminator that silently stops
+#: discriminating.
 PLATFORM_CUSTOMER_SENTINEL = "aibots-platform"
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedPrincipal:
+    """the principal a verified identity token names, read once and carried whole.
+
+    The registry's door, its assertion mint and the serving pod's mirror gate all
+    used to reconstruct "what kind of principal is this" from ``customer_id`` on
+    their own -- one by a boolean, one by ``is None``, one by parsing the claim as a
+    UUID -- and a tool pod admitted at one door was refused at the next. This is
+    the one reading. Every consumer takes the kind from :attr:`is_tool_pod` and the
+    customer from :attr:`customer_id`, and a downstream assertion re-mints the
+    customer claim from :attr:`customer_claim` verbatim, so the sentinel travels
+    intact to the pod rather than being invented there.
+
+    :ivar principal_id: the token's ``sub`` -- an agent's id, or a tool pod's id
+    :ivar customer_id: the customer the principal is scoped to, or ``None`` for
+        a platform principal
+    :ivar is_tool_pod: whether the token names a tool pod, which is the ONLY
+        principal evaluated on its own grant with no user
+    :ivar customer_claim: the ``customer_id`` claim verbatim, a UUID string or
+        :data:`PLATFORM_CUSTOMER_SENTINEL`, for re-minting onto an assertion
+        whose schema requires the claim
+    """
+
+    principal_id: UUID
+    customer_id: UUID | None
+    is_tool_pod: bool
+    customer_claim: str
+
+
+def principal_from_claims(claims: IdentityClaims) -> VerifiedPrincipal:
+    """read the principal a VERIFIED token names.
+
+    The customer claim is read exactly one of two ways: equal to
+    :data:`PLATFORM_CUSTOMER_SENTINEL` it is a tool pod with no customer; otherwise
+    it must parse as a customer UUID. Any other value is a malformed token and
+    raises, so a caller that catches ``ValueError`` at its door fails closed on it
+    exactly as it fails closed on a non-UUID ``sub``.
+
+    :param claims: the claims :func:`verify_identity_token` returned
+    :ptype claims: IdentityClaims
+    :return: the principal the token names
+    :rtype: VerifiedPrincipal
+    :raises ValueError: when ``sub`` is not a UUID, or ``customer_id`` is neither
+        a UUID nor the platform sentinel
+    """
+    is_tool_pod = claims.customer_id == PLATFORM_CUSTOMER_SENTINEL
+    return VerifiedPrincipal(
+        principal_id=UUID(claims.sub),
+        customer_id=None if is_tool_pod else UUID(claims.customer_id),
+        is_tool_pod=is_tool_pod,
+        customer_claim=claims.customer_id,
+    )
 
 
 class IdentityTokenError(Exception):
