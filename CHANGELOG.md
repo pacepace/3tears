@@ -19,7 +19,10 @@ packages (bumped in lock-step).
 
 - **`threetears.datasources.query_client`.** `DatasourceQueryClient` publishes a
   typed `DatasourceQueryRequest` on that subject with the caller's identity as a
-  FORWARDED TOKEN read from a provider on every call, and returns rows or raises
+  FORWARDED TOKEN read from a provider on every call, and returns a
+  `DatasourceQueryResult` -- the rows plus `truncated`, set when the hub cut the
+  result at its row cap, so a caller deriving state from a full read can refuse a
+  prefix rather than treat the missing rows as absent -- or raises
   `DatasourceQueryError` carrying the hub's refusal code. One wire model for both
   ends: the hub's responder imports these same classes, so the two sides cannot
   drift the way a hand-copied mirror does. The request forbids unknown fields for

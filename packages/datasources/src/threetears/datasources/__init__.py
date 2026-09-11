@@ -105,6 +105,7 @@ from threetears.datasources.query_client import (
     DatasourceQueryError,
     DatasourceQueryRequest,
     DatasourceQueryResponse,
+    DatasourceQueryResult,
 )
 from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
@@ -140,6 +141,7 @@ __all__ = [
     "DatasourceQueryError",
     "DatasourceQueryRequest",
     "DatasourceQueryResponse",
+    "DatasourceQueryResult",
     "IntrospectionDiff",
     "PostgresConnectionConfig",
     "RedshiftConnectionConfig",

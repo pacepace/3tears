@@ -27,13 +27,16 @@ Imported via `from threetears.datasources import …`:
   SDK validates against) plus the per-driver `ConnectionConfig`
   discriminated union.
 - **query wire** -- `DatasourceQueryClient`, `DatasourceQueryRequest`,
-  `DatasourceQueryResponse`, `DatasourceQueryError`. How a process that
-  holds no warehouse credential (a tool pod) queries a hub-served
-  datasource on its own identity: it publishes on
+  `DatasourceQueryResponse`, `DatasourceQueryResult`, `DatasourceQueryError`.
+  How a process that holds no warehouse credential (a tool pod) queries a
+  hub-served datasource on its own identity: it publishes on
   `{ns}.datasource.{name}.query` carrying its hub-minted token, the hub
   verifies the token, evaluates the caller's grant on the datasource
   namespace, runs the query on the driver it already holds, and answers
-  with rows or a typed refusal. Rows only -- the model-facing rendering
+  with rows or a typed refusal. The client hands back the rows and
+  `truncated`, set when the hub cut the result at its row cap, so a caller
+  deriving state from a full read can refuse a prefix rather than treat the
+  missing rows as absent. Rows only otherwise -- the model-facing rendering
   with honesty imperatives is the datasource tool's job.
 
 ## Drivers

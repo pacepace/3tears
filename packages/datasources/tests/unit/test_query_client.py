@@ -271,10 +271,30 @@ class TestReplies:
 
     @pytest.mark.asyncio
     async def test_success_returns_the_rows(self) -> None:
-        """rows come back as plain dicts in the hub's order."""
+        """rows come back as plain dicts in the hub's order, and a full result says so."""
         rows = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
-        fake = _FakeNatsClient(reply=_rows(uuid7(), rows))
-        assert await _client(fake).query("ds", "SELECT id, name FROM t") == rows
+        cid = uuid7()
+        fake = _FakeNatsClient(reply=_rows(cid, rows))
+
+        result = await _client(fake).query("ds", "SELECT id, name FROM t")
+
+        assert result.rows == rows
+        assert result.row_count == 2
+        assert result.truncated is False
+        assert result.correlation_id == cid
+
+    @pytest.mark.asyncio
+    async def test_a_cut_result_is_returned_flagged_never_as_the_whole(self) -> None:
+        """the hub's row cap rides through: a caller deriving state from a full read
+        can refuse the prefix instead of treating the missing rows as absent upstream."""
+        rows = [{"id": index} for index in range(3)]
+        reply = DatasourceQueryResponse(success=True, rows=rows, row_count=3, truncated=True, correlation_id=uuid7())
+        fake = _FakeNatsClient(reply=reply)
+
+        result = await _client(fake).query("ds", "SELECT id FROM t")
+
+        assert result.rows == rows
+        assert result.truncated is True
 
     @pytest.mark.asyncio
     async def test_refusal_envelope_raises_with_the_code(self) -> None:

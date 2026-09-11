@@ -32,8 +32,17 @@ the second is a bus to look at.
 
 **No markdown, no honesty imperatives.** The datasource TOOL renders rows for a
 model and annotates what is missing so the model cannot invent it. This client
-serves a program, which gets the rows and nothing else. A program that wants the
-model-facing rendering calls the tool.
+serves a program, which gets the rows and the one fact about them it cannot
+recover on its own: whether the hub CUT the result at its row cap. A program
+that wants the model-facing rendering calls the tool.
+
+**Truncation is returned, never swallowed.** The hub caps a result and says so
+on the wire; a client that handed back the rows alone would turn a cap into a
+silent prefix, and a consumer that derives state from a full read -- prune what
+the upstream no longer has, say -- would rewrite its state from a lie. So
+:meth:`DatasourceQueryClient.query` returns a :class:`DatasourceQueryResult`
+carrying ``truncated`` beside ``rows``, and the caller decides: a preview takes
+the prefix, a derivation refuses it.
 """
 
 from __future__ import annotations
@@ -58,6 +67,7 @@ __all__ = [
     "DatasourceQueryError",
     "DatasourceQueryRequest",
     "DatasourceQueryResponse",
+    "DatasourceQueryResult",
 ]
 
 log = get_logger(__name__)
@@ -153,6 +163,36 @@ class DatasourceQueryResponse(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     correlation_id: UUID | None = None
+
+
+class DatasourceQueryResult(BaseModel):
+    """what a successful query hands the caller: the rows, and whether they are all of them.
+
+    Distinct from :class:`DatasourceQueryResponse`, which is the WIRE envelope
+    and carries the refusal fields too; by the time a caller holds this, a
+    refusal has already become :class:`DatasourceQueryError`, so the fields
+    left are the ones a program acts on.
+
+    :param rows: result rows, one dict per row, in the hub's order. a ``bytes``
+        column arrives hex-encoded; decode with ``bytes.fromhex``
+    :ptype rows: list[dict[str, Any]]
+    :param row_count: how many rows ``rows`` carries
+    :ptype row_count: int
+    :param truncated: whether the hub cut the result at its row cap, so
+        ``rows`` is a prefix of what the query produced. a caller deriving
+        state from a full read must refuse a truncated one rather than treat
+        the missing rows as absent upstream
+    :ptype truncated: bool
+    :param correlation_id: the request's id, echoed by the hub
+    :ptype correlation_id: UUID
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    rows: list[dict[str, Any]]
+    row_count: int
+    truncated: bool
+    correlation_id: UUID
 
 
 class DatasourceQueryError(RuntimeError):
@@ -254,8 +294,8 @@ class DatasourceQueryClient:
         *,
         user_identity_token: str | None = None,
         correlation_id: UUID | None = None,
-    ) -> list[dict[str, Any]]:
-        """run one read query against a datasource and return its rows.
+    ) -> DatasourceQueryResult:
+        """run one read query against a datasource and return its rows, flagged if cut.
 
         :param datasource_name: the datasource's name as the hub's ``datasources``
             table holds it
@@ -269,8 +309,9 @@ class DatasourceQueryClient:
         :ptype user_identity_token: str | None
         :param correlation_id: trace id for this query; minted when omitted
         :ptype correlation_id: UUID | None
-        :return: result rows, one dict per row
-        :rtype: list[dict[str, Any]]
+        :return: the rows, with ``truncated`` set when the hub cut them at its
+            row cap; a caller that needs every row must check it
+        :rtype: DatasourceQueryResult
         :raises DatasourceQueryError: when the datasource name is empty, when
             no identity token is available, when the hub refuses (its code
             rides on the exception), or when the bus fails to deliver a
@@ -319,9 +360,30 @@ class DatasourceQueryClient:
             )
             raise DatasourceQueryError("REQUEST_FAILED", f"datasource query on {datasource_name!r}: {exc}") from exc
 
-        result: list[dict[str, Any]]
+        result: DatasourceQueryResult
         if response.success:
-            result = response.rows
+            if response.truncated:
+                # said here as well as carried, because a program that ignores
+                # the flag is the failure this warns about, and the hub's own
+                # line is on the other side of the bus.
+                log.warning(
+                    "datasource query result was cut at the hub's row cap; rows is a prefix",
+                    extra={
+                        "extra_data": {
+                            "datasource": datasource_name,
+                            "correlation_id": f"{request.correlation_id}",
+                            "row_count": response.row_count,
+                        }
+                    },
+                )
+            result = DatasourceQueryResult(
+                rows=response.rows,
+                row_count=response.row_count,
+                truncated=response.truncated,
+                correlation_id=response.correlation_id
+                if response.correlation_id is not None
+                else request.correlation_id,
+            )
         else:
             error_code = response.error_code or "UNKNOWN"
             log.info(
