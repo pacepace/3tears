@@ -163,6 +163,15 @@ class NamespaceDiscoverySummary(BaseModel):
     namespace_type: str
     owner_agent_id: UUID
     customer_id: UUID
+    # Populated only for a ``datasource`` row, and only by a hub at v102 or
+    # later; ``None`` everywhere else. The broker's summary is otherwise
+    # deliberately minimal on the grounds that "downstream tools fetch full
+    # metadata by id from the owner agent's schema" -- which assumes an owner
+    # schema. A datasource namespace carries ``owner_agent_id`` NULL, so for
+    # this one type there is no second call to make and the paired
+    # ``datasources.id`` has nowhere else to come from. Schema priming needs it:
+    # the schema digests are keyed on that id.
+    datasource_id: UUID | None = None
 
 
 class NamespaceDiscoveryResponse(BaseModel):
