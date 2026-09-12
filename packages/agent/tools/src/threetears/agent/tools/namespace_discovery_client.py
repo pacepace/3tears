@@ -152,7 +152,7 @@ class NamespaceDiscoverySummary(BaseModel):
     :ptype namespace_type: str
     :param owner_agent_id: agent whose schema physically holds the
         namespace's rows; cross-agent routing targets this agent
-    :ptype owner_agent_id: UUID
+    :ptype owner_agent_id: UUID | None
     :param customer_id: owning customer; always matches the caller's
         customer because the broker filters in SQL
     :ptype customer_id: UUID
@@ -161,7 +161,11 @@ class NamespaceDiscoverySummary(BaseModel):
     id: UUID
     name: str
     namespace_type: str
-    owner_agent_id: UUID
+    # ``None`` for a type with no owning agent. A ``datasource`` namespace is
+    # created with it NULL -- its rows live in a warehouse, not in any agent's
+    # schema -- so a non-optional annotation here made discovery fail validation
+    # for the whole answer whenever one was visible.
+    owner_agent_id: UUID | None
     customer_id: UUID
     # Populated only for a ``datasource`` row, and only by a hub at v102 or
     # later; ``None`` everywhere else. The broker's summary is otherwise

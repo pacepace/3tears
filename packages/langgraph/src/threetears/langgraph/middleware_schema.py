@@ -461,9 +461,14 @@ async def _read_schema_block(integration: Any, datasource_ids: list[Any], budget
                 digests.append(entity)
         block = _render_schema_block(digests, budget=budget)
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- digest read is best-effort; a fault drops the block but the honesty rule still ships
+        # The TYPE alone is not diagnosable. Every fault here -- a denied read, a
+        # proxy timeout, a malformed row -- collapsed to one bare class name, so
+        # the one log line that exists for a silently-degraded turn said nothing
+        # about which of them happened or what would fix it. Carry the message.
         log.warning(
-            "schema priming digest read failed (soft-fail; honesty rule still shipped): %s",
+            "schema priming digest read failed (soft-fail; honesty rule still shipped): %s: %s",
             type(exc).__name__,
+            exc,
         )
     return block
 
