@@ -15,15 +15,21 @@ Part of the [3tears](https://github.com/pacepace/3tears) framework.
 
 ## Authorization
 
-Tool dispatch authorization lives behind the `AgentToolAuthorizer` protocol. Implementations receive the calling agent id, the invoking user id (from `CallContext.user_id`), and the fully qualified tool name, and return a boolean decision.
+Tool dispatch authorization lives behind the `AgentToolAuthorizer` protocol. Implementations receive the calling principal id, the invoking user id (from `CallContext.user_id`), the fully qualified tool name and version, and one fact the ids cannot carry, `principal_is_tool_pod`, and return a boolean decision.
 
 Production deployments wire `RbacEvaluatorAuthorizer` (in `threetears.registry.rbac_authorizer`) which delegates to the unified rbac evaluator from `threetears.agent.acl`:
 
 - The platform-side `ToolNamespaceEmitter` listens on `{ns}.tools.register` and upserts a `namespaces` row of type `tool` per tool in every `RegistrationManifest`. The canonical `name` shape is `tools.<sanitized-mcp-name>.<sanitized-version>` (per `build_namespace_name`); `metadata` carries the pre-sanitized natural-identity fields `mcp_name` / `mcp_version` / `pod_id` so downstream pattern matching (the access materializer's agent.yaml `access.tools` patterns) does not need to reverse the sanitization rules.
-- The authorizer resolves the tool namespace via an injected `NamespaceCollection`. The signature is `is_authorized(agent_id, user_id, tool_name, tool_version)`. The implementation builds the canonical lookup key via `build_namespace_name(PLURAL_PREFIX_TOOL, tool_name, tool_version)` rather than passing the raw `mcp_name` directly, so the lookup matches the row the emitter wrote.
+- The authorizer resolves the tool namespace via an injected `NamespaceCollection`. The signature is `is_authorized(agent_id, user_id, tool_name, tool_version, *, principal_is_tool_pod)`. The implementation builds the canonical lookup key via `build_namespace_name(PLURAL_PREFIX_TOOL, tool_name, tool_version)` rather than passing the raw `mcp_name` directly, so the lookup matches the row the emitter wrote.
 - `evaluate_decision` resolves the two-sided grant chain: user side (groups the invoking user is in) intersected with agent side (groups the calling agent is in, short-circuited by namespace ownership). The decision is cached in `threetears.agent.acl.AclCache` with TTL + fine-grained invalidation; cross-process rbac mutations purge the cache promptly via the `acl.{membership,assignment,role}.invalidate` subjects the `RegistryRbacStack` subscribes to on startup.
 
-Defense in depth: when `user_id=None` (tool dispatch without user identity) the authorizer denies unconditionally. When the namespace Collection's `get_by_name` returns `None` (tool registered but namespace row not yet visible) it denies. This catches registration races rather than defaulting to allow.
+Defense in depth: when `user_id=None` on an AGENT's dispatch the authorizer denies unconditionally, because an agent's tool grants are two-sided. When the namespace Collection's `get_by_name` returns `None` (tool registered but namespace row not yet visible) it denies. This catches registration races rather than defaulting to allow.
+
+A TOOL POD is the one principal evaluated on its own grant alone. A pod acts on nobody's behalf and never carries a user; the hub mints its identity token with the platform customer sentinel (`threetears.core.security.PLATFORM_CUSTOMER_SENTINEL`) where a customer UUID would be, and `CallProxy._verify_identity` reads that signed claim as `customer_id=None` plus the mark it passes to the authorizer. `RbacEvaluatorAuthorizer` then evaluates the agent side only, against the pod's own group, exactly as the L3 broker and the hub's datasource authorizer evaluate the same principal. The mark buys evaluation and never authority: a marked pod holding no `ToolCaller` row on the tool's namespace is refused. Any non-UUID customer claim that is not the sentinel still fails closed at the door.
+
+## Calling a tool from a tool pod
+
+`ToolCallClient` (in `threetears.registry.client`) is the pod's half of the wire: it publishes the registry's own `ProxyCallRequest` on `{ns}.tools.call` with the pod's hub-minted identity token read from a provider on every call and a proof of possession minted by a caller-supplied signer (`PopSignerProtocol`, the shape the SDK's `PopSigner` has), and returns the `ProxyCallResponse` or raises `ToolCallError` carrying the registry's or the tool's refusal code. It is synchronous on the pod's own inbox and requests no durable reply; its default deadline sits above the registry's forward budget so a slow tool comes back as the registry's `TOOL_TIMEOUT` rather than the client's own transport fault.
 
 Platform-built-in tools land with `owner_agent_id=NULL, customer_id=NULL`. There is no implicit "anyone can call" behaviour for them. Grants are managed via explicit assignments on the platform-seeded `ToolCaller` role (same pattern as shared-type workspaces).
 
@@ -71,7 +77,7 @@ sequenceDiagram
     participant ToolPod
 
     Agent->>Registry: ProxyCallRequest(tool_name, tool_version, context.user_id)
-    Registry->>RbacStack: is_authorized(agent_id, user_id, tool_name, tool_version)
+    Registry->>RbacStack: is_authorized(agent_id, user_id, tool_name, tool_version, principal_is_tool_pod=...)
     RbacStack->>RbacStack: build_namespace_name(PLURAL_PREFIX_TOOL, tool_name, tool_version)
     RbacStack->>PlatformBroker: NamespaceCollection.get_by_name (system.platform.rbac proxy)
     PlatformBroker-->>RbacStack: tool namespace row

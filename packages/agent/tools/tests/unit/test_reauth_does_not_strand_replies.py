@@ -29,8 +29,6 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
-import pytest
-
 from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
@@ -39,8 +37,6 @@ from threetears.nats import IncomingMessage, set_default_namespace
 from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
 from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
-
-pytestmark = pytest.mark.unit
 
 _POD = "pod-under-test"
 

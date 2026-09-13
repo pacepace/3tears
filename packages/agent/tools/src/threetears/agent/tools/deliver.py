@@ -28,6 +28,7 @@ from uuid import UUID
 from threetears.observe import get_logger
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.config import get_deliver_timeout
 from threetears.agent.tools.consume import ConsumeObjectError, presigned_object_url, resolve_object
 from threetears.agent.tools.object_resolver import ResolveObjectError
 
@@ -41,11 +42,6 @@ _DEFAULT_NAME = "threetears.deliver_object"
 #: presigned delivery-URL validity; override with DELIVER_PRESIGN_TTL_SECONDS.
 _DEFAULT_PRESIGN_TTL = 3600
 _PRESIGN_TTL_ENV = "DELIVER_PRESIGN_TTL_SECONDS"
-
-#: expected max resolve+presign time (a NATS round-trip + a presign, no
-#: rendering); override with DELIVER_TIMEOUT_SECONDS.
-_DEFAULT_TIMEOUT_SECONDS = 30.0
-_TIMEOUT_ENV = "DELIVER_TIMEOUT_SECONDS"
 
 _INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -62,24 +58,6 @@ _INPUT_SCHEMA: dict[str, Any] = {
     },
     "required": ["object_id"],
 }
-
-
-def _timeout_seconds() -> float:
-    """Resolve the tool's expected-max resolve+presign time from the environment.
-
-    :return: timeout in seconds (falls back to the default on unset/invalid)
-    :rtype: float
-    """
-    raw = os.environ.get(_TIMEOUT_ENV)
-    if raw:
-        try:
-            value = float(raw)
-        except ValueError:
-            _log.warning("invalid %s=%r; using default", _TIMEOUT_ENV, raw)
-        else:
-            if value > 0:
-                return value
-    return _DEFAULT_TIMEOUT_SECONDS
 
 
 def _presign_ttl() -> int:
@@ -196,7 +174,7 @@ class DeliverObjectTool(TearsTool):
                 "inline. Unknown or foreign object ids are refused."
             ),
             input_schema=_INPUT_SCHEMA,
-            timeout_seconds=_timeout_seconds(),
+            timeout_seconds=get_deliver_timeout(),
         )
 
     def mcp_name(self) -> str:

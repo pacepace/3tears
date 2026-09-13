@@ -30,11 +30,23 @@ wiring shape:
   ``get_by_name`` method, then asks the evaluator for a boolean
   decision
 
-defense in depth: when ``user_id`` is ``None`` the authorizer
-returns ``False`` (a tool dispatch without an identified user is
-refused even when the agent is privileged). when the namespace
-lookup returns ``None`` (tool not yet materialized; registration
-race) the authorizer also returns ``False``.
+defense in depth: when ``user_id`` is ``None`` and the principal is
+an AGENT the authorizer returns ``False`` (an agent's tool dispatch
+without an identified user is refused even when the agent is
+privileged). when the namespace lookup returns ``None`` (tool not
+yet materialized; registration race) the authorizer also returns
+``False``.
+
+a TOOL POD is the one principal evaluated on its own grant alone.
+it acts on nobody's behalf and never carries a user, so the
+two-sided rule would refuse every call it makes; the proxy marks
+the principal a tool pod off the token's platform customer claim
+and passes ``principal_is_tool_pod=True``, and the evaluation runs
+on the agent side only -- exactly as the L3 broker and the hub's
+datasource authorizer evaluate the same principal. an agent is
+never marked, so an agent dispatch with no user stays refused. the
+mark is the proxy's to set, from a claim it verified; it is never
+read off the envelope.
 """
 
 from __future__ import annotations
@@ -142,6 +154,8 @@ class RbacEvaluatorAuthorizer:
         user_id: str | None,
         tool_name: str,
         tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
     ) -> bool:
         """resolve an authorization decision for a tool dispatch.
 
@@ -157,8 +171,16 @@ class RbacEvaluatorAuthorizer:
         ``user_id`` from ``ProxyCallRequest.context.user_id`` and
         ``tool_name`` / ``tool_version`` from the request directly.
 
-        :param agent_id: calling agent UUID in string form (border
-            conversion happens here)
+        with no user, the decision depends on WHAT the principal is.
+        a tool pod is evaluated on its own grant alone, because a pod
+        acts on nobody's behalf and has no user to carry; an agent
+        with no user is refused, because an agent's tool grants are
+        two-sided and a missing user is a missing half. the proxy
+        supplies the distinction from the token it verified.
+
+        :param agent_id: calling principal UUID in string form (border
+            conversion happens here): an agent's id, or a tool pod's
+            ``tool_pods.id``
         :ptype agent_id: str
         :param user_id: invoking user UUID in string form, or
             ``None`` when the dispatch carries no user identity
@@ -173,6 +195,10 @@ class RbacEvaluatorAuthorizer:
             request; sanitized into the LAST component of the
             canonical namespace name
         :ptype tool_version: str
+        :param principal_is_tool_pod: whether the proxy verified the
+            principal as a tool pod; the only principal admitted with
+            no user
+        :ptype principal_is_tool_pod: bool
         :return: True iff the evaluator grants the ``tool.call``
             action on the resolved tool namespace
         :rtype: bool
@@ -203,13 +229,15 @@ class RbacEvaluatorAuthorizer:
                 )
                 return result
 
-        # defense in depth: a tool dispatch without an identified
-        # user cannot be authorized. the workspace side short-
-        # circuits to the agent-owner shortcut instead, but tool
-        # grants are always two-sided (user must have permission).
-        if user_uuid is None:
+        # defense in depth: an AGENT's tool dispatch without an
+        # identified user cannot be authorized. the workspace side
+        # short-circuits to the agent-owner shortcut instead, but an
+        # agent's tool grants are always two-sided (user must have
+        # permission). a TOOL POD is the one principal that has no
+        # user to carry, and it is evaluated on its own grant below.
+        if user_uuid is None and not principal_is_tool_pod:
             log.info(
-                "rbac authorizer: no user_id on tool dispatch, denying",
+                "rbac authorizer: no user_id on an agent's tool dispatch, denying",
                 extra={
                     "extra_data": {
                         "agent_id": agent_id,
@@ -218,6 +246,16 @@ class RbacEvaluatorAuthorizer:
                 },
             )
             return result
+        if user_uuid is None:
+            log.info(
+                "rbac authorizer: tool pod dispatch with no user; evaluating the pod's own grant",
+                extra={
+                    "extra_data": {
+                        "agent_id": agent_id,
+                        "tool_name": tool_name,
+                    }
+                },
+            )
 
         # canonicalize: the dispatch arrives as the natural
         # ``(mcp_name, mcp_version)`` pair; the namespace ``name``

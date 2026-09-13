@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 __all__ = [
     "DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS",
     "DEFAULT_HTTP_TIMEOUT_SECONDS",
+    "DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS",
     "CoreConfig",
     "DefaultCoreConfig",
     "VALID_FLUSH_STRATEGIES",
@@ -26,6 +27,15 @@ DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 # exit up", and a check that hangs as long as a real request tells an operator nothing they
 # could not already see from the requests themselves.
 DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS = 10.0
+
+# startup budget for a PostgreSQL pool (:func:`threetears.core.utils.pg_pool_kwargs
+# .create_pool_with_startup_timeout`). the same wall clock as the NATS startup
+# budget (``threetears.nats.DEFAULT_STARTUP_TIMEOUT``), pinned equal by a test in
+# the nats package, which is the one that can import both. lives here, the core
+# config layer, because core cannot import nats and a literal beside the pool
+# helper was a timeout constant the hardcoded-timeout gate had to be widened to
+# see.
+DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS = 30.0
 
 
 @runtime_checkable

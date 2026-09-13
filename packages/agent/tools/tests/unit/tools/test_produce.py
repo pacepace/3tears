@@ -263,7 +263,7 @@ async def test_tool_server_wires_store_into_scope() -> None:
         arguments={},
         context=CallContext(customer_id=_CUSTOMER, conversation_id=_CONVERSATION),
     )
-    scope = await server._build_call_scope(request)  # noqa: SLF001 -- wiring seam: server propagates its store to the per-call scope
+    scope = await server._build_call_scope(request, principal_is_tool_pod=False)  # noqa: SLF001 -- wiring seam: server propagates its store to the per-call scope
     assert scope.object_store is store
 
 
@@ -273,5 +273,5 @@ async def test_tool_server_default_scope_has_no_store() -> None:
         nats_url="nats://localhost:4222",
     )
     request = CallRequest(tool_name="t", tool_version="1.0.0", arguments={})
-    scope = await server._build_call_scope(request)  # noqa: SLF001 -- wiring seam: default server yields a storeless scope
+    scope = await server._build_call_scope(request, principal_is_tool_pod=False)  # noqa: SLF001 -- wiring seam: default server yields a storeless scope
     assert scope.object_store is None

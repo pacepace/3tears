@@ -1,7 +1,7 @@
 """authentication and authorization protocols for tool registry.
 
 defines protocols that host applications implement to provide
-tool pod verification and agent tool access control. the registry
+tool pod verification and tool access control for every caller. the registry
 uses these to enforce security without depending on specific
 persistence implementations.
 
@@ -139,10 +139,10 @@ class AgentToolAuthorizer(Protocol):
     two-argument ``(agent_id, tool_name)`` shape to include the
     calling user identity. the unified rbac evaluator resolves a
     two-sided decision (user grants intersected with agent grants)
-    so the user dimension is mandatory on the protocol. callers
-    without a user identity (fully-stateless tool dispatch) pass
-    ``user_id=None``; implementations return ``False`` because tool
-    grants are always two-sided.
+    so the user dimension is mandatory on the protocol. an AGENT
+    dispatch without a user identity passes ``user_id=None`` and
+    implementations return ``False``, because an agent's tool grants
+    are always two-sided.
 
     Phase 26 widened the protocol again to carry ``tool_version`` so
     rbac implementations can construct the canonical
@@ -152,6 +152,17 @@ class AgentToolAuthorizer(Protocol):
     canonical name is undefined and the namespace lookup is
     inherently ambiguous between concurrent versions of the same
     tool.
+
+    ``principal_is_tool_pod`` carries the one fact the proxy knows
+    and the authorizer cannot recover from the ids alone: whether the
+    verified principal is a TOOL POD rather than an agent. a tool pod
+    acts on nobody's behalf, so it never carries a user, and an
+    implementation evaluates it on its own grant alone -- exactly as
+    the L3 broker and the hub's datasource authorizer evaluate the
+    same principal. the keyword is required rather than defaulted so
+    an implementer cannot forget it and silently keep refusing every
+    pod, and so a fake that predates it fails loudly under the parity
+    walker rather than passing on the wrong protocol.
     """
 
     async def is_authorized(
@@ -160,10 +171,13 @@ class AgentToolAuthorizer(Protocol):
         user_id: str | None,
         tool_name: str,
         tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
     ) -> bool:
-        """check if agent + user pair is authorized to call named tool.
+        """check if the verified principal may call the named tool.
 
-        :param agent_id: calling agent UUID in string form
+        :param agent_id: calling principal UUID in string form: an
+            agent's id, or a tool pod's ``tool_pods.id``
         :ptype agent_id: str
         :param user_id: invoking user UUID in string form, or
             ``None`` when the dispatch carries no user identity
@@ -174,6 +188,10 @@ class AgentToolAuthorizer(Protocol):
             paired with ``tool_name`` to build the canonical
             namespace lookup key
         :ptype tool_version: str
+        :param principal_is_tool_pod: whether the proxy verified the
+            principal as a tool pod; with no user, a tool pod is
+            evaluated on its own grant and an agent is refused
+        :ptype principal_is_tool_pod: bool
         :return: True if authorized, False if denied
         :rtype: bool
         """
@@ -194,10 +212,12 @@ class AllowAllAuthorizer:
         user_id: str | None,
         tool_name: str,
         tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
     ) -> bool:
-        """return True for any agent and tool combination.
+        """return True for any principal and tool combination.
 
-        :param agent_id: calling agent UUID (ignored)
+        :param agent_id: calling principal UUID (ignored)
         :ptype agent_id: str
         :param user_id: invoking user UUID (ignored)
         :ptype user_id: str | None
@@ -205,6 +225,8 @@ class AllowAllAuthorizer:
         :ptype tool_name: str
         :param tool_version: tool version (ignored)
         :ptype tool_version: str
+        :param principal_is_tool_pod: whether the principal is a tool pod (ignored)
+        :ptype principal_is_tool_pod: bool
         :return: always True
         :rtype: bool
         """
@@ -227,10 +249,12 @@ class DenyAllAuthorizer:
         user_id: str | None,
         tool_name: str,
         tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
     ) -> bool:
-        """return False for any agent and tool combination.
+        """return False for any principal and tool combination.
 
-        :param agent_id: calling agent UUID (ignored)
+        :param agent_id: calling principal UUID (ignored)
         :ptype agent_id: str
         :param user_id: invoking user UUID (ignored)
         :ptype user_id: str | None
@@ -238,6 +262,8 @@ class DenyAllAuthorizer:
         :ptype tool_name: str
         :param tool_version: tool version (ignored)
         :ptype tool_version: str
+        :param principal_is_tool_pod: whether the principal is a tool pod (ignored)
+        :ptype principal_is_tool_pod: bool
         :return: always False
         :rtype: bool
         """

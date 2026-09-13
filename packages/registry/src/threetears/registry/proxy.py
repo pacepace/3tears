@@ -22,7 +22,9 @@ from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityKeyNotFoundError,
     IdentityTokenError,
+    VerifiedPrincipal,
     canonical_call_hash,
+    principal_from_claims,
     verify_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
@@ -82,7 +84,7 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
 
 
 class ProxyCallRequest(BaseModel):
-    """incoming tool call request from agent.
+    """incoming tool call request from a caller: an agent, a tool pod, or the hub.
 
     all per-call identity dimensions (conversation_id, user_id,
     customer_id, correlation_id, agent_id) ride as a single nested
@@ -186,7 +188,7 @@ class ProxyCallRequest(BaseModel):
 
 
 class ProxyCallResponse(BaseModel):
-    """outgoing tool call response to agent.
+    """outgoing tool call response to the caller.
 
     the response echoes the inbound :class:`CallContext` verbatim so
     identity has one shape on both sides of the proxy hop. there is no
@@ -250,7 +252,7 @@ class ProxyCallAccepted(BaseModel):
 
 
 class CallProxy:
-    """proxies tool calls from agents to tool pods.
+    """proxies tool calls from callers -- agents, tool pods, the hub -- to tool pods.
 
     subscribes to call subject with queue group for HA,
     validates tool availability in catalog, selects endpoint
@@ -551,7 +553,7 @@ class CallProxy:
 
     async def _verify_identity(
         self, request: "ProxyCallRequest"
-    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None"]:
+    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None", VerifiedPrincipal | None]:
         """verify the Hub-issued identity token and re-stamp the VERIFIED identity.
 
         the heart of the platform-auth fix: authorization + forwarding must act on an
@@ -561,15 +563,27 @@ class CallProxy:
 
         verification is UNCONDITIONAL and fail-closed (caller guarantees ``request.context`` and
         ``context.agent_id`` present): verify; on success return the re-stamped request; on ANY
-        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>)`` so the dispatcher rejects
-        the call without forwarding. there is no off/warn passthrough -- a call the proxy cannot
-        authenticate never reaches the tool pod on the self-asserted envelope.
+        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>, None)`` so the dispatcher
+        rejects the call without forwarding. there is no off/warn passthrough -- a call the proxy
+        cannot authenticate never reaches the tool pod on the self-asserted envelope.
+
+        the third value is the principal the token names, read ONCE through
+        :func:`~threetears.core.security.principal_from_claims` and carried whole to the
+        authorizer and the assertion mint, so neither reconstructs the principal's kind from the
+        re-stamped customer on its own. a tool pod's token carries the platform customer
+        sentinel in place of a customer UUID, because a tool pod has no customer; it is read as
+        ``customer_id=None`` plus the tool-pod kind. any other non-UUID customer claim still fails
+        closed -- the sentinel is the one value the hub mints on purpose, and a garbage claim is
+        a malformed token, not a platform principal. a tool pod presenting a user assertion is
+        refused outright: a pod acts on nobody's behalf, so an assertion on a pod token is
+        malformed by definition, whatever customer it was minted for.
 
         :param request: the parsed call request (its context carries the identity token)
         :ptype request: ProxyCallRequest
-        :return: ``(possibly re-stamped request, error response or None)``. a non-None response
-            means the caller must reject the call without dispatching
-        :rtype: tuple[ProxyCallRequest, ProxyCallResponse | None]
+        :return: ``(possibly re-stamped request, error response or None, the verified
+            principal or None)``. a non-None response means the caller must reject the call
+            without dispatching, and the principal is ``None`` exactly then
+        :rtype: tuple[ProxyCallRequest, ProxyCallResponse | None, VerifiedPrincipal | None]
         """
         context = request.context
         assert context is not None  # guaranteed by the caller's agent_id presence check
@@ -589,8 +603,13 @@ class CallProxy:
             # ``None`` for an agent handshake token (one per pod; it CANNOT carry the per-turn
             # user), the system principal for a hub-originated call. the bound user-assertion below
             # may override it with the per-turn verified user.
-            agent_id_value = UUID(claims.sub)
-            customer_id_value = UUID(claims.customer_id)
+            # the ONE reading of who the token names. a tool pod's token carries the platform
+            # sentinel where a customer UUID would be, because ``tool_pods`` has no customer: it
+            # is read as NO customer plus the tool-pod kind, and a non-UUID claim that is not the
+            # sentinel still fails closed on the UUID parse inside this try.
+            principal = principal_from_claims(claims)
+            agent_id_value = principal.principal_id
+            customer_id_value = principal.customer_id
             user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
@@ -614,7 +633,48 @@ class CallProxy:
                 error_code="TOOL_IDENTITY_UNVERIFIED",
                 context=context,
             )
-            return request, response
+            return request, response, None
+
+        if principal.is_tool_pod:
+            # the decision tier: a signed claim was read as "platform principal, no customer",
+            # and the operator reading a dispatch has to be able to see that from a line rather
+            # than from the ABSENCE of a customer tag. never token or key material.
+            log.info(
+                "identity verified as a platform principal; customer claim read as none",
+                extra={
+                    "extra_data": {
+                        "agent_id": str(principal.principal_id),
+                        "tool_name": request.tool_name,
+                        "correlation_id": _correlation_id_str(request),
+                    }
+                },
+            )
+            if context.user_identity_token:
+                # a pod acts on nobody's behalf, so an assertion on a pod token is malformed by
+                # definition -- refused here at the sink, not left to the customer-binding check
+                # below, which compares claim strings and would admit one minted with the sentinel.
+                log.warning(
+                    "user-assertion presented on a tool pod token; rejecting call",
+                    extra={
+                        "extra_data": {
+                            "tool_name": request.tool_name,
+                            "reason": "IdentityTokenError",
+                            "detail": "a tool pod acts on nobody's behalf; a user assertion on a pod token is malformed",
+                            "correlation_id": _correlation_id_str(request),
+                        }
+                    },
+                )
+                return (
+                    request,
+                    ProxyCallResponse(
+                        success=False,
+                        content="",
+                        error="user-assertion verification failed (IdentityTokenError)",
+                        error_code="TOOL_USER_IDENTITY_UNVERIFIED",
+                        context=context,
+                    ),
+                    None,
+                )
 
         # the verified user identity DEFAULTS to the handshake token's user_id: ``None`` for an
         # agent handshake token (one per pod; it CANNOT carry the per-turn user), the system
@@ -691,7 +751,7 @@ class CallProxy:
                     error_code="TOOL_USER_IDENTITY_UNVERIFIED",
                     context=context,
                 )
-                return request, response
+                return request, response, None
 
         verified_context = context.model_copy(
             update={
@@ -700,7 +760,7 @@ class CallProxy:
                 "customer_id": customer_id_value,
             }
         )
-        return request.model_copy(update={"context": verified_context}), None
+        return request.model_copy(update={"context": verified_context}), None, principal
 
     async def _verify_pop(self, request: "ProxyCallRequest") -> "ProxyCallResponse | None":
         """verify the per-call proof-of-possession against the token's holder-key binding.
@@ -830,9 +890,9 @@ class CallProxy:
         # verify the Hub-issued identity token and re-stamp the VERIFIED identity onto the
         # request BEFORE authorization + forwarding, so RBAC and the tool pod act on an
         # authenticated identity rather than the self-asserted envelope. unconditional + fail-closed.
-        verified_request, identity_error = await self._verify_identity(request)
-        if identity_error is not None:
-            if msg.reply_subject is not None:
+        verified_request, identity_error, principal = await self._verify_identity(request)
+        if identity_error is not None or principal is None:
+            if msg.reply_subject is not None and identity_error is not None:
                 await self._nc.publish_reply(
                     reply_subject=msg.reply_subject,
                     message=identity_error,
@@ -861,7 +921,7 @@ class CallProxy:
         # CallContext envelope (context-task-01) and is plumbed to
         # the authorizer so rbac-evaluator implementations can
         # resolve user-side grants; ``None`` when the dispatch
-        # carries no user identity (authorizer will deny).
+        # carries no user identity.
         correlation_id_log = _correlation_id_str(request)
         agent_id_log = str(request.context.agent_id)
         user_id_log: str | None = str(request.context.user_id) if request.context.user_id is not None else None
@@ -965,27 +1025,33 @@ class CallProxy:
                 return
 
         if self._authorizer is not None:
+            # the tool-pod mark rides beside the ids because the ids cannot carry it: a pod's
+            # principal id and an agent's are both UUIDs, and only the verified token's customer
+            # claim says which kind this one is. the authorizer admits a pod on its own grant
+            # and refuses an agent with no user; the mark is what tells those two apart.
             authorized = await self._authorizer.is_authorized(
                 agent_id_log,
                 user_id_log,
                 request.tool_name,
                 request.tool_version,
+                principal_is_tool_pod=principal.is_tool_pod,
             )
             if not authorized:
                 response = ProxyCallResponse(
                     success=False,
                     content="",
-                    error=f"agent not authorized for tool {request.tool_name}",
+                    error=f"principal not authorized for tool {request.tool_name}",
                     error_code="TOOL_NOT_AUTHORIZED",
                     context=request.context,
                 )
                 await self._answer(msg, response, delivery_subject)
                 log.warning(
-                    "agent tool call denied",
+                    "tool call denied",
                     extra={
                         "extra_data": {
                             "agent_id": agent_id_log,
                             "user_id": user_id_log,
+                            "principal_is_tool_pod": principal.is_tool_pod,
                             "tool_name": request.tool_name,
                             "correlation_id": correlation_id_log,
                         }
@@ -1093,7 +1159,7 @@ class CallProxy:
             attempted_pod_ids.add(endpoint.pod_id)
             endpoint.in_flight += 1
             try:
-                response = await self._forward_call(request, endpoint.pod_id)
+                response = await self._forward_call(request, endpoint.pod_id, principal)
             finally:
                 endpoint.in_flight -= 1
             if response.error_code != "TOOL_UNAVAILABLE":
@@ -1233,6 +1299,7 @@ class CallProxy:
         self,
         request: ProxyCallRequest,
         pod_id: str,
+        principal: VerifiedPrincipal,
     ) -> ProxyCallResponse:
         """forward tool call to target tool pod, on whichever path its declared timeout allows.
 
@@ -1245,10 +1312,12 @@ class CallProxy:
         calls go through :meth:`_forward_call_durable` instead. Everything shorter keeps the fast
         request/reply path unchanged.
 
-        :param request: original call request from agent
+        :param request: the identity-verified call request
         :ptype request: ProxyCallRequest
         :param pod_id: identifier of target tool pod
         :ptype pod_id: str
+        :param principal: the principal the verified token named, for the proxy assertion
+        :ptype principal: VerifiedPrincipal
         :return: response from tool pod or error response on timeout
         :rtype: ProxyCallResponse
         :raises RuntimeError: when invoked before ``start`` connects NATS
@@ -1257,11 +1326,11 @@ class CallProxy:
             raise RuntimeError("_forward_call invoked before NATS connected")
         effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)
         if requires_async_result(effective_timeout):
-            return await self._forward_call_durable(request, pod_id, effective_timeout)
+            return await self._forward_call_durable(request, pod_id, effective_timeout, principal)
         internal_subject = Subjects.tools_internal(pod_id)
         internal_payload = _build_internal_payload(
             request,
-            self._mint_proxy_assertion(request, pod_id),
+            self._mint_proxy_assertion(request, pod_id, principal),
             effective_timeout=effective_timeout,
         )
         correlation_id_log = _correlation_id_str(request)
@@ -1312,6 +1381,7 @@ class CallProxy:
         request: ProxyCallRequest,
         pod_id: str,
         effective_timeout: float,
+        principal: VerifiedPrincipal,
     ) -> ProxyCallResponse:
         """forward a LONG call: subscribe, dispatch, and collect the answer off a durable subject.
 
@@ -1327,12 +1397,14 @@ class CallProxy:
         per CALL, never the per-turn ``correlation_id``: a turn can dispatch several tool calls, and a
         correlation-keyed subject would hand this waiter another call's result.
 
-        :param request: original call request from agent
+        :param request: the identity-verified call request
         :ptype request: ProxyCallRequest
         :param pod_id: identifier of target tool pod
         :ptype pod_id: str
         :param effective_timeout: how long the tool is allowed to take
         :ptype effective_timeout: float
+        :param principal: the principal the verified token named, for the proxy assertion
+        :ptype principal: VerifiedPrincipal
         :return: the pod's answer, or a well-typed error response
         :rtype: ProxyCallResponse
         """
@@ -1341,15 +1413,40 @@ class CallProxy:
         result_subject = Subjects.tools_result(pod_id, uuid7())
         internal_payload = _build_internal_payload(
             request,
-            self._mint_proxy_assertion(request, pod_id),
+            self._mint_proxy_assertion(request, pod_id, principal),
             result_subject=result_subject.path,
             effective_timeout=effective_timeout,
         )
-        waiter = await self._nc.jetstream_result_waiter(
-            subject=result_subject,
-            stream=result_stream_name(),
-            wait_budget=timedelta(seconds=effective_timeout),
-        )
+        try:
+            waiter = await self._nc.jetstream_result_waiter(
+                subject=result_subject,
+                stream=result_stream_name(),
+                wait_budget=timedelta(seconds=effective_timeout),
+            )
+        except Exception as exc:  # noqa: BLE001 -- every failure becomes a typed response, never a hang
+            # the waiter is opened BEFORE the call is dispatched, so a failure here means the call
+            # never reached a pod: TOOL_UNAVAILABLE, the retryable answer. left uncaught it killed
+            # the dispatch task with the reply subject unanswered, and the caller learned nothing
+            # until its own deadline -- a stream missing from a bus read as a dead tool.
+            log.warning(
+                "durable result waiter could not open; the call was never dispatched",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "stream": result_stream_name(),
+                        "detail": str(exc),
+                    }
+                },
+            )
+            return ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"durable result stream unavailable; the call was not dispatched: {exc}",
+                error_code="TOOL_UNAVAILABLE",
+                context=request.context,
+            )
         try:
             accept_error = await self._await_pod_accept(
                 pod_id=pod_id,
@@ -1414,7 +1511,7 @@ class CallProxy:
         :ptype internal_payload: bytes
         :param result_subject: the subject the pod was asked to deliver on
         :ptype result_subject: Subject
-        :param request: original call request from agent (for context echoing)
+        :param request: original call request (for context echoing)
         :ptype request: ProxyCallRequest
         :param correlation_id_log: stringified correlation id for log records
         :ptype correlation_id_log: str
@@ -1482,29 +1579,30 @@ class CallProxy:
             )
         return None
 
-    def _mint_proxy_assertion(self, request: ProxyCallRequest, pod_id: str) -> str | None:
-        """sign a proxy->pod assertion for a forwarded call, or ``None`` when unsignable.
+    def _mint_proxy_assertion(self, request: ProxyCallRequest, pod_id: str, principal: VerifiedPrincipal) -> str | None:
+        """sign a proxy->pod assertion for a forwarded call, or ``None`` when no signer is wired.
 
-        Binds the VERIFIED caller identity (already re-stamped onto the context by
-        :meth:`_verify_identity`) + the call body + a single-use nonce + the target pod, so the pod
-        can verify the call came from THIS proxy, for THIS body, once. Returns ``None`` when no
-        signer is configured (the binding is inert) or the verified identity is incomplete.
+        Binds the VERIFIED caller identity + the call body + a single-use nonce + the target pod,
+        so the pod can verify the call came from THIS proxy, for THIS body, once. The identity is
+        taken from the principal :meth:`_verify_identity` read, never reconstructed from the
+        re-stamped context: the assertion's ``customer_id`` claim is required, and a tool pod
+        has no customer, so the claim is re-minted VERBATIM from the token -- the platform
+        sentinel for a pod, the customer UUID for an agent -- and travels intact to the pod. Under
+        the old ``customer_id is not None`` guard a pod's call was forwarded unsigned whenever the
+        production signer was wired, and every pod is bound to reject an unsigned call.
 
-        :param request: the forwarded call request (its context carries the verified identity)
+        :param request: the forwarded call request
         :ptype request: ProxyCallRequest
         :param pod_id: the target pod id (the assertion ``aud``)
         :ptype pod_id: str
-        :return: a compact JWS assertion, or ``None``
+        :param principal: the principal the verified token named
+        :ptype principal: VerifiedPrincipal
+        :return: a compact JWS assertion, or ``None`` when no signer is configured
         :rtype: str | None
         """
         context = request.context
         result: str | None = None
-        if (
-            self._proxy_signer is not None
-            and context is not None
-            and context.agent_id is not None
-            and context.customer_id is not None
-        ):
+        if self._proxy_signer is not None and context is not None:
             body_hash = canonical_call_hash(
                 request.tool_name,
                 request.arguments,
@@ -1512,8 +1610,8 @@ class CallProxy:
             )
             result = self._proxy_signer.mint(
                 pod_id=pod_id,
-                agent_id=str(context.agent_id),
-                customer_id=str(context.customer_id),
+                agent_id=str(principal.principal_id),
+                customer_id=principal.customer_claim,
                 body_hash=body_hash,
                 nonce=str(uuid7()),
                 now=int(datetime.now(UTC).timestamp()),

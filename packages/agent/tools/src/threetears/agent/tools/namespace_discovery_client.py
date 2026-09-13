@@ -48,6 +48,8 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from threetears.observe import get_logger, traced
 
+from threetears.agent.tools.config import get_namespace_discovery_request_timeout
+
 __all__ = [
     "DiscoveryClientError",
     "NamespaceDiscoveryClient",
@@ -150,7 +152,7 @@ class NamespaceDiscoverySummary(BaseModel):
     :ptype namespace_type: str
     :param owner_agent_id: agent whose schema physically holds the
         namespace's rows; cross-agent routing targets this agent
-    :ptype owner_agent_id: UUID
+    :ptype owner_agent_id: UUID | None
     :param customer_id: owning customer; always matches the caller's
         customer because the broker filters in SQL
     :ptype customer_id: UUID
@@ -159,8 +161,21 @@ class NamespaceDiscoverySummary(BaseModel):
     id: UUID
     name: str
     namespace_type: str
-    owner_agent_id: UUID
+    # ``None`` for a type with no owning agent. A ``datasource`` namespace is
+    # created with it NULL -- its rows live in a warehouse, not in any agent's
+    # schema -- so a non-optional annotation here made discovery fail validation
+    # for the whole answer whenever one was visible.
+    owner_agent_id: UUID | None
     customer_id: UUID
+    # Populated only for a ``datasource`` row, and only by a hub at v102 or
+    # later; ``None`` everywhere else. The broker's summary is otherwise
+    # deliberately minimal on the grounds that "downstream tools fetch full
+    # metadata by id from the owner agent's schema" -- which assumes an owner
+    # schema. A datasource namespace carries ``owner_agent_id`` NULL, so for
+    # this one type there is no second call to make and the paired
+    # ``datasources.id`` has nowhere else to come from. Schema priming needs it:
+    # the schema digests are keyed on that id.
+    datasource_id: UUID | None = None
 
 
 class NamespaceDiscoveryResponse(BaseModel):
@@ -232,16 +247,18 @@ class NamespaceDiscoveryClient:
     :param namespace: broker subject namespace prefix (from
         ``THREETEARS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str
-    :param timeout_seconds: per-call request timeout in seconds;
-        defaults to 5.0 to match other broker request/reply helpers
-    :ptype timeout_seconds: float
+    :param timeout_seconds: per-call request timeout in seconds; ``None``
+        reads :func:`threetears.agent.tools.config.get_namespace_discovery_request_timeout`,
+        the config layer that owns the default for this and the other broker
+        request/reply helpers
+    :ptype timeout_seconds: float | None
     """
 
     def __init__(
         self,
         nats_client: Any,
         namespace: str,
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float | None = None,
     ) -> None:
         """bind the client to a NATS handle + broker subject namespace.
 
@@ -249,12 +266,23 @@ class NamespaceDiscoveryClient:
         :ptype nats_client: Any
         :param namespace: broker subject namespace prefix
         :ptype namespace: str
-        :param timeout_seconds: per-call request timeout in seconds
-        :ptype timeout_seconds: float
+        :param timeout_seconds: per-call request timeout in seconds, or ``None`` for the config default
+        :ptype timeout_seconds: float | None
         """
         self._nats_client = nats_client
         self._namespace = namespace
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = (
+            timeout_seconds if timeout_seconds is not None else get_namespace_discovery_request_timeout()
+        )
+
+    @property
+    def timeout_seconds(self) -> float:
+        """the per-call request timeout this client resolved at construction.
+
+        :return: timeout in seconds
+        :rtype: float
+        """
+        return self._timeout_seconds
 
     @traced
     async def discover(

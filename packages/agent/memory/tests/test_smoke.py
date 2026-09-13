@@ -1,4 +1,4 @@
 def test_agent_memory_import():
     from threetears.agent.memory import __version__
 
-    assert __version__ == "0.38.0"
+    assert __version__ == "0.39.0"

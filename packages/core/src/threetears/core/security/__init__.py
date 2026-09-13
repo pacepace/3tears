@@ -28,13 +28,16 @@ from threetears.core.security.identity_minter import (
     static_token_provider,
 )
 from threetears.core.security.identity_token import (
+    PLATFORM_CUSTOMER_SENTINEL,
     IdentityClaims,
     IdentityKeyNotFoundError,
     IdentityTokenError,
+    VerifiedPrincipal,
     build_jwks,
     canonical_call_hash,
     generate_signing_keypair,
     jwk_thumbprint,
+    principal_from_claims,
     sign_identity_token,
     verify_identity_token,
 )
@@ -80,6 +83,7 @@ __all__ = [
     "seal",
     # identity tokens
     "DEFAULT_IDENTITY_TTL_SECONDS",
+    "PLATFORM_CUSTOMER_SENTINEL",
     "CachedHubJwksProvider",
     "IdentityClaims",
     "IdentityKeyNotFoundError",
@@ -87,6 +91,7 @@ __all__ = [
     "IdentityTokenError",
     "ProxyAssertionClaims",
     "ProxyAssertionSigner",
+    "VerifiedPrincipal",
     "access_token_hash",
     "build_jwks",
     "canonical_call_hash",
@@ -94,6 +99,7 @@ __all__ = [
     "jwk_thumbprint",
     "make_pop_proof",
     "mint_proxy_assertion",
+    "principal_from_claims",
     "sign_identity_token",
     "static_token_provider",
     "verify_identity_token",

@@ -17,12 +17,15 @@ from threetears.observe import get_logger
 __all__ = [
     "get_connect_retry_backoff_cap",
     "get_connect_retry_budget",
+    "get_deliver_timeout",
     "get_engagement_scope_request_timeout",
     "get_jwks_request_timeout",
+    "get_namespace_discovery_request_timeout",
     "get_nats_user_jwt_ttl_seconds",
     "get_object_resolve_request_timeout",
     "get_ready_poll_interval",
     "get_ready_timeout",
+    "get_report_timeout",
     "get_serve_ready_timeout",
 ]
 
@@ -34,6 +37,12 @@ _PLATFORM_DEFAULT_SERVE_READY_TIMEOUT = 30.0
 _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT = 5.0
 _PLATFORM_DEFAULT_OBJECT_RESOLVE_REQUEST_TIMEOUT = 5.0
 _PLATFORM_DEFAULT_ENGAGEMENT_SCOPE_REQUEST_TIMEOUT = 5.0
+# one broker request/reply round trip, matching the other hub request/reply helpers above.
+_PLATFORM_DEFAULT_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT = 5.0
+# the deliver tool's expected max resolve+presign time: a NATS round trip and a presign, no rendering.
+_PLATFORM_DEFAULT_DELIVER_TIMEOUT = 30.0
+# the report tool's expected max render+store time; a PDF through pandoc and pdflatex is the slow path.
+_PLATFORM_DEFAULT_REPORT_TIMEOUT = 120.0
 # a standalone tool pod that opens its OWN connection retries the initial connect for this long before
 # giving up (fail-visible crash -> k8s CrashLoopBackoff). generous by design: k8s starts pods in any
 # order, so the hub (auth-callout + the pod's seeded tool_pods row) may not be up yet -- the pod must
@@ -76,6 +85,34 @@ def _env_float(name: str, fallback: float) -> float:
         except ValueError:
             log.warning("invalid %s=%r, using default", name, raw)
             result = fallback
+    return result
+
+
+def _env_positive_float(name: str, fallback: float) -> float:
+    """read an env var as a positive float, falling back on a blank, malformed or non-positive value.
+
+    a tool's declared timeout of zero or less would make every call time out at once, so such a
+    value is refused with a warning naming it rather than applied.
+
+    :param name: environment variable name
+    :ptype name: str
+    :param fallback: returned when the variable is blank, malformed or not positive
+    :ptype fallback: float
+    :return: resolved positive float
+    :rtype: float
+    """
+    raw = os.environ.get(name)
+    result = fallback
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            log.warning("invalid %s=%r, using default", name, raw)
+        else:
+            if value > 0:
+                result = value
+            else:
+                log.warning("non-positive %s=%r, using default", name, raw)
     return result
 
 
@@ -149,6 +186,36 @@ def get_engagement_scope_request_timeout() -> float:
         "THREETEARS_TOOLSERVER_ENGAGEMENT_SCOPE_REQUEST_TIMEOUT",
         _PLATFORM_DEFAULT_ENGAGEMENT_SCOPE_REQUEST_TIMEOUT,
     )
+
+
+def get_namespace_discovery_request_timeout() -> float:
+    """return the broker namespace-discovery request/reply timeout in seconds.
+
+    :return: timeout from THREETEARS_TOOLSERVER_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT or platform default
+    :rtype: float
+    """
+    return _env_float(
+        "THREETEARS_TOOLSERVER_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT",
+        _PLATFORM_DEFAULT_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT,
+    )
+
+
+def get_deliver_timeout() -> float:
+    """return the deliver tool's declared timeout in seconds.
+
+    :return: positive seconds from DELIVER_TIMEOUT_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_positive_float("DELIVER_TIMEOUT_SECONDS", _PLATFORM_DEFAULT_DELIVER_TIMEOUT)
+
+
+def get_report_timeout() -> float:
+    """return the report tool's declared timeout in seconds.
+
+    :return: positive seconds from REPORT_TIMEOUT_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_positive_float("REPORT_TIMEOUT_SECONDS", _PLATFORM_DEFAULT_REPORT_TIMEOUT)
 
 
 def get_nats_user_jwt_ttl_seconds() -> int | None:

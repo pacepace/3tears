@@ -28,6 +28,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.core.security.identity_token import (
+    PLATFORM_CUSTOMER_SENTINEL,
     IdentityClaims,
     build_jwks,
     canonical_call_hash,
@@ -81,7 +82,7 @@ def _token(
     priv: Any,
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID | None,
     exp_delta: int = 600,
     iss: str = _ISS,
@@ -131,7 +132,7 @@ def _authed_request(
     priv: Any,
     *,
     token_sub: UUID,
-    token_customer: UUID,
+    token_customer: UUID | str,
     token_user: UUID | None,
     envelope_agent: UUID,
     envelope_user: UUID | None = None,
@@ -187,7 +188,7 @@ def _user_assertion(
     priv: Any,
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID,
     exp_delta: int = 3600,
     conversation_id: UUID | None = None,
@@ -342,7 +343,13 @@ class TestDispatchIdentityEnforcement:
 
         class _RecordingAuthorizer:
             async def is_authorized(
-                self, agent_id: str, user_id: str | None, tool_name: str, tool_version: str
+                self,
+                agent_id: str,
+                user_id: str | None,
+                tool_name: str,
+                tool_version: str,
+                *,
+                principal_is_tool_pod: bool,
             ) -> bool:
                 captured["agent_id"] = agent_id
                 captured["user_id"] = user_id
@@ -436,6 +443,165 @@ class TestDispatchIdentityEnforcement:
         assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
 
 
+class TestDispatchToolPodPrincipal:
+    """a TOOL POD's token carries the platform customer sentinel where a customer UUID would be.
+
+    the door reads that claim, off the SIGNED token, as ``customer_id=None`` plus a tool-pod
+    mark the authorizer receives beside the ids. a UUID claim is an agent and carries no mark; any
+    other non-UUID claim is a malformed token and fails closed exactly as before.
+    """
+
+    async def _drive(
+        self,
+        jwks_provider: Any,
+        req: ProxyCallRequest,
+        *,
+        authorizer: Any = None,
+    ) -> AsyncMock:
+        proxy = CallProxy(
+            await _catalog(),
+            authorizer if authorizer is not None else AllowAllAuthorizer(),
+            _StubReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
+            namespace="test",
+            jwks_provider=jwks_provider,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_tool_reply())
+        await proxy.start(nc)
+        msg = IncomingMessage(
+            data=req.model_dump_json().encode("utf-8"),
+            reply_subject="reply.subject",
+            subject="test.tools.call",
+        )
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+        return nc
+
+    @staticmethod
+    def _forwarded_context(nc: AsyncMock) -> dict[str, Any]:
+        payload = json.loads(nc.request_raw.call_args.kwargs["payload"])
+        context: dict[str, Any] = payload["context"]
+        return context
+
+    @staticmethod
+    def _reply(nc: AsyncMock) -> ProxyCallResponse:
+        message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
+        return message
+
+    @staticmethod
+    def _recording_authorizer(captured: dict[str, Any]) -> Any:
+        class _RecordingAuthorizer:
+            async def is_authorized(
+                self,
+                agent_id: str,
+                user_id: str | None,
+                tool_name: str,
+                tool_version: str,
+                *,
+                principal_is_tool_pod: bool,
+            ) -> bool:
+                captured["agent_id"] = agent_id
+                captured["user_id"] = user_id
+                captured["principal_is_tool_pod"] = principal_is_tool_pod
+                return True
+
+        return _RecordingAuthorizer()
+
+    @pytest.mark.asyncio
+    async def test_sentinel_customer_forwards_no_customer_and_marks_the_pod(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        priv, jwks = hub
+        pod_id = uuid7()
+        captured: dict[str, Any] = {}
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=pod_id,
+                token_customer=PLATFORM_CUSTOMER_SENTINEL,
+                token_user=None,
+                envelope_agent=uuid7(),
+            ),
+            authorizer=self._recording_authorizer(captured),
+        )
+        nc.request_raw.assert_called_once()
+        forwarded = self._forwarded_context(nc)
+        assert forwarded["agent_id"] == str(pod_id)
+        assert forwarded["customer_id"] is None  # no customer was stamped, not a UUID and not the literal
+        assert forwarded["user_id"] is None
+        assert captured["agent_id"] == str(pod_id)
+        assert captured["user_id"] is None
+        assert captured["principal_is_tool_pod"] is True
+
+    @pytest.mark.asyncio
+    async def test_uuid_customer_is_an_agent_and_carries_no_mark(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        priv, jwks = hub
+        captured: dict[str, Any] = {}
+        await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=uuid7(),
+                token_customer=uuid7(),
+                token_user=None,
+                envelope_agent=uuid7(),
+            ),
+            authorizer=self._recording_authorizer(captured),
+        )
+        assert captured["principal_is_tool_pod"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_non_uuid_customer_that_is_not_the_sentinel_still_fails_closed(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        # the sentinel is the ONE non-UUID value the hub mints on purpose; a signed token carrying
+        # any other non-UUID customer is malformed and must never read as a platform principal.
+        priv, jwks = hub
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=uuid7(),
+                token_customer="aibots-platform-but-not-quite",
+                token_user=None,
+                envelope_agent=uuid7(),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_a_pod_presenting_a_user_assertion_is_refused(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # the assertion is minted with the pod's own sub AND the sentinel customer, so the customer
+        # binding check -- which compares claim strings -- would admit it. only the explicit refusal of
+        # any assertion on a pod token can turn this call away, which is the rule under test: a pod
+        # acts on nobody's behalf and cannot borrow a user by attaching one.
+        priv, jwks = hub
+        pod_id, conv = uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=pod_id,
+                token_customer=PLATFORM_CUSTOMER_SENTINEL,
+                token_user=None,
+                envelope_agent=uuid7(),
+                conversation_id=conv,
+                user_assertion=_user_assertion(
+                    priv,
+                    sub=pod_id,
+                    customer_id=PLATFORM_CUSTOMER_SENTINEL,
+                    user_id=uuid7(),
+                    conversation_id=conv,
+                ),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+
 # ---------------------------------------------------------------------------
 # v0.13.9 enforce-flip final piece: the Hub-minted, cnf-less user-assertion (two-token design).
 #
@@ -525,7 +691,13 @@ class TestDispatchUserAssertion:
 
         class _RecordingAuthorizer:
             async def is_authorized(
-                self, agent_id: str, user_id: str | None, tool_name: str, tool_version: str
+                self,
+                agent_id: str,
+                user_id: str | None,
+                tool_name: str,
+                tool_version: str,
+                *,
+                principal_is_tool_pod: bool,
             ) -> bool:
                 captured["agent_id"] = agent_id
                 captured["user_id"] = user_id

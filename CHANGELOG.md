@@ -4,6 +4,133 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.39.0 -- 2026-09-11
+
+### Added
+
+- **A tool pod can call a platform tool, the way it queries a datasource.**
+  `_tool_pod` in `threetears.nats.subject_permissions` now publishes
+  `{ns}.tools.call`, the subject the registry answers. The request names no
+  principal, so the subject buys reach and never authority: the registry
+  verifies the forwarded hub-minted token and the per-call proof of possession
+  at the door and evaluates the pod's OWN `tool.call` grant on the tool's
+  namespace. The hub half -- the `declared_tools` row that materializes that
+  grant, and the build path admitting a pod principal -- lands in the hub.
+
+- **The registry door and the serving pod's mirror gate admit a tool pod, and
+  read the same principal.** `threetears.core.security.principal_from_claims`
+  is the ONE reading of who a verified token names: a `VerifiedPrincipal`
+  carrying the principal id, the customer (`None` for a platform principal),
+  whether it is a tool pod, and the customer claim verbatim.
+  `CallProxy._verify_identity` reads it and hands it to the authorizer AND to
+  the proxy-assertion mint, which re-mints the claim verbatim -- the sentinel
+  for a pod -- rather than skipping the assertion for a caller with no
+  customer, so a pod's forwarded call is signed like every other.
+  `ToolServer._verify_identity` reads it the same way, so the pod that
+  re-verifies the forwarded token admits the sentinel the registry admitted
+  instead of failing a UUID parse on it. Any other non-UUID customer claim
+  still fails closed at both doors, and both doors refuse a user assertion
+  presented on a tool pod's token outright: a pod acts on nobody's behalf. The
+  registry logs the platform-principal reading at INFO so an operator can see
+  it happened from a line rather than from a missing customer tag.
+
+- **The call scope says whether the verified caller is a tool pod.**
+  `ToolCallScope.principal_is_tool_pod` is set by `ToolServer` from the principal
+  it verified and is `False` on every scope the server did not build. A tool that
+  admits a caller with no user -- a pod on its own grant -- reads this rather than
+  inferring a pod from a missing customer, which a hand-built scope can carry by
+  accident. `ToolServer._verify_identity` returns the mark as a third value, and
+  `_build_call_scope` takes it as a required keyword.
+
+- **`PLATFORM_CUSTOMER_SENTINEL`** in `threetears.core.security`: the one
+  spelling of the `"aibots-platform"` customer claim a platform principal's
+  token carries, which the hub mints and the SDK presents and which each used
+  to spell for itself. Deliberately not a UUID; which doors refuse it is a
+  property of each door -- a customer-scoped read or a user-assertion binding
+  refuses a tool pod on it, the tool-call gates read it through
+  `principal_from_claims` and evaluate the pod alone.
+
+- **`threetears.registry.client`.** `ToolCallClient` publishes the registry's
+  own `ProxyCallRequest` on the call subject with the caller's identity as a
+  FORWARDED TOKEN read from a provider on every call and a proof of possession
+  minted by a caller-supplied signer (`PopSignerProtocol`, the shape the SDK's
+  `PopSigner` already has), and returns the registry's `ProxyCallResponse` or
+  raises `ToolCallError`. The error's code is the registry's or the tool's
+  refusal code, or one of the four the client mints itself:
+  `INVALID_TOOL_NAME`, `INVALID_TOOL_VERSION`, `NO_IDENTITY_TOKEN` (each
+  refused before the bus) and `REQUEST_FAILED` (the bus, not the registry, said
+  no). Synchronous, on the caller's own inbox; its default deadline is the
+  registry's `PLATFORM_DEFAULT_CALL_TIMEOUT` (now public on
+  `threetears.registry.config`) plus `CALL_TIMEOUT_MARGIN_SECONDS`, pinned by a
+  test, so a tool that runs past the default budget comes back as the
+  registry's `TOOL_TIMEOUT` rather than the client's own transport fault. A
+  tool whose declared `timeout_seconds` exceeds the default needs `timeout`
+  raised to match.
+
+### Changed
+
+- **`AgentToolAuthorizer.is_authorized` takes a required keyword,
+  `principal_is_tool_pod`.** `RbacEvaluatorAuthorizer` evaluates a marked
+  principal with no user on its own grant alone -- exactly as the L3 broker and
+  the hub's datasource authorizer evaluate the same principal -- and refuses an
+  unmarked (agent) principal with no user exactly as before. Every implementer,
+  every fake AND every caller grows the keyword: a caller that resolves a real
+  user for the principal it names -- the hub's REST OpenAPI ingress is one --
+  passes `principal_is_tool_pod=False`. It is required rather than defaulted so
+  a fake or caller that predates it fails loudly instead of passing on the
+  wrong protocol.
+
+- **`CallProxy._verify_identity` returns the `VerifiedPrincipal` as its third
+  value** (it returned a pair). A host that reaches through a subclass to drive
+  the verifier directly unpacks three.
+
+- **The hardcoded-timeout gate reads annotated constants.**
+  `packages/registry/tests/enforcement/test_no_hardcoded_timeouts.py` walked
+  plain assignments only, so `X_TIMEOUT: float = 30.0` passed the gate whose
+  purpose is to refuse it. It now walks both spellings, and its narrow
+  exceptions are consulted for constants; the client's margin is the one
+  allowlisted literal, with its reason beside it.
+
+### Fixed
+
+- **A dynamic tool pod announced a new spec's tools before it could answer for
+  them.** `DynamicToolPod.register_spec` published the manifest as soon as the
+  connection was up, including when that same call had just started the serve
+  loop. The registry probes a newly named endpoint once, on arrival, and does
+  not probe an endpoint it already holds, so the probe reached a subject nothing
+  had bound and the loop's own publish did not retry it: the tools stayed
+  `pending` until the next heartbeat. It now publishes only when the server is
+  ready (`ToolServer.is_ready`, below) and connected, and otherwise leaves the
+  announcement to the serve loop, which subscribes first. A spec that built no
+  tools no longer publishes at all, since it changes nothing a manifest carries.
+
+- **`ToolServer.is_ready`** is new: the non-blocking twin of `wait_ready`, true
+  once `serve()` has bound its call and probe subjects and published once. Code
+  that publishes a manifest itself checks it first.
+
+- **A durable forward whose result waiter could not open killed the dispatch
+  task silently.** `CallProxy._forward_call_durable` opened its JetStream
+  waiter outside any guard, so a bus missing the result stream raised out of the
+  task with the reply subject unanswered, and the caller learned nothing until
+  its own deadline. The open is now guarded: a failure there answers
+  `TOOL_UNAVAILABLE`, the retryable code, because the waiter opens BEFORE the
+  call is dispatched and so the call never reached a pod.
+
+- **The hardcoded-timeout gate never scanned agent-tools.** It listed
+  `packages/agent-tools/src`, which does not exist (the package lives at
+  `packages/agent/tools/src`), and skipped a missing directory silently, so the
+  gate read green over a package it had never opened. The path is corrected,
+  and the three literals it then found now come from the config layer the gate
+  allows: `threetears.agent.tools.config` gains `get_deliver_timeout`
+  (`DELIVER_TIMEOUT_SECONDS`), `get_report_timeout` (`REPORT_TIMEOUT_SECONDS`)
+  and `get_namespace_discovery_request_timeout`
+  (`THREETEARS_TOOLSERVER_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT`), with the same
+  defaults as before. A non-positive override of the two tool timeouts falls
+  back to the default as it did, and now says so in a warning.
+  `NamespaceDiscoveryClient(timeout_seconds=)` defaults to `None`, reads the
+  config layer when omitted, and exposes the resolved value as
+  `timeout_seconds`.
+
 ## v0.38.0 -- 2026-09-10
 
 ### Added
