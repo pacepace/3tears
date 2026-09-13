@@ -67,7 +67,7 @@ def jwks_provider() -> dict[str, Any]:
 def _hub_token(
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID | None,
     exp_delta: int = 600,
     conversation_id: UUID | None = None,
@@ -96,7 +96,7 @@ def _hub_token(
 def mint_user_assertion(
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID | None,
     exp_delta: int = 3600,
     conversation_id: UUID | None = None,
@@ -123,7 +123,7 @@ def signed_call_payload(
     arguments: dict[str, Any] | None = None,
     correlation_id: str | None = None,
     agent_id: UUID | None = None,
-    customer_id: UUID | None = None,
+    customer_id: UUID | str | None = None,
     conversation_id: UUID | None = None,
     user_id: UUID | None = None,
     user_assertion: str | None = None,
@@ -150,6 +150,10 @@ def signed_call_payload(
     the server under test MUST be constructed with ``pod_id=<pod_id>`` and ``jwks_provider`` (so the
     proxy assertion's ``aud`` matches and both gates verify). the handshake agent/customer are NOT
     put on the envelope context; the pod overwrites them from the verified token regardless.
+
+    ``customer_id`` may be the platform customer sentinel (a ``str``) to build the call a TOOL POD
+    makes on its own identity: the handshake token then names no customer, and the proxy assertion
+    carries the same claim verbatim as the registry re-mints it.
     """
     args = arguments if arguments is not None else {}
     corr = correlation_id if correlation_id is not None else str(uuid4())
@@ -170,8 +174,8 @@ def signed_call_payload(
     body_hash = canonical_call_hash(tool_name, args, corr)
     proxy_assertion = _SIGNER.mint(
         pod_id=pod_id,
-        agent_id=str(uuid4()),
-        customer_id=str(uuid4()),
+        agent_id=str(effective_agent_id),
+        customer_id=str(effective_customer_id),
         body_hash=body_hash,
         nonce=str(uuid4()),
         now=int(time.time()),

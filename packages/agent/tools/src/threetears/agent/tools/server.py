@@ -61,6 +61,7 @@ from threetears.core.security.identity_token import (
     IdentityKeyNotFoundError,
     IdentityTokenError,
     canonical_call_hash,
+    principal_from_claims,
     verify_identity_token,
 )
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
@@ -1301,6 +1302,21 @@ class ToolServer:
         """
         return self._owns_nats_connection
 
+    @property
+    def is_ready(self) -> bool:
+        """return whether serve() has bound its call and probe subjects and published once.
+
+        the non-blocking twin of :meth:`wait_ready`. a caller that publishes the manifest
+        itself must not do so before this is true: the registry probes a newly named
+        endpoint the moment the manifest arrives, a probe to a subject nothing has bound
+        yet fails, and a later publish does not probe an endpoint the registry already
+        holds -- so the endpoint stays pending until the pod's next heartbeat.
+
+        :return: true once serve() has subscribed and published its first registration
+        :rtype: bool
+        """
+        return self._ready_event.is_set()
+
     async def wait_ready(self, timeout: float | None = None) -> None:
         """block until serve() has subscribed to NATS and published registration.
 
@@ -2012,7 +2028,7 @@ class ToolServer:
             )
 
     @traced(record_args=True)
-    async def _verify_identity(self, request: CallRequest) -> tuple[CallRequest, str | None]:
+    async def _verify_identity(self, request: CallRequest) -> tuple[CallRequest, str | None, bool]:
         """re-verify the Hub identity token and RE-STAMP the verified identity (defense in depth).
 
         The registry proxy already verifies + re-stamps identity, but anything that can publish on
@@ -2041,10 +2057,13 @@ class ToolServer:
 
         :param request: the parsed inbound call request
         :ptype request: CallRequest
-        :return: ``(request, reason)`` where ``request`` is the re-stamped request on verify
-            success (else the original) and ``reason`` is ``None`` when the call may proceed or a
-            rejection-reason string when the call MUST be rejected without dispatching
-        :rtype: tuple[CallRequest, str | None]
+        :return: ``(request, reason, principal_is_tool_pod)`` where ``request`` is the re-stamped
+            request on verify success (else the original), ``reason`` is ``None`` when the call may
+            proceed or a rejection-reason string when the call MUST be rejected without
+            dispatching, and ``principal_is_tool_pod`` is whether the VERIFIED principal is a tool
+            pod -- ``False`` on every rejection, so nothing downstream can read a mark a failed
+            verification never earned
+        :rtype: tuple[CallRequest, str | None, bool]
         """
         context = request.context
         # shared across the handshake + user-assertion verifications so the reactive Hub refresh (on
@@ -2062,12 +2081,17 @@ class ToolServer:
             # OVERWRITE the envelope's claimed identity with the verified token. a captured token
             # re-pointed at a forged agent / customer, or stripped of its identity to skip a
             # comparison, runs under the token's TRUE identity -- never the self-asserted one.
-            # these UUID conversions live INSIDE the try so a malformed-but-signed non-UUID claim
-            # fails closed (rejects) rather than escaping as an uncaught ValueError. user_id DEFAULTS
-            # to the handshake token's: ``None`` for a per-pod agent handshake token (it CANNOT carry
-            # the per-turn user); the bound user-assertion below may override it.
-            agent_id_value = UUID(claims.sub)
-            customer_id_value = UUID(claims.customer_id)
+            # the principal is read through the ONE reading the registry's door uses, INSIDE the
+            # try so a malformed-but-signed claim fails closed (rejects) rather than escaping as an
+            # uncaught ValueError: a tool pod's token carries the platform customer sentinel, read
+            # as no customer, and this gate MIRRORS the registry in admitting it -- a pod the
+            # registry authorized on its own grant must not be refused here by a parse the registry
+            # already decided against. user_id DEFAULTS to the handshake token's: ``None`` for a
+            # per-pod handshake token (it CANNOT carry the per-turn user); the bound user-assertion
+            # below may override it.
+            principal = principal_from_claims(claims)
+            agent_id_value = principal.principal_id
+            customer_id_value = principal.customer_id
             user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
@@ -2077,11 +2101,34 @@ class ToolServer:
             # key material (IdentityTokenError carries only the structural reason).
             extra = {"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}}
             log.warning("pod identity verification failed; rejecting call", extra=extra)
-            return request, f"identity verification failed ({reason})"
+            return request, f"identity verification failed ({reason})", False
 
         # the handshake token verified above, so ``context`` is non-None (the try raised + returned
         # otherwise). re-narrow for the type checker.
         assert context is not None
+
+        if principal.is_tool_pod:
+            # the same decision the registry's door logs, mirrored here so a dispatch under a
+            # platform principal is visible from a line and not from a missing customer tag.
+            log.info(
+                "pod identity verified as a platform principal; customer claim read as none",
+                extra={"extra_data": {"agent_id": str(principal.principal_id), "tool_name": request.tool_name}},
+            )
+            if context.user_identity_token:
+                # MIRRORS the registry: a pod acts on nobody's behalf, so a user assertion on a
+                # pod token is malformed by definition, refused at the sink rather than left to
+                # the claim-equality binding below, which would admit one minted with the sentinel.
+                log.warning(
+                    "pod user-assertion presented on a tool pod token; rejecting call",
+                    extra={
+                        "extra_data": {
+                            "reason": "IdentityTokenError",
+                            "detail": "a tool pod acts on nobody's behalf; a user assertion on a pod token is malformed",
+                            "tool_name": request.tool_name,
+                        }
+                    },
+                )
+                return request, "user-assertion verification failed (IdentityTokenError)", False
 
         # MIRROR THE PROXY's user-assertion gate (registry/proxy.py ``_verify_identity``): a
         # user-driven turn's tool call ALSO carries a Hub-minted, cnf-LESS user-assertion
@@ -2127,7 +2174,7 @@ class ToolServer:
                 # expired/absent assertion), never token or key material.
                 extra = {"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}}
                 log.warning("pod user-assertion verification failed; rejecting call", extra=extra)
-                return request, f"user-assertion verification failed ({reason})"
+                return request, f"user-assertion verification failed ({reason})", False
 
         verified_context = context.model_copy(
             update={
@@ -2136,7 +2183,7 @@ class ToolServer:
                 "customer_id": customer_id_value,
             }
         )
-        return request.model_copy(update={"context": verified_context}), None
+        return request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod
 
     async def _verify_proxy_assertion(self, request: CallRequest) -> str | None:
         """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
@@ -2542,7 +2589,7 @@ class ToolServer:
                 owes_sync_reply[0] = False
                 self._settle_sync_reply()
 
-            request, identity_rejection = await self._verify_identity(request)
+            request, identity_rejection, principal_is_tool_pod = await self._verify_identity(request)
             if identity_rejection is not None:
                 error_response = CallResponse(
                     success=False,
@@ -2617,7 +2664,7 @@ class ToolServer:
                 return
 
             try:
-                scope = await self._build_call_scope(request)
+                scope = await self._build_call_scope(request, principal_is_tool_pod=principal_is_tool_pod)
                 tool_result = await self._run_tool_guarded(tool, request, scope)
                 response = CallResponse(
                     success=tool_result.success,
@@ -2906,6 +2953,8 @@ class ToolServer:
     async def _build_call_scope(
         self,
         request: CallRequest,
+        *,
+        principal_is_tool_pod: bool,
     ) -> ToolCallScope:
         """construct per-call scope from envelope :class:`CallContext`.
 
@@ -2924,6 +2973,11 @@ class ToolServer:
 
         :param request: parsed call request
         :ptype request: CallRequest
+        :param principal_is_tool_pod: whether the principal :meth:`_verify_identity` verified is
+            a tool pod. REQUIRED rather than defaulted: it is an authorization input a tool reads
+            to admit a caller with no user, so a construction site that forgot it must fail
+            loudly rather than build a scope that quietly says "agent"
+        :ptype principal_is_tool_pod: bool
         :return: populated :class:`ToolCallScope`
         :rtype: ToolCallScope
         """
@@ -2950,6 +3004,7 @@ class ToolServer:
             object_store=self._object_store,
             object_resolver=self._object_resolver,
             engagement_resolver=self._engagement_resolver,
+            principal_is_tool_pod=principal_is_tool_pod,
         )
 
     async def _heartbeat_loop(self) -> None:

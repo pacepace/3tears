@@ -1000,6 +1000,14 @@ def _tool_pod(
         # than per-name literals because these grants are minted at connect, before the pod
         # knows which datasources an operator will declare for it.
         str(Subjects.datasource_query_wildcard()),
+        # a platform tool -- the dataset verbs above all -- reached the same way: the registry
+        # answers ``{ns}.tools.call``, verifies the forwarded hub-minted token and the per-call
+        # proof of possession at the door, and evaluates the pod's OWN ``tool.call`` grant on
+        # the tool's namespace, because a tool pod forwards no user assertion. The request
+        # names no principal, so this subject buys reach and never authority: the pod may ask
+        # for any tool, and the registry refuses every one the pod's row was not granted. The
+        # same subject the agent pod holds, for the same call shape.
+        str(Subjects.tools_call()),
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify proxy assertions
         str(Subjects.audit_event("tool.call")),
         # Path-2 consume: a consuming tool resolves an object id -> its stored

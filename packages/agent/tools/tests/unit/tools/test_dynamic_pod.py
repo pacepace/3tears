@@ -112,6 +112,7 @@ class _FakeToolServer(ToolServer):
         self.shutdown_count = 0
         self.serve_count = 0
         self._connected = False
+        self._ready = False
         self._serve_gate = asyncio.Event()
 
     def set_connected(self, connected: bool) -> None:
@@ -165,13 +166,23 @@ class _FakeToolServer(ToolServer):
         self._serve_gate.set()
 
     async def serve(self) -> None:
-        """block until shutdown so the spawned task stays alive.
+        """report ready as the real loop does once its subjects are bound, then block.
 
         :return: nothing
         :rtype: None
         """
         self.serve_count += 1
+        self._ready = True
         await self._serve_gate.wait()
+
+    @property
+    def is_ready(self) -> bool:
+        """return whether the fake serve loop has reached its bound state.
+
+        :return: ready state
+        :rtype: bool
+        """
+        return self._ready
 
     @property
     def is_connected(self) -> bool:
@@ -321,17 +332,58 @@ async def test_register_spec_while_disconnected_does_not_publish() -> None:
 
 
 @pytest.mark.asyncio
-async def test_register_spec_while_connected_publishes_once() -> None:
-    """registering on a connected pod registers tools and publishes once."""
+async def test_register_spec_on_a_serving_pod_publishes_once() -> None:
+    """registering on a pod whose serve loop is bound registers tools and publishes once."""
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_first", tool_count=1)], fake)
+    await pod.start()
+    await asyncio.sleep(0)
+    fake.set_connected(True)
+
+    await pod.register_spec(_StubSpec("ds_live", tool_count=2))
+
+    assert len(fake.registered) == 3
+    assert fake.publish_count == 1
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_register_spec_that_starts_the_serve_loop_leaves_the_publish_to_it() -> None:
+    """a spec that gives an empty pod its first tools must not publish ahead of the loop.
+
+    the registry probes a pod the moment a manifest names a new endpoint, and does not probe
+    an endpoint it already holds. a publish issued before the serve loop has bound the probe
+    subject therefore loses the probe AND stops the loop's own publish from probing again, so
+    the tools wait a whole heartbeat for promotion. the loop publishes the current manifest,
+    new tools included, as soon as its subjects are bound.
+    """
     fake = _FakeToolServer()
     pod = _StubPod([], fake)
     await pod.start()
     fake.set_connected(True)
 
-    await pod.register_spec(_StubSpec("ds_live", tool_count=2))
+    await pod.register_spec(_StubSpec("ds_first", tool_count=2))
 
-    assert len(fake.registered) == 2
-    assert fake.publish_count == 1
+    assert fake.publish_count == 0
+    await asyncio.sleep(0)
+    assert fake.serve_count == 1
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_register_spec_that_builds_no_tools_publishes_nothing() -> None:
+    """a spec whose build failed changes nothing a manifest carries, so none is published."""
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_first", tool_count=1)], fake)
+    await pod.start()
+    await asyncio.sleep(0)
+    fake.set_connected(True)
+
+    await pod.register_spec(_StubSpec("ds_broken", tool_count=0))
+
+    assert fake.publish_count == 0
 
     await pod.stop()
 

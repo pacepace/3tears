@@ -25,6 +25,12 @@ from threetears.registry.auth import (
     ToolPodAuthenticator,
 )
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.client import (
+    DEFAULT_CALL_TIMEOUT_SECONDS,
+    PopSignerProtocol,
+    ToolCallClient,
+    ToolCallError,
+)
 from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.entities import HeartbeatEntity
 from threetears.registry.health import HeartbeatSubscriber
@@ -46,8 +52,12 @@ __all__ = [
     "AllowAllAuthorizer",
     "CallProxy",
     "CatalogEntry",
+    "DEFAULT_CALL_TIMEOUT_SECONDS",
     "DenyAllAuthorizer",
     "DiscoveryHandler",
+    "PopSignerProtocol",
+    "ToolCallClient",
+    "ToolCallError",
     "HeartbeatCollection",
     "HeartbeatEntity",
     "HeartbeatSubscriber",

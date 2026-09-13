@@ -111,6 +111,15 @@ class ToolCallScope:
         wired with one (no NATS client, as in unit tests); a tool that needs it
         fails closed at first use rather than authorizing against nothing
     :ptype engagement_resolver: EngagementScopeResolver | None
+    :param principal_is_tool_pod: whether the caller the tool server VERIFIED is a
+        tool pod -- a platform principal acting on nobody's behalf -- rather than an
+        agent. set by the tool server from the one reading of a verified token,
+        :func:`threetears.core.security.principal_from_claims`, and never from
+        anything the envelope asserts. ``False`` on every scope the server did not
+        build, so a tool that admits a caller with no user (a pod on its own grant)
+        reads this rather than inferring a pod from a missing customer, which a
+        hand-built scope can carry by accident
+    :ptype principal_is_tool_pod: bool
     :param cleanup_hooks: synchronous callbacks the tool server runs -- best
         effort, in registration order -- if it force-ends this call on its hard
         execution-time limit (``ToolServer(max_call_seconds=...)``). A tool
@@ -127,6 +136,7 @@ class ToolCallScope:
     object_store: ObjectStore | None = None
     object_resolver: "ObjectResolver | None" = None
     engagement_resolver: "EngagementScopeResolver | None" = None
+    principal_is_tool_pod: bool = False
     cleanup_hooks: list[Callable[[], None]] = field(default_factory=list)
 
 

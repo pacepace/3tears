@@ -13,6 +13,7 @@ import os
 from threetears.observe import get_logger
 
 __all__ = [
+    "PLATFORM_DEFAULT_CALL_TIMEOUT",
     "get_call_timeout",
     "get_heartbeat_check_interval",
     "get_heartbeat_max_misses",
@@ -27,8 +28,11 @@ __all__ = [
 
 log = get_logger(__name__)
 
-# platform default for tool call timeout (seconds)
-_PLATFORM_DEFAULT_CALL_TIMEOUT = 120.0
+#: platform default for the tool call forward budget (seconds). PUBLIC because a
+#: caller's own deadline has to sit ABOVE this budget so a slow tool comes back as
+#: the registry's typed timeout rather than the caller's transport fault, and a
+#: caller that restates the number is a caller that drifts.
+PLATFORM_DEFAULT_CALL_TIMEOUT = 120.0
 # platform default for heartbeat liveness timeout (seconds)
 _PLATFORM_DEFAULT_HEARTBEAT_TIMEOUT = 45.0
 # platform default for heartbeat check sweep interval (seconds)
@@ -61,9 +65,9 @@ def get_call_timeout() -> float:
             log.warning(
                 "invalid THREETEARS_REGISTRY_CALL_TIMEOUT=%r, using default %.1f",
                 raw,
-                _PLATFORM_DEFAULT_CALL_TIMEOUT,
+                PLATFORM_DEFAULT_CALL_TIMEOUT,
             )
-    return _PLATFORM_DEFAULT_CALL_TIMEOUT
+    return PLATFORM_DEFAULT_CALL_TIMEOUT
 
 
 def get_heartbeat_timeout() -> float:
@@ -175,9 +179,9 @@ def get_mcp_timeout() -> float:
             log.warning(
                 "invalid THREETEARS_MCP_TIMEOUT=%r, using default %.1f",
                 raw,
-                _PLATFORM_DEFAULT_CALL_TIMEOUT,
+                PLATFORM_DEFAULT_CALL_TIMEOUT,
             )
-    return _PLATFORM_DEFAULT_CALL_TIMEOUT
+    return PLATFORM_DEFAULT_CALL_TIMEOUT
 
 
 def get_nats_proxy_timeout_ms() -> int:
