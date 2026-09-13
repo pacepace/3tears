@@ -4,6 +4,36 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.39.1 -- 2026-09-13
+
+### Fixed
+
+- **Auth-flow state survives a hop to another replica.** `state_store` and
+  `ticket_store` in `threetears.iam.stores.nats_kv` opened their KV buckets
+  without naming a storage, and `NatsClient.kv_bucket` defaults to
+  `storage="memory"`. On a clustered broker a memory-backed bucket is not
+  reliably readable by a second replica, so state written while serving one
+  request went missing when the next request landed on a different pod.
+
+  Everything these factories hold is read back by a LATER request -- OAuth
+  authorization codes, OIDC flow state, partial-auth tickets, DPoP nonces --
+  and that request routes wherever the load balancer sends it. Observed as a
+  login that restarted and then succeeded on the retry, on a three-node NATS
+  cluster with two identity replicas: roughly a coin flip per attempt, and
+  invisible on a single-replica stack. Both factories now pass
+  `storage="file"`.
+
+  **An existing bucket is NOT converted by deploying this.** `storage` is
+  requestable but not in `RECONCILED_KV_STREAM_FIELDS`, so it is set at CREATE
+  and never reconciled. A cluster that already ran these buckets must delete
+  them once, so the next open recreates them file-backed. They are short-TTL
+  auth-flow state; the cost of dropping them is that anyone mid-login logs in
+  again.
+
+- **`FakeNatsClient` records the storage it was asked for.** It previously did
+  `del storage`, discarding the one argument the defect above turns on, so no
+  test could witness it. `FakeKvBucket.storage` now reports it.
+
 ## v0.39.0 -- 2026-09-11
 
 ### Added
