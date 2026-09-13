@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.39.1 -- 2026-09-13
+## v0.40.0 -- 2026-09-13
 
 ### Fixed
 
@@ -30,9 +30,14 @@ packages (bumped in lock-step).
   auth-flow state; the cost of dropping them is that anyone mid-login logs in
   again.
 
+### Added
+
 - **`FakeNatsClient` records the storage it was asked for.** It previously did
   `del storage`, discarding the one argument the defect above turns on, so no
-  test could witness it. `FakeKvBucket.storage` now reports it.
+  test could witness it. `FakeKvBucket.storage` now reports it. That new name on
+  a shipped module is why this is a minor rather than a patch: intra-family
+  bounds span one minor line, so a name added inside one could pair a sibling
+  that lacks it.
 
 ## v0.39.0 -- 2026-09-11
 
