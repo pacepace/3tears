@@ -63,7 +63,7 @@ class FakeKvBucket:
     fixtures exercise the same call shape production code uses.
     """
 
-    def __init__(self, bucket_name: str, ttl: timedelta | None = None) -> None:
+    def __init__(self, bucket_name: str, ttl: timedelta | None = None, storage: str = "memory") -> None:
         """initialize empty fake bucket with zero revision counter.
 
         :param bucket_name: full bucket name (with namespace prefix)
@@ -75,11 +75,18 @@ class FakeKvBucket:
             it asked for), and a double that cannot answer a question the real
             bucket answers is a double that hides the call.
         :ptype ttl: timedelta | None
+        :param storage: the backing this bucket was opened with. Recorded and reported by
+            :attr:`storage` for the same reason as ``ttl``: whether a caller asked for
+            ``memory`` or ``file`` is a real difference in a clustered broker -- memory
+            state is not reliably readable by another replica -- and a double that cannot
+            answer it hides the choice
+        :ptype storage: str
         :return: None
         :rtype: None
         """
         self._bucket_name = bucket_name
         self._ttl = ttl
+        self._storage = storage
         self._entries: dict[str, _Entry] = {}
         self._revision = 0
 
@@ -91,6 +98,15 @@ class FakeKvBucket:
         :rtype: timedelta | None
         """
         return self._ttl
+
+    @property
+    def storage(self) -> str:
+        """the backing this bucket was opened with (``memory`` or ``file``).
+
+        :return: storage name as the caller asked for it
+        :rtype: str
+        """
+        return self._storage
 
     @property
     def name(self) -> str:
@@ -238,7 +254,9 @@ class FakeNatsClient:
         :ptype name: str
         :param ttl: recorded and reported by :attr:`FakeKvBucket.ttl`; not applied
         :ptype ttl: object | None
-        :param storage: ignored by fake
+        :param storage: recorded and reported by :attr:`FakeKvBucket.storage`, so a test can
+            witness which backing a caller asked for. Not otherwise applied -- the fake is
+            always in-process
         :ptype storage: str
         :param create_if_missing: when ``False`` and bucket absent, raises
         :ptype create_if_missing: bool
@@ -248,11 +266,15 @@ class FakeNatsClient:
         :rtype: FakeKvBucket
         :raises KeyError: when ``create_if_missing=False`` and bucket absent
         """
-        del storage, history
+        del history
         bucket = self._buckets.get(name)
         if bucket is None:
             if not create_if_missing:
                 raise KeyError(f"bucket {name!r} not found")
-            bucket = FakeKvBucket(bucket_name=name, ttl=ttl if isinstance(ttl, timedelta) else None)
+            bucket = FakeKvBucket(
+                bucket_name=name,
+                ttl=ttl if isinstance(ttl, timedelta) else None,
+                storage=storage,
+            )
             self._buckets[name] = bucket
         return bucket
