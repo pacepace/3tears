@@ -308,6 +308,15 @@ async def state_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvStat
     the handle itself, so this costs nothing and stays correct across a broker reconnect --
     where a handle captured once at construction would not.
 
+    **FILE storage, explicitly, because ``kv_bucket`` defaults to memory.** What these stores
+    hold is auth-flow state read back by a LATER request -- an OAuth authorization code, OIDC
+    flow state, a partial-auth ticket -- and that request routes to whichever replica the load
+    balancer picks. On a clustered broker a memory-backed bucket is not reliably readable by a
+    second replica, so the state written while serving one request is missing when the next
+    arrives elsewhere. The symptom is a login that restarts and then works on the retry,
+    because the retry happened to stay on one replica. Anything single-process enough for
+    memory storage does not need a broker to hold it.
+
     :param nc: the connected client.
     :ptype nc: KvCapable
     :param name: bucket suffix, namespace-prefixed by the client.
@@ -319,13 +328,15 @@ async def state_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvStat
     :return: the store.
     :rtype: NatsKvStateStore
     """
-    return NatsKvStateStore(await nc.kv_bucket(name=name, ttl=ttl))
+    return NatsKvStateStore(await nc.kv_bucket(name=name, ttl=ttl, storage="file"))
 
 
 async def ticket_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvTicketStore:
     """Open (or rebind) ``name`` and wrap it as a :class:`NatsKvTicketStore`.
 
-    Same per-call resolution as :func:`state_store`, for the same reason.
+    Same per-call resolution as :func:`state_store`, and FILE storage for the same reason:
+    a ticket is issued on one request and redeemed on another, which need not reach the same
+    replica.
 
     :param nc: the connected client.
     :ptype nc: KvCapable
@@ -337,4 +348,4 @@ async def ticket_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvTic
     :return: the store.
     :rtype: NatsKvTicketStore
     """
-    return NatsKvTicketStore(await nc.kv_bucket(name=name, ttl=ttl))
+    return NatsKvTicketStore(await nc.kv_bucket(name=name, ttl=ttl, storage="file"))

@@ -463,6 +463,27 @@ async def test_a_hash_collision_refuses_to_overwrite_a_live_ticket(nats: FakeNat
         await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
 
 
+async def test_the_factories_open_file_backed_buckets(nats: FakeNatsClient) -> None:
+    """auth-flow state must survive a hop to another replica, so it cannot be memory-backed.
+
+    `NatsClient.kv_bucket` defaults to `storage="memory"`, and these two factories used to
+    take that default. On a clustered broker a memory bucket is not reliably readable by a
+    second replica, so an authorization code minted while serving one request was invisible
+    when the browser's next request landed on a different pod -- the login then restarted,
+    and succeeded only when the round trip happened to stay on one replica.
+
+    Every caller of these factories stores exactly that kind of state: OAuth authorization
+    codes, OIDC flow state, partial-auth tickets, DPoP nonces. None of it is single-process
+    by nature; if it were, it would not be in a broker at all.
+    """
+    await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))  # type: ignore[arg-type]
+    await state_store(nats, name="state", ttl=timedelta(hours=1))  # type: ignore[arg-type]
+
+    opened = {name: bucket.storage for name, bucket in nats._buckets.items()}  # noqa: SLF001 -- the fake's recorded opens ARE the subject
+
+    assert opened == {"tickets": "file", "state": "file"}, f"an auth-flow store opened a memory-backed bucket: {opened}"
+
+
 async def test_the_factories_open_a_bucket_and_wrap_it(nats: FakeNatsClient) -> None:
     # The factories resolve the bucket per call rather than holding one, so a broker
     # reconnect does not leave a stale handle behind.
