@@ -4,6 +4,38 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.41.1 -- 2026-09-14
+
+### Fixed
+
+- **`read_all`'s default page size disarmed the guard it exists for.** The hub
+  computes `truncated = total > MAX_RESULT_ROWS`, strictly greater, over what the
+  query returned. `read_all` shipped with `page_size=1000` and the cap is 1000, so
+  a `LIMIT` at the cap made that test unsatisfiable: `truncated` could never be
+  true, `previous_truncated` was never true, and the empty-page-after-truncated
+  check -- the one signal separating a duplicate-key short read from a clean
+  finish -- was unreachable code.
+
+  Its own docstring said "must stay under the hub's row cap" while the default sat
+  ON it. The default is what a caller gets by not thinking about the parameter,
+  which is precisely the caller the guard protects.
+
+  A page size at or above the cap is now REFUSED rather than silently degraded,
+  matching how the function already treats an empty key or a non-positive size,
+  and the message names the guard it would disable so nobody picks one smaller and
+  keeps the bug. The default is 500.
+
+  The cap is mirrored as `_HUB_ROW_CAP` rather than imported -- it lives in the
+  hub, which this package cannot import, since the dependency runs the other way.
+  Wrong-low costs only a smaller page and wrong-high is refused at the door, so
+  the dangerous direction is the hub LOWERING its cap; if that value moves, this
+  one moves in the same release.
+
+  Found by a consumer reading both sides and doing the arithmetic. The tests
+  missed it because they scripted `truncated` as a fixture value and so never
+  touched the arithmetic deciding whether it could be true at the default -- a
+  fake agreeing with the code instead of the world.
+
 ## v0.41.0 -- 2026-09-14
 
 ### Fixed

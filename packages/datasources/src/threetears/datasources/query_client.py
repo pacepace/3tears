@@ -49,7 +49,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer
@@ -436,6 +436,31 @@ class DatasourceQueryClient:
         return result
 
 
+#: The hub's per-call row cap, MIRRORED rather than imported.
+#:
+#: It lives in `aibots.hub.datasources.sql_safety.MAX_RESULT_ROWS`, in the hub
+#: repo, which this package cannot import -- the dependency runs the other way.
+#: So this is a copy, and a copy of someone else's constant is a thing that goes
+#: stale.
+#:
+#: What makes the staleness safe rather than silent: being WRONG-LOW only costs a
+#: smaller page, while being wrong-high is refused at the door by `read_all`. The
+#: failure mode of a hub that LOWERS its cap is therefore a caller passing a size
+#: between the new cap and this value and losing the guard -- so if the hub's
+#: value ever changes, this one moves in the same release.
+_HUB_ROW_CAP: Final[int] = 1000
+
+#: Comfortably under the cap, because ON the cap disarms the guard.
+#:
+#: The first shipped default was 1000, exactly the cap, which made
+#: `previous_truncated` permanently False and the empty-page-after-truncated
+#: check unreachable. The docstring said "must stay under the hub's row cap"
+#: while the default sat on it, and the default is what a caller gets by not
+#: thinking about it -- which is precisely the caller the guard protects. Found
+#: by a consumer reading both sides rather than trusting either.
+_DEFAULT_PAGE_SIZE: Final[int] = 500
+
+
 class IncompleteReadError(RuntimeError):
     """a paged read could not be shown to have returned every row.
 
@@ -452,7 +477,7 @@ async def read_all(
     columns: Sequence[str],
     relation: str,
     key: Sequence[str],
-    page_size: int = 1000,
+    page_size: int = _DEFAULT_PAGE_SIZE,
     max_pages: int = 10_000,
 ) -> list[dict[str, Any]]:
     """read an entire relation, or raise. never return a prefix.
@@ -493,10 +518,12 @@ async def read_all(
     :param key: the ordering key. Must be unique for the read to be complete;
         non-uniqueness is detected rather than assumed
     :ptype key: Sequence[str]
-    :param page_size: rows per page. Must stay under the hub's row cap, which
-        bounds what crosses the bus but does NOT bound what the warehouse
-        returns -- the hub materializes the whole result and slices, so the
-        ``LIMIT`` here is what keeps a page cheap
+    :param page_size: rows per page. Must be UNDER the hub's row cap and is
+        REFUSED at or above it, because the hub computes ``truncated`` as
+        ``total > cap`` and a ``LIMIT`` at the cap makes that unsatisfiable --
+        which silently disarms the guard above. The cap bounds what crosses the
+        bus and NOT what the warehouse returns: the hub materializes the whole
+        result and slices, so the ``LIMIT`` here is also what keeps a page cheap
     :ptype page_size: int
     :param max_pages: refuse rather than loop forever
     :ptype max_pages: int
@@ -511,6 +538,22 @@ async def read_all(
         raise ValueError("key must not be empty: keyset paging has no cursor without one")
     if page_size < 1:
         raise ValueError(f"page_size must be positive, got {page_size}")
+    if page_size >= _HUB_ROW_CAP:
+        # Refuse rather than degrade. At or above the cap the hub can never report
+        # `truncated` -- it computes `total > MAX_RESULT_ROWS` over what the query
+        # returned, and a LIMIT at the cap makes that strictly-greater test
+        # unsatisfiable. `previous_truncated` then stays False forever and the
+        # empty-page-after-truncated guard, which is the whole reason this
+        # function exists, becomes unreachable code.
+        #
+        # Silently returning a prefix is the failure being guarded against, so a
+        # page size that disables the guard is refused the way an empty key is.
+        raise ValueError(
+            f"page_size must be UNDER the hub's row cap of {_HUB_ROW_CAP}, got {page_size}. "
+            f"at or above it the hub can never report `truncated`, so the duplicate-key "
+            f"guard cannot fire and a short read would be returned as a complete one. "
+            f"pass something smaller -- the default is {_DEFAULT_PAGE_SIZE}."
+        )
 
     selected = ", ".join(columns)
     ordering = ", ".join(key)
