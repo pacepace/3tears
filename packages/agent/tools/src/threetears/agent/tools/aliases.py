@@ -73,7 +73,7 @@ WEB_TOOLS: frozenset[str] = frozenset(
 )
 
 # media tool names all use the uniform dotted ``threetears.X`` form:
-# * ``threetears.analyze_media`` -- TearsTool subclass under ``builtin/``
+# * ``threetears.media_analyze`` -- TearsTool subclass under ``builtin/``
 # * ``threetears.parse_document`` -- TearsTool subclass under
 #   ``document/`` (separate dir because PyMuPDF / pdfminer / OCR
 #   stack is an optional dependency; the tool registers only when
@@ -92,7 +92,7 @@ WEB_TOOLS: frozenset[str] = frozenset(
 # appears in the registry.
 MEDIA_TOOLS: frozenset[str] = frozenset(
     {
-        "threetears.analyze_media",
+        "threetears.media_analyze",
         "threetears.parse_document",
         "threetears.image_prep",
         "threetears.image_generation",

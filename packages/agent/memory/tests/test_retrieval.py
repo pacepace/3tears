@@ -341,9 +341,43 @@ class TestFormatMemoryContext:
             {"memory_id": uuid.uuid7(), "content": "likes cats", "summary": None, "hybrid_score": 0.5},
         ]
         result = _format_memory_context(memories, detail_threshold=0.85)
-        assert "Things you remember about this user:" in result
+        assert "What you remember" in result
         assert "likes cats" in result
         assert "memory_recall" in result
+
+    def test_the_header_does_not_claim_every_memory_is_about_the_user(self) -> None:
+        """Memories are extracted from conversations, so many are about the agent.
+
+        The old header said "Things you remember about this user", which made a
+        memory the agent had written about ITSELF read as a fact about the
+        person -- so the agent took the name inside it as the user's name,
+        addressed the person by its own name and signed off with theirs. Twice in
+        one conversation, until the person pointed it out.
+
+        Pinned as a negative because the failure was the claim, not the wording:
+        any future header that asserts every memory is about the user
+        reintroduces it.
+        """
+        memories = [
+            {"memory_id": uuid.uuid7(), "content": "x", "summary": None, "hybrid_score": 0.5},
+        ]
+
+        result = _format_memory_context(memories, detail_threshold=0.85)
+
+        assert "about this user" not in result
+
+    def test_the_header_says_how_to_read_a_name_inside_a_memory(self) -> None:
+        """Saying "some are about you" is not enough on its own -- it leaves the
+        agent to decide, per memory, whose name it is holding. The header has to
+        answer that, or the same misreading is still available.
+        """
+        memories = [
+            {"memory_id": uuid.uuid7(), "content": "x", "summary": None, "hybrid_score": 0.5},
+        ]
+
+        result = _format_memory_context(memories, detail_threshold=0.85)
+
+        assert "a name inside a memory means whoever it names" in result
 
     def test_media_section(self) -> None:
         media = [
@@ -749,7 +783,7 @@ class TestMemoryRetrieverE2E:
         )
         assert result is not None
         assert "User likes Python" in result
-        assert "Things you remember" in result
+        assert "What you remember" in result
 
     async def test_empty_text_returns_none(
         self,
@@ -949,7 +983,7 @@ class TestFtsNullEmbeddingGuard:
         )
 
         assert result is not None
-        assert "Things you remember" in result
+        assert "What you remember" in result
         # the NULL-embedding keyword-only row never surfaces
         assert "keyword-only memory not yet embedded" not in result
 
