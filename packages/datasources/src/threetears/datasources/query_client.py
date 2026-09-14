@@ -47,7 +47,7 @@ the prefix, a derivation refuses it.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
@@ -68,6 +68,8 @@ __all__ = [
     "DatasourceQueryRequest",
     "DatasourceQueryResponse",
     "DatasourceQueryResult",
+    "IncompleteReadError",
+    "read_all",
 ]
 
 log = get_logger(__name__)
@@ -432,3 +434,150 @@ class DatasourceQueryClient:
                 response.error_message or f"datasource query on {datasource_name!r} refused",
             )
         return result
+
+
+class IncompleteReadError(RuntimeError):
+    """a paged read could not be shown to have returned every row.
+
+    Raised rather than returned, because the failure this guards is a caller
+    deriving state from a PREFIX it believes is the whole relation. A short list
+    of published files, treated as complete, prunes the entries it never saw.
+    """
+
+
+async def read_all(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str],
+    relation: str,
+    key: Sequence[str],
+    page_size: int = 1000,
+    max_pages: int = 10_000,
+) -> list[dict[str, Any]]:
+    """read an entire relation, or raise. never return a prefix.
+
+    ``DatasourceQueryResult.truncated`` tells a caller the hub cut THIS page. It
+    is necessary and not sufficient: a caller that checks it faithfully on every
+    page can still lose rows, and this exists because that happened.
+
+    **The trap.** Keyset paging steps past the last key it saw. When the key is
+    unique only BY PROMISE -- and a warehouse enforces nothing, including a
+    declared primary key -- duplicate keys make the cursor step OVER the
+    duplicates. The next page comes back empty with ``truncated`` false, which is
+    byte-identical to a clean finish. A hand-written helper returned 3 of 8 rows
+    and reported success.
+
+    **The signal that catches it.** The PREVIOUS page said truncated. An empty
+    page after a truncated one cannot mean "reached the end" -- there were more
+    rows a moment ago -- so it means the cursor skipped them, or a concurrent
+    writer deleted them. Both are an incomplete read, so both raise.
+
+    ``OFFSET`` is not offered. It looks correct in testing and silently drops a
+    row when anything is deleted between pages, which is the failure mode this
+    function exists to make impossible rather than merely discouraged.
+
+    The predicate is nested-OR rather than the row-constructor form
+    ``(a,b) > (?,?)``. This runs against every datasource type the platform
+    admits -- redshift, snowflake, bigquery, postgres, yugabyte -- and
+    row-constructor comparison is not portable across them.
+
+    :param client: the connected query client
+    :ptype client: DatasourceQueryClient
+    :param datasource_name: the datasource to read, as the hub names it
+    :ptype datasource_name: str
+    :param columns: columns to select, TRUSTED identifiers, never caller input
+    :ptype columns: Sequence[str]
+    :param relation: the table or view to read, TRUSTED, never caller input
+    :ptype relation: str
+    :param key: the ordering key. Must be unique for the read to be complete;
+        non-uniqueness is detected rather than assumed
+    :ptype key: Sequence[str]
+    :param page_size: rows per page. Must stay under the hub's row cap, which
+        bounds what crosses the bus but does NOT bound what the warehouse
+        returns -- the hub materializes the whole result and slices, so the
+        ``LIMIT`` here is what keeps a page cheap
+    :ptype page_size: int
+    :param max_pages: refuse rather than loop forever
+    :ptype max_pages: int
+    :return: every row of the relation
+    :rtype: list[dict[str, Any]]
+    :raises IncompleteReadError: when completeness cannot be demonstrated
+    :raises ValueError: when the arguments cannot describe a complete read
+    """
+    if not columns:
+        raise ValueError("columns must not be empty: a read of no columns cannot be checked for completeness")
+    if not key:
+        raise ValueError("key must not be empty: keyset paging has no cursor without one")
+    if page_size < 1:
+        raise ValueError(f"page_size must be positive, got {page_size}")
+
+    selected = ", ".join(columns)
+    ordering = ", ".join(key)
+    rows: list[dict[str, Any]] = []
+    cursor: tuple[Any, ...] | None = None
+    previous_truncated = False
+
+    for _ in range(max_pages):
+        predicate, params = _keyset_predicate(key, cursor)
+        sql = f"SELECT {selected} FROM {relation}{predicate} ORDER BY {ordering} LIMIT {int(page_size)}"
+        page = await client.query(datasource_name, sql, params=params)
+
+        if not page.rows:
+            if previous_truncated:
+                raise IncompleteReadError(
+                    f"{datasource_name}: empty page after a truncated one. the previous page reported more "
+                    f"rows existed, so this cannot be the end of the relation. either the ordering key "
+                    f"{tuple(key)} is not unique and the cursor stepped over duplicates, or rows were deleted "
+                    f"mid-read. {len(rows)} rows were read and they are NOT the whole relation."
+                )
+            return rows
+
+        advanced = tuple(page.rows[-1][column] for column in key)
+        if cursor is not None and advanced == cursor:
+            raise IncompleteReadError(
+                f"{datasource_name}: the cursor did not advance past {advanced!r}. every row in this page "
+                f"carries the same key, so paging cannot make progress and the remaining rows are "
+                f"unreachable by this key. {tuple(key)} is not unique in {relation}."
+            )
+
+        rows.extend(page.rows)
+        cursor = advanced
+        previous_truncated = page.truncated
+
+    raise IncompleteReadError(
+        f"{datasource_name}: still reading after {max_pages} pages ({len(rows)} rows). raising rather than "
+        f"continuing, because an unbounded read against a growing relation never terminates."
+    )
+
+
+def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:
+    """build the ``WHERE`` fragment selecting rows strictly after ``cursor``.
+
+    Nested OR rather than a row constructor, for portability across every
+    datasource type the platform admits. For key ``(a, b)`` the shape is::
+
+        WHERE (a > ?) OR (a = ? AND b > ?)
+
+    Values bind as parameters, so a cursor value never reaches the SQL as text.
+
+    :param key: the ordering columns, TRUSTED identifiers
+    :ptype key: Sequence[str]
+    :param cursor: the last key read, or ``None`` for the first page
+    :ptype cursor: tuple[Any, ...] | None
+    :return: the ``WHERE`` fragment (empty for page one) and its parameters
+    :rtype: tuple[str, list[Any]]
+    """
+    if cursor is None:
+        return "", []
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    for index, column in enumerate(key):
+        equalities = " AND ".join(f"{earlier} = ?" for earlier in key[:index])
+        comparison = f"{column} > ?"
+        clauses.append(f"({equalities} AND {comparison})" if equalities else f"({comparison})")
+        params.extend(cursor[:index])
+        params.append(cursor[index])
+
+    return f" WHERE {' OR '.join(clauses)}", params

@@ -125,9 +125,16 @@ async def test_a_short_feed_below_the_pipe_buffer_is_known_to_go_undetected(size
     legitimately exits 0 at the end-of-archive marker without waiting for EOF, so that check failed
     every real restore (caught by the integration tier, not by this file).
 
+    THE CHILD MUST STILL BE RUNNING for the kernel to absorb anything, and the ``sleep`` is what
+    makes that true rather than lucky. A child that has already reached ``exit 0`` has closed its
+    read end, so the next write breaks whatever its size and the guard fires on 1 KiB -- which is
+    not the guard getting better, just a different scenario. Without the sleep the outcome turns on
+    whether the first write beats the child to exit: it always did on an idle machine and did not
+    on a loaded CI runner, which failed the 0.40.0 release with exactly this test.
+
     If this test ever FAILS, the guard got better -- update the module docstring and delete this.
     """
-    await feed_stdin(["sh", "-c", "exit 0"], _emit(b"x" * size, chunk=64 * 1024))
+    await feed_stdin(["sh", "-c", "sleep 0.5; exit 0"], _emit(b"x" * size, chunk=64 * 1024))
 
 
 @pytest.mark.asyncio

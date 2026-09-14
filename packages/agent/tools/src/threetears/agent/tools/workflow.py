@@ -97,7 +97,7 @@ def load_workflow_tools(tool_context: ToolContextManager) -> list[Any]:
         StructuredTool.from_function(
             func=lambda key, value, value_type="string": None,
             coroutine=lambda key, value, value_type="string": _set_variable(tool_context, key, value, value_type),
-            name="set_variable",
+            name="variable_set",
             description=(
                 "Store a key-value variable in conversation context. "
                 "Use this to remember important values across turns."
@@ -107,20 +107,20 @@ def load_workflow_tools(tool_context: ToolContextManager) -> list[Any]:
         StructuredTool.from_function(
             func=lambda key: None,
             coroutine=lambda key: _get_variable(tool_context, key),
-            name="get_variable",
+            name="variable_get",
             description="Retrieve a previously stored variable by key.",
             args_schema=GetVariableInput,
         ),
         StructuredTool.from_function(
             func=lambda context_id: None,
             coroutine=lambda context_id: _recall_context(tool_context, context_id),
-            name="recall_context",
+            name="context_recall",
             description="Recall a specific context item by its context_id.",
             args_schema=RecallContextInput,
         ),
         StructuredTool.from_function(
             func=lambda plan, steps: _declare_workflow(tool_context, plan, steps),
-            name="declare_workflow",
+            name="workflow_declare",
             description=(
                 "Declare a structured workflow with a plan and ordered steps. "
                 "Use this when a task requires multiple sequential actions."

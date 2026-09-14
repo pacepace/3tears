@@ -743,7 +743,7 @@ class AnalyzeMediaTool(TearsTool):
         :return: namespaced tool name
         :rtype: str
         """
-        return "threetears.analyze_media"
+        return "threetears.media_analyze"
 
     def mcp_version(self) -> str:
         """return tool version.

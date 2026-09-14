@@ -58,9 +58,9 @@ def _make_tools(ctx: ToolContextManager):
 
 
 @pytest.mark.asyncio
-async def test_set_variable_tool(ctx: ToolContextManager) -> None:
+async def test_variable_set_tool(ctx: ToolContextManager) -> None:
     tools = _make_tools(ctx)
-    result = await tools["set_variable"].ainvoke({"key": "color", "value": "blue"})
+    result = await tools["variable_set"].ainvoke({"key": "color", "value": "blue"})
     assert "Variable 'color' saved" in result
     var = await ctx.get_variable("color")
     assert var is not None
@@ -68,39 +68,39 @@ async def test_set_variable_tool(ctx: ToolContextManager) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_variable_tool(ctx: ToolContextManager) -> None:
+async def test_variable_get_tool(ctx: ToolContextManager) -> None:
     tools = _make_tools(ctx)
     await ctx.set_variable("city", "Paris")
-    result = await tools["get_variable"].ainvoke({"key": "city"})
+    result = await tools["variable_get"].ainvoke({"key": "city"})
     assert "Paris" in result
 
 
 @pytest.mark.asyncio
-async def test_get_variable_not_found(ctx: ToolContextManager) -> None:
+async def test_variable_get_not_found(ctx: ToolContextManager) -> None:
     tools = _make_tools(ctx)
-    result = await tools["get_variable"].ainvoke({"key": "nope"})
+    result = await tools["variable_get"].ainvoke({"key": "nope"})
     assert "not found" in result
 
 
 @pytest.mark.asyncio
-async def test_recall_context_tool(ctx: ToolContextManager) -> None:
+async def test_context_recall_tool(ctx: ToolContextManager) -> None:
     tools = _make_tools(ctx)
     cid = await ctx.save_tool_result("calc", "42")
-    result = await tools["recall_context"].ainvoke({"context_id": cid})
+    result = await tools["context_recall"].ainvoke({"context_id": cid})
     assert "42" in result
 
 
 @pytest.mark.asyncio
-async def test_recall_context_not_found(ctx: ToolContextManager) -> None:
+async def test_context_recall_not_found(ctx: ToolContextManager) -> None:
     tools = _make_tools(ctx)
-    result = await tools["recall_context"].ainvoke({"context_id": "bad-id"})
+    result = await tools["context_recall"].ainvoke({"context_id": "bad-id"})
     assert "not found" in result
 
 
 @pytest.mark.asyncio
-async def test_declare_workflow_tool(ctx: ToolContextManager) -> None:
+async def test_workflow_declare_tool(ctx: ToolContextManager) -> None:
     tools = _make_tools(ctx)
-    result = tools["declare_workflow"].invoke(
+    result = tools["workflow_declare"].invoke(
         {
             "plan": "Test plan",
             "steps": ["step1", "step2"],

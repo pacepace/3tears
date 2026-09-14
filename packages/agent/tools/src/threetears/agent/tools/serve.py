@@ -180,7 +180,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
         "skipping analyze_media (requires MediaStorage and analyzer configuration, host-application-provided)",
         extra={
             "extra_data": {
-                "tool": "threetears.analyze_media",
+                "tool": "threetears.media_analyze",
                 "hint": (
                     "register in your agent host via "
                     "AnalyzeMediaTool(storage=<MediaStorage>, "

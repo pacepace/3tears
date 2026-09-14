@@ -4,6 +4,84 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.41.0 -- 2026-09-14
+
+### Fixed
+
+- **An `agent_internal` datasource routes to the schema its name advertises.**
+  The asyncpg driver's only `search_path` mechanism was the pgwire STARTUP
+  packet, which is why the setting survives the `RESET ALL` asyncpg issues on
+  release. A BORROWED pool never sends a startup packet, so the
+  `agent_internal` path -- which shares the Hub's L3 pool -- inherited the pool
+  owner's `search_path` and was never scoped at all.
+
+  Observed on a live cluster: `SELECT count(*) FROM users` against an
+  `agent_internal` datasource raised `UndefinedTableError`, while the identical
+  query fully qualified returned rows. `schema_name` was read in exactly one
+  place, to build a display string, and a Hub-side docstring asserted a
+  "per-query SET search_path" that existed nowhere in the driver.
+
+  Every acquire now issues `SET search_path` for the borrowed-pool case, which
+  is safe on a shared pool precisely because `RESET ALL` on release restores the
+  owner's startup default.
+
+- **Recalled memories are no longer all titled "about this user".** Memories are
+  extracted from conversations, so a large share are about the AGENT's own work.
+  On one deployment: 609 memories, 59 naming the agent in the third person, 44
+  naming both it and the person.
+
+  Under the old header a memory the agent wrote about ITSELF was presented as a
+  fact about the user, so the agent read the name inside it as the user's name.
+  It addressed the person by its own name and signed off with theirs, twice in
+  one conversation, until the person said so. The header now states that
+  memories may be about either party AND how to read a name inside one -- the
+  first without the second still leaves the agent guessing per memory.
+  Closes #446.
+
+### Added
+
+- **`read_all` reads an entire relation, or raises.** `DatasourceQueryResult.truncated`
+  says the hub cut THIS page; it is necessary and not sufficient. Keyset paging
+  steps past the last key it saw, so when a key is unique only by promise --
+  and a warehouse enforces nothing, including a declared primary key --
+  duplicate keys make the cursor step OVER them. The next page returns empty
+  with `truncated` false, byte-identical to a clean finish. A hand-written
+  helper returned 3 of 8 rows and reported success.
+
+  `read_all` raises on an empty page following a truncated one, on a cursor that
+  cannot advance, and on exceeding a page budget. It returns the whole relation
+  or nothing, because the failure it guards is a caller deriving state from a
+  prefix it believes is complete. The predicate is nested-OR rather than the
+  row-constructor form, which is not portable across the five datasource types
+  the platform admits. Reported by the delivery team, who spiked all three
+  paging shapes and found `OFFSET` loses a row whenever one is deleted mid-read.
+
+### Changed
+
+- **Five built-in tools renamed noun-first**, so tools for one subject sort
+  together. Closes #445.
+
+  | was | now |
+  |---|---|
+  | `set_variable` | `variable_set` |
+  | `get_variable` | `variable_get` |
+  | `recall_context` | `context_recall` |
+  | `declare_workflow` | `workflow_declare` |
+  | `threetears.analyze_media` | `threetears.media_analyze` |
+
+  **Breaking, with no alias period.** A name is the key a tool's spec is looked
+  up by, so an alias means a second way to reach each tool and then remembering
+  to delete it. Consumers move on the version bump.
+
+  The Python methods behind them -- `ToolContextManager.set_variable`,
+  `.get_variable`, `.declare_workflow` -- are deliberately NOT renamed. The rule
+  is about the names a model reads when picking a tool; those are ordinary
+  methods other code calls, and metallm overrides `declare_workflow`.
+
+  The names live in more places than the registrations: `aliases.py` group
+  patterns and the `serve.py` tool list carried the qualified media name too.
+  Downstream, check prompt text, stored rows, and recorded fixtures.
+
 ## v0.40.0 -- 2026-09-13
 
 ### Fixed

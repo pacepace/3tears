@@ -265,7 +265,25 @@ def _format_memory_context(
             parent_summary_by_id[str(mid_raw)] = mem_summary
 
     if memories:
-        lines.append("Things you remember about this user:")
+        # NOT "things you remember about this user". Memories are extracted from
+        # conversations, so a large share of them are about the AGENT's own work
+        # rather than about the person: on one deployment, 609 memories of which
+        # 59 named the agent in the third person and 44 named both.
+        #
+        # Under the old header a memory the agent wrote about itself -- "<agent>
+        # must write in short, plain English" -- was presented as a fact about
+        # the user, so the agent read the name in it as the user's. It then
+        # addressed the person by its own name and signed off with theirs, twice
+        # in one conversation, until the person said so.
+        #
+        # The header therefore says whose memory it might be AND how to read a
+        # name inside one, because the first without the second still leaves the
+        # agent guessing per memory.
+        lines.append(
+            "What you remember. Some of these are about the person you are talking with, "
+            "some are about you and your own work -- a name inside a memory means whoever "
+            "it names:"
+        )
         for mem in memories:
             text, detailed = _get_display_text(mem, detail_threshold)
             marker = " (detailed)" if detailed else ""

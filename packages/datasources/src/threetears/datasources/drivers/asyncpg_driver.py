@@ -80,9 +80,21 @@ the engines do:
   outside an explicit block unless the caller opens one, and
   ``Pool.release`` runs ``Connection.reset`` (``ROLLBACK`` when in a
   transaction, then ``CLOSE ALL`` / ``UNLISTEN *`` / ``RESET ALL`` --
-  ``asyncpg/connection.py``, ``get_reset_query``). the configured
-  ``search_path`` survives that ``RESET ALL`` because it is sent in the
-  pgwire STARTUP packet and is therefore the session default.
+  ``asyncpg/connection.py``, ``get_reset_query``). for a pool this driver
+  OWNS, the configured ``search_path`` survives that ``RESET ALL``
+  because it is sent in the pgwire STARTUP packet and is therefore the
+  session default.
+- **a BORROWED pool sends no startup packet**, so that mechanism does not
+  reach the ``AGENT_INTERNAL`` path at all. It inherited the pool owner's
+  ``search_path`` and was never scoped: an unqualified ``FROM users``
+  resolved against the Hub's own schema and raised ``UndefinedTableError``
+  while the same query fully qualified returned rows -- a datasource that
+  did not route to the schema its own name advertises. Every acquire now
+  issues ``SET search_path`` for that case
+  (:meth:`AsyncpgDriver._scope_borrowed_connection`), which is safe on a
+  shared pool precisely because ``RESET ALL`` on release restores the
+  owner's startup default. Stating both halves here because describing
+  only the owned-pool half is what let the gap sit unnoticed.
 
 cancellation: what this driver does NOT do (dsd-task-02):
 
@@ -566,6 +578,47 @@ class AsyncpgDriver(Driver):
                 extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
             )
 
+    async def _scope_borrowed_connection(self, conn: "asyncpg.Connection[Any]") -> None:
+        """scope a BORROWED connection to this datasource's schema.
+
+        A driver that opens its own pool sends ``search_path`` in the pgwire
+        STARTUP packet, which is why it survives the ``RESET ALL`` asyncpg issues
+        on release. A driver that BORROWS a pool -- the ``agent_internal`` case,
+        which shares the Hub's L3 pool -- never sends a startup packet, so it
+        inherited the pool owner's ``search_path`` and had no scoping at all.
+
+        The effect was that an ``agent_internal`` datasource did not route to the
+        schema its own name advertises: an unqualified ``FROM users`` resolved
+        against the Hub's own ``search_path`` and raised ``UndefinedTableError``,
+        while the identical query fully qualified returned rows. The module
+        docstring on the Hub side asserted a "per-query SET search_path" that did
+        not exist anywhere in this driver; ``schema_name`` was read in exactly one
+        place, to build a display string.
+
+        ``SET`` rather than ``SET LOCAL``: ``SET LOCAL`` outside a transaction is
+        a no-op with a warning, and this runs before the optional transaction the
+        timeout path opens. Session-level ``SET`` is safe on a shared pool because
+        ``Pool.release`` runs ``RESET ALL``, restoring the owner's startup default
+        -- the same property the statement_timeout path above relies on.
+
+        No-op when the driver owns its pool, where the startup packet already did
+        this and re-issuing it every acquire would be a wasted round trip.
+
+        :param conn: the freshly acquired connection
+        :ptype conn: asyncpg.Connection
+        :return: nothing
+        :rtype: None
+        """
+        if self._external_pool is None:
+            return
+        schema_name = getattr(self._config, "schema_name", None)
+        if not schema_name:
+            return
+        value = build_search_path_value([schema_name])
+        if value is None:
+            return
+        await conn.execute(f"SET search_path TO {value}")
+
     async def _acquire_and_run(
         self,
         coro_fn: Callable[[asyncpg.Connection[Any]], Awaitable[Any]],
@@ -573,6 +626,7 @@ class AsyncpgDriver(Driver):
         timeout_seconds: int | None = None,
     ) -> Any:
         """acquire a connection from the pool + route the call through cancellation.
+
 
         canonical wrapper every single-statement method routes through.
 
@@ -601,8 +655,12 @@ class AsyncpgDriver(Driver):
         :raises RuntimeError: if the driver was previously closed
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
+        # every single-statement method routes through here, which is why the
+        # borrowed-pool search_path is applied at this one point rather than at
+        # each call site.
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
+            await self._scope_borrowed_connection(conn)
             if timeout_seconds is None:
                 result = await self._with_cancellation(
                     lambda: coro_fn(conn),
@@ -742,6 +800,10 @@ class AsyncpgDriver(Driver):
         pool = await self._ensure_pool()
         conn = await pool.acquire()
         try:
+            # before the transaction opens: a borrowed connection carries the
+            # pool owner's search_path until scoped, and SET inside the
+            # transaction would roll back with it on any abort.
+            await self._scope_borrowed_connection(conn)
             transaction = conn.transaction()
             await transaction.start()
         except BaseException:
@@ -897,6 +959,7 @@ class AsyncpgDriver(Driver):
         translated = _translate_placeholders(sql, "asyncpg")
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
+            await self._scope_borrowed_connection(conn)
             async with conn.transaction():
                 # ``Connection.cursor`` returns a server-side cursor;
                 # this is the WHOLE reason we override the ABC default.
