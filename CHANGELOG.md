@@ -4,6 +4,41 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.41.3 -- 2026-09-14
+
+### Fixed
+
+- **`read_all` could still return a short read as a complete one when duplicate
+  keys straddled a page boundary.** 0.41.2 made the completeness guard reachable,
+  which it had not been, but it only caught a run of duplicate keys sitting at the
+  END of a relation. A run with distinct rows after it stayed silent, and that is
+  the reported shape: a seven-row relation read with a page of three returned six
+  rows and reported success.
+
+  The mechanism: the page was trimmed to `page_size` without regard for where the
+  key changed, so a run of equal keys was CUT by the boundary. The cursor advanced
+  to that key, the next page asked for rows strictly greater than it, and the rest
+  of the run was unreachable. Every signal behaved -- the page was not empty, the
+  cursor did advance, the sentinel arrived exactly as expected -- so nothing
+  noticed.
+
+  A key run is no longer split by a boundary. When the sentinel row arrives, every
+  row sharing ITS key is dropped from the page and re-read at the head of the next
+  one, so the cursor never steps over a row that has not been returned. The cost is
+  re-reading at most one key group per page. A run that fits inside a page now
+  reads COMPLETELY rather than raising, which is a strictly better outcome than
+  0.41.2 gave; only a single key value filling an entire page still raises, because
+  paging then has nowhere to step, and the message says so and names the page size
+  to raise.
+
+  This is the fourth release against one defect, and the three before it were each
+  argued through by hand and each shipped wrong. So the tests no longer only cover
+  the shapes someone thought to name: they sweep every run-length shape against
+  every page size in range and assert the contract itself -- every read returns the
+  relation entire or raises -- plus the converse, that it raises ONLY where a run
+  genuinely cannot fit a page. That sweep finds 21 distinct silent short reads in
+  0.41.2, and would have failed 0.41.1 and 0.41.0 as well.
+
 ## v0.41.2 -- 2026-09-14
 
 ### Fixed
