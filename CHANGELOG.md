@@ -4,6 +4,44 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.41.2 -- 2026-09-14
+
+### Fixed
+
+- **`read_all`'s completeness guard could never fire, at any page size.** 0.41.1
+  treated this as a boundary-value problem and was wrong. The guard read
+  `DatasourceQueryResult.truncated`, which the hub computes as
+  `total > MAX_RESULT_ROWS` over what the query returned. `read_all` sends
+  `LIMIT page_size`, so `total <= page_size`, and the comparison is unsatisfiable
+  for EVERY page size at or under the cap. Not defaulted past -- unreachable. And
+  0.41.1's refusal of sizes at or above the cap forbade the only values that could
+  ever have set it.
+
+  The error underneath was conceptual: `truncated` answers "did the hub CUT an
+  unbounded result". It was being read as "are there more rows", a different
+  question the hub was never asked.
+
+  The has-more signal is now a SENTINEL the client computes for itself: the query
+  asks for `page_size + 1`, the extra row proves more exist, and it is trimmed
+  before the caller sees it. Independent of the hub's cap, and the same mechanism
+  `threetears.core.pagination.Keyset.page` already used. `page_size` must still
+  stay under the cap, now so the sentinel fits beneath it rather than to keep a
+  dead flag alive. A page whose sentinel is absent returns immediately instead of
+  looping to an empty page, saving a round trip per read.
+
+  **The tests are rebuilt around a fake that actually pages.** The previous ones
+  scripted `truncated` as a fixture value and asserted the guard fired when handed
+  it -- a fake agreeing with the code instead of the world, which is why two
+  releases shipped with the guard dead. The new fake recovers the cursor from the
+  bound parameters, applies the keyset comparison, honours the LIMIT, and always
+  reports `truncated=False` exactly as the hub does under a LIMIT. Run against the
+  0.41.1 implementation, 11 of 18 fail, including the one asserting the contract:
+  a short read is never returned as a complete one.
+
+  Found by a consumer who traced the arithmetic rather than reading the diff, then
+  corrected their own first report when their reviewer found it was not a boundary
+  case.
+
 ## v0.41.1 -- 2026-09-14
 
 ### Fixed
