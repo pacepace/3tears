@@ -482,21 +482,31 @@ async def read_all(
 ) -> list[dict[str, Any]]:
     """read an entire relation, or raise. never return a prefix.
 
-    ``DatasourceQueryResult.truncated`` tells a caller the hub cut THIS page. It
-    is necessary and not sufficient: a caller that checks it faithfully on every
-    page can still lose rows, and this exists because that happened.
-
     **The trap.** Keyset paging steps past the last key it saw. When the key is
     unique only BY PROMISE -- and a warehouse enforces nothing, including a
-    declared primary key -- duplicate keys make the cursor step OVER the
-    duplicates. The next page comes back empty with ``truncated`` false, which is
-    byte-identical to a clean finish. A hand-written helper returned 3 of 8 rows
-    and reported success.
+    declared primary key -- a run of duplicate keys straddling a page boundary
+    is stepped OVER: the next page asks for rows strictly greater than the
+    cursor, and the rest of that run is not greater. A hand-written helper
+    returned 3 of 8 rows and reported success.
 
-    **The signal that catches it.** The PREVIOUS page said truncated. An empty
-    page after a truncated one cannot mean "reached the end" -- there were more
-    rows a moment ago -- so it means the cursor skipped them, or a concurrent
-    writer deleted them. Both are an incomplete read, so both raise.
+    **What makes the read complete.** Each page asks for ``page_size + 1`` rows.
+    The extra row is a SENTINEL, not data: getting it back proves more rows
+    exist. When it comes back, every row sharing ITS key is dropped from this
+    page and re-read at the head of the next one, so a run of equal keys is
+    never split by a boundary and the cursor never steps over an unread row.
+    Re-reading at most one key group per page is the cost of that guarantee.
+
+    **What cannot be made complete.** A single key value filling an entire page
+    leaves paging nowhere to step, so it raises rather than advancing. So does
+    an empty page arriving after one that returned its sentinel, which means
+    rows that existed a moment ago are gone -- a concurrent delete, and an
+    incomplete read either way.
+
+    ``DatasourceQueryResult.truncated`` is NOT part of any of this. The hub
+    computes it as ``total > cap`` over what a query returned, so under any
+    ``LIMIT n <= cap`` it is permanently false. It answers "did the hub cut an
+    UNBOUNDED result", which is a different question from "are there more rows";
+    reading it as the latter is what shipped three releases with a dead guard.
 
     ``OFFSET`` is not offered. It looks correct in testing and silently drops a
     row when anything is deleted between pages, which is the failure mode this
@@ -519,11 +529,13 @@ async def read_all(
         non-uniqueness is detected rather than assumed
     :ptype key: Sequence[str]
     :param page_size: rows per page. Must be UNDER the hub's row cap and is
-        REFUSED at or above it, because the hub computes ``truncated`` as
-        ``total > cap`` and a ``LIMIT`` at the cap makes that unsatisfiable --
-        which silently disarms the guard above. The cap bounds what crosses the
-        bus and NOT what the warehouse returns: the hub materializes the whole
-        result and slices, so the ``LIMIT`` here is also what keeps a page cheap
+        REFUSED at or above it, because the query asks for ``page_size + 1`` and
+        the sentinel must fit under the cap; at the cap the hub would cut the
+        result and the sentinel would be the row it dropped, reporting a short
+        read as a complete one. Must also exceed the largest run of equal keys,
+        or the read raises rather than losing rows. The cap bounds what crosses
+        the bus and NOT what the warehouse returns: the hub materializes the
+        whole result and slices, so the ``LIMIT`` here is what keeps a page cheap
     :ptype page_size: int
     :param max_pages: refuse rather than loop forever
     :ptype max_pages: int
@@ -587,25 +599,49 @@ async def read_all(
             return rows
 
         had_more = len(page.rows) > page_size
-        kept = page.rows[:page_size] if had_more else page.rows
+        if not had_more:
+            # No sentinel: the warehouse had nothing past this page, so every row
+            # is safe to keep and there is no boundary to worry about.
+            rows.extend(page.rows)
+            return rows
+
+        # A KEY GROUP MUST NOT STRADDLE THE BOUNDARY. The next page asks for rows
+        # strictly greater than the cursor, so any row sharing the cursor's key is
+        # unreachable once we move past it. Trimming blindly at page_size splits a
+        # run of equal keys and silently drops its tail -- a 7-row relation with a
+        # 3-run in the middle returned 6 rows and reported success.
+        #
+        # So the trailing group is dropped from this page and re-read at the head
+        # of the next one. It costs re-reading at most one group per page and it
+        # is what makes the promise hold for a key that is unique only by promise.
+        kept = page.rows[:page_size]
+        sentinel_key = tuple(page.rows[page_size][column] for column in key)
+        while kept and tuple(kept[-1][column] for column in key) == sentinel_key:
+            kept.pop()
+
+        if not kept:
+            # Every row in the page shares the sentinel's key, so the group is
+            # larger than the page and no page size below it can advance. Raising
+            # names the cause; a bigger page_size is the fix when the group is
+            # genuinely smaller than the cap.
+            raise IncompleteReadError(
+                f"{datasource_name}: a single value of {tuple(key)} fills an entire page of "
+                f"{page_size} rows in {relation}, so paging cannot step past it without dropping "
+                f"rows. {tuple(key)} is not unique. read with a larger page_size, or use a key "
+                f"that is."
+            )
 
         advanced = tuple(kept[-1][column] for column in key)
         if cursor is not None and advanced == cursor:
+            # Defensive: every row here should already satisfy `> cursor`, so this
+            # can only fire if the warehouse returned rows the predicate excluded.
             raise IncompleteReadError(
-                f"{datasource_name}: the cursor did not advance past {advanced!r}. every row in this page "
-                f"carries the same key, so paging cannot make progress and the remaining rows are "
-                f"unreachable by this key. {tuple(key)} is not unique in {relation}."
+                f"{datasource_name}: the cursor did not advance past {advanced!r}, though the "
+                f"predicate asked for rows strictly greater than it. the result did not honour "
+                f"the keyset predicate, so completeness cannot be established."
             )
 
         rows.extend(kept)
-        if not had_more:
-            # The sentinel was absent, so the warehouse had nothing past this
-            # page and there is no need to ask again. Returning here rather than
-            # looping to an empty page saves a round trip per read, and makes the
-            # terminating condition the SIGNAL rather than an empty result --
-            # which is the distinction this function got wrong twice.
-            return rows
-
         cursor = advanced
         previous_had_more = had_more
 
