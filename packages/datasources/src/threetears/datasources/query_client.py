@@ -539,44 +539,57 @@ async def read_all(
     if page_size < 1:
         raise ValueError(f"page_size must be positive, got {page_size}")
     if page_size >= _HUB_ROW_CAP:
-        # Refuse rather than degrade. At or above the cap the hub can never report
-        # `truncated` -- it computes `total > MAX_RESULT_ROWS` over what the query
-        # returned, and a LIMIT at the cap makes that strictly-greater test
-        # unsatisfiable. `previous_truncated` then stays False forever and the
-        # empty-page-after-truncated guard, which is the whole reason this
-        # function exists, becomes unreachable code.
-        #
-        # Silently returning a prefix is the failure being guarded against, so a
-        # page size that disables the guard is refused the way an empty key is.
+        # The query asks for page_size + 1, so page_size must leave room for the
+        # sentinel under the hub's cap. At page_size == cap the hub would cut the
+        # result at the cap and the sentinel would be the row it dropped, turning
+        # "there are more rows" into "this was the last page" -- the exact silent
+        # short read this function exists to prevent.
         raise ValueError(
             f"page_size must be UNDER the hub's row cap of {_HUB_ROW_CAP}, got {page_size}. "
-            f"at or above it the hub can never report `truncated`, so the duplicate-key "
-            f"guard cannot fire and a short read would be returned as a complete one. "
-            f"pass something smaller -- the default is {_DEFAULT_PAGE_SIZE}."
+            f"this function reads page_size + 1 rows and uses the extra one as a has-more "
+            f"sentinel, so the sentinel must fit under the cap; at or above it the cap would "
+            f"eat the sentinel and a short read would be returned as a complete one. "
+            f"the default is {_DEFAULT_PAGE_SIZE}."
         )
 
     selected = ", ".join(columns)
     ordering = ", ".join(key)
     rows: list[dict[str, Any]] = []
     cursor: tuple[Any, ...] | None = None
-    previous_truncated = False
+    previous_had_more = False
 
     for _ in range(max_pages):
         predicate, params = _keyset_predicate(key, cursor)
-        sql = f"SELECT {selected} FROM {relation}{predicate} ORDER BY {ordering} LIMIT {int(page_size)}"
+        # LIMIT page_size + 1: the extra row is a SENTINEL, not data. Getting it
+        # back proves more rows exist; not getting it proves they do not. That is
+        # the has-more signal, and it is computed HERE from a row count we asked
+        # for, independent of anything the hub decides.
+        #
+        # It replaces `DatasourceQueryResult.truncated`, which this function used
+        # until 0.41.2 and which CANNOT serve paging. The hub computes
+        # `truncated = total > MAX_RESULT_ROWS` over what the query returned, so
+        # under any `LIMIT n <= cap` the comparison is unsatisfiable and truncated
+        # is permanently false. `truncated` answers "did the hub cut an UNBOUNDED
+        # result"; it was read here as "are there more rows", which is a different
+        # question the hub is not being asked.
+        sql = f"SELECT {selected} FROM {relation}{predicate} ORDER BY {ordering} LIMIT {int(page_size) + 1}"
         page = await client.query(datasource_name, sql, params=params)
 
         if not page.rows:
-            if previous_truncated:
+            if previous_had_more:
                 raise IncompleteReadError(
-                    f"{datasource_name}: empty page after a truncated one. the previous page reported more "
-                    f"rows existed, so this cannot be the end of the relation. either the ordering key "
-                    f"{tuple(key)} is not unique and the cursor stepped over duplicates, or rows were deleted "
-                    f"mid-read. {len(rows)} rows were read and they are NOT the whole relation."
+                    f"{datasource_name}: empty page after a page that had more. the previous page returned "
+                    f"its sentinel row, so more rows existed a moment ago and this cannot be the end of the "
+                    f"relation. either the ordering key {tuple(key)} is not unique and the cursor stepped "
+                    f"over duplicates, or rows were deleted mid-read. {len(rows)} rows were read and they "
+                    f"are NOT the whole relation."
                 )
             return rows
 
-        advanced = tuple(page.rows[-1][column] for column in key)
+        had_more = len(page.rows) > page_size
+        kept = page.rows[:page_size] if had_more else page.rows
+
+        advanced = tuple(kept[-1][column] for column in key)
         if cursor is not None and advanced == cursor:
             raise IncompleteReadError(
                 f"{datasource_name}: the cursor did not advance past {advanced!r}. every row in this page "
@@ -584,9 +597,17 @@ async def read_all(
                 f"unreachable by this key. {tuple(key)} is not unique in {relation}."
             )
 
-        rows.extend(page.rows)
+        rows.extend(kept)
+        if not had_more:
+            # The sentinel was absent, so the warehouse had nothing past this
+            # page and there is no need to ask again. Returning here rather than
+            # looping to an empty page saves a round trip per read, and makes the
+            # terminating condition the SIGNAL rather than an empty result --
+            # which is the distinction this function got wrong twice.
+            return rows
+
         cursor = advanced
-        previous_truncated = page.truncated
+        previous_had_more = had_more
 
     raise IncompleteReadError(
         f"{datasource_name}: still reading after {max_pages} pages ({len(rows)} rows). raising rather than "
