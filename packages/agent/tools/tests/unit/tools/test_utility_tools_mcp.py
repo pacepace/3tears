@@ -194,7 +194,7 @@ class TestAnalyzeMediaTool:
     def test_mcp_name(self) -> None:
         """AnalyzeMediaTool mcp_name returns correct string."""
         tool = AnalyzeMediaTool(storage=_FakeMediaStorage())
-        assert tool.mcp_name() == "threetears.analyze_media"
+        assert tool.mcp_name() == "threetears.media_analyze"
 
     def test_mcp_version(self) -> None:
         """AnalyzeMediaTool mcp_version returns 1.0."""
@@ -206,7 +206,7 @@ class TestAnalyzeMediaTool:
         tool = AnalyzeMediaTool(storage=_FakeMediaStorage())
         schema = tool.mcp_schema()
         assert isinstance(schema, MCPToolDefinition)
-        assert schema.name == "threetears.analyze_media"
+        assert schema.name == "threetears.media_analyze"
         assert schema.input_schema
         assert "media_ids" in schema.input_schema.get("properties", {})
         assert "question" in schema.input_schema.get("properties", {})

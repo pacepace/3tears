@@ -635,3 +635,100 @@ class TestServerSettingsSearchPath:
         await driver.fetch("SELECT 1")
         server_settings = create_pool_mock.await_args.kwargs["server_settings"]
         assert server_settings == {"search_path": '"app"'}
+
+
+# ---------------------------------------------------------------------------
+# Borrowed-pool search_path scoping
+# ---------------------------------------------------------------------------
+
+
+class TestABorrowedConnectionIsScopedToItsSchema:
+    """an ``agent_internal`` driver shares the Hub's L3 pool and must scope itself.
+
+    A driver that opens its own pool sends ``search_path`` in the pgwire STARTUP
+    packet, which is why it survives the ``RESET ALL`` asyncpg issues on release.
+    A BORROWED pool never sends a startup packet, so before this the
+    ``agent_internal`` driver inherited the Hub's own ``search_path`` and had no
+    scoping at all.
+
+    Observed on cobalt-dev: an unqualified ``SELECT count(*) FROM users`` against
+    an ``agent_internal`` datasource raised ``UndefinedTableError`` while the
+    identical query fully qualified returned rows -- a datasource that did not
+    route to the schema its own name advertises. The Hub-side docstring asserted
+    a "per-query SET search_path" that existed nowhere in this driver;
+    ``schema_name`` was read in one place, to build a display string.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fetch_sets_search_path_on_the_borrowed_connection(
+        self,
+        agent_internal_config: AgentInternalConnectionConfig,
+    ) -> None:
+        """
+        :return: nothing
+        :rtype: None
+        """
+        fake_pool = _build_mock_pool()
+        driver = AsyncpgDriver(agent_internal_config, external_pool=fake_pool)
+
+        await driver.fetch("SELECT 1")
+
+        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        executed = [call.args[0] for call in conn.execute.await_args_list]
+        assert 'SET search_path TO "agent_abc123"' in executed
+
+    @pytest.mark.asyncio
+    async def test_the_schema_name_is_identifier_quoted(
+        self,
+    ) -> None:
+        """The name reaches SQL as an identifier, not as interpolated text.
+
+        ``schema_name`` is operator-controlled rather than caller-controlled, so
+        this is defence in depth rather than the primary boundary -- but a
+        driver that interpolates a name into DDL-adjacent SQL should quote it,
+        and ``build_search_path_value`` already does.
+
+        :return: nothing
+        :rtype: None
+        """
+        cfg = AgentInternalConnectionConfig(
+            datasource_type=DataSourceType.AGENT_INTERNAL,
+            schema_name='weird"name',
+        )
+        fake_pool = _build_mock_pool()
+        driver = AsyncpgDriver(cfg, external_pool=fake_pool)
+
+        await driver.fetch("SELECT 1")
+
+        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        executed = [call.args[0] for call in conn.execute.await_args_list]
+        assert any('"weird""name"' in statement for statement in executed)
+
+    @pytest.mark.asyncio
+    async def test_an_owned_pool_is_not_re_scoped_every_acquire(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The startup packet already did it; repeating it is a wasted round trip.
+
+        :return: nothing
+        :rtype: None
+        """
+        cfg = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="h",
+            database="x",
+            allowed_schemas=["app"],
+        )
+        fake_pool = _build_mock_pool()
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            AsyncMock(return_value=fake_pool),
+        )
+        driver = AsyncpgDriver(cfg)
+
+        await driver.fetch("SELECT 1")
+
+        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        executed = [call.args[0] for call in conn.execute.await_args_list]
+        assert not any("search_path" in statement for statement in executed)
