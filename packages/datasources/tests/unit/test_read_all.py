@@ -357,3 +357,69 @@ class TestArgumentsThatCannotDescribeACompleteRead:
 
         with pytest.raises(IncompleteReadError, match="still reading after"):
             await _read(client, page_size=1, max_pages=3)
+
+
+class TestAPageSizeThatWouldDisarmTheGuardIsRefused:
+    """the default shipped ON the hub's cap, which made the guard unreachable.
+
+    The hub computes `truncated = total > MAX_RESULT_ROWS`, strictly greater,
+    over what the query returned. A `LIMIT` at the cap makes that test
+    unsatisfiable, so `truncated` is never true, `previous_truncated` is never
+    true, and the empty-page-after-truncated check -- the one thing separating a
+    duplicate-key short read from a clean finish -- is dead code.
+
+    The first shipped default was exactly the cap. The docstring said "must stay
+    under the hub's row cap" while the default sat on it, and the default is what
+    a caller gets by not thinking about it, which is precisely the caller the
+    guard exists for. Found by a consumer reading both sides rather than trusting
+    either.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_page_size_at_the_cap_is_refused(self) -> None:
+        """
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="UNDER the hub's row cap"):
+            await _read(_FakeClient([]), page_size=1000)
+
+    @pytest.mark.asyncio
+    async def test_a_page_size_above_the_cap_is_refused(self) -> None:
+        """
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="UNDER the hub's row cap"):
+            await _read(_FakeClient([]), page_size=5000)
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_says_why_rather_than_just_refusing(self) -> None:
+        """A caller told only "too big" picks a number one smaller and keeps the
+        bug. The message has to name the guard it would disable.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError) as excinfo:
+            await _read(_FakeClient([]), page_size=1000)
+
+        message = str(excinfo.value)
+        assert "truncated" in message
+        assert "guard cannot fire" in message
+
+    @pytest.mark.asyncio
+    async def test_the_default_is_under_the_cap(self) -> None:
+        """Pins the property the first release got wrong. A default that disarms
+        the guard is worse than no default, because it looks considered.
+
+        :return: nothing
+        :rtype: None
+        """
+        import inspect
+
+        from threetears.datasources.query_client import _HUB_ROW_CAP
+
+        default = inspect.signature(read_all).parameters["page_size"].default
+
+        assert default < _HUB_ROW_CAP
