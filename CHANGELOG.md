@@ -4,6 +4,47 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.41.4 -- 2026-09-14
+
+### Fixed
+
+- **`read_all` now proves the total instead of guarding mechanisms.** The relation
+  is counted before paging begins, and a read returning fewer rows than that count
+  raises. The count is the contract; the guards that remain say WHICH mechanism
+  lost the rows, which is what an operator needs, but none of them is what makes
+  the read complete any more.
+
+  This is the fourth release against this function. Each earlier one shipped a
+  guard that was correct about the failure it named -- `truncated` being
+  unreachable, then the missing has-more sentinel, then a key run cut by a page
+  boundary -- and blind to the next one. Enumerating mechanisms does not converge.
+  A count asks a different question, one whose answer does not depend on having
+  imagined the failure.
+
+- **A NULL in the ordering key no longer returns a prefix as a complete read.**
+  `column > value` is NULL rather than true for such a row, so it satisfies no
+  keyset predicate ever built, and neither does anything ordered after it. Under
+  ASC the engines this platform admits sort NULLs last, so those rows sit at the
+  end of the relation and the read stops short -- returning a short page, which is
+  exactly what reaching the end looks like.
+
+  At `page_size=1` this defeated every guard in 0.41.3 simultaneously: each page
+  came back full, the cursor advanced every time, no page was empty, and the last
+  page was short precisely as a final page should be. A four-row relation with two
+  NULL-keyed rows returned two and reported success. It cannot be caught by
+  inspecting pages, because from page two onward the predicate has already
+  excluded every NULL-keyed row, so no page contains one to look at.
+
+  Note that a page large enough to hold the relation carries no predicate at all,
+  so the NULL rows arrive and the read is genuinely complete. That case is not
+  refused.
+
+### Changed
+
+- **`read_all` issues one `SELECT COUNT(*)` per call**, and raises on a relation
+  being written concurrently, where it previously returned whatever it happened to
+  read. On a changing relation there is no whole relation to return.
+
 ## v0.41.3 -- 2026-09-14
 
 ### Fixed

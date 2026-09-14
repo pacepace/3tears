@@ -489,7 +489,23 @@ async def read_all(
     cursor, and the rest of that run is not greater. A hand-written helper
     returned 3 of 8 rows and reported success.
 
-    **What makes the read complete.** Each page asks for ``page_size + 1`` rows.
+    **What makes the read complete.** The relation is COUNTED before paging
+    begins, and a read that does not return that many rows raises. That is the
+    contract, and it is deliberately not a statement about any mechanism: it
+    holds for the ways to lose a row described below, and for the ones nobody has
+    thought of. Four releases of this function each shipped a guard that was
+    correct about the failure it named and blind to the next one, which is the
+    evidence that enumerating mechanisms does not converge.
+
+    The count and the pages are not one transaction. A relation written during
+    the read will not match, and that raises too: on a changing relation there is
+    no whole relation to return, and this function promises the whole relation.
+
+    Everything below is still here because a count says only THAT rows are
+    missing. These say WHICH mechanism lost them, which is what an operator needs
+    at three in the morning.
+
+    **The sentinel.** Each page asks for ``page_size + 1`` rows.
     The extra row is a SENTINEL, not data: getting it back proves more rows
     exist. When it comes back, every row sharing ITS key is dropped from this
     page and re-read at the head of the next one, so a run of equal keys is
@@ -566,6 +582,26 @@ async def read_all(
 
     selected = ", ".join(columns)
     ordering = ", ".join(key)
+
+    # THE TOTAL IS THE PROOF. Everything below this line guards a specific way to
+    # lose a row, and four releases of this function shipped a guard that was
+    # correct about the mechanism it named and blind to the next one. Counting
+    # first and comparing at the end asks a different question -- not "did I think
+    # of every way to skip a row" but "are they all here" -- and that question has
+    # one answer that does not depend on enumerating anything.
+    #
+    # It is what catches a NULL in the key, which no keyset predicate can reach:
+    # `column > value` is NULL rather than true for such a row, so it is skipped
+    # and so is everything ordered after it, and the page that excluded it comes
+    # back short, which is indistinguishable from reaching the end.
+    #
+    # The count and the pages are not one transaction, so a relation being written
+    # during the read will not match. That is reported rather than hidden: on a
+    # relation that is changing there is no "whole relation" to return, and this
+    # function's promise is the whole relation or a raise.
+    counted = await client.query(datasource_name, f"SELECT COUNT(*) AS total FROM {relation}")
+    expected = int(counted.rows[0]["total"]) if counted.rows else 0
+
     rows: list[dict[str, Any]] = []
     cursor: tuple[Any, ...] | None = None
     previous_had_more = False
@@ -596,14 +632,14 @@ async def read_all(
                     f"over duplicates, or rows were deleted mid-read. {len(rows)} rows were read and they "
                     f"are NOT the whole relation."
                 )
-            return rows
+            return _proven(datasource_name, relation, key, rows, expected)
 
         had_more = len(page.rows) > page_size
         if not had_more:
             # No sentinel: the warehouse had nothing past this page, so every row
             # is safe to keep and there is no boundary to worry about.
             rows.extend(page.rows)
-            return rows
+            return _proven(datasource_name, relation, key, rows, expected)
 
         # A KEY GROUP MUST NOT STRADDLE THE BOUNDARY. The next page asks for rows
         # strictly greater than the cursor, so any row sharing the cursor's key is
@@ -649,6 +685,51 @@ async def read_all(
         f"{datasource_name}: still reading after {max_pages} pages ({len(rows)} rows). raising rather than "
         f"continuing, because an unbounded read against a growing relation never terminates."
     )
+
+
+def _proven(
+    datasource_name: str,
+    relation: str,
+    key: Sequence[str],
+    rows: list[dict[str, Any]],
+    expected: int,
+) -> list[dict[str, Any]]:
+    """return ``rows`` only if it holds every row the relation counted.
+
+    The completeness check of last resort, and the only one that does not depend
+    on naming the mechanism that lost a row. Guards elsewhere in this module each
+    catch one skip and say something useful about it; this catches any skip at
+    all, including the ones nobody has thought of yet.
+
+    :param datasource_name: the datasource read, as the hub names it
+    :ptype datasource_name: str
+    :param relation: the table or view read
+    :ptype relation: str
+    :param key: the ordering key, named in the message because it is the usual cause
+    :ptype key: Sequence[str]
+    :param rows: every row collected by the paging loop
+    :ptype rows: list[dict[str, Any]]
+    :param expected: the row count taken before paging began
+    :ptype expected: int
+    :return: ``rows`` unchanged, when it is provably complete
+    :rtype: list[dict[str, Any]]
+    :raises IncompleteReadError: when the count and the rows disagree
+    """
+    if len(rows) != expected:
+        short = expected - len(rows)
+        cause = (
+            f"{short} row(s) were never returned. the usual cause is a value the ordering key cannot "
+            f"page past: a NULL in {tuple(key)} is skipped by every keyset predicate, because "
+            f"`column > ?` is NULL rather than true for such a row, and so is every row ordered after "
+            f"it. read with a key whose columns are NOT NULL."
+            if short > 0
+            else f"{-short} row(s) MORE than the count arrived, so {relation} was written during the read."
+        )
+        raise IncompleteReadError(
+            f"{datasource_name}: {relation} counted {expected} rows and the read returned {len(rows)}. {cause}"
+        )
+
+    return rows
 
 
 def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:
