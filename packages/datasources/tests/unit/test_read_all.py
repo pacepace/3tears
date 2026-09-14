@@ -83,6 +83,11 @@ class _PagingWarehouse:
         self._rows = sorted(dataset, key=lambda r: tuple(r[c] for c in _KEY))
         self.statements: list[str] = []
         self.params: list[list[Any]] = []
+        # The count is a statement the fake serves but no paging test is asking
+        # about. Kept apart so an index into `statements` means the page a reader
+        # thinks it means, rather than silently shifting by one.
+        self.pages: list[str] = []
+        self.page_params: list[list[Any]] = []
 
     def forwarded_identity_token(self) -> str:
         """
@@ -113,6 +118,20 @@ class _PagingWarehouse:
         self.statements.append(query)
         bound = list(params or [])
         self.params.append(bound)
+
+        if "COUNT(*)" in query:
+            # The fake counts the relation honestly, including rows its own keyset
+            # filter would never serve. That is the whole point of the check under
+            # test: a warehouse knows about rows the predicate cannot reach.
+            return DatasourceQueryResult(
+                rows=[{"total": len(self._rows)}],
+                row_count=1,
+                truncated=False,
+                correlation_id=uuid7(),
+            )
+
+        self.pages.append(query)
+        self.page_params.append(bound)
 
         candidates = self._rows
         if bound:
@@ -179,7 +198,7 @@ class TestAUniqueKeyReadsCompletely:
         rows = await _read(warehouse, page_size=10)
 
         assert len(rows) == 2
-        assert len(warehouse.statements) == 1
+        assert len(warehouse.pages) == 1
 
     @pytest.mark.asyncio
     async def test_an_empty_relation_is_not_an_error(self) -> None:
@@ -381,7 +400,7 @@ class TestTheHasMoreSignalIsTheSentinelAndNotTruncated:
 
         await _read(warehouse, page_size=7)
 
-        assert _limit_of(warehouse.statements[0]) == 8
+        assert _limit_of(warehouse.pages[0]) == 8
 
     @pytest.mark.asyncio
     async def test_the_sentinel_row_is_not_handed_to_the_caller(self) -> None:
@@ -428,7 +447,7 @@ class TestThePredicateIsPortableAndBound:
 
         await _read(warehouse, page_size=10)
 
-        assert "WHERE" not in warehouse.statements[0]
+        assert "WHERE" not in warehouse.pages[0]
 
     @pytest.mark.asyncio
     async def test_the_next_page_uses_nested_or_not_a_row_constructor(self) -> None:
@@ -440,7 +459,7 @@ class TestThePredicateIsPortableAndBound:
 
         await _read(warehouse, page_size=2)
 
-        predicate = warehouse.statements[1]
+        predicate = warehouse.pages[1]
         assert "(jurisdiction > ?) OR (jurisdiction = ? AND period > ?)" in predicate
         assert "(jurisdiction, period) >" not in predicate
 
@@ -454,8 +473,8 @@ class TestThePredicateIsPortableAndBound:
 
         await _read(warehouse, page_size=2)
 
-        assert warehouse.params[1] == ["s01", "s01", "2026-01"]
-        assert "s01" not in warehouse.statements[1]
+        assert warehouse.page_params[1] == ["s01", "s01", "2026-01"]
+        assert "s01" not in warehouse.pages[1]
 
 
 class TestArgumentsThatCannotDescribeACompleteRead:
@@ -603,5 +622,203 @@ class TestTheContractHoldsAcrossEveryShape:
             pytest.skip("a run larger than the page has nowhere to step, so refusing is correct")
 
         rows = await _read(_PagingWarehouse(dataset), page_size=page_size)
+
+        assert len(rows) == len(dataset)
+
+
+# parity-with: threetears.datasources.query_client.DatasourceQueryClient
+class _WarehouseWithNullKeys:
+    """a warehouse holding rows a keyset predicate can never reach.
+
+    Models SQL's three-valued logic faithfully, because that is the whole defect:
+    ``column > value`` is NULL for a NULL column and SQL does not act on NULL, so
+    such a row satisfies no keyset predicate ever built. Under ASC the engines
+    this platform admits sort NULLs last, so the rows sit at the end of the
+    relation and the read stops short of them -- returning a short page, which is
+    what reaching the end also looks like.
+    """
+
+    def __init__(self, dataset: list[dict[str, Any]]) -> None:
+        """
+        :param dataset: the relation, NULL-keyed rows included
+        :ptype dataset: list[dict[str, Any]]
+        """
+        self._rows = sorted(
+            dataset,
+            key=lambda r: (r[_KEY[0]] is None, tuple(r[c] or "" for c in _KEY)),
+        )
+
+    def forwarded_identity_token(self) -> str:
+        """
+        :return: a placeholder; the paging logic never inspects it
+        :rtype: str
+        """
+        return "token"
+
+    async def query(
+        self,
+        datasource_name: str,
+        query: str,
+        *,
+        params: list[Any] | None = None,
+        **_: Any,
+    ) -> DatasourceQueryResult:
+        """serve a page, or the count, honouring NULL comparison semantics.
+
+        :param datasource_name: unused; the fake serves one relation
+        :ptype datasource_name: str
+        :param query: the statement under test
+        :ptype query: str
+        :param params: bound parameters, ending with the cursor
+        :ptype params: list[Any] | None
+        :return: the page or the count
+        :rtype: DatasourceQueryResult
+        """
+        if "COUNT(*)" in query:
+            return DatasourceQueryResult(
+                rows=[{"total": len(self._rows)}],
+                row_count=1,
+                truncated=False,
+                correlation_id=uuid7(),
+            )
+
+        bound = list(params or [])
+        candidates = self._rows
+        if bound:
+            cursor = tuple(bound[-len(_KEY) :])
+            # A NULL on EITHER side makes the comparison NULL, which SQL does not
+            # act on. A NULL-keyed row is therefore excluded by every predicate,
+            # and a cursor carrying a NULL matches nothing at all -- it does not
+            # raise, which is why this is easy to miss in Python and impossible to
+            # see in SQL.
+            if any(value is None for value in cursor):
+                candidates = []
+            else:
+                candidates = [
+                    r for r in self._rows if all(r[c] is not None for c in _KEY) and tuple(r[c] for c in _KEY) > cursor
+                ]
+
+        served = candidates[: _limit_of(query)]
+        return DatasourceQueryResult(
+            rows=served,
+            row_count=len(served),
+            truncated=False,
+            correlation_id=uuid7(),
+        )
+
+
+class TestARowTheKeyCannotReachIsNotLost:
+    """a NULL in the ordering key, which no keyset predicate can step onto.
+
+    Found by asking what the shape sweep did NOT cover, after three releases whose
+    guards were each correct about the mechanism they named and blind to the next
+    one. It is why the count exists: the count sees rows the predicate cannot.
+    """
+
+    @pytest.mark.parametrize("page_size", [1, 2, 3, 4, 5])
+    @pytest.mark.asyncio
+    async def test_the_contract_holds_at_every_page_size(self, page_size: int) -> None:
+        """Whole relation or raise, with NULL-keyed rows in it.
+
+        Which guard answers depends on the page size, and asserting a particular
+        message here would pin the wrong thing. A page large enough to hold the
+        relation carries no predicate at all, so the NULL rows arrive and the read
+        is genuinely complete; a smaller one loses them and must say so.
+
+        :param page_size: rows per page
+        :ptype page_size: int
+        :return: nothing
+        :rtype: None
+        """
+        dataset = [
+            _row("ca", "2026-01"),
+            _row("ny", "2026-01"),
+            {"jurisdiction": None, "period": "2026-01"},
+            {"jurisdiction": None, "period": "2026-02"},
+        ]
+
+        try:
+            rows = await read_all(
+                _WarehouseWithNullKeys(dataset),
+                "published-files",
+                columns=_COLUMNS,
+                relation="published_files",
+                key=_KEY,
+                page_size=page_size,
+            )
+        except IncompleteReadError:
+            return
+        assert len(rows) == len(dataset), "returned a prefix instead of raising"
+
+    @pytest.mark.asyncio
+    async def test_the_count_is_what_catches_the_otherwise_silent_case(self) -> None:
+        """page_size 1 defeats every other guard, and the count still refuses.
+
+        Each page comes back full, the cursor advances every time, no page is
+        empty, and the last page is short exactly as a final page should be. The
+        NULL-keyed rows are simply never mentioned. Before the count this returned
+        2 of 4 and reported success.
+
+        :return: nothing
+        :rtype: None
+        """
+        dataset = [
+            _row("ca", "2026-01"),
+            _row("ny", "2026-01"),
+            {"jurisdiction": None, "period": "2026-01"},
+            {"jurisdiction": None, "period": "2026-02"},
+        ]
+
+        with pytest.raises(IncompleteReadError, match="counted 4 rows and the read returned 2"):
+            await read_all(
+                _WarehouseWithNullKeys(dataset),
+                "published-files",
+                columns=_COLUMNS,
+                relation="published_files",
+                key=_KEY,
+                page_size=1,
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_message_names_the_null_key_as_the_usual_cause(self) -> None:
+        """An operator reading this must not have to derive the cause.
+
+        :return: nothing
+        :rtype: None
+        """
+        dataset = [
+            _row("ca", "2026-01"),
+            _row("ny", "2026-01"),
+            {"jurisdiction": None, "period": "2026-01"},
+            {"jurisdiction": None, "period": "2026-02"},
+        ]
+
+        with pytest.raises(IncompleteReadError, match="NULL in"):
+            await read_all(
+                _WarehouseWithNullKeys(dataset),
+                "published-files",
+                columns=_COLUMNS,
+                relation="published_files",
+                key=_KEY,
+                page_size=1,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_relation_with_no_nulls_is_unaffected(self) -> None:
+        """The guard must not refuse a read it could have completed.
+
+        :return: nothing
+        :rtype: None
+        """
+        dataset = [_row("ca", "2026-01"), _row("ny", "2026-01"), _row("tx", "2026-01")]
+
+        rows = await read_all(
+            _WarehouseWithNullKeys(dataset),
+            "published-files",
+            columns=_COLUMNS,
+            relation="published_files",
+            key=_KEY,
+            page_size=2,
+        )
 
         assert len(rows) == len(dataset)
