@@ -72,6 +72,11 @@ class FakeSession:
         self.disposals = 0
         self.fail_clear = False
         self.fail_prepare = False
+        self.clear_raises: BaseException | None = None
+        self.dispose_delay = 0.0
+        self.released = 0
+        self.start_ticks: int | None = None
+        self.contexts: list[Any] = []
         FakeSession.instances.append(self)
 
     @classmethod
@@ -79,17 +84,25 @@ class FakeSession:
         """The production entry point the pool calls; builds a fake instead of a subprocess."""
         return cls(options, key)
 
-    async def prepare(self, *, model: str | None, tool_server: Any | None) -> None:
+    async def prepare(self, *, model: str | None, tool_server: Any | None, call_context: Any = None) -> None:
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         if self.fail_prepare:
             raise ClaudeCliSessionError("the CLI refused the tool server")
         self.prepared.append((model, tool_server))
+        self.contexts.append(call_context)
+
+    async def release_tools(self) -> None:
+        if self.closed:
+            raise ClaudeCliSessionError("this Claude CLI session has been stopped")
+        self.released += 1
 
     async def clear(self, *, timeout: float) -> None:
         del timeout
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
+        if self.clear_raises is not None:
+            raise self.clear_raises
         if self.fail_clear:
             raise ClaudeCliSessionError("the CLI would not clear")
         self.clears += 1
@@ -99,6 +112,8 @@ class FakeSession:
         if self.closed:
             return
         self.closed = True
+        if self.dispose_delay:
+            await asyncio.sleep(self.dispose_delay)
         self.disposals += 1
 
 
@@ -511,3 +526,197 @@ class TestIdleCapacityIsNotHoarded:
         differing = {name for name in a if a[name] != b[name]}
         assert differing == {"system_prompt"}
         assert "persona" not in str(a), "a system prompt leaked into the log"
+
+
+class TestFailuresTheReviewFound:
+    async def test_a_bare_exception_during_clear_frees_the_slot_and_the_call_still_succeeds(self) -> None:
+        """The SDK surfaces a CLI that died mid-clear as a bare ``Exception``. It escaped ``_return``:
+        the slot was never freed and a call that had succeeded raised out of its cleanup."""
+        pool = _pool(per_key=1)
+        async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+            FakeSession.instances[0].clear_raises = Exception("the CLI exited during /clear")
+        assert FakeSession.instances[0].disposals == 1
+        assert pool.live_count == 0, "the slot leaked, and every later call would find the pool busy"
+        async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+            pass
+        await pool.aclose()
+
+    async def test_a_stop_during_an_eviction_does_not_strand_the_victims_slot(self) -> None:
+        pool = _pool(max_sessions=1, per_key=1, checkout_timeout_seconds=5.0)
+        async with pool.checkout(Options(system_prompt="router"), token=TOKEN, tool_server=None):
+            pass
+        victim = FakeSession.instances[0]
+        victim.dispose_delay = 0.2
+
+        async def caller() -> None:
+            async with pool.checkout(Options(system_prompt="conversation"), token=TOKEN, tool_server=None):
+                pass
+
+        task = asyncio.create_task(caller())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.3)
+        assert victim.disposals == 1, "the evicted session's disposal was abandoned"
+        assert pool.live_count == 0, "the victim's slot leaked"
+        await pool.aclose()
+
+    async def test_an_idle_session_holds_none_of_the_last_callers_tools(self) -> None:
+        pool = _pool()
+        async with pool.checkout(Options(), token=TOKEN, tool_server=object()):
+            pass
+        assert FakeSession.instances[0].released == 1
+        await pool.aclose()
+
+    async def test_the_borrowers_context_reaches_prepare(self) -> None:
+        pool = _pool()
+        marker = contextvars.copy_context()
+        async with pool.checkout(Options(), token=TOKEN, tool_server=object(), call_context=marker):
+            pass
+        assert FakeSession.instances[0].contexts == [marker]
+        await pool.aclose()
+
+
+class TestAToolCallRunsInItsBorrowersContext:
+    """Found by review, reproduced: a reused CLI ran every tool call in the context of the caller that
+    STARTED it, because the SDK spawns tool calls from a reader task created at connect time. A second
+    conversation's interrupt landed in the first conversation's list and its graph never paused."""
+
+    async def test_a_tool_call_from_the_readers_context_sees_the_borrowers_values(self) -> None:
+        pytest.importorskip("claude_agent_sdk")
+        from claude_agent_sdk import create_sdk_mcp_server, tool
+        from mcp.types import CallToolRequest, CallToolRequestParams
+
+        from threetears.models.claude_cli_pool import bind_tool_server_to_context
+
+        whose: contextvars.ContextVar[str] = contextvars.ContextVar("whose_call", default="nobody")
+        captured: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("captured", default=None)
+        seen: list[str] = []
+
+        @tool("probe", "Report whose call this is.", {})
+        async def probe(args: dict[str, Any]) -> dict[str, Any]:
+            seen.append(whose.get())
+            bucket = captured.get()
+            if bucket is not None:
+                bucket.append("interrupt")
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        server = create_sdk_mcp_server(name="langchain-tools", tools=[probe])["instance"]
+
+        # Conversation A started the CLI: the SDK's reader task, and so every tool call it spawns,
+        # carries A's context.
+        reader_context = contextvars.Context()
+        reader_context.run(whose.set, "conversation-A")
+
+        # Conversation B borrows it.
+        b_bucket: list[str] = []
+        whose.set("conversation-B")
+        captured.set(b_bucket)
+        bound = bind_tool_server_to_context(server, contextvars.copy_context())
+
+        handler = bound.request_handlers[CallToolRequest]
+        request = CallToolRequest(method="tools/call", params=CallToolRequestParams(name="probe", arguments={}))
+        await asyncio.create_task(handler(request), context=reader_context)
+
+        assert seen == ["conversation-B"], "the tool ran in the conversation that started the CLI"
+        assert b_bucket == ["interrupt"], "the borrower's interrupt was captured somewhere it will never be read"
+
+    async def test_concurrent_tool_calls_in_one_turn_do_not_collide(self) -> None:
+        pytest.importorskip("claude_agent_sdk")
+        from claude_agent_sdk import create_sdk_mcp_server, tool
+        from mcp.types import CallToolRequest, CallToolRequestParams
+
+        from threetears.models.claude_cli_pool import bind_tool_server_to_context
+
+        @tool("slow", "Wait briefly.", {})
+        async def slow(args: dict[str, Any]) -> dict[str, Any]:
+            await asyncio.sleep(0.01)
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+        server = create_sdk_mcp_server(name="langchain-tools", tools=[slow])["instance"]
+        bound = bind_tool_server_to_context(server, contextvars.copy_context())
+        handler = bound.request_handlers[CallToolRequest]
+        request = CallToolRequest(method="tools/call", params=CallToolRequestParams(name="slow", arguments={}))
+        await asyncio.gather(handler(request), handler(request), handler(request))
+
+
+class TestWhatMayShareACli:
+    def test_a_call_carrying_callables_is_not_pooled(self) -> None:
+        from threetears.models.claude_cli_pool import poolable
+
+        @dataclass
+        class WithHooks(Options):
+            hooks: Any = None
+
+        assert poolable(Options())
+        assert not poolable(WithHooks(hooks={"PreToolUse": [object()]}))
+
+    async def test_a_call_that_cannot_be_pooled_is_refused_so_it_falls_back(self) -> None:
+        @dataclass
+        class Resumed(Options):
+            resume: str | None = None
+
+        pool = _pool()
+        with pytest.raises(ClaudeCliPoolExhausted, match="cannot share"):
+            async with pool.checkout(Resumed(resume="session-1"), token=TOKEN, tool_server=None):
+                pass
+        assert FakeSession.instances == []
+        await pool.aclose()
+
+    def test_an_option_a_call_can_set_per_call_changes_the_key(self) -> None:
+        """The base package accepts any option as a per-call override; every one must reach the key."""
+
+        @dataclass
+        class WithThinking(Options):
+            max_thinking_tokens: int | None = None
+
+        assert launch_key(WithThinking(), TOKEN) != launch_key(WithThinking(max_thinking_tokens=8000), TOKEN)
+
+    def test_the_credential_in_the_environment_is_keyed_by_digest(self) -> None:
+        a = Options(env={"CLAUDE_CODE_OAUTH_TOKEN": TOKEN})
+        b = Options(env={"CLAUDE_CODE_OAUTH_TOKEN": OTHER_TOKEN})
+        assert launch_key(a, None) != launch_key(b, None)
+        assert "aaaaaaaa" not in str(claude_cli_pool.launch_fingerprint(a))
+
+    def test_the_pool_marker_does_not_change_the_key(self) -> None:
+        a = Options(env={POOL_MARKER_ENV: "1:2:one"})
+        b = Options(env={POOL_MARKER_ENV: "1:2:two"})
+        assert launch_key(a, TOKEN) == launch_key(b, TOKEN)
+
+
+class TestTheSdkSurfaceMoving:
+    async def test_repeated_structural_failures_turn_pooling_off(self) -> None:
+        async def factory(options: Any, *, key: str) -> Any:
+            session = FakeSession(options, key)
+
+            async def moved(**kwargs: Any) -> None:
+                error = ClaudeCliSessionError("could not prepare: '_query' has no attribute")
+                error.structural = True  # type: ignore[attr-defined]
+                raise error
+
+            session.prepare = moved  # type: ignore[method-assign]
+            return session
+
+        pool = _pool(session_factory=factory, per_key=5, max_sessions=5)
+        for _ in range(3):
+            with pytest.raises(ClaudeCliSessionError):
+                async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                    pass
+        with pytest.raises(ClaudeCliPoolExhausted, match="pooling is off"):
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                pass
+        assert len(FakeSession.instances) == 3, "it kept starting CLIs it could not prepare"
+        await pool.aclose()
+
+    async def test_an_ordinary_failure_does_not(self) -> None:
+        pool = _pool(per_key=5, max_sessions=5)
+        for _ in range(4):
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                pass
+            FakeSession.instances[-1].fail_prepare = True
+            with pytest.raises(ClaudeCliSessionError):
+                async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                    pass
+        assert pool._broken is False  # noqa: SLF001
+        await pool.aclose()

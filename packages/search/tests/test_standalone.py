@@ -928,3 +928,45 @@ async def test_a_host_the_proxy_bypass_names_is_still_resolved_and_guarded(no_pr
             await StandaloneTransport(max_attempts=1).request("GET", f"{server.base_url}/search")
 
     assert server.requests == []
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["localhost.", "127.1", "2130706433", "0x7f000001", "127.0.0.1."],
+)
+async def test_every_spelling_of_loopback_is_refused_through_a_proxy(
+    no_proxy_env: pytest.MonkeyPatch, host: str
+) -> None:
+    """Resolvers accept more than the dotted form, so the guard must too (found by review)."""
+    async with LocalHttpServer() as proxy:
+        no_proxy_env.setenv("HTTP_PROXY", proxy.base_url)
+        with pytest.raises(TransportFailed, match="non-public"):
+            await StandaloneTransport(max_attempts=1).request("GET", f"http://{host}/admin")
+
+    assert proxy.requests == [], "the refusal happens before anything is sent"
+
+
+async def test_a_name_that_resolves_locally_is_checked_even_through_a_proxy(
+    no_proxy_env: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping resolution is for a host that CANNOT resolve, not for every proxied request."""
+    from threetears.search import standalone
+
+    async def resolves_to_loopback(host: str) -> tuple[str, ...]:
+        return ("127.0.0.1",)
+
+    monkeypatch.setattr(standalone, "_resolve", resolves_to_loopback)
+    async with LocalHttpServer() as proxy:
+        no_proxy_env.setenv("HTTP_PROXY", proxy.base_url)
+        with pytest.raises(TransportFailed, match="non-public address"):
+            await StandaloneTransport(max_attempts=1).request("GET", "http://rebinds-to-loopback.example/admin")
+
+    assert proxy.requests == []
+
+
+async def test_an_unresolvable_name_on_a_direct_route_still_fails(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """The proxy exception must not become a way past resolution for a direct request."""
+    with pytest.raises(TransportFailed, match="cannot resolve"):
+        await StandaloneTransport(max_attempts=1, **FAST_BACKOFF).request(  # type: ignore[arg-type]
+            "GET", "http://only-the-proxy-resolves.invalid/page"
+        )

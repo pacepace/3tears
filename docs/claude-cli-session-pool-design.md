@@ -8,8 +8,8 @@ HTTP API, and a routing decision stretched to 4–19 s under load. Every convers
 it too.
 
 This package pools the CLI: one subprocess per launch configuration, reused and cleared
-between calls. Everything below was verified against the bundled CLI (claude-agent-sdk
-0.2.118), not inferred from documentation.
+between calls. Everything below was verified against the bundled CLI (claude-agent-sdk 0.2.116 and
+0.2.118), not inferred from documentation. The extra bounds the SDK below 0.3 for that reason.
 
 ## What is fixed when a CLI starts, and what can change per call
 

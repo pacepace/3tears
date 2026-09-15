@@ -33,7 +33,9 @@ apply the same isolation without importing the chat-model backend.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,6 +84,9 @@ def claude_cli_isolation(token: str | None) -> ClaudeCliIsolation:
     if root is None or not root.is_dir():
         root = Path(tempfile.mkdtemp(prefix=f"threetears-claude-cli-{key}-"))
         _ROOTS[key] = root
+        # One directory per credential per process start would otherwise accumulate in the temp
+        # directory for the life of the host.
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
     config_dir = root / "config"
     cwd = root / "cwd"
     config_dir.mkdir(exist_ok=True)

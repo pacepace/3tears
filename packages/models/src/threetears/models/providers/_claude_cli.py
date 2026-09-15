@@ -135,6 +135,7 @@ this time.
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -605,6 +606,10 @@ def _subscription_model_cls() -> type:
             :rtype: AsyncIterator[Any]
             """
             pool = claude_cli_pool() if pooled else None
+            # The borrower's context, captured now -- inside its own run, with its interrupt list,
+            # tool-result list, callbacks and runnable config set. Tool calls on a reused CLI run in
+            # a copy of it; without that they ran in whichever caller first started the CLI.
+            call_context = contextvars.copy_context()
             async with AsyncExitStack() as stack:
                 client: Any = None
                 if pool is not None:
@@ -616,7 +621,12 @@ def _subscription_model_cls() -> type:
                     instance = server.get("instance") if isinstance(server, dict) else None
                     try:
                         client = await stack.enter_async_context(
-                            pool.checkout(_pooled_launch_options(options), token=self.oauth_token, tool_server=instance)
+                            pool.checkout(
+                                _pooled_launch_options(options),
+                                token=self.oauth_token,
+                                tool_server=instance,
+                                call_context=call_context,
+                            )
                         )
                     except (ClaudeCliPoolExhausted, ClaudeCliSessionError) as exc:
                         _logger.info(
@@ -662,7 +672,9 @@ def _subscription_model_cls() -> type:
             all_tool_calls: list[dict[str, Any]] = []
             all_tool_results: list[dict[str, Any]] = []
             generation_info: dict[str, Any] = {}
-            tool_results_token = self._tool_results_var.set([])
+            results_var = self._tool_results_var
+            assert results_var is not None, "ClaudeCodeChatModel initialises _tool_results_var in __init__"
+            tool_results_token = results_var.set([])
             try:
                 async with self._cli_client(options, pooled=not session_id) as client:
                     await client.query(prompt)
@@ -687,11 +699,11 @@ def _subscription_model_cls() -> type:
                             }
                             if msg.usage:
                                 generation_info["usage"] = msg.usage
-                captured = self._tool_results_var.get()
+                captured = results_var.get()
                 if captured:
                     all_tool_results.extend(captured)
             finally:
-                self._tool_results_var.reset(tool_results_token)
+                results_var.reset(tool_results_token)
             if all_tool_results:
                 generation_info["tool_results"] = all_tool_results
             return "\n".join(all_text), all_tool_calls, generation_info

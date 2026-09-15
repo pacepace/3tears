@@ -264,7 +264,32 @@ def _leaves_through_a_proxy(scheme: str, host: str) -> bool:
     proxies = urllib.request.getproxies_environment()
     if not (proxies.get(scheme) or proxies.get("all")):
         return False
-    return not urllib.request.proxy_bypass_environment(host, proxies)
+    # getattr: present at runtime on every supported Python, absent from the type stubs.
+    bypass = getattr(urllib.request, "proxy_bypass_environment")
+    return not bypass(host, proxies)
+
+
+def _as_address(host: str) -> str | None:
+    """``host`` as a canonical IP address when it is one in ANY accepted spelling, else ``None``.
+
+    Resolvers accept more than dotted quads: ``127.1``, ``2130706433`` and ``0x7f000001`` all reach
+    loopback. A guard that only recognises the dotted form lets the others through.
+
+    :param host: a URL host, lower-cased and without a trailing dot
+    :ptype host: str
+    :return: the canonical address, or ``None`` for a name
+    :rtype: str | None
+    """
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        # NOSILENT: not a standard literal; the IPv4 shorthand spellings are tried next.
+        pass
+    try:
+        return socket.inet_ntoa(socket.inet_aton(host))
+    except OSError:
+        # NOSILENT: not an IPv4 shorthand either, so it is a name -- the documented None.
+        return None
 
 
 def _is_local_name(host: str) -> bool:
@@ -1107,9 +1132,16 @@ class StandaloneTransport:
         Two guards, both deployment-configured: an optional host allowlist,
         which is the strongest available answer to "never a caller-supplied
         base URL" at the only seam that can enforce it; and a private-address
-        refusal covering every address the name resolves to, since a name
-        resolving to one public and one loopback address is the interesting
-        case rather than a hypothetical one.
+        refusal covering the host's address in every accepted spelling
+        (``127.1``, ``2130706433``, a trailing dot) and every address the name
+        resolves to, since a name resolving to one public and one loopback
+        address is the interesting case rather than a hypothetical one.
+
+        One exception, and only one: a name that cannot be resolved here, on a
+        request that leaves through a forward proxy. Such a host has no DNS of
+        its own, the proxy resolves the name, and the proxy's ACL is the
+        boundary. Where local resolution works its answers are checked whatever
+        route the request takes.
 
         Honest about its limit: httpx resolves the name again when it
         connects, so a name that changes answers between the two can still
@@ -1140,25 +1172,33 @@ class StandaloneTransport:
             )
         if self._allow_private_addresses:
             return
-        if _leaves_through_a_proxy(parsed.scheme, host):
-            # The proxy resolves the name, so a local lookup is both impossible
-            # on a host whose only way out is that proxy -- which made every
-            # request fail "cannot resolve host" there -- and meaningless: the
-            # address checked here is not the one the proxy connects to. What
-            # can still be refused without resolving is refused; the rest is
-            # the proxy's ACL to enforce.
-            if (_is_address_literal(host) and _is_blocked_address(host)) or _is_local_name(host):
-                raise TransportFailed(
-                    f"refusing to reach host {host!r}: it names a non-public address",
-                    spend=spend,
-                    remediation=(
-                        "a search instance genuinely on this host's own network is reached by constructing the "
-                        "transport with allow_private_addresses=True -- deployment config, never a per-call "
-                        "parameter (D21)"
-                    ),
-                )
-            return
-        addresses = await _resolve(host)
+        # A trailing dot and the numeric spellings of an address reach the same place as the plain
+        # forms, so they are normalised before anything is checked.
+        host = host.rstrip(".")
+        address = _as_address(host)
+        if (address is not None and _is_blocked_address(address)) or _is_local_name(host):
+            raise TransportFailed(
+                f"refusing to reach host {host!r}: it names a non-public address",
+                spend=spend,
+                remediation=(
+                    "a search instance genuinely on this host's own network is reached by constructing the "
+                    "transport with allow_private_addresses=True -- deployment config, never a per-call "
+                    "parameter (D21)"
+                ),
+            )
+        try:
+            addresses = await _resolve(address or host)
+        except TransportFailed:
+            # A host whose only way out is a forward proxy has no DNS of its own: names resolve at
+            # the proxy. Found live -- every fetch failed "cannot resolve host" while curl through
+            # the same proxy returned 200. Only when the name cannot be resolved here AND the
+            # request goes to a proxy is the check the proxy's to make. Where local resolution
+            # works, its answers are checked whichever way the request leaves; and if this ever
+            # disagrees with httpx about the route, a name that does not resolve here cannot be
+            # connected to directly either, so the disagreement fails closed.
+            if _leaves_through_a_proxy(parsed.scheme, host):
+                return
+            raise
         blocked = sorted(address for address in addresses if _is_blocked_address(address))
         if blocked:
             raise TransportFailed(

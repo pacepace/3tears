@@ -186,8 +186,9 @@ class TestACallIsNeverRefused:
 
         class _Serving:
             @asynccontextmanager
-            async def checkout(self, options: Any, *, token: Any, tool_server: Any) -> Any:
+            async def checkout(self, options: Any, *, token: Any, tool_server: Any, call_context: Any = None) -> Any:
                 seen["token"] = token
+                seen["call_context"] = call_context
                 seen["system_prompt"] = options.system_prompt
                 yield pooled_client
 
@@ -195,6 +196,7 @@ class TestACallIsNeverRefused:
         assert client is pooled_client
         assert _FakeClient.opened == 0, "a CLI of its own was started although a pooled one was free"
         assert seen["token"] == TOKEN
+        assert seen["call_context"] is not None, "tool calls on a reused CLI would run in its first caller's context"
 
 
 def test_the_process_wide_pool_can_be_turned_off() -> None:
@@ -203,3 +205,67 @@ def test_the_process_wide_pool_can_be_turned_off() -> None:
         assert claude_cli_pool.claude_cli_pool() is None
     finally:
         claude_cli_pool.configure_claude_cli_pool(enabled=True)
+
+
+# parity-exempt: a scripted reply stream standing in for a connected ClaudeSDKClient; only query and receive_response are driven
+class _ScriptedClient:
+    """A connected client that answers every query with one scripted reply."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.queries: list[str] = []
+
+    async def query(self, prompt: str, session_id: str = "default") -> None:
+        del session_id
+        self.queries.append(prompt)
+
+    async def receive_response(self) -> Any:
+        from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+
+        yield AssistantMessage(content=[TextBlock(text=self.text)], model=DEFAULT_CHAT_MODEL)
+        yield ResultMessage(
+            subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1, session_id="s"
+        )
+
+
+class TestTheModelIsWiredToThePool:
+    """Pinned through the model's public entry points, not ``_cli_client`` directly: reverting either
+    generation path to ``ClaudeSDKClient(options)`` must fail here (found by review)."""
+
+    @pytest.fixture
+    def serving_pool(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        state: dict[str, Any] = {"checkouts": 0, "client": _ScriptedClient("pooled answer")}
+
+        class _Serving:
+            @asynccontextmanager
+            async def checkout(self, options: Any, *, token: Any, tool_server: Any, call_context: Any = None) -> Any:
+                state["checkouts"] += 1
+                state["system_prompt"] = options.system_prompt
+                yield state["client"]
+
+        monkeypatch.setattr(_claude_cli, "claude_cli_pool", lambda: _Serving())
+
+        def _never(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("a CLI of the call's own was started although the pool served the call")
+
+        import claude_agent_sdk
+
+        monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _never)
+        return state
+
+    async def test_a_non_streaming_call_runs_on_a_pooled_cli(self, serving_pool: dict[str, Any]) -> None:
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        result = await model.ainvoke([_structured_system("persona", "memory"), HumanMessage(content="hi")])
+        assert serving_pool["checkouts"] == 1
+        assert "pooled answer" in str(result.content)
+        assert serving_pool["system_prompt"] == "persona"
+        assert serving_pool["client"].queries[0].startswith("memory")
+
+    async def test_a_streaming_call_runs_on_a_pooled_cli(self, serving_pool: dict[str, Any]) -> None:
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        chunks = [
+            chunk
+            async for chunk in model.astream([_structured_system("persona", "memory"), HumanMessage(content="hi")])
+        ]
+        assert serving_pool["checkouts"] == 1
+        assert "pooled answer" in "".join(str(c.content) for c in chunks)

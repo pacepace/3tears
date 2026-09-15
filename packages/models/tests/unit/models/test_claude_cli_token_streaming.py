@@ -30,6 +30,18 @@ from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.models.providers._claude_cli import create_subscription_chat
 
 
+@pytest.fixture(autouse=True)
+def _one_off_cli_per_call() -> Any:
+    """These pins drive the one-off-client path on purpose, with a fake client that only works as a
+    context manager. Pooling is turned off explicitly so that path is chosen, rather than reached by a
+    pooled start failing and falling back. The pooled path is pinned in ``test_claude_cli_pooled_chat.py``."""
+    from threetears.models import claude_cli_pool
+
+    claude_cli_pool.configure_claude_cli_pool(enabled=False)
+    yield
+    claude_cli_pool.configure_claude_cli_pool(enabled=True)
+
+
 def _result_message(**overrides: Any) -> ResultMessage:
     defaults: dict[str, Any] = {
         "subtype": "success",

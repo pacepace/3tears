@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextvars
+import dataclasses
 import hashlib
 import json
 import os
@@ -54,6 +55,7 @@ __all__ = [
     "POOL_MARKER_ENV",
     "TOOL_SERVER_NAME",
     "ClaudeCliPool",
+    "PooledCliSession",
     "ClaudeCliPoolExhausted",
     "ClaudeCliSessionError",
     "claude_cli_pool",
@@ -61,7 +63,9 @@ __all__ = [
     "configure_claude_cli_pool",
     "kill_process_tree",
     "launch_fingerprint",
+    "bind_tool_server_to_context",
     "launch_key",
+    "poolable",
     "sweep_orphaned_claude_clis",
 ]
 
@@ -383,23 +387,53 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
 # The launch key
 # ---------------------------------------------------------------------------
 
-#: ``ClaudeAgentOptions`` fields fixed when the CLI starts. Two calls may share a session only when
-#: every one of these matches. ``model`` and ``mcp_servers`` are deliberately absent: both are
-#: applied per checkout. ``env`` is represented by the credential digest alone, so the token never
-#: becomes part of a key.
-_LAUNCH_FIELDS = (
-    "system_prompt",
-    "tools",
-    "allowed_tools",
-    "disallowed_tools",
-    "permission_mode",
-    "max_turns",
-    "max_budget_usd",
-    "fallback_model",
-    "cwd",
-    "extra_args",
-    "include_partial_messages",
-)
+#: Options applied per checkout rather than at launch, so they are not part of the key.
+_PER_CHECKOUT_FIELDS = frozenset({"model", "mcp_servers"})
+
+#: Options carrying Python callables. A callable has no stable identity to key on and closes over
+#: one caller's state -- the same hazard as a tool server -- so a call that sets any of them is not
+#: pooled at all.
+_CALLABLE_FIELDS = frozenset({"hooks", "can_use_tool", "stderr", "debug_stderr"})
+
+#: Options that ask the CLI to continue a stored session, which isolation disables and which cannot
+#: be shared between callers.
+_RESUME_FIELDS = frozenset({"resume", "continue_conversation", "fork_session", "session_id"})
+
+#: The environment variable carrying the credential; keyed by digest, never by value.
+_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def _option_fields(options: Any) -> list[str]:
+    """Every option field the launch key considers.
+
+    Every field of the options dataclass, so an option a caller can set per call cannot silently
+    share a CLI launched without it -- the base package's ``_build_options`` accepts any field as an
+    override. A non-dataclass stand-in falls back to its public attributes.
+
+    :param options: the launch options
+    :ptype options: Any
+    :return: the field names, sorted
+    :rtype: list[str]
+    """
+    if dataclasses.is_dataclass(options):
+        names = [f.name for f in dataclasses.fields(options)]
+    else:
+        names = [n for n in vars(options) if not n.startswith("_")]
+    return sorted(n for n in names if n not in _PER_CHECKOUT_FIELDS)
+
+
+def poolable(options: Any) -> bool:
+    """Whether a call with these options may run on a shared, reused CLI.
+
+    :param options: the call's launch options
+    :ptype options: Any
+    :return: ``False`` when a callable option or a resumed session is set
+    :rtype: bool
+    """
+    for name in _CALLABLE_FIELDS | _RESUME_FIELDS:
+        if getattr(options, name, None):
+            return False
+    return True
 
 
 def _jsonable(value: Any) -> Any:
@@ -416,7 +450,29 @@ def _jsonable(value: Any) -> Any:
         return [_jsonable(v) for v in value]
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return _jsonable(dataclasses.asdict(value))
     return str(value)
+
+
+def _keyed_value(name: str, options: Any) -> Any:
+    """One option's value as the key sees it: the credential in ``env`` digested, the pool marker gone.
+
+    :param name: the field
+    :ptype name: str
+    :param options: the launch options
+    :ptype options: Any
+    :return: a JSON-safe rendering
+    :rtype: Any
+    """
+    value = getattr(options, name, None)
+    if name == "env" and isinstance(value, dict):
+        value = {
+            k: (hashlib.sha256(str(v).encode("utf-8")).hexdigest() if k == _TOKEN_ENV else v)
+            for k, v in value.items()
+            if k != POOL_MARKER_ENV
+        }
+    return _jsonable(value)
 
 
 def launch_fingerprint(options: Any) -> dict[str, str]:
@@ -432,10 +488,8 @@ def launch_fingerprint(options: Any) -> dict[str, str]:
     :rtype: dict[str, str]
     """
     return {
-        name: hashlib.sha256(
-            json.dumps(_jsonable(getattr(options, name, None)), sort_keys=True).encode("utf-8")
-        ).hexdigest()[:8]
-        for name in _LAUNCH_FIELDS
+        name: hashlib.sha256(json.dumps(_keyed_value(name, options), sort_keys=True).encode("utf-8")).hexdigest()[:8]
+        for name in _option_fields(options)
     }
 
 
@@ -451,7 +505,7 @@ def launch_key(options: Any, token: str | None) -> str:
     """
     material = {
         "credential": hashlib.sha256((token or "").encode("utf-8")).hexdigest(),
-        **{name: _jsonable(getattr(options, name, None)) for name in _LAUNCH_FIELDS},
+        **{name: _keyed_value(name, options) for name in _option_fields(options)},
     }
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode("utf-8")).hexdigest()[:32]
 
@@ -509,6 +563,55 @@ def _discover_pid(client: Any, marker: str) -> int | None:
     return None
 
 
+class _ContextBoundServer:
+    """An in-process MCP server whose tool calls run in one borrower's context.
+
+    The SDK runs a tool call in a task spawned from its message-reader task, and that task was
+    created when the CLI connected -- inside whichever caller STARTED the session. On a reused
+    session every later borrower's tool calls therefore ran with the first borrower's context
+    variables: an ``interrupt()`` was captured into the first caller's list and the graph never
+    paused, tool-status events went to the first caller's callbacks, and the tool saw the first
+    caller's runnable config. Found by review and reproduced.
+
+    Each call runs in a fresh copy of the borrower's context: a copy because two tool calls in one
+    turn may run at once and a context cannot be entered twice, and a copy still shares the
+    borrower's mutable values -- the list an interrupt is appended to is the same list.
+    """
+
+    def __init__(self, server: Any, context: contextvars.Context) -> None:
+        from mcp.types import CallToolRequest  # noqa: PLC0415 -- arrives with the claude-cli extra
+
+        self._server = server
+        self.name = server.name
+        self.version = getattr(server, "version", None)
+        self.request_handlers = dict(server.request_handlers)
+        original = self.request_handlers.get(CallToolRequest)
+        if original is not None:
+
+            async def call_in_borrower_context(request: Any) -> Any:
+                return await asyncio.create_task(original(request), context=context.copy())
+
+            self.request_handlers[CallToolRequest] = call_in_borrower_context
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._server, name)
+
+
+def bind_tool_server_to_context(server: Any, context: contextvars.Context | None) -> Any:
+    """``server`` with its tool calls running in ``context``; ``server`` itself when there is none.
+
+    :param server: an in-process MCP server instance (``create_sdk_mcp_server(...)["instance"]``)
+    :ptype server: Any
+    :param context: the borrower's context, captured when its call began
+    :ptype context: contextvars.Context | None
+    :return: the server to install on the session
+    :rtype: Any
+    """
+    if server is None or context is None:
+        return server
+    return _ContextBoundServer(server, context)
+
+
 class PooledCliSession:
     """One live CLI subprocess, lent to exactly one caller at a time."""
 
@@ -520,6 +623,8 @@ class PooledCliSession:
         self.reusable = reusable
         self.closed = False
         self._model: str | None = None
+        #: The CLI's start time, so disposal never signals a recycled pid that is not this CLI.
+        self.start_ticks = _process_start_ticks(pid) if pid is not None else None
 
     @classmethod
     async def start(cls, options: Any, *, key: str) -> PooledCliSession:
@@ -562,7 +667,9 @@ class PooledCliSession:
         session._model = getattr(options, "model", None)
         return session
 
-    async def prepare(self, *, model: str | None, tool_server: Any | None) -> None:
+    async def prepare(
+        self, *, model: str | None, tool_server: Any | None, call_context: contextvars.Context | None = None
+    ) -> None:
         """Point this session at the caller's model and the caller's tools.
 
         The tool server is replaced on EVERY checkout, never reused: its handlers close over the
@@ -573,6 +680,8 @@ class PooledCliSession:
         :ptype model: str | None
         :param tool_server: the call's in-process MCP server instance, or ``None`` for no tools
         :ptype tool_server: Any | None
+        :param call_context: the borrower's context, which every tool call on this checkout runs in
+        :ptype call_context: contextvars.Context | None
         :raises ClaudeCliSessionError: when either change is refused
         """
         if self.closed:
@@ -585,7 +694,7 @@ class PooledCliSession:
             await query._send_control_request({"subtype": "mcp_set_servers", "servers": {}}, timeout=30.0)  # noqa: SLF001
             query.sdk_mcp_servers.pop(TOOL_SERVER_NAME, None)
             if tool_server is not None:
-                query.sdk_mcp_servers[TOOL_SERVER_NAME] = tool_server
+                query.sdk_mcp_servers[TOOL_SERVER_NAME] = bind_tool_server_to_context(tool_server, call_context)
                 await query._send_control_request(  # noqa: SLF001
                     {
                         "subtype": "mcp_set_servers",
@@ -594,7 +703,25 @@ class PooledCliSession:
                     timeout=30.0,
                 )
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the SDK raises bare Exception for a refused control request; any failure here must dispose the session, never hand it on
-            raise ClaudeCliSessionError(f"could not prepare the Claude CLI session: {exc}") from exc
+            error = ClaudeCliSessionError(f"could not prepare the Claude CLI session: {exc}")
+            #: A failure of the SDK surface itself (a private attribute or control request that
+            #: moved) rather than of this one CLI; the pool counts these and stops pooling.
+            error.structural = isinstance(exc, (AttributeError, TypeError, KeyError))  # type: ignore[attr-defined]
+            raise error from exc
+
+    async def release_tools(self) -> None:
+        """Drop the last borrower's tool server, so an idle session holds none of its objects.
+
+        :raises ClaudeCliSessionError: when the CLI refuses; the pool disposes the session
+        """
+        if self.closed:
+            raise ClaudeCliSessionError("this Claude CLI session has been stopped")
+        try:
+            query = self.client._query  # noqa: SLF001
+            query.sdk_mcp_servers.pop(TOOL_SERVER_NAME, None)
+            await query._send_control_request({"subtype": "mcp_set_servers", "servers": {}}, timeout=30.0)  # noqa: SLF001
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the session cannot be trusted idle; the pool disposes it
+            raise ClaudeCliSessionError(f"could not release the Claude CLI's tools: {exc}") from exc
 
     async def clear(self, *, timeout: float) -> None:
         """Drop the session's conversation with the CLI's local ``/clear``.
@@ -617,7 +744,7 @@ class PooledCliSession:
                         break
         except TimeoutError as exc:
             raise ClaudeCliSessionError(f"the Claude CLI did not clear within {timeout}s") from exc
-        except sdk.ClaudeSDKError as exc:
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the SDK surfaces a CLI that died mid-clear as a bare Exception from receive_messages; every failure must dispose the session, never leak its slot
             raise ClaudeCliSessionError(f"the Claude CLI failed to clear: {exc}") from exc
 
     async def dispose(self, *, grace_seconds: float) -> None:
@@ -634,6 +761,9 @@ class PooledCliSession:
         with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
             await asyncio.wait_for(self.client.disconnect(), timeout=5.0)
         if self.pid is not None and _alive(self.pid):
+            if self.start_ticks is not None and _process_start_ticks(self.pid) != self.start_ticks:
+                # The CLI exited and its pid now belongs to something else: signal nothing.
+                return
             await asyncio.to_thread(kill_process_tree, self.pid, grace_seconds=grace_seconds)
 
 
@@ -646,6 +776,10 @@ class PooledCliSession:
 class _Idle:
     session: PooledCliSession
     since: float
+
+
+#: Consecutive structural prepare failures after which the pool turns itself off.
+_STRUCTURAL_FAILURE_LIMIT = 3
 
 
 class ClaudeCliPool:
@@ -679,6 +813,8 @@ class ClaudeCliPool:
         self._reaper: asyncio.Task[None] | None = None
         #: How a session is started. Injected by tests; a real host never passes it.
         self._start = session_factory or PooledCliSession.start
+        self._structural_failures = 0
+        self._broken = False
 
     @property
     def live_count(self) -> int:
@@ -694,7 +830,14 @@ class ClaudeCliPool:
         return [s.pid for s in self._all if s.pid is not None and not s.closed]
 
     @asynccontextmanager
-    async def checkout(self, options: Any, *, token: str | None, tool_server: Any | None) -> AsyncIterator[Any]:
+    async def checkout(
+        self,
+        options: Any,
+        *,
+        token: str | None,
+        tool_server: Any | None,
+        call_context: contextvars.Context | None = None,
+    ) -> AsyncIterator[Any]:
         """Borrow a connected CLI client for one call.
 
         The caller drives ``client.query`` and reads ``client.receive_response()`` to its
@@ -709,20 +852,53 @@ class ClaudeCliPool:
         :ptype token: str | None
         :param tool_server: the call's in-process MCP server instance, or ``None``
         :ptype tool_server: Any | None
+        :param call_context: the borrower's context; its tool calls run in a copy of it
+        :ptype call_context: contextvars.Context | None
         :return: the connected ``ClaudeSDKClient``
         :rtype: AsyncIterator[Any]
         :raises ClaudeCliPoolExhausted: when no session frees up in time
         :raises ClaudeCliSessionError: when a session cannot be started or prepared
         """
+        if self._broken:
+            raise ClaudeCliPoolExhausted("pooling is off: the Claude Agent SDK's surface failed repeatedly")
+        if not poolable(options):
+            raise ClaudeCliPoolExhausted("this call carries callables or a resumed session and cannot share a CLI")
         key = launch_key(options, token)
         session = await self._acquire(key, options)
         clean = False
         try:
-            await session.prepare(model=getattr(options, "model", None), tool_server=tool_server)
+            try:
+                await session.prepare(
+                    model=getattr(options, "model", None), tool_server=tool_server, call_context=call_context
+                )
+            except ClaudeCliSessionError as exc:
+                self._note_prepare_failure(exc)
+                raise
+            self._structural_failures = 0
             yield session.client
             clean = True
         finally:
             await asyncio.shield(self._return(key, session, clean=clean))
+
+    def _note_prepare_failure(self, exc: ClaudeCliSessionError) -> None:
+        """Count failures of the SDK surface itself, and stop pooling when they repeat.
+
+        A private attribute or control request that moved in an SDK release fails every prepare.
+        Without this every call would start a pooled CLI, fail, dispose it and then start a one-off
+        CLI -- twice the start cost, logged only as a fallback.
+
+        :param exc: the prepare failure
+        :ptype exc: ClaudeCliSessionError
+        """
+        if not getattr(exc, "structural", False):
+            return
+        self._structural_failures += 1
+        if self._structural_failures >= _STRUCTURAL_FAILURE_LIMIT and not self._broken:
+            self._broken = True
+            _logger.warning(
+                "The Claude CLI pool turned itself off: the Claude Agent SDK surface it relies on is not there",
+                extra={"extra_data": {"failures": self._structural_failures, "error": str(exc)}},
+            )
 
     async def aclose(self) -> None:
         """Stop every session this pool holds."""
@@ -786,7 +962,10 @@ class ClaudeCliPool:
                             "Evicting an idle Claude CLI to make room for another launch",
                             extra={"extra_data": {"evicted_key": victim_key[:12], "for_key": key[:12]}},
                         )
-                        await self._dispose(victim_key, victim_session)
+                        # Shielded: a Stop landing during the victim's disconnect would otherwise skip
+                        # its kill and its slot release, and every later call would find the pool
+                        # "busy" with a session that no longer exists.
+                        await asyncio.shield(self._dispose(victim_key, victim_session))
                     finally:
                         await self._condition.acquire()
                     continue
@@ -813,8 +992,13 @@ class ClaudeCliPool:
             if not started:
                 await asyncio.shield(self._forget(key))
 
-        async with self._condition:
-            self._all.add(session)
+        try:
+            await asyncio.shield(self._register(session))
+        except BaseException:
+            # The borrower was cancelled between starting its CLI and taking it: nobody will return
+            # this session, so stop it and free its slot rather than leave both stranded.
+            await asyncio.shield(self._dispose(key, session))
+            raise
         self._ensure_reaper()
         _logger.info(
             "Started a pooled Claude CLI",
@@ -829,6 +1013,15 @@ class ClaudeCliPool:
             },
         )
         return session
+
+    async def _register(self, session: PooledCliSession) -> None:
+        """Add a started session to the live set.
+
+        :param session: the session
+        :ptype session: PooledCliSession
+        """
+        async with self._condition:
+            self._all.add(session)
 
     def _longest_idle_elsewhere(self, key: str) -> tuple[str, PooledCliSession] | None:
         """Take the longest-idle session under any OTHER key out of the idle set. Call under the lock.
@@ -861,8 +1054,9 @@ class ClaudeCliPool:
         keep = clean and session.reusable and not session.closed and not self._closing
         if keep:
             try:
+                await session.release_tools()
                 await session.clear(timeout=self._clear_timeout)
-            except ClaudeCliSessionError as exc:
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever a returning session raises, it must be disposed and its slot freed, and a call that already succeeded must not fail here
                 _logger.warning(
                     "A pooled Claude CLI would not clear its context; disposing of it",
                     extra={"extra_data": {"key": key[:12], "error": str(exc)}},
