@@ -67,10 +67,18 @@ storage rather than being careless.
 
 ## Shards
 
-**Shard 1 -- the gate. DONE.** Walker in
-`threetears.enforcement.kv_memory_only`, thin shell in `packages/core`, strict,
-with the four sites exempted and each rationale naming the work that removes it.
-Stops the next one; does not fix these.
+**Shard 1 -- the gate. DONE.** Walker and gate together in
+`packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py`, strict, with
+the four sites exempted and each rationale naming the work that removes it. Stops
+the next one; does not fix these.
+
+**The walker is deliberately NOT in `threetears.enforcement` yet.** Every
+violation today is in this repo, and promoting it would grow that package's public
+API -- which on a patch line is refused by `test_api_growth_requires_a_minor_bump`,
+for a real reason: the intra-family bound reads `>=0.41.0,<0.42.0`, so pip may
+resolve a sibling published earlier on this line that lacks the new names, giving a
+family that installs clean and ImportErrors at runtime. It moves when a second repo
+needs it, and that move is a minor bump by itself.
 
 **Shard 2 -- `DurableKvBucket`.** An implementation of `KvBucketLike` backed by a
 `BaseCollection`. Same surface as the KV bucket the four already hold, so adoption
