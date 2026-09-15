@@ -32,6 +32,7 @@ response so junk tool names never reach downstream dispatch.
 from __future__ import annotations
 
 from threetears.models.cache import ModelCache
+from threetears.models.claude_cli_isolation import ClaudeCliIsolation, claude_cli_isolation
 from threetears.models.capabilities import (
     CapabilityOverride,
     ModelCapabilities,
@@ -123,6 +124,7 @@ __all__ = [
     "DEFAULT_LARGE_MODEL",
     "DEFAULT_MAX_TOKENS",
     "CapabilityOverride",
+    "ClaudeCliIsolation",
     "ChunkParsed",
     "CircuitBreaker",
     "CircuitBreakerCallback",
@@ -150,6 +152,7 @@ __all__ = [
     "UsageTracker",
     "UsageTrackingCallback",
     "clear_capability_overrides",
+    "claude_cli_isolation",
     "create_chat_model",
     "create_embedding_model",
     "default_price_sources",

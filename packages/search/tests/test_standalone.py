@@ -850,3 +850,123 @@ def test_one_shot_asyncio_run_needs_no_lifecycle() -> None:
 
     prose = asyncio.run(_once())
     assert prose.startswith("1. Capybara")
+
+
+# --- the address guard behind a forward proxy ----------------------------
+#
+# A deployment whose only way out is a forward proxy (squid at HTTPS_PROXY) has
+# no DNS of its own: names resolve at the proxy. httpx already sends the request
+# there -- it honours the proxy environment -- but the guard resolved the name
+# locally first, as though the connection were direct. Found live in a dev
+# container: every fetch failed "cannot resolve host", robots.txt read as
+# unknown, unknown rules deny, and the fetch came back ``refused`` while curl
+# through the same proxy returned 200.
+#
+# The guard now checks the route the request will actually take.
+
+_PROXY_VARS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+
+
+@pytest.fixture
+def no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """A clean proxy environment, so a pin states exactly the route it tests."""
+    for name in _PROXY_VARS:
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+async def test_a_proxied_request_is_not_refused_for_a_name_only_the_proxy_can_resolve(
+    no_proxy_env: pytest.MonkeyPatch,
+) -> None:
+    """The name is the proxy's to resolve; the request must reach the proxy."""
+    async with LocalHttpServer() as proxy:
+        no_proxy_env.setenv("HTTP_PROXY", proxy.base_url)
+        response = await StandaloneTransport(max_attempts=1, **FAST_BACKOFF).request(  # type: ignore[arg-type]
+            "GET", "http://only-the-proxy-resolves.invalid/page"
+        )
+
+    assert response.status_code == 200
+    assert proxy.requests, "the request never reached the proxy"
+
+
+async def test_a_private_address_literal_is_refused_even_through_a_proxy(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """A proxy resolves names; it does not make an internal address public."""
+    async with LocalHttpServer() as proxy:
+        no_proxy_env.setenv("HTTP_PROXY", proxy.base_url)
+        with pytest.raises(TransportFailed, match="non-public address"):
+            await StandaloneTransport(max_attempts=1).request("GET", "http://10.0.0.5/admin")
+
+    assert proxy.requests == [], "the refusal happens before anything is sent"
+
+
+@pytest.mark.parametrize("host", ["localhost", "api.localhost"])
+async def test_localhost_is_refused_even_through_a_proxy(no_proxy_env: pytest.MonkeyPatch, host: str) -> None:
+    """Sent through a proxy, ``localhost`` is the proxy's own loopback."""
+    async with LocalHttpServer() as proxy:
+        no_proxy_env.setenv("HTTP_PROXY", proxy.base_url)
+        with pytest.raises(TransportFailed, match="non-public"):
+            await StandaloneTransport(max_attempts=1).request("GET", f"http://{host}/admin")
+
+    assert proxy.requests == []
+
+
+async def test_a_host_the_proxy_bypass_names_is_still_resolved_and_guarded(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """``NO_PROXY`` sends the request direct, so the direct-route guard applies in full."""
+    async with LocalHttpServer() as server:
+        no_proxy_env.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+        no_proxy_env.setenv("NO_PROXY", "127.0.0.1")
+        with pytest.raises(TransportFailed, match="non-public address"):
+            await StandaloneTransport(max_attempts=1).request("GET", f"{server.base_url}/search")
+
+    assert server.requests == []
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["localhost.", "127.1", "2130706433", "0x7f000001", "127.0.0.1."],
+)
+async def test_every_spelling_of_loopback_is_refused_through_a_proxy(
+    no_proxy_env: pytest.MonkeyPatch, host: str
+) -> None:
+    """Resolvers accept more than the dotted form, so the guard must too (found by review)."""
+    async with LocalHttpServer() as proxy:
+        no_proxy_env.setenv("HTTP_PROXY", proxy.base_url)
+        with pytest.raises(TransportFailed, match="non-public"):
+            await StandaloneTransport(max_attempts=1).request("GET", f"http://{host}/admin")
+
+    assert proxy.requests == [], "the refusal happens before anything is sent"
+
+
+async def test_a_name_that_resolves_locally_is_checked_even_through_a_proxy(
+    no_proxy_env: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipping resolution is for a host that CANNOT resolve, not for every proxied request."""
+    from threetears.search import standalone
+
+    async def resolves_to_loopback(host: str) -> tuple[str, ...]:
+        return ("127.0.0.1",)
+
+    monkeypatch.setattr(standalone, "_resolve", resolves_to_loopback)
+    async with LocalHttpServer() as proxy:
+        no_proxy_env.setenv("HTTP_PROXY", proxy.base_url)
+        with pytest.raises(TransportFailed, match="non-public address"):
+            await StandaloneTransport(max_attempts=1).request("GET", "http://rebinds-to-loopback.example/admin")
+
+    assert proxy.requests == []
+
+
+async def test_an_unresolvable_name_on_a_direct_route_still_fails(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """The proxy exception must not become a way past resolution for a direct request."""
+    with pytest.raises(TransportFailed, match="cannot resolve"):
+        await StandaloneTransport(max_attempts=1, **FAST_BACKOFF).request(  # type: ignore[arg-type]
+            "GET", "http://only-the-proxy-resolves.invalid/page"
+        )
