@@ -39,6 +39,13 @@ packages (bumped in lock-step).
     wipe, so calls through that guard are refused for its reach afterwards. The
     `RevocationGuard`, idempotency and windowed-counter buckets are still deliberately
     file-backed and are NOT part of this step.
+- **BREAKING: `BaseCollection.l2_cas_mutate` returns a `CasMutation`** (`action` of created,
+  updated, deleted or noop, and the row written) instead of `None`. On a collection with an L3
+  pool it is now three-tier: when L2 holds no live row the callback is shown L3's row, so a
+  broker wipe no longer resets a counter to zero, and the won result is persisted to L3 per
+  `l3_write_policy` (deletes always synchronously). Collections without an L3 pool, including
+  the presence collections, behave as before. Migration: callers that ignored the return value
+  need no change; a synchronous persist that affects no L3 row now raises `RuntimeError`.
 
 ### Added
 
@@ -79,6 +86,11 @@ packages (bumped in lock-step).
   cannot be disabled again), while a binding opener tolerates its absence and only its TTL'd
   writes are refused.
 - `FakeKvBucket` accepts `ttl` and gains `advance_clock()`.
+- **`BaseCollection.l3_write_policy`**: `"synchronous"` or `"write_behind"`, declared on the
+  collection and overriding the process-wide `collection_flush` strategy for its table. `None`
+  (the default) keeps following the process strategy. `"write_behind"` without a write buffer is
+  refused at construction.
+- `threetears.core.collections.base.CasMutation`.
 
 ## v0.42.0 -- 2026-09-15
 

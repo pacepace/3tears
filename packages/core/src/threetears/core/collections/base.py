@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     # local `_NatsClientFromRegistry` sentinel, not `NatsClient`.
     from threetears.nats import NatsClient, NatsKvBucket
 
-__all__ = ["NATS_CLIENT_FROM_REGISTRY", "BaseCollection", "EntityT"]
+__all__ = ["NATS_CLIENT_FROM_REGISTRY", "BaseCollection", "CasMutation", "EntityT"]
 
 log = get_logger(__name__)
 
@@ -86,6 +86,19 @@ Table(
 #: larger than one batch drains over successive intervals.
 _ABSENT_MARKER_SWEEP_INTERVAL_SECONDS: Final = 60.0
 _ABSENT_MARKER_SWEEP_BATCH: Final = 500
+
+
+@dataclass(frozen=True, slots=True)
+class CasMutation:
+    """what :meth:`BaseCollection.l2_cas_mutate` did.
+
+    :ivar action: ``"created"`` when no prior row existed in any tier, ``"updated"`` when one did,
+        ``"deleted"``, or ``"noop"`` when the callback declined to write
+    :ivar row: the row as written, or ``None`` for a delete or a noop
+    """
+
+    action: Literal["created", "updated", "deleted", "noop"]
+    row: dict[str, Any] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +223,16 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: L2 read decodes it or reports the entry corrupt rather than failing mid-comparison.
     expires_at_column: ClassVar[str | None] = None
 
+    #: How this collection's L3 writes land: ``"synchronous"`` before the write returns,
+    #: ``"write_behind"`` through the write buffer, or ``None`` to follow the process-wide
+    #: ``collection_flush`` strategy and table list.
+    #:
+    #: Declared on the collection because the right answer is a property of the data, not of the
+    #: deployment: an attempt counter can lose one flush interval of increments to a broker wipe
+    #: coinciding with a writer crash and nobody is harmed, while a revocation cannot lose one.
+    #: ``"write_behind"`` requires a write buffer at construction.
+    l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = None
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """refuse, at class definition, an expiry or negative-cache setting that cannot work.
 
@@ -282,6 +305,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             or without an L2 client, because a writer without one must still advance the generation
             other pods' absences are stamped with
         """
+        if self.l3_write_policy == "write_behind" and self.l3_pool is not None and self._write_buffer is None:
+            raise ValueError(
+                f"{type(self).__name__} declares l3_write_policy='write_behind' but was constructed with "
+                f"no write buffer, so its L3 writes would have nowhere to wait"
+            )
         if not self._negative_cache_writes_advance:
             return
         if self._registry.generation_source is None:
@@ -290,7 +318,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"source: nothing could invalidate a recorded absence when a write lands. wire "
                 f"registry.set_generation_source(...) before constructing it"
             )
-        if self._flush_strategy != FlushStrategy.ALWAYS and self.table_name in self._flush_tables:
+        if self._declares_deferred_l3_writes:
             raise ValueError(
                 f"{type(self).__name__} opts into negative caching but {self.table_name!r} defers its L3 "
                 f"writes: a reader between the L2 write and the buffered flush would record the row "
@@ -769,6 +797,27 @@ class BaseCollection(ABC, Generic[EntityT]):
             # the zone on the way back out, not a local time.
             value = value.replace(tzinfo=UTC)
         return value <= datetime.now(UTC)
+
+    @property
+    def _declares_deferred_l3_writes(self) -> bool:
+        """whether this collection's L3 writes are MEANT to wait, whatever it was wired with.
+
+        :return: ``True`` for ``l3_write_policy="write_behind"``, or for no declared policy when
+            the process-wide strategy defers this table
+        :rtype: bool
+        """
+        if self.l3_write_policy is not None:
+            return self.l3_write_policy == "write_behind"
+        return self._flush_strategy != FlushStrategy.ALWAYS and self.table_name in self._flush_tables
+
+    @property
+    def _defers_l3_writes(self) -> bool:
+        """whether this collection's L3 writes actually go through its write buffer.
+
+        :return: ``True`` when writes are meant to wait and a write buffer exists
+        :rtype: bool
+        """
+        return self._declares_deferred_l3_writes and self._write_buffer is not None
 
     @property
     def _negative_cache_writes_advance(self) -> bool:
@@ -1569,13 +1618,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         # Signal other pods to evict stale L1
         await self._publish_invalidation(entity_id)
 
-        # L3: immediate or deferred based on flush strategy
-        should_defer = (
-            self._flush_strategy != FlushStrategy.ALWAYS
-            and self.table_name in self._flush_tables
-            and self._write_buffer is not None
-        )
-        if should_defer:
+        # L3: immediate or deferred, per the collection's declared policy or the process strategy
+        if self._defers_l3_writes:
             assert self._write_buffer is not None
             await self._write_buffer.add(self.table_name, entity_id, data)
         else:
@@ -1801,11 +1845,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         # that used to live here was load-bearing only while TIMESTAMP
         # columns existed and is gone with them.
 
-        defer = (
-            self._flush_strategy != FlushStrategy.ALWAYS
-            and self.table_name in self._flush_tables
-            and self._write_buffer is not None
-        )
+        defer = self._defers_l3_writes
         if conn is not None and self._negative_cache_writes_advance:
             # the write joins a transaction the caller commits later; the generation would advance
             # before the row is visible, and a reader in between would record it absent under the
@@ -1953,7 +1993,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]],
         *,
         max_retries: int = 8,
-    ) -> None:
+    ) -> CasMutation:
         """atomically read-modify-write one entity's L2 value under revision CAS.
 
         the framework's optimistic-lock fence lives in the L3 write
@@ -1989,10 +2029,36 @@ class BaseCollection(ABC, Generic[EntityT]):
         free** -- it is re-invoked from the freshly-read state on every
         retry.
 
+        **On a collection with an L3 pool**, the same compare-and-swap is
+        the concurrency fence and L3 is the durable record behind it:
+
+        - when L2 holds no live row -- a wiped broker, a cold key, an
+          absent-marker -- the callback is shown L3's row, so a counter
+          continues from its durable value rather than restarting at zero;
+        - the won result is persisted per :attr:`l3_write_policy`:
+          synchronously before this returns, or through the write buffer.
+          A delete always lands synchronously;
+        - a collection that caches absences advances its write generation
+          after a synchronous persist, as :meth:`save_entity` does, and
+          raises if it cannot once L1 and the broadcast have run.
+
+        Write-behind can lose the increments of one flush interval when a
+        broker wipe coincides with the writer's crash. That is the trade
+        :attr:`l3_write_policy` states for data like attempt counters; data
+        that cannot tolerate it declares ``"synchronous"``.
+
+        Under either policy the L2 revision orders the writes and L3 does
+        not: two replicas that win consecutive revisions persist
+        independently, so L3 can briefly hold the earlier row until the
+        next write lands. L3 matters only once L2 has lost the key, so a
+        collection whose rows are only ever inserted or deleted (a
+        revocation, a jti ledger) is unaffected, and a counter can at worst
+        resume a few increments low.
+
         **L1-only fallback**: when no NATS client is wired
         (:meth:`_ensure_kv` is ``None`` -- unit / single-pod), there is
         no cross-pod contention to CAS against, so the method degrades
-        to a single uncontended L1 read-modify-write via :meth:`get` /
+        to a single uncontended read-modify-write via :meth:`get` /
         :meth:`save_entity` / :meth:`delete`.
 
         **deliberately NOT degrade-on-KvError, unlike its L1+L2+L3
@@ -2017,19 +2083,22 @@ class BaseCollection(ABC, Generic[EntityT]):
         :param max_retries: how many times to retry on a CAS conflict
             before surfacing the error
         :ptype max_retries: int
-        :return: nothing
-        :rtype: None
+        :return: what was done, and the row written
+        :rtype: CasMutation
         :raises ConcurrentModificationError: when the retry budget is
             exhausted (a genuine livelock, never the common case)
         :raises KvError: on any L2 transport failure, including
             during bucket resolution -- intentionally not swallowed,
             see the note above
+        :raises RuntimeError: when a synchronous L3 persist affects no row
+        :raises GenerationUnavailableError: when a collection that caches
+            absences persisted the result but could not advance its write
+            generation
         """
         self._set_span_table()
         kv = await self._ensure_kv()
         if kv is None:
-            await self._l1_only_cas_mutate(entity_id, mutate)
-            return
+            return await self._l1_only_cas_mutate(entity_id, mutate)
 
         key = self.l2_key(entity_id)
         for attempt in range(max_retries):
@@ -2062,9 +2131,18 @@ class BaseCollection(ABC, Generic[EntityT]):
                     )
                     row = None
 
+            if row is not None and self._row_is_expired(row):
+                row = None
+            if row is None and self.l3_pool is not None:
+                # L2 holds no live row, but L3 is the source of truth: a wiped broker must not reset
+                # a counter to zero. no separate seeding write -- the create below converges, since
+                # a racing seeder that lands first makes it fail and the next round reads L2.
+                seeded = await self.fetch_from_store(entity_id)
+                row = None if seeded is None or self._row_is_expired(seeded) else seeded
+
             action, new_row = mutate(row)
             if action == "noop":
-                return
+                return CasMutation(action="noop", row=None)
 
             now = datetime.now(UTC)
             ok: bool
@@ -2106,7 +2184,9 @@ class BaseCollection(ABC, Generic[EntityT]):
                 )
                 continue
 
-            # CAS won: reconcile L1 and notify peers.
+            # CAS won: the L2 revision was the fence. persist to L3 (when there is one) only now,
+            # so a write that lost the race is never persisted; then reconcile L1 and notify peers.
+            generation_failure = await self._persist_cas_result(entity_id, action, new_row)
             if action == "delete":
                 if self._l1 is not None:
                     self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
@@ -2114,44 +2194,96 @@ class BaseCollection(ABC, Generic[EntityT]):
                 assert new_row is not None  # narrow: "upsert" always carries a row
                 if self._l1 is not None:
                     self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
+                self._clear_l1_marker(entity_id)
             await self._publish_invalidation(entity_id)
-            return
+            if generation_failure is not None:
+                raise generation_failure
+            outcome: CasMutation
+            if action == "delete":
+                outcome = CasMutation(action="deleted", row=None)
+            else:
+                outcome = CasMutation(action="created" if row is None else "updated", row=new_row)
+            return outcome
+        raise AssertionError("unreachable: every CAS round either returns or retries within the budget")
+
+    async def _persist_cas_result(
+        self, entity_id: Any, action: Literal["upsert", "delete"], new_row: dict[str, Any] | None
+    ) -> GenerationUnavailableError | None:
+        """land a won compare-and-swap in L3, per this collection's L3 write policy.
+
+        Nothing to do without an L3 pool: there, L2 is the source of truth. A write-behind upsert
+        joins the write buffer and is flushed later; a synchronous one, and every delete (the
+        buffer holds rows, not removals), is written before this returns.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param action: the action that won
+        :ptype action: str
+        :param new_row: the row written, for an upsert
+        :ptype new_row: dict[str, Any] | None
+        :return: a write-generation failure for the caller to raise once L1 and the broadcast have
+            run, or ``None``
+        :rtype: GenerationUnavailableError | None
+        :raises RuntimeError: when a synchronous L3 write affects no row
+        """
+        if self.l3_pool is None:
+            return None
+        if action == "delete":
+            if self._write_buffer is not None:
+                await self._write_buffer.remove(self.table_name, entity_id)
+            await self.delete_from_store(entity_id)
+            return None
+        assert new_row is not None  # narrow: "upsert" always carries a row
+        if self._defers_l3_writes:
+            assert self._write_buffer is not None  # narrow: deferral requires one
+            await self._write_buffer.add(self.table_name, entity_id, new_row)
+            return None
+        if await self.save_to_store(new_row) == 0:
+            raise RuntimeError(
+                f"{self.table_name}: persisting a won compare-and-swap for {entity_id!r} affected no L3 row"
+            )
+        return await self._advance_generation()
 
     async def _l1_only_cas_mutate(
         self,
         entity_id: Any,
         mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]],
-    ) -> None:
-        """uncontended L1 read-modify-write fallback for :meth:`l2_cas_mutate`.
+    ) -> CasMutation:
+        """uncontended read-modify-write fallback for :meth:`l2_cas_mutate`.
 
         used when no NATS client is wired (L1-only unit / single-pod
         mode): there is no cross-pod contention to CAS against, so a
         plain read-modify-write via :meth:`get` + :meth:`save_entity` /
-        :meth:`delete` is correct. ``date_created`` / ``date_updated``
-        stamping is owned by :meth:`save_entity`, so this path does not
-        re-stamp.
+        :meth:`delete` is correct, and those carry the L3 write and the
+        write-generation advance with them. ``date_created`` /
+        ``date_updated`` stamping is owned by :meth:`save_entity`, so this
+        path does not re-stamp.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
         :ptype entity_id: Any
         :param mutate: same callback contract as :meth:`l2_cas_mutate`
         :ptype mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]]
-        :return: nothing
-        :rtype: None
+        :return: what was done
+        :rtype: CasMutation
         """
         entity = await self.get(entity_id)
         row = entity.to_dict() if entity is not None else None
         action, new_row = mutate(row)
+        outcome: CasMutation
         if action == "noop":
-            return
-        if action == "delete":
+            outcome = CasMutation(action="noop", row=None)
+        elif action == "delete":
             await self.delete(entity_id)
-            return
-        assert new_row is not None, "'upsert' action must carry a non-None new_row"
-        if entity is None:
-            await self.save_entity(self.create(new_row))
+            outcome = CasMutation(action="deleted", row=None)
         else:
-            entity.set_data(new_row)
-            await self.save_entity(entity)
+            assert new_row is not None, "'upsert' action must carry a non-None new_row"
+            if entity is None:
+                await self.save_entity(self.create(new_row))
+            else:
+                entity.set_data(new_row)
+                await self.save_entity(entity)
+            outcome = CasMutation(action="created" if entity is None else "updated", row=new_row)
+        return outcome
 
     @traced()
     async def invalidate_cache(self, entity_id: Any) -> None:

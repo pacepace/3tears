@@ -163,11 +163,26 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    held past its expiry can still be saved. The L3 check runs on the fetched row, so any
    `fetch_from_store` inherits it; a collection may also filter in SQL. A sweep is table-size
    hygiene only, and each durable primitive that adopts expiry owns one for its table.
-3. **`l2_cas_mutate` on a three-tier collection.** It seeds from L3 when L2 holds nothing, so
-   a wipe does not reset a counter to zero; persists the result through the collection's
-   flush policy; and returns the outcome, so a claim can report claimed or exists.
-4. **Flush policy per collection.** Today it is one global strategy plus a table-name list.
-   A counter wants write-behind, a revocation wants synchronous L3.
+3. **`l2_cas_mutate` on a three-tier collection.** The L2 revision stays the concurrency
+   fence; L3 becomes the durable record behind it.
+   - When L2 holds no live row, the callback is shown L3's row, so a wipe does not reset a
+     counter to zero. There is no separate seeding write: replicas racing to seed all try
+     create-if-absent, one wins, and the rest retry against its value.
+   - Only a won result is persisted, so a write that lost the race never reaches L3.
+   - It returns a `CasMutation` (created, updated, deleted, noop), so a claim can report
+     claimed or exists.
+   - A collection that caches absences advances its write generation after the persist,
+     exactly as `save_entity` does.
+   - *What L3 does not order.* Two replicas that win consecutive revisions persist
+     independently, so L3 can briefly hold the earlier row. L3 is read only once L2 has lost
+     the key, so insert-or-delete data (revocations, the jti ledger) is unaffected and a
+     counter can at worst resume a few increments low.
+4. **L3 write policy per collection** (`l3_write_policy`). The process-wide strategy and table
+   list stay the default; a collection that knows what its data can tolerate declares
+   `"write_behind"` (counters) or `"synchronous"` (revocations), and the declaration wins. A
+   write-behind declaration without a write buffer is refused at construction, and so is one
+   on a collection that caches absences. Deletes always land synchronously, because the
+   buffer holds rows, not removals.
 
 ## Consumers
 
