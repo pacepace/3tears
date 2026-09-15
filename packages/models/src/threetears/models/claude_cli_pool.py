@@ -392,8 +392,10 @@ _PER_CHECKOUT_FIELDS = frozenset({"model", "mcp_servers"})
 
 #: Options carrying Python callables. A callable has no stable identity to key on and closes over
 #: one caller's state -- the same hazard as a tool server -- so a call that sets any of them is not
-#: pooled at all.
-_CALLABLE_FIELDS = frozenset({"hooks", "can_use_tool", "stderr", "debug_stderr"})
+#: pooled at all. ``debug_stderr`` is deliberately absent: it DEFAULTS to ``sys.stderr``, a stream
+#: rather than a callback, and listing it here made every real call unpoolable -- found live, when
+#: every call logged "carries callables" and ran on a CLI of its own.
+_CALLABLE_FIELDS = frozenset({"hooks", "can_use_tool", "stderr"})
 
 #: Options that ask the CLI to continue a stored session, which isolation disables and which cannot
 #: be shared between callers.

@@ -269,3 +269,22 @@ class TestTheModelIsWiredToThePool:
         ]
         assert serving_pool["checkouts"] == 1
         assert "pooled answer" in "".join(str(c.content) for c in chunks)
+
+
+class TestRealOptionsArePoolable:
+    """Pinned on REAL ``ClaudeAgentOptions`` from the real model, not a stand-in. A stand-in let a
+    check ship that refused every real call: ``debug_stderr`` defaults to ``sys.stderr``, which is
+    truthy, and was treated as a callable -- so pooling was silently off for every call."""
+
+    def _launch(self) -> Any:
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        return _claude_cli._pooled_launch_options(model._build_options())  # noqa: SLF001
+
+    def test_an_ordinary_call_may_share_a_cli(self) -> None:
+        assert claude_cli_pool.poolable(self._launch()), "every real call would run on a CLI of its own"
+
+    def test_two_identical_calls_get_the_same_key(self) -> None:
+        a, b = self._launch(), self._launch()
+        assert claude_cli_pool.launch_key(a, TOKEN) == claude_cli_pool.launch_key(b, TOKEN), (
+            "an option renders unstably, so no session would ever be shared"
+        )
