@@ -4,9 +4,67 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.42.0 -- 2026-09-15
+
+### Added
+
+- **A pool of Claude Code CLI sessions for subscription credentials**
+  (`threetears.models.claude_cli_pool`). A Claude subscription token (`sk-ant-oat…`)
+  is spent by driving the bundled CLI as a subprocess, and `langchain-claude-code`
+  started one per call: ~2.4 s each, which stretched a routing decision to 4-19 s on
+  a real deployment. Sessions are now keyed by the credential and every launch-time
+  option, reused and cleared (`/clear`) between calls, with the model and the bound
+  tool server swapped per call. A call that finds no free session runs on a CLI of
+  its own, never refused and never moved to another credential. Abandoned streams
+  dispose rather than re-pool; disposal kills the process tree via `/proc` (the SDK
+  starts the CLI in the caller's process group, so `killpg` would signal the host);
+  a marker in each CLI's environment lets a startup sweep kill orphans a dead owner
+  left. The host owns the numbers: `configure_claude_cli_pool(...)` and
+  `close_claude_cli_pool()`. Measured live: routing 1.07-1.32 s on a warm pool.
+  Design and evidence: `docs/claude-cli-session-pool-design.md`.
+- **Every subscription CLI is isolated from the host's Claude Code configuration**
+  (`threetears.models.claude_cli_isolation`): its own empty `CLAUDE_CONFIG_DIR` and
+  working directory, `--strict-mcp-config`, `--no-session-persistence`, and
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false`. Without it a CLI loaded the host's plugins,
+  hooks and account connectors, and wrote a transcript of every exchange to disk.
+
+### Changed
+
+- **A subscription model hands tool calls back instead of running them inside the
+  CLI.** The base package ran bound tools itself and returned only the finished text,
+  so a caller's graph never saw a call: no approval gate, no ledger, no output
+  shaping, no loading tools mid-turn. Every call is now one model turn
+  (`--max-turns 1`, forced): the model's tool uses, parallel ones included, come back
+  as `AIMessage.tool_calls` under the names the caller bound, and the CLI's own tool
+  handler runs nothing. Verified against the bundled CLI: it stops with
+  `error_max_turns` before a second model turn and the session answers the next query
+  normally; that ending is not reported as an error. **Callers that relied on the CLI
+  running tools must run them** (any LangGraph `ToolNode` loop does). `max_turns` is
+  no longer forwarded, and the in-CLI interrupt capture and resume hint are gone: an
+  approval `interrupt()` now happens in the caller's tool node. Usage is reported as
+  `usage_metadata`, cached prompt tokens included in `input_tokens`.
 
 ### Fixed
+
+- **A subscription system prompt reached the CLI as a Python repr.** A cached prompt
+  is a list of content blocks, and the base class did `str(content)`: the persona
+  arrived with literal `\n` sequences and `cache_control` dicts inline. The stable
+  part (up to the last `cache_control` block) is now the CLI's system prompt and the
+  variable part travels in the query, which is also what lets one CLI serve turn after
+  turn.
+- **The standalone fetch tool's SSRF guard refused every page behind a forward
+  proxy.** It resolved the target locally and refused when resolution failed, but a
+  host that only the proxy can resolve is exactly the case the proxy is for. It now
+  resolves first and skips only a name that does not resolve locally when the request
+  leaves through a proxy; a local or private address is still refused.
+- **Tool relevance: the latency ceiling cancelled the embedding along with the wait.**
+  A catalog that took longer than the ceiling to embed never reached the cache, so
+  every cold turn fell back to the full catalog and threw the work away again. The
+  embedding now runs as its own task and lands for the next turn; concurrent turns
+  share one embedding call.
+- **The test suite prints no warnings.** Test HMAC keys meet their algorithm's minimum
+  length, the MCP HTTP test uses `streamable_http_client`, and `httpx2` joins the dev
+  dependencies for `starlette.testclient`.
 
 - **The auth-flow KV stores return to memory storage, because the reason they left
   it was tested and was wrong.** 0.40.0 made `state_store` and `ticket_store`
