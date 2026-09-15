@@ -1,0 +1,21 @@
+# Every NATS KV bucket is memory-backed. NATS is L2; durability is L3's job.
+#
+# Format: a `# rationale: <reason>` line, then one `path:line:callee` triple.
+# A rationale naming no specific mechanism is refused by the gate.
+#
+# EVERY ENTRY BELOW IS TEMPORARY and tracked by
+# docs/design-durable-coordination.md. They are not exceptions to the rule --
+# they are the work the rule exists to force, listed so the gate can go strict
+# today rather than after it.
+
+# rationale: an idempotency key lost means a retried operation runs a second time, which for a payment or a provisioning call is the failure the primitive exists to prevent. Moves to a DurableKvBucket over BaseCollection (design-durable-coordination.md shard 2); the seam is _ensure_bucket, and the protocol is already KvBucketLike.
+packages/core/src/threetears/core/coordination/idempotency.py:372:kv_bucket
+
+# rationale: a replay guard lost means a code or token already spent is accepted a second time, which is the whole attack it blocks. Same seam, same shard, same protocol.
+packages/core/src/threetears/core/coordination/replay_guard.py:109:kv_bucket
+
+# rationale: the second replay-guard bucket, identical reasoning to line 109 and moved by the same change.
+packages/core/src/threetears/core/coordination/replay_guard.py:264:kv_bucket
+
+# rationale: a windowed counter lost releases every account currently locked out and restarts every in-flight brute-force budget. Its own comment already says a throttle counter is a security control and not a cache, which is precisely the argument for L3 rather than for file-backed L2.
+packages/core/src/threetears/core/coordination/windowed_counter.py:320:kv_bucket

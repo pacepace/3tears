@@ -95,7 +95,7 @@ class TestProxyAssertion:
                 "iat": now,
                 "exp": now + 30,
             },
-            key="secret",
+            key="an-hmac-key-long-enough-for-hs256-x",
             algorithm="HS256",
             headers={"kid": "proxy-1"},
         )

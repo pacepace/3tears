@@ -145,7 +145,7 @@ class TestHeaderPinning:
         # secret verifies fine if the algorithm is read off the token.
         proof = pyjwt.encode(
             {"htm": _HTM, "htu": _HTU, "jti": "j", "iat": int(time.time())},
-            key="a-shared-secret",
+            key="an-hmac-key-long-enough-for-hs256-x",
             algorithm="HS256",
             headers={"typ": "dpop+jwt", "jwk": {"kty": "oct"}},
         )

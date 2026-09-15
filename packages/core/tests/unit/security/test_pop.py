@@ -124,7 +124,7 @@ class TestProofOfPossession:
         # an HS256 proof must be rejected at the alg pin, before signature handling.
         forged = pyjwt.encode(
             {"ath": "a", "bh": "b", "jti": "j", "iat": int(time.time())},
-            key="secret",
+            key="an-hmac-key-long-enough-for-hs256-x",
             algorithm="HS256",
             headers={"jwk": {}},
         )

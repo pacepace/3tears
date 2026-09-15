@@ -600,7 +600,7 @@ async def read_all(
     # relation that is changing there is no "whole relation" to return, and this
     # function's promise is the whole relation or a raise.
     counted = await client.query(datasource_name, f"SELECT COUNT(*) AS total FROM {relation}")
-    expected = int(counted.rows[0]["total"]) if counted.rows else 0
+    expected = _only_value(datasource_name, relation, counted)
 
     rows: list[dict[str, Any]] = []
     cursor: tuple[Any, ...] | None = None
@@ -685,6 +685,52 @@ async def read_all(
         f"{datasource_name}: still reading after {max_pages} pages ({len(rows)} rows). raising rather than "
         f"continuing, because an unbounded read against a growing relation never terminates."
     )
+
+
+def _only_value(datasource_name: str, relation: str, counted: DatasourceQueryResult) -> int:
+    """read the single value of a single-column, single-row result.
+
+    Reads it POSITIONALLY rather than by name, because the name is not portable.
+    ``SELECT COUNT(*) AS total`` comes back as ``total`` from postgres and
+    redshift, which fold unquoted identifiers to lower case, and as ``TOTAL``
+    from snowflake, which folds to upper. Indexing the alias therefore works on
+    the engines it was written against and raises ``KeyError`` on one this
+    function's own docstring claims to support -- an untyped failure crossing a
+    driver boundary, which tells an operator nothing about the cause.
+
+    :param datasource_name: the datasource queried, as the hub names it
+    :ptype datasource_name: str
+    :param relation: the relation counted, named in the failure message
+    :ptype relation: str
+    :param counted: the result of the count query
+    :ptype counted: DatasourceQueryResult
+    :return: the counted rows
+    :rtype: int
+    :raises IncompleteReadError: when the result cannot be read as one number
+    """
+    if not counted.rows:
+        raise IncompleteReadError(
+            f"{datasource_name}: counting {relation} returned no row at all. a count returns exactly one "
+            f"row on every engine, so the read cannot be shown to be complete and is refused rather than "
+            f"assumed empty."
+        )
+
+    values = list(counted.rows[0].values())
+    if len(values) != 1:
+        raise IncompleteReadError(
+            f"{datasource_name}: counting {relation} returned {len(values)} columns rather than one, so "
+            f"which of them is the count cannot be determined and completeness cannot be established."
+        )
+
+    try:
+        total = int(values[0])
+    except (TypeError, ValueError) as exc:
+        raise IncompleteReadError(
+            f"{datasource_name}: counting {relation} returned {values[0]!r}, which is not a number, so "
+            f"completeness cannot be established."
+        ) from exc
+
+    return total
 
 
 def _proven(

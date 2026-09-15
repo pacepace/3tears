@@ -42,8 +42,10 @@ class _FakeEmbeddings(Embeddings):
         raise_on_documents: bool = False,
         raise_on_query: bool = False,
         sleep_s: float = 0.0,
+        documents_sleep_s: float | None = None,
     ) -> None:
         self.vectors = vectors
+        self.documents_sleep_s = sleep_s if documents_sleep_s is None else documents_sleep_s
         self.raise_on_documents = raise_on_documents
         self.raise_on_query = raise_on_query
         self.sleep_s = sleep_s
@@ -58,8 +60,8 @@ class _FakeEmbeddings(Embeddings):
 
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         self.aembed_documents_calls.append(list(texts))
-        if self.sleep_s:
-            await asyncio.sleep(self.sleep_s)
+        if self.documents_sleep_s:
+            await asyncio.sleep(self.documents_sleep_s)
         if self.raise_on_documents:
             raise RuntimeError("embedder unavailable")
         return [self.vectors.get(t, [0.0, 0.0]) for t in texts]
@@ -262,6 +264,38 @@ async def test_select_falls_back_to_full_catalog_on_latency_ceiling() -> None:
     assert result.fallback_used
     assert result.fallback_reason == "latency_ceiling"
     assert result.selected == tools
+
+
+async def test_a_catalog_embedding_cut_off_by_the_ceiling_still_lands_for_the_next_turn() -> None:
+    """Found live: embedding a 51-tool catalog took longer than the 1 s ceiling, and the timeout
+    cancelled the embedding along with the ranking -- the cache never filled, so every turn that
+    started cold fell back to the full catalog and threw the work away again."""
+    tools = _catalog(10)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    embedder = _FakeEmbeddings(vectors, documents_sleep_s=0.2)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=3, latency_ceiling_s=0.05)
+
+    first = await index.select(tools, "anything")
+    assert first.fallback_reason == "latency_ceiling"
+
+    await asyncio.sleep(0.3)
+    second = await index.select(tools, "anything")
+
+    assert not second.fallback_used
+    assert len(second.selected) == 3
+    assert len(embedder.aembed_documents_calls) == 1, "the catalog was embedded again"
+
+
+async def test_turns_arriving_together_embed_one_catalog_once() -> None:
+    tools = _catalog(10)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    embedder = _FakeEmbeddings(vectors, documents_sleep_s=0.05)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=3, latency_ceiling_s=1.0)
+
+    results = await asyncio.gather(*(index.select(tools, f"query {n}") for n in range(4)))
+
+    assert all(not r.fallback_used for r in results)
+    assert len(embedder.aembed_documents_calls) == 1
 
 
 async def test_fallback_result_is_never_smaller_than_full_catalog() -> None:

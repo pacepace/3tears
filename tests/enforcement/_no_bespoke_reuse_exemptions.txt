@@ -19,3 +19,5 @@ packages/agent/tools/src/threetears/agent/tools/server.py:*:ToolServer
 
 # rationale: LocalHttpServer is a scripted test HTTP server, not a write path. Its 'self.requests' list RECORDS the request heads it served so a test can assert on them, and its asyncio.sleep is a scripted per-reply 'delay' for pinning deadline behaviour -- there is nothing buffered and nothing flushed, so ConversationWriteBuffer has no meaning here. It lives under src/ (not tests/) because a consumer host must be able to pin what its own injected transport does with a socket, which is why the walker sees it at all.
 packages/search/src/threetears/search/testing/http_server.py:*:LocalHttpServer
+# rationale: ClaudeCliPool is a subprocess pool, not a write buffer -- _live counts live CLIs per launch key and its sleep loop evicts idle CLIs; there is nothing to flush
+packages/models/src/threetears/models/claude_cli_pool.py:*:ClaudeCliPool
