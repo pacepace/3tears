@@ -35,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 
 from collections.abc import Generator
 from dataclasses import dataclass
+from typing import Any
 
 __all__ = ["FakeKvBucket", "FakeNatsClient"]
 
@@ -152,6 +153,17 @@ class FakeKvBucket:
         """
         await _YieldOnce()  # so gather() genuinely interleaves
         return self._date_created
+
+    def keys(self) -> tuple[str, ...]:
+        """every live key in the bucket, for a test asserting on what was stored.
+
+        Public because the alternative is reaching into the fake's entries, which the underscore
+        contract forbids across classes and which every consumer was otherwise doing.
+
+        :return: the live keys, in insertion order
+        :rtype: tuple[str, ...]
+        """
+        return tuple(key for key in tuple(self._entries) if self._live(key) is not None)
 
     def wipe(self, *, date_created: datetime | None = None) -> None:
         """empty the bucket and give it a new creation time, as a broker restart does.
@@ -313,6 +325,15 @@ class FakeNatsClient:
     matches the narrow surface KV consumers depend on. the bucket
     cache mirrors :class:`NatsClient`'s internal cache: repeat
     ``kv_bucket`` calls for the same name return the same instance.
+
+    :meth:`publish` and :meth:`subscribe_typed` are here because every
+    ``BaseCollection`` write publishes a cache invalidation: a fake with
+    only ``kv_bucket`` cannot stand in for a collection's client at all,
+    and each consumer was otherwise left to discover that and write its
+    own. Published messages are delivered to whatever subscribed on the
+    same subject through this instance and kept in
+    :attr:`published`, so a test can assert on the broadcast or run a
+    real listener against it.
     """
 
     def __init__(self) -> None:
@@ -322,6 +343,54 @@ class FakeNatsClient:
         :rtype: None
         """
         self._buckets: dict[str, FakeKvBucket] = {}
+        self.published: list[Any] = []
+        self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+        """record a message and deliver it to this client's subscribers on that subject.
+
+        :param subject: the subject published to; stringified for the subscriber lookup
+        :ptype subject: Any
+        :param message: the typed envelope
+        :ptype message: Any
+        :param reply_to: ignored; present so the surface matches the real client
+        :ptype reply_to: Any
+        :return: None
+        :rtype: None
+        """
+        del reply_to
+        self.published.append(message)
+        for callback, message_type in list(self._subscribers.get(str(subject), [])):
+            await callback(message_type.model_validate_json(message.model_dump_json()))
+
+    async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any, **kwargs: Any) -> object:
+        """register a typed subscriber, so a real listener can run against this fake.
+
+        :param subject: the subject to subscribe to
+        :ptype subject: Any
+        :param cb: the async callback the listener supplies
+        :ptype cb: Any
+        :param message_type: the Pydantic envelope to validate into
+        :ptype message_type: Any
+        :param kwargs: ignored; the real client takes queue groups and durable names
+        :ptype kwargs: Any
+        :return: an opaque subscription handle
+        :rtype: object
+        """
+        del kwargs
+        self._subscribers.setdefault(str(subject), []).append((cb, message_type))
+        return object()
+
+    async def unsubscribe(self, subscription: Any) -> None:
+        """drop a subscription handle.
+
+        :param subscription: the handle :meth:`subscribe_typed` returned
+        :ptype subscription: Any
+        :return: None
+        :rtype: None
+        """
+        del subscription
+        self._subscribers.clear()
 
     async def kv_bucket(
         self,

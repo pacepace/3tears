@@ -13,6 +13,3 @@ packages/core/src/threetears/core/coordination/idempotency.py:372:kv_bucket
 
 # rationale: a standing revocation lost makes a revoked session, principal or customer valid again. Moves onto a synchronous, negative-cached, expiring BaseCollection (design-durable-coordination.md, durable security state).
 packages/core/src/threetears/core/coordination/replay_guard.py:366:kv_bucket
-
-# rationale: a windowed counter lost releases every account currently locked out and restarts every in-flight brute-force budget. Moves onto a BaseCollection with L2 CAS and write-behind to L3 (design-durable-coordination.md, durable security state).
-packages/core/src/threetears/core/coordination/windowed_counter.py:320:kv_bucket

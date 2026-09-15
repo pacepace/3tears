@@ -143,6 +143,28 @@ packages (bumped in lock-step).
 - Expired coordination rows are swept inline, bounded, at most once per interval per process
   (`sweep_expired`). Correctness never waits on it: an expired row is already absent at every
   tier. It is not a scheduled job because two of the four consumers run no scheduler.
+- **BREAKING: `WindowedCounter` and `NatsKvAttemptLimiter` keep their counts in L3, not in a
+  file-backed KV bucket.** A broker restart no longer releases every account currently locked out
+  or restarts every in-flight brute-force budget.
+  - `WindowedCounter(registry, *, purpose=..., window_seconds=..., fail_open=..., clock=...)`
+    replaces `WindowedCounter(nats_client, *, bucket_name=...)`, and
+    `NatsKvAttemptLimiter(registry, *, purpose=...)` replaces its `nats_client, bucket_name=`
+    form. Every method surface is unchanged. `purpose` carries what the bucket name carried, so
+    counters over one table never share a budget; the `bucket_name` property is now `purpose`.
+  - Counts are a compare-and-swap against L2 with the row written behind to L3, so a wipe costs
+    at most the increments since the last flush. The counter starts its own flusher.
+  - `fail_open` now covers every storage failure the counter can see (L2 and L3), not only
+    `KvError`; the set is `threetears.core.coordination.tables.STORAGE_FAILURES`, deliberately
+    named rather than `Exception` so a wiring error still propagates.
+  - Migration: build one `CollectionRegistry` per process (L1, L2, and L3 where the process has a
+    database), register `threetears.core.coordination.migrations`, and pass the registry. A
+    process with no L3 keeps counting in L2 across its replicas.
+- `l2_cas_mutate` now backs off with full jitter between compare-and-swap rounds. Without it the
+  losers of a round retried in lockstep and spent the budget on one instant, which is what a
+  burst against a single key produces; a 20-way burst on one counter exhausted eight rounds.
+- `FakeNatsClient` gains `publish`, `subscribe_typed` and `unsubscribe`, and `FakeKvBucket` gains
+  `keys()`. Every `BaseCollection` write publishes an invalidation, so the fake could not stand in
+  for a collection's client at all, and each consumer was left to discover that.
 - The column-type alignment gate understands rendered migrations: a table whose DDL comes from its
   own `TableSchema` is checked through the renderer's type map instead of a SQL literal, and a
   renderer that maps `DATETIMETZ_TYPE` to anything but `TIMESTAMPTZ` fails the gate.

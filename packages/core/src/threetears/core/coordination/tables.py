@@ -30,6 +30,9 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Final, Literal
 
+from asyncpg import PostgresError
+from sqlalchemy import MetaData
+
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -42,13 +45,17 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.data.schema import ColumnDef, IndexDef as DdlIndexDef, TableDef
 from threetears.core.entities.base import BaseEntity
+from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
 __all__ = [
     "COORDINATION_TABLE_SCHEMAS",
+    "STORAGE_FAILURES",
     "CoordinationClaimsCollection",
     "CoordinationCountersCollection",
     "CoordinationRedemptionsCollection",
@@ -59,6 +66,23 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: what a coordination primitive means by "storage failed", and so what a ``fail_open`` primitive
+#: may degrade on. Deliberately a named set rather than ``Exception``: an outage is a reason to
+#: stop throttling for a moment, and a wiring or programming error is not, so the second kind
+#: still propagates rather than silently admitting every caller.
+#:
+#: ``KvError`` is L2; ``DataLayerUnavailableError`` is the framework's L3-down signal;
+#: ``PostgresError`` covers a direct asyncpg pool; the builtins cover a socket, a DNS failure and
+#: a timeout wherever the backend does not wrap them.
+STORAGE_FAILURES: Final[tuple[type[BaseException], ...]] = (
+    KvError,
+    DataLayerUnavailableError,
+    PostgresError,
+    ConnectionError,
+    TimeoutError,
+    OSError,
+)
 
 #: how long a recorded absence may answer on the revocation table. The generation stamp is what
 #: makes an absence correct; this only bounds the window left by a write that commits and then
@@ -110,6 +134,11 @@ class _CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         super().__init__(*args, **kwargs)
         self._next_expiry_sweep = 0.0
         self._flusher: PeriodicFlusher | None = None
+        if self._l1 is not None:
+            # These tables are the framework's, not the consumer's, so nothing else declares them
+            # to L1. Initialising here is the same move the absent-marker table makes, and it is
+            # what lets a consumer wire a coordination primitive without knowing our schema.
+            self._l1.initialize(self.schema.to_sqlalchemy_table(MetaData()).metadata)
 
     @property
     def write_buffer(self) -> WriteBuffer | None:
@@ -411,6 +440,8 @@ def coordination_collection(
         # primitive has no reason to know that. The flusher that drains it is started by the
         # primitive's first write (see ``ensure_flushing``).
         kwargs["write_buffer"] = WriteBuffer()
-    built = collection_class(registry, config, **kwargs)
+    # the framework defaults are the right fallback: each coordination table declares its own
+    # l3_write_policy, which overrides whatever flush strategy a consumer's config carries.
+    built = collection_class(registry, config or DefaultCoreConfig(), **kwargs)
     registry.register(built)
     return built

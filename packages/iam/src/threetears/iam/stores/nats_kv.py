@@ -22,10 +22,12 @@ and monotonic clocks are not comparable across processes.
 The two stores take a bucket already opened with the right TTL -- or come from
 the :func:`state_store` / :func:`ticket_store` factories below, which open it
 per call (``kv_bucket`` caches the handle, so that stays correct across a broker
-reconnect). :class:`NatsKvAttemptLimiter` is the exception: it takes the client
-and a bucket name, because the ``WindowedCounter`` underneath owns its own
-bucket lifecycle. Either way, naming stays with the caller who knows the
-deployment's namespace.
+reconnect). :class:`NatsKvAttemptLimiter` is the exception: it holds no bucket at
+all. Attempt counts are durable state, so the ``WindowedCounter`` underneath
+keeps them in the coordination tables through a ``CollectionRegistry`` -- L2 as
+the shared fence, L3 as the record that survives a broker restart. Naming stays
+with the caller either way: a bucket name for the two stores, a counter purpose
+for the limiter.
 
 **Redemption is a compare-and-swap claim, not a read-then-delete.** Two
 concurrent redemptions of one ticket must produce exactly one winner. Reading
@@ -52,6 +54,7 @@ from collections.abc import Callable, Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 
+from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination import WindowedCounter, WindowState
 from threetears.observe import get_logger
 
@@ -242,24 +245,27 @@ class NatsKvAttemptLimiter:
 
     def __init__(
         self,
-        nats_client: KvCapable,
+        registry: CollectionRegistry,
         *,
-        bucket_name: str,
+        purpose: str,
         max_attempts: int = 5,
         window: timedelta = timedelta(minutes=15),
         fail_open: bool = False,
     ) -> None:
         """
-        :param nats_client: the connected client; the counter opens its own bucket.
-        :ptype nats_client: KvCapable
-        :param bucket_name: bucket suffix, namespace-prefixed by the client. Give each
-            protected surface its own, so unrelated counters never share a budget.
-        :ptype bucket_name: str
+        :param registry: the collection registry the counter reads and writes through. L2 is
+            the fence every replica shares and L3 the durable record behind it; both are
+            optional, and a deployment with neither counts per process.
+        :ptype registry: CollectionRegistry
+        :param purpose: what this limiter protects, carried in the row key. Give each
+            protected surface its own, so unrelated counters never share a budget. This is
+            what the KV bucket name used to be.
+        :ptype purpose: str
         :param max_attempts: failures within one window before :attr:`AttemptWindow.limited`.
         :ptype max_attempts: int
-        :param window: the window length, and the bucket TTL that reaps abandoned counters.
+        :param window: the window length, measured from the first failure in it.
         :ptype window: timedelta
-        :param fail_open: whether a KV transport failure reports "not limited" instead of
+        :param fail_open: whether a storage failure reports "not limited" instead of
             raising. Defaults to ``False`` -- pass ``True`` only with an authoritative check
             behind this one.
         :ptype fail_open: bool
@@ -267,8 +273,8 @@ class NatsKvAttemptLimiter:
         self._max_attempts = max_attempts
         self._window = window
         self._counter = WindowedCounter(
-            nats_client,
-            bucket_name=bucket_name,
+            registry,
+            purpose=purpose,
             window_seconds=int(window.total_seconds()),
             fail_open=fail_open,
         )
@@ -290,7 +296,7 @@ class NatsKvAttemptLimiter:
     async def record_failure(self, key: str) -> AttemptWindow:
         count = await self._counter.record_attempt(key)
         if count == 0:
-            # fail-open: the counter swallowed a KvError and recorded nothing.
+            # fail-open: the counter swallowed a storage failure and recorded nothing.
             return AttemptWindow(count=0, limited=False)
         return self._verdict(await self._counter.state(key))
 
@@ -329,10 +335,12 @@ async def state_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvStat
     next person to meet the double login should find this paragraph rather than an absence
     that looks like nobody considered it.
 
-    **The counter stores are NOT part of this withdrawal.** ``WindowedCounter`` requests file
-    for its own reason -- a login lockout that resets to zero on every broker restart is not a
-    lockout -- and that request had been silently refused since those buckets were created.
-    Leave it alone.
+    **The counter stores are NOT part of this withdrawal, and they are no longer buckets.** The
+    reason ``WindowedCounter`` asked for file storage still holds -- a login lockout that resets
+    to zero on every broker restart is not a lockout -- but the answer is L3, not a file-backed
+    cache tier: it now keeps its counts in the coordination tables, with L2 as the fence in
+    front. These two stores keep their buckets, and their ten-minute state is what a restart may
+    cost one login.
 
     :param nc: the connected client.
     :ptype nc: KvCapable

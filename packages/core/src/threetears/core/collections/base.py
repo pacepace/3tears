@@ -15,7 +15,9 @@ array and composite-pk emits a length-N array.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import random
 import re
 import time
 from abc import ABC, abstractmethod
@@ -87,6 +89,12 @@ Table(
 _ABSENT_MARKER_SWEEP_INTERVAL_SECONDS: Final = 60.0
 _ABSENT_MARKER_SWEEP_BATCH: Final = 500
 _GENERATION_WARNING_INTERVAL_SECONDS: Final = 60.0
+
+#: full-jitter bound between compare-and-swap rounds, seconds. Without it the losers of a round
+#: retry in lockstep and spend the whole budget on the same instant, which is exactly what a burst
+#: against ONE key produces -- a credential-stuffing run against one account, or every replica
+#: incrementing one counter. Matches the value the coordination primitives used.
+_CAS_RETRY_BACKOFF_SECONDS: Final = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -2192,6 +2200,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                         }
                     },
                 )
+                await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311 - jitter, not security
                 continue
 
             # CAS won: the L2 revision was the fence. persist to L3 (when there is one) only now,

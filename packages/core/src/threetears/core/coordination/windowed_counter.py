@@ -1,74 +1,59 @@
-"""generic windowed attempt counter backed by NATS JetStream KV -- a rate-limiter/throttle
-primitive, sibling to :class:`~threetears.core.coordination.replay_guard.ReplayGuard` and
-:class:`~threetears.core.coordination.replay_guard.RevocationGuard`, but a different shape: those
-two answer "have I seen this exact key" (bare presence / timestamped presence); this answers "how
-many times has this key been attempted inside a fixed window anchored at its first attempt" -- the shape a throttle or
-rate limiter needs (e.g. "no more than N login attempts per IP per minute").
+"""generic windowed attempt counter -- a rate-limiter / throttle primitive.
 
-    counter = WindowedCounter(nats_client, bucket_name="login_ip_throttle", window_seconds=60)
+Sibling to :class:`~threetears.core.coordination.replay_guard.ReplayGuard` and
+:class:`~threetears.core.coordination.replay_guard.RevocationGuard`, but a different shape: those
+answer "have I seen this exact key"; this answers "how many times has this key been attempted
+inside a fixed window anchored at its first attempt" -- what a throttle needs ("no more than N
+login attempts per IP per minute")::
+
+    counter = WindowedCounter(registry, purpose="login_ip_throttle", window_seconds=60)
     attempts = await counter.record_attempt(ip_address)
     if attempts > 20:
         raise <throttled>
 
-The window is an app-level ``window_start`` timestamp carried in the KV value, anchored at the
-FIRST attempt of the current window -- NOT the KV entry's own write-time TTL. JetStream KV TTL is
-refreshed on every write to a key, so relying on it directly would let a steady stream of attempts
-keep extending the window indefinitely instead of the fixed window callers ask for (the same
-reasoning as identity-core's ``LockoutTracker``, which this primitive generalizes). The bucket's
-own TTL is still set to the window, purely as eventual garbage collection for abandoned counters.
+The window is anchored at the FIRST attempt in it and carried in the row, not refreshed per
+write: a steady stream of attempts must not extend the window the caller asked for. The row
+expires when its window closes, so a stale window reads as absent at every tier rather than as a
+count the reader has to range-check.
 
-Bucket uses ``file`` storage (not the default ``memory``): a throttle counter is a security
-control, not a cache -- a NATS restart must not silently reset it back to zero, handing an
-in-progress attacker a fresh window for free (the same fail-open concern documented on
-``ReplayGuard``'s and ``RevocationGuard``'s buckets).
+**Where the count lives.** L2 (NATS KV) is the fence every replica compares against, and L3 is the
+durable record behind it, written behind through the collection's write buffer: a broker wipe then
+costs at most the increments since the last flush, which for a throttle is a few extra attempts
+and not worth a database write per login. A deployment with no L3 (identity-edge, which holds no
+database by design) still throttles across replicas on L2 alone.
 
-**Fail-open vs. fail-closed on a `KvError` is the CALLER's choice**, via the constructor's
-``fail_open`` flag -- unlike ``ReplayGuard``/``RevocationGuard``, which are always fail-closed. A
-windowed counter is not always sitting on a hard security boundary the way a replay nonce or a
-revocation entry is: an edge-tier IP throttle is a best-effort, cheap first-line defense in front
-of an authoritative second check (identity-core's Chunk 05 anti-automation design explicitly
-layers a fail-open edge throttle in front of a fail-closed core throttle over a SEPARATE bucket)
--- degrading a first-line defense to "not currently throttling" on a transport blip is an
-acceptable trade for availability, since the authoritative layer behind it is unaffected. A
-counter guarding something with no such second layer behind it should be constructed
-``fail_open=False`` (the default) so a transport failure denies rather than silently admits.
+**Fail-open versus fail-closed on a storage failure is the CALLER's choice**, through the
+constructor's ``fail_open`` flag -- unlike ``ReplayGuard``/``RevocationGuard``, which are always
+fail-closed. An edge-tier IP throttle is a best-effort first line in front of an authoritative
+fail-closed check, so degrading it to "not currently throttling" during an outage is an acceptable
+trade for availability. A counter with nothing behind it stays ``fail_open=False`` (the default).
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import random
-import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import Any, Final, Literal
 
-from threetears.nats.errors import KvError
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import CoreConfig
+from threetears.core.coordination.tables import (
+    STORAGE_FAILURES,
+    CoordinationCountersCollection,
+    coordination_collection,
+)
 from threetears.observe import get_logger
-
-if TYPE_CHECKING:
-    # From the submodule, not the package: these three are Protocols that
-    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
-    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
-    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = ["WindowState", "WindowedCounter"]
 
 log = get_logger(__name__)
 
-#: matched to the sibling primitives in this package (`distributed_counter`, `token_bucket`),
-#: whose 30 is empirical: 8 retries raised a conflict on ~75% of runs under a 25-connection
-#: integration test, zero at 30. the contention this counter sees is a credential-stuffing
-#: burst against ONE key, which is exactly that case -- a budget tuned for the quiet path
-#: degrades precisely when the counter is the control that matters.
-_MAX_CAS_ATTEMPTS = 30
-
-#: full-jitter backoff bound between CAS retries, seconds. without it, retries collide in
-#: lockstep and the budget is spent on the same instant repeatedly. same value as the siblings.
-_CAS_RETRY_BACKOFF_SECONDS = 0.02
+#: compare-and-swap rounds this counter allows per increment. See the call site for why it is not
+#: the framework default.
+_MAX_CAS_ATTEMPTS: Final = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,83 +68,75 @@ class WindowState:
     window_start: float
 
 
-def _encode(state: WindowState) -> bytes:
-    return json.dumps({"count": state.count, "window_start": state.window_start}).encode("utf-8")
-
-
-def _decode(value: bytes) -> WindowState:
-    payload = json.loads(value)
-    return WindowState(count=int(payload["count"]), window_start=float(payload["window_start"]))
-
-
 class WindowedCounter:
-    """per-key attempt counter over a fixed window anchored at the first attempt, in a NATS JetStream KV bucket.
+    """per-key attempt counter over a fixed window anchored at the first attempt.
 
-    generic: the caller supplies the key (already hashed if it carries anything sensitive -- this
-    class hashes it again into a KV-safe form regardless, but does not otherwise interpret it) and
-    decides what threshold makes a count "too many". This class only tracks the count.
+    Generic: the caller supplies the key (already hashed if it carries anything sensitive -- this
+    class hashes it again into a fixed-length form regardless, but does not otherwise interpret
+    it) and decides what threshold makes a count "too many". This class only tracks the count.
     """
 
     def __init__(
         self,
-        nats_client: "KvCapable",
+        registry: CollectionRegistry,
         *,
-        bucket_name: str,
+        purpose: str,
         window_seconds: int,
         fail_open: bool = False,
         clock: Callable[[], float] = time.time,
+        config: CoreConfig | None = None,
     ) -> None:
-        """configure the counter; defer bucket binding until the first use.
+        """configure the counter over its registry's coordination tables.
 
-        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`
-        :ptype nats_client: KvCapable
-        :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
-            bucket dedicated to one throttle purpose (e.g. ``login_ip_throttle``) so unrelated
-            counters never collide across surfaces, and so two independent counters (e.g. an
-            edge-tier and a core-tier throttle over the "same" logical key) can be given
-            deliberately SEPARATE buckets with different write access
-        :ptype bucket_name: str
+        :param registry: the collection registry whose tiers this counter reads and writes. L2
+            and L3 are both optional: with no L3 the count lives in L2 and is lost on a broker
+            wipe; with no L2 it is per-process, which throttles one replica rather than the fleet
+        :ptype registry: CollectionRegistry
+        :param purpose: what this counter counts (``"login_ip_throttle"``), carried in the row key
+            so counters over one table never collide. This is what the KV bucket name used to be
+        :ptype purpose: str
         :param window_seconds: length of the fixed window in seconds, measured from the first
-            attempt in it. MUST be positive: a
-            non-positive window would mean the count never resets
+            attempt in it. MUST be positive: a non-positive window would mean the count never
+            resets
         :ptype window_seconds: int
-        :param clock: the time source, injectable so a test can stand on the window boundary.
-            without a seam here the window semantics are untestable, which is how a
-            wall-clock-ordinal implementation once passed for an anchored one
-        :ptype clock: Callable[[], float]
-        :param fail_open: on a :class:`~threetears.nats.KvError` (KV transport failure), whether
-            to treat the key as NOT over any threshold (``fail_open=True`` -- `record_attempt`
-            returns ``0``, `count` returns ``0``, a warning is logged) rather than propagating the
-            error for the caller to deny (``fail_open=False``, the default -- mirrors
-            `ReplayGuard`/`RevocationGuard`'s always-fail-closed posture)
+        :param fail_open: on a storage failure (L2 or L3), whether to treat the key as NOT over
+            any threshold (``True`` -- :meth:`record_attempt` and :meth:`count` return ``0`` and a
+            warning is logged) rather than propagating for the caller to deny (``False``, the
+            default)
         :ptype fail_open: bool
-        :raises ValueError: when ``window_seconds`` is not positive
+        :param clock: the time source, injectable so a test can stand on the window boundary
+        :ptype clock: Callable[[], float]
+        :param config: core config forwarded when this process first builds the counters
+            collection; defaults to the framework defaults, which its declared write policy
+            overrides anyway
+        :ptype config: CoreConfig | None
+        :raises ValueError: when ``window_seconds`` is not positive, or ``purpose`` is empty
         """
         if window_seconds <= 0:
             raise ValueError(f"WindowedCounter window_seconds must be positive, got {window_seconds}")
-        self._client = nats_client
-        self._bucket_name = bucket_name
+        if not purpose.strip():
+            raise ValueError("WindowedCounter purpose must be a non-empty name, e.g. 'login_ip_throttle'")
+        self._purpose = purpose
         self._window = timedelta(seconds=window_seconds)
         self._fail_open = fail_open
         self._clock = clock
-        self._bucket: "KvBucketLike | None" = None
-        self._bucket_lock = asyncio.Lock()
+        self._collection = coordination_collection(registry, CoordinationCountersCollection, config)
 
     @property
-    def bucket_name(self) -> str:
-        """the configured bucket suffix.
+    def purpose(self) -> str:
+        """what this counter counts, carried in every row it writes.
 
-        :return: bucket name
+        :return: the purpose
         :rtype: str
         """
-        return self._bucket_name
+        return self._purpose
 
     @property
-    def clock(self) -> "Callable[[], float]":
+    def clock(self) -> Callable[[], float]:
         """the time source this counter reads.
 
-        exposed so an adapter computing a "retry after" uses the SAME clock the window is
-        measured with; two clocks in one verdict is two answers.
+        Exposed so an adapter computing a "retry after" uses the SAME clock the window is measured
+        with; two clocks in one verdict is two answers.
 
         :return: the configured clock
         :rtype: Callable[[], float]
@@ -168,59 +145,53 @@ class WindowedCounter:
 
     @property
     def fail_open(self) -> bool:
-        """whether this counter fails open (``True``) or closed (``False``) on `KvError`.
+        """whether this counter fails open (``True``) or closed (``False``) on a storage failure.
 
-        :return: the configured fail-open/fail-closed posture
+        :return: the configured posture
         :rtype: bool
         """
         return self._fail_open
 
     async def record_attempt(self, key: str) -> int:
-        """record one attempt for ``key``; return the attempt count within the current
-        (possibly just-started) window.
+        """record one attempt for ``key``; return the attempt count within its live window.
 
-        Starts a fresh window (count=1) if the previous one has already expired. CAS
-        create-if-absent / compare-and-swap retry loop, so concurrent callers on the same key never
-        lose an increment silently.
+        Starts a fresh window (count 1) when the previous one has closed. The increment is a
+        compare-and-swap against L2, so concurrent callers on one key never lose an increment
+        silently.
 
-        :param key: the identifier to key the counter on (e.g. an IP address, or an
-            already-hashed compound key). Hashed into a fixed, KV-safe key before storage, so any
-            key format is accepted and the raw identifier is never stored as a KV key
+        :param key: the identifier to count (an IP address, an already-hashed compound key).
+            Hashed into a fixed-length form before storage, so the raw identifier is never a key
         :ptype key: str
-        :return: the attempt count within the live window (``>= 1``), or ``0`` if this counter is
-            ``fail_open`` and a `KvError` occurred
+        :return: the attempt count within the live window (``>= 1``), or ``0`` when this counter
+            is ``fail_open`` and storage failed
         :rtype: int
-        :raises threetears.nats.KvError: on a KV transport failure, when ``fail_open=False``
+        :raises threetears.nats.KvError: on an L2 failure, when ``fail_open=False``
         """
         try:
             return await self._record_attempt(key)
-        except KvError:
+        except STORAGE_FAILURES as exc:
             if self._fail_open:
-                log.warning("WindowedCounter %s fail-open on KvError for record_attempt", self._bucket_name)
+                log.warning(
+                    "windowed counter failing open on a storage failure",
+                    extra={"extra_data": {"purpose": self._purpose, "error": f"{type(exc).__name__}: {exc}"}},
+                )
                 return 0
             raise
 
     async def count(self, key: str) -> int:
-        """read-only: the current attempt count for ``key`` within the live window, without
-        recording a new attempt.
+        """the current attempt count for ``key`` within its live window, recording nothing.
 
         :param key: the identifier to look up
         :ptype key: str
-        :return: the live count, or ``0`` if absent, expired, or (when ``fail_open``) on `KvError`
+        :return: the live count, 0 when absent, expired, or (when ``fail_open``) storage failed
         :rtype: int
-        :raises threetears.nats.KvError: on a KV transport failure, when ``fail_open=False``
+        :raises threetears.nats.KvError: on an L2 failure, when ``fail_open=False``
         """
-        try:
-            state = await self._read_live_state(key)
-        except KvError:
-            if self._fail_open:
-                log.warning("WindowedCounter %s fail-open on KvError for count", self._bucket_name)
-                return 0
-            raise
+        state = await self.state(key)
         return 0 if state is None else state.count
 
     async def state(self, key: str) -> WindowState | None:
-        """the live window for ``key``, or ``None`` if absent or expired.
+        """the live window for ``key``, or ``None`` when absent or closed.
 
         Unlike :meth:`count`, this exposes ``window_start`` too, so a caller reporting a
         ``Retry-After`` can say how long is actually left rather than restating the window.
@@ -229,37 +200,48 @@ class WindowedCounter:
         :ptype key: str
         :return: the live window state, or ``None``
         :rtype: WindowState | None
-        :raises threetears.nats.KvError: on a KV transport failure, when ``fail_open=False``
+        :raises threetears.nats.KvError: on an L2 failure, when ``fail_open=False``
         """
         try:
-            return await self._read_live_state(key)
-        except KvError:
+            entity = await self._collection.get(self._row_id(key))
+        except STORAGE_FAILURES as exc:
             if self._fail_open:
-                log.warning("WindowedCounter %s fail-open on KvError for state", self._bucket_name)
+                log.warning(
+                    "windowed counter failing open on a storage failure",
+                    extra={"extra_data": {"purpose": self._purpose, "error": f"{type(exc).__name__}: {exc}"}},
+                )
                 return None
             raise
+        if entity is None:
+            return None
+        row = entity.to_dict()
+        window_start = _as_epoch(row["window_start"])
+        if window_start + self._window.total_seconds() < self._clock():
+            # closed on this counter's clock, whatever the row's wall-clock expiry says.
+            return None
+        return WindowState(count=int(row["count"]), window_start=window_start)
 
     async def clear(self, key: str) -> None:
-        """drop ``key``'s counter entirely -- the "successful authentication" reset.
+        """drop ``key``'s counter entirely -- the "authentication succeeded" reset.
 
-        Always fail-open on a `KvError`, regardless of the configured posture: failing to
-        clear leaves a stale counter that can only ever deny too much, and raising here would
-        turn a successful login into an error.
+        Always fails open, whatever the configured posture: failing to clear leaves a counter that
+        can only ever deny too much, and raising here would turn a successful login into an error.
 
         :param key: the identifier to reset
         :ptype key: str
+        :return: nothing
+        :rtype: None
         """
         try:
-            bucket = await self._ensure_bucket()
-            await bucket.delete(key=self._key(key))
-        except KvError:
+            await self._collection.delete(self._row_id(key))
+        except STORAGE_FAILURES as exc:
             log.warning(
-                "WindowedCounter %s could not clear a counter; it will expire with the window", self._bucket_name
+                "windowed counter could not clear a counter; it expires with its window",
+                extra={"extra_data": {"purpose": self._purpose, "error": f"{type(exc).__name__}: {exc}"}},
             )
 
     async def is_over_threshold(self, key: str, *, threshold: int) -> bool:
-        """``True`` if ``key``'s live count is at or above ``threshold``, without recording a new
-        attempt.
+        """whether ``key``'s live count is at or above ``threshold``, recording nothing.
 
         :param key: the identifier to look up
         :ptype key: str
@@ -267,69 +249,71 @@ class WindowedCounter:
         :ptype threshold: int
         :return: whether the key is currently over threshold
         :rtype: bool
-        :raises threetears.nats.KvError: on a KV transport failure, when ``fail_open=False``
+        :raises threetears.nats.KvError: on an L2 failure, when ``fail_open=False``
         """
         return await self.count(key) >= threshold
 
     async def _record_attempt(self, key: str) -> int:
-        bucket = await self._ensure_bucket()
-        kv_key = self._key(key)
-        now = self._clock()
-        for _ in range(_MAX_CAS_ATTEMPTS):
-            entry = await bucket.get_entry(key=kv_key)
-            if entry is None:
-                created = await bucket.create(key=kv_key, value=_encode(WindowState(count=1, window_start=now)))
-                if created is not None:
-                    return 1
-                continue  # lost the create race -- next loop iteration falls into the update path
-            value, revision = entry
-            state = _decode(value)
-            if now - state.window_start > self._window.total_seconds():
-                next_state = WindowState(count=1, window_start=now)
-            else:
-                next_state = WindowState(count=state.count + 1, window_start=state.window_start)
-            if await bucket.update(key=kv_key, value=_encode(next_state), revision=revision) is not None:
-                return next_state.count
-            await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311
-        # CAS retries exhausted: the increment was LOST, so the count read back under-reports
-        # by at least one. Logged rather than swallowed -- losing writes is what a burst against
-        # one key causes, and this counter is a security control on exactly that burst.
-        log.warning(
-            "WindowedCounter %s lost an increment to CAS contention; the count is under-reported",
-            self._bucket_name,
-        )
-        live_state = await self._read_live_state(key)
-        return 1 if live_state is None else live_state.count
+        """increment the live window, or open a new one.
 
-    async def _read_live_state(self, key: str) -> WindowState | None:
-        bucket = await self._ensure_bucket()
-        value = await bucket.get(key=self._key(key))
-        if value is None:
-            return None
-        state = _decode(value)
-        if self._clock() - state.window_start > self._window.total_seconds():
-            return None
-        return state
+        :param key: the identifier to count
+        :ptype key: str
+        :return: the count within the live window
+        :rtype: int
+        """
+        now = datetime.fromtimestamp(self._clock(), tz=UTC)
+        row_id = self._row_id(key)
 
-    async def _ensure_bucket(self) -> "KvBucketLike":
-        """open (or bind) the windowed KV bucket once; async-safe lazy init."""
-        if self._bucket is not None:
-            return self._bucket
-        async with self._bucket_lock:
-            if self._bucket is None:
-                self._bucket = await self._client.kv_bucket(
-                    name=self._bucket_name,
-                    ttl=self._window,
-                    # file storage: see module docstring -- a throttle counter is a security
-                    # control, not a cache; a restart must not silently reset it to zero.
-                    storage="file",
-                    create_if_missing=True,
-                    history=1,
-                )
-                log.info("WindowedCounter bound bucket %s", self._bucket_name)
-        return self._bucket
+        def _increment(
+            current: dict[str, Any] | None,
+        ) -> tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]:
+            # The window is judged here, from the row's own ``window_start`` and THIS counter's
+            # clock. The row's ``expires_at`` says the same thing to the tiers below -- it is what
+            # makes a closed window absent to a reader and sweepable -- but it is read against the
+            # wall clock, so a caller that injected a clock (a test standing on the boundary, a
+            # service whose time source is not `time.time`) would otherwise get two answers.
+            fresh = {
+                "purpose": self._purpose,
+                "key": row_id[1],
+                "count": 1,
+                "window_start": now,
+                "expires_at": now + self._window,
+            }
+            if current is None or _as_epoch(current["window_start"]) + self._window.total_seconds() < now.timestamp():
+                return "upsert", fresh
+            return "upsert", {**current, "count": int(current["count"]) + 1}
 
-    @staticmethod
-    def _key(key: str) -> str:
-        """hash the caller's key into a fixed-length, KV-safe key (also avoids storing it raw)."""
-        return hashlib.sha256(key.encode("utf-8")).hexdigest()
+        # 30 rounds, not the default 8: the contention this counter sees is a burst against ONE
+        # key -- a credential-stuffing run against one account -- and 8 raised a conflict on about
+        # three quarters of a 25-connection integration run, where 30 raised none. A budget tuned
+        # for the quiet path fails precisely when the counter is the control that matters.
+        outcome = await self._collection.l2_cas_mutate(row_id, _increment, max_retries=_MAX_CAS_ATTEMPTS)
+        self._collection.ensure_flushing()
+        await self._collection.sweep_expired_if_due()
+        return int(outcome.row["count"]) if outcome.row is not None else 1
+
+    def _row_id(self, key: str) -> tuple[str, str]:
+        """the row this counter's key addresses.
+
+        :param key: the caller's identifier
+        :ptype key: str
+        :return: ``(purpose, hashed key)`` in declared column order
+        :rtype: tuple[str, str]
+        """
+        return (self._purpose, hashlib.sha256(key.encode("utf-8")).hexdigest())
+
+
+def _as_epoch(value: Any) -> float:
+    """read a stored window start back as epoch seconds.
+
+    Rows carry aware-UTC datetimes; :class:`WindowState` reports epoch seconds, because callers
+    compute a "retry after" against the same clock they passed in.
+
+    :param value: the stored value
+    :ptype value: Any
+    :return: epoch seconds
+    :rtype: float
+    """
+    if isinstance(value, datetime):
+        return value.timestamp()
+    return float(value)

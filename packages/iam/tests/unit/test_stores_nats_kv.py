@@ -9,11 +9,15 @@ what happens when the broker is unreachable.
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from datetime import timedelta
 from typing import Any
 
 import pytest
 
+from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.iam.stores import AttemptLimiter, SingleUseTicketStore, StateStore, hash_ticket
 from threetears.iam.stores.nats_kv import (
@@ -32,10 +36,23 @@ def nats() -> FakeNatsClient:
     return FakeNatsClient()
 
 
-def _limiter(nats: FakeNatsClient, **overrides: object) -> NatsKvAttemptLimiter:
-    kwargs: dict[str, object] = {"bucket_name": "lockout", "max_attempts": 3, "window": _WINDOW}
+def _registry(nats: FakeNatsClient) -> CollectionRegistry:
+    """a registry over the shared KV double: L1 plus L2, the shape an edge process has.
+
+    The limiter's counts live in the coordination tables now, not in a bucket of their own, so
+    the wiring a test supplies is a registry. No L3 here: these assertions are about the window
+    and the verdict, which L2 alone answers.
+    """
+    l1 = SQLiteBackend(db_name=f"iam_limiter_{uuid.uuid4().hex[:8]}")
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1, l2_client=nats, kv_key_scope="iam-principal")
+    return registry
+
+
+def _limiter(nats: FakeNatsClient, **overrides: Any) -> NatsKvAttemptLimiter:
+    kwargs: dict[str, Any] = {"purpose": "lockout", "max_attempts": 3, "window": _WINDOW}
     kwargs.update(overrides)
-    return NatsKvAttemptLimiter(nats, **kwargs)
+    return NatsKvAttemptLimiter(_registry(nats), **kwargs)
 
 
 async def _bucket(nats: FakeNatsClient, name: str = "state") -> object:
@@ -104,12 +121,13 @@ async def test_keys_are_case_sensitive(nats: FakeNatsClient) -> None:
     assert (await limiter.check("someone")).limited is False
 
 
-async def test_the_raw_key_never_reaches_the_bucket(nats: FakeNatsClient) -> None:
+async def test_the_raw_key_never_reaches_storage(nats: FakeNatsClient) -> None:
     """Keys are far likelier than values to end up in an operator's terminal."""
     limiter = _limiter(nats)
     await limiter.record_failure("user@example.com")
-    bucket = await nats.kv_bucket(name="lockout")
+    bucket = await nats.kv_bucket(name="collections")
     assert await bucket.get(key="user@example.com") is None
+    assert all("user@example.com" not in key for key in bucket.keys())
 
 
 async def test_lockout_lasts_the_whole_window_from_the_first_failure(nats: FakeNatsClient) -> None:
@@ -234,10 +252,15 @@ async def test_an_absent_key_reads_as_none(nats: FakeNatsClient) -> None:
 
 
 class _Clock:
-    """A movable time source, so the window boundary is a thing a test can stand on."""
+    """A movable time source, so the window boundary is a thing a test can stand on.
 
-    def __init__(self, now: float = 1_000_000.0) -> None:
-        self.now = now
+    Anchored near the wall clock by default: a counter row carries the expiry its window
+    implies, and the tiers below read that against the wall clock, so a clock parked in 1970
+    would make every row read as long expired -- a property of the tiers, not of the window.
+    """
+
+    def __init__(self, now: float | None = None) -> None:
+        self.now = time.time() if now is None else now
 
     def __call__(self) -> float:
         return self.now
@@ -266,7 +289,8 @@ async def test_the_window_is_anchored_at_the_first_failure_not_the_wall_clock(
     This test FAILS against an epoch-aligned implementation, which is the whole point: the
     previous version of it passed against both.
     """
-    clock = _Clock(now=899.0)  # 1s before a 900s epoch boundary
+    boundary = (int(time.time()) // 900 + 1) * 900  # the next 900s epoch boundary, near now
+    clock = _Clock(now=boundary - 1.0)  # 1s before it
     limiter = _clocked_limiter(nats, clock)
     for _ in range(3):
         await limiter.record_failure("someone")
@@ -327,7 +351,7 @@ class _WallClock:
 
 async def test_a_ticket_expires_at_its_own_ttl_not_the_buckets(nats: FakeNatsClient) -> None:
     clock = _WallClock()
-    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)  # type: ignore[arg-type]
+    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)
     issued = await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
     clock.advance(timedelta(minutes=11).total_seconds())
     assert await store.redeem(issued.secret) is None
@@ -335,7 +359,7 @@ async def test_a_ticket_expires_at_its_own_ttl_not_the_buckets(nats: FakeNatsCli
 
 async def test_a_ticket_within_its_ttl_still_redeems(nats: FakeNatsClient) -> None:
     clock = _WallClock()
-    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)  # type: ignore[arg-type]
+    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)
     issued = await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
     clock.advance(timedelta(minutes=9).total_seconds())
     assert await store.redeem(issued.secret) == {"user": "u1"}
@@ -347,17 +371,17 @@ async def test_an_expired_ticket_is_refused_without_being_consumed(nats: FakeNat
     # the record of it, and would make "expired" indistinguishable from "already redeemed".
     clock = _WallClock()
     bucket = await nats.kv_bucket(name="tickets")
-    store = NatsKvTicketStore(bucket, clock=clock)  # type: ignore[arg-type]
+    store = NatsKvTicketStore(bucket, clock=clock)
     issued = await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
     clock.advance(timedelta(minutes=11).total_seconds())
     assert await store.redeem(issued.secret) is None
-    assert await bucket.get(key=issued.hashed) is not None  # type: ignore[attr-defined]
+    assert await bucket.get(key=issued.hashed) is not None
 
 
 async def test_two_tickets_in_one_bucket_expire_independently(nats: FakeNatsClient) -> None:
     # THE property a bucket TTL cannot express: one bucket, two lifetimes.
     clock = _WallClock()
-    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)  # type: ignore[arg-type]
+    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)
     short = await store.issue({"kind": "short"}, ttl=timedelta(minutes=5))
     long_lived = await store.issue({"kind": "long"}, ttl=timedelta(hours=2))
     clock.advance(timedelta(minutes=30).total_seconds())
@@ -367,7 +391,7 @@ async def test_two_tickets_in_one_bucket_expire_independently(nats: FakeNatsClie
 
 async def test_state_take_honours_the_per_entry_ttl(nats: FakeNatsClient) -> None:
     clock = _WallClock()
-    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)  # type: ignore[arg-type]
+    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)
     await store.put("s1", {"nonce": "n"}, ttl=timedelta(minutes=2))
     clock.advance(timedelta(minutes=3).total_seconds())
     assert await store.take("s1") is None
@@ -376,7 +400,7 @@ async def test_state_take_honours_the_per_entry_ttl(nats: FakeNatsClient) -> Non
 async def test_state_get_honours_the_per_entry_ttl(nats: FakeNatsClient) -> None:
     # `get` is the non-consuming read, and an expired value must not leak through it either.
     clock = _WallClock()
-    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)  # type: ignore[arg-type]
+    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)
     await store.put("s1", {"nonce": "n"}, ttl=timedelta(minutes=2))
     assert await store.get("s1") == {"nonce": "n"}
     clock.advance(timedelta(minutes=3).total_seconds())
@@ -385,7 +409,7 @@ async def test_state_get_honours_the_per_entry_ttl(nats: FakeNatsClient) -> None
 
 async def test_the_expiry_stamp_never_reaches_the_caller(nats: FakeNatsClient) -> None:
     clock = _WallClock()
-    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)  # type: ignore[arg-type]
+    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)
     await store.put("s1", {"nonce": "n"}, ttl=timedelta(minutes=2))
     assert await store.take("s1") == {"nonce": "n"}
 
@@ -400,7 +424,7 @@ async def test_the_kv_store_and_the_memory_double_agree_on_expiry(nats: FakeNats
     from threetears.iam.stores.memory import MemoryTicketStore
 
     clock = _WallClock()
-    kv = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)  # type: ignore[arg-type]
+    kv = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)
     memory = MemoryTicketStore(clock=clock)
 
     kv_ticket = await kv.issue({"user": "u1"}, ttl=timedelta(minutes=10))
@@ -419,7 +443,7 @@ async def test_a_corrupt_payload_reads_as_absent_not_as_an_error(nats: FakeNatsC
     either way, and raising would turn it into a 500 on an authentication path where the
     correct answer is simply "this ticket is not valid"."""
     bucket = await nats.kv_bucket(name="tickets")
-    store = NatsKvTicketStore(bucket)  # type: ignore[arg-type]
+    store = NatsKvTicketStore(bucket)
     issued = await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
     await bucket.put(key=issued.hashed, value=b"\xff\xfe not json at all")
     assert await store.redeem(issued.secret) is None
@@ -428,7 +452,7 @@ async def test_a_corrupt_payload_reads_as_absent_not_as_an_error(nats: FakeNatsC
 async def test_a_non_object_payload_reads_as_absent_too(nats: FakeNatsClient) -> None:
     # Valid JSON, wrong shape: a bare list is not a payload mapping.
     bucket = await nats.kv_bucket(name="state")
-    store = NatsKvStateStore(bucket)  # type: ignore[arg-type]
+    store = NatsKvStateStore(bucket)
     await store.put("s1", {"nonce": "n"}, ttl=timedelta(minutes=2))
     await bucket.put(key="s1", value=b'["not", "a", "mapping"]')
     assert await store.get("s1") is None
@@ -486,8 +510,8 @@ async def test_the_factories_open_memory_backed_buckets(nats: FakeNatsClient) ->
     it through `WindowedCounter` from the identity service, not from here. Nothing in this
     change touches them.
     """
-    await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))  # type: ignore[arg-type]
-    await state_store(nats, name="state", ttl=timedelta(hours=1))  # type: ignore[arg-type]
+    await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))
+    await state_store(nats, name="state", ttl=timedelta(hours=1))
 
     opened = {name: bucket.storage for name, bucket in nats._buckets.items()}  # noqa: SLF001 -- the fake's recorded opens ARE the subject
 
@@ -500,8 +524,8 @@ async def test_the_factories_open_memory_backed_buckets(nats: FakeNatsClient) ->
 async def test_the_factories_open_a_bucket_and_wrap_it(nats: FakeNatsClient) -> None:
     # The factories resolve the bucket per call rather than holding one, so a broker
     # reconnect does not leave a stale handle behind.
-    tickets = await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))  # type: ignore[arg-type]
-    states = await state_store(nats, name="state", ttl=timedelta(hours=1))  # type: ignore[arg-type]
+    tickets = await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))
+    states = await state_store(nats, name="state", ttl=timedelta(hours=1))
     issued = await tickets.issue({"user": "u1"}, ttl=timedelta(minutes=5))
     assert await tickets.redeem(issued.secret) == {"user": "u1"}
     await states.put("k", {"v": 1}, ttl=timedelta(minutes=5))
