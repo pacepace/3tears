@@ -40,11 +40,12 @@ avoid excluding them.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, StructuredTool
@@ -151,6 +152,11 @@ class ToolRelevanceIndex:
         # simple bounded LRU (move-to-end on hit, popitem(last=False) on
         # overflow) -- no external cache dependency needed at this size.
         self._cache: OrderedDict[str, dict[str, list[float]]] = OrderedDict()
+        # content_hash -> the embedding of that tool set, while it runs. Its own task, so the
+        # latency ceiling cancels a caller's wait and not the work: a catalog that takes longer
+        # than the ceiling to embed still lands in the cache for the next turn, and turns that
+        # arrive together share one embedding call.
+        self._inflight: dict[str, asyncio.Task[dict[str, list[float]] | None]] = {}
 
     async def _safe_aembed_query(self, text: str) -> list[float] | None:
         """Soft-fail single-text embed. ``None`` on any failure or empty input."""
@@ -197,6 +203,19 @@ class ToolRelevanceIndex:
             self._cache.move_to_end(content_hash)
             return cached
 
+        task = self._inflight.get(content_hash)
+        if task is None:
+            task = asyncio.get_running_loop().create_task(self._embed_and_cache(content_hash, list(tools)))
+            self._inflight[content_hash] = task
+            task.add_done_callback(functools.partial(self._forget_inflight, content_hash))
+        return await asyncio.shield(task)
+
+    def _forget_inflight(self, content_hash: str, _done: asyncio.Future[Any]) -> None:
+        """Drop a finished embedding's task handle; its result, if any, is in the cache."""
+        self._inflight.pop(content_hash, None)
+
+    async def _embed_and_cache(self, content_hash: str, tools: list[BaseTool]) -> dict[str, list[float]] | None:
+        """Embed one tool set and cache it; ``None`` on a soft-failed embed (nothing cached)."""
         texts = [f"{t.name}: {t.description or ''}" for t in tools]
         vectors = await self._safe_aembed_documents(texts)
         if vectors is None:
