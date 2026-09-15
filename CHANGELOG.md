@@ -4,6 +4,44 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Fixed
+
+- **The auth-flow KV stores return to memory storage, because the reason they left
+  it was tested and was wrong.** 0.40.0 made `state_store` and `ticket_store`
+  request `storage="file"`, on the reasoning that a memory-backed bucket "is not
+  reliably readable by a second replica" and that this caused an intermittent
+  double login on a two-replica deployment.
+
+  That was deployed, the existing buckets were deleted so they recreated
+  file-backed, and **the double login continued**. Verified on cobalt-dev
+  2026-09-15: every auth-flow bucket read `file`, and a login still restarted once
+  and then succeeded on the retry. A prediction was made and it failed, so the
+  reasoning is withdrawn rather than kept next to a symptom it does not explain.
+
+  What holds instead is the ordinary JetStream behaviour: a stream exists once in
+  the cluster and any client on any node reaches it. Memory decides whether it
+  survives a BROKER RESTART, not whether a second replica can read it. These
+  buckets hold state with a ten-minute TTL, so a restart costs whoever is mid-login
+  one retry.
+
+  `storage="memory"` is passed explicitly rather than dropped, even though it is
+  the default, so the next person to meet this symptom finds the history instead of
+  an absence that looks unconsidered. The test that pinned `file` is inverted, not
+  deleted, for the same reason: this wrong conclusion has now been reached twice
+  from the same symptom.
+
+  **The counter stores are NOT part of this.** `WindowedCounter` asks for file on
+  its own still-standing grounds -- a login lockout that resets to zero on every
+  broker restart is not a lockout -- and reaches it from the identity service
+  rather than from here. Nothing in this change touches them.
+
+  **Deploying this is not sufficient on a cluster that already ran.** `storage` is
+  set at CREATE and is absent from `RECONCILED_KV_STREAM_FIELDS`, so an existing
+  file-backed bucket stays file-backed however many times the fixed code opens it.
+  Each one has to be deleted once, exactly as converting them the other way did.
+
 ## v0.41.4 -- 2026-09-14
 
 ### Fixed
