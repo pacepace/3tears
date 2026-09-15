@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal
 
 import pytest
@@ -129,10 +129,19 @@ class _FakeGenerations:
 
 
 class _Nats(FakeNatsClient):
-    """the shared collections bucket, and a broadcast nobody subscribes to."""
+    """the shared collections bucket, and the invalidation broadcast delivered to every listening replica."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._subscribers: list[tuple[Any, Any]] = []
 
     async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
-        return None
+        for cb, message_type in list(self._subscribers):
+            await cb(message_type.model_validate_json(message.model_dump_json()))
+
+    async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any, **_: Any) -> object:
+        self._subscribers.append((cb, message_type))
+        return object()
 
 
 def _replica(
@@ -143,11 +152,12 @@ def _replica(
     buffer: WriteBuffer | None = None,
     config: DefaultCoreConfig | None = None,
     generations: _FakeGenerations | None = None,
+    scope: str = _SCOPE,
 ) -> tuple[_Counters, CollectionRegistry]:
     l1 = SQLiteBackend(db_name=f"cas_{uuid.uuid4().hex[:8]}")
     l1.initialize(_metadata())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=object(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=object(), kv_key_scope=scope)  # type: ignore[arg-type]
     if generations is not None:
         registry.set_generation_source(generations)
     collection = cls(
@@ -253,6 +263,102 @@ class TestTheL3WritePolicy:
         coll, _ = _replica(_SynchronousCounters, nats, store)
         with pytest.raises(RuntimeError, match="affected no L3 row"):
             await coll.l2_cas_mutate("acct-1", _increment)
+
+
+class TestPeersListening:
+    @pytest.mark.asyncio
+    async def test_a_listening_peer_in_the_same_scope_keeps_the_counter(self) -> None:
+        # write-behind: L3 holds nothing until a flush, so the shared L2 key is the only record
+        # of the count. a peer that evicted it on every broadcast would restart the counter.
+        nats, store = _Nats(), _Store()
+        first, first_registry = _replica(_WriteBehindCounters, nats, store, buffer=WriteBuffer())
+        second, second_registry = _replica(_WriteBehindCounters, nats, store, buffer=WriteBuffer())
+        await first_registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+        await second_registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+        for replica in (first, second, first, second):
+            await replica.l2_cas_mutate("acct-1", _increment)
+        assert await _l2_count(nats) == 4, "a peer's listener evicted the compare-and-swap key"
+
+    @pytest.mark.asyncio
+    async def test_a_listener_in_another_scope_still_evicts_its_own_copy(self) -> None:
+        nats, store = _Nats(), _Store()
+        writer, _ = _replica(_SynchronousCounters, nats, store)
+        await writer.l2_cas_mutate("acct-1", _increment)
+        reader, reader_registry = _replica(_SynchronousCounters, nats, store, scope="other-principal")
+        await reader_registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+        assert await reader.get("acct-1") is not None  # pulls through into the reader's own key
+        bucket = await nats.kv_bucket(name="collections")
+        other_key = f"other-principal.{_TABLE}.acct-1"
+        assert await bucket.get(key=other_key) is not None
+        await writer.l2_cas_mutate("acct-1", _increment)
+        assert await bucket.get(key=other_key) is None, "another principal's stale copy survived"
+
+
+class TestPersistFailure:
+    @pytest.mark.asyncio
+    async def test_a_raising_persist_withdraws_the_l2_value_and_a_retry_counts_once(self) -> None:
+        nats, store = _Nats(), _Store()
+        store.rows["acct-1"] = {"id": "acct-1", "count": 5}
+        coll, _ = _replica(_SynchronousCounters, nats, store)
+        outage = RuntimeError("L3 unavailable")
+
+        async def _refuse(data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None) -> int:
+            raise outage
+
+        coll.save_to_store = _refuse  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="L3 unavailable"):
+            await coll.l2_cas_mutate("acct-1", _increment)
+        bucket = await nats.kv_bucket(name="collections")
+        assert await bucket.get(key=_KEY) is None, "L2 kept a write the caller was told failed"
+        del coll.save_to_store
+        outcome = await coll.l2_cas_mutate("acct-1", _increment)
+        assert outcome.row is not None and outcome.row["count"] == 6, "the failed increment was counted"
+        assert store.rows["acct-1"]["count"] == 6
+
+    @pytest.mark.asyncio
+    async def test_a_persist_affecting_no_row_withdraws_the_l2_value(self) -> None:
+        nats, store = _Nats(), _Store()
+        store.affect_nothing = True
+        coll, _ = _replica(_SynchronousCounters, nats, store)
+        with pytest.raises(RuntimeError, match="affected no L3 row"):
+            await coll.l2_cas_mutate("acct-1", _increment)
+        bucket = await nats.kv_bucket(name="collections")
+        assert await bucket.get(key=_KEY) is None
+
+    @pytest.mark.asyncio
+    async def test_a_table_that_fences_every_l3_write_is_refused_before_l2_is_touched(self) -> None:
+        class _Fenced(_SynchronousCounters):
+            @property
+            def emits_cas_fence(self) -> bool:
+                return True
+
+        nats, store = _Nats(), _Store()
+        coll, _ = _replica(_Fenced, nats, store)
+        with pytest.raises(ValueError, match="fences every L3 write"):
+            await coll.l2_cas_mutate("acct-1", _increment)
+        bucket = await nats.kv_bucket(name="collections")
+        assert await bucket.get(key=_KEY) is None
+
+
+class TestCreationTime:
+    @pytest.mark.asyncio
+    async def test_a_row_new_to_every_tier_is_stamped_even_over_an_l2_entry(self) -> None:
+        nats, store = _Nats(), _Store()
+        bucket = await nats.kv_bucket(name="collections")
+        await bucket.put(key=_KEY, value=b'{"id": "acct-1", "date_created": "not-a-time"}')  # corrupt
+        coll, _ = _replica(_SynchronousCounters, nats, store)
+        outcome = await coll.l2_cas_mutate("acct-1", _increment)
+        assert outcome.row is not None and outcome.row.get("date_created") is not None
+        assert store.rows["acct-1"].get("date_created") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_row_seeded_from_l3_keeps_its_creation_time(self) -> None:
+        nats, store = _Nats(), _Store()
+        created = datetime(2026, 1, 1, tzinfo=UTC)
+        store.rows["acct-1"] = {"id": "acct-1", "count": 5, "date_created": created}
+        coll, _ = _replica(_SynchronousCounters, nats, store)
+        await coll.l2_cas_mutate("acct-1", _increment)
+        assert store.rows["acct-1"]["date_created"] == created
 
 
 class TestOutcomes:

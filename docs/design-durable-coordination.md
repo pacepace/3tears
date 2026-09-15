@@ -68,8 +68,9 @@ HMAC-signed issue time, and for an OAuth client assertion whose `iat` is optiona
 ahead of its own clock, and the creation time is the broker's clock. So the refusal reaches
 the verifier's future tolerance, passed at construction with no default, plus a single
 named drift allowance between those hosts, added by the guard. Each verifier calls
-`require_covers` with its own leeway, so widening a leeway later fails at startup instead of
-silently reopening the hole. The cost is bounded and visible: for that long after a wipe,
+`require_covers` with its own leeway, so widening a leeway later fails loudly instead of
+silently reopening the hole: at construction for the registry proxy and the tool server, and
+on every request for `validate_dpop_proof`, which is a function with no construction step. The cost is bounded and visible: for that long after a wipe,
 fresh artifacts are refused. A missing `created` raises rather than admits.
 
 **Some guards are removed rather than watermarked.** Where the guarded artifact is itself a
@@ -88,10 +89,12 @@ wiped while the artifact survives. Consuming the artifact itself cannot split th
 | Attempt counters (`WindowedCounter`, lockout, spray) | lockouts release; brute-force budgets restart | L2 CAS, write-behind to L3 |
 | Idempotency claims | a retried operation runs a second time | L2 claim, write-behind to L3 |
 
-**Counters are write-behind on purpose.** A NATS wipe coinciding with a crash of the writing
-pod loses at most one flush interval of increments. That is a few extra attempts against a
-throttle, and it is not worth a database write on every login or API call. Revocations lose
-nothing.
+**Counters are write-behind on purpose.** A NATS wipe loses at most the increments made since
+the last flush: the next increment starts from L3, which holds the last flushed count, not
+from any pod's unflushed buffer. That is a few extra attempts against a throttle, and it is
+not worth a database write on every login or API call. Revocations lose nothing. A
+write-behind collection needs something to drive `flush_pending` on an interval; nothing in
+3tears does that on its own, so each primitive that declares write-behind wires one.
 
 ### Hot-path cost
 
@@ -103,7 +106,9 @@ nothing.
 - **Counter increments:** L2 CAS, the NATS round trips they already pay, with L3 batched per
   flush interval.
 - **Nonces:** memory plus one extra NATS request on a fresh nonce. No L3.
-- **L3 sees:** one miss per key per L2 lifetime, batched flushes, and rare revocation writes.
+- **L3 sees:** one miss per key per pod per write generation (fewer where L2 already holds
+  the marker), batched flushes, and rare revocation writes. The generation is per table, so
+  this is cheap only for tables written rarely; see "What one generation per table costs".
 
 These are measured, not assumed, before the primitives adopt them.
 
@@ -140,23 +145,40 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    *What bounds memory.* An L2 marker carries a server-side per-entry lifetime of the max age
    (NATS 2.11+ `allow_msg_ttl`, reconciled in place on buckets created before it was set), so
    markers nobody reads again leave the shared bucket. An L1 marker lives in a framework-owned
-   table beside the collection's and stops answering at the same age; a bounded sweep, run from
-   the marker write path at most once a minute, deletes past-deadline rows whose keys nobody
-   looks up again -- which, for a denylist checking one key per token, is nearly all of them.
+   table beside the collection's and stops answering at the same age; a sweep, run from the
+   marker write path at most once a minute, drains every past-deadline row in batches, so the
+   table holds at most one max age plus one minute of markers whatever the miss rate. Most rows
+   need it: a denylist checks one key per token, and nobody looks those keys up again.
+
+   *What one generation per table costs.* Any committed write to the table stops every marker
+   in it from answering, not only the written key's. Every writer also compare-and-swaps the
+   same generation key, so heavy concurrent writing contends on it. After 30 lost rounds the
+   writer raises `GenerationUnavailableError`, with the row already committed. So negative
+   caching suits tables that are read far more often than they are written, like standing
+   revocations. The refresh-token jti ledger is not one of them: it is written on every
+   rotation, and each check is followed by that write, so a marker would rarely answer twice.
+   Per-key generations would lift this and are not built; a table that needs them is the
+   reason to build them.
 
    *Who must advance.* Every writer that opts in and has an L3 pool, whether or not it has an
    L2 client of its own. Absences are recorded by readers, which may be other pods with L2; a
    writer skipping the advance for lack of L2 would leave their absences answering. The
-   guarantee also holds only for writes made through the collection: an L3 write that bypasses
-   `save_entity` -- ad-hoc SQL through `l3_pool` -- advances nothing, so a consumer that caches
-   absences writes only through the collection.
+   guarantee also holds only for writes made through the collection's own write paths
+   (`save_entity`, `delete`, `l2_cas_mutate`). An L3 write that bypasses them advances nothing:
+   ad-hoc SQL through `l3_pool`, or a subclass that writes its own SQL and then fills L2. So a
+   collection that caches absences writes only through those paths. Nothing enforces that yet;
+   the durable primitives that opt in are built that way, and a structural check lands with
+   them.
 
    *What still needs the max age.* A write that commits and then fails to advance the
    generation leaves older markers answering; the writer raises, and the max age bounds the
    window if nobody retries. For the same reason opting in refuses deferred flushes, subscript
    writes and joining a caller's transaction, each of which could make a row visible before
-   the generation moves; and a failed L2 write on `save_entity`, `reload_entity` or `delete`
-   raises rather than degrading.
+   the generation moves.
+
+   *What does not need it.* A failed L2 write degrades exactly as it does on any collection. The
+   marker it failed to replace was stamped before the commit advanced the generation, so it
+   stops answering anyway.
 2. **Row expiry** (`expires_at_column`). A row whose declared expiry has passed is absent to
    every read that answers "does this exist" -- `get`, `ensure`, `collection[id]` -- at L1, L2
    and L3. Reporting reads that serve an entity's own internals still see it, so an entity
@@ -173,6 +195,19 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
      claimed or exists.
    - A collection that caches absences advances its write generation after the persist,
      exactly as `save_entity` does.
+   - A persist that fails withdraws the won L2 value before the error propagates. The value is
+     deleted at the revision it won rather than restored, because with L3 behind it an absent
+     key is always correct. Without that, a retried claim reads "already claimed" and skips
+     its work, and a retried increment counts twice. A table that fences every L3 write
+     (`cas_null_safe`) is refused before L2 is touched, since its unfenced persist would fail
+     every update.
+   - *Peers keep the key.* The invalidation broadcast from a compare-and-swap names the L2 scope
+     it left current, and a listener in that scope skips its L2 eviction. That key is the
+     fence, and under write-behind the only copy newer than L3; deleting it would move the
+     counter backwards. Listeners in other scopes still evict their own copies. An unfenced
+     `save_entity` broadcast still evicts everywhere, because its put can land out of order.
+   - *One principal per row.* The fence is a scoped key, so two principals mutating one row
+     would hold two fences and overwrite each other in L3.
    - *What L3 does not order.* Two replicas that win consecutive revisions persist
      independently, so L3 can briefly hold the earlier row. L3 is read only once L2 has lost
      the key, so insert-or-delete data (revocations, the jti ledger) is unaffected and a
@@ -196,7 +231,13 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
   the new tables before the new code rolls. Without the copy, revoked tokens become valid.
   identity-edge holds no database by design, so its fail-open route throttles run the same
   collection without an L3 pool.
-- **hub**: the DPoP impersonation guard's `issued_at`.
+- **hub**: its DPoP guard (`hub-dpop-nonces`, built in `aibots/hub/app.py`) gains
+  `verifier_future_tolerance` covering the `iat_window` it validates with. Without it the hub
+  fails at startup on this release. `validate_dpop_proof` passes `issued_at` itself.
+- **identity's refresh-token jti ledger is not a nonce guard.** It is a `ReplayGuard` over a
+  30-day TTL (`identity-revocation-jti`). Watermarked, a broker wipe would refuse every
+  outstanding refresh token for up to 30 days. It moves to an L3 collection instead, and it
+  keeps its file-backed bucket until then.
 - **registry and tool runtime** (this repo): the PoP and proxy-assertion guards.
 - **survey**: the entry-challenge guard, the panel lockout counter, and idempotency claims.
 - **scriob**: its login throttle.

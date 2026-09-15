@@ -9,7 +9,9 @@ each running the real cache-invalidation listener and the real epoch-bucket gene
 - an expired row is replaced by a marker through a compare-and-swap that carries a lifetime, which
   the wrapper sends itself because nats-py's public update takes none;
 - a collections bucket created before per-entry lifetimes were allowed is enabled in place by the
-  declaring opener, keeping its existing entries.
+  declaring opener, keeping its existing entries -- and a file-backed one stays file-backed;
+- peers in one L2 scope, each running the listener, keep a write-behind compare-and-swap counter
+  rather than evicting it on every broadcast.
 
 Uses the session-scoped ``nats_container`` fixture; a checkout without docker skips cleanly.
 """
@@ -20,7 +22,7 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import pytest
 from nats.js.api import StorageType
@@ -28,6 +30,7 @@ from sqlalchemy import Column, DateTime, MetaData, String, Table
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -212,3 +215,82 @@ async def test_a_legacy_collections_bucket_is_enabled_in_place_and_keeps_its_ent
             assert await bucket.get(key=coll.l2_key("never")) is not None, "the marker write was refused"
         finally:
             await registry.stop_invalidation_listener()
+
+
+async def test_a_legacy_file_backed_bucket_is_enabled_in_place_and_stays_file_backed(nats_container: str) -> None:
+    # the server refuses to change a stream's storage; an update that asked for memory would fail
+    # the whole reconcile, and with it every open of the bucket.
+    namespace = f"negc{uuid.uuid4().hex[:6]}"
+    set_default_namespace(namespace)
+    async with await _connect(nats_container, "pod", namespace) as nc:
+        full_name = f"{namespace}-collections"
+        legacy = build_kv_stream_config(
+            bucket=full_name, ttl_seconds=0, history=1, storage_type=StorageType.FILE, direct=None
+        )
+        legacy.allow_msg_ttl = False
+        js = nc.jetstream_context()
+        await js.add_stream(legacy)
+        try:
+            coll, registry = await _pod(nc, {})
+            try:
+                assert await coll.get("never") is None  # opens as declarer asking for memory, then writes a marker
+                info = await js.stream_info(f"KV_{full_name}")
+                assert info.config.allow_msg_ttl is True, "the reconcile did not enable per-entry lifetimes"
+                assert info.config.storage == StorageType.FILE
+                bucket = await nc.kv_bucket(name="collections")
+                assert await bucket.get(key=coll.l2_key("never")) is not None, "the marker write was refused"
+            finally:
+                await registry.stop_invalidation_listener()
+        finally:
+            await js.delete_stream(f"KV_{full_name}")
+
+
+class _LiveCounter(_LiveDenylist):
+    """a write-behind attempt counter: L3 holds nothing until a flush, so L2 is the only current count."""
+
+    negative_cache_max_age: ClassVar[timedelta | None] = None
+    l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
+
+    def __init__(self, registry: CollectionRegistry, rows: dict[str, dict[str, Any]]) -> None:
+        self._rows = rows
+        self.fetches = 0
+        BaseCollection.__init__(
+            self,
+            registry,
+            DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
+            write_buffer=WriteBuffer(),
+        )
+
+
+async def test_listening_peers_in_one_scope_keep_a_compare_and_swap_counter(nats_container: str) -> None:
+    namespace = f"negc{uuid.uuid4().hex[:6]}"
+    set_default_namespace(namespace)
+    rows: dict[str, dict[str, Any]] = {}
+
+    def _increment(row: dict[str, Any] | None) -> tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]:
+        count = 0 if row is None else int(row["reason"])
+        return "upsert", {"id": "acct", "reason": str(count + 1), "expires_at": None}
+
+    async with (
+        await _connect(nats_container, "first", namespace) as first_nc,
+        await _connect(nats_container, "second", namespace) as second_nc,
+    ):
+        pods = []
+        for nc in (first_nc, second_nc):
+            l1 = SQLiteBackend(db_name=f"live_counter_{uuid.uuid4().hex[:8]}")
+            l1.initialize(_metadata())
+            registry = CollectionRegistry()
+            registry.configure(l1_backend=l1, l2_client=nc, l3_pool=object(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+            await registry.start_invalidation_listener(nc)
+            pods.append((_LiveCounter(registry, rows), registry))
+        try:
+            for n in range(6):
+                await pods[n % 2][0].l2_cas_mutate("acct", _increment)
+                await asyncio.sleep(0.1)  # let the other pod's listener act on the broadcast
+            bucket = await first_nc.kv_bucket(name="collections")
+            raw = await bucket.get(key=pods[0][0].l2_key("acct"))
+            assert raw is not None, "a peer's listener evicted the compare-and-swap key"
+            assert json.loads(raw)["reason"] == "6"
+        finally:
+            for _, registry in pods:
+                await registry.stop_invalidation_listener()

@@ -98,11 +98,20 @@ class CacheInvalidationMessage(BaseModel):
         cannot prove self-origin and evicts (the historical behaviour),
         which is safe: a redundant local eviction only forces a
         pull-through, never stale data.
+    :ivar l2_current_scope: the L2 key scope whose entry for this pk the
+        publisher left current, set only by a revision-fenced write
+        (:meth:`BaseCollection.l2_cas_mutate`). A receiver sharing that
+        scope shares that key and skips its L2 eviction: the key already
+        holds the newest value, and for a compare-and-swap counter it is
+        the only copy newer than L3, so deleting it would move the counter
+        backwards. ``None`` for every unfenced write, whose L2 put can land
+        out of order and still needs the eviction to heal.
     """
 
     table: str
     ids: list[str]
     origin: str | None = None
+    l2_current_scope: str | None = None
 
 
 class CollectionRegistry:
@@ -413,8 +422,8 @@ class CollectionRegistry:
         """wire the write generation negative-caching collections on this registry stamp absences with.
 
         Required before constructing any collection that sets
-        :attr:`BaseCollection.negative_cache_max_age` and has L2 and L3: without it an absence
-        could only be invalidated by timing, and every way that races was found.
+        :attr:`BaseCollection.negative_cache_max_age` and has an L3 pool: without it an absence
+        could only be invalidated by timing, which races.
 
         :param source: the generation source, normally ``threetears.epoch``'s
         :ptype source: GenerationSource
@@ -572,7 +581,12 @@ class CollectionRegistry:
             #
             # The arity check is hoisted above this rather than left where it was, because
             # ``l2_key`` normalises the pk and raises on a mismatch; it touches no L1.
-            await collection.delete_l2_entry(entity_id)
+            #
+            # Skipped only when a revision-fenced writer says it left THIS scope's key current:
+            # the key is shared, already newest, and deleting it would discard the only copy of a
+            # compare-and-swap value that L3 may not hold yet.
+            if message.l2_current_scope is None or message.l2_current_scope != self._kv_key_scope:
+                await collection.delete_l2_entry(entity_id)
 
             l1 = self.get_l1_backend(message.table)
             if l1 is None:
@@ -655,6 +669,8 @@ class CollectionRegistry:
         nats_client: NatsClient | None,
         table_name: str,
         entity_id: Any,
+        *,
+        l2_key_current: bool = False,
     ) -> None:
         """publish cache invalidation signal for an entity.
 
@@ -684,6 +700,11 @@ class CollectionRegistry:
         :param entity_id: pk value (single-pk) or tuple of pk values
             in declared order (composite-pk)
         :ptype entity_id: Any
+        :param l2_key_current: the write was revision-fenced and left this
+            registry's scoped L2 key holding the newest value, so receivers
+            sharing the scope keep it (see
+            :attr:`CacheInvalidationMessage.l2_current_scope`)
+        :ptype l2_key_current: bool
         :return: nothing
         :rtype: None
         """
@@ -713,7 +734,12 @@ class CollectionRegistry:
         else:
             values = (entity_id,)
         ids = [str(v) for v in values]  # convert at border: invalidation wire-envelope pk values
-        message = CacheInvalidationMessage(table=table_name, ids=ids, origin=self._origin_id)
+        message = CacheInvalidationMessage(
+            table=table_name,
+            ids=ids,
+            origin=self._origin_id,
+            l2_current_scope=self._kv_key_scope if l2_key_current else None,
+        )
         try:
             await nats_client.publish(
                 subject=Subjects.cache_invalidate(),

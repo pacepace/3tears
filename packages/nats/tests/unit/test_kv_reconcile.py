@@ -257,6 +257,34 @@ class TestTheDeclarerReconciles:
         assert js.updated[0].allow_msg_ttl is True
 
     @pytest.mark.asyncio
+    async def test_a_legacy_file_bucket_is_enabled_in_place_without_asking_to_change_storage(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The server refuses to change a stream's storage, so an update that asked for it would
+        fail the in-place enable along with it -- and the opener with it, for every guard on that
+        bucket. The update carries the live storage and the drift is reported, not requested."""
+        js = _ScriptedJetStream(
+            add_raises=_ApiError(10058, "stream name already in use with a different configuration"),
+            live=_live(storage=StorageType.FILE, allow_direct=True, allow_msg_ttl=None, max_age=30.0),
+        )
+        with caplog.at_level("WARNING"):
+            await NatsKvBucket.open(
+                client=_ScriptedClient(js),  # type: ignore[arg-type]
+                full_name="probe",
+                ttl=None,
+                storage="memory",
+                create_if_missing=True,
+                history=1,
+                direct=True,
+            )
+        assert len(js.updated) == 1
+        assert js.updated[0].allow_msg_ttl is True
+        assert js.updated[0].storage == StorageType.FILE, "the update asked the server to change storage"
+        assert js.updated[0].max_age == 30.0, "the update carried a value that was not being reconciled"
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("storage" in w for w in warnings), "the storage drift went unreported"
+
+    @pytest.mark.asyncio
     async def test_a_live_bucket_already_carrying_it_is_not_updated(self) -> None:
         """Idempotence, and the reason it matters: `update_stream` is a write.
 

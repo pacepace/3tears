@@ -19,6 +19,7 @@ The contract this pins:
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -311,10 +312,8 @@ class TestNegativeCaching:
     ) -> None:
         # a denylist checks a different key per token, so a marker's own key is rarely seen twice;
         # expiry has to reach rows nobody looks up again.
-        import threetears.core.collections.base as base_module
-
         clock = [1_000.0]
-        monkeypatch.setattr(base_module.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
         nats, store, gens = _wire()
         l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
         coll = _replica(_NegativeCaching, nats, store, gens, l1=l1)
@@ -326,6 +325,26 @@ class TestNegativeCaching:
         assert await coll.get("a-new-token") is None  # a marker write triggers the sweep
         remaining = l1.execute_query("SELECT key FROM collection_absent_markers")
         assert len(remaining) == 1, "expired markers for keys nobody read again were left in L1"
+
+    @pytest.mark.asyncio
+    async def test_one_sweep_drains_a_backlog_larger_than_its_batch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # a sweep capped at one batch per interval falls behind any miss rate above batch/interval,
+        # and the table then grows without bound.
+        import threetears.core.collections.base as base_module
+
+        clock = [1_000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(base_module, "_ABSENT_MARKER_SWEEP_BATCH", 2)
+        nats, store, gens = _wire()
+        l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
+        coll = _replica(_NegativeCaching, nats, store, gens, l1=l1)
+        for n in range(7):
+            assert await coll.get(f"token-{n}") is None
+
+        clock[0] += _MAX_AGE.total_seconds() + 61.0
+        assert await coll.get("a-new-token") is None
+        remaining = l1.execute_query("SELECT key FROM collection_absent_markers")
+        assert len(remaining) == 1, "the sweep stopped after one batch and left the backlog"
 
     @pytest.mark.asyncio
     async def test_an_l2_marker_leaves_the_bucket_when_its_lifetime_passes(self) -> None:
@@ -379,36 +398,21 @@ class TestNegativeCaching:
         assert store.fetches == 1, "the poisoned entry kept sending lookups to L3"
 
 
-class TestStrictWrites:
+class TestFailedL2Writes:
     @pytest.mark.asyncio
-    async def test_a_failed_l2_write_raises_on_a_negative_caching_collection(self) -> None:
+    async def test_a_failed_l2_write_cannot_leave_an_absence_answering(self) -> None:
+        # the L2 marker the write failed to replace was stamped before the commit advanced the
+        # generation, so it stops answering without the write ever reaching L2.
         nats, store, gens = _wire()
+        reader = _replica(_NegativeCaching, nats, store, gens)
+        assert await reader.get("tok") is None  # absence recorded in L1 and L2
         writer = _replica(_NegativeCaching, nats, store, gens)
         nats.bucket.fail_put = True
-        with pytest.raises(KvError, match="L2 may disagree"):
-            await _write(writer, "tok")
-        assert "tok" in store.rows
-
-    @pytest.mark.asyncio
-    async def test_a_failed_l2_delete_raises_on_a_negative_caching_collection(self) -> None:
-        nats, store, gens = _wire()
-        coll = _replica(_NegativeCaching, nats, store, gens)
-        await _write(coll, "tok")
-        nats.bucket.fail_delete = True
-        with pytest.raises(KvError, match="delete"):
-            await coll.delete("tok")
-        assert "tok" not in store.rows
-
-    @pytest.mark.asyncio
-    async def test_a_failed_l2_reload_raises_on_a_negative_caching_collection(self) -> None:
-        nats, store, gens = _wire()
-        coll = _replica(_NegativeCaching, nats, store, gens)
-        await _write(coll, "tok")
-        entity = await coll.get("tok")
-        assert entity is not None
-        nats.bucket.fail_put = True
-        with pytest.raises(KvError, match="reload"):
-            await coll.reload_entity(entity)
+        await _write(writer, "tok")
+        nats.bucket.fail_put = False
+        other = _replica(_NegativeCaching, nats, store, gens)
+        assert await reader.get("tok") is not None, "this pod's own recorded absence hid the row"
+        assert await other.get("tok") is not None, "the L2 marker hid the row"
 
     @pytest.mark.asyncio
     async def test_failed_l2_writes_still_degrade_without_opting_in(self) -> None:

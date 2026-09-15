@@ -30,22 +30,51 @@ packages (bumped in lock-step).
   - Migration: pass `verifier_future_tolerance` at every construction and `issued_at` at
     every `record_unique` call. `validate_dpop_proof` passes the proof's `iat` itself; its
     guard needs `verifier_future_tolerance` of at least the `iat_window` you pass
-    (`DEFAULT_IAT_WINDOW` by default).
+    (`DEFAULT_IAT_WINDOW` by default). A guard sized too small makes `validate_dpop_proof`
+    raise on every request, not at startup, because it is a function with no construction
+    step. `CallProxy` and `ToolServer` do refuse at construction.
+  - A construction without `verifier_future_tolerance` fails with `TypeError`. The hub's
+    DPoP guard (`hub-dpop-nonces`) is one, so the hub does not start on this release until
+    it passes one.
+  - **Only single-use nonces migrate this way.** A `ReplayGuard` used as a long-lived ledger
+    is not a nonce guard: identity's refresh-token jti ledger (`identity-revocation-jti`, a
+    30-day TTL) would refuse every outstanding refresh token for up to 30 days after a
+    broker wipe. Move such a ledger to an L3 collection rather than watermarking it, and
+    leave its bucket alone until then.
   - **Existing nonce buckets stay file-backed until deleted.** The bucket names are
     unchanged and a bucket's storage is never reconciled, so on a cluster that already has
-    `{ns}-pop_nonces` and `{ns}-proxy_assertion_nonces` this release binds the existing
-    FILE streams (logging the storage drift on every open). Delete each by name once every
-    replica runs this release; the next record recreates it memory-backed. A deletion is a
-    wipe, so calls through that guard are refused for its reach afterwards. The
-    `RevocationGuard`, idempotency and windowed-counter buckets are still deliberately
+    them this release binds the existing FILE streams (logging the storage drift on every
+    open). This repo's are `{ns}-pop_nonces` and `{ns}-proxy_assertion_nonces`; the hub's
+    `hub-dpop-nonces` and identity's nonce buckets follow the same step when those
+    consumers release. Delete each by name once every replica of its consumer runs this
+    release; the next record recreates it memory-backed. A deletion is a wipe, so calls
+    through that guard are refused for its reach afterwards. Ledger buckets (above), and the
+    `RevocationGuard`, idempotency and windowed-counter buckets, are still deliberately
     file-backed and are NOT part of this step.
 - **BREAKING: `BaseCollection.l2_cas_mutate` returns a `CasMutation`** (`action` of created,
   updated, deleted or noop, and the row written) instead of `None`. On a collection with an L3
-  pool it is now three-tier: when L2 holds no live row the callback is shown L3's row, so a
-  broker wipe no longer resets a counter to zero, and the won result is persisted to L3 per
-  `l3_write_policy` (deletes always synchronously). Collections without an L3 pool, including
-  the presence collections, behave as before. Migration: callers that ignored the return value
-  need no change; a synchronous persist that affects no L3 row now raises `RuntimeError`.
+  pool it is now three-tier:
+  - When L2 holds no live row the callback is shown L3's row, so a broker wipe no longer resets
+    a counter to zero.
+  - The won result is persisted to L3 per `l3_write_policy`, deletes always synchronously.
+  - A persist that fails withdraws the won L2 value (deleted at the revision it won) and then
+    raises, so a retry never sees a write it was told failed. That includes a persist that
+    affects no row, which raises `RuntimeError`.
+  - A table that fences every L3 write (`cas_null_safe`) raises `ValueError` before L2 is
+    touched.
+  - Its invalidation broadcast tells listeners in the same L2 scope to keep the key, which is
+    the fence and may be newer than L3. Listeners in other scopes still evict.
+  - Collections without an L3 pool, including the presence collections, behave as before.
+  - Migration: callers that ignored the return value need no change.
+- `CacheInvalidationMessage` gains `l2_current_scope`, and `CollectionRegistry.publish_invalidation`
+  gains `l2_key_current`. A receiver on an older release ignores the field and evicts as before, so
+  roll every replica of a principal that uses a three-tier `l2_cas_mutate` together.
+- **Reconciling a KV stream no longer asks for unreconciled changes.** The in-place update is
+  built from the live stream config with only the reconciled fields changed. It used to send
+  the whole requested config, so a legacy file-backed bucket opened by a declarer asking for
+  memory failed the update over storage. That failure was reported as a missing grant, and it
+  blocked the `allow_msg_ttl` enable. Differences outside the reconciled set are now always
+  reported at WARNING, including when a reconcile also ran.
 
 ### Added
 
@@ -67,9 +96,15 @@ packages (bumped in lock-step).
   `GenerationUnavailableError`, and `negative_cache_max_age` bounds how long older markers can
   hide it if nobody retries. Requires `CollectionRegistry.set_generation_source(...)`
   (normally `threetears.epoch.EpochGenerationSource`). Refuses, at construction, deferred L3
-  flushes; refuses subscript writes and `save_entity(conn=...)`; makes `save_entity`,
-  `reload_entity` and `delete` raise `KvError` when their L2 write fails. L2 markers carry a
-  server-side lifetime, so they leave the shared bucket.
+  flushes; refuses subscript writes and `save_entity(conn=...)`. A failed L2 write degrades as
+  on any collection, since the marker it failed to replace no longer matches the generation. L2
+  markers carry a server-side lifetime; L1 markers are swept, the whole backlog each minute.
+  - **One generation per table.** Any write stops every marker in the table from answering,
+    and every writer compare-and-swaps the same generation key: after 30 lost rounds the write
+    raises `GenerationUnavailableError` with its row committed. Opt in for tables read far
+    more often than written.
+  - Only the collection's own write paths advance the generation (`save_entity`, `delete`,
+    `l2_cas_mutate`). A subclass that writes L3 with its own SQL must not opt in.
 - **`BaseCollection.expires_at_column`**: a row whose expiry has passed is absent to `get`,
   `ensure` and `collection[id]` at every tier, so correctness never waits on a sweep. Reporting
   reads that serve an entity's internals still see it, so an entity held past its expiry can

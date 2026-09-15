@@ -86,6 +86,7 @@ Table(
 #: larger than one batch drains over successive intervals.
 _ABSENT_MARKER_SWEEP_INTERVAL_SECONDS: Final = 60.0
 _ABSENT_MARKER_SWEEP_BATCH: Final = 500
+_GENERATION_WARNING_INTERVAL_SECONDS: Final = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +290,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._l1 = registry.get_l1_backend(self.table_name)
         self.l3_pool = registry.get_l3_pool(self.table_name)
         self._next_absent_marker_sweep = 0.0
+        self._last_generation_warning: float | None = None
         self._refuse_unsound_negative_cache()
         if self._negative_cache_active and self._l1 is not None:
             self._l1.initialize(_ABSENT_MARKER_METADATA)
@@ -859,10 +861,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         try:
             return await source.current(self.table_name)
         except GenerationUnavailableError as exc:
-            log.warning(
-                "write generation unavailable; asking L3 rather than trusting a recorded absence",
-                extra={"extra_data": {"table": self.table_name, "error": str(exc)}},
-            )
+            # every lookup lands here while the source is down; one warning per interval says so.
+            # absence of a previous warning means never warned, not a warning at time zero.
+            now = time.monotonic()
+            last = self._last_generation_warning
+            if last is None or now - last >= _GENERATION_WARNING_INTERVAL_SECONDS:
+                self._last_generation_warning = now
+                log.warning(
+                    "write generation unavailable; asking L3 rather than trusting a recorded absence",
+                    extra={"extra_data": {"table": self.table_name, "error": str(exc)}},
+                )
             return None
 
     async def _advance_generation(self) -> GenerationUnavailableError | None:
@@ -951,13 +959,14 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._sweep_expired_l1_markers(now)
 
     def _sweep_expired_l1_markers(self, now: float) -> None:
-        """delete absent-markers past their deadline from this pod's L1, in one bounded batch.
+        """delete every absent-marker past its deadline from this pod's L1.
 
         A marker is otherwise removed only when its own key is read or written again, and the keys
         a denylist checks -- one per token -- are rarely seen twice, so without this the table grows
         with every distinct key ever looked up. Runs from the marker write path at most once per
-        :data:`_ABSENT_MARKER_SWEEP_INTERVAL_SECONDS` per collection, and removes at most
-        :data:`_ABSENT_MARKER_SWEEP_BATCH` rows, so the cost it adds to a lookup stays bounded.
+        :data:`_ABSENT_MARKER_SWEEP_INTERVAL_SECONDS` per collection and drains the backlog in
+        batches of :data:`_ABSENT_MARKER_SWEEP_BATCH`, so the table never holds more than the
+        markers written within one max age plus one interval, whatever the miss rate.
 
         :param now: the monotonic time the caller already read
         :ptype now: float
@@ -966,12 +975,15 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return
-        expired = self._l1.execute_query(
-            f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE deadline <= ? LIMIT {_ABSENT_MARKER_SWEEP_BATCH}",
-            (now,),
-        )
-        for row in expired:
-            self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
+        while True:
+            expired = self._l1.execute_query(
+                f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE deadline <= ? LIMIT {_ABSENT_MARKER_SWEEP_BATCH}",
+                (now,),
+            )
+            for row in expired:
+                self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
+            if len(expired) < _ABSENT_MARKER_SWEEP_BATCH:
+                return
 
     def _clear_l1_marker(self, entity_id: Any) -> None:
         """drop this pod's L1 absent-marker for ``entity_id``, if it holds one.
@@ -1663,8 +1675,12 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     # --- Cache coherence signaling ---
 
-    async def _publish_invalidation(self, entity_id: Any) -> None:
+    async def _publish_invalidation(self, entity_id: Any, *, l2_key_current: bool = False) -> None:
         """Signal other pods to evict this entity from their L1 caches.
+
+        ``l2_key_current`` is for revision-fenced writes only: peers sharing this registry's L2
+        scope then keep the key rather than evicting it (see
+        :attr:`CacheInvalidationMessage.l2_current_scope`).
 
         datasource-task-06 DS-06-04: when ``nats_client`` is missing
         the publish is a no-op -- consumer pods serve stale L1
@@ -1698,6 +1714,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._nats_client,
             self.table_name,
             entity_id,
+            l2_key_current=l2_key_current,
         )
 
     def _warn_missing_nats_client_once(self) -> None:
@@ -1812,8 +1829,6 @@ class BaseCollection(ABC, Generic[EntityT]):
         :raises ValueError: when ``conn`` is passed to a collection that caches absences
         :raises GenerationUnavailableError: when a collection that caches absences committed the
             write but could not advance its write generation; retry the save
-        :raises KvError: when a collection that caches absences committed the write but its L2
-            write did not land; retry the save
         """
         self._set_span_table()
         data = entity.to_dict()
@@ -1860,7 +1875,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if defer:
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, data, self.primary_key_columns)
-            l2_landed = await self._save_to_l2(entity_id, data)
+            await self._save_to_l2(entity_id, data)
             assert self._write_buffer is not None
             await self._write_buffer.add(self.table_name, entity_id, data)
             entity.mark_clean()
@@ -1893,37 +1908,11 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # No L1 backend: repopulate _changes so entity fields remain accessible
                 object.__setattr__(entity, "_changes", dict(data))
             self._clear_l1_marker(entity_id)
-            l2_landed = await self._save_to_l2(entity_id, data)
+            await self._save_to_l2(entity_id, data)
 
         await self._publish_invalidation(entity_id)
         if generation_failure is not None:
             raise generation_failure
-        self._raise_if_l2_write_lost(entity_id, landed=l2_landed, operation="write")
-
-    def _raise_if_l2_write_lost(self, entity_id: Any, *, landed: bool, operation: str) -> None:
-        """make a failed L2 write loud on a negative-caching collection.
-
-        Everywhere else a failed L2 write is a cache miss and degrades to a warning. On a
-        collection whose reads trust L2 to say a key is absent, L2 disagreeing with L3 is not a
-        cache miss: it can report a written row absent, or a deleted row present. Raising tells the
-        caller to retry. Called after the invalidation broadcast, so peers are still told.
-
-        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
-        :ptype entity_id: Any
-        :param landed: whether the L2 write succeeded
-        :ptype landed: bool
-        :param operation: what was attempted, for the message
-        :ptype operation: str
-        :return: None
-        :rtype: None
-        :raises KvError: when the write did not land and this collection caches misses
-        """
-        if landed or not self._negative_cache_active:
-            return
-        raise KvError(
-            f"{self.table_name}: the L2 {operation} for {entity_id!r} did not land, so L2 may disagree "
-            f"with L3 for that key until the {operation} is retried."
-        )
 
     async def persist_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
         """Persist a write-buffer entry to L3. Used by ``flush_pending``.
@@ -1961,9 +1950,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             # freshly-reloaded row read as locally authored, and locally
             # authored rows never expire.
             self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
-        l2_landed = await self._save_to_l2(entity_id, data)
+        await self._save_to_l2(entity_id, data)
         await self._publish_invalidation(entity_id)
-        self._raise_if_l2_write_lost(entity_id, landed=l2_landed, operation="reload")
 
     @traced()
     async def delete(self, entity_id: Any) -> bool:
@@ -1981,9 +1969,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         await self.delete_from_store(entity_id)
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-        l2_landed = await self._delete_from_l2(entity_id)
+        await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
-        self._raise_if_l2_write_lost(entity_id, landed=l2_landed, operation="delete")
         return True
 
     @traced()
@@ -2040,10 +2027,22 @@ class BaseCollection(ABC, Generic[EntityT]):
           A delete always lands synchronously;
         - a collection that caches absences advances its write generation
           after a synchronous persist, as :meth:`save_entity` does, and
-          raises if it cannot once L1 and the broadcast have run.
+          raises if it cannot once L1 and the broadcast have run;
+        - a persist that fails withdraws the won L2 value (deleted at the
+          revision it won) before the error propagates, so a retry does not
+          see a write it was told failed;
+        - the invalidation broadcast tells peers sharing this registry's L2
+          scope to keep the key, which already holds the newest value.
 
-        Write-behind can lose the increments of one flush interval when a
-        broker wipe coincides with the writer's crash. That is the trade
+        The fence is one scoped L2 key, so a three-tier compare-and-swap row
+        is mutated by one principal's replicas; two principals would each
+        hold their own key and overwrite each other in L3. Mutate such a row
+        only through this method: an unfenced :meth:`save_entity` on the
+        same row invalidates the key for every peer.
+
+        Write-behind can lose the increments of up to one flush interval
+        whenever L2 loses the key before the flush lands: the seed comes
+        from L3, not from any replica's unflushed buffer. That is the trade
         :attr:`l3_write_policy` states for data like attempt counters; data
         that cannot tolerate it declares ``"synchronous"``.
 
@@ -2091,14 +2090,25 @@ class BaseCollection(ABC, Generic[EntityT]):
             during bucket resolution -- intentionally not swallowed,
             see the note above
         :raises RuntimeError: when a synchronous L3 persist affects no row
+            (an ``on_conflict="ignore"`` table refusing an update, say); L2
+            is withdrawn first, as for any persist failure
         :raises GenerationUnavailableError: when a collection that caches
             absences persisted the result but could not advance its write
             generation
+        :raises ValueError: on a collection with an L3 pool whose every L3
+            write is fenced (``cas_null_safe``), before L2 is touched
         """
         self._set_span_table()
         kv = await self._ensure_kv()
         if kv is None:
             return await self._l1_only_cas_mutate(entity_id, mutate)
+        if self.l3_pool is not None and self.emits_cas_fence:
+            # the persist carries no fence value, so a fenced table would refuse every update
+            # after the first -- having already let L2 advance. refused before L2 is touched.
+            raise ValueError(
+                f"{type(self).__name__} fences every L3 write (cas_null_safe), so l2_cas_mutate cannot "
+                f"persist to it: the L2 revision is this method's fence and the persist is unfenced"
+            )
 
         key = self.l2_key(entity_id)
         for attempt in range(max_retries):
@@ -2146,27 +2156,27 @@ class BaseCollection(ABC, Generic[EntityT]):
 
             now = datetime.now(UTC)
             ok: bool
+            won_revision: int | None = None
             if action == "delete":
                 ok = await kv.delete(key=key, revision=revision)
             else:
                 assert new_row is not None, "'upsert' action must carry a non-None new_row"
                 new_row["date_updated"] = now
+                # a row new to every tier is stamped now; one seeded from L3, or rewritten by a
+                # callback that dropped the field, keeps the creation time it already had.
+                new_row.setdefault("date_created", now if row is None else row.get("date_created", now))
                 if revision is None:
                     # value absent: create-if-absent so a racing creator loses.
-                    new_row.setdefault("date_created", now)
-                    ok = (
-                        await kv.create(key=key, value=self.serialize(self._normalise_datetimes_for_write(new_row)))
-                        is not None
+                    won_revision = await kv.create(
+                        key=key, value=self.serialize(self._normalise_datetimes_for_write(new_row))
                     )
                 else:
-                    ok = (
-                        await kv.update(
-                            key=key,
-                            value=self.serialize(self._normalise_datetimes_for_write(new_row)),
-                            revision=revision,
-                        )
-                        is not None
+                    won_revision = await kv.update(
+                        key=key,
+                        value=self.serialize(self._normalise_datetimes_for_write(new_row)),
+                        revision=revision,
                     )
+                ok = won_revision is not None
 
             if not ok:
                 if attempt == max_retries - 1:
@@ -2186,7 +2196,11 @@ class BaseCollection(ABC, Generic[EntityT]):
 
             # CAS won: the L2 revision was the fence. persist to L3 (when there is one) only now,
             # so a write that lost the race is never persisted; then reconcile L1 and notify peers.
-            generation_failure = await self._persist_cas_result(entity_id, action, new_row)
+            try:
+                generation_failure = await self._persist_cas_result(entity_id, action, new_row)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- compensates L2 for any persist failure, then re-raises it unchanged
+                await self._withdraw_unpersisted_cas(entity_id, key, action, won_revision, exc)
+                raise
             if action == "delete":
                 if self._l1 is not None:
                     self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
@@ -2195,7 +2209,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 if self._l1 is not None:
                     self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
                 self._clear_l1_marker(entity_id)
-            await self._publish_invalidation(entity_id)
+            await self._publish_invalidation(entity_id, l2_key_current=True)
             if generation_failure is not None:
                 raise generation_failure
             outcome: CasMutation
@@ -2205,6 +2219,69 @@ class BaseCollection(ABC, Generic[EntityT]):
                 outcome = CasMutation(action="created" if row is None else "updated", row=new_row)
             return outcome
         raise AssertionError("unreachable: every CAS round either returns or retries within the budget")
+
+    async def _withdraw_unpersisted_cas(
+        self,
+        entity_id: Any,
+        key: str,
+        action: Literal["upsert", "delete"],
+        won_revision: int | None,
+        persist_error: BaseException,
+    ) -> None:
+        """take back a won compare-and-swap whose L3 persist failed.
+
+        The caller is about to be told the write failed, so L2 must not keep answering with it: a
+        retried claim would read "already claimed" and skip its work, and a retried increment
+        would count twice. The upsert is withdrawn by deleting the key at the revision it won,
+        not by restoring the prior bytes: with an L3 pool behind it an absent L2 entry is always
+        a correct state, since the next read or mutation starts from L3, which never took the
+        write. A failed delete needs nothing: its L2 entry is already absent and L3 still holds
+        the row.
+
+        When the delete at that revision fails, another writer has already compare-and-swapped
+        on top of the unpersisted value and its own persist carries it forward; that is logged,
+        not repaired.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param key: the scoped L2 key the mutation won
+        :ptype key: str
+        :param action: the action that won in L2
+        :ptype action: str
+        :param won_revision: the L2 revision the upsert produced, ``None`` for a delete
+        :ptype won_revision: int | None
+        :param persist_error: why the persist failed, for the log
+        :ptype persist_error: BaseException
+        :return: nothing
+        :rtype: None
+        """
+        withdrawn = False
+        withdraw_error: str | None = None
+        remedy = "retry the mutation once L3 accepts writes"
+        if action == "upsert" and won_revision is not None:
+            try:
+                kv = await self._ensure_kv()
+                withdrawn = kv is not None and await kv.delete(key=key, revision=won_revision)
+            except KvError as exc:
+                withdraw_error = str(exc)
+            if withdraw_error is not None:
+                remedy = "L2 still holds the unpersisted value: delete the key, or retry once L2 and L3 are reachable"
+            elif not withdrawn:
+                remedy = "a later compare-and-swap already built on this value in L2, and its persist carries it"
+        log.error(
+            "L3 persist of a won L2 compare-and-swap failed; the write is reported failed",
+            extra={
+                "extra_data": {
+                    "entity_id": str(entity_id),  # convert at border: log extra_data field
+                    "table": self.table_name,
+                    "action": action,
+                    "error": f"{type(persist_error).__name__}: {persist_error}",
+                    "l2_withdrawn": withdrawn,
+                    "l2_withdraw_error": withdraw_error,
+                    "remedy": remedy,
+                }
+            },
+        )
 
     async def _persist_cas_result(
         self, entity_id: Any, action: Literal["upsert", "delete"], new_row: dict[str, Any] | None

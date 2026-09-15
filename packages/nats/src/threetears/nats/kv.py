@@ -29,6 +29,7 @@ design notes
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -446,11 +447,24 @@ async def _reconcile_existing_kv_stream(*, js: Any, full_name: str, config: Stre
     live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
     differences = kv_stream_differences(requested=config, actual=live)
     reconcilable = {field: value for field, value in differences.items() if field in RECONCILED_KV_STREAM_FIELDS}
+    dropped = {field: value for field, value in differences.items() if field not in RECONCILED_KV_STREAM_FIELDS}
+    if dropped:
+        log.warning(
+            "JetStream KV bucket bound to an existing stream whose configuration differs from the "
+            "requested one; the requested values were NOT applied: bucket=%s %s",
+            full_name,
+            _render_differences(dropped),
+            extra={"extra_data": {"bucket": full_name, "dropped": _render_differences(dropped)}},
+        )
     if reconcilable:
-        # update_stream sends the whole requested config, so this applies every
-        # difference, not only the reconciled ones. That is the declarer's job.
+        # Built from the LIVE config with only the reconciled fields changed. Sending the
+        # requested config would also ask for every other difference, and some of those the
+        # server refuses to change at all: a legacy file-backed bucket opened by a declarer that
+        # asks for memory would fail the whole update over storage, and with it the in-place
+        # enable this update exists for.
+        update = dataclasses.replace(live, **{field: want for field, (want, _have) in reconcilable.items()})
         try:
-            await js.update_stream(config)
+            await js.update_stream(update)
         except Exception as exc:
             # A principal may be granted STREAM.CREATE and refused STREAM.UPDATE --
             # that is exactly the shape coll-task-05a gives pods. Say which grant is
@@ -462,17 +476,9 @@ async def _reconcile_existing_kv_stream(*, js: Any, full_name: str, config: Stre
             ) from exc
         log.info(
             "JetStream KV bucket reconciled in place",
-            extra={"extra_data": {"bucket": full_name, "applied": _render_differences(differences)}},
+            extra={"extra_data": {"bucket": full_name, "applied": _render_differences(reconcilable)}},
         )
-    elif differences:
-        log.warning(
-            "JetStream KV bucket bound to an existing stream whose configuration differs from the "
-            "requested one; the requested values were NOT applied: bucket=%s %s",
-            full_name,
-            _render_differences(differences),
-            extra={"extra_data": {"bucket": full_name, "dropped": _render_differences(differences)}},
-        )
-    else:
+    elif not dropped:
         log.debug(
             "JetStream KV bucket bound (already existed)",
             extra={"extra_data": {"bucket": full_name}},
