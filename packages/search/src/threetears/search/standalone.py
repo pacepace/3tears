@@ -106,6 +106,7 @@ import asyncio
 import ipaddress
 import socket
 import time
+import urllib.request
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -243,6 +244,41 @@ def _is_address_literal(host: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _leaves_through_a_proxy(scheme: str, host: str) -> bool:
+    """Whether a request to ``host`` leaves through a forward proxy rather than directly.
+
+    httpx honours the proxy environment (``HTTPS_PROXY`` / ``HTTP_PROXY`` /
+    ``ALL_PROXY``, with ``NO_PROXY`` exempting hosts), and this answers the same
+    question from the same variables, so the guard checks the route the request
+    actually takes rather than assuming a direct one.
+
+    :param scheme: the URL's scheme
+    :ptype scheme: str
+    :param host: the URL's host, lower-cased
+    :ptype host: str
+    :return: ``True`` when the connection goes to a proxy
+    :rtype: bool
+    """
+    proxies = urllib.request.getproxies_environment()
+    if not (proxies.get(scheme) or proxies.get("all")):
+        return False
+    return not urllib.request.proxy_bypass_environment(host, proxies)
+
+
+def _is_local_name(host: str) -> bool:
+    """Whether ``host`` names the machine it is resolved on, whatever DNS says.
+
+    Sent through a proxy, ``localhost`` is the *proxy's* loopback -- an internal
+    endpoint the local resolver never gets asked about.
+
+    :param host: a hostname, lower-cased
+    :ptype host: str
+    :return: ``True`` for ``localhost`` and its subdomains
+    :rtype: bool
+    """
+    return host == "localhost" or host.endswith(".localhost")
 
 
 async def _resolve(host: str) -> tuple[str, ...]:
@@ -1103,6 +1139,24 @@ class StandaloneTransport:
                 remediation="add the host to allowed_hosts if the deployment intends it to be reachable",
             )
         if self._allow_private_addresses:
+            return
+        if _leaves_through_a_proxy(parsed.scheme, host):
+            # The proxy resolves the name, so a local lookup is both impossible
+            # on a host whose only way out is that proxy -- which made every
+            # request fail "cannot resolve host" there -- and meaningless: the
+            # address checked here is not the one the proxy connects to. What
+            # can still be refused without resolving is refused; the rest is
+            # the proxy's ACL to enforce.
+            if (_is_address_literal(host) and _is_blocked_address(host)) or _is_local_name(host):
+                raise TransportFailed(
+                    f"refusing to reach host {host!r}: it names a non-public address",
+                    spend=spend,
+                    remediation=(
+                        "a search instance genuinely on this host's own network is reached by constructing the "
+                        "transport with allow_private_addresses=True -- deployment config, never a per-call "
+                        "parameter (D21)"
+                    ),
+                )
             return
         addresses = await _resolve(host)
         blocked = sorted(address for address in addresses if _is_blocked_address(address))
