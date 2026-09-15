@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, Final, Literal
+from typing import Any, ClassVar, Final, Literal, TypeVar
 
 from asyncpg import PostgresError
 from sqlalchemy import MetaData
@@ -45,7 +45,7 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
-from threetears.core.config import DefaultCoreConfig
+from threetears.core.config import CoreConfig, DefaultCoreConfig
 from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.data.schema import ColumnDef, IndexDef as DdlIndexDef, TableDef
 from threetears.core.entities.base import BaseEntity
@@ -57,6 +57,7 @@ __all__ = [
     "COORDINATION_TABLE_SCHEMAS",
     "STORAGE_FAILURES",
     "CoordinationClaimsCollection",
+    "CoordinationCollection",
     "CoordinationCountersCollection",
     "CoordinationRedemptionsCollection",
     "CoordinationRevocationsCollection",
@@ -95,6 +96,11 @@ _SWEEP_INTERVAL_SECONDS: Final = 300.0
 _SWEEP_BATCH: Final = 1_000
 
 
+#: so :func:`coordination_collection` returns the class it was asked for, and a consumer's
+#: lifecycle calls on it stay checked.
+_CollectionT = TypeVar("_CollectionT", bound="CoordinationCollection")
+
+
 class CoordinationRow(BaseEntity):
     """one coordination row; addressed by its collection's ``(purpose, key)``."""
 
@@ -116,8 +122,15 @@ def _common_columns() -> list[Column]:
     ]
 
 
-class _CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
-    """shared behaviour of the coordination tables: the composite key, and the expiry sweep."""
+class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
+    """shared behaviour of the coordination tables: the composite key, the flusher, the sweep.
+
+    Public because it is the type a consumer holds: the lifecycle a process must drive
+    (:meth:`ensure_flushing`, :meth:`aclose`) and the hygiene it may drive (:meth:`sweep_expired`)
+    live here, so a wave-2 consumer annotating the collection it got from
+    :func:`coordination_collection` would otherwise have to import a private name across packages
+    or fall back to ``Any`` and lose checking on exactly those calls.
+    """
 
     primary_key_column: str | tuple[str, ...] = ("purpose", "key")
 
@@ -177,6 +190,30 @@ class _CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         if flusher is not None:
             await flusher.aclose()
 
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
+        """persist to L3, or report success when this deployment has no L3.
+
+        A coordination collection with no L3 is a supported wiring, not a broken one:
+        identity-edge holds no database by design and still throttles across its replicas on L2.
+        The generated path returns 0 rows when there is no durable store, and ``save_entity``
+        reads 0 as a failed insert -- so a row written by an edge replica raised rather than
+        landing. Reporting the write as done is the truth here: there was nothing to write to.
+
+        :param data: row payload keyed by column name
+        :ptype data: dict[str, Any]
+        :param original_timestamp: pre-mutation CAS fence value
+        :ptype original_timestamp: datetime | None
+        :param conn: optional backend connection the write joins
+        :ptype conn: Any
+        :return: rows affected, or 1 when this collection has no L3
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 1
+        return await super().save_to_store(data, original_timestamp, conn=conn)
+
     @property
     def entity_class(self) -> type[CoordinationRow]:
         """the entity every coordination table holds.
@@ -196,14 +233,25 @@ class _CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         return self.schema.name
 
     async def sweep_expired(self, *, now: datetime | None = None, batch: int = _SWEEP_BATCH) -> int:
-        """delete rows whose expiry has passed, in one bounded statement.
+        """delete rows whose expiry has passed from L3, in one bounded statement.
 
         Hygiene only, and deliberately not a scheduled job: identity runs no scheduler and survey
         pods take none by design, so a scheduled sweep would have no home in half the consumers.
         Correctness never waits on it -- an expired row is already absent to every read at every
-        tier -- so concurrent sweepers just delete rows the other already deleted, and no singleton
-        is needed. L2 is left alone for the same reason: an expired L2 row answers as absent, and
-        its own lifetime removes it.
+        tier -- so concurrent sweepers just delete rows the other already deleted, and no
+        singleton is needed.
+
+        **L1 and L2 reclaim themselves, by different means.** L1 drops an expired row when it is
+        read. L2 carries the row's own expiry as a server-side lifetime on every write
+        (:meth:`BaseCollection._l2_entry_lifetime`), so the broker removes the entry without
+        being asked. This statement is the third tier only.
+
+        **This is the one direct L3 write a negative-caching collection may make**, and it needs
+        no write-generation advance: deleting a row that every tier already reads as absent cannot
+        change any read's answer, and an absent-marker only ever claims absence.
+
+        Raises on a storage failure, so a caller sweeping deliberately sees it;
+        :meth:`sweep_expired_if_due`, which runs from a primitive's write path, contains it.
 
         :param now: the moment to compare against, for tests; defaults to now
         :ptype now: datetime | None
@@ -211,6 +259,8 @@ class _CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         :ptype batch: int
         :return: rows deleted, or 0 when this collection has no L3
         :rtype: int
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure, and
+            whatever else the backend raises
         """
         store = self.l3_pool
         if store is None:
@@ -222,19 +272,44 @@ class _CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
             f"SELECT purpose, key FROM {table} WHERE expires_at IS NOT NULL AND expires_at < $1 LIMIT {int(batch)})",
             cutoff,
         )
-        return _rows_affected(deleted)
+        rows = _rows_affected(deleted)
+        # Logged even at zero: an operator looking at a growing table needs to tell "sweeping,
+        # nothing expired" from "never sweeping" and from "sweeping and failing".
+        log.info(
+            "coordination expiry sweep",
+            extra={"extra_data": {"table": table, "rows_deleted": rows, "cutoff": cutoff.isoformat()}},
+        )
+        return rows
 
     async def sweep_expired_if_due(self) -> int:
-        """run :meth:`sweep_expired` at most once per interval in this process.
+        """run :meth:`sweep_expired` at most once per interval in this process, failures contained.
 
-        :return: rows deleted, or 0 when the interval has not elapsed
+        This is the seam a primitive calls from its own write path, so a failed sweep must not
+        fail the throttle or claim that triggered it: table-size hygiene the docstring above says
+        correctness never waits on cannot be what denies a login. The interval stamp is advanced
+        before the statement runs, so a failing sweep self-throttles to one attempt per interval.
+
+        :return: rows deleted, 0 when the interval has not elapsed or the sweep failed
         :rtype: int
         """
         now = time.monotonic()
         if now < self._next_expiry_sweep:
             return 0
         self._next_expiry_sweep = now + _SWEEP_INTERVAL_SECONDS
-        return await self.sweep_expired()
+        try:
+            return await self.sweep_expired()
+        except STORAGE_FAILURES as exc:
+            log.warning(
+                "coordination expiry sweep failed; retrying after the interval",
+                extra={
+                    "extra_data": {
+                        "table": self.table_name,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "interval_seconds": _SWEEP_INTERVAL_SECONDS,
+                    }
+                },
+            )
+            return 0
 
 
 def _rows_affected(result: Any) -> int:
@@ -255,7 +330,7 @@ def _rows_affected(result: Any) -> int:
     return 0
 
 
-class CoordinationCountersCollection(_CoordinationCollection):
+class CoordinationCountersCollection(CoordinationCollection):
     """windowed attempt counts: many increments, each cheap, none worth an L3 write on its own."""
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
@@ -279,7 +354,7 @@ class CoordinationCountersCollection(_CoordinationCollection):
     )
 
 
-class CoordinationClaimsCollection(_CoordinationCollection):
+class CoordinationClaimsCollection(CoordinationCollection):
     """idempotency claims: the claim itself, and the outcome a retry must be given back."""
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
@@ -307,7 +382,7 @@ class CoordinationClaimsCollection(_CoordinationCollection):
     )
 
 
-class CoordinationRevocationsCollection(_CoordinationCollection):
+class CoordinationRevocationsCollection(CoordinationCollection):
     """standing revocations: read on nearly every request, written rarely, and absence is the
     common answer -- which is what negative caching is for."""
 
@@ -330,7 +405,7 @@ class CoordinationRevocationsCollection(_CoordinationCollection):
     )
 
 
-class CoordinationRedemptionsCollection(_CoordinationCollection):
+class CoordinationRedemptionsCollection(CoordinationCollection):
     """single-use redemptions: the durable ledger shape, where a second sighting is the answer."""
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
@@ -399,10 +474,10 @@ def table_def_for(schema: TableSchema) -> TableDef:
 
 def coordination_collection(
     registry: CollectionRegistry,
-    collection_class: type[_CoordinationCollection],
-    config: Any = None,
+    collection_class: type[_CollectionT],
+    config: CoreConfig | None = None,
     **kwargs: Any,
-) -> _CoordinationCollection:
+) -> _CollectionT:
     """return the one collection of its table on this registry, building it the first time.
 
     Every primitive over a table shares it. A process builds many primitives over one table (seven
@@ -412,14 +487,15 @@ def coordination_collection(
 
     :param registry: the registry to look in and register with
     :ptype registry: CollectionRegistry
-    :param collection_class: which coordination collection is wanted
-    :ptype collection_class: type[_CoordinationCollection]
-    :param config: core config forwarded on first construction
-    :ptype config: Any
+    :param collection_class: which coordination collection is wanted; the return is typed as it
+    :ptype collection_class: type[CoordinationCollection]
+    :param config: core config forwarded on first construction; ``None`` uses the framework
+        defaults, which each table's declared ``l3_write_policy`` overrides anyway
+    :ptype config: CoreConfig | None
     :param kwargs: further keyword args forwarded on first construction (e.g. ``write_buffer``)
     :ptype kwargs: Any
     :return: the shared collection
-    :rtype: _CoordinationCollection
+    :rtype: CoordinationCollection
     :raises TypeError: when the registry already holds a different collection for that table
     """
     table = collection_class.schema.name
@@ -442,6 +518,5 @@ def coordination_collection(
         kwargs["write_buffer"] = WriteBuffer()
     # the framework defaults are the right fallback: each coordination table declares its own
     # l3_write_policy, which overrides whatever flush strategy a consumer's config carries.
-    built = collection_class(registry, config or DefaultCoreConfig(), **kwargs)
-    registry.register(built)
-    return built
+    # BaseCollection registers itself on construction, so nothing registers it here.
+    return collection_class(registry, config or DefaultCoreConfig(), **kwargs)

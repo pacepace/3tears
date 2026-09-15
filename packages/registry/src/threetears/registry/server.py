@@ -866,6 +866,9 @@ class RegistryServer:
         # safe on a partial startup, which is why it is unconditional rather than guarded.
         if self._collection_registry is not None:
             await self._collection_registry.stop_invalidation_listener()
+            # the same pairing for work a collection started itself: a write-behind
+            # coordination collection's flusher owes one last flush before the loop closes.
+            await self._collection_registry.close_collections()
         # whatever a factory built and the server never saw -- today the rbac stack's own
         # invalidation subscriptions.
         if self._on_shutdown is not None:

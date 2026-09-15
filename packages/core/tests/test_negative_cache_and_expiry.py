@@ -154,10 +154,10 @@ class _HookedBucket(FakeKvBucket):
         self.fail_put = False
         self.fail_delete = False
 
-    async def put(self, *, key: str, value: bytes) -> int:
+    async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
         if self.fail_put:
             raise KvError("simulated L2 write failure")
-        return await super().put(key=key, value=value)
+        return await super().put(key=key, value=value, ttl=ttl)
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:
         if self.fail_delete:

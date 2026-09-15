@@ -21,6 +21,7 @@ import pytest
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import BYTES_TYPE, INT_TYPE, STRING_TYPE
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.coordination.migrations import PACKAGE_NAME, register
@@ -35,6 +36,7 @@ from threetears.core.coordination.tables import (
     table_def_for,
 )
 from threetears.core.data.migrations import MigrationRunner, MigrationScope
+from threetears.core.testing.kv import FakeNatsClient
 
 
 class _RecordingStore:
@@ -76,15 +78,73 @@ class _FakeGenerations:
         self.count += 1
 
 
-def _registry(*, l3: Any = None) -> CollectionRegistry:
+class _Nats(FakeNatsClient):
+    """the shared collections bucket, with no listener subscribed in these tests."""
+
+
+class _RowStore:
+    """an in-process L3 that stores rows, for the tier round-trips."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str], dict[str, Any]] = {}
+
+    async def fetch_one(self, table: str, pk: dict[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
+        del table, conn
+        row = self.rows.get((pk["purpose"], pk["key"]))
+        return dict(row) if row is not None else None
+
+    async def upsert(self, table: str, data: dict[str, Any], **kwargs: Any) -> int:
+        del table, kwargs
+        self.rows[(data["purpose"], data["key"])] = dict(data)
+        return 1
+
+    async def delete(self, table: str, pk: dict[str, Any], *, conn: Any = None) -> None:
+        del table, conn
+        self.rows.pop((pk["purpose"], pk["key"]), None)
+
+    async def scan(self, table: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        del table, filters
+        return [dict(row) for row in self.rows.values()]
+
+    async def execute(self, query: str, *params: Any, namespace: str | None = None) -> str:
+        del query, params, namespace
+        return "DELETE 0"
+
+
+def _registry(*, l3: Any = None, l2: Any = None) -> CollectionRegistry:
     l1 = SQLiteBackend(db_name=f"coord_{uuid.uuid4().hex[:8]}")
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l3_pool=l3)
+    registry.configure(
+        l1_backend=l1,
+        l2_client=l2,
+        l3_pool=l3,
+        kv_key_scope="coord-principal" if l2 is not None else None,
+    )
     # the revocations table caches absences, so any registry with L3 needs a generation source.
     # In production that is threetears.epoch's; a consumer with L3 and no epoch access cannot run
     # that table, which is why the refusal is at construction.
     registry.set_generation_source(_FakeGenerations())
     return registry
+
+
+def _split_top_level(body: str) -> list[str]:
+    """split a CREATE TABLE body on its top-level commas, so ``PRIMARY KEY (a, b)`` stays whole."""
+    parts: list[str] = []
+    buffer: list[str] = []
+    depth = 0
+    for char in body:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(buffer))
+            buffer = []
+        else:
+            buffer.append(char)
+    if buffer:
+        parts.append("".join(buffer))
+    return parts
 
 
 def _config() -> DefaultCoreConfig:
@@ -103,13 +163,39 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
                 assert index.name in created, f"{schema.name}: index {index.name} was never created"
 
     @pytest.mark.asyncio
-    async def test_each_created_table_carries_exactly_its_declared_columns(self) -> None:
+    async def test_each_created_table_is_exactly_what_its_schema_declares(self) -> None:
+        # asserted statement-for-statement, not by substring: the renderer's type map, its
+        # nullability rule and the composite key are what a consumer's table is made of, and a
+        # "column name appears somewhere" check passes on all three being wrong.
         store = _RecordingStore()
         await create_coordination_tables(store)  # type: ignore[arg-type]
         creates = [s for s in store.statements if s.startswith("CREATE TABLE")]
-        for schema, statement in zip(COORDINATION_TABLE_SCHEMAS, creates, strict=False):
-            for column in schema.columns:
-                assert f" {column.name} " in statement, f"{schema.name}: column {column.name} is missing"
+        assert len(creates) == len(COORDINATION_TABLE_SCHEMAS), "a declared table was not created"
+        for schema, statement in zip(COORDINATION_TABLE_SCHEMAS, creates, strict=True):
+            body = statement.split("(", 1)[1].rsplit(")", 1)[0]
+            rendered = [part.strip() for part in _split_top_level(body)]
+            pk_clause = [part for part in rendered if part.upper().startswith("PRIMARY KEY")]
+            assert pk_clause == ["PRIMARY KEY (purpose, key)"], f"{schema.name}: wrong primary key"
+            declared = {
+                column.name: (
+                    "TEXT"
+                    if column.column_type == STRING_TYPE
+                    else "INTEGER"
+                    if column.column_type == INT_TYPE
+                    else "BYTEA"
+                    if column.column_type == BYTES_TYPE
+                    else "TIMESTAMPTZ"
+                )
+                for column in schema.columns
+            }
+            columns = {part.split(" ", 1)[0]: part.split(" ", 1)[1] for part in rendered if part not in pk_clause}
+            assert set(columns) == set(declared), f"{schema.name}: rendered columns differ from the declaration"
+            for name, sql in columns.items():
+                assert sql.startswith(declared[name]), f"{schema.name}.{name}: rendered as {sql!r}"
+                # the key columns carry the table's identity and can never be NULL; everything
+                # else follows its own declaration.
+                if name in {"purpose", "key"}:
+                    assert "NOT NULL" in sql, f"{schema.name}.{name}: a key column may not be nullable"
 
     def test_the_primary_key_is_purpose_and_key_on_every_table(self) -> None:
         # the purpose column is what a bucket name used to be; without it in the key, two throttles
@@ -161,17 +247,58 @@ class TestTheSharedCollection:
 
 
 class TestTheTiersAreOptional:
-    def test_a_registry_without_l2_or_l3_still_builds_every_table(self) -> None:
-        # identity-edge has no L3 by design; scriob's control plane has no L2.
-        registry = _registry()
-        for cls in (
-            CoordinationCountersCollection,
-            CoordinationClaimsCollection,
-            CoordinationRevocationsCollection,
-            CoordinationRedemptionsCollection,
-        ):
-            collection = coordination_collection(registry, cls, _config())
-            assert collection.l3_pool is None
+    """every tier combination a consumer actually has, exercised through a real read and write.
+
+    Building the collection proves nothing: the L1 table these collections declare for themselves
+    is what a read and a write need, and a suite that only constructs them cannot tell whether it
+    was ever declared.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "with_l2, with_l3",
+        [(False, False), (False, True), (True, False), (True, True)],
+        ids=["l1-only", "l1-and-l3", "l1-and-l2", "all-three"],
+    )
+    async def test_a_row_round_trips_on_every_tier_combination(self, with_l2: bool, with_l3: bool) -> None:
+        nats = _Nats() if with_l2 else None
+        store = _RowStore() if with_l3 else None
+        registry = _registry(l2=nats, l3=store)
+        collection = coordination_collection(registry, CoordinationRedemptionsCollection, _config())
+
+        entity = collection.create(
+            {"purpose": "jti", "key": "token-1", "expires_at": datetime.now(UTC) + timedelta(hours=1)}
+        )
+        await collection.save_entity(entity)
+
+        fetched = await collection.get(("jti", "token-1"))
+        assert fetched is not None, "a written row could not be read back"
+        assert fetched.to_dict()["key"] == "token-1"
+        if with_l3:
+            assert store is not None and ("jti", "token-1") in store.rows
+        await collection.delete(("jti", "token-1"))
+        assert await collection.get(("jti", "token-1")) is None
+
+    @pytest.mark.asyncio
+    async def test_a_compare_and_swap_round_trips_on_every_tier(self) -> None:
+        for nats, store in ((None, None), (None, _RowStore()), (_Nats(), None), (_Nats(), _RowStore())):
+            registry = _registry(l2=nats, l3=store)
+            collection = coordination_collection(registry, CoordinationCountersCollection, _config())
+            outcome = await collection.l2_cas_mutate(
+                ("throttle", "ip-1"),
+                lambda row: (
+                    "upsert",
+                    {
+                        "purpose": "throttle",
+                        "key": "ip-1",
+                        "count": 1 if row is None else int(row["count"]) + 1,
+                        "window_start": datetime.now(UTC),
+                        "expires_at": datetime.now(UTC) + timedelta(minutes=1),
+                    },
+                ),
+            )
+            assert outcome.row is not None and outcome.row["count"] == 1
+            await collection.aclose()
 
     def test_the_revocations_table_caches_absences_and_writes_l3_synchronously(self) -> None:
         assert CoordinationRevocationsCollection.negative_cache_max_age is not None

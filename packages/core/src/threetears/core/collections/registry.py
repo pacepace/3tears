@@ -623,6 +623,35 @@ class CollectionRegistry:
         self._nats_client = nats_client
         self._invalidation_subscription = subscription
 
+    async def close_collections(self) -> None:
+        """close every registered collection that has something to shut down.
+
+        The teardown owner for a collection's own background work: a write-behind coordination
+        collection starts a periodic flusher from its write path, and the final flush is the
+        difference between a clean shutdown losing nothing and losing one flush interval. Without
+        an owner here, the only caller of that ``aclose`` was a test, and the task leaked at loop
+        close.
+
+        Runs beside :meth:`stop_invalidation_listener` in a process's shutdown path and follows
+        the same rules: a no-op when nothing needs closing, and one collection's failure does not
+        abandon the rest, because a teardown that stops halfway leaves the task it was there to
+        stop still running.
+
+        :return: nothing
+        :rtype: None
+        """
+        for table, collection in list(self._collections.items()):
+            closer = getattr(collection, "aclose", None)
+            if closer is None:
+                continue
+            try:
+                await closer()
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- one table must not abandon the rest
+                log.error(
+                    "closing a collection failed; continuing with the rest of the teardown",
+                    extra={"extra_data": {"table": table, "error": f"{type(exc).__name__}: {exc}"}},
+                )
+
     async def stop_invalidation_listener(self) -> None:
         """drop this registry's cache-invalidation subscription.
 

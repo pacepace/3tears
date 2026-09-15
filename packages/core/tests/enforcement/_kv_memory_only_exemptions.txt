@@ -8,8 +8,5 @@
 # they are the work the rule exists to force, listed so the gate can go strict
 # today rather than after it.
 
-# rationale: an idempotency key lost means a retried operation runs a second time, which for a payment or a provisioning call is the failure the primitive exists to prevent. Moves onto a BaseCollection claim with write-behind to L3 (design-durable-coordination.md, durable security state).
-packages/core/src/threetears/core/coordination/idempotency.py:372:kv_bucket
-
 # rationale: a standing revocation lost makes a revoked session, principal or customer valid again. Moves onto a synchronous, negative-cached, expiring BaseCollection (design-durable-coordination.md, durable security state).
 packages/core/src/threetears/core/coordination/replay_guard.py:366:kv_bucket

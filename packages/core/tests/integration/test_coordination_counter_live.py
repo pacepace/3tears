@@ -24,7 +24,12 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination.migrations.v001_create_coordination_tables import create_coordination_tables
-from threetears.core.coordination.tables import CoordinationCountersCollection, coordination_collection
+from threetears.core.coordination.idempotency import IdempotencyKeyStore
+from threetears.core.coordination.tables import (
+    CoordinationClaimsCollection,
+    CoordinationCountersCollection,
+    coordination_collection,
+)
 from threetears.core.coordination.windowed_counter import WindowedCounter
 from threetears.core.data.store import DataStore
 from threetears.nats import NatsClient, set_default_namespace
@@ -70,7 +75,7 @@ def _registry(nats: NatsClient | None, pool: asyncpg.Pool) -> CollectionRegistry
 
 
 def _counters(registry: CollectionRegistry) -> CoordinationCountersCollection:
-    return coordination_collection(registry, CoordinationCountersCollection)  # type: ignore[return-value]
+    return coordination_collection(registry, CoordinationCountersCollection)
 
 
 async def test_a_flushed_count_survives_a_broker_wipe(db_container: str, nats_container: str) -> None:
@@ -102,6 +107,32 @@ async def test_a_flushed_count_survives_a_broker_wipe(db_container: str, nats_co
             await js.delete_stream(f"KV_{namespace}-collections")
             fresh = WindowedCounter(_registry(nats, pool), purpose="login", window_seconds=60)
             assert await fresh.record_attempt("ip-1") == 3, "the wipe reset a throttle that had reached L3"
+    finally:
+        await pool.close()
+
+
+async def test_a_flushed_claim_survives_a_broker_wipe(db_container: str, nats_container: str) -> None:
+    namespace = f"coord{uuid.uuid4().hex[:6]}"
+    set_default_namespace(namespace)
+    pool = await _migrated_pool(db_container)
+    try:
+        async with await NatsClient.connect(
+            nats_url=nats_container, nats_subject_namespace=namespace, client_name="claims"
+        ) as nats:
+            registry = _registry(nats, pool)
+            store = IdempotencyKeyStore(registry, purpose="exports")
+            assert (await store.claim("job-1", metadata=b"body-hash")).status == "claimed"
+            await store.complete("job-1", result=b"receipt")
+            claims = coordination_collection(registry, CoordinationClaimsCollection)
+            await claims.aclose()  # the flush interval, forced
+
+            js = nats.jetstream_context()
+            await js.delete_stream(f"KV_{namespace}-collections")
+            fresh = IdempotencyKeyStore(_registry(nats, pool), purpose="exports")
+            outcome = await fresh.claim("job-1")
+            assert outcome.status == "exists", "a wipe let a completed operation run a second time"
+            assert outcome.record.result == b"receipt"
+            assert outcome.record.metadata == b"body-hash"
     finally:
         await pool.close()
 

@@ -142,7 +142,13 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    let a follower answer with a generation a write had already advanced past, and has to be
    designed for rather than switched on.
 
-   *What bounds memory.* An L2 marker carries a server-side per-entry lifetime of the max age
+   *What bounds memory, for rows as well as markers.* A row on a table that declares
+   `expires_at_column` carries that expiry into L2 as a server-side lifetime on every write, so
+   the broker reclaims it without being asked. Without that, L1 dropped an expired row on read
+   and the owning collection swept L3, while L2 -- the shared, memory-backed collections bucket,
+   opened with no expiry -- kept every retired key until the broker restarted.
+
+   *What bounds marker memory.* An L2 marker carries a server-side per-entry lifetime of the max age
    (NATS 2.11+ `allow_msg_ttl`, reconciled in place on buckets created before it was set), so
    markers nobody reads again leave the shared bucket. An L1 marker lives in a framework-owned
    table beside the collection's and stops answering at the same age; a sweep, run from the
@@ -164,11 +170,18 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    L2 client of its own. Absences are recorded by readers, which may be other pods with L2; a
    writer skipping the advance for lack of L2 would leave their absences answering. The
    guarantee also holds only for writes made through the collection's own write paths
-   (`save_entity`, `delete`, `l2_cas_mutate`). An L3 write that bypasses them advances nothing:
+   (`save_entity` and `l2_cas_mutate`). An L3 write that bypasses them advances nothing:
    ad-hoc SQL through `l3_pool`, or a subclass that writes its own SQL and then fills L2. So a
    collection that caches absences writes only through those paths. Nothing enforces that yet;
    the durable primitives that opt in are built that way, and a structural check lands with
    them.
+
+   *Which writes need no advance, and why that is not a loophole.* A marker only ever claims a
+   key is ABSENT, so a write that cannot make a key present cannot make a marker wrong. `delete`
+   is one. So is the expired-row sweep the coordination tables ship: every tier already reads an
+   expired row as absent, so removing it changes no answer. Those two are the whole list, and
+   the structural check must permit exactly that shape rather than be widened to fit whatever
+   code it meets.
 
    *What still needs the max age.* A write that commits and then fails to advance the
    generation leaves older markers answering; the writer raises, and the max age bounds the
@@ -218,6 +231,34 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    write-behind declaration without a write buffer is refused at construction, and so is one
    on a collection that caches absences. Deletes always land synchronously, because the
    buffer holds rows, not removals.
+
+## The tables the primitives keep their state in
+
+`BaseCollection` is the machinery; these four tables are what the primitives put in it. All in
+`threetears.core.coordination.tables`, all keyed `(purpose, key)`.
+
+| Table | Holds | Policy |
+|---|---|---|
+| `coordination_counters` | the count in the live window, and when it opened | write-behind, expiring |
+| `coordination_claims` | an idempotency claim and its stored outcome | write-behind, expiring |
+| `coordination_revocations` | the moment a key is revoked from | synchronous, negative-cached, expiring |
+| `coordination_redemptions` | a single-use redemption, presence only | synchronous, expiring |
+
+- **`purpose` is what a bucket name used to be.** One process builds many primitives over one
+  table -- identity-core has three counters, identity-edge seven route throttles -- and a
+  collection is registered per table, so a table per bucket would mean seven collections and
+  seven migrations for one process. The rows stay separated by `purpose`, and
+  `coordination_collection` hands every primitive the one shared collection.
+- **Every tier is optional.** identity-edge has no L3 by design and still throttles across
+  replicas on L2 alone; a registry with no L2 counts per process. A collection with no L3 reports
+  its writes as done rather than raising, because there was nothing to write to.
+- **One declaration, two readers.** The migration renders its DDL from the same `TableSchema` the
+  collection reads, so a consumer's table cannot drift from the table the code expects. A
+  consumer that cannot run DDL -- an agent or tool pod, whose broker refuses it -- declares the
+  same schemas in its data section instead.
+- **Lifecycle.** A write-behind table's flusher starts on its first write and is stopped by
+  `CollectionRegistry.close_collections()` in the process's shutdown path, beside
+  `stop_invalidation_listener()`. Without that call the last flush interval is lost on shutdown.
 
 ## Consumers
 

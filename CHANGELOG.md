@@ -103,8 +103,13 @@ packages (bumped in lock-step).
     and every writer compare-and-swaps the same generation key: after 30 lost rounds the write
     raises `GenerationUnavailableError` with its row committed. Opt in for tables read far
     more often than written.
-  - Only the collection's own write paths advance the generation (`save_entity`, `delete`,
-    `l2_cas_mutate`). A subclass that writes L3 with its own SQL must not opt in.
+  - Only the collection's own write paths advance the generation (`save_entity` and
+    `l2_cas_mutate`, which commit rows a recorded absence would otherwise hide). A subclass that
+    writes L3 with its own SQL must not opt in.
+  - `delete` advances nothing, and needs to: an absent-marker only ever claims absence, so
+    removing a row cannot make one wrong. The same reasoning makes the coordination tables'
+    expired-row sweep the one direct L3 write a negative-caching collection may make -- every
+    tier already reads an expired row as absent.
 - **`BaseCollection.expires_at_column`**: a row whose expiry has passed is absent to `get`,
   `ensure` and `collection[id]` at every tier, so correctness never waits on a sweep. Reporting
   reads that serve an entity's internals still see it, so an entity held past its expiry can
@@ -159,11 +164,38 @@ packages (bumped in lock-step).
   - Migration: build one `CollectionRegistry` per process (L1, L2, and L3 where the process has a
     database), register `threetears.core.coordination.migrations`, and pass the registry. A
     process with no L3 keeps counting in L2 across its replicas.
+- **BREAKING: `IdempotencyKeyStore` keeps its claims in L3, not in a file-backed KV bucket.** A
+  broker restart no longer resurrects a completed operation so a retry runs it a second time.
+  - `IdempotencyKeyStore(registry, *, purpose=..., ttl=...)` replaces
+    `IdempotencyKeyStore(nats_client, *, bucket_name=...)`. Every method surface is unchanged;
+    `bucket_name` is now `purpose`, and `IdempotencyRecord.metadata` is the `claim_metadata`
+    column.
+  - The claim is still a create-if-absent compare-and-swap, so "claimed" versus "exists" stays
+    atomic across replicas; the row is written behind to L3, so a wipe inside one flush interval
+    can still lose a claim made in that interval.
+  - A `ttl` of `None` never expires (and the table then grows without bound); a non-positive one
+    is refused at construction.
 - `l2_cas_mutate` now backs off with full jitter between compare-and-swap rounds. Without it the
   losers of a round retried in lockstep and spent the budget on one instant, which is what a
   burst against a single key produces; a 20-way burst on one counter exhausted eight rounds.
+- **A row's declared expiry now reaches L2.** Every write of a row on a table with
+  `expires_at_column` carries that expiry as a server-side lifetime (`NatsKvBucket.put` takes a
+  `ttl` too now), so the broker reclaims it. L1 dropped expired rows on read and the owning
+  collection swept L3, while L2 -- the shared, memory-backed collections bucket, opened with no
+  expiry -- kept every retired key until the broker restarted.
+- **`CollectionRegistry.close_collections()`**: the teardown owner for work a collection starts
+  itself, beside `stop_invalidation_listener()`. A write-behind coordination collection's flusher
+  had a start owner and no stop owner, so the final flush never ran and the task leaked at loop
+  close. The registry server, the tool-pod bootstrap and the registry RBAC stack call it.
+- `threetears.core.coordination.tables.CoordinationCollection` is public: it is the type a
+  consumer holds, and the lifecycle it must drive lives on it.
+- The column-type alignment gate was scanning three package roots that do not exist
+  (`packages/agent-tools` against the real `packages/agent/tools`), each skipped in silence, so
+  three of its five packages were asserted against nothing while it read green. It now fails on a
+  missing root, understands `ALTER TABLE ... RENAME COLUMN` (which carries a column's type to its
+  new name), and exempts a rendered table only when a migration actually renders it.
 - `FakeNatsClient` gains `publish`, `subscribe_typed` and `unsubscribe`, and `FakeKvBucket` gains
-  `keys()`. Every `BaseCollection` write publishes an invalidation, so the fake could not stand in
+  `keys()` and a `ttl` on `put`. Every `BaseCollection` write publishes an invalidation, so the fake could not stand in
   for a collection's client at all, and each consumer was left to discover that.
 - The column-type alignment gate understands rendered migrations: a table whose DDL comes from its
   own `TableSchema` is checked through the renderer's type map instead of a SQL literal, and a

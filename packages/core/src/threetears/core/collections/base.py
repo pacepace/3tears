@@ -1353,7 +1353,16 @@ class BaseCollection(ABC, Generic[EntityT]):
             kv = await self._ensure_kv()
             if kv is None:
                 return False
-            await kv.put(key=self.l2_key(entity_id), value=self.serialize(self._normalise_datetimes_for_write(data)))
+            key = self.l2_key(entity_id)
+            value = self.serialize(self._normalise_datetimes_for_write(data))
+            lifetime = self._l2_entry_lifetime(data)
+            # the keyword is sent only when this table declares an expiry, so the call a
+            # non-expiring collection makes is exactly the call it has always made -- a bucket
+            # shim or a test double that predates per-entry lifetimes still satisfies it.
+            if lifetime is None:
+                await kv.put(key=key, value=value)
+            else:
+                await kv.put(key=key, value=value, ttl=lifetime)
         except KvError as exc:
             log.warning(
                 "L2 cache write failed",
@@ -1367,6 +1376,33 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
             return False
         return True
+
+    def _l2_entry_lifetime(self, row: dict[str, Any]) -> timedelta | None:
+        """the server-side lifetime this row's L2 entry should carry, from its declared expiry.
+
+        L1 drops an expired row when it reads it and the owning collection sweeps L3, which left
+        L2 as the one tier with no reclamation: the shared collections bucket is opened with no
+        expiry, so an expiring table's keys -- one per request for a claim, one per account or IP
+        for a counter -- stayed resident in a memory-backed broker until it restarted. A row that
+        declares when it expires can say so to the server, which is what this does.
+
+        A row already past its expiry still gets the floor of one second (the finest the header
+        can express) rather than no lifetime at all: it reads as absent everywhere either way, and
+        the point is that it leaves.
+
+        :param row: the row about to be written
+        :ptype row: dict[str, Any]
+        :return: the lifetime, or ``None`` when this table declares no expiry
+        :rtype: timedelta | None
+        """
+        column = self.expires_at_column
+        if column is None:
+            return None
+        expires_at = row.get(column)
+        if not isinstance(expires_at, datetime):
+            return None
+        remaining = expires_at - datetime.now(UTC)
+        return remaining if remaining >= timedelta(seconds=1) else timedelta(seconds=1)
 
     async def _delete_from_l2(self, entity_id: Any) -> bool:
         """delete entity payload from the L2 NATS KV bucket.
@@ -2173,17 +2209,17 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # a row new to every tier is stamped now; one seeded from L3, or rewritten by a
                 # callback that dropped the field, keeps the creation time it already had.
                 new_row.setdefault("date_created", now if row is None else row.get("date_created", now))
+                lifetime = self._l2_entry_lifetime(new_row)
+                # as in _save_to_l2: the ttl keyword is sent only when this table declares an
+                # expiry, so a bucket shim that predates per-entry lifetimes still satisfies the
+                # call a non-expiring collection makes.
+                payload = self.serialize(self._normalise_datetimes_for_write(new_row))
+                timed = {} if lifetime is None else {"ttl": lifetime}
                 if revision is None:
                     # value absent: create-if-absent so a racing creator loses.
-                    won_revision = await kv.create(
-                        key=key, value=self.serialize(self._normalise_datetimes_for_write(new_row))
-                    )
+                    won_revision = await kv.create(key=key, value=payload, **timed)
                 else:
-                    won_revision = await kv.update(
-                        key=key,
-                        value=self.serialize(self._normalise_datetimes_for_write(new_row)),
-                        revision=revision,
-                    )
+                    won_revision = await kv.update(key=key, value=payload, revision=revision, **timed)
                 ok = won_revision is not None
 
             if not ok:

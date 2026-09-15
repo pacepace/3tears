@@ -303,19 +303,22 @@ class FakeKvBucket:
         del self._entries[key]
         return True
 
-    async def put(self, *, key: str, value: bytes) -> int:
+    async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
         """unconditional write. returns new revision.
 
         :param key: key to write
         :ptype key: str
         :param value: bytes payload
         :ptype value: bytes
+        :param ttl: a per-entry lifetime, honoured against this bucket's own clock (see
+            :meth:`advance_clock`) exactly as :meth:`create` and :meth:`update` honour theirs
+        :ptype ttl: timedelta | None
         :return: new revision number
         :rtype: int
         """
         await _YieldOnce()  # so gather() genuinely interleaves
         self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision)
+        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
         return self._revision
 
 

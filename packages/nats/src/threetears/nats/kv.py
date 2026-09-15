@@ -845,22 +845,56 @@ class NatsKvBucket:
             return None
         return (bytes(entry.value), int(entry.revision))
 
-    async def put(self, *, key: str, value: bytes) -> int:
+    async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
         """unconditional write. returns new revision.
 
         :param key: key to write
         :ptype key: str
         :param value: bytes to store
         :ptype value: bytes
+        :param ttl: a server-side lifetime for THIS entry, after which the server removes it;
+            ``None`` keeps the bucket's own expiry. Whole seconds, at least one. Needs the
+            stream's ``allow_msg_ttl``: a stream without it refuses the write, which raises
+        :ptype ttl: timedelta | None
         :return: new revision number
         :rtype: int
-        :raises KvError: on transport failure
+        :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
+        :raises ValueError: when ``ttl`` is under one second
         """
+        msg_ttl = _msg_ttl_seconds(ttl)
+        if msg_ttl is not None:
+            return await self._put_with_ttl(key=key, value=value, msg_ttl=msg_ttl)
         try:
             revision = await self._run_with_reopen(lambda: self._kv.put(key, value), passthrough=())
         except Exception as exc:
             raise KvError(f"KV put failed: bucket={self._full_name} key={key}: {exc}") from exc
         return int(revision)
+
+    async def _put_with_ttl(self, *, key: str, value: bytes, msg_ttl: float) -> int:
+        """unconditional write carrying a per-entry TTL.
+
+        nats-py's public ``KeyValue.put`` takes no TTL, so this sends what it would -- a publish
+        to the key's subject -- with the ``Nats-TTL`` header added. The sibling of
+        :meth:`_update_with_ttl`, without the expected-sequence header, because an unconditional
+        write fences on nothing.
+
+        :param key: key to write
+        :ptype key: str
+        :param value: bytes to store
+        :ptype value: bytes
+        :param msg_ttl: server-side lifetime in whole seconds
+        :ptype msg_ttl: float
+        :return: new revision number
+        :rtype: int
+        :raises KvError: on transport failure or any refusal
+        """
+        js = self._client.jetstream_context()
+        subject = f"$KV.{self._full_name}.{key}"
+        try:
+            ack = await self._run_with_reopen(lambda: js.publish(subject, value, msg_ttl=msg_ttl), passthrough=())
+        except Exception as exc:
+            raise KvError(f"KV put failed: bucket={self._full_name} key={key}: {exc}") from exc
+        return int(ack.seq)
 
     async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
         """create-if-absent (SET NX). returns new revision or ``None`` on conflict.
@@ -1061,7 +1095,7 @@ class KvBucketLike(Protocol):
 
     async def get_entry(self, *, key: str) -> tuple[bytes, int] | None: ...
 
-    async def put(self, *, key: str, value: bytes) -> int: ...
+    async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int: ...
 
     async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None: ...
 
