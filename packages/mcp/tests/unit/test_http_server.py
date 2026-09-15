@@ -30,7 +30,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from threetears.mcp.auth import (
     BearerTokenIdentityProvider,
     Identity,
@@ -113,25 +113,19 @@ async def _mcp_client(app: Any, *, token: str) -> AsyncIterator[ClientSession]:
     """
     headers = {"Authorization": f"Bearer {token}"}
 
-    def _factory(
-        headers: dict[str, str] | None = None,
-        timeout: httpx.Timeout | None = None,
-        auth: httpx.Auth | None = None,
-    ) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://mcp.test",
-            headers=headers,
-            timeout=timeout,
-            follow_redirects=True,
-        )
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://mcp.test",
+        headers=headers,
+        follow_redirects=True,
+    )
 
-    async with app.router.lifespan_context(app):
-        async with streamablehttp_client(
-            "http://mcp.test/mcp",
-            headers=headers,
-            httpx_client_factory=_factory,
-        ) as (read_stream, write_stream, _get_session_id):
+    async with app.router.lifespan_context(app), client:
+        async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (
+            read_stream,
+            write_stream,
+            _get_session_id,
+        ):
             async with ClientSession(read_stream, write_stream) as session:
                 yield session
 

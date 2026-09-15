@@ -66,6 +66,9 @@ dev-dependencies = [
     # ``starlette.testclient.TestClient`` against a real route.
     "fastapi>=0.110",
     "httpx>=0.27",
+    # starlette.testclient runs on httpx2 from starlette 1.x; with plain httpx
+    # every suite that imports it warns that the fallback is deprecated.
+    "httpx2",
     # testcontainers used by the migration runner integration tests to
     # exercise real Postgres (rollback semantics cannot be verified
     # against the in-memory FakeDataStore).

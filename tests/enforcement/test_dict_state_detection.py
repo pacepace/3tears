@@ -179,6 +179,17 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/agent/tools/src/threetears/agent/tools/relevance.py",
+        class_name="ToolRelevanceIndex",
+        attr_name="_inflight",
+        rationale=(
+            "the asyncio tasks embedding a tool set right now, keyed by content hash and removed "
+            "when each finishes. Live task handles, non-serializable, meaningful only on the event "
+            "loop that owns them; they exist so the latency ceiling cancels a caller's wait rather "
+            "than the embedding, and so concurrent turns share one call. Nothing survives a task"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeKvBucket",
         attr_name="_entries",
