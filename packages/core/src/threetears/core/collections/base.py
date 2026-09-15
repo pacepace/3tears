@@ -81,6 +81,13 @@ Table(
 )
 
 
+#: how often a collection sweeps expired absent-markers from its pod's L1, and how many rows one
+#: sweep removes. Bounded both ways so the sweep never becomes a cost a lookup notices; a backlog
+#: larger than one batch drains over successive intervals.
+_ABSENT_MARKER_SWEEP_INTERVAL_SECONDS: Final = 60.0
+_ABSENT_MARKER_SWEEP_BATCH: Final = 500
+
+
 @dataclass(frozen=True, slots=True)
 class _AbsentMarker:
     """a decoded negative-cache marker.
@@ -258,6 +265,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         # Resolve L1 and L3 from registry
         self._l1 = registry.get_l1_backend(self.table_name)
         self.l3_pool = registry.get_l3_pool(self.table_name)
+        self._next_absent_marker_sweep = 0.0
         self._refuse_unsound_negative_cache()
         if self._negative_cache_active and self._l1 is not None:
             self._l1.initialize(_ABSENT_MARKER_METADATA)
@@ -269,10 +277,12 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :return: None
         :rtype: None
-        :raises ValueError: when this collection opts into negative caching with L2 and L3 but the
-            registry carries no generation source, or the table's L3 writes are deferred
+        :raises ValueError: when this collection opts into negative caching with an L3 pool but the
+            registry carries no generation source, or the table's L3 writes are deferred -- with
+            or without an L2 client, because a writer without one must still advance the generation
+            other pods' absences are stamped with
         """
-        if self.negative_cache_max_age is None or self.l3_pool is None or self._nats_client is None:
+        if not self._negative_cache_writes_advance:
             return
         if self._registry.generation_source is None:
             raise ValueError(
@@ -761,16 +771,27 @@ class BaseCollection(ABC, Generic[EntityT]):
         return value <= datetime.now(UTC)
 
     @property
-    def _negative_cache_active(self) -> bool:
-        """whether full misses are recorded, which also makes L2 writes strict.
+    def _negative_cache_writes_advance(self) -> bool:
+        """whether this collection's committed writes must advance the table's write generation.
 
-        :return: ``True`` when :attr:`negative_cache_max_age` is set and L2, L3 and a generation
-            source all exist
+        Deliberately independent of L2. Absences are recorded by READERS, which may be other pods
+        with L2 while this one has none; a writer that skipped the advance because it has no L2
+        client of its own would leave their absences answering over its commit.
+
+        :return: ``True`` when :attr:`negative_cache_max_age` is set and an L3 pool exists
+        :rtype: bool
+        """
+        return self.negative_cache_max_age is not None and self.l3_pool is not None
+
+    @property
+    def _negative_cache_active(self) -> bool:
+        """whether this collection records and trusts absences, which also makes L2 writes strict.
+
+        :return: ``True`` when writes advance the generation and L2 and a generation source exist
         :rtype: bool
         """
         return (
-            self.negative_cache_max_age is not None
-            and self.l3_pool is not None
+            self._negative_cache_writes_advance
             and self._nats_client is not None
             and self._registry.generation_source is not None
         )
@@ -803,8 +824,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: GenerationUnavailableError | None
         """
         # the opt-in is checked before anything else is touched, so a collection that never opted
-        # in runs none of this path however it was assembled.
-        if not self._negative_cache_active:
+        # in runs none of this path however it was assembled. L2 is deliberately not part of it.
+        if not self._negative_cache_writes_advance:
             return None
         source = self._registry.generation_source
         if source is None:
@@ -866,15 +887,42 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None or self.negative_cache_max_age is None:
             return
+        now = time.monotonic()
         self._l1.upsert(
             _ABSENT_MARKER_TABLE,
             {
                 "key": self._absent_marker_key(entity_id),
                 "generation": generation,
-                "deadline": time.monotonic() + self.negative_cache_max_age.total_seconds(),
+                "deadline": now + self.negative_cache_max_age.total_seconds(),
             },
             "key",
         )
+        if now >= self._next_absent_marker_sweep:
+            self._next_absent_marker_sweep = now + _ABSENT_MARKER_SWEEP_INTERVAL_SECONDS
+            self._sweep_expired_l1_markers(now)
+
+    def _sweep_expired_l1_markers(self, now: float) -> None:
+        """delete absent-markers past their deadline from this pod's L1, in one bounded batch.
+
+        A marker is otherwise removed only when its own key is read or written again, and the keys
+        a denylist checks -- one per token -- are rarely seen twice, so without this the table grows
+        with every distinct key ever looked up. Runs from the marker write path at most once per
+        :data:`_ABSENT_MARKER_SWEEP_INTERVAL_SECONDS` per collection, and removes at most
+        :data:`_ABSENT_MARKER_SWEEP_BATCH` rows, so the cost it adds to a lookup stays bounded.
+
+        :param now: the monotonic time the caller already read
+        :ptype now: float
+        :return: None
+        :rtype: None
+        """
+        if self._l1 is None:
+            return
+        expired = self._l1.execute_query(
+            f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE deadline <= ? LIMIT {_ABSENT_MARKER_SWEEP_BATCH}",
+            (now,),
+        )
+        for row in expired:
+            self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
 
     def _clear_l1_marker(self, entity_id: Any) -> None:
         """drop this pod's L1 absent-marker for ``entity_id``, if it holds one.
@@ -1484,7 +1532,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         tell when its write generation failed to advance, and an unadvanced generation keeps an
         absence recorded before the write answering. Use :meth:`save_entity`.
         """
-        if self._negative_cache_active:
+        if self._negative_cache_writes_advance:
             raise TypeError(
                 f"{type(self).__name__} caches absences; subscript writes cannot report a write "
                 f"generation they failed to advance. use save_entity()"
@@ -1758,7 +1806,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             and self.table_name in self._flush_tables
             and self._write_buffer is not None
         )
-        if conn is not None and self._negative_cache_active:
+        if conn is not None and self._negative_cache_writes_advance:
             # the write joins a transaction the caller commits later; the generation would advance
             # before the row is visible, and a reader in between would record it absent under the
             # new generation, where no later advance reaches it.

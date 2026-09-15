@@ -197,9 +197,11 @@ def _replica(
     with_l3: bool = True,
     scope: str = _SCOPE,
     config: DefaultCoreConfig | None = None,
+    l1: SQLiteBackend | None = None,
 ) -> _DenylistCollection:
-    """one replica: its own L1, the shared L2, L3 and generation."""
-    l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
+    """one replica: its own L1 (the caller's, when a test inspects it), the shared L2, L3 and generation."""
+    if l1 is None:
+        l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
     l1.initialize(_metadata())
     registry = CollectionRegistry()
     registry.configure(
@@ -291,6 +293,39 @@ class TestNegativeCaching:
         assert await reader.get("tok") is None
         await _write(writer, "tok")
         assert await reader.get("tok") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_writer_with_no_l2_client_still_invalidates_absences_other_pods_recorded(self) -> None:
+        # absences are recorded by readers with L2; a writer wired without one must still advance
+        # the generation they are stamped with, or they answer over its commit.
+        nats, store, gens = _wire()
+        reader = _replica(_NegativeCaching, nats, store, gens)
+        l3_only_writer = _replica(_NegativeCaching, None, store, gens)
+        assert await reader.get("tok") is None
+        await _write(l3_only_writer, "tok")
+        assert await reader.get("tok") is not None, "an L3-only writer left the reader's absence answering"
+
+    @pytest.mark.asyncio
+    async def test_expired_l1_markers_are_swept_without_their_keys_being_read_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # a denylist checks a different key per token, so a marker's own key is rarely seen twice;
+        # expiry has to reach rows nobody looks up again.
+        import threetears.core.collections.base as base_module
+
+        clock = [1_000.0]
+        monkeypatch.setattr(base_module.time, "monotonic", lambda: clock[0])
+        nats, store, gens = _wire()
+        l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
+        coll = _replica(_NegativeCaching, nats, store, gens, l1=l1)
+        for n in range(5):
+            assert await coll.get(f"token-{n}") is None
+        assert len(l1.execute_query("SELECT key FROM collection_absent_markers")) == 5
+
+        clock[0] += _MAX_AGE.total_seconds() + 61.0  # past every deadline and the sweep interval
+        assert await coll.get("a-new-token") is None  # a marker write triggers the sweep
+        remaining = l1.execute_query("SELECT key FROM collection_absent_markers")
+        assert len(remaining) == 1, "expired markers for keys nobody read again were left in L1"
 
     @pytest.mark.asyncio
     async def test_an_l2_marker_leaves_the_bucket_when_its_lifetime_passes(self) -> None:
@@ -390,6 +425,13 @@ class TestUnsoundWiringIsRefused:
         nats, store, _ = _wire()
         with pytest.raises(ValueError, match="generation source"):
             _replica(_NegativeCaching, nats, store, None)
+
+    def test_no_generation_source_is_refused_even_without_an_l2_client(self) -> None:
+        # an L3-only writer that cannot advance the generation is as unsound as a reader that
+        # cannot read it.
+        _, store, _ = _wire()
+        with pytest.raises(ValueError, match="generation source"):
+            _replica(_NegativeCaching, None, store, None)
 
     def test_deferred_l3_writes_are_refused_at_construction(self) -> None:
         nats, store, gens = _wire()

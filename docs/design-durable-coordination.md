@@ -131,12 +131,25 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    `"{incarnation}:{count}"`. One value, because reading an incarnation and a count as two
    keys can straddle a broker wipe and produce a token a later genuine one can equal. A wipe
    forces a new incarnation, so no token issued before it matches one issued after. Core
-   defines the `GenerationSource` protocol; `EpochGenerationSource` implements it.
+   defines the `GenerationSource` protocol; `EpochGenerationSource` implements it. The read is
+   only as fresh as the replica that answers it: the epoch bucket is single-replica today, so
+   every read reaches the writer's copy. Replicating that bucket with direct gets enabled would
+   let a follower answer with a generation a write had already advanced past, and has to be
+   designed for rather than switched on.
 
    *What bounds memory.* An L2 marker carries a server-side per-entry lifetime of the max age
    (NATS 2.11+ `allow_msg_ttl`, reconciled in place on buckets created before it was set), so
    markers nobody reads again leave the shared bucket. An L1 marker lives in a framework-owned
-   table beside the collection's and expires at the same age.
+   table beside the collection's and stops answering at the same age; a bounded sweep, run from
+   the marker write path at most once a minute, deletes past-deadline rows whose keys nobody
+   looks up again -- which, for a denylist checking one key per token, is nearly all of them.
+
+   *Who must advance.* Every writer that opts in and has an L3 pool, whether or not it has an
+   L2 client of its own. Absences are recorded by readers, which may be other pods with L2; a
+   writer skipping the advance for lack of L2 would leave their absences answering. The
+   guarantee also holds only for writes made through the collection: an L3 write that bypasses
+   `save_entity` -- ad-hoc SQL through `l3_pool` -- advances nothing, so a consumer that caches
+   absences writes only through the collection.
 
    *What still needs the max age.* A write that commits and then fails to advance the
    generation leaves older markers answering; the writer raises, and the max age bounds the
