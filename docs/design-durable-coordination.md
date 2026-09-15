@@ -4,102 +4,136 @@
 
 ## The rule
 
-**Every NATS KV bucket is memory-backed.** NATS is L2. Durability is L3's job.
+**Every NATS KV bucket is memory-backed.** NATS is L2. Durability is L3's job, reached
+through `BaseCollection`, which already puts L1 and L2 in front of L3 so hot reads never
+touch the database.
 
-Enforced by `packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py`,
-strict, with a temporary exemption per site listed below.
+Enforced by `packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py`. When the
+last file-backed site in this repo is gone, the gate moves to `threetears.enforcement`,
+consumer repos adopt it, and it loses its exemption mechanism: file-backed KV then cannot
+be exempted, only designed out.
 
 ## Why file storage is the wrong answer even where it works
 
-It is not that file-backed JetStream fails. On cobalt-dev it genuinely persists --
-three bound 20Gi EFS volumes, `store_dir: /data/jetstream`, 54 days old. The
-objection is architectural.
+On cobalt-dev file-backed JetStream genuinely persists -- three bound 20Gi EFS volumes,
+`store_dir: /data/jetstream`. The objection is architectural. A file-backed bucket is the
+cache tier taking the source-of-truth role while keeping none of the properties that role
+needs:
 
-A file-backed KV bucket is the cache tier taking the source-of-truth role while
-keeping none of the properties that role needs:
+- **`num_replicas=1`.** It survives a pod restart because the volume reattaches. It does
+  not survive losing the node or the volume.
+- **No backups.** L3 is backed up. A JetStream volume is not.
+- **No schema, no migrations.** Long-lived state acquires a shape; KV gives it none.
+- **Storage is chosen at CREATE and never reconciled.** A wrong value is fixed by deleting
+  live state on a running cluster, not by shipping a fix.
 
-- **`num_replicas=1`.** It survives a pod restart because the volume reattaches.
-  It does not survive losing the node or the volume, and while that one node is
-  down the state is simply unavailable.
-- **No backups.** L3 is backed up. A JetStream volume is not in that story.
-- **No schema, no migrations.** A durable store people keep for months acquires a
-  shape. KV gives it none, so the shape lives in whichever code last wrote it.
-- **Storage is chosen at CREATE and never reconciled.** A wrong value is not a bug
-  you fix by shipping a fix; it is one you fix by deleting live state on a running
-  cluster. That asymmetry is the whole reason this is a gate.
+`threetears.epoch` made the same call for its durable tile family: file storage survives
+only while its store directory survives, so it is a false guarantee against the failure it
+claims to cover.
 
-`threetears.epoch` already refuses file storage for its own state, on the related
-grounds that it would be a FALSE guarantee, and keeps a Postgres row instead. This
-generalises that decision.
+## Every file-backed site, classified by what a wipe must do
 
-## The false choice
+The four `threetears.core.coordination` sites were never one kind of state, so they do not
+get one answer. Each was classified from its production consumers.
 
-The reflex says: this state cannot be lost, so make the bucket durable. That reads
-as a choice between speed and safety, and it is not one.
+### Single-use nonces: memory, fail closed by watermark
 
-**`BaseCollection` composes both tiers.** L1 pod-local, L2 on this same NATS --
-memory-backed, as intended -- and L3 in Yugabyte as the source of truth. State
-that cannot be lost was never L2 state; it is L3 state with a cache in front, and
-the platform's own primitive is exactly that shape.
+A nonce only matters inside its accept window, and it never had to survive a wipe. It had
+to make a wipe fail CLOSED. Today's file storage does not even do that: `replay_guard.py`
+documents that total stream or disk loss reopens the replay window.
 
-## What has to move, and it is one change
+`ReplayGuard` stays on memory storage and learns when its bucket was created:
 
-Every file-backed site in this repo is in `threetears.core.coordination`, and all
-four share one seam:
+1. `record_unique(nonce, *, issued_at)` creates the nonce key (create-if-absent). A
+   present key is a replay, refused.
+2. On a fresh create, it reads the stream's creation time from the server
+   (`STREAM.INFO`, `StreamInfo.created`), and refuses the artifact when
+   `issued_at < created + max_clock_skew`.
 
-```python
-self._bucket: KvBucketLike | None = None
-async def _ensure_bucket(self) -> KvBucketLike:
-    self._bucket = await self._client.kv_bucket(..., storage="file")
-```
+**Why the order is create, then read.** A bucket handle holds only names, so after another
+pod recreates a wiped stream a stale handle keeps working silently -- a creation time
+cached at open is unsound, and reconnect callbacks run after new requests can already be
+served. Reading after the create closes both: any wipe before the create is visible as a
+newer creation time, which can only make the check stricter. A replay can only create its
+key if the original entry was wiped, which puts the original acceptance, and so its signed
+issue time, before the new creation time.
 
-`KvBucketLike` is a **protocol**. So this is one new component and four one-line
-adopters, not four rewrites.
+**The `issued_at` contract:** no later than the earliest moment the artifact could first
+have been accepted. Each call site derives it from a signed or server-held timestamp:
+DPoP and PoP `iat`, the proxy assertion `iat`, SAML `IssueInstant`, the survey challenge's
+HMAC-signed issue time, and for an OAuth client assertion whose `iat` is optional,
+`exp - MAX_CLIENT_ASSERTION_LIFETIME`.
 
-| Site | What a wipe costs |
-|---|---|
-| `idempotency.py:372` | a retried operation runs a second time |
-| `replay_guard.py:109`, `:264` | a code or token already spent is accepted again |
-| `windowed_counter.py:320` | every lockout releases; every brute-force budget restarts |
+**`max_clock_skew` is a required constructor argument, with no default.** Each site passes
+the tolerance its own issued-at check already allows for that issuer's clock. Its cost is
+bounded and visible: for that long after a wipe, fresh artifacts are refused. A missing
+`created` raises rather than admits.
 
-None of those is a cache. That is the tell, and it is why they reached for file
-storage rather than being careless.
+**Some guards are removed rather than watermarked.** Where the guarded artifact is itself a
+server-side record read before the nonce is recorded -- OAuth authorization codes, OIDC and
+GitHub state, SAML `InResponseTo`, passkey challenges, TOTP partial-auth -- the artifact is
+consumed by a revision-guarded delete of its own record, as `NatsKvTicketStore` already
+does. Separate R1 streams can sit on different NATS nodes, so a separate nonce bucket can be
+wiped while the artifact survives. Consuming the artifact itself cannot split that way.
 
-## Shards
+### Durable security state: L3 through `BaseCollection`
 
-**Shard 1 -- the gate. DONE.** Walker and gate together in
-`packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py`, strict, with
-the four sites exempted and each rationale naming the work that removes it. Stops
-the next one; does not fix these.
+| State | What a wipe costs | Write path |
+|---|---|---|
+| Refresh-token jti ledger | an already-rotated refresh token is accepted again, for its whole 30-day life, and reuse detection is skipped | synchronous L3 |
+| Standing revocations (`sid`, `sub`, `customer_id`) | revoked sessions become valid | synchronous L3 |
+| Attempt counters (`WindowedCounter`, lockout, spray) | lockouts release; brute-force budgets restart | L2 CAS, write-behind to L3 |
+| Idempotency claims | a retried operation runs a second time | L2 claim, write-behind to L3 |
 
-**The walker is deliberately NOT in `threetears.enforcement` yet.** Every
-violation today is in this repo, and promoting it would grow that package's public
-API -- which on a patch line is refused by `test_api_growth_requires_a_minor_bump`,
-for a real reason: the intra-family bound reads `>=0.41.0,<0.42.0`, so pip may
-resolve a sibling published earlier on this line that lacks the new names, giving a
-family that installs clean and ImportErrors at runtime. It moves when a second repo
-needs it, and that move is a minor bump by itself.
+**Counters are write-behind on purpose.** A NATS wipe coinciding with a crash of the writing
+pod loses at most one flush interval of increments. That is a few extra attempts against a
+throttle, and it is not worth a database write on every login or API call. Revocations lose
+nothing.
 
-**Shard 2 -- `DurableKvBucket`.** An implementation of `KvBucketLike` backed by a
-`BaseCollection`. Same surface as the KV bucket the four already hold, so adoption
-is the `_ensure_bucket` line and nothing else. TTL semantics are the design
-question: KV expiry is the broker's, a collection's is the table's, and the
-primitives lean on per-entry TTL rather than sweeping. Decide that before writing
-it, not during.
+### Hot-path cost
 
-**Shard 3 -- adopt it, four call sites**, and delete the four exemptions in the
-same commit. The gate's staleness check fails if an exemption outlives its call
-site, so this cannot be half-done quietly.
+- **Revocation checks:** an L1 hit in steady state. Other pods see a revocation through the
+  invalidation broadcast.
+- **Counter increments:** L2 CAS, the NATS round trips they already pay, with L3 batched per
+  flush interval.
+- **Nonces:** memory plus one extra NATS request on a fresh nonce. No L3.
+- **L3 sees:** one miss per key per L2 lifetime, batched flushes, and rare revocation writes.
 
-**Shard 4 -- identity's revocation lists**, which are not coordination primitives
-and are the largest durable thing still in KV: `identity-revocation-jti` held
-11,431 entries on cobalt-dev. Losing it makes revoked tokens valid again. Its own
-collection, its own migration, in the identity repo.
+These are measured, not assumed, before the primitives adopt them.
 
-## What this does not claim
+## What `BaseCollection` gains
 
-Moving to L3 costs a round trip these primitives do not pay today. `Idempotency`
-and `ReplayGuard` sit on hot paths. Shard 2 has to measure that rather than assume
-it is acceptable -- and if it is not, the answer is a considered L1/L2 read-through
-in front of an L3 truth, which is what `BaseCollection` already does, rather than
-a return to file storage.
+Each gap is a generic enhancement to the primitive, not a store beside it.
+
+1. **Negative caching.** Today a miss in every tier caches nothing, so every "not revoked"
+   check would reach L3. On a full miss the collection writes an L2 absent-marker with
+   create-if-absent, so a reader can never overwrite a writer's value and a writer's put
+   replaces the marker. A collection that opts in makes its own L2 writes strict: a failed
+   overwrite raises rather than leaving a stale "absent".
+2. **Row expiry.** A declared expiry column every tier treats as absent once passed. A sweep
+   is table-size hygiene only, never correctness.
+3. **`l2_cas_mutate` on a three-tier collection.** It seeds from L3 when L2 holds nothing, so
+   a wipe does not reset a counter to zero; persists the result through the collection's
+   flush policy; and returns the outcome, so a claim can report claimed or exists.
+4. **Flush policy per collection.** Today it is one global strategy plus a table-name list.
+   A counter wants write-behind, a revocation wants synchronous L3.
+
+## Consumers
+
+The primitives keep their public surfaces apart from `ReplayGuard.record_unique` gaining
+`issued_at`, which is a breaking change landed at every call site in one commit per repo.
+
+- **identity** (the largest): the removals above, the watermark at DPoP, SAML assertion and
+  client-assertion sites, jti and standing revocations and every counter (including its own
+  `security/spray_counter.py`, which bypasses `WindowedCounter` and is file-backed) onto
+  collections, its own migration, and a one-time copy of the live revocation buckets into
+  the new tables before the new code rolls. Without the copy, revoked tokens become valid.
+  identity-edge holds no database by design, so its fail-open route throttles run the same
+  collection without an L3 pool.
+- **hub**: the DPoP impersonation guard's `issued_at`.
+- **registry and tool runtime** (this repo): the PoP and proxy-assertion guards.
+- **survey**: the entry-challenge guard, the panel lockout counter, and idempotency claims.
+- **scriob**: its login throttle.
+
+After every consumer is released, the orphaned file-backed buckets are deleted on cobalt-dev
+and then prod, dry run first, and a real sign-in verifies each.
