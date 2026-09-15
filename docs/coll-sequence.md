@@ -42,8 +42,9 @@ belongs to `build-plan-principal-convergence.md` Chunk 11, which has the better
 analysis: `allowed_namespaces` holds prefixes while `hitl_forward_family` needs
 full names, so wiring the existing parameter cannot work.
 
-`design-l3-for-non-agent-principals.md` is a design doc, not a shard. Build it
-only if a pod needs durable state.
+Tool pods also hold L3: provider storage, scoped to the provider's `ns_<hex>`
+schema. It was built under `build-plan-principal-convergence.md` Chunk 13, and the
+current map is `14-eng-ai-bot/docs/data-access-paths.md`, row A2.
 
 ---
 

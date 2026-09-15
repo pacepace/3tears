@@ -411,13 +411,12 @@ class TestBootCompleteness:
         assert str(Subjects.tools_call()) in _build(Principal.REGISTRY).subscribe
 
     def test_tool_pod_may_handshake_for_a_token_of_its_own(self) -> None:
-        """a tool pod writing its OWN state has no inbound token to forward.
+        """a tool pod writes its OWN state on a hub-minted token from this handshake.
 
-        acting on a call, it forwards that call's identity token and needs
-        nothing of its own. writing its own durable state is the case with no
-        caller to act on behalf of, so it presents its provisioned key and
-        receives a short-lived hub-minted token, the same handshake an agent
-        pod performs. without this grant a tool pod cannot reach L3 at all.
+        acting on a call, it forwards that call's identity token. writing its
+        own durable state, it presents its provisioned key and receives a
+        short-lived hub-minted token, the same handshake an agent pod performs.
+        this grant is what carries a tool pod's L3 access.
 
         :return: none
         :rtype: None
