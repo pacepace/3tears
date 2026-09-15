@@ -201,21 +201,24 @@ class TestTokenLevelStreaming:
 
         assert all(c.message.content == "" for c in chunks)
 
-    async def test_tool_calls_and_results_still_flow_into_generation_info(self) -> None:
-        """Tool-call extraction is unaffected by the streaming change."""
+    async def test_tool_calls_ride_the_terminal_chunk_after_the_streamed_text(self) -> None:
+        """Tool calls are handed back on the last chunk; the text before them still streams."""
         messages = [
             AssistantMessage(
                 content=[TextBlock(text="calling a tool"), ToolUseBlock(id="tu-1", name="echo", input={"x": 1})],
                 model=DEFAULT_CHAT_MODEL,
             ),
-            _result_message(),
+            _result_message(subtype="error_max_turns", is_error=True),
         ]
         chunks = await _collect_chunks(messages)
 
+        assert [c.message.content for c in chunks] == ["calling a tool", ""]
         final = chunks[-1]
-        assert final.generation_info["internal_tool_calls"] == [
-            {"id": "tu-1", "name": "echo", "args": {"x": 1}},
+        assert final.message.tool_call_chunks == [
+            {"id": "tu-1", "name": "echo", "args": '{"x": 1}', "index": 0, "type": "tool_call_chunk"},
         ]
+        assert final.generation_info["finish_reason"] == "tool_calls"
+        assert "internal_tool_calls" not in final.generation_info
 
     async def test_result_message_still_yields_the_terminal_chunk(self) -> None:
         """The ResultMessage -> final chunk_position='last' chunk is unaffected."""

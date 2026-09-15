@@ -18,7 +18,7 @@ between calls. Everything below was verified against the bundled CLI (claude-age
 | system prompt | `--system-prompt` launch flag | **no** | a second `initialize` returns before reading `systemPrompt` |
 | model | `set_model` control request | yes | SDK method |
 | bound tools (in-process MCP server) | `mcp_set_servers` control request | **yes** | swapped a live session's server in 3 ms; the model called the new tool |
-| `max_turns` | `--max-turns` launch flag | per *query* | three queries at cap 2, each used 2 turns, none errored |
+| `max_turns` | `--max-turns` launch flag | per *query* | three queries at cap 2, each used 2 turns, none errored; the model forces 1 (below) |
 | conversation | `/clear` between calls | yes | planted a codeword, cleared, asked: "NONE" |
 | `reconnect_mcp_server` | control request | — | **refused** for SDK servers ("SDK servers should be handled in print.ts") |
 
@@ -46,13 +46,24 @@ Trade-off, stated: the variable part moves from the system role into the first u
 message. It is the dynamic context the caller already separated from the persona, and on this
 route the alternative is either no pooling or a repr.
 
+## Tool calls are handed back, one model turn per call
+
+A pooled session never runs a caller's tool. The subscription model forces `--max-turns 1`: the
+model's tool uses -- parallel ones included -- are emitted, the CLI stops with `error_max_turns`
+before a second model turn, and the tool calls come back as `AIMessage.tool_calls` for the caller's
+graph to run (approval, shaping, its ledger). The handler the CLI calls in between answers with a
+placeholder no turn reads. Verified live on the bundled CLI (2026-09-15): two parallel calls
+emitted, both handlers called, `error_max_turns` after turn 2 of the CLI's count, and the same
+session then answered an ordinary query with `success`. With `max_turns` fixed, it is no longer
+part of what distinguishes one session from another.
+
 ## Session key
 
 A session is reusable for any call whose **launch-time** options match:
 
 - a digest of the credential (the token never appears in a key or a path);
 - the stable system prompt;
-- `tools` (built-ins), `disallowed_tools`, `permission_mode`, `max_turns`, `max_budget_usd`,
+- `tools` (built-ins), `disallowed_tools`, `permission_mode`, `max_budget_usd`,
   `fallback_model`, and any caller-set `cwd`.
 
 Not in the key, because they are applied per checkout: `model` (`set_model`) and the bound
