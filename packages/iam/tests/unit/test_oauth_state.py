@@ -142,7 +142,13 @@ async def test_an_unrecorded_state_is_a_replay() -> None:
 async def test_recording_refuses_a_state_that_does_not_verify() -> None:
     store = MemoryStateStore()
     with pytest.raises(OAuthStateError):
-        await record_state_nonce(store, _mint(secret="the-wrong-secret-long-enough-for-hs256"), secret=_SECRET, issuer=_ISSUER, audience=_AUDIENCE)
+        await record_state_nonce(
+            store,
+            _mint(secret="the-wrong-secret-long-enough-for-hs256"),
+            secret=_SECRET,
+            issuer=_ISSUER,
+            audience=_AUDIENCE,
+        )
 
 
 def test_a_state_minted_on_a_slightly_fast_clock_still_verifies() -> None:
