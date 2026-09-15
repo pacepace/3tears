@@ -53,10 +53,15 @@ class _YieldOnce:
 
 @dataclass
 class _Entry:
-    """internal storage entry."""
+    """internal storage entry.
+
+    :ivar expires_at: the bucket-clock time the server would remove a per-entry-TTL entry, or
+        ``None`` for an entry that lives as long as the bucket
+    """
 
     value: bytes
     revision: int
+    expires_at: timedelta | None = None
 
 
 class FakeKvBucket:
@@ -93,6 +98,51 @@ class FakeKvBucket:
         self._entries: dict[str, _Entry] = {}
         self._revision = 0
         self._date_created = datetime.now(UTC)
+        # a clock only this bucket reads, moved by advance_clock, so a test can make a per-entry
+        # TTL lapse without sleeping.
+        self._elapsed = timedelta(0)
+
+    def advance_clock(self, delta: timedelta) -> None:
+        """move this bucket's clock forward, lapsing any per-entry TTL it passes.
+
+        :param delta: how far to move the clock; must not be negative
+        :ptype delta: timedelta
+        :return: None
+        :rtype: None
+        :raises ValueError: when ``delta`` is negative
+        """
+        if delta < timedelta(0):
+            raise ValueError("FakeKvBucket.advance_clock cannot move the clock backwards")
+        self._elapsed += delta
+
+    def _live(self, key: str) -> _Entry | None:
+        """the entry under ``key``, or ``None`` once its per-entry TTL has lapsed.
+
+        :param key: key to look up
+        :ptype key: str
+        :return: the live entry, or ``None``
+        :rtype: _Entry | None
+        """
+        entry = self._entries.get(key)
+        if entry is not None and entry.expires_at is not None and self._elapsed >= entry.expires_at:
+            del self._entries[key]
+            entry = None
+        return entry
+
+    def _expiry(self, ttl: timedelta | None) -> timedelta | None:
+        """the bucket-clock removal time for an entry written now with ``ttl``.
+
+        :param ttl: the per-entry lifetime, or ``None``
+        :ptype ttl: timedelta | None
+        :return: the removal time, or ``None``
+        :rtype: timedelta | None
+        :raises ValueError: when ``ttl`` is under one second, as the real wrapper refuses
+        """
+        if ttl is None:
+            return None
+        if ttl < timedelta(seconds=1):
+            raise ValueError(f"a per-entry KV TTL must be at least one second, got {ttl}")
+        return self._elapsed + ttl
 
     async def date_created(self) -> datetime:
         """when this bucket was created, or last wiped.
@@ -148,21 +198,23 @@ class FakeKvBucket:
         """
         return self._bucket_name
 
-    async def create(self, *, key: str, value: bytes) -> int | None:
+    async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
         """create-if-absent. returns new revision or ``None`` on conflict.
 
         :param key: key to insert
         :ptype key: str
         :param value: bytes payload
         :ptype value: bytes
+        :param ttl: per-entry lifetime on this bucket's clock (see :meth:`advance_clock`), or ``None``
+        :ptype ttl: timedelta | None
         :return: new revision number, or ``None`` if key already exists
         :rtype: int | None
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        if key in self._entries:
+        if self._live(key) is not None:
             return None
         self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision)
+        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
         return self._revision
 
     async def get(self, *, key: str) -> bytes | None:
@@ -174,7 +226,7 @@ class FakeKvBucket:
         :rtype: bytes | None
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        entry = self._entries.get(key)
+        entry = self._live(key)
         if entry is None:
             return None
         return entry.value
@@ -188,12 +240,12 @@ class FakeKvBucket:
         :rtype: tuple[bytes, int] | None
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        entry = self._entries.get(key)
+        entry = self._live(key)
         if entry is None:
             return None
         return (entry.value, entry.revision)
 
-    async def update(self, *, key: str, value: bytes, revision: int) -> int | None:
+    async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
         """CAS update. returns new revision or ``None`` on mismatch.
 
         :param key: key to update
@@ -202,15 +254,17 @@ class FakeKvBucket:
         :ptype value: bytes
         :param revision: expected current revision
         :ptype revision: int
+        :param ttl: per-entry lifetime for the new entry on this bucket's clock, or ``None``
+        :ptype ttl: timedelta | None
         :return: new revision, or ``None`` on conflict / missing key
         :rtype: int | None
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        entry = self._entries.get(key)
+        entry = self._live(key)
         if entry is None or entry.revision != revision:
             return None
         self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision)
+        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
         return self._revision
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:
@@ -225,7 +279,7 @@ class FakeKvBucket:
         :rtype: bool
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        entry = self._entries.get(key)
+        entry = self._live(key)
         if entry is None:
             # A revision-guarded delete of a key that is no longer there LOST the race -- it
             # cannot have been the caller whose revision matched. Returning True here made

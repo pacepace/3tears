@@ -169,6 +169,11 @@ _EPHEMERAL_FAMILIES: Final[tuple[tuple[str, str], ...]] = (
     ("gateway_catalog_epoch", "pods re-run _load_catalog from the gateway tables"),
     ("mcp_rbac_epoch", "pods reload the RBAC view from mcp_tool_grants"),
     ("identity_epoch", "pods drop cached principal status and re-read it"),
+    (
+        "collection_generation_epoch",
+        "a replaced generation carries a new incarnation, so every recorded absence stops answering "
+        "and readers ask L3, which is the source of truth",
+    ),
 )
 
 

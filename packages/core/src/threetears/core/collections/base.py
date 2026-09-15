@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
 
+from sqlalchemy import Column, Float, MetaData, String, Table, Text
+
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
@@ -32,7 +34,12 @@ from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity, derive_addressing_id
-from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry, L2ScopeNotConfiguredError
+from threetears.core.exceptions import (
+    ConcurrentModificationError,
+    CorruptCacheEntry,
+    GenerationUnavailableError,
+    L2ScopeNotConfiguredError,
+)
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
 
@@ -55,25 +62,50 @@ EntityT = TypeVar("EntityT", bound=BaseEntity)
 #: cannot be interpolated raw into a KV key. matched as a whole string.
 _KV_KEY_GRAMMAR: Final = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
 
-#: the L2 value recording that a key is absent from every tier, followed by the ISO time it was
-#: written. It opens with a NUL byte so no JSON-serialised row can ever equal or start with it.
+#: the L2 value recording that a key is absent from every tier, followed by the write generation it
+#: was recorded under. It opens with a NUL byte so no JSON-serialised row can equal or start with it.
 _ABSENT_MARKER_PREFIX: Final = b"\x00threetears.collections.absent\x00"
+
+#: the framework-owned L1 table holding negative-cache markers for every collection on a backend,
+#: beside the collections' own tables -- the same arrangement as the write buffer's table.
+_ABSENT_MARKER_TABLE: Final = "collection_absent_markers"
+_ABSENT_MARKER_METADATA: Final = MetaData()
+Table(
+    _ABSENT_MARKER_TABLE,
+    _ABSENT_MARKER_METADATA,
+    Column("key", String, primary_key=True),
+    Column("generation", Text, nullable=False),
+    # monotonic seconds: this row is never shared across processes, so the local clock is the
+    # only one that ever reads it.
+    Column("deadline", Float, nullable=False),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _AbsentMarker:
+    """a decoded negative-cache marker.
+
+    :ivar generation: the table's write generation when the absence was recorded
+    """
+
+    generation: str
 
 
 @dataclass(frozen=True, slots=True)
 class _L2Lookup:
-    """what one L2 read found, in the three shapes a pull-through has to tell apart.
+    """what one L2 read found.
 
     :ivar row: a live row, or ``None``
-    :ivar absent: a fresh absent-marker says the key exists in no tier, so L3 need not be asked
-    :ivar replaceable_revision: the revision of an entry that is present but must be replaced --
-        an aged-out absent-marker or an expired row -- so the replacement can compare-and-swap
-        against it and never overwrite a writer's value; ``None`` when the key holds nothing
+    :ivar marker: an absent-marker, whatever its generation, or ``None``
+    :ivar revision: the entry's revision whenever the key held anything that is not a live row --
+        a marker, an expired row, an undecodable entry -- so a replacement can compare-and-swap
+        against it and never overwrite a writer's value; ``None`` when the key holds nothing or
+        the read fetched no revision
     """
 
     row: dict[str, Any] | None
-    absent: bool
-    replaceable_revision: int | None
+    marker: _AbsentMarker | None
+    revision: int | None
 
 
 class _NatsClientFromRegistry:
@@ -142,27 +174,56 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: restating it, which is how a column gets silently dropped.
     datetime_columns: ClassVar[frozenset[str]] = frozenset()
 
-    #: How long L2 may answer "this key exists in no tier" before L3 is asked again, or ``None``.
+    #: How long a recorded absence may live, or ``None`` to record none. At least one second.
     #:
     #: Without it, a lookup of a key nobody ever wrote misses L1 and L2 and reaches L3 every
     #: time -- which, for a denylist checked on every request ("is this token revoked?"), puts a
-    #: database query behind nearly every call. Setting it makes a full miss write an
-    #: absent-marker to L2 with create-if-absent, so a reader can never overwrite a writer's
-    #: value and a writer's put replaces the marker.
+    #: database query behind nearly every call. Setting it records a full miss as an absent-marker
+    #: in L1 and in L2, stamped with the table's write generation
+    #: (:meth:`CollectionRegistry.set_generation_source`), read BEFORE the L3 lookup that found
+    #: nothing. A marker answers only while its stamp is the table's current generation, and every
+    #: committed write advances the generation, so a marker cannot outlive a write that landed
+    #: after its L3 read -- whichever pod, principal, broadcast or clock was involved.
     #:
-    #: Opting in makes this collection's WRITE paths strict: a failed L2 write raises instead of
-    #: degrading, because a marker the write failed to replace would keep reporting the key
-    #: absent. The max age is the backstop for that double fault -- the L3 write landed, the L2
-    #: overwrite did not -- and bounds how long the marker can hide it. Ignored without an L3
-    #: pool: there, a full miss already means the key does not exist.
+    #: The max age is the backstop, not the mechanism: it bounds a marker only when a write
+    #: commits and then fails to advance the generation, and it is the server-side lifetime that
+    #: keeps markers from filling the shared L2 bucket. Opting in requires a generation source on
+    #: the registry, refuses deferred L3 flushes (a write visible before its row lands would be
+    #: hidden by a marker recorded in between), refuses subscript writes (fire-and-forget cannot
+    #: report a generation it failed to advance), and makes ``save_entity``, ``reload_entity`` and
+    #: ``delete`` raise when their L2 write fails. Ignored without an L3 pool or an L2 client.
     negative_cache_max_age: ClassVar[timedelta | None] = None
 
     #: The column holding each row's expiry time, or ``None`` for rows that never expire.
     #:
-    #: A row whose expiry has passed is absent at every tier -- L1, L2 and L3 -- so correctness
-    #: never depends on anything sweeping it. Deleting expired rows is table-size hygiene only.
-    #: A ``None`` value in the column means that row does not expire.
+    #: A row whose expiry has passed is absent to every read that answers "does this exist" --
+    #: ``get``, ``ensure``, ``collection[id]`` -- at L1, L2 and L3, so correctness never depends on
+    #: anything sweeping it; deleting expired rows is table-size hygiene only. A ``None`` value in
+    #: the column means that row does not expire. Must be one of :attr:`datetime_columns`, so an
+    #: L2 read decodes it or reports the entry corrupt rather than failing mid-comparison.
     expires_at_column: ClassVar[str | None] = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """refuse, at class definition, an expiry or negative-cache setting that cannot work.
+
+        :param kwargs: forwarded to :func:`object.__init_subclass__`
+        :ptype kwargs: Any
+        :return: None
+        :rtype: None
+        :raises TypeError: when :attr:`expires_at_column` is not a declared datetime column, or
+            :attr:`negative_cache_max_age` is under one second
+        """
+        super().__init_subclass__(**kwargs)
+        if cls.expires_at_column is not None and cls.expires_at_column not in cls.datetime_columns:
+            raise TypeError(
+                f"{cls.__name__}.expires_at_column {cls.expires_at_column!r} must be one of its "
+                f"datetime_columns, so every tier reads it back as a time"
+            )
+        if cls.negative_cache_max_age is not None and cls.negative_cache_max_age < timedelta(seconds=1):
+            raise TypeError(
+                f"{cls.__name__}.negative_cache_max_age must be at least one second, the finest "
+                f"server-side lifetime an L2 entry can carry; got {cls.negative_cache_max_age}"
+            )
 
     # datasource-task-06 DS-06-04: per-concrete-class memo of table
     # names that have already emitted the "nats_client missing"
@@ -197,8 +258,34 @@ class BaseCollection(ABC, Generic[EntityT]):
         # Resolve L1 and L3 from registry
         self._l1 = registry.get_l1_backend(self.table_name)
         self.l3_pool = registry.get_l3_pool(self.table_name)
+        self._refuse_unsound_negative_cache()
+        if self._negative_cache_active and self._l1 is not None:
+            self._l1.initialize(_ABSENT_MARKER_METADATA)
         # Auto-register
         registry.register(self)
+
+    def _refuse_unsound_negative_cache(self) -> None:
+        """refuse, at construction, a negative-caching collection whose wiring would let a marker lie.
+
+        :return: None
+        :rtype: None
+        :raises ValueError: when this collection opts into negative caching with L2 and L3 but the
+            registry carries no generation source, or the table's L3 writes are deferred
+        """
+        if self.negative_cache_max_age is None or self.l3_pool is None or self._nats_client is None:
+            return
+        if self._registry.generation_source is None:
+            raise ValueError(
+                f"{type(self).__name__} opts into negative caching but its registry has no generation "
+                f"source: nothing could invalidate a recorded absence when a write lands. wire "
+                f"registry.set_generation_source(...) before constructing it"
+            )
+        if self._flush_strategy != FlushStrategy.ALWAYS and self.table_name in self._flush_tables:
+            raise ValueError(
+                f"{type(self).__name__} opts into negative caching but {self.table_name!r} defers its L3 "
+                f"writes: a reader between the L2 write and the buffered flush would record the row "
+                f"absent under the generation that write already advanced"
+            )
 
     @property
     def required_l3_pool(self) -> L3Backend:
@@ -675,12 +762,131 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     @property
     def _negative_cache_active(self) -> bool:
-        """whether full misses are recorded in L2, which also makes L2 writes strict.
+        """whether full misses are recorded, which also makes L2 writes strict.
 
-        :return: ``True`` when :attr:`negative_cache_max_age` is set and both L2 and L3 exist
+        :return: ``True`` when :attr:`negative_cache_max_age` is set and L2, L3 and a generation
+            source all exist
         :rtype: bool
         """
-        return self.negative_cache_max_age is not None and self.l3_pool is not None and self._nats_client is not None
+        return (
+            self.negative_cache_max_age is not None
+            and self.l3_pool is not None
+            and self._nats_client is not None
+            and self._registry.generation_source is not None
+        )
+
+    async def _current_generation(self) -> str | None:
+        """this table's write generation, or ``None`` when it cannot be read.
+
+        ``None`` means no absence may be trusted or recorded this time; the caller asks L3.
+
+        :return: the generation token, or ``None``
+        :rtype: str | None
+        """
+        source = self._registry.generation_source
+        if source is None:
+            return None
+        try:
+            return await source.current(self.table_name)
+        except GenerationUnavailableError as exc:
+            log.warning(
+                "write generation unavailable; asking L3 rather than trusting a recorded absence",
+                extra={"extra_data": {"table": self.table_name, "error": str(exc)}},
+            )
+            return None
+
+    async def _advance_generation(self) -> GenerationUnavailableError | None:
+        """advance this table's write generation after a committed write, when negative caching is on.
+
+        :return: the failure, for the caller to raise once the rest of the write path has run, or
+            ``None`` when the generation advanced or nothing needed advancing
+        :rtype: GenerationUnavailableError | None
+        """
+        # the opt-in is checked before anything else is touched, so a collection that never opted
+        # in runs none of this path however it was assembled.
+        if not self._negative_cache_active:
+            return None
+        source = self._registry.generation_source
+        if source is None:
+            return None
+        try:
+            await source.advance(self.table_name)
+        except GenerationUnavailableError as exc:
+            log.error(
+                "write generation could not be advanced after a committed write; absences recorded "
+                "before it stay trusted until they expire",
+                extra={"extra_data": {"table": self.table_name, "error": str(exc)}},
+            )
+            return exc
+        return None
+
+    def _absent_marker_key(self, entity_id: Any) -> str:
+        """the L1 marker key for one pk: table-qualified, digested so any pk shape fits.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: the key
+        :rtype: str
+        """
+        body = "\x1f".join(str(v) for v in self.normalize_pk(entity_id))
+        return f"{self.table_name}.{hashlib.sha256(body.encode('utf-8')).hexdigest()}"
+
+    def _l1_marker_matches(self, entity_id: Any, generation: str) -> bool:
+        """whether this pod's L1 holds a live absent-marker for ``entity_id`` under ``generation``.
+
+        A marker under any other generation, or past its deadline, is removed.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param generation: the table's current write generation
+        :ptype generation: str
+        :return: ``True`` when the marker may answer
+        :rtype: bool
+        """
+        if self._l1 is None:
+            return False
+        key = (self._absent_marker_key(entity_id),)
+        row = self._l1.select_by_id(_ABSENT_MARKER_TABLE, key, ("key",))
+        if row is None:
+            return False
+        if row["generation"] == generation and time.monotonic() < float(row["deadline"]):
+            return True
+        self._l1.delete_by_id(_ABSENT_MARKER_TABLE, key, ("key",))
+        return False
+
+    def _write_l1_marker(self, entity_id: Any, generation: str) -> None:
+        """record in this pod's L1 that ``entity_id`` is absent under ``generation``.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param generation: the generation read before the L3 lookup that found nothing
+        :ptype generation: str
+        :return: None
+        :rtype: None
+        """
+        if self._l1 is None or self.negative_cache_max_age is None:
+            return
+        self._l1.upsert(
+            _ABSENT_MARKER_TABLE,
+            {
+                "key": self._absent_marker_key(entity_id),
+                "generation": generation,
+                "deadline": time.monotonic() + self.negative_cache_max_age.total_seconds(),
+            },
+            "key",
+        )
+
+    def _clear_l1_marker(self, entity_id: Any) -> None:
+        """drop this pod's L1 absent-marker for ``entity_id``, if it holds one.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: None
+        :rtype: None
+        """
+        if self._l1 is None or not self._negative_cache_active:
+            return
+        self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (self._absent_marker_key(entity_id),), ("key",))
 
     def write_to_cache_sync(
         self,
@@ -909,7 +1115,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: the classified entry
         :rtype: _L2Lookup
         """
-        empty = _L2Lookup(row=None, absent=False, replaceable_revision=None)
+        empty = _L2Lookup(row=None, marker=None, revision=None)
         try:
             kv = await self._ensure_kv()
             if kv is None:
@@ -938,10 +1144,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         if entry is None:
             return empty
         raw, revision = entry
-        if raw.startswith(_ABSENT_MARKER_PREFIX):
-            return self._classify_absent_marker(raw, revision)
         try:
-            row = self._rehydrate_datetimes(self.deserialize(raw))
+            decoded = self._decode_l2_value(raw)
         except CorruptCacheEntry as exc:
             # A cache miss, not a failure. Returning None sends the caller to L3, which is
             # authoritative -- the same path a cold key takes. Failing the read instead would
@@ -959,67 +1163,61 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
             # keep the revision: a negative-caching collection replaces the poisoned entry rather
             # than creating over it, which would fail and send every later read to L3 too.
-            return _L2Lookup(row=None, absent=False, replaceable_revision=revision)
-        if self._row_is_expired(row):
-            return _L2Lookup(row=None, absent=False, replaceable_revision=revision)
-        return _L2Lookup(row=row, absent=False, replaceable_revision=None)
+            return _L2Lookup(row=None, marker=None, revision=revision)
+        if isinstance(decoded, _AbsentMarker):
+            return _L2Lookup(row=None, marker=decoded, revision=revision)
+        if self._row_is_expired(decoded):
+            return _L2Lookup(row=None, marker=None, revision=revision)
+        return _L2Lookup(row=decoded, marker=None, revision=None)
 
-    def _classify_absent_marker(self, raw: bytes, revision: int | None) -> _L2Lookup:
-        """decide whether an absent-marker may still answer, or must be replaced after asking L3.
+    def _decode_l2_value(self, raw: bytes) -> dict[str, Any] | _AbsentMarker:
+        """decode one L2 value of this collection: a row, or an absent-marker.
 
-        A marker is honoured only while this collection opts into negative caching and the marker
-        is younger than :attr:`negative_cache_max_age`. A collection that stopped opting in, or a
-        marker whose time cannot be read, is treated as aged out: asking L3 again is always safe.
+        The one decoder every read of a collection key goes through, so an absent-marker is never
+        handed to a subclass :meth:`deserialize` that has no idea what it is.
 
-        :param raw: the L2 value, starting with the marker prefix
+        :param raw: the stored bytes
         :ptype raw: bytes
-        :param revision: the entry's revision, for a compare-and-swap replacement; ``None`` when
-            the read did not fetch one
-        :ptype revision: int | None
-        :return: ``absent`` for a fresh marker, otherwise a miss carrying the revision to replace
-        :rtype: _L2Lookup
+        :return: the rehydrated row, or the marker
+        :rtype: dict[str, Any] | _AbsentMarker
+        :raises CorruptCacheEntry: when a row, or a marker's generation, cannot be decoded
         """
-        max_age = self.negative_cache_max_age
-        fresh = False
-        if max_age is not None and self._negative_cache_active:
+        if raw.startswith(_ABSENT_MARKER_PREFIX):
             try:
-                written = datetime.fromisoformat(raw[len(_ABSENT_MARKER_PREFIX) :].decode("ascii"))
-            except UnicodeDecodeError, ValueError:
-                log.warning(
-                    "L2 absent-marker carries no readable time; asking L3",
-                    extra={"extra_data": {"table": self.table_name}},
-                )
-            else:
-                fresh = datetime.now(UTC) - written < max_age
-        if fresh:
-            return _L2Lookup(row=None, absent=True, replaceable_revision=None)
-        return _L2Lookup(row=None, absent=False, replaceable_revision=revision)
+                return _AbsentMarker(generation=raw[len(_ABSENT_MARKER_PREFIX) :].decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise CorruptCacheEntry(self.table_name, "absent-marker generation", raw) from exc
+        return self._rehydrate_datetimes(self.deserialize(raw))
 
-    async def _record_absent(self, entity_id: Any, replaceable_revision: int | None) -> None:
-        """record in L2 that ``entity_id`` exists in no tier, without ever overwriting a writer.
+    async def _write_l2_marker(self, entity_id: Any, generation: str, revision: int | None) -> None:
+        """record in L2 that ``entity_id`` is absent under ``generation``, never over a writer's value.
 
-        Creates the marker when the key holds nothing, or compare-and-swaps it over the aged-out
-        marker or expired row the lookup found. Either way a writer's value that landed since the
-        lookup makes the write fail, and the writer's value stands. A failure here costs one more
-        L3 read later, never correctness, so it degrades to a warning.
+        Creates the marker when the key held nothing, or compare-and-swaps it over the stale
+        marker, expired row or undecodable entry the lookup found; a value a writer put since then
+        makes either write fail, and the writer's value stands. The entry carries a server-side
+        lifetime of :attr:`negative_cache_max_age`, so markers nobody reads again leave the bucket.
+        A failure here costs one more L3 read later, never correctness, so it degrades to a
+        warning -- including the refusal of a bucket its declarer has not yet let carry lifetimes.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
-        :param replaceable_revision: revision of the entry to replace, or ``None`` to create
-        :ptype replaceable_revision: int | None
+        :param generation: the generation read before the L3 lookup that found nothing
+        :ptype generation: str
+        :param revision: revision of the entry to replace, or ``None`` to create
+        :ptype revision: int | None
         :return: None
         :rtype: None
         """
-        marker = _ABSENT_MARKER_PREFIX + datetime.now(UTC).isoformat().encode("ascii")
+        marker = _ABSENT_MARKER_PREFIX + generation.encode("utf-8")
         try:
             kv = await self._ensure_kv()
             if kv is None:
                 return
             key = self.l2_key(entity_id)
-            if replaceable_revision is None:
-                await kv.create(key=key, value=marker)
+            if revision is None:
+                await kv.create(key=key, value=marker, ttl=self.negative_cache_max_age)
             else:
-                await kv.update(key=key, value=marker, revision=replaceable_revision)
+                await kv.update(key=key, value=marker, revision=revision, ttl=self.negative_cache_max_age)
         except KvError as exc:
             log.warning(
                 "L2 absent-marker write failed; the next lookup will ask L3 again",
@@ -1161,15 +1359,33 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def _pull_through(self, entity_id: Any) -> dict[str, Any] | None:
         """Async pull-through: L2 -> L1, then L3 -> L1+L2. Returns the data or None.
 
-        A fresh absent-marker in L2 answers ``None`` without asking L3. An expired row is absent
-        at every tier, L3's included. When negative caching is on, a full miss is recorded in L2.
+        An expired row is absent at every tier, L3's included. When negative caching is on, the
+        table's write generation is read FIRST -- before L2 and before L3 -- and an absent-marker
+        in L1 or L2 answers ``None`` only when stamped with that generation. A full miss is then
+        recorded under it in both tiers. Because every committed write advances the generation, a
+        marker recorded from an L3 read that predated a write carries a generation that write
+        already moved past, and never answers again.
         """
+        generation: str | None = None
+        if self._negative_cache_active:
+            generation = await self._current_generation()
+            if generation is not None and self._l1_marker_matches(entity_id, generation):
+                log.debug(
+                    "absence served from an L1 marker",
+                    extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
+                )
+                return None
         lookup = await self._l2_lookup(entity_id)
         if lookup.row is not None:
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, self._stamped(lookup.row), self.primary_key_columns)
             return lookup.row
-        if lookup.absent:
+        if generation is not None and lookup.marker is not None and lookup.marker.generation == generation:
+            self._write_l1_marker(entity_id, generation)
+            log.debug(
+                "absence served from an L2 marker",
+                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
+            )
             return None
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None and self._row_is_expired(pg_data):
@@ -1178,8 +1394,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, self._stamped(pg_data), self.primary_key_columns)
             await self._save_to_l2(entity_id, pg_data)
-        elif self._negative_cache_active:
-            await self._record_absent(entity_id, lookup.replaceable_revision)
+        elif generation is not None:
+            self._write_l1_marker(entity_id, generation)
+            await self._write_l2_marker(entity_id, generation, lookup.revision)
         return pg_data
 
     @staticmethod
@@ -1262,7 +1479,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         (fire-and-forget on the background event loop). L3 writes only
         happen if flush strategy is ALWAYS; otherwise the change is
         buffered for later flush.
+
+        Refused on a collection that caches absences: the fire-and-forget write has no caller to
+        tell when its write generation failed to advance, and an unadvanced generation keeps an
+        absence recorded before the write answering. Use :meth:`save_entity`.
         """
+        if self._negative_cache_active:
+            raise TypeError(
+                f"{type(self).__name__} caches absences; subscript writes cannot report a write "
+                f"generation they failed to advance. use save_entity()"
+            )
         if isinstance(key, tuple):
             entity_id, field = key
             self.set_field_sync(entity_id, field, value)
@@ -1483,13 +1709,19 @@ class BaseCollection(ABC, Generic[EntityT]):
             rollback), making the write atomic with whatever other operations
             the caller already issued on the same transaction. L1 / L2 /
             invalidation publish run unchanged. ``None`` lets the collection's
-            own L3 store service the write
+            own L3 store service the write. refused on a collection that caches
+            absences, whose write generation must advance after the commit
         :ptype conn: Any
         :return: nothing
         :rtype: None
         :raises ConcurrentModificationError: on optimistic-lock fence
             mismatch when the entity carries an
             ``original_date_updated`` value
+        :raises ValueError: when ``conn`` is passed to a collection that caches absences
+        :raises GenerationUnavailableError: when a collection that caches absences committed the
+            write but could not advance its write generation; retry the save
+        :raises KvError: when a collection that caches absences committed the write but its L2
+            write did not land; retry the save
         """
         self._set_span_table()
         data = entity.to_dict()
@@ -1526,6 +1758,16 @@ class BaseCollection(ABC, Generic[EntityT]):
             and self.table_name in self._flush_tables
             and self._write_buffer is not None
         )
+        if conn is not None and self._negative_cache_active:
+            # the write joins a transaction the caller commits later; the generation would advance
+            # before the row is visible, and a reader in between would record it absent under the
+            # new generation, where no later advance reaches it.
+            raise ValueError(
+                f"{type(self).__name__} caches absences and cannot join a caller's transaction: its "
+                f"write generation must advance after the commit, which only the collection's own "
+                f"write can guarantee"
+            )
+        generation_failure: GenerationUnavailableError | None = None
 
         if defer:
             if self._l1 is not None:
@@ -1551,6 +1793,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                 if entity.is_new:
                     raise RuntimeError(f"L3 insert failed for {self.table_name} entity {entity_id}: 0 rows affected")
                 raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
+            # the row is committed: advance the generation before anything else, so an absence a
+            # reader recorded from an L3 read that predated this commit stops answering as soon as
+            # possible. a failure is raised only once L1, L2 and the broadcast have run.
+            generation_failure = await self._advance_generation()
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
             if self._l1 is not None:
@@ -1558,19 +1804,21 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 # No L1 backend: repopulate _changes so entity fields remain accessible
                 object.__setattr__(entity, "_changes", dict(data))
+            self._clear_l1_marker(entity_id)
             l2_landed = await self._save_to_l2(entity_id, data)
 
         await self._publish_invalidation(entity_id)
+        if generation_failure is not None:
+            raise generation_failure
         self._raise_if_l2_write_lost(entity_id, landed=l2_landed, operation="write")
 
     def _raise_if_l2_write_lost(self, entity_id: Any, *, landed: bool, operation: str) -> None:
         """make a failed L2 write loud on a negative-caching collection.
 
-        Everywhere else a failed L2 write is a cache miss and degrades to a warning. Here it may
-        have left an absent-marker in place, which keeps reporting the key absent after the L3
-        write it hides landed -- for a denylist, a revocation nobody sees. Raising tells the caller
-        to retry; the marker's max age bounds the damage if nobody does. Called after the
-        invalidation broadcast, so peers are still told.
+        Everywhere else a failed L2 write is a cache miss and degrades to a warning. On a
+        collection whose reads trust L2 to say a key is absent, L2 disagreeing with L3 is not a
+        cache miss: it can report a written row absent, or a deleted row present. Raising tells the
+        caller to retry. Called after the invalidation broadcast, so peers are still told.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
@@ -1585,9 +1833,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         if landed or not self._negative_cache_active:
             return
         raise KvError(
-            f"{self.table_name}: the L2 {operation} for {entity_id!r} failed after its L3 {operation} "
-            f"landed; an absent-marker may keep reporting it absent for up to "
-            f"{self.negative_cache_max_age}. Retry the {operation}."
+            f"{self.table_name}: the L2 {operation} for {entity_id!r} did not land, so L2 may disagree "
+            f"with L3 for that key until the {operation} is retried."
         )
 
     async def persist_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
@@ -1745,7 +1992,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 raw_bytes, revision = entry
                 try:
-                    row = self._rehydrate_datetimes(self.deserialize(raw_bytes))
+                    decoded = self._decode_l2_value(raw_bytes)
+                    # an absent-marker is no prior row; its revision is kept so the write below
+                    # compare-and-swaps the marker away rather than creating over it.
+                    row = None if isinstance(decoded, _AbsentMarker) else decoded
                 except CorruptCacheEntry as exc:
                     # Treated as no prior row, but the REVISION is kept deliberately. The write
                     # below then takes the `update` branch and compare-and-swaps the corrupt

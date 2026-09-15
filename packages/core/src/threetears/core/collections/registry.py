@@ -14,6 +14,7 @@ from uuid_utils import uuid7
 
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
+    from threetears.core.collections.generation import GenerationSource
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
@@ -143,6 +144,9 @@ class CollectionRegistry:
         # registering, so a bound stored there would be silently dropped by a
         # later ``register()`` call. Separate dict, separate lifetime.
         self._l1_max_ages: dict[str, float | None] = {}
+        # The write generation a negative-caching collection stamps its absences with. One per
+        # registry: every collection on it answers to the same principal's view of the world.
+        self._generation_source: GenerationSource | None = None
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
@@ -404,6 +408,29 @@ class CollectionRegistry:
                 f"which is not a cache",
             )
         self._l1_max_ages[table_name] = max_age_seconds
+
+    def set_generation_source(self, source: GenerationSource) -> None:
+        """wire the write generation negative-caching collections on this registry stamp absences with.
+
+        Required before constructing any collection that sets
+        :attr:`BaseCollection.negative_cache_max_age` and has L2 and L3: without it an absence
+        could only be invalidated by timing, and every way that races was found.
+
+        :param source: the generation source, normally ``threetears.epoch``'s
+        :ptype source: GenerationSource
+        :return: nothing
+        :rtype: None
+        """
+        self._generation_source = source
+
+    @property
+    def generation_source(self) -> GenerationSource | None:
+        """the write generation source wired on this registry, or ``None``.
+
+        :return: the source, or ``None`` when none is wired
+        :rtype: GenerationSource | None
+        """
+        return self._generation_source
 
     def get_l1_max_age(self, table_name: str) -> float | None:
         """Return the configured L1 max age for a collection, or ``None``.

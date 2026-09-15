@@ -100,6 +100,9 @@ def _live(**overrides: Any) -> StreamConfig:
         "max_msgs_per_subject": 1,
         "storage": StorageType.MEMORY,
         "allow_direct": False,
+        # both nats-py's create_key_value and this package's build_kv_stream_config set it on a
+        # stream they create; a legacy bucket without it is spelled out where a test needs one.
+        "allow_msg_ttl": True,
         "discard": DiscardPolicy.NEW,
     }
     base.update(overrides)
@@ -147,8 +150,10 @@ class TestTheComparedFieldSetIsNarrow:
     in the dataclass and another on the server.
     """
 
-    def test_only_direct_is_reconciled_for_this_landing(self) -> None:
-        assert RECONCILED_KV_STREAM_FIELDS == ("allow_direct",)
+    def test_only_direct_and_per_entry_ttl_are_reconciled(self) -> None:
+        # allow_direct for read scoping; allow_msg_ttl so entries nothing deletes can carry a
+        # server-side lifetime. every other requestable field stays set-at-create.
+        assert RECONCILED_KV_STREAM_FIELDS == ("allow_direct", "allow_msg_ttl")
 
     def test_a_field_the_caller_did_not_request_is_not_a_difference(self) -> None:
         requested = build_kv_stream_config(
@@ -227,6 +232,29 @@ class TestTheDeclarerReconciles:
         )
         assert len(js.updated) == 1, "a declarer must reconcile allow_direct in place"
         assert js.updated[0].allow_direct is True
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_bucket_without_per_entry_ttl_is_enabled_in_place(self) -> None:
+        """Buckets created before this package set allow_msg_ttl carry it off.
+
+        Without the in-place enable, every TTL'd write to such a bucket is refused by the server
+        for as long as the bucket lives -- which, for a memory bucket nobody deletes, is forever.
+        """
+        js = _ScriptedJetStream(
+            add_raises=_ApiError(10058, "stream name already in use with a different configuration"),
+            live=_live(allow_direct=True, allow_msg_ttl=None),
+        )
+        await NatsKvBucket.open(
+            client=_ScriptedClient(js),  # type: ignore[arg-type]
+            full_name="probe",
+            ttl=None,
+            storage="memory",
+            create_if_missing=True,
+            history=1,
+            direct=True,
+        )
+        assert len(js.updated) == 1, "a declarer must enable allow_msg_ttl on a legacy bucket"
+        assert js.updated[0].allow_msg_ttl is True
 
     @pytest.mark.asyncio
     async def test_a_live_bucket_already_carrying_it_is_not_updated(self) -> None:
@@ -313,6 +341,26 @@ class TestTheReaderRefuses:
             direct=True,
         )
         assert bucket.name == "probe"
+
+    @pytest.mark.asyncio
+    async def test_a_reader_binds_a_legacy_bucket_without_per_entry_ttl(self) -> None:
+        """Only the declarer enables allow_msg_ttl; a reader must not refuse the bucket meanwhile.
+
+        Refusing would take L2 offline on every reader until the declaring identity rolled. What
+        the reader loses instead is per-entry TTL writes, which the server refuses loudly.
+        """
+        js = _ScriptedJetStream(live=_live(allow_direct=True, allow_msg_ttl=None))
+        bucket = await NatsKvBucket.open(
+            client=_ScriptedClient(js),  # type: ignore[arg-type]
+            full_name="probe",
+            ttl=None,
+            storage="memory",
+            create_if_missing=False,
+            history=1,
+            direct=True,
+        )
+        assert bucket.name == "probe"
+        assert js.updated == []
 
     @pytest.mark.asyncio
     async def test_a_reader_that_states_no_direct_does_not_even_look(self) -> None:

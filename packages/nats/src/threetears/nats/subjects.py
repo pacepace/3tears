@@ -1989,6 +1989,22 @@ class Subjects:
         )
 
     @classmethod
+    def collection_generation_epoch(cls, table_name: str) -> Subject:
+        """the key naming one collection table's write generation.
+
+        advanced by every committed write to a collection that caches absences, and read before
+        the L3 lookup whose miss it stamps. Read and written directly, never broadcast: a reader
+        compares the value it recorded an absence under against the current one on each lookup,
+        so no subscriber has to hear anything.
+
+        :param table_name: the collection's table, an ``[a-z_]`` identifier
+        :ptype table_name: str
+        :return: subject ``{ns}.collections.{table_name}.epoch``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.collections.{table_name}.epoch", kind="point")
+
+    @classmethod
     def mcp_rbac_epoch(cls) -> Subject:
         """publish + subscribe subject for MCP per-tool RBAC epoch.
 

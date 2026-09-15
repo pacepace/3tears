@@ -50,16 +50,35 @@ packages (bumped in lock-step).
   `threetears.core.coordination.replay_guard.CLOCK_DRIFT_ALLOWANCE`.
 - `threetears.registry.proxy.POP_LEEWAY_SECONDS`, public so a pop replay guard can be sized
   from the proxy's own value.
-- **`BaseCollection.negative_cache_max_age`**: opt in to recording a full miss in L2, so a
-  lookup of a key nobody wrote reaches L3 once per marker lifetime instead of on every call. A
-  reader's marker can never overwrite a writer's value (create-if-absent, or compare-and-swap
-  over an aged-out entry). Opting in makes `save_entity`, `reload_entity` and `delete` raise
-  `KvError` when their L2 write fails, after the invalidation broadcast; the max age bounds
-  how long a marker the failed write left behind can hide it. Ignored without an L3 pool.
+- **`BaseCollection.negative_cache_max_age`**: opt in to recording a full miss as an
+  absent-marker in L1 and L2, so a lookup of a key nobody wrote reaches L3 once per write
+  generation instead of on every call. **The guarantee: a recorded absence never answers after
+  a committed write** -- whichever pod or principal wrote, whatever the invalidation broadcast
+  or L2 did in between -- because every marker is stamped with the table's write generation,
+  read before the L3 lookup, and every committed write advances it. The one exception is a
+  write that commits and then fails to advance the generation: it raises
+  `GenerationUnavailableError`, and `negative_cache_max_age` bounds how long older markers can
+  hide it if nobody retries. Requires `CollectionRegistry.set_generation_source(...)`
+  (normally `threetears.epoch.EpochGenerationSource`). Refuses, at construction, deferred L3
+  flushes; refuses subscript writes and `save_entity(conn=...)`; makes `save_entity`,
+  `reload_entity` and `delete` raise `KvError` when their L2 write fails. L2 markers carry a
+  server-side lifetime, so they leave the shared bucket.
 - **`BaseCollection.expires_at_column`**: a row whose expiry has passed is absent to `get`,
   `ensure` and `collection[id]` at every tier, so correctness never waits on a sweep. Reporting
   reads that serve an entity's internals still see it, so an entity held past its expiry can
-  still be saved. A `None` value never expires.
+  still be saved. A `None` value never expires. Must be one of `datetime_columns`, checked at
+  class definition.
+- `threetears.core.collections.generation.GenerationSource`,
+  `threetears.core.exceptions.GenerationUnavailableError`, `CollectionRegistry.set_generation_source`
+  and `CollectionRegistry.generation_source`.
+- `threetears.epoch.EpochGenerationSource` and `Subjects.collection_generation_epoch`: a
+  table's write generation as one `"{incarnation}:{count}"` value in the epoch bucket.
+- **Per-entry KV lifetimes.** `NatsKvBucket.create` and `.update` (and `KvBucketLike`) take an
+  optional `ttl`. `allow_msg_ttl` joins the reconciled stream fields: a declaring opener enables
+  it in place on a bucket created before this package set it (existing entries are kept; it
+  cannot be disabled again), while a binding opener tolerates its absence and only its TTL'd
+  writes are refused.
+- `FakeKvBucket` accepts `ttl` and gains `advance_clock()`.
 
 ## v0.42.0 -- 2026-09-15
 

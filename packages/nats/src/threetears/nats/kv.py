@@ -33,8 +33,8 @@ import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from nats.js.api import DiscardPolicy, StorageType, StreamConfig, StreamInfo
-from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
+from nats.js.api import DiscardPolicy, Header, StorageType, StreamConfig, StreamInfo
+from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.observe import get_logger
 
 from threetears.nats._diagnostics import kv_grant_remedy, kv_timeout_remedy
@@ -95,6 +95,11 @@ _JS_ERR_STREAM_NAME_IN_USE = 10058
 #: forbids.
 _JS_ERR_SUBJECTS_OVERLAP = 10065
 
+#: JetStream's refusals of a publish whose expected last subject sequence did not match --
+#: ``JSStreamWrongLastSequenceErrF`` and ``JSStreamWrongLastSequenceConstantErr``. Both mean a lost
+#: compare-and-swap, the same codes nats-py maps to ``KeyWrongLastSequenceError``.
+_JS_ERR_WRONG_LAST_SEQUENCE: frozenset[int] = frozenset({10071, 10164})
+
 #: Stream-config fields a caller can actually ASK for through
 #: :meth:`threetears.nats.NatsClient.kv_bucket`, and therefore the only ones
 #: whose server-side value is worth reporting when an existing bucket carries
@@ -107,6 +112,7 @@ REQUESTABLE_KV_STREAM_FIELDS: tuple[str, ...] = (
     "max_msgs_per_subject",
     "storage",
     "allow_direct",
+    "allow_msg_ttl",
 )
 
 #: The subset of :data:`REQUESTABLE_KV_STREAM_FIELDS` an open RECONCILES -- by
@@ -121,9 +127,22 @@ REQUESTABLE_KV_STREAM_FIELDS: tuple[str, ...] = (
 #: constrain a read. With it true the read is
 #: ``$JS.API.DIRECT.GET.{stream}.{subject}`` and the key is pinnable.
 #:
+#: ``allow_msg_ttl`` is here because per-entry lifetimes are what bound L2 memory for entries
+#: nothing ever deletes -- a collection's negative-cache markers -- and buckets created before
+#: this module set it carry it off. Enabling it is safe on a live stream and cannot be undone,
+#: which is fine: it only permits a header, it changes no existing entry.
+#:
 #: Consequence worth stating: anything outside this tuple is set at CREATE and
 #: never reconciled afterwards.
-RECONCILED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct",)
+RECONCILED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct", "allow_msg_ttl")
+
+#: The subset of :data:`RECONCILED_KV_STREAM_FIELDS` a BIND-only open refuses to run against.
+#:
+#: ``allow_msg_ttl`` is reconciled by the declarer but not refused by a binder. A process that
+#: binds a bucket its declarer has not yet reconciled loses nothing but per-entry TTL writes, which
+#: the server refuses loudly and every caller treats as an ordinary failed write; refusing the bind
+#: instead would take L2 offline on every such process until the declarer rolled.
+_BIND_REFUSED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct",)
 
 #: Ceiling on one KV operation, ack included.
 #:
@@ -153,6 +172,23 @@ _TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS: float = 300.0
 #: throttle should hold across bucket handles for the same name -- a re-open mints a new
 #: instance, and a reconnect loop must not reset the throttle on every attempt.
 _last_timeout_remedy_log: dict[str, float] = {}
+
+
+def _msg_ttl_seconds(ttl: timedelta | None) -> float | None:
+    """convert a per-entry TTL to the whole seconds the ``Nats-TTL`` header carries.
+
+    :param ttl: the requested lifetime, or ``None`` for none
+    :ptype ttl: timedelta | None
+    :return: whole seconds, or ``None``
+    :rtype: float | None
+    :raises ValueError: when ``ttl`` is under one second, which the header cannot express
+    """
+    if ttl is None:
+        return None
+    seconds = int(ttl.total_seconds())
+    if seconds < 1:
+        raise ValueError(f"a per-entry KV TTL must be at least one second, got {ttl}")
+    return float(seconds)
 
 
 def build_kv_stream_config(
@@ -265,7 +301,7 @@ def _normalised(field: str, value: Any) -> Any:
     :return: the value in its normalised form
     :rtype: Any
     """
-    if field == "allow_direct":
+    if field in ("allow_direct", "allow_msg_ttl"):
         return bool(value)
     if field == "max_age":
         return float(value or 0.0)
@@ -369,12 +405,12 @@ async def _bind_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> K
         raise KvError(
             f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
         ) from exc
-    if any(getattr(config, field, None) is not None for field in RECONCILED_KV_STREAM_FIELDS):
+    if any(getattr(config, field, None) is not None for field in _BIND_REFUSED_KV_STREAM_FIELDS):
         live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
         drift = {
             field: value
             for field, value in kv_stream_differences(requested=config, actual=live).items()
-            if field in RECONCILED_KV_STREAM_FIELDS
+            if field in _BIND_REFUSED_KV_STREAM_FIELDS
         }
         if drift:
             raise KvConfigMismatch(
@@ -820,21 +856,33 @@ class NatsKvBucket:
             raise KvError(f"KV put failed: bucket={self._full_name} key={key}: {exc}") from exc
         return int(revision)
 
-    async def create(self, *, key: str, value: bytes) -> int | None:
+    async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
         """create-if-absent (SET NX). returns new revision or ``None`` on conflict.
 
         :param key: key to create
         :ptype key: str
         :param value: bytes to store
         :ptype value: bytes
+        :param ttl: a server-side lifetime for THIS entry, after which the server removes it;
+            ``None`` keeps the bucket's own expiry. Whole seconds, at least one. Needs the stream's
+            ``allow_msg_ttl``: a stream without it refuses the write, which raises
+        :ptype ttl: timedelta | None
         :return: new revision number, or ``None`` if key already exists
         :rtype: int | None
-        :raises KvError: on transport failure
+        :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
+        :raises ValueError: when ``ttl`` is under one second
         """
+        msg_ttl = _msg_ttl_seconds(ttl)
+
+        def _do_create() -> Any:
+            # the keyword is sent only when a lifetime was asked for, so the call an untimed
+            # create makes is exactly the call it has always made.
+            if msg_ttl is None:
+                return self._kv.create(key, value)
+            return self._kv.create(key, value, msg_ttl=msg_ttl)
+
         try:
-            revision = await self._run_with_reopen(
-                lambda: self._kv.create(key, value), passthrough=(KeyWrongLastSequenceError,)
-            )
+            revision = await self._run_with_reopen(_do_create, passthrough=(KeyWrongLastSequenceError,))
         except KeyWrongLastSequenceError:
             # A lost create is a documented result (None), but a burst of them is contention on
             # one key -- two writers racing a lock or a leader election -- which only shows up
@@ -849,7 +897,7 @@ class NatsKvBucket:
             raise KvError(f"KV create failed: bucket={self._full_name} key={key}: {exc}") from exc
         return int(revision)
 
-    async def update(self, *, key: str, value: bytes, revision: int) -> int | None:
+    async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
         """compare-and-swap update. returns new revision or ``None`` on revision-mismatch.
 
         :param key: key to update
@@ -858,10 +906,17 @@ class NatsKvBucket:
         :ptype value: bytes
         :param revision: expected current revision
         :ptype revision: int
+        :param ttl: a server-side lifetime for the new entry; ``None`` keeps the bucket's own
+            expiry. Whole seconds, at least one. Needs the stream's ``allow_msg_ttl``
+        :ptype ttl: timedelta | None
         :return: new revision number, or ``None`` if expected revision did not match
         :rtype: int | None
-        :raises KvError: on transport failure
+        :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
+        :raises ValueError: when ``ttl`` is under one second
         """
+        msg_ttl = _msg_ttl_seconds(ttl)
+        if msg_ttl is not None:
+            return await self._update_with_ttl(key=key, value=value, revision=revision, msg_ttl=msg_ttl)
         try:
             new_revision = await self._run_with_reopen(
                 lambda: self._kv.update(key, value, revision), passthrough=(KeyWrongLastSequenceError,)
@@ -877,6 +932,45 @@ class NatsKvBucket:
         except Exception as exc:
             raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
         return int(new_revision)
+
+    async def _update_with_ttl(self, *, key: str, value: bytes, revision: int, msg_ttl: float) -> int | None:
+        """compare-and-swap update carrying a per-entry TTL.
+
+        nats-py's public ``KeyValue.update`` takes no TTL, so this sends what it would -- a
+        publish to the key's subject expecting ``revision`` as the subject's last sequence -- with
+        the ``Nats-TTL`` header added. The server's two wrong-last-sequence codes are the lost
+        compare-and-swap; anything else it refuses is a failure.
+
+        :param key: key to update
+        :ptype key: str
+        :param value: bytes to store
+        :ptype value: bytes
+        :param revision: expected current revision
+        :ptype revision: int
+        :param msg_ttl: server-side lifetime in whole seconds
+        :ptype msg_ttl: float
+        :return: new revision number, or ``None`` if expected revision did not match
+        :rtype: int | None
+        :raises KvError: on transport failure or any other refusal
+        """
+        js = self._client.jetstream_context()
+        subject = f"$KV.{self._full_name}.{key}"
+        headers = {Header.EXPECTED_LAST_SUBJECT_SEQUENCE: str(revision)}
+        try:
+            ack = await self._run_with_reopen(
+                lambda: js.publish(subject, value, headers=headers, msg_ttl=msg_ttl), passthrough=(APIError,)
+            )
+        except APIError as exc:
+            if exc.err_code in _JS_ERR_WRONG_LAST_SEQUENCE:
+                log.debug(
+                    "KV update lost: revision mismatch",
+                    extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
+                )
+                return None
+            raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
+        except Exception as exc:
+            raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
+        return int(ack.seq)
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:
         """delete a key, optionally guarded by a CAS revision.
@@ -963,9 +1057,9 @@ class KvBucketLike(Protocol):
 
     async def put(self, *, key: str, value: bytes) -> int: ...
 
-    async def create(self, *, key: str, value: bytes) -> int | None: ...
+    async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None: ...
 
-    async def update(self, *, key: str, value: bytes, revision: int) -> int | None: ...
+    async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None: ...
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool: ...
 
