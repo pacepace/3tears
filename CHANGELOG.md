@@ -126,6 +126,26 @@ packages (bumped in lock-step).
   (the default) keeps following the process strategy. `"write_behind"` without a write buffer is
   refused at construction.
 - `threetears.core.collections.base.CasMutation`.
+- **The coordination tables** (`threetears.core.coordination.tables`): `coordination_counters`,
+  `coordination_claims`, `coordination_revocations` and `coordination_redemptions`, the L3 tables
+  the durable coordination primitives move onto. Each is keyed `(purpose, key)`, where `purpose`
+  carries what a KV bucket name used to, so the many primitives one process builds share one
+  collection per table (`coordination_collection`). Every tier is optional: a process with no L3
+  (identity-edge) or no L2 still runs them.
+- **`threetears.core.coordination.migrations.register(runner, scope=...)`**: core's first package
+  migration. It creates the four tables by rendering each collection's declared `TableSchema`
+  (`table_def_for`), so the migrated table cannot drift from the table the collection reads. A
+  consumer that cannot run DDL declares the same schemas in its data section instead.
+- **`threetears.core.coordination.flusher.PeriodicFlusher`**: drains a write buffer on an interval
+  and flushes what is left on close. Nothing in 3tears called `flush_pending` before, so a
+  write-behind collection had no driver; a coordination collection starts one on its first write
+  (`ensure_flushing`) and stops it in `aclose`.
+- Expired coordination rows are swept inline, bounded, at most once per interval per process
+  (`sweep_expired`). Correctness never waits on it: an expired row is already absent at every
+  tier. It is not a scheduled job because two of the four consumers run no scheduler.
+- The column-type alignment gate understands rendered migrations: a table whose DDL comes from its
+  own `TableSchema` is checked through the renderer's type map instead of a SQL literal, and a
+  renderer that maps `DATETIMETZ_TYPE` to anything but `TIMESTAMPTZ` fails the gate.
 
 ## v0.42.0 -- 2026-09-15
 

@@ -27,6 +27,14 @@ design:
 - migration precedence: ``ALTER TABLE ... ALTER COLUMN ... TYPE T``
   supersedes the original ``CREATE TABLE`` declaration. when multiple
   migrations touch the same column, the highest-versioned one wins.
+- rendered migrations: a migration may build its DDL from the same
+  ``TableSchema`` the collection reads (``table_def_for``) instead of
+  repeating the columns as a SQL literal. Such a table has one
+  declaration and cannot drift, but it leaves no literal for the
+  regexes to read, so the check moves onto the renderer's type map,
+  which must send ``DATETIMETZ_TYPE`` to ``TIMESTAMPTZ``. A renderer
+  with a wrong or missing map fails, and so does every table it
+  renders.
 - exemptions: tables tracked only via inline raw SQL (no Column
   declaration anywhere) live in ``_column_type_alignment_exemptions.txt``
   with a ``# rationale: ...`` line per entry, matching the underscore-
@@ -64,6 +72,7 @@ _PACKAGE_SRC_ROOTS: list[Path] = [
 # package migration roots to walk for SQL declarations.
 _PACKAGE_MIGRATION_ROOTS: list[Path] = [
     _REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core" / "data" / "migrations",  # noqa: E501
+    _REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core" / "coordination" / "migrations",  # noqa: E501
     _REPO_ROOT / "packages" / "agent-tools" / "src" / "threetears" / "agent" / "tools" / "migrations",  # noqa: E501
     _REPO_ROOT / "packages" / "agent-workspace" / "src" / "threetears" / "agent" / "workspace" / "migrations",  # noqa: E501
     _REPO_ROOT / "packages" / "agent-memory" / "src" / "threetears" / "agent" / "memory" / "migrations",  # noqa: E501
@@ -507,6 +516,118 @@ def parse_column_exemptions(path: Path) -> list[ColumnExemption]:
 
 _EXEMPTION_FILE = Path(__file__).resolve().parent / "_column_type_alignment_exemptions.txt"
 
+# the renderer seam: a migration may build its DDL from the same TableSchema the collection reads,
+# instead of repeating the columns as a SQL literal. Such a table cannot drift -- there is one
+# declaration -- but it also has no literal for the regexes above to read. The check does not go
+# away: it moves onto the renderer's own type map, which must send DATETIMETZ_TYPE to TIMESTAMPTZ
+# for every table it renders. Anything else (a renderer that maps it to TIMESTAMP, or a rendered
+# table whose renderer declares no map) is a violation, same as a mismatched literal.
+_RENDERER_FUNCTION = "table_def_for"
+_RENDERER_TYPE_MAP = "_DDL_TYPES"
+
+
+def _migration_tree_uses_renderer(migration_roots: list[Path]) -> bool:
+    """whether any migration builds its DDL through the renderer rather than a SQL literal.
+
+    :param migration_roots: package migration roots to walk
+    :ptype migration_roots: list[Path]
+    :return: ``True`` when a migration calls the renderer
+    :rtype: bool
+    """
+    for root in migration_roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except OSError, SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == _RENDERER_FUNCTION
+                ):
+                    return True
+    return False
+
+
+def _renderer_maps_datetimetz_correctly(module: ast.Module) -> bool:
+    """whether a renderer module's type map sends ``DATETIMETZ_TYPE`` to a timestamptz column.
+
+    :param module: parsed renderer module
+    :ptype module: ast.Module
+    :return: ``True`` when the map is present and correct
+    :rtype: bool
+    """
+    for node in ast.walk(module):
+        if not isinstance(node, ast.AnnAssign | ast.Assign):
+            continue
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else list(node.targets)
+        if not any(isinstance(t, ast.Name) and t.id == _RENDERER_TYPE_MAP for t in targets):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Dict):
+            continue
+        for key, mapped in zip(value.keys, value.values, strict=False):
+            if isinstance(key, ast.Name) and key.id == "DATETIMETZ_TYPE":
+                return (
+                    isinstance(mapped, ast.Constant)
+                    and isinstance(mapped.value, str)
+                    and mapped.value.upper() == _EXPECTED_SQL_TYPE["DATETIMETZ_TYPE"]
+                )
+    return False
+
+
+def _rendered_tables(src_roots: list[Path], migration_roots: list[Path]) -> tuple[set[str], list[str]]:
+    """tables whose DDL a migration renders from their own schema, and any renderer violations.
+
+    A rendered table's columns are checked through the renderer's type map rather than through a
+    SQL literal, so a renderer with a wrong or missing map fails here instead of silently
+    exempting every table it renders.
+
+    :param src_roots: package source roots to walk
+    :ptype src_roots: list[Path]
+    :param migration_roots: package migration roots to walk
+    :ptype migration_roots: list[Path]
+    :return: rendered table names, and violation messages for bad renderers
+    :rtype: tuple[set[str], list[str]]
+    """
+    rendered: set[str] = set()
+    violations: list[str] = []
+    if not _migration_tree_uses_renderer(migration_roots):
+        return (rendered, violations)
+    for src_root in src_roots:
+        if not src_root.exists():
+            continue
+        for path in src_root.rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except OSError, SyntaxError:
+                continue
+            defines_renderer = any(
+                isinstance(node, ast.FunctionDef) and node.name == _RENDERER_FUNCTION for node in ast.walk(tree)
+            )
+            if not defines_renderer:
+                continue
+            tables = {
+                table.lower()
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "TableSchema"
+                and (table := _extract_table_name_from_schema(node)) is not None
+            }
+            if not _renderer_maps_datetimetz_correctly(tree):
+                violations.append(
+                    f"{path}: defines {_RENDERER_FUNCTION}() and renders "
+                    f"{len(tables)} table(s), but its {_RENDERER_TYPE_MAP} does not map "
+                    f"DATETIMETZ_TYPE to {_EXPECTED_SQL_TYPE['DATETIMETZ_TYPE']}"
+                )
+                continue
+            rendered |= tables
+    return (rendered, violations)
+
 
 def test_column_type_alignment() -> None:
     """every datetime Column matches its migration-defined SQL type.
@@ -520,6 +641,7 @@ def test_column_type_alignment() -> None:
     :rtype: None
     :raises AssertionError: on any unexempted mismatch
     """
+    violations: list[str] = []
     column_decls: list[ColumnDecl] = []
     for src_root in _PACKAGE_SRC_ROOTS:
         column_decls.extend(_collect_column_decls(src_root))
@@ -530,11 +652,15 @@ def test_column_type_alignment() -> None:
             sql_types[k] = v
 
     exemptions = {(e.table, e.column) for e in parse_column_exemptions(_EXEMPTION_FILE)}
+    rendered, violations = _rendered_tables(_PACKAGE_SRC_ROOTS, _PACKAGE_MIGRATION_ROOTS)
 
-    violations: list[str] = []
     for decl in column_decls:
         key = (decl.table, decl.column)
         if key in exemptions:
+            continue
+        if decl.table in rendered:
+            # its migration renders this column from this same declaration, and the renderer's
+            # type map was checked above; there is no second place for it to drift from.
             continue
         sql = sql_types.get(key)
         if sql is None:
