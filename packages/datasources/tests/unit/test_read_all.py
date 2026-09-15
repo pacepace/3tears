@@ -88,6 +88,11 @@ class _PagingWarehouse:
         # thinks it means, rather than silently shifting by one.
         self.pages: list[str] = []
         self.page_params: list[list[Any]] = []
+        # What the driver calls the count column, and what it answers. Drivers
+        # disagree on both, so the tests can vary them.
+        self.count_column = "total"
+        self.count_value: Any = None
+        self.count_returns_nothing = False
 
     def forwarded_identity_token(self) -> str:
         """
@@ -123,9 +128,10 @@ class _PagingWarehouse:
             # The fake counts the relation honestly, including rows its own keyset
             # filter would never serve. That is the whole point of the check under
             # test: a warehouse knows about rows the predicate cannot reach.
+            answer = len(self._rows) if self.count_value is None else self.count_value
             return DatasourceQueryResult(
-                rows=[{"total": len(self._rows)}],
-                row_count=1,
+                rows=[] if self.count_returns_nothing else [{self.count_column: answer}],
+                row_count=0 if self.count_returns_nothing else 1,
                 truncated=False,
                 correlation_id=uuid7(),
             )
@@ -822,3 +828,56 @@ class TestARowTheKeyCannotReachIsNotLost:
         )
 
         assert len(rows) == len(dataset)
+
+
+class TestTheCountIsReadPortably:
+    """the count column's NAME differs by engine, so it is read by position.
+
+    Postgres and redshift fold unquoted identifiers to lower case and return
+    ``total``; snowflake folds to upper and returns ``TOTAL``. Indexing the alias
+    works on the engines it was written against and raises KeyError on one this
+    function claims to support. Reported by a consumer whose fake returned a
+    different name and got a KeyError instead of a typed error.
+    """
+
+    @pytest.mark.parametrize("column_name", ["total", "TOTAL", "count", "c", "?column?"])
+    @pytest.mark.asyncio
+    async def test_any_column_name_is_accepted(self, column_name: str) -> None:
+        """
+        :param column_name: what the driver happens to call the count column
+        :ptype column_name: str
+        :return: nothing
+        :rtype: None
+        """
+        dataset = [_row("ca", "2026-01"), _row("ny", "2026-01"), _row("tx", "2026-01")]
+        warehouse = _PagingWarehouse(dataset)
+        warehouse.count_column = column_name
+
+        rows = await _read(warehouse, page_size=2)
+
+        assert len(rows) == len(dataset)
+
+    @pytest.mark.asyncio
+    async def test_a_count_returning_no_row_is_refused_not_assumed_empty(self) -> None:
+        """An engine answering nothing must not be read as "the relation is empty".
+
+        :return: nothing
+        :rtype: None
+        """
+        warehouse = _PagingWarehouse([_row("ca", "2026-01")])
+        warehouse.count_returns_nothing = True
+
+        with pytest.raises(IncompleteReadError, match="returned no row at all"):
+            await _read(warehouse, page_size=2)
+
+    @pytest.mark.asyncio
+    async def test_a_count_that_is_not_a_number_is_refused(self) -> None:
+        """
+        :return: nothing
+        :rtype: None
+        """
+        warehouse = _PagingWarehouse([_row("ca", "2026-01")])
+        warehouse.count_value = "not a number"
+
+        with pytest.raises(IncompleteReadError, match="which is not a number"):
+            await _read(warehouse, page_size=2)
