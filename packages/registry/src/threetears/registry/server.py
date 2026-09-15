@@ -14,6 +14,7 @@ import asyncio
 import os
 import signal
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -43,7 +44,7 @@ from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
-from threetears.registry.proxy import CallProxy
+from threetears.registry.proxy import _POP_LEEWAY_SECONDS, CallProxy
 from threetears.registry.auth import (
     AgentToolAuthorizer,
     AllowAllLimitGuard,
@@ -71,6 +72,11 @@ _logger = get_logger(__name__)
 # a pop nonce must be remembered at least as long as a proof stays valid: the iat freshness
 # window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
 _POP_NONCE_TTL_SECONDS = 120
+
+# the proxy accepts a pop iat up to the pop leeway AHEAD of its clock, so a replayed proof can
+# carry an issue time that far past its real one. the replay guard's wipe check has to allow the
+# same lead or that proof would pass it.
+_POP_MAX_CLOCK_SKEW = timedelta(seconds=_POP_LEEWAY_SECONDS)
 
 
 def build_heartbeat_collection_registry(
@@ -735,7 +741,12 @@ class RegistryServer:
         # the pop replay guard records each per-call proof nonce for single-use enforcement;
         # always provisioned under enforce-only so a captured pop can never be replayed verbatim
         # for the same call body within the iat freshness window.
-        pop_replay_guard = ReplayGuard(nc, bucket_name="pop_nonces", ttl_seconds=_POP_NONCE_TTL_SECONDS)
+        pop_replay_guard = ReplayGuard(
+            nc,
+            bucket_name="pop_nonces",
+            ttl_seconds=_POP_NONCE_TTL_SECONDS,
+            max_clock_skew=_POP_MAX_CLOCK_SKEW,
+        )
 
         # one in-flight-requests gauge for this registry replica: the CallProxy
         # brackets every dispatch through it, and the HealthServer serves it on

@@ -20,6 +20,9 @@ use:
   ``None`` on CAS conflict (revision mismatch or key absent).
 - :meth:`FakeKvBucket.delete` accepts an optional ``revision`` and
   returns ``True`` on success or absent key, ``False`` on CAS mismatch.
+- :meth:`FakeKvBucket.date_created` reports when the bucket was created, and
+  :meth:`FakeKvBucket.wipe` empties it and moves that time forward, which is
+  what a broker restart does to a memory-backed bucket.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
@@ -28,7 +31,7 @@ is bucket-local and monotonic per bucket.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -89,6 +92,34 @@ class FakeKvBucket:
         self._storage = storage
         self._entries: dict[str, _Entry] = {}
         self._revision = 0
+        self._date_created = datetime.now(UTC)
+
+    async def date_created(self) -> datetime:
+        """when this bucket was created, or last wiped.
+
+        :return: timezone-aware UTC creation time
+        :rtype: datetime
+        """
+        await _YieldOnce()  # so gather() genuinely interleaves
+        return self._date_created
+
+    def wipe(self, *, date_created: datetime | None = None) -> None:
+        """empty the bucket and give it a new creation time, as a broker restart does.
+
+        Every handle a test holds keeps working afterwards and silently sees the empty
+        bucket -- the same property the real wrapper has, and the one a wipe-detecting
+        caller exists to handle.
+
+        :param date_created: the new creation time; ``None`` uses now. Must be timezone-aware.
+        :ptype date_created: datetime | None
+        :return: None
+        :rtype: None
+        :raises ValueError: when ``date_created`` is timezone-naive
+        """
+        if date_created is not None and date_created.tzinfo is None:
+            raise ValueError("FakeKvBucket.wipe requires a timezone-aware date_created")
+        self._entries.clear()
+        self._date_created = date_created if date_created is not None else datetime.now(UTC)
 
     @property
     def ttl(self) -> timedelta | None:

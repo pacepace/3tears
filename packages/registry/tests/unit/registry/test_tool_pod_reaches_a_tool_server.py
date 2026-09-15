@@ -20,7 +20,7 @@ import asyncio
 import base64
 import json
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid7
 
@@ -77,7 +77,9 @@ class _Signer:
 
 
 class _StubReplayGuard:
-    async def record_unique(self, nonce: str) -> bool:
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        if issued_at.tzinfo is None:
+            raise ValueError("record_unique requires a timezone-aware issued_at")
         return True
 
 

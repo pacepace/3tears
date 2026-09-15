@@ -803,14 +803,14 @@ class CallProxy:
                 request.arguments,
                 str(context.correlation_id) if context.correlation_id is not None else None,
             )
-            jti = verify_pop_proof(
+            proof = verify_pop_proof(
                 request.pop,
                 expected_jkt=claims.cnf,
                 access_token_hash=access_token_hash(token),
                 body_hash=body_hash,
                 leeway_seconds=_POP_LEEWAY_SECONDS,
             )
-            if not await self._pop_replay_guard.record_unique(jti):
+            if not await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at):
                 raise IdentityTokenError("pop nonce replay")
             return None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:

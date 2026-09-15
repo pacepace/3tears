@@ -15,6 +15,10 @@ The contract this pins (exercised end-to-end through the public dispatch surface
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+import jwt
+
 import asyncio
 import json
 import logging
@@ -72,9 +76,13 @@ class _StubReplayGuard:
     def __init__(self, *, fresh: bool = True) -> None:
         self._fresh = fresh
         self.seen: list[str] = []
+        self.issued_at: list[datetime] = []
 
-    async def record_unique(self, nonce: str) -> bool:
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        if issued_at.tzinfo is None:
+            raise ValueError("record_unique requires a timezone-aware issued_at")
         self.seen.append(nonce)
+        self.issued_at.append(issued_at)
         return self._fresh
 
 
@@ -1316,3 +1324,15 @@ class TestDispatchPopEnforcement:
         nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_called_once()
         assert len(guard.seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_guard_receives_the_proofs_signed_issue_time(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # the guard refuses a proof issued before a wipe of its bucket only if it is handed the
+        # proof's own signed iat -- not the proxy's clock, which would make every replay look new.
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        guard = _StubReplayGuard(fresh=True)
+        await self._drive(lambda: jwks, req, pop_replay_guard=guard)
+        assert req.pop is not None
+        signed_iat = jwt.decode(req.pop, options={"verify_signature": False})["iat"]
+        assert guard.issued_at == [datetime.fromtimestamp(signed_iat, UTC)]

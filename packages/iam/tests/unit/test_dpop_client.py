@@ -10,6 +10,7 @@ this module lives beside its validator.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, EllipticCurvePrivateKey
@@ -27,7 +28,9 @@ class _AcceptingReplayGuard:
     def __init__(self) -> None:
         self.seen: list[str] = []
 
-    async def record_unique(self, jti: str) -> bool:
+    async def record_unique(self, jti: str, *, issued_at: datetime) -> bool:
+        if issued_at.tzinfo is None:
+            raise ValueError("record_unique requires a timezone-aware issued_at")
         first = jti not in self.seen
         self.seen.append(jti)
         return first

@@ -199,6 +199,11 @@ _IDENTITY_LEEWAY_SECONDS = 60
 # how long a proxy-assertion nonce is remembered for single-use enforcement; a TTL (not a timeout),
 # sized to the assertion's short accept window (its exp + clock skew).
 _ASSERTION_NONCE_TTL_SECONDS = 60
+# how far a proxy assertion's iat may lead the broker's clock, for the replay guard's wipe check. the
+# pod verifies assertions with zero leeway, so an accepted iat never leads this pod's clock; the
+# allowance only has to cover drift between NTP-synchronised hosts, and every second of it is a
+# second of refused calls after a broker restart.
+_ASSERTION_MAX_CLOCK_SKEW = timedelta(seconds=5)
 # how many times a durable result publish is retried before the answer is declared lost. the tool has
 # already run by then, so a transport blip must not cost the work; but the caller has a deadline, so
 # the retrying cannot be unbounded either.
@@ -1558,6 +1563,7 @@ class ToolServer:
                 self._nc,
                 bucket_name="proxy_assertion_nonces",
                 ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
+                max_clock_skew=_ASSERTION_MAX_CLOCK_SKEW,
             )
 
         # DQ-B7 queue-group sweep: call_subject and probe_subject are
@@ -2225,7 +2231,9 @@ class ToolServer:
                 expected_pod_id=self._pod_id,
                 body_hash=body_hash,
             )
-            if not await self._assertion_replay_guard.record_unique(claims.jti):
+            if not await self._assertion_replay_guard.record_unique(
+                claims.jti, issued_at=datetime.fromtimestamp(claims.iat, UTC)
+            ):
                 raise IdentityTokenError("proxy assertion nonce replay")
         except (IdentityTokenError, ValueError) as exc:
             kind = type(exc).__name__

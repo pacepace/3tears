@@ -15,14 +15,26 @@ FAIL-CLOSED, unlike the L2 cache accessors on :class:`~threetears.core.collectio
 (deliberately fail-open): a transport failure that the backing
 :class:`~threetears.nats.kv.KvBucketLike` cannot self-heal propagates as
 :class:`~threetears.nats.KvError`, so the caller DENIES rather than silently admitting a possible
-replay. The bucket uses ``file`` storage so a normal NATS restart re-binds the intact on-disk
-bucket and recorded nonces survive within their TTL (with the default ``memory`` storage a restart
-wipes the stream and the bucket's self-heal would recreate it EMPTY -- a fail-open replay hole).
-The one residual: total stream/disk loss resets the replay window for at most one accept-window;
-that is unavoidable and bounded.
+replay.
 
-    guard = ReplayGuard(nats_client, bucket_name="pop_nonces", ttl_seconds=120)
-    if not await guard.record_unique(nonce):
+**A wiped bucket fails closed too.** The bucket is memory-backed, so a broker restart empties it
+and the wrapper's self-heal recreates it -- and any handle, on any replica, then keeps working
+silently against the empty bucket. A nonce recorded before the wipe is no longer there to refuse
+its replay. So a fresh record also reads the bucket's creation time from the server and refuses
+any artifact issued before it: a replay can only find its nonce missing if the bucket was wiped
+after the original was accepted, which puts the original's signed issue time before the new
+creation time. The read comes AFTER the create, so a wipe racing the check can only make it
+stricter.
+
+``max_clock_skew`` bounds the difference between the issuer's clock and the broker's. It must
+cover the verifier's own future tolerance for the artifact's issue time, or a replayed artifact
+stamped slightly ahead would slip past. Its cost is that for that long after a wipe, fresh
+artifacts are refused too -- the price of never admitting a replay.
+
+    guard = ReplayGuard(
+        nats_client, bucket_name="pop_nonces", ttl_seconds=120, max_clock_skew=timedelta(seconds=60)
+    )
+    if not await guard.record_unique(nonce, issued_at=proof_issued_at):
         raise <replay rejected>
 """
 
@@ -49,7 +61,14 @@ log = get_logger(__name__)
 class ReplayGuard:
     """records single-use nonces in a shared, TTL'd KV bucket; rejects any second sighting."""
 
-    def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        nats_client: "KvCapable",
+        *,
+        bucket_name: str,
+        ttl_seconds: int,
+        max_clock_skew: timedelta,
+    ) -> None:
         """configure the guard; defer bucket binding until the first record.
 
         :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`; the guard
@@ -63,13 +82,21 @@ class ReplayGuard:
             accept window. MUST be positive: a non-positive TTL would mean entries never expire,
             growing the bucket without bound
         :ptype ttl_seconds: int
-        :raises ValueError: when ``ttl_seconds`` is not positive
+        :param max_clock_skew: the most an artifact's issue time may lead the broker's clock. Pass
+            the verifier's own future tolerance for that issue time: anything smaller lets a
+            replay stamped slightly ahead through after a wipe. Deliberately has no default, because
+            the right value is a property of the issuer, not of this class. MUST NOT be negative
+        :ptype max_clock_skew: timedelta
+        :raises ValueError: when ``ttl_seconds`` is not positive or ``max_clock_skew`` is negative
         """
         if ttl_seconds <= 0:
             raise ValueError(f"ReplayGuard ttl_seconds must be positive, got {ttl_seconds}")
+        if max_clock_skew < timedelta(0):
+            raise ValueError(f"ReplayGuard max_clock_skew must not be negative, got {max_clock_skew}")
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = timedelta(seconds=ttl_seconds)
+        self._max_clock_skew = max_clock_skew
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -82,8 +109,13 @@ class ReplayGuard:
         """
         return self._bucket_name
 
-    async def record_unique(self, nonce: str) -> bool:
-        """record ``nonce``; return ``True`` if FRESH, ``False`` if a REPLAY (already recorded).
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        """record ``nonce``; return ``True`` if FRESH, ``False`` if it must be REFUSED.
+
+        Refused means either already recorded (a replay), or issued before the bucket's current
+        incarnation began, allowing for ``max_clock_skew`` -- an artifact whose earlier sighting a
+        wipe may have erased. The nonce is recorded either way, so a refused artifact stays
+        refused.
 
         The nonce is hashed into a fixed, KV-safe key, so any nonce format is accepted and the raw
         nonce is never stored as a key. Backed by CAS create-if-absent, so the fresh/replay
@@ -91,14 +123,40 @@ class ReplayGuard:
 
         :param nonce: the per-assertion nonce to consume
         :ptype nonce: str
-        :return: ``True`` on first sighting (recorded), ``False`` if it was already recorded
+        :param issued_at: no later than the earliest moment the artifact could first have been
+            accepted -- normally its signed issue time. MUST be timezone-aware
+        :ptype issued_at: datetime
+        :return: ``True`` when the artifact may be used, ``False`` when it must be refused
         :rtype: bool
-        :raises threetears.nats.KvError: on a KV transport failure — the caller MUST treat this as
-            a failed check and DENY (fail-closed), never as fresh
+        :raises ValueError: when ``issued_at`` is timezone-naive
+        :raises threetears.nats.KvError: on a KV transport failure, or when the bucket's creation
+            time cannot be read — the caller MUST treat this as a failed check and DENY
+            (fail-closed), never as fresh
         """
+        if issued_at.tzinfo is None:
+            raise ValueError("ReplayGuard.record_unique requires a timezone-aware issued_at")
         bucket = await self._ensure_bucket()
         revision = await bucket.create(key=self._key(nonce), value=b"1")
-        return revision is not None  # None == key already existed == replay
+        fresh = revision is not None  # None == key already existed == replay
+        if fresh:
+            # read only after the create: a wipe landing between the two can only move this
+            # later, which refuses more, never less.
+            date_created = await bucket.date_created()
+            if issued_at < date_created + self._max_clock_skew:
+                log.warning(
+                    "ReplayGuard refused an artifact issued before its bucket was created; "
+                    "the bucket was wiped or is new, so an earlier sighting cannot be ruled out",
+                    extra={
+                        "extra_data": {
+                            "bucket": self._bucket_name,
+                            "issued_at": issued_at.isoformat(),
+                            "bucket_date_created": date_created.isoformat(),
+                            "max_clock_skew_seconds": self._max_clock_skew.total_seconds(),
+                        }
+                    },
+                )
+                fresh = False
+        return fresh
 
     async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""
@@ -106,16 +164,11 @@ class ReplayGuard:
             return self._bucket
         async with self._bucket_lock:
             if self._bucket is None:
+                # memory storage: a wipe is detected by record_unique's creation-time check, not
+                # survived. see the module docstring.
                 self._bucket = await self._client.kv_bucket(
                     name=self._bucket_name,
                     ttl=self._ttl,
-                    # file storage (NOT the default "memory"): the replay cache must survive a NATS
-                    # restart. with memory storage a restart wipes the stream, and KvBucketLike's
-                    # self-heal (kv.py _run_with_reopen) would recreate the bucket EMPTY -- so a
-                    # pre-restart nonce would be admitted as "fresh" for one accept-window, a
-                    # fail-OPEN replay hole. file storage rebinds the intact on-disk bucket instead,
-                    # so recorded nonces persist within their TTL across a normal restart.
-                    storage="file",
                     create_if_missing=True,
                     history=1,
                 )
@@ -265,8 +318,8 @@ class RevocationGuard:
                     name=self._bucket_name,
                     ttl=self._ttl,
                     # file storage: a revocation entry is a security control, not a cache -- a
-                    # restart must not silently forget an active revocation (the same fail-open
-                    # concern ReplayGuard's bucket comment documents).
+                    # restart must not silently forget an active revocation. temporary: this
+                    # state belongs in L3, see docs/design-durable-coordination.md.
                     storage="file",
                     create_if_missing=True,
                     history=1,

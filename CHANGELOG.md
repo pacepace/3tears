@@ -4,6 +4,35 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.43.0 -- unreleased
+
+### Changed
+
+- **BREAKING: `ReplayGuard` is memory-backed and fails closed after a wipe.** A broker
+  restart empties a memory bucket, and every handle on every replica then keeps working
+  silently against the empty bucket, so a nonce recorded before the wipe could not refuse
+  its replay. A fresh record now also reads the bucket's creation time from the server and
+  refuses anything issued before it. File storage did not close this either: it reopened
+  the replay window on any loss of the JetStream volume.
+  - `ReplayGuard(..., max_clock_skew=timedelta(...))` is required. Pass the verifier's own
+    future tolerance for the artifact's issue time; for that long after a wipe, fresh
+    artifacts are refused too.
+  - `record_unique(nonce, *, issued_at=...)` is required: the artifact's signed or
+    server-held issue time, timezone-aware, no later than the earliest moment it could
+    first have been accepted.
+  - `verify_pop_proof` returns `VerifiedPopProof(jti, issued_at)` instead of the bare `jti`.
+  - Migration: pass `max_clock_skew` at every construction and `issued_at` at every
+    `record_unique` call. `validate_dpop_proof` passes the proof's `iat` itself; its guard
+    needs only `max_clock_skew` (use `DEFAULT_IAT_WINDOW`). Existing file-backed nonce
+    buckets are left behind and can be deleted once every replica runs this release.
+
+### Added
+
+- `NatsKvBucket.date_created()` and `KvBucketLike.date_created`: the backing stream's
+  creation time, read fresh from the server on every call.
+- `FakeKvBucket.date_created()` and `FakeKvBucket.wipe()`, so a test can model a broker
+  restart.
+
 ## v0.42.0 -- 2026-09-15
 
 ### Added

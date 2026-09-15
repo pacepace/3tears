@@ -30,10 +30,10 @@ design notes
 from __future__ import annotations
 
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from nats.js.api import DiscardPolicy, StorageType, StreamConfig
+from nats.js.api import DiscardPolicy, StorageType, StreamConfig, StreamInfo
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.observe import get_logger
 
@@ -913,6 +913,32 @@ class NatsKvBucket:
             raise KvError(f"KV delete failed: bucket={self._full_name} key={key} revision={revision}: {exc}") from exc
         return True
 
+    async def date_created(self) -> datetime:
+        """when the bucket's backing stream was created, read fresh from the server.
+
+        Never cached, deliberately. A handle carries only names, so after another pod
+        recreates a wiped stream every operation on this handle keeps succeeding against
+        the new, empty stream without raising -- a creation time remembered at open would
+        go stale with nothing to say so. Asking the server each time is what lets a caller
+        detect that the bucket it wrote to is younger than something it trusts.
+
+        A vanished stream takes the same self-heal as every other operation, so the answer
+        describes the stream the next write will land in.
+
+        :return: timezone-aware UTC creation time of the backing stream
+        :rtype: datetime
+        :raises KvError: on transport failure, or when the server reports no creation time
+        """
+        js = self._client.jetstream_context()
+        stream = f"KV_{self._full_name}"
+        try:
+            info: StreamInfo = await self._run_with_reopen(lambda: js.stream_info(stream), passthrough=())
+        except Exception as exc:
+            raise KvError(f"KV stream info failed: bucket={self._full_name}: {exc}") from exc
+        if info.created is None:
+            raise KvError(f"KV stream info carries no creation time: bucket={self._full_name}")
+        return info.created
+
 
 @runtime_checkable
 class KvBucketLike(Protocol):
@@ -942,6 +968,8 @@ class KvBucketLike(Protocol):
     async def update(self, *, key: str, value: bytes, revision: int) -> int | None: ...
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool: ...
+
+    async def date_created(self) -> datetime: ...
 
 
 @runtime_checkable

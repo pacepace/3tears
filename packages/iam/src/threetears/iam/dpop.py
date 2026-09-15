@@ -203,8 +203,8 @@ async def validate_dpop_proof(
     jti = payload.get("jti")
     if not isinstance(jti, str) or not jti:
         raise DpopError("dpop proof jti must be a non-empty string.")
-    if not await replay_guard.record_unique(jti):
-        raise DpopError("dpop proof jti has already been used (replay).")
+    if not await replay_guard.record_unique(jti, issued_at=datetime.fromtimestamp(iat, UTC)):
+        raise DpopError("dpop proof jti refused: already used, or issued before the replay guard's bucket was created.")
     return DpopProof(jkt=jwk_thumbprint(holder_key))
 
 
