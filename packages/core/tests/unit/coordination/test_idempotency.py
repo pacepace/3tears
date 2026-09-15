@@ -317,10 +317,17 @@ class TestConstruction:
         with pytest.raises(ValueError, match="ttl"):
             _store(ttl=timedelta(0))
 
-    def test_the_default_ttl_is_24_hours(self) -> None:
-        from threetears.core.coordination.idempotency import _DEFAULT_TTL  # noqa: PLC0415
-
-        assert _DEFAULT_TTL == timedelta(hours=24)
+    @pytest.mark.asyncio
+    async def test_a_claim_made_without_a_ttl_expires_in_24_hours(self) -> None:
+        # asserted through a written row, not by reading the constant back: the default only
+        # means anything if a claim carries it.
+        nats, durable = _Nats(), _Store()
+        registry = _registry(nats, durable)
+        store = _store(registry)  # no ttl argument
+        await store.claim("key-1")
+        await _claims(registry).aclose()
+        row = next(iter(durable.rows.values()))
+        assert row["expires_at"] - row["date_claimed"] == timedelta(hours=24)
 
     def test_every_store_over_the_table_shares_one_collection(self) -> None:
         registry = _registry(_Nats())

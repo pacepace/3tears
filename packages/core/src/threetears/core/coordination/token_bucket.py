@@ -169,12 +169,13 @@ class TokenBucket:
     serves; callers needing different rates for different keys construct
     separate instances (optionally sharing one underlying KV bucket_name
     only if their key namespaces cannot collide, though separate
-    bucket_names is the safer default -- see IdempotencyKeyStore's own
-    "pick a bucket dedicated to one domain" guidance).
+    bucket_names is the safer default: one bucket per purpose, so
+    unrelated keys can never share a budget).
 
     KV bucket binding is lazy (deferred to the first operation), matching
-    :class:`KVLease`/:class:`IdempotencyKeyStore`'s construction style
-    within this package.
+    :class:`KVLease`'s construction style within this package.
+    ``IdempotencyKeyStore`` no longer belongs in that comparison: its
+    claims are durable state and live in L3 through a collection.
     """
 
     def __init__(

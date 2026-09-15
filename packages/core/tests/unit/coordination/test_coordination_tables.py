@@ -368,6 +368,64 @@ class TestTheFlusher:
             PeriodicFlusher(WriteBuffer(), _registry(), interval_seconds=0)
 
     @pytest.mark.asyncio
+    async def test_closing_the_registry_flushes_what_a_collection_still_holds(self) -> None:
+        # the property close_collections exists for, asserted on a real registry holding a real
+        # flusher: a mock that records the call passes whatever the method body does.
+        store = _RowStore()
+        registry = _registry(l2=_Nats(), l3=store)
+        collection = coordination_collection(registry, CoordinationCountersCollection, _config())
+        await collection.l2_cas_mutate(
+            ("throttle", "ip-1"),
+            lambda row: (
+                "upsert",
+                {
+                    "purpose": "throttle",
+                    "key": "ip-1",
+                    "count": 1 if row is None else int(row["count"]) + 1,
+                    "window_start": datetime.now(UTC),
+                    "expires_at": datetime.now(UTC) + timedelta(minutes=1),
+                },
+            ),
+        )
+        collection.ensure_flushing()
+        assert store.rows == {}, "precondition: a write-behind row waits for a flush"
+
+        await registry.close_collections()
+
+        assert ("throttle", "ip-1") in store.rows, "shutdown lost the buffered write"
+        assert collection._flusher is None  # noqa: SLF001 - asserting the task was released
+
+    @pytest.mark.asyncio
+    async def test_one_collection_failing_to_close_does_not_abandon_the_rest(self) -> None:
+        # a teardown that stops at the first failure leaves the task it was there to stop running.
+        store = _RowStore()
+        registry = _registry(l2=_Nats(), l3=store)
+        counters = coordination_collection(registry, CoordinationCountersCollection, _config())
+        claims = coordination_collection(registry, CoordinationClaimsCollection, _config())
+
+        async def _refuse() -> None:
+            raise RuntimeError("closing this one fails")
+
+        counters.aclose = _refuse  # type: ignore[method-assign]
+        closed: list[str] = []
+        original = claims.aclose
+
+        async def _record() -> None:
+            closed.append("claims")
+            await original()
+
+        claims.aclose = _record  # type: ignore[method-assign]
+
+        await registry.close_collections()
+
+        assert closed == ["claims"], "a failing close abandoned the collections after it"
+
+    @pytest.mark.asyncio
+    async def test_closing_a_registry_with_nothing_to_close_is_a_no_op(self) -> None:
+        registry = _registry()
+        await registry.close_collections()
+
+    @pytest.mark.asyncio
     async def test_a_write_behind_collection_gets_a_buffer_and_starts_flushing_itself(self) -> None:
         registry = _registry(l3=_SweepStore())
         collection = coordination_collection(registry, CoordinationCountersCollection, _config())
