@@ -463,25 +463,38 @@ async def test_a_hash_collision_refuses_to_overwrite_a_live_ticket(nats: FakeNat
         await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
 
 
-async def test_the_factories_open_file_backed_buckets(nats: FakeNatsClient) -> None:
-    """auth-flow state must survive a hop to another replica, so it cannot be memory-backed.
+async def test_the_factories_open_memory_backed_buckets(nats: FakeNatsClient) -> None:
+    """auth-flow state is memory-backed, and this test is the inverse of the one it replaces.
 
-    `NatsClient.kv_bucket` defaults to `storage="memory"`, and these two factories used to
-    take that default. On a clustered broker a memory bucket is not reliably readable by a
-    second replica, so an authorization code minted while serving one request was invisible
-    when the browser's next request landed on a different pod -- the login then restarted,
-    and succeeded only when the round trip happened to stay on one replica.
+    0.40.0 made these factories request `storage="file"`, on the reasoning that a memory
+    bucket "is not reliably readable by a second replica" and that this caused an
+    intermittent double login on a two-replica deployment. The test that pinned it asserted
+    `{"tickets": "file", "state": "file"}`.
 
-    Every caller of these factories stores exactly that kind of state: OAuth authorization
-    codes, OIDC flow state, partial-auth tickets, DPoP nonces. None of it is single-process
-    by nature; if it were, it would not be in a broker at all.
+    **That was deployed, the buckets were deleted so they recreated file-backed, and the
+    double login continued.** Verified on cobalt-dev 2026-09-15: every auth-flow bucket read
+    `file`, and a login still restarted once and then succeeded. A prediction was made and it
+    failed, so the claim is withdrawn.
+
+    Inverted rather than deleted. A deleted test leaves nothing to stop the next reader
+    reaching the same wrong conclusion from the same symptom, and this one has now been
+    reached twice.
+
+    **This withdrawal covers these two factories only.** The login-lockout and API-key
+    throttle counters also ask for file storage, for a different and still-standing reason --
+    a lockout that resets to zero on every broker restart is not a lockout -- and they reach
+    it through `WindowedCounter` from the identity service, not from here. Nothing in this
+    change touches them.
     """
     await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))  # type: ignore[arg-type]
     await state_store(nats, name="state", ttl=timedelta(hours=1))  # type: ignore[arg-type]
 
     opened = {name: bucket.storage for name, bucket in nats._buckets.items()}  # noqa: SLF001 -- the fake's recorded opens ARE the subject
 
-    assert opened == {"tickets": "file", "state": "file"}, f"an auth-flow store opened a memory-backed bucket: {opened}"
+    assert opened == {"tickets": "memory", "state": "memory"}, (
+        f"an auth-flow store asked for file storage again: {opened}. The cross-replica "
+        f"argument for it was tested against the double login and did not fix it."
+    )
 
 
 async def test_the_factories_open_a_bucket_and_wrap_it(nats: FakeNatsClient) -> None:
