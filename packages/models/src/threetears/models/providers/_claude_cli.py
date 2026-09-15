@@ -135,14 +135,16 @@ this time.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections.abc import AsyncIterator, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, Callable
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import ensure_config
@@ -150,6 +152,13 @@ from langchain_core.tools import BaseTool
 from langgraph.errors import GraphBubbleUp, GraphInterrupt
 from pydantic import Field
 
+from threetears.models.claude_cli_isolation import claude_cli_isolation
+from threetears.models.claude_cli_pool import (
+    TOOL_SERVER_NAME,
+    ClaudeCliPoolExhausted,
+    ClaudeCliSessionError,
+    claude_cli_pool,
+)
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
 
 from threetears.langgraph.events import (
@@ -253,6 +262,90 @@ def _messages_with_resume_hint(messages: list[BaseMessage]) -> list[BaseMessage]
     return [*messages, HumanMessage(content=hint)]
 
 
+def _content_text(content: Any) -> str:
+    """The text of a message's content, whether it is a string or a list of content blocks.
+
+    The base class did ``str(msg.content)``. On a caller that caches prompts the content is a list
+    of blocks, so the CLI received the Python repr -- ``[{'type': 'text', 'text': '## SYSTEM\\n…',
+    'cache_control': {...}}]`` with literal ``\\n`` sequences -- as the agent's persona.
+
+    :param content: a LangChain message's ``content``
+    :ptype content: Any
+    :return: the text, blocks joined by blank lines; a non-text block is named, not dumped
+    :rtype: str
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else str(content)
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict):
+            if block.get("type") == "text" or "text" in block:
+                parts.append(str(block.get("text", "")))
+            else:
+                parts.append(f"[{block.get('type', 'non-text')} content omitted]")
+    return "\n\n".join(part for part in parts if part)
+
+
+def _split_system(content: Any) -> tuple[str, str]:
+    """A system message's content split at its last cache marker: ``(stable, variable)``.
+
+    A caller that caches prompts marks where the stable part ends with ``cache_control`` on the last
+    stable block; everything after it changes turn to turn. A string, or a list with no marker, is
+    all stable.
+
+    :param content: a system message's ``content``
+    :ptype content: Any
+    :return: the stable text and the variable text (either may be empty)
+    :rtype: tuple[str, str]
+    """
+    if not isinstance(content, list):
+        return _content_text(content), ""
+    last_marked = -1
+    for index, block in enumerate(content):
+        if isinstance(block, dict) and block.get("cache_control"):
+            last_marked = index
+    if last_marked == -1:
+        return _content_text(content), ""
+    return _content_text(content[: last_marked + 1]), _content_text(content[last_marked + 1 :])
+
+
+def _pooled_launch_options(options: Any) -> Any:
+    """The options a pooled session launches with, derived from one call's options.
+
+    Three differences, each because a live session must serve more than one call:
+
+    - tool auto-approval is granted for the whole tool server rather than per tool, so a tool set
+      swapped in later needs no relaunch;
+    - the session launches with an empty placeholder tool server, replaced on every checkout;
+    - partial messages are always on, so a streaming and a non-streaming call share a session
+      (a non-streaming reader ignores the partial events).
+
+    :param options: the call's ``ClaudeAgentOptions``
+    :ptype options: Any
+    :return: a new options object; the call's own is not mutated
+    :rtype: Any
+    """
+    from claude_agent_sdk import create_sdk_mcp_server  # noqa: PLC0415
+
+    per_tool_prefix = f"mcp__{TOOL_SERVER_NAME}__"
+    allowed = [t for t in (options.allowed_tools or []) if not str(t).startswith(per_tool_prefix)]
+    server_rule = f"mcp__{TOOL_SERVER_NAME}"
+    if server_rule not in allowed:
+        allowed.append(server_rule)
+    return dataclasses.replace(
+        options,
+        allowed_tools=allowed,
+        mcp_servers={TOOL_SERVER_NAME: create_sdk_mcp_server(name=TOOL_SERVER_NAME, version="1.0.0", tools=[])},
+        include_partial_messages=True,
+        env=dict(options.env or {}),
+        extra_args=dict(options.extra_args or {}),
+    )
+
+
 def _subscription_model_cls() -> type:
     """The ``ClaudeCodeChatModel`` subclass with the bound-tool wrapper fixed (lazy import)."""
     from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent
@@ -278,9 +371,23 @@ def _subscription_model_cls() -> type:
         tools: list[str] | None = Field(default_factory=list)
 
         def _build_options(self, **overrides: Any) -> Any:
-            """Force ``ClaudeAgentOptions.tools`` from :attr:`tools` unless a call overrides it."""
+            """Force ``tools`` from :attr:`tools`, and cut the CLI off from the host's Claude config.
+
+            Isolation is applied to the built options rather than passed as overrides: ``env`` is a
+            single dict the base class assembles from the token, so an override would replace the
+            credential rather than add to it. See :mod:`threetears.models.claude_cli_isolation`
+            for what an un-isolated CLI reads.
+            """
             overrides.setdefault("tools", self.tools)
-            return super()._build_options(**overrides)
+            options = super()._build_options(**overrides)
+            isolation = claude_cli_isolation(self.oauth_token)
+            # A caller that deliberately points the CLI at a configuration or directory of its
+            # own has made that choice; only an unset one falls back to the isolated default.
+            options.env = {**isolation.env, **(options.env or {})}
+            if not options.cwd:
+                options.cwd = isolation.cwd
+            options.extra_args = {**(options.extra_args or {}), **isolation.extra_args}
+            return options
 
         def bind_tools(  # type: ignore[override] # narrows the supertype's Sequence[dict | type |
             # Callable | BaseTool] to Sequence[BaseTool] -- every real caller (metallm's own tool
@@ -442,6 +549,153 @@ def _subscription_model_cls() -> type:
             # decorator-then-return shape is unchanged by this chunk's edit, only newly surfaced because
             # 3tears-models isn't in CI's mypy invocation, so nothing here has been type-checked before).
 
+        def _convert_messages(self, messages: list[BaseMessage]) -> tuple[str, str | None]:
+            """The CLI's query text and its system prompt, from LangChain messages.
+
+            Returns the STABLE part of the system prompt as the system prompt and folds the
+            variable part into the query, ahead of the conversation. A running CLI's system prompt
+            cannot change, so this is what lets one CLI serve turn after turn while retrieved
+            memory, tool results and notices change underneath it. Every content list is read as
+            text rather than ``str()``-ed into a repr.
+
+            :param messages: the conversation
+            :ptype messages: list[BaseMessage]
+            :return: ``(query_text, system_prompt)``
+            :rtype: tuple[str, str | None]
+            """
+            stable_parts: list[str] = []
+            variable_parts: list[str] = []
+            conversation: list[str] = []
+            for msg in messages:
+                if isinstance(msg, SystemMessage):
+                    stable, variable = _split_system(msg.content)
+                    if stable:
+                        stable_parts.append(stable)
+                    if variable:
+                        variable_parts.append(variable)
+                elif isinstance(msg, HumanMessage):
+                    conversation.append(f"Human: {_content_text(msg.content)}")
+                elif isinstance(msg, AIMessage):
+                    content = _content_text(msg.content)
+                    if getattr(msg, "tool_calls", None):
+                        calls = ", ".join(f"{tc['name']}({tc['args']})" for tc in msg.tool_calls)
+                        content = f"{content}\n[Tool calls: {calls}]" if content else f"[Tool calls: {calls}]"
+                    conversation.append(f"Assistant: {content}")
+                elif isinstance(msg, ToolMessage):
+                    conversation.append(f"Tool ({msg.name}): {_content_text(msg.content)}")
+            query = "\n\n".join([*variable_parts, *conversation])
+            system_prompt = "\n\n".join(stable_parts) if stable_parts else None
+            return query, system_prompt
+
+        @asynccontextmanager
+        async def _cli_client(self, options: Any, *, pooled: bool) -> AsyncIterator[Any]:
+            """A connected CLI client for one call: a pooled session when one can serve it.
+
+            Falls back to a CLI of the call's own -- exactly the behaviour before pooling -- when
+            the host turned pooling off, when the call resumes a stored CLI session (which isolation
+            disables, so it cannot share), when every session stays busy past the checkout timeout,
+            or when a pooled session cannot be started or prepared. A call is never refused for
+            want of a pooled session.
+
+            :param options: the call's ``ClaudeAgentOptions``
+            :ptype options: Any
+            :param pooled: ``False`` forces a CLI of the call's own
+            :ptype pooled: bool
+            :return: the connected ``ClaudeSDKClient``
+            :rtype: AsyncIterator[Any]
+            """
+            pool = claude_cli_pool() if pooled else None
+            async with AsyncExitStack() as stack:
+                client: Any = None
+                if pool is not None:
+                    server = (
+                        (options.mcp_servers or {}).get(TOOL_SERVER_NAME)
+                        if isinstance(options.mcp_servers, dict)
+                        else None
+                    )
+                    instance = server.get("instance") if isinstance(server, dict) else None
+                    try:
+                        client = await stack.enter_async_context(
+                            pool.checkout(_pooled_launch_options(options), token=self.oauth_token, tool_server=instance)
+                        )
+                    except (ClaudeCliPoolExhausted, ClaudeCliSessionError) as exc:
+                        _logger.info(
+                            "No pooled Claude CLI for this call; running it on its own CLI",
+                            extra={"extra_data": {"reason": str(exc)}},
+                        )
+                if client is None:
+                    client = await stack.enter_async_context(ClaudeSDKClient(options=options))
+                yield client
+
+        async def _aquery(
+            self,
+            prompt: str,
+            config: Any = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+            """The base class's non-streaming query, on a pooled CLI instead of a fresh one.
+
+            Identical to ``ClaudeCodeChatModel._aquery`` apart from where the client comes from:
+            the base opens ``ClaudeSDKClient(options=options)`` inline, which is the per-call
+            subprocess this backend exists to avoid.
+
+            :param prompt: the query text
+            :ptype prompt: str
+            :param config: the runnable config
+            :ptype config: Any
+            :param run_manager: the callback manager
+            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+            :return: ``(content, tool_calls, generation_info)``
+            :rtype: tuple[str, list[dict[str, Any]], dict[str, Any]]
+            """
+            cfg = ensure_config(config) if config is not None else None
+            session_id = kwargs.pop("session_id", None) or kwargs.pop("resume", None)
+            if cfg:
+                session_id = session_id or cfg.get("configurable", {}).get("session_id")
+            options = self._build_options(**kwargs)
+            if session_id:
+                options.resume = session_id
+                options.continue_conversation = True
+
+            all_text: list[str] = []
+            all_tool_calls: list[dict[str, Any]] = []
+            all_tool_results: list[dict[str, Any]] = []
+            generation_info: dict[str, Any] = {}
+            tool_results_token = self._tool_results_var.set([])
+            try:
+                async with self._cli_client(options, pooled=not session_id) as client:
+                    await client.query(prompt)
+                    async for msg in client.receive_response():
+                        if isinstance(msg, AssistantMessage):
+                            text, tool_calls, tool_results = self._parse_assistant_message(msg)
+                            if text:
+                                all_text.append(text)
+                                if run_manager:
+                                    await run_manager.on_llm_new_token(text)
+                            all_tool_calls.extend(tool_calls)
+                            all_tool_results.extend(tool_results)
+                        elif isinstance(msg, ResultMessage):
+                            self._last_result = msg
+                            generation_info = {
+                                "total_cost_usd": msg.total_cost_usd,
+                                "duration_ms": msg.duration_ms,
+                                "duration_api_ms": msg.duration_api_ms,
+                                "num_turns": msg.num_turns,
+                                "session_id": msg.session_id,
+                                "is_error": msg.is_error,
+                            }
+                            if msg.usage:
+                                generation_info["usage"] = msg.usage
+                captured = self._tool_results_var.get()
+                if captured:
+                    all_tool_results.extend(captured)
+            finally:
+                self._tool_results_var.reset(tool_results_token)
+            if all_tool_results:
+                generation_info["tool_results"] = all_tool_results
+            return "\n".join(all_text), all_tool_calls, generation_info
+
         async def _astream(
             self,
             messages: list[BaseMessage],
@@ -494,7 +748,7 @@ def _subscription_model_cls() -> type:
                 # (deltas for a message's blocks, then one AssistantMessage closing it).
                 streamed_block_indices: set[int] = set()
 
-                async with ClaudeSDKClient(options=options) as client:
+                async with self._cli_client(options, pooled=not session_id) as client:
                     await client.query(prompt)
 
                     async for msg in client.receive_response():
