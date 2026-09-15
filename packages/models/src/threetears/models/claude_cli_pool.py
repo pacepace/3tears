@@ -394,8 +394,10 @@ _PER_CHECKOUT_FIELDS = frozenset({"model", "mcp_servers"})
 #: one caller's state -- the same hazard as a tool server -- so a call that sets any of them is not
 #: pooled at all. ``debug_stderr`` is deliberately absent: it DEFAULTS to ``sys.stderr``, a stream
 #: rather than a callback, and listing it here made every real call unpoolable -- found live, when
-#: every call logged "carries callables" and ran on a CLI of its own.
-_CALLABLE_FIELDS = frozenset({"hooks", "can_use_tool", "stderr"})
+#: every call logged "carries callables" and ran on a CLI of its own. ``session_store`` is here
+#: though it is an object, not a function: it is one caller's state, and it renders in a key by
+#: memory address, so a new store at a reused address could otherwise share a CLI.
+_CALLABLE_FIELDS = frozenset({"hooks", "can_use_tool", "stderr", "session_store"})
 
 #: Options that ask the CLI to continue a stored session, which isolation disables and which cannot
 #: be shared between callers.
@@ -711,17 +713,22 @@ class PooledCliSession:
             error.structural = isinstance(exc, (AttributeError, TypeError, KeyError))  # type: ignore[attr-defined]
             raise error from exc
 
-    async def release_tools(self) -> None:
+    async def release_tools(self, *, timeout: float) -> None:
         """Drop the last borrower's tool server, so an idle session holds none of its objects.
 
-        :raises ClaudeCliSessionError: when the CLI refuses; the pool disposes the session
+        Bounded by the same short leash as ``/clear``: it runs after a call has already finished,
+        so a hung CLI must cost that caller seconds, not the control request's default 30.
+
+        :param timeout: seconds before the release is abandoned
+        :ptype timeout: float
+        :raises ClaudeCliSessionError: when the CLI refuses or times out; the pool disposes the session
         """
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         try:
             query = self.client._query  # noqa: SLF001
             query.sdk_mcp_servers.pop(TOOL_SERVER_NAME, None)
-            await query._send_control_request({"subtype": "mcp_set_servers", "servers": {}}, timeout=30.0)  # noqa: SLF001
+            await query._send_control_request({"subtype": "mcp_set_servers", "servers": {}}, timeout=timeout)  # noqa: SLF001
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the session cannot be trusted idle; the pool disposes it
             raise ClaudeCliSessionError(f"could not release the Claude CLI's tools: {exc}") from exc
 
@@ -772,6 +779,26 @@ class PooledCliSession:
 # ---------------------------------------------------------------------------
 # The pool
 # ---------------------------------------------------------------------------
+
+
+async def _reacquire(condition: asyncio.Condition) -> None:
+    """Take ``condition``'s lock back even if the caller is cancelled while waiting for it.
+
+    The eviction path releases the lock around a slow disposal and re-takes it before continuing
+    inside its ``async with``. A cancellation arriving while it waits would propagate with the lock
+    NOT held, and the ``async with`` would then release a lock this task does not own. The waiting is
+    done in a shielded task; if the caller is cancelled meanwhile, the lock is still taken (so the
+    ``async with`` exits cleanly) and the cancellation is re-raised.
+
+    :param condition: the pool's condition
+    :ptype condition: asyncio.Condition
+    """
+    waiter = asyncio.ensure_future(condition.acquire())
+    try:
+        await asyncio.shield(waiter)
+    except asyncio.CancelledError:
+        await waiter
+        raise
 
 
 @dataclass
@@ -969,7 +996,9 @@ class ClaudeCliPool:
                         # "busy" with a session that no longer exists.
                         await asyncio.shield(self._dispose(victim_key, victim_session))
                     finally:
-                        await self._condition.acquire()
+                        # Shielded too: a second cancellation here would leave the enclosing
+                        # ``async with`` releasing a lock this task no longer holds.
+                        await _reacquire(self._condition)
                     continue
                 remaining = deadline - loop.time()
                 if remaining <= 0:
@@ -1056,7 +1085,7 @@ class ClaudeCliPool:
         keep = clean and session.reusable and not session.closed and not self._closing
         if keep:
             try:
-                await session.release_tools()
+                await session.release_tools(timeout=self._clear_timeout)
                 await session.clear(timeout=self._clear_timeout)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever a returning session raises, it must be disposed and its slot freed, and a call that already succeeded must not fail here
                 _logger.warning(

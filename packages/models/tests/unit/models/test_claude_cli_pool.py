@@ -92,7 +92,8 @@ class FakeSession:
         self.prepared.append((model, tool_server))
         self.contexts.append(call_context)
 
-    async def release_tools(self) -> None:
+    async def release_tools(self, *, timeout: float) -> None:
+        del timeout
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         self.released += 1
@@ -720,3 +721,110 @@ class TestTheSdkSurfaceMoving:
                     pass
         assert pool._broken is False  # noqa: SLF001
         await pool.aclose()
+
+
+class TestAToolCallThroughTheSdksOwnDispatch:
+    """The context fix, pinned through the SDK's real ``tools/call`` routing rather than by calling the
+    handler directly: the model's real tool wrapper raises an interrupt from a reader task that carries
+    the conversation that STARTED the CLI, while a second conversation holds it."""
+
+    async def test_the_borrowers_interrupt_config_and_callbacks_are_the_ones_used(self) -> None:
+        pytest.importorskip("claude_agent_sdk")
+        pytest.importorskip("langchain_claude_code")
+        import uuid
+
+        from claude_agent_sdk._internal.query import Query
+        from langchain_core.callbacks import AsyncCallbackHandler, AsyncCallbackManager
+        from langchain_core.runnables.config import ensure_config, var_child_runnable_config
+        from langchain_core.tools import tool as lc_tool
+        from langgraph.errors import GraphInterrupt
+        from langgraph.types import Interrupt
+
+        from threetears.models.claude_cli_pool import bind_tool_server_to_context
+        from threetears.models.providers import _claude_cli
+        from threetears.models.providers._claude_cli import create_subscription_chat
+
+        seen_config: list[str | None] = []
+
+        @lc_tool
+        async def confirm(x: str) -> str:
+            """Ask a human to confirm."""
+            seen_config.append(ensure_config().get("configurable", {}).get("who"))
+            raise GraphInterrupt((Interrupt(value="approve?"),))
+
+        events: dict[str, list[str]] = {"A": [], "B": []}
+
+        class _Recorder(AsyncCallbackHandler):
+            def __init__(self, who: str) -> None:
+                self.who = who
+
+            async def on_custom_event(self, name: str, data: Any, **kwargs: Any) -> None:
+                events[self.who].append(name)
+
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN).bind_tools([confirm])
+        inner = model.bound  # type: ignore[attr-defined]
+        instance = inner._mcp_servers["langchain-tools"]["instance"]  # noqa: SLF001
+        interrupts = _claude_cli._captured_interrupts_var  # noqa: SLF001
+
+        def become(who: str) -> list[Any]:
+            bucket: list[Any] = []
+            interrupts.set(bucket)
+            var_child_runnable_config.set(
+                {
+                    "configurable": {"who": who},
+                    "callbacks": AsyncCallbackManager(
+                        handlers=[_Recorder(who)], inheritable_handlers=[_Recorder(who)], parent_run_id=uuid.uuid4()
+                    ),
+                }
+            )
+            return bucket
+
+        reader_context = contextvars.Context()
+        a_bucket = reader_context.run(become, "A")
+
+        async def borrower() -> list[Any]:
+            b_bucket = become("B")
+            query = Query.__new__(Query)
+            query.sdk_mcp_servers = {
+                "langchain-tools": bind_tool_server_to_context(instance, contextvars.copy_context())
+            }
+            message = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "confirm", "arguments": {"x": "y"}},
+            }
+            await asyncio.create_task(query._handle_sdk_mcp_request("langchain-tools", message), context=reader_context)  # noqa: SLF001
+            return b_bucket
+
+        b_bucket = await asyncio.create_task(borrower())
+
+        assert len(b_bucket) == 1 and a_bucket == [], (
+            "the interrupt was captured for the conversation that started the CLI"
+        )
+        assert seen_config == ["B"], "the tool saw another conversation's runnable config"
+        assert events["B"] and not events["A"], "tool-status events went to another conversation's callbacks"
+
+
+class TestReturningASessionIsBounded:
+    async def test_the_tool_release_on_return_uses_the_short_clear_timeout(self) -> None:
+        seen: list[float] = []
+        pool = _pool(clear_timeout_seconds=1.5)
+        async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+            session = FakeSession.instances[0]
+
+            async def record(*, timeout: float) -> None:
+                seen.append(timeout)
+
+            session.release_tools = record  # type: ignore[method-assign]
+        assert seen == [1.5], "a hung CLI could hold a finished call for the control request's default 30 s"
+        await pool.aclose()
+
+    def test_a_session_store_is_caller_state_and_not_pooled(self) -> None:
+        from threetears.models.claude_cli_pool import poolable
+
+        @dataclass
+        class WithStore(Options):
+            session_store: Any = None
+
+        assert not poolable(WithStore(session_store=object()))
