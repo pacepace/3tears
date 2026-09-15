@@ -18,13 +18,16 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from threetears.core.coordination import ReplayGuard
+from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
 from threetears.nats import NatsClient, set_default_namespace
 
 pytestmark = pytest.mark.integration
 
 _NAMESPACE = "replaywipe"
 _BUCKET = "wipe_nonces"
-_SKEW = timedelta(seconds=1)
+# a zero-leeway verifier, like the tool pod's; the guard's refusal reach is then the drift allowance.
+_TOLERANCE = timedelta(0)
+_REACH = _TOLERANCE + CLOCK_DRIFT_ALLOWANCE
 
 
 async def test_date_created_is_server_time_and_moves_forward_on_recreate(nats_container: str) -> None:
@@ -54,16 +57,16 @@ async def test_a_replay_through_a_handle_that_never_saw_the_wipe_is_refused(nats
             nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="replica-b"
         ) as b,
     ):
-        guard_a = ReplayGuard(a, bucket_name=_BUCKET, ttl_seconds=120, max_clock_skew=_SKEW)
-        guard_b = ReplayGuard(b, bucket_name=_BUCKET, ttl_seconds=120, max_clock_skew=_SKEW)
+        guard_a = ReplayGuard(a, bucket_name=_BUCKET, ttl_seconds=120, verifier_future_tolerance=_TOLERANCE)
+        guard_b = ReplayGuard(b, bucket_name=_BUCKET, ttl_seconds=120, verifier_future_tolerance=_TOLERANCE)
 
         # replica A admits a proof on a bucket that already existed well before it was issued. the
-        # proof is stamped "now": an issue time leading the clock by more than the skew breaks the
-        # guard's contract, and would -- correctly -- be admitted again after a wipe.
+        # proof is stamped "now": an issue time leading the clock by more than the verifier's
+        # tolerance breaks the guard's contract, and would -- correctly -- be admitted after a wipe.
         bucket_a = await a.kv_bucket(name=_BUCKET, ttl=timedelta(seconds=120))
-        await asyncio.sleep((2 * _SKEW).total_seconds())
+        await asyncio.sleep((_REACH + timedelta(milliseconds=500)).total_seconds())
         issued_at = datetime.now(UTC)
-        assert issued_at >= (await bucket_a.date_created()) + _SKEW
+        assert issued_at >= (await bucket_a.date_created()) + _REACH
         assert await guard_a.record_unique("proof-1", issued_at=issued_at) is True
         assert await guard_a.record_unique("proof-1", issued_at=issued_at) is False  # plain replay
 
@@ -77,6 +80,6 @@ async def test_a_replay_through_a_handle_that_never_saw_the_wipe_is_refused(nats
         # replay is refused anyway, because the proof predates that stream.
         assert await guard_a.record_unique("proof-1", issued_at=issued_at) is False
 
-        # a proof issued after the new stream exists, beyond the skew, is admitted on either replica.
-        after = (await bucket_b.date_created()) + 2 * _SKEW
+        # a proof issued after the new stream exists, beyond the reach, is admitted on either replica.
+        after = (await bucket_b.date_created()) + _REACH + timedelta(seconds=1)
         assert await guard_a.record_unique("proof-2", issued_at=after) is True

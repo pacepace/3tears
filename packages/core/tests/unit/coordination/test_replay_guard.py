@@ -7,9 +7,11 @@ The contract this pins:
   another instance over the same bucket (an in-process set would miss the cross-replica replay);
 - it is FAIL-CLOSED: a KV transport failure propagates (never silently answers "fresh");
 - a WIPED bucket fails closed too: an artifact issued before the bucket's current creation time,
-  allowing for the configured clock skew, is refused even though its nonce is not recorded;
+  plus the verifier's future tolerance and the host drift allowance, is refused even though its
+  nonce is not recorded;
+- a guard refuses to serve a verifier whose future tolerance it was not sized for;
 - the bucket is memory-backed and opened with the accept-window TTL so nonces self-expire;
-- construction rejects a non-positive TTL and a negative clock skew; a naive issue time raises.
+- construction rejects a non-positive TTL and a negative tolerance; a naive issue time raises.
 """
 
 from __future__ import annotations
@@ -21,24 +23,27 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from threetears.core.coordination import ReplayGuard
+from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
 from threetears.nats import KvError
 
 from threetears.core.testing.kv import FakeNatsClient
 
 _SKEW = timedelta(seconds=60)
+# how far past a bucket's creation time the guard refuses, for a guard built with _SKEW.
+_REACH = _SKEW + CLOCK_DRIFT_ALLOWANCE
 
 
 def _later() -> datetime:
     """an issue time comfortably after any bucket the fake created during this test.
 
-    :return: now plus twice the skew
+    :return: now plus twice the refusal reach
     :rtype: datetime
     """
-    return datetime.now(UTC) + 2 * _SKEW
+    return datetime.now(UTC) + 2 * _REACH
 
 
 def _guard(client: object, *, bucket_name: str = "pop_nonces", ttl_seconds: int = 120) -> ReplayGuard:
-    """build a guard with the test skew.
+    """build a guard sized for the test verifier's future tolerance.
 
     :param client: the KV-capable client double
     :ptype client: object
@@ -49,7 +54,7 @@ def _guard(client: object, *, bucket_name: str = "pop_nonces", ttl_seconds: int 
     :return: the guard
     :rtype: ReplayGuard
     """
-    return ReplayGuard(client, bucket_name=bucket_name, ttl_seconds=ttl_seconds, max_clock_skew=_SKEW)  # type: ignore[arg-type]
+    return ReplayGuard(client, bucket_name=bucket_name, ttl_seconds=ttl_seconds, verifier_future_tolerance=_SKEW)  # type: ignore[arg-type]
 
 
 @pytest.fixture
@@ -163,13 +168,30 @@ class TestReplayGuard:
 
     def test_non_positive_ttl_rejected(self) -> None:
         with pytest.raises(ValueError):
-            ReplayGuard(MagicMock(), bucket_name="b", ttl_seconds=0, max_clock_skew=_SKEW)
+            ReplayGuard(MagicMock(), bucket_name="b", ttl_seconds=0, verifier_future_tolerance=_SKEW)
         with pytest.raises(ValueError):
-            ReplayGuard(MagicMock(), bucket_name="b", ttl_seconds=-5, max_clock_skew=_SKEW)
+            ReplayGuard(MagicMock(), bucket_name="b", ttl_seconds=-5, verifier_future_tolerance=_SKEW)
 
-    def test_negative_clock_skew_rejected(self) -> None:
+    def test_negative_verifier_future_tolerance_rejected(self) -> None:
         with pytest.raises(ValueError):
-            ReplayGuard(MagicMock(), bucket_name="b", ttl_seconds=60, max_clock_skew=timedelta(seconds=-1))
+            ReplayGuard(MagicMock(), bucket_name="b", ttl_seconds=60, verifier_future_tolerance=timedelta(seconds=-1))
+
+
+class TestRequireCovers:
+    """a guard refuses to serve a verifier that accepts issue times further ahead than it expects."""
+
+    def test_a_verifier_within_the_sized_tolerance_is_served(self) -> None:
+        guard = ReplayGuard(MagicMock(), bucket_name="b", ttl_seconds=60, verifier_future_tolerance=_SKEW)
+        guard.require_covers(_SKEW)
+        guard.require_covers(timedelta(0))
+        assert guard.verifier_future_tolerance == _SKEW
+
+    def test_a_verifier_with_a_wider_tolerance_is_refused(self) -> None:
+        # the widened leeway would let a replay stamped at that edge past the wipe check; it must
+        # fail where the verifier is wired, naming the fix.
+        guard = ReplayGuard(MagicMock(), bucket_name="b", ttl_seconds=60, verifier_future_tolerance=_SKEW)
+        with pytest.raises(ValueError, match="verifier_future_tolerance"):
+            guard.require_covers(_SKEW + timedelta(seconds=1))
 
     @pytest.mark.asyncio
     async def test_naive_issued_at_rejected(self, client: FakeNatsClient) -> None:
@@ -197,15 +219,15 @@ class TestReplayGuardAfterAWipe:
         created = datetime.now(UTC)
         bucket.wipe(date_created=created)
         guard = _guard(client)
-        issued_at = created + 2 * _SKEW
+        issued_at = created + 2 * _REACH
         assert await guard.record_unique("proof-1", issued_at=issued_at) is True
         bucket.wipe(date_created=issued_at + timedelta(seconds=30))
         assert await guard.record_unique("proof-1", issued_at=issued_at) is False
 
     @pytest.mark.asyncio
-    async def test_artifact_within_the_skew_of_the_wipe_is_refused(self, client: FakeNatsClient) -> None:
+    async def test_artifact_within_the_tolerance_of_the_wipe_is_refused(self, client: FakeNatsClient) -> None:
         # an issue time just after the creation time could still be a replay stamped by a clock
-        # running ahead; inside the skew it must be refused.
+        # running ahead; inside the verifier's tolerance it must be refused.
         bucket = await client.kv_bucket(name="pop_nonces")
         created = datetime.now(UTC)
         bucket.wipe(date_created=created)
@@ -213,16 +235,29 @@ class TestReplayGuardAfterAWipe:
         assert await guard.record_unique("n", issued_at=created + _SKEW - timedelta(seconds=1)) is False
 
     @pytest.mark.asyncio
-    async def test_artifact_issued_after_the_wipe_plus_skew_is_fresh(self, client: FakeNatsClient) -> None:
+    async def test_artifact_within_the_drift_allowance_past_the_tolerance_is_refused(
+        self, client: FakeNatsClient
+    ) -> None:
+        # the creation time is the broker's clock and the tolerance is the verifier's; the drift
+        # between them is covered too, so an issue time at the bare tolerance is still refused.
         bucket = await client.kv_bucket(name="pop_nonces")
         created = datetime.now(UTC)
         bucket.wipe(date_created=created)
         guard = _guard(client)
-        assert await guard.record_unique("n", issued_at=created + _SKEW) is True
+        assert await guard.record_unique("n", issued_at=created + _SKEW) is False
+        assert await guard.record_unique("m", issued_at=created + _REACH - timedelta(seconds=1)) is False
+
+    @pytest.mark.asyncio
+    async def test_artifact_issued_after_the_full_reach_is_fresh(self, client: FakeNatsClient) -> None:
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = datetime.now(UTC)
+        bucket.wipe(date_created=created)
+        guard = _guard(client)
+        assert await guard.record_unique("n", issued_at=created + _REACH) is True
 
     @pytest.mark.asyncio
     async def test_a_refused_artifact_stays_refused(self, client: FakeNatsClient) -> None:
-        # the refusal records the nonce, so presenting the same artifact later -- once the skew
+        # the refusal records the nonce, so presenting the same artifact later -- once the reach
         # has passed -- is a plain replay, not a second chance.
         bucket = await client.kv_bucket(name="pop_nonces")
         created = datetime.now(UTC)
@@ -230,4 +265,4 @@ class TestReplayGuardAfterAWipe:
         guard = _guard(client)
         stamped = created + timedelta(seconds=1)
         assert await guard.record_unique("n", issued_at=stamped) is False
-        assert await guard.record_unique("n", issued_at=created + 2 * _SKEW) is False
+        assert await guard.record_unique("n", issued_at=created + 2 * _REACH) is False

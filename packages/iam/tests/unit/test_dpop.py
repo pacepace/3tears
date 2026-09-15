@@ -55,7 +55,7 @@ async def guard(kv: FakeNatsClient) -> ReplayGuard:
     """
     bucket = await kv.kv_bucket(name="dpop-nonces")
     bucket.wipe(date_created=datetime.now(UTC) - timedelta(hours=1))
-    return ReplayGuard(kv, bucket_name="dpop-nonces", ttl_seconds=300, max_clock_skew=DEFAULT_IAT_WINDOW)
+    return ReplayGuard(kv, bucket_name="dpop-nonces", ttl_seconds=300, verifier_future_tolerance=DEFAULT_IAT_WINDOW)
 
 
 def _key() -> EllipticCurvePrivateKey:
@@ -370,6 +370,23 @@ class TestSingleUse:
         bucket.wipe(date_created=datetime.now(UTC))
         with pytest.raises(DpopError, match="replay"):
             await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
+
+    async def test_a_window_wider_than_the_guard_was_sized_for_is_refused_before_the_proof(
+        self, guard: ReplayGuard
+    ) -> None:
+        """Widening iat_window alone would let a replay stamped at the new edge past the wipe check.
+
+        So it is a wiring error, raised whatever the proof -- never a quiet reopening of the hole.
+        """
+        key = _key()
+        with pytest.raises(ValueError, match="verifier_future_tolerance"):
+            await validate_dpop_proof(
+                _proof(key),
+                expected_htm=_HTM,
+                expected_htu=_HTU,
+                replay_guard=guard,
+                iat_window=DEFAULT_IAT_WINDOW + timedelta(seconds=1),
+            )
 
     async def test_an_empty_jti_is_refused(self, guard: ReplayGuard) -> None:
         key = _key()

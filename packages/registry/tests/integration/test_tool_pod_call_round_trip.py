@@ -20,7 +20,7 @@ requires docker; marked integration. run with::
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import asyncio
 import time
@@ -99,6 +99,9 @@ class _Signer:
 
 class _StubReplayGuard:
     """accepts every first-seen nonce; the real guard's compare-and-set has its own tests."""
+
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """a stub guard is sized for any verifier; the real check has its own tests."""
 
     async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
         if issued_at.tzinfo is None:

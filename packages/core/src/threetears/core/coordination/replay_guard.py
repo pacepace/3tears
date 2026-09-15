@@ -26,14 +26,22 @@ after the original was accepted, which puts the original's signed issue time bef
 creation time. The read comes AFTER the create, so a wipe racing the check can only make it
 stricter.
 
-``max_clock_skew`` bounds the difference between the issuer's clock and the broker's. It must
-cover the verifier's own future tolerance for the artifact's issue time, or a replayed artifact
-stamped slightly ahead would slip past. Its cost is that for that long after a wipe, fresh
-artifacts are refused too -- the price of never admitting a replay.
+**How far past the creation time the refusal reaches.** A verifier accepts an issue time up to its
+own future tolerance ahead of ITS clock, and the creation time comes from the BROKER's clock. So
+the refusal must reach the verifier's future tolerance plus the drift between those two hosts, or
+a replay stamped at the edge of acceptance could slip past. The guard is given the verifier's
+future tolerance and adds :data:`CLOCK_DRIFT_ALLOWANCE` itself, so the drift is modelled in one
+place rather than guessed at each call site. A verifier calls :meth:`ReplayGuard.require_covers`
+with its own tolerance, so a leeway widened later fails loudly instead of reopening the hole.
+
+The cost is that for that long after a wipe, fresh artifacts are refused too -- the price of never
+admitting a replay.
 
     guard = ReplayGuard(
-        nats_client, bucket_name="pop_nonces", ttl_seconds=120, max_clock_skew=timedelta(seconds=60)
+        nats_client, bucket_name="pop_nonces", ttl_seconds=120,
+        verifier_future_tolerance=timedelta(seconds=60),
     )
+    guard.require_covers(timedelta(seconds=leeway_seconds))  # at the verifier's construction
     if not await guard.record_unique(nonce, issued_at=proof_issued_at):
         raise <replay rejected>
 """
@@ -53,9 +61,15 @@ if TYPE_CHECKING:
     # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
     from threetears.nats.kv import KvBucketLike, KvCapable
 
-__all__ = ["ReplayGuard", "RevocationGuard"]
+__all__ = ["CLOCK_DRIFT_ALLOWANCE", "ReplayGuard", "RevocationGuard"]
 
 log = get_logger(__name__)
+
+#: how far the clocks of two NTP-synchronised platform hosts -- a verifier and the NATS broker -- may
+#: disagree. Added to every guard's verifier future tolerance, because the creation time the wipe
+#: check compares against is the broker's clock while the tolerance is measured on the verifier's.
+#: Every second of it is also a second of refused traffic after a broker restart.
+CLOCK_DRIFT_ALLOWANCE = timedelta(seconds=5)
 
 
 class ReplayGuard:
@@ -67,7 +81,7 @@ class ReplayGuard:
         *,
         bucket_name: str,
         ttl_seconds: int,
-        max_clock_skew: timedelta,
+        verifier_future_tolerance: timedelta,
     ) -> None:
         """configure the guard; defer bucket binding until the first record.
 
@@ -82,21 +96,24 @@ class ReplayGuard:
             accept window. MUST be positive: a non-positive TTL would mean entries never expire,
             growing the bucket without bound
         :ptype ttl_seconds: int
-        :param max_clock_skew: the most an artifact's issue time may lead the broker's clock. Pass
-            the verifier's own future tolerance for that issue time: anything smaller lets a
-            replay stamped slightly ahead through after a wipe. Deliberately has no default, because
-            the right value is a property of the issuer, not of this class. MUST NOT be negative
-        :ptype max_clock_skew: timedelta
-        :raises ValueError: when ``ttl_seconds`` is not positive or ``max_clock_skew`` is negative
+        :param verifier_future_tolerance: how far ahead of the verifier's clock the verifier
+            accepts an artifact's issue time. The guard refuses, after a wipe, anything issued within
+            this plus :data:`CLOCK_DRIFT_ALLOWANCE` of the bucket's creation time. Deliberately has
+            no default: it is a property of the verifier, which confirms it with
+            :meth:`require_covers`. MUST NOT be negative
+        :ptype verifier_future_tolerance: timedelta
+        :raises ValueError: when ``ttl_seconds`` is not positive or the tolerance is negative
         """
         if ttl_seconds <= 0:
             raise ValueError(f"ReplayGuard ttl_seconds must be positive, got {ttl_seconds}")
-        if max_clock_skew < timedelta(0):
-            raise ValueError(f"ReplayGuard max_clock_skew must not be negative, got {max_clock_skew}")
+        if verifier_future_tolerance < timedelta(0):
+            raise ValueError(
+                f"ReplayGuard verifier_future_tolerance must not be negative, got {verifier_future_tolerance}"
+            )
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = timedelta(seconds=ttl_seconds)
-        self._max_clock_skew = max_clock_skew
+        self._verifier_future_tolerance = verifier_future_tolerance
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -109,13 +126,44 @@ class ReplayGuard:
         """
         return self._bucket_name
 
+    @property
+    def verifier_future_tolerance(self) -> timedelta:
+        """the verifier future tolerance this guard's wipe check was sized for.
+
+        :return: the configured tolerance, excluding the drift allowance
+        :rtype: timedelta
+        """
+        return self._verifier_future_tolerance
+
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """refuse to serve a verifier whose future tolerance this guard was not sized for.
+
+        A verifier that accepts issue times further ahead than the guard expects would let a
+        replay stamped at that edge past the wipe check, with nothing to say so. Calling this where
+        the verifier is configured turns that silent hole into a startup failure.
+
+        :param future_tolerance: how far ahead of its clock the calling verifier accepts an issue
+            time
+        :ptype future_tolerance: timedelta
+        :return: None
+        :rtype: None
+        :raises ValueError: when ``future_tolerance`` exceeds this guard's configured tolerance
+        """
+        if future_tolerance > self._verifier_future_tolerance:
+            raise ValueError(
+                f"ReplayGuard {self._bucket_name!r} was sized for a verifier future tolerance of "
+                f"{self._verifier_future_tolerance}, but its verifier accepts issue times up to "
+                f"{future_tolerance} ahead; a replay stamped at that edge would pass the wipe check. "
+                "Construct the guard with verifier_future_tolerance at least the verifier's leeway."
+            )
+
     async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
         """record ``nonce``; return ``True`` if FRESH, ``False`` if it must be REFUSED.
 
         Refused means either already recorded (a replay), or issued before the bucket's current
-        incarnation began, allowing for ``max_clock_skew`` -- an artifact whose earlier sighting a
-        wipe may have erased. The nonce is recorded either way, so a refused artifact stays
-        refused.
+        incarnation began, allowing for the verifier's future tolerance and
+        :data:`CLOCK_DRIFT_ALLOWANCE` -- an artifact whose earlier sighting a wipe may have erased.
+        The nonce is recorded either way, so a refused artifact stays refused.
 
         The nonce is hashed into a fixed, KV-safe key, so any nonce format is accepted and the raw
         nonce is never stored as a key. Backed by CAS create-if-absent, so the fresh/replay
@@ -142,7 +190,8 @@ class ReplayGuard:
             # read only after the create: a wipe landing between the two can only move this
             # later, which refuses more, never less.
             date_created = await bucket.date_created()
-            if issued_at < date_created + self._max_clock_skew:
+            refusal_reach = self._verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE
+            if issued_at < date_created + refusal_reach:
                 log.warning(
                     "ReplayGuard refused an artifact issued before its bucket was created; "
                     "the bucket was wiped or is new, so an earlier sighting cannot be ruled out",
@@ -151,7 +200,7 @@ class ReplayGuard:
                             "bucket": self._bucket_name,
                             "issued_at": issued_at.isoformat(),
                             "bucket_date_created": date_created.isoformat(),
-                            "max_clock_skew_seconds": self._max_clock_skew.total_seconds(),
+                            "refusal_reach_seconds": refusal_reach.total_seconds(),
                         }
                     },
                 )

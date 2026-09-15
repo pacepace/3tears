@@ -15,7 +15,7 @@ The contract this pins (exercised end-to-end through the public dispatch surface
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt
 
@@ -77,6 +77,9 @@ class _StubReplayGuard:
         self._fresh = fresh
         self.seen: list[str] = []
         self.issued_at: list[datetime] = []
+
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """a stub guard is sized for any verifier; the real check has its own tests."""
 
     async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
         if issued_at.tzinfo is None:

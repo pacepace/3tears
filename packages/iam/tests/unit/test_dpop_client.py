@@ -10,7 +10,7 @@ this module lives beside its validator.
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, EllipticCurvePrivateKey
@@ -27,6 +27,9 @@ class _AcceptingReplayGuard:
 
     def __init__(self) -> None:
         self.seen: list[str] = []
+
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """a stub guard is sized for any verifier; the real check has its own tests."""
 
     async def record_unique(self, jti: str, *, issued_at: datetime) -> bool:
         if issued_at.tzinfo is None:

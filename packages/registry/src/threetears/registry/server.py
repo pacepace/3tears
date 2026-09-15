@@ -44,7 +44,7 @@ from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
-from threetears.registry.proxy import _POP_LEEWAY_SECONDS, CallProxy
+from threetears.registry.proxy import POP_LEEWAY_SECONDS, CallProxy
 from threetears.registry.auth import (
     AgentToolAuthorizer,
     AllowAllLimitGuard,
@@ -72,11 +72,6 @@ _logger = get_logger(__name__)
 # a pop nonce must be remembered at least as long as a proof stays valid: the iat freshness
 # window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
 _POP_NONCE_TTL_SECONDS = 120
-
-# the proxy accepts a pop iat up to the pop leeway AHEAD of its clock, so a replayed proof can
-# carry an issue time that far past its real one. the replay guard's wipe check has to allow the
-# same lead or that proof would pass it.
-_POP_MAX_CLOCK_SKEW = timedelta(seconds=_POP_LEEWAY_SECONDS)
 
 
 def build_heartbeat_collection_registry(
@@ -745,7 +740,9 @@ class RegistryServer:
             nc,
             bucket_name="pop_nonces",
             ttl_seconds=_POP_NONCE_TTL_SECONDS,
-            max_clock_skew=_POP_MAX_CLOCK_SKEW,
+            # the proxy accepts a pop iat up to its leeway ahead of its clock; the guard's wipe check
+            # is sized for exactly that, and CallProxy refuses a guard that is not.
+            verifier_future_tolerance=timedelta(seconds=POP_LEEWAY_SECONDS),
         )
 
         # one in-flight-requests gauge for this registry replica: the CallProxy

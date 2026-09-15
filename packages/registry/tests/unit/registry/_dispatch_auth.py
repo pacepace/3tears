@@ -13,7 +13,7 @@ not a ``test_*`` module, so pytest does not collect it; the registry test packag
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import time
 from typing import Any
@@ -74,6 +74,9 @@ class StubReplayGuard:
         self._fresh = fresh
         self.seen: list[str] = []
         self.issued_at: list[datetime] = []
+
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """a stub guard is sized for any verifier; the real check has its own tests."""
 
     async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
         if issued_at.tzinfo is None:

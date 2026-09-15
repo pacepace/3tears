@@ -39,8 +39,8 @@ get one answer. Each was classified from its production consumers.
 ### Single-use nonces: memory, fail closed by watermark
 
 A nonce only matters inside its accept window, and it never had to survive a wipe. It had
-to make a wipe fail CLOSED. Today's file storage does not even do that: `replay_guard.py`
-documents that total stream or disk loss reopens the replay window.
+to make a wipe fail CLOSED. The former file-backed design did not even do that: losing the
+JetStream volume reopened the replay window.
 
 `ReplayGuard` stays on memory storage and learns when its bucket was created:
 
@@ -48,7 +48,7 @@ documents that total stream or disk loss reopens the replay window.
    present key is a replay, refused.
 2. On a fresh create, it reads the stream's creation time from the server
    (`STREAM.INFO`, `StreamInfo.created`), and refuses the artifact when
-   `issued_at < created + max_clock_skew`.
+   `issued_at < created + verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE`.
 
 **Why the order is create, then read.** A bucket handle holds only names, so after another
 pod recreates a wiped stream a stale handle keeps working silently -- a creation time
@@ -64,10 +64,13 @@ DPoP and PoP `iat`, the proxy assertion `iat`, SAML `IssueInstant`, the survey c
 HMAC-signed issue time, and for an OAuth client assertion whose `iat` is optional,
 `exp - MAX_CLIENT_ASSERTION_LIFETIME`.
 
-**`max_clock_skew` is a required constructor argument, with no default.** Each site passes
-the tolerance its own issued-at check already allows for that issuer's clock. Its cost is
-bounded and visible: for that long after a wipe, fresh artifacts are refused. A missing
-`created` raises rather than admits.
+**How far the refusal reaches.** A verifier accepts an issue time up to its future tolerance
+ahead of its own clock, and the creation time is the broker's clock. So the refusal reaches
+the verifier's future tolerance, passed at construction with no default, plus a single
+named drift allowance between those hosts, added by the guard. Each verifier calls
+`require_covers` with its own leeway, so widening a leeway later fails at startup instead of
+silently reopening the hole. The cost is bounded and visible: for that long after a wipe,
+fresh artifacts are refused. A missing `created` raises rather than admits.
 
 **Some guards are removed rather than watermarked.** Where the guarded artifact is itself a
 server-side record read before the nonce is recorded -- OAuth authorization codes, OIDC and
@@ -135,5 +138,11 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
 - **survey**: the entry-challenge guard, the panel lockout counter, and idempotency claims.
 - **scriob**: its login throttle.
 
-After every consumer is released, the orphaned file-backed buckets are deleted on cobalt-dev
-and then prod, dry run first, and a real sign-in verifies each.
+**The live buckets are converted, not abandoned.** The nonce buckets keep their names and a
+bucket's storage is never reconciled, so after release the new code binds the existing
+file-backed streams. Each one stays file-backed until deleted by name, and a deletion is a
+wipe: calls through that guard are refused for its reach while it is recreated
+memory-backed. The durable primitives' buckets are different: once their state lives in
+L3 they are genuinely unused, and they are deleted after the one-time copy. Both happen on
+cobalt-dev and then prod, after every consumer is released, dry run first, and a real
+sign-in verifies each.

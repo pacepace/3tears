@@ -140,7 +140,13 @@ async def validate_dpop_proof(
     :rtype: DpopProof
     :raises DpopError: on any failure. The caller MUST treat this as deny -- never as a
         fallback to an unverified key.
+    :raises ValueError: when ``replay_guard`` was sized for a smaller verifier future tolerance
+        than ``iat_window``. A configuration error, not a proof failure: that pairing would let a
+        proof replayed after a wipe of the guard's bucket through.
     """
+    # the iat check below accepts issue times up to iat_window ahead of now, so the guard's wipe
+    # check must reach that far. checked before the proof, because it is about the wiring.
+    replay_guard.require_covers(iat_window)
     try:
         header = jwt.get_unverified_header(proof)
     except jwt.PyJWTError as exc:

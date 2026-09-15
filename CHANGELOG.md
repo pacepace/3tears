@@ -14,17 +14,31 @@ packages (bumped in lock-step).
   its replay. A fresh record now also reads the bucket's creation time from the server and
   refuses anything issued before it. File storage did not close this either: it reopened
   the replay window on any loss of the JetStream volume.
-  - `ReplayGuard(..., max_clock_skew=timedelta(...))` is required. Pass the verifier's own
-    future tolerance for the artifact's issue time; for that long after a wipe, fresh
-    artifacts are refused too.
+  - `ReplayGuard(..., verifier_future_tolerance=timedelta(...))` is required: how far ahead
+    of its clock the verifier accepts the artifact's issue time. The guard adds
+    `CLOCK_DRIFT_ALLOWANCE` (5s, verifier-vs-broker drift) itself. For that total after a
+    wipe, fresh artifacts are refused too: 65s for registry PoP and DPoP, 5s for tool-pod
+    proxy assertions.
+  - Verifiers refuse a guard sized below their own leeway: `validate_dpop_proof` raises
+    `ValueError` when `iat_window` exceeds the guard's tolerance, and `CallProxy` and
+    `ToolServer` raise at construction. Widening a leeway can no longer silently reopen the
+    replay hole.
   - `record_unique(nonce, *, issued_at=...)` is required: the artifact's signed or
     server-held issue time, timezone-aware, no later than the earliest moment it could
     first have been accepted.
   - `verify_pop_proof` returns `VerifiedPopProof(jti, issued_at)` instead of the bare `jti`.
-  - Migration: pass `max_clock_skew` at every construction and `issued_at` at every
-    `record_unique` call. `validate_dpop_proof` passes the proof's `iat` itself; its guard
-    needs only `max_clock_skew` (use `DEFAULT_IAT_WINDOW`). Existing file-backed nonce
-    buckets are left behind and can be deleted once every replica runs this release.
+  - Migration: pass `verifier_future_tolerance` at every construction and `issued_at` at
+    every `record_unique` call. `validate_dpop_proof` passes the proof's `iat` itself; its
+    guard needs `verifier_future_tolerance` of at least the `iat_window` you pass
+    (`DEFAULT_IAT_WINDOW` by default).
+  - **Existing nonce buckets stay file-backed until deleted.** The bucket names are
+    unchanged and a bucket's storage is never reconciled, so on a cluster that already has
+    `{ns}-pop_nonces` and `{ns}-proxy_assertion_nonces` this release binds the existing
+    FILE streams (logging the storage drift on every open). Delete each by name once every
+    replica runs this release; the next record recreates it memory-backed. A deletion is a
+    wipe, so calls through that guard are refused for its reach afterwards. The
+    `RevocationGuard`, idempotency and windowed-counter buckets are still deliberately
+    file-backed and are NOT part of this step.
 
 ### Added
 
@@ -32,6 +46,10 @@ packages (bumped in lock-step).
   creation time, read fresh from the server on every call.
 - `FakeKvBucket.date_created()` and `FakeKvBucket.wipe()`, so a test can model a broker
   restart.
+- `ReplayGuard.require_covers()`, `ReplayGuard.verifier_future_tolerance`, and
+  `threetears.core.coordination.replay_guard.CLOCK_DRIFT_ALLOWANCE`.
+- `threetears.registry.proxy.POP_LEEWAY_SECONDS`, public so a pop replay guard can be sized
+  from the proxy's own value.
 
 ## v0.42.0 -- 2026-09-15
 
