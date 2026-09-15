@@ -50,6 +50,16 @@ packages (bumped in lock-step).
   `threetears.core.coordination.replay_guard.CLOCK_DRIFT_ALLOWANCE`.
 - `threetears.registry.proxy.POP_LEEWAY_SECONDS`, public so a pop replay guard can be sized
   from the proxy's own value.
+- **`BaseCollection.negative_cache_max_age`**: opt in to recording a full miss in L2, so a
+  lookup of a key nobody wrote reaches L3 once per marker lifetime instead of on every call. A
+  reader's marker can never overwrite a writer's value (create-if-absent, or compare-and-swap
+  over an aged-out entry). Opting in makes `save_entity`, `reload_entity` and `delete` raise
+  `KvError` when their L2 write fails, after the invalidation broadcast; the max age bounds
+  how long a marker the failed write left behind can hide it. Ignored without an L3 pool.
+- **`BaseCollection.expires_at_column`**: a row whose expiry has passed is absent to `get`,
+  `ensure` and `collection[id]` at every tier, so correctness never waits on a sweep. Reporting
+  reads that serve an entity's internals still see it, so an entity held past its expiry can
+  still be saved. A `None` value never expires.
 
 ## v0.42.0 -- 2026-09-15
 

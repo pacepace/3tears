@@ -95,8 +95,10 @@ nothing.
 
 ### Hot-path cost
 
-- **Revocation checks:** an L1 hit in steady state. Other pods see a revocation through the
-  invalidation broadcast.
+- **Revocation checks:** a revoked key is an L1 hit in steady state, and other pods see a new
+  revocation through the invalidation broadcast. A key that is NOT revoked -- nearly every
+  check -- is answered by an L2 absent-marker: one NATS read, what the KV-backed check costs
+  today, and no L3 query.
 - **Counter increments:** L2 CAS, the NATS round trips they already pay, with L3 batched per
   flush interval.
 - **Nonces:** memory plus one extra NATS request on a fresh nonce. No L3.
@@ -108,13 +110,20 @@ These are measured, not assumed, before the primitives adopt them.
 
 Each gap is a generic enhancement to the primitive, not a store beside it.
 
-1. **Negative caching.** Today a miss in every tier caches nothing, so every "not revoked"
-   check would reach L3. On a full miss the collection writes an L2 absent-marker with
-   create-if-absent, so a reader can never overwrite a writer's value and a writer's put
-   replaces the marker. A collection that opts in makes its own L2 writes strict: a failed
-   overwrite raises rather than leaving a stale "absent".
-2. **Row expiry.** A declared expiry column every tier treats as absent once passed. A sweep
-   is table-size hygiene only, never correctness.
+1. **Negative caching** (`negative_cache_max_age`). Today a miss in every tier caches nothing,
+   so every "not revoked" check would reach L3. On a full miss the collection writes an L2
+   absent-marker with create-if-absent, or compare-and-swaps it over an aged-out marker or
+   expired row, so a reader can never overwrite a writer's value and a writer's put replaces
+   the marker. A collection that opts in makes its own write paths strict: a failed L2 write
+   raises, after the invalidation broadcast. **The max age is required, not optional:**
+   raising does not remove a marker the failed write left behind, so in the double fault --
+   L3 write landed, L2 overwrite failed, nobody retried -- only the max age bounds how long
+   the marker hides the write. Markers are per principal scope, like every L2 entry: a writer
+   in another principal reaches a reader's marker through the invalidation broadcast.
+2. **Row expiry** (`expires_at_column`). A row whose declared expiry has passed is absent to
+   every read that answers "does this exist" -- `get`, `ensure`, `collection[id]` -- at L1, L2
+   and L3. Reporting reads that serve an entity's own internals still see it, so an entity
+   held past its expiry can still be saved. A sweep is table-size hygiene only.
 3. **`l2_cas_mutate` on a three-tier collection.** It seeds from L3 when L2 holds nothing, so
    a wipe does not reset a counter to zero; persists the result through the collection's
    flush policy; and returns the outcome, so a claim can report claimed or exists.
