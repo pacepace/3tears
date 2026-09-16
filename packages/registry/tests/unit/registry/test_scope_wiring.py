@@ -232,8 +232,11 @@ class TestShutdownReleasesWhatStartupSubscribed:
     """
 
     @pytest.mark.asyncio
-    async def test_shutdown_stops_the_invalidation_listener(self) -> None:
-        """the collection registry's listener is stopped, not left running.
+    async def test_shutdown_stops_the_invalidation_listener_and_closes_the_collections(self) -> None:
+        """both halves of the registry teardown run: the listener, and the collections' own work.
+
+        A collection can start background work of its own -- a write-behind coordination
+        collection runs a periodic flusher -- and it owes one last flush on the way out.
 
         :return: nothing
         :rtype: None
@@ -241,11 +244,13 @@ class TestShutdownReleasesWhatStartupSubscribed:
         server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
         collection_registry = MagicMock()
         collection_registry.stop_invalidation_listener = AsyncMock()
+        collection_registry.close_collections = AsyncMock()
         server._collection_registry = collection_registry  # noqa: SLF001 - drives the teardown under test
 
         await server.shutdown()
 
         collection_registry.stop_invalidation_listener.assert_awaited_once()
+        collection_registry.close_collections.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_runs_the_caller_supplied_teardown(self) -> None:

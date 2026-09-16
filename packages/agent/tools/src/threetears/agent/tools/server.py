@@ -199,6 +199,10 @@ _IDENTITY_LEEWAY_SECONDS = 60
 # how long a proxy-assertion nonce is remembered for single-use enforcement; a TTL (not a timeout),
 # sized to the assertion's short accept window (its exp + clock skew).
 _ASSERTION_NONCE_TTL_SECONDS = 60
+# how far past the pod's clock a proxy assertion's iat and exp may fall. zero: the registry mints
+# and the pod verifies on NTP-synchronised hosts, and the assertion lives only 30s. the assertion
+# replay guard is sized for exactly this future tolerance, so the one value feeds both.
+_ASSERTION_LEEWAY_SECONDS = 0
 # how many times a durable result publish is retried before the answer is declared lost. the tool has
 # already run by then, so a transport blip must not cost the work; but the caller has a deadline, so
 # the retrying cannot be unbounded either.
@@ -970,9 +974,17 @@ class ToolServer:
             tool that raises its OWN ``TimeoutError`` within the ceiling is
             unaffected -- that stays an ordinary tool failure. Must be > 0.
         :ptype max_call_seconds: float | None
+        :param assertion_replay_guard: the single-use guard for inbound proxy-assertion nonces, or
+            ``None`` to self-provision one in :meth:`serve` over the pod's connection. REQUIRED at
+            verify time either way: a pod with no guard refuses every call rather than skipping
+            single-use enforcement. An injected guard must be sized for this pod's assertion
+            leeway
+        :ptype assertion_replay_guard: ReplayGuard | None
         :raises ValueError: when neither ``nats_url`` nor
-            ``nats_client`` carries a usable value, or ``max_concurrent_calls`` /
-            ``max_call_seconds`` is set to a non-positive value
+            ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
+            ``max_call_seconds`` is set to a non-positive value, or an injected
+            ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
+            pod's assertion leeway
         """
         if not nats_url and nats_client is None:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
@@ -1041,7 +1053,11 @@ class ToolServer:
         self._owned_jwks_provider: CachedHubJwksProvider | None = None
         # the proxy-assertion replay guard is REQUIRED at verify time (a guardless pod must NOT
         # silently skip single-use enforcement). serve() always provisions it over the pod's
-        # connection; callers driving handle_call without serve() (tests) inject one here.
+        # connection; callers driving handle_call without serve() (tests) inject one here. an injected
+        # guard must be sized for this pod's assertion leeway, or a replay stamped at that edge would
+        # pass its wipe check: refused at construction rather than discovered after a restart.
+        if assertion_replay_guard is not None:
+            assertion_replay_guard.require_covers(timedelta(seconds=_ASSERTION_LEEWAY_SECONDS))
         self._assertion_replay_guard: ReplayGuard | None = assertion_replay_guard
         # leak-safe in-flight-requests gauge bracketed around every handle_call:
         # the tool-pod bootstrap serves it on the shared HealthServer's /metrics
@@ -1558,6 +1574,7 @@ class ToolServer:
                 self._nc,
                 bucket_name="proxy_assertion_nonces",
                 ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
+                verifier_future_tolerance=timedelta(seconds=_ASSERTION_LEEWAY_SECONDS),
             )
 
         # DQ-B7 queue-group sweep: call_subject and probe_subject are
@@ -2224,8 +2241,11 @@ class ToolServer:
                 jwks=self._jwks_provider(),
                 expected_pod_id=self._pod_id,
                 body_hash=body_hash,
+                leeway_seconds=_ASSERTION_LEEWAY_SECONDS,
             )
-            if not await self._assertion_replay_guard.record_unique(claims.jti):
+            if not await self._assertion_replay_guard.record_unique(
+                claims.jti, issued_at=datetime.fromtimestamp(claims.iat, UTC)
+            ):
                 raise IdentityTokenError("proxy assertion nonce replay")
         except (IdentityTokenError, ValueError) as exc:
             kind = type(exc).__name__

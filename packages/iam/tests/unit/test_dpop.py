@@ -14,6 +14,7 @@ so an otherwise-invalid proof cannot burn a nonce.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt as pyjwt
@@ -38,12 +39,23 @@ _HTU = "https://issuer.example/v1/token"
 
 
 @pytest.fixture
-def guard() -> ReplayGuard:
-    """A real ReplayGuard over the shipped in-memory KV double.
+def kv() -> FakeNatsClient:
+    """The in-memory KV double the guard stores nonces in."""
+    return FakeNatsClient()
 
-    No cast: the guard names ``KvCapable``, which the double satisfies by construction.
+
+@pytest.fixture
+async def guard(kv: FakeNatsClient) -> ReplayGuard:
+    """A real ReplayGuard over the shipped in-memory KV double, on a bucket that already existed.
+
+    The bucket is aged an hour: a guard refuses proofs issued before its bucket was created, so a
+    bucket born in the same instant as the proof would refuse every case here for a reason none
+    of them is about. No cast: the guard names ``KvCapable``, which the double satisfies by
+    construction.
     """
-    return ReplayGuard(FakeNatsClient(), bucket_name="dpop-nonces", ttl_seconds=300)
+    bucket = await kv.kv_bucket(name="dpop-nonces")
+    bucket.wipe(date_created=datetime.now(UTC) - timedelta(hours=1))
+    return ReplayGuard(kv, bucket_name="dpop-nonces", ttl_seconds=300, verifier_future_tolerance=DEFAULT_IAT_WINDOW)
 
 
 def _key() -> EllipticCurvePrivateKey:
@@ -342,6 +354,39 @@ class TestSingleUse:
         assert await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
         with pytest.raises(DpopError, match="replay"):
             await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
+
+    async def test_a_proof_replayed_after_the_nonce_bucket_is_wiped_is_refused(
+        self, guard: ReplayGuard, kv: FakeNatsClient
+    ) -> None:
+        """A broker restart empties the nonce bucket; the proof's own iat is what still refuses it.
+
+        This is the proof reaching the guard with its signed issue time. Were that time not
+        passed through, the wiped bucket would treat the replay as a first sighting.
+        """
+        key = _key()
+        proof = _proof(key, jti="spent-before-the-restart")
+        assert await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
+        bucket = await kv.kv_bucket(name="dpop-nonces")
+        bucket.wipe(date_created=datetime.now(UTC))
+        with pytest.raises(DpopError, match="replay"):
+            await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
+
+    async def test_a_window_wider_than_the_guard_was_sized_for_is_refused_before_the_proof(
+        self, guard: ReplayGuard
+    ) -> None:
+        """Widening iat_window alone would let a replay stamped at the new edge past the wipe check.
+
+        So it is a wiring error, raised whatever the proof -- never a quiet reopening of the hole.
+        """
+        key = _key()
+        with pytest.raises(ValueError, match="verifier_future_tolerance"):
+            await validate_dpop_proof(
+                _proof(key),
+                expected_htm=_HTM,
+                expected_htu=_HTU,
+                replay_guard=guard,
+                iat_window=DEFAULT_IAT_WINDOW + timedelta(seconds=1),
+            )
 
     async def test_an_empty_jti_is_refused(self, guard: ReplayGuard) -> None:
         key = _key()

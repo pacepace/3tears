@@ -49,7 +49,10 @@ from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrateg
 # need to tune them.
 _IDENTITY_ISSUER = "hub"
 _IDENTITY_LEEWAY_SECONDS = 60
-_POP_LEEWAY_SECONDS = 60
+#: how far either side of the proxy's clock a pop proof's ``iat`` may fall. public because the pop
+#: replay guard must be sized for its future half: whoever constructs that guard reads it here, and
+#: :class:`CallProxy` refuses a guard that does not cover it.
+POP_LEEWAY_SECONDS = 60
 
 # how many times a durable result publish to the caller is retried before the answer is declared
 # lost. by that point the tool has already run, so a transport blip must not cost the work; the
@@ -64,6 +67,7 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
+    "POP_LEEWAY_SECONDS",
     "CallProxy",
     "ProxyCallAccepted",
     "ProxyCallRequest",
@@ -293,7 +297,8 @@ class CallProxy:
         :ptype authorizer: AgentToolAuthorizer
         :param pop_replay_guard: records each pop nonce for single-use enforcement; REQUIRED.
             without it a captured pop could be replayed verbatim for the same call body within the
-            iat freshness window, so the enforce-only proxy must always carry one
+            iat freshness window, so the enforce-only proxy must always carry one. It must be
+            sized for a verifier future tolerance of at least :data:`POP_LEEWAY_SECONDS`
         :ptype pop_replay_guard: ReplayGuard
         :param limit_guard: pre-call spend gate; REQUIRED. every tool dispatch is
             gated through the limit guard after the pop check and before catalog
@@ -348,6 +353,8 @@ class CallProxy:
             it here; ``None`` (tests / standalone) self-provisions a private
             gauge so the bracket is always live
         :ptype inflight_gauge: InflightRequestsGauge | None
+        :raises ValueError: when ``pop_replay_guard`` is sized for a smaller verifier future
+            tolerance than :data:`POP_LEEWAY_SECONDS`
         """
         from threetears.registry.config import get_call_timeout
 
@@ -361,6 +368,9 @@ class CallProxy:
         self._jwks_provider = jwks_provider
         self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
+        # a guard sized for a smaller future tolerance than this proxy accepts would let a replayed
+        # proof stamped at the edge through its wipe check; refuse it here, at startup.
+        pop_replay_guard.require_covers(timedelta(seconds=POP_LEEWAY_SECONDS))
         self._pop_replay_guard = pop_replay_guard
         self._inflight_gauge = inflight_gauge or InflightRequestsGauge("threetears_registry_inflight_requests")
         self._nc: "NatsClient | None" = None
@@ -803,14 +813,14 @@ class CallProxy:
                 request.arguments,
                 str(context.correlation_id) if context.correlation_id is not None else None,
             )
-            jti = verify_pop_proof(
+            proof = verify_pop_proof(
                 request.pop,
                 expected_jkt=claims.cnf,
                 access_token_hash=access_token_hash(token),
                 body_hash=body_hash,
-                leeway_seconds=_POP_LEEWAY_SECONDS,
+                leeway_seconds=POP_LEEWAY_SECONDS,
             )
-            if not await self._pop_replay_guard.record_unique(jti):
+            if not await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at):
                 raise IdentityTokenError("pop nonce replay")
             return None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:

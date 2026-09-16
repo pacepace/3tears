@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 
 import jwt as pyjwt
 import pytest
@@ -32,11 +33,16 @@ def _proof(
 class TestProofOfPossession:
     """a proof verifies ONLY under the bound holder key, for THIS token + THIS call, fresh."""
 
-    def test_round_trips_and_returns_nonce(self) -> None:
+    def test_round_trips_and_returns_nonce_and_signed_issue_time(self) -> None:
+        # the issue time comes back so a replay guard can refuse a proof issued before a wipe.
         holder = Ed25519PrivateKey.generate()
         jkt = jwk_thumbprint(holder.public_key())
-        proof = _proof(holder, ath="ath-x", bh="bh-y", nonce="n-1")
-        assert verify_pop_proof(proof, expected_jkt=jkt, access_token_hash="ath-x", body_hash="bh-y") == "n-1"
+        iat = int(time.time())
+        proof = _proof(holder, ath="ath-x", bh="bh-y", nonce="n-1", iat=iat)
+        verified = verify_pop_proof(proof, expected_jkt=jkt, access_token_hash="ath-x", body_hash="bh-y")
+        assert verified.jti == "n-1"
+        assert verified.issued_at == datetime.fromtimestamp(iat, UTC)
+        assert verified.issued_at.tzinfo is not None
 
     def test_wrong_holder_key_rejected(self) -> None:
         holder = Ed25519PrivateKey.generate()
@@ -116,7 +122,7 @@ class TestProofOfPossession:
                     access_token_hash="ath-1",
                     body_hash="bh-1",
                     leeway_seconds=60,
-                )
+                ).jti
                 == f"ahead-{ahead}"
             )
 

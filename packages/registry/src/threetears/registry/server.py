@@ -14,6 +14,7 @@ import asyncio
 import os
 import signal
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -43,7 +44,7 @@ from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
-from threetears.registry.proxy import CallProxy
+from threetears.registry.proxy import POP_LEEWAY_SECONDS, CallProxy
 from threetears.registry.auth import (
     AgentToolAuthorizer,
     AllowAllLimitGuard,
@@ -735,7 +736,14 @@ class RegistryServer:
         # the pop replay guard records each per-call proof nonce for single-use enforcement;
         # always provisioned under enforce-only so a captured pop can never be replayed verbatim
         # for the same call body within the iat freshness window.
-        pop_replay_guard = ReplayGuard(nc, bucket_name="pop_nonces", ttl_seconds=_POP_NONCE_TTL_SECONDS)
+        pop_replay_guard = ReplayGuard(
+            nc,
+            bucket_name="pop_nonces",
+            ttl_seconds=_POP_NONCE_TTL_SECONDS,
+            # the proxy accepts a pop iat up to its leeway ahead of its clock; the guard's wipe check
+            # is sized for exactly that, and CallProxy refuses a guard that is not.
+            verifier_future_tolerance=timedelta(seconds=POP_LEEWAY_SECONDS),
+        )
 
         # one in-flight-requests gauge for this registry replica: the CallProxy
         # brackets every dispatch through it, and the HealthServer serves it on
@@ -858,6 +866,9 @@ class RegistryServer:
         # safe on a partial startup, which is why it is unconditional rather than guarded.
         if self._collection_registry is not None:
             await self._collection_registry.stop_invalidation_listener()
+            # the same pairing for work a collection started itself: a write-behind
+            # coordination collection's flusher owes one last flush before the loop closes.
+            await self._collection_registry.close_collections()
         # whatever a factory built and the server never saw -- today the rbac stack's own
         # invalidation subscriptions.
         if self._on_shutdown is not None:

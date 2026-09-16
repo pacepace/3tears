@@ -35,10 +35,12 @@ dependencies = [
     # import path connected them. This package is that path, so the enum is
     # imported here and the second declaration goes away.
     "3tears-agent-acl>=0.43.0,<0.44.0",
-    # the KV adapters in threetears.iam.stores.nats_kv. Every state this
-    # package keeps (auth codes, OAuth state, single-use tickets, attempt
-    # counters) is short-lived and TTL'd, which is a KV bucket's job, not a
-    # table's -- and both first consumers already run NATS.
+    # the KV adapters in threetears.iam.stores.nats_kv: auth codes, OAuth state
+    # and single-use tickets, each short-lived and TTL'd, which is a KV
+    # bucket's job -- losing one costs whoever is mid-login a retry. Attempt
+    # counters are NOT in that list any more: a lockout that resets on every
+    # broker restart is not a lockout, so CollectionAttemptLimiter keeps its counts
+    # in L3 through a collection and NATS is the fence in front of it.
     "3tears-nats[client]>=0.43.0,<0.44.0",
     # argon2id for password hashing, bcrypt for verify-then-upgrade of hashes
     # migrated in from an older system. bcrypt is verify-only here: nothing in

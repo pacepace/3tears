@@ -20,6 +20,9 @@ use:
   ``None`` on CAS conflict (revision mismatch or key absent).
 - :meth:`FakeKvBucket.delete` accepts an optional ``revision`` and
   returns ``True`` on success or absent key, ``False`` on CAS mismatch.
+- :meth:`FakeKvBucket.date_created` reports when the bucket was created, and
+  :meth:`FakeKvBucket.wipe` empties it and moves that time forward, which is
+  what a broker restart does to a memory-backed bucket.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
@@ -28,10 +31,11 @@ is bucket-local and monotonic per bucket.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from collections.abc import Generator
 from dataclasses import dataclass
+from typing import Any
 
 __all__ = ["FakeKvBucket", "FakeNatsClient"]
 
@@ -50,10 +54,15 @@ class _YieldOnce:
 
 @dataclass
 class _Entry:
-    """internal storage entry."""
+    """internal storage entry.
+
+    :ivar expires_at: the bucket-clock time the server would remove a per-entry-TTL entry, or
+        ``None`` for an entry that lives as long as the bucket
+    """
 
     value: bytes
     revision: int
+    expires_at: timedelta | None = None
 
 
 class FakeKvBucket:
@@ -89,6 +98,90 @@ class FakeKvBucket:
         self._storage = storage
         self._entries: dict[str, _Entry] = {}
         self._revision = 0
+        self._date_created = datetime.now(UTC)
+        # a clock only this bucket reads, moved by advance_clock, so a test can make a per-entry
+        # TTL lapse without sleeping.
+        self._elapsed = timedelta(0)
+
+    def advance_clock(self, delta: timedelta) -> None:
+        """move this bucket's clock forward, lapsing any per-entry TTL it passes.
+
+        :param delta: how far to move the clock; must not be negative
+        :ptype delta: timedelta
+        :return: None
+        :rtype: None
+        :raises ValueError: when ``delta`` is negative
+        """
+        if delta < timedelta(0):
+            raise ValueError("FakeKvBucket.advance_clock cannot move the clock backwards")
+        self._elapsed += delta
+
+    def _live(self, key: str) -> _Entry | None:
+        """the entry under ``key``, or ``None`` once its per-entry TTL has lapsed.
+
+        :param key: key to look up
+        :ptype key: str
+        :return: the live entry, or ``None``
+        :rtype: _Entry | None
+        """
+        entry = self._entries.get(key)
+        if entry is not None and entry.expires_at is not None and self._elapsed >= entry.expires_at:
+            del self._entries[key]
+            entry = None
+        return entry
+
+    def _expiry(self, ttl: timedelta | None) -> timedelta | None:
+        """the bucket-clock removal time for an entry written now with ``ttl``.
+
+        :param ttl: the per-entry lifetime, or ``None``
+        :ptype ttl: timedelta | None
+        :return: the removal time, or ``None``
+        :rtype: timedelta | None
+        :raises ValueError: when ``ttl`` is under one second, as the real wrapper refuses
+        """
+        if ttl is None:
+            return None
+        if ttl < timedelta(seconds=1):
+            raise ValueError(f"a per-entry KV TTL must be at least one second, got {ttl}")
+        return self._elapsed + ttl
+
+    async def date_created(self) -> datetime:
+        """when this bucket was created, or last wiped.
+
+        :return: timezone-aware UTC creation time
+        :rtype: datetime
+        """
+        await _YieldOnce()  # so gather() genuinely interleaves
+        return self._date_created
+
+    def keys(self) -> tuple[str, ...]:
+        """every live key in the bucket, for a test asserting on what was stored.
+
+        Public because the alternative is reaching into the fake's entries, which the underscore
+        contract forbids across classes and which every consumer was otherwise doing.
+
+        :return: the live keys, in insertion order
+        :rtype: tuple[str, ...]
+        """
+        return tuple(key for key in tuple(self._entries) if self._live(key) is not None)
+
+    def wipe(self, *, date_created: datetime | None = None) -> None:
+        """empty the bucket and give it a new creation time, as a broker restart does.
+
+        Every handle a test holds keeps working afterwards and silently sees the empty
+        bucket -- the same property the real wrapper has, and the one a wipe-detecting
+        caller exists to handle.
+
+        :param date_created: the new creation time; ``None`` uses now. Must be timezone-aware.
+        :ptype date_created: datetime | None
+        :return: None
+        :rtype: None
+        :raises ValueError: when ``date_created`` is timezone-naive
+        """
+        if date_created is not None and date_created.tzinfo is None:
+            raise ValueError("FakeKvBucket.wipe requires a timezone-aware date_created")
+        self._entries.clear()
+        self._date_created = date_created if date_created is not None else datetime.now(UTC)
 
     @property
     def ttl(self) -> timedelta | None:
@@ -117,21 +210,23 @@ class FakeKvBucket:
         """
         return self._bucket_name
 
-    async def create(self, *, key: str, value: bytes) -> int | None:
+    async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
         """create-if-absent. returns new revision or ``None`` on conflict.
 
         :param key: key to insert
         :ptype key: str
         :param value: bytes payload
         :ptype value: bytes
+        :param ttl: per-entry lifetime on this bucket's clock (see :meth:`advance_clock`), or ``None``
+        :ptype ttl: timedelta | None
         :return: new revision number, or ``None`` if key already exists
         :rtype: int | None
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        if key in self._entries:
+        if self._live(key) is not None:
             return None
         self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision)
+        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
         return self._revision
 
     async def get(self, *, key: str) -> bytes | None:
@@ -143,7 +238,7 @@ class FakeKvBucket:
         :rtype: bytes | None
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        entry = self._entries.get(key)
+        entry = self._live(key)
         if entry is None:
             return None
         return entry.value
@@ -157,12 +252,12 @@ class FakeKvBucket:
         :rtype: tuple[bytes, int] | None
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        entry = self._entries.get(key)
+        entry = self._live(key)
         if entry is None:
             return None
         return (entry.value, entry.revision)
 
-    async def update(self, *, key: str, value: bytes, revision: int) -> int | None:
+    async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
         """CAS update. returns new revision or ``None`` on mismatch.
 
         :param key: key to update
@@ -171,15 +266,17 @@ class FakeKvBucket:
         :ptype value: bytes
         :param revision: expected current revision
         :ptype revision: int
+        :param ttl: per-entry lifetime for the new entry on this bucket's clock, or ``None``
+        :ptype ttl: timedelta | None
         :return: new revision, or ``None`` on conflict / missing key
         :rtype: int | None
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        entry = self._entries.get(key)
+        entry = self._live(key)
         if entry is None or entry.revision != revision:
             return None
         self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision)
+        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
         return self._revision
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:
@@ -194,7 +291,7 @@ class FakeKvBucket:
         :rtype: bool
         """
         await _YieldOnce()  # so gather() genuinely interleaves
-        entry = self._entries.get(key)
+        entry = self._live(key)
         if entry is None:
             # A revision-guarded delete of a key that is no longer there LOST the race -- it
             # cannot have been the caller whose revision matched. Returning True here made
@@ -206,19 +303,22 @@ class FakeKvBucket:
         del self._entries[key]
         return True
 
-    async def put(self, *, key: str, value: bytes) -> int:
+    async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
         """unconditional write. returns new revision.
 
         :param key: key to write
         :ptype key: str
         :param value: bytes payload
         :ptype value: bytes
+        :param ttl: a per-entry lifetime, honoured against this bucket's own clock (see
+            :meth:`advance_clock`) exactly as :meth:`create` and :meth:`update` honour theirs
+        :ptype ttl: timedelta | None
         :return: new revision number
         :rtype: int
         """
         await _YieldOnce()  # so gather() genuinely interleaves
         self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision)
+        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
         return self._revision
 
 
@@ -228,6 +328,15 @@ class FakeNatsClient:
     matches the narrow surface KV consumers depend on. the bucket
     cache mirrors :class:`NatsClient`'s internal cache: repeat
     ``kv_bucket`` calls for the same name return the same instance.
+
+    :meth:`publish` and :meth:`subscribe_typed` are here because every
+    ``BaseCollection`` write publishes a cache invalidation: a fake with
+    only ``kv_bucket`` cannot stand in for a collection's client at all,
+    and each consumer was otherwise left to discover that and write its
+    own. Published messages are delivered to whatever subscribed on the
+    same subject through this instance and kept in
+    :attr:`published`, so a test can assert on the broadcast or run a
+    real listener against it.
     """
 
     def __init__(self) -> None:
@@ -237,6 +346,67 @@ class FakeNatsClient:
         :rtype: None
         """
         self._buckets: dict[str, FakeKvBucket] = {}
+        self.published: list[Any] = []
+        self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+        """record a message and deliver it to this client's subscribers on that subject.
+
+        :param subject: the subject published to; stringified for the subscriber lookup
+        :ptype subject: Any
+        :param message: the typed envelope
+        :ptype message: Any
+        :param reply_to: ignored; present so the surface matches the real client
+        :ptype reply_to: Any
+        :return: None
+        :rtype: None
+        """
+        del reply_to
+        self.published.append(message)
+        for callback, message_type in list(self._subscribers.get(str(subject), [])):
+            await callback(message_type.model_validate_json(message.model_dump_json()))
+
+    async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any, **kwargs: Any) -> object:
+        """register a typed subscriber, so a real listener can run against this fake.
+
+        :param subject: the subject to subscribe to
+        :ptype subject: Any
+        :param cb: the async callback the listener supplies
+        :ptype cb: Any
+        :param message_type: the Pydantic envelope to validate into
+        :ptype message_type: Any
+        :param kwargs: ignored; the real client takes queue groups and durable names
+        :ptype kwargs: Any
+        :return: an opaque subscription handle
+        :rtype: object
+        """
+        del kwargs
+        entry = (cb, message_type)
+        self._subscribers.setdefault(str(subject), []).append(entry)
+        return (str(subject), entry)
+
+    async def unsubscribe(self, subscription: Any) -> None:
+        """drop the one subscription this handle names.
+
+        Only that one: two L2-live registries in one process subscribe and stop independently,
+        and a fake that cleared every subscriber could not express one listener stopping while
+        another kept running -- so a test written against it passed or failed for reasons
+        unrelated to the code under test.
+
+        :param subscription: the handle :meth:`subscribe_typed` returned
+        :ptype subscription: Any
+        :return: None
+        :rtype: None
+        """
+        if not isinstance(subscription, tuple) or len(subscription) != 2:
+            return
+        subject, entry = subscription
+        entries = self._subscribers.get(subject)
+        if entries is None or entry not in entries:
+            return
+        entries.remove(entry)
+        if not entries:
+            del self._subscribers[subject]
 
     async def kv_bucket(
         self,

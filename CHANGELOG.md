@@ -4,9 +4,215 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.43.0 -- unreleased
+
+### Before you bump to this version
+
+Releasing 0.43.0 changes nothing on its own: every consumer pins 3tears by range and installs
+what its own `uv.lock` resolved, so nothing picks this up until a repo bumps deliberately. These
+are what that bump costs, and two of them are outages if missed. Read them before raising the
+pin, not after.
+
+- **The hub does not start on this release until its DPoP guard passes
+  `verifier_future_tolerance`.** `ReplayGuard` now requires it, and `hub-dpop-nonces` is built
+  in `aibots/hub/app.py`. The failure is at startup, so it is loud rather than subtle, but a
+  bump that does not land this change in the same commit will not boot.
+- **Copy the live revocation buckets into the new tables BEFORE identity's new code rolls, or
+  revoked tokens become valid again.** `RevocationGuard` and the refresh-token jti ledger move
+  from KV to L3, and the new tables start empty. Every outstanding revocation lives only in the
+  old bucket until it is copied. This is a security regression if skipped and it is silent:
+  nothing fails, tokens you revoked simply start working.
+- **Roll the hub before any pod, in every environment.** Coordination rows carry a per-entry
+  TTL, which a collections bucket created before this release refuses until a DECLARING process
+  reconciles `allow_msg_ttl` on it. Pods bind rather than declare, so until the hub rolls, a
+  pod's counter increment and every claim or redemption RAISE rather than degrade -- and a
+  fail-closed counter then denies, which is a login outage rather than a degraded cache. Check
+  `nats stream info KV_{ns}-collections` reports `allow_msg_ttl: true` before rolling pods. Only
+  the shared collections bucket is affected; no nonce bucket writes a per-entry TTL.
+- **A `fail_open` `WindowedCounter` now degrades on exhausted compare-and-swap contention**, not
+  only on a storage failure, and that contention is attacker-inducible: a burst against one key
+  is what produces it. Default-closed and opt-in, so it is a posture rather than a weakening --
+  but wire `fail_open=True` throttles knowing it, and leave credential lockout, which has
+  nothing behind it, fail-closed.
+- **A bucket's storage is never reconciled.** After this release the new code binds the existing
+  file-backed nonce streams; each stays file-backed until deleted by name, and that deletion is
+  a wipe, so calls through that guard are refused for the guard's watermark reach while it is
+  recreated. Do it deliberately, dry run first, and verify with a real sign-in.
+
+Full rationale, and which consumer owns which step, in `docs/design-durable-coordination.md`.
 
 ### Added
+
+- `NatsKvBucket.date_created()` and `KvBucketLike.date_created`: the backing stream's
+  creation time, read fresh from the server on every call.
+- `FakeKvBucket.date_created()` and `FakeKvBucket.wipe()`, so a test can model a broker
+  restart.
+- `ReplayGuard.require_covers()`, `ReplayGuard.verifier_future_tolerance`, and
+  `threetears.core.coordination.replay_guard.CLOCK_DRIFT_ALLOWANCE`.
+- `threetears.registry.proxy.POP_LEEWAY_SECONDS`, public so a pop replay guard can be sized
+  from the proxy's own value.
+- **`BaseCollection.negative_cache_max_age`**: opt in to recording a full miss as an
+  absent-marker in L1 and L2, so a lookup of a key nobody wrote reaches L3 once per write
+  generation instead of on every call. **The guarantee: a recorded absence never answers after
+  a committed write** -- whichever pod or principal wrote, whatever the invalidation broadcast
+  or L2 did in between -- because every marker is stamped with the table's write generation,
+  read before the L3 lookup, and every committed write advances it. The one exception is a
+  write that commits and then fails to advance the generation: it raises
+  `GenerationUnavailableError`, and `negative_cache_max_age` bounds how long older markers can
+  hide it if nobody retries. Requires `CollectionRegistry.set_generation_source(...)`
+  (normally `threetears.epoch.EpochGenerationSource`). Refuses, at construction, deferred L3
+  flushes; refuses subscript writes and `save_entity(conn=...)`. A failed L2 write degrades as
+  on any collection, since the marker it failed to replace no longer matches the generation. L2
+  markers carry a server-side lifetime; L1 markers are swept, the whole backlog each minute.
+  - **One generation per table.** Any write stops every marker in the table from answering,
+    and every writer compare-and-swaps the same generation key: after 30 lost rounds the write
+    raises `GenerationUnavailableError` with its row committed. Opt in for tables read far
+    more often than written.
+  - Only the collection's own write paths advance the generation (`save_entity` and
+    `l2_cas_mutate`, which commit rows a recorded absence would otherwise hide). A subclass that
+    writes L3 with its own SQL must not opt in.
+  - `delete` advances nothing, and needs to: an absent-marker only ever claims absence, so
+    removing a row cannot make one wrong. The same reasoning makes the coordination tables'
+    expired-row sweep the one direct L3 write a negative-caching collection may make -- every
+    tier already reads an expired row as absent.
+- **`BaseCollection.expires_at_column`**: a row whose expiry has passed is absent to `get`,
+  `ensure` and `collection[id]` at every tier, so correctness never waits on a sweep. Reporting
+  reads that serve an entity's internals still see it, so an entity held past its expiry can
+  still be saved. A `None` value never expires. Must be one of `datetime_columns`, checked at
+  class definition.
+- `threetears.core.collections.generation.GenerationSource`,
+  `threetears.core.exceptions.GenerationUnavailableError`, `CollectionRegistry.set_generation_source`
+  and `CollectionRegistry.generation_source`.
+- `threetears.epoch.EpochGenerationSource` and `Subjects.collection_generation_epoch`: a
+  table's write generation as one `"{incarnation}:{count}"` value in the epoch bucket.
+- **Per-entry KV lifetimes.** `NatsKvBucket.put`, `.create` and `.update` (and `KvBucketLike`) take an
+  optional `ttl`. `allow_msg_ttl` joins the reconciled stream fields: a declaring opener enables
+  it in place on a bucket created before this package set it (existing entries are kept; it
+  cannot be disabled again), while a binding opener tolerates its absence and only its TTL'd
+  writes are refused.
+- `FakeKvBucket` accepts `ttl` and gains `advance_clock()`.
+- **`BaseCollection.l3_write_policy`**: `"synchronous"` or `"write_behind"`, declared on the
+  collection and overriding the process-wide `collection_flush` strategy for its table. `None`
+  (the default) keeps following the process strategy. `"write_behind"` without a write buffer is
+  refused at construction.
+- `threetears.core.collections.base.CasMutation`.
+- **The coordination tables** (`threetears.core.coordination.tables`): `coordination_counters`,
+  `coordination_claims`, `coordination_revocations` and `coordination_redemptions`, the L3 tables
+  the durable coordination primitives move onto. Each is keyed `(purpose, key)`, where `purpose`
+  carries what a KV bucket name used to, so the many primitives one process builds share one
+  collection per table (`coordination_collection`). A process with no L3 (identity-edge) or no L2
+  still runs a counter, whose worst case without a tier is a lost increment. A primitive whose
+  contract is exactly-once refuses a registry with no L2 at construction, because the
+  compare-and-swap is that guarantee: `RedemptionLedger` and `IdempotencyKeyStore`.
+- **`threetears.core.coordination.migrations.register(runner, scope=...)`**: core's first package
+  migration. It creates the four tables by rendering each collection's declared `TableSchema`
+  (`table_def_for`), so the migrated table cannot drift from the table the collection reads. A
+  consumer that cannot run DDL declares the same schemas in its data section instead.
+- **`threetears.core.coordination.flusher.PeriodicFlusher`**: drains a write buffer on an interval
+  and flushes what is left on close. Nothing in 3tears called `flush_pending` before, so a
+  write-behind collection had no driver; a coordination collection starts one on its first write
+  (`ensure_flushing`) and stops it in `aclose`.
+- Expired coordination rows are swept inline, bounded, at most once per interval per process
+  (`sweep_expired`). Correctness never waits on it: an expired row is already absent at every
+  tier. It is not a scheduled job because two of the four consumers run no scheduler.
+- **BREAKING: `WindowedCounter` and the attempt limiter keep their counts in L3, not in a
+  file-backed KV bucket.** A broker restart no longer releases every account currently locked out
+  or restarts every in-flight brute-force budget.
+  - **BREAKING: `NatsKvAttemptLimiter` is renamed `CollectionAttemptLimiter` and moves from
+    `threetears.iam.stores.nats_kv` to `threetears.iam.stores.attempt_limiter`.** It holds no
+    bucket any more, so the old name described the one property that stopped being true, in the
+    direction that matters: a reader would under-trust a counter that is now durable. Renamed in
+    the same release as the constructor break, so every call site is touched once. No alias.
+  - `WindowedCounter(registry, *, purpose=..., window_seconds=..., fail_open=..., clock=...)`
+    replaces `WindowedCounter(nats_client, *, bucket_name=...)`, and
+    `CollectionAttemptLimiter(registry, *, purpose=...)` replaces its `nats_client, bucket_name=`
+    form. Every method surface is unchanged. `purpose` carries what the bucket name carried, so
+    counters over one table never share a budget; the `bucket_name` property is now `purpose`.
+  - Counts are a compare-and-swap against L2 with the row written behind to L3, so a wipe costs
+    at most the increments since the last flush. The counter starts its own flusher.
+  - `fail_open` now covers every storage failure the counter can see (L2 and L3), not only
+    `KvError`; the set is `threetears.core.coordination.tables.STORAGE_FAILURES`, deliberately
+    named rather than `Exception` so a wiring error still propagates. It also covers exhausted
+    compare-and-swap contention (`ConcurrentModificationError`), which is this counter's expected
+    shape under a burst against one key -- exactly when a `fail_open` throttle must not 500.
+  - Migration: build one `CollectionRegistry` per process (L1, L2, and L3 where the process has a
+    database), register `threetears.core.coordination.migrations`, and pass the registry. A
+    process with no L3 keeps counting in L2 across its replicas.
+- **BREAKING: `RevocationGuard` keeps standing revocations in L3, not in a file-backed KV
+  bucket**, and moves to `threetears.core.coordination.revocation` (still exported from
+  `threetears.core.coordination`). A broker restart no longer forgets an active revocation.
+  - `RevocationGuard(registry, *, purpose=..., ttl_seconds=...)` replaces the
+    `nats_client, bucket_name=` form; every method surface is unchanged.
+  - Nearly every check is of a key nobody revoked, and that answer is served from an
+    absent-marker: one L3 read per write generation instead of one per request.
+  - An entry expires a ttl after the REVOCATION, not after the write, so re-recording a narrowed
+    cutoff cannot extend how long it is remembered past the sessions it exists to block.
+  - What "fail closed" means has changed with the tier that holds the truth: an L2 outage no
+    longer denies, because the write still commits to L3 and the read still falls through to it.
+    An L3 failure propagates, because "no answer" must never read as "not revoked".
+- **`RedemptionLedger` (new)**: the durable single-use ledger a refresh-token `jti` store needs --
+  one sighting is legitimate, a second is reuse, remembered for the artifact's whole life and
+  written to L3 before the call returns. It is deliberately not a `ReplayGuard`: watermarking a
+  30-day ledger would refuse every token outstanding when the broker last restarted. Its
+  compare-and-swap IS the fence, so an L2 failure propagates rather than degrading.
+- **`threetears.enforcement.memory_only_kv`**: the memory-only KV gate leaves one repo's tests
+  and becomes a domain every consumer can adopt, the way the fake-parity walker did. A consumer
+  adds a four-line shell.
+  - **It has no exemption mechanism.** Each of the four file-backed buckets this rule removed
+    carried a specific, honest rationale naming the work that would remove it, and that is how
+    they stayed for months. The work is done, so the escape hatch went with it: a file-backed
+    bucket cannot be exempted now, only designed out.
+  - Its scan covers nested package families (`packages/agent/tools/src`) as well as flat packages
+    and a plain `src` layout. A single `packages/*/src` glob matched none of the agent packages,
+    so they went unscanned while the gate read green -- and the gate now FAILS when its globs
+    match no file at all, rather than passing by scanning nothing.
+- `threetears.core.coordination.revocation.hashed_denylist_key`: the stored form of a denylist
+  key, public because a caller comparing against a stored key needs the same function rather than
+  a second copy of it.
+- `scripts/measure-coordination-latency.py`: runs each hot coordination operation on both the new
+  path and the bare-KV path it replaced, against one broker and one database. The results are in
+  the design doc's hot-path section, and re-running the script beats trusting the table.
+- **A new gate holds the negative-caching invariant structurally**
+  (`test_negative_cache_write_paths.py`): a collection that caches absences may not fill L2 from a
+  method of its own, because a row committed outside `save_entity`/`l2_cas_mutate` stays hidden by
+  every recorded absence. Two shapes are permitted and the list is closed: `delete`, and an
+  expired-row sweep. It discovers package roots rather than listing them.
+- **BREAKING: `IdempotencyKeyStore` keeps its claims in L3, not in a file-backed KV bucket.** A
+  broker restart no longer resurrects a completed operation so a retry runs it a second time.
+  - `IdempotencyKeyStore(registry, *, purpose=..., ttl=...)` replaces
+    `IdempotencyKeyStore(nats_client, *, bucket_name=...)`. Every method surface is unchanged;
+    `bucket_name` is now `purpose`, and `IdempotencyRecord.metadata` is the `claim_metadata`
+    column.
+  - The claim is still a create-if-absent compare-and-swap, so "claimed" versus "exists" stays
+    atomic across replicas; the row is written behind to L3, so a wipe inside one flush interval
+    can still lose a claim made in that interval.
+  - A `ttl` of `None` never expires (and the table then grows without bound); a non-positive one
+    is refused at construction.
+- `l2_cas_mutate` now backs off with full jitter between compare-and-swap rounds. Without it the
+  losers of a round retried in lockstep and spent the budget on one instant, which is what a
+  burst against a single key produces; a 20-way burst on one counter exhausted eight rounds.
+- **A row's declared expiry now reaches L2.** Every write of a row on a table with
+  `expires_at_column` carries that expiry as a server-side lifetime (`NatsKvBucket.put` takes a
+  `ttl` too now), so the broker reclaims it. L1 dropped expired rows on read and the owning
+  collection swept L3, while L2 -- the shared, memory-backed collections bucket, opened with no
+  expiry -- kept every retired key until the broker restarted.
+- **`CollectionRegistry.close_collections()`**: the teardown owner for work a collection starts
+  itself, beside `stop_invalidation_listener()`. A write-behind coordination collection's flusher
+  had a start owner and no stop owner, so the final flush never ran and the task leaked at loop
+  close. The registry server, the tool-pod bootstrap and the registry RBAC stack call it.
+- `threetears.core.coordination.tables.CoordinationCollection` is public: it is the type a
+  consumer holds, and the lifecycle it must drive lives on it.
+- The column-type alignment gate was scanning three package roots that do not exist
+  (`packages/agent-tools` against the real `packages/agent/tools`), each skipped in silence, so
+  three of its five packages were asserted against nothing while it read green. It now fails on a
+  missing root, understands `ALTER TABLE ... RENAME COLUMN` (which carries a column's type to its
+  new name), and exempts a rendered table only when a migration actually renders it.
+- `FakeNatsClient` gains `publish`, `subscribe_typed` and `unsubscribe`, and `FakeKvBucket` gains
+  `keys()` and a `ttl` on `put`. Every `BaseCollection` write publishes an invalidation, so the fake could not stand in
+  for a collection's client at all, and each consumer was left to discover that.
+- The column-type alignment gate understands rendered migrations: a table whose DDL comes from its
+  own `TableSchema` is checked through the renderer's type map instead of a SQL literal, and a
+  renderer that maps `DATETIMETZ_TYPE` to anything but `TIMESTAMPTZ` fails the gate.
 
 - **One way to hand back a result too long to send whole**
   (`threetears.agent.tools.text_window`). Every tool that returns text met the same
@@ -21,6 +227,80 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- **BREAKING: `ReplayGuard` is memory-backed and fails closed after a wipe.** A broker
+  restart empties a memory bucket, and every handle on every replica then keeps working
+  silently against the empty bucket, so a nonce recorded before the wipe could not refuse
+  its replay. A fresh record now also reads the bucket's creation time from the server and
+  refuses anything issued before it. File storage did not close this either: it reopened
+  the replay window on any loss of the JetStream volume.
+  - `ReplayGuard(..., verifier_future_tolerance=timedelta(...))` is required: how far ahead
+    of its clock the verifier accepts the artifact's issue time. The guard adds
+    `CLOCK_DRIFT_ALLOWANCE` (5s, verifier-vs-broker drift) itself. For that total after a
+    wipe, fresh artifacts are refused too: 65s for registry PoP and DPoP, 5s for tool-pod
+    proxy assertions.
+  - Verifiers refuse a guard sized below their own leeway: `validate_dpop_proof` raises
+    `ValueError` when `iat_window` exceeds the guard's tolerance, and `CallProxy` and
+    `ToolServer` raise at construction. Widening a leeway can no longer silently reopen the
+    replay hole.
+  - `record_unique(nonce, *, issued_at=...)` is required: the artifact's signed or
+    server-held issue time, timezone-aware, no later than the earliest moment it could
+    first have been accepted.
+  - `verify_pop_proof` returns `VerifiedPopProof(jti, issued_at)` instead of the bare `jti`.
+  - Migration: pass `verifier_future_tolerance` at every construction and `issued_at` at
+    every `record_unique` call. `validate_dpop_proof` passes the proof's `iat` itself; its
+    guard needs `verifier_future_tolerance` of at least the `iat_window` you pass
+    (`DEFAULT_IAT_WINDOW` by default). A guard sized too small makes `validate_dpop_proof`
+    raise on every request, not at startup, because it is a function with no construction
+    step. `CallProxy` and `ToolServer` do refuse at construction.
+  - A construction without `verifier_future_tolerance` fails with `TypeError`. The hub's
+    DPoP guard (`hub-dpop-nonces`) is one, so the hub does not start on this release until
+    it passes one.
+  - **Only single-use nonces migrate this way.** A `ReplayGuard` used as a long-lived ledger
+    is not a nonce guard: identity's refresh-token jti ledger (`identity-revocation-jti`, a
+    30-day TTL) would refuse every outstanding refresh token for up to 30 days after a
+    broker wipe. Move such a ledger to an L3 collection rather than watermarking it, and
+    leave its bucket alone until then.
+  - **Existing nonce buckets stay file-backed until deleted.** The bucket names are
+    unchanged and a bucket's storage is never reconciled, so on a cluster that already has
+    them this release binds the existing FILE streams (logging the storage drift on every
+    open). This repo's are `{ns}-pop_nonces` and `{ns}-proxy_assertion_nonces`; the hub's
+    `hub-dpop-nonces` and identity's nonce buckets follow the same step when those
+    consumers release. Delete each by name once every replica of its consumer runs this
+    release; the next record recreates it memory-backed. A deletion is a wipe, so calls
+    through that guard are refused for its reach afterwards. Ledger buckets (above) are NOT part
+    of this step: they stay where they are until their consumer moves to the L3 ledger.
+    - The `RevocationGuard`, idempotency and windowed-counter buckets are not part of it either,
+      for the opposite reason: nothing opens them any more. Those three primitives moved to L3 in
+      this same release (below), so their buckets are dead state to be copied into the new tables
+      and then deleted -- see "The live buckets are converted, not abandoned" in
+      `docs/design-durable-coordination.md`. Skipping the copy is the difference between a
+      revoked session staying revoked and becoming valid again.
+- **BREAKING: `BaseCollection.l2_cas_mutate` returns a `CasMutation`** (`action` of created,
+  updated, deleted or noop, and the row written) instead of `None`. On a collection with an L3
+  pool it is now three-tier:
+  - When L2 holds no live row the callback is shown L3's row, so a broker wipe no longer resets
+    a counter to zero.
+  - The won result is persisted to L3 per `l3_write_policy`, deletes always synchronously.
+  - A persist that fails withdraws the won L2 value (deleted at the revision it won) and then
+    raises, so a retry never sees a write it was told failed. That includes a persist that
+    affects no row, which raises `RuntimeError`.
+  - A table that fences every L3 write (`cas_null_safe`) raises `ValueError` before L2 is
+    touched.
+  - Its invalidation broadcast tells listeners in the same L2 scope to keep the key, which is
+    the fence and may be newer than L3. Listeners in other scopes still evict.
+  - Collections without an L3 pool, including the presence collections, behave as before.
+  - Migration: callers that ignored the return value need no change.
+- `CacheInvalidationMessage` gains `l2_current_scope`, and `CollectionRegistry.publish_invalidation`
+  gains `l2_key_current`. A receiver on an older release ignores the field and evicts as before, so
+  roll every replica of a principal that uses a three-tier `l2_cas_mutate` together.
+- **Reconciling a KV stream no longer asks for unreconciled changes.** The in-place update is
+  built from the live stream config with only the reconciled fields changed. It used to send
+  the whole requested config, so a legacy file-backed bucket opened by a declarer asking for
+  memory failed the update over storage. That failure was reported as a missing grant, and it
+  blocked the `allow_msg_ttl` enable. Differences outside the reconciled set are now always
+  reported at WARNING, including when a reconcile also ran.
+
+
 - **`web_fetch` and `parse_document` take an `offset`** and window their result
   instead of cutting it: a long page or document is read in parts, and nothing is
   discarded. `web_fetch`'s result metadata carries `window` (`offset`, `total_chars`,
@@ -32,6 +312,7 @@ packages (bumped in lock-step).
   been analysing the first 12,000 characters and presenting that as the document.
 - A test fails any tool under `agent/tools` that writes a truncation phrase of its
   own. It is what found the analyser and the save node.
+
 
 ## v0.42.0 -- 2026-09-15
 

@@ -212,6 +212,19 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeNatsClient",
+        attr_name="_subscribers",
+        rationale=(
+            "the double's subject to callback map, standing in for the real client's "
+            "subscriptions so a test can run a real invalidation listener against it. The values "
+            "are live coroutine functions, which no backend can serialise or hand to another "
+            "process, and the whole point of the double is that a test needs no bus at all -- "
+            "same test-double rationale as FakeKvBucket._entries above, and it lives for one "
+            "test's client instance"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/dynamic_pod.py",
         class_name="DynamicToolPod",
         attr_name="_resources",

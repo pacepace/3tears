@@ -13,6 +13,8 @@ not a ``test_*`` module, so pytest does not collect it; the registry test packag
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -71,9 +73,16 @@ class StubReplayGuard:
     def __init__(self, *, fresh: bool = True) -> None:
         self._fresh = fresh
         self.seen: list[str] = []
+        self.issued_at: list[datetime] = []
 
-    async def record_unique(self, nonce: str) -> bool:
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """a stub guard is sized for any verifier; the real check has its own tests."""
+
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        if issued_at.tzinfo is None:
+            raise ValueError("record_unique requires a timezone-aware issued_at")
         self.seen.append(nonce)
+        self.issued_at.append(issued_at)
         return self._fresh
 
 

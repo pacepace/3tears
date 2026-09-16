@@ -455,6 +455,9 @@ class ToolServerBootstrap:
                 # so it runs FIRST in this block: a listener left bound holds a subscription on a
                 # client the process no longer owns.
                 await registry.stop_invalidation_listener()
+                # and whatever a collection itself started: a write-behind coordination
+                # collection's flusher owes one last flush before the loop closes.
+                await registry.close_collections()
             if health_server is not None:
                 try:
                     await health_server.stop()

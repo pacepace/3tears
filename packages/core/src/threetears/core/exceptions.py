@@ -8,10 +8,20 @@ __all__ = [
     "ConcurrentModificationError",
     "CorruptCacheEntry",
     "DataLayerUnavailableError",
+    "GenerationUnavailableError",
     "InvalidL2ScopeError",
     "L2ScopeError",
     "L2ScopeNotConfiguredError",
 ]
+
+
+class GenerationUnavailableError(Exception):
+    """Raised when a table's write generation cannot be read or advanced.
+
+    A reader treats it as "cannot trust a cached absence": it neither serves a negative-cache
+    marker nor records one, and asks L3. A writer surfaces it, because a generation it failed to
+    advance leaves older markers valid over the write it just committed.
+    """
 
 
 class ConcurrentModificationError(Exception):
