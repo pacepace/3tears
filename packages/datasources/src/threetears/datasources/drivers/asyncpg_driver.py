@@ -161,6 +161,7 @@ from threetears.datasources.config import (
 )
 from threetears.datasources.drivers._util import (
     _translate_placeholders,
+    build_relation_key_expression,
     build_reset_statement_timeout_sql,
     build_search_path_value,
     build_set_local_statement_timeout_sql,
@@ -169,6 +170,7 @@ from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
     Driver,
+    RelationFingerprint,
     TableRow,
     Transaction,
     _check_otel_metrics,
@@ -1028,6 +1030,41 @@ class AsyncpgDriver(Driver):
             for r in records
         ]
         return result
+
+    @traced
+    @_observed(driver_type="asyncpg")
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+        """count and fingerprint ``relation`` over ``key``, in one statement.
+
+        Postgres turns a hash into a summable number by casting the leading hex
+        digits through ``bit(32)``: ``('x' || <8 hex chars>)::bit(32)::bigint``.
+        That is the spelling this engine has, and it is why the fingerprint is a
+        driver method rather than SQL a portable caller writes.
+
+        ``SUM`` over ``bigint`` widens to ``numeric`` here, so a large relation
+        cannot silently wrap -- an overflow would fingerprint two different
+        relations identically, which is the one failure a change-probe must not
+        have.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the ordering columns, TRUSTED identifiers
+        :ptype key: list[str]
+        :return: the relation's current row count and key digest
+        :rtype: RelationFingerprint
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        key_expression = build_relation_key_expression(key)
+        sql = (
+            "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
+            "COALESCE(SUM(('x' || SUBSTR(MD5(k), 1, 8))::bit(32)::bigint), 0) AS digest "
+            f"FROM (SELECT {key_expression} AS k FROM {relation}) AS fingerprint_source"
+        )
+        record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql))
+        return RelationFingerprint(row_count=int(record["row_count"]), digest=str(record["digest"]))
 
     @traced
     @_observed(driver_type="asyncpg")

@@ -88,6 +88,18 @@ class _StubDriver(Driver):
     async def list_columns(self, schemas: list[str]) -> list[Any]:
         return []
 
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> Any:
+        """stub fingerprint; the ABC requires the method.
+
+        These tests assert which class a config dispatched to and what reached its
+        constructor, so a real answer here would be a fixture nothing reads.
+
+        :return: never returns
+        :rtype: Any
+        :raises NotImplementedError: this stub has no relation to fingerprint
+        """
+        raise NotImplementedError("stub driver has no relation to fingerprint")
+
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         return {}
 

@@ -37,6 +37,13 @@ with its own tolerance, so a leeway widened later fails loudly instead of reopen
 The cost is that for that long after a wipe, fresh artifacts are refused too -- the price of never
 admitting a replay.
 
+**A first run is not a wipe, and an anchor is what tells them apart.** Without one the guard
+cannot distinguish a bucket it has never had from one it lost, so it assumes the worse and pays
+that cost on a fresh deployment too -- where nothing was ever recorded and no replay is possible.
+Pass a :class:`~threetears.core.coordination.replay_anchor.ReplayAnchor` and the watermark
+applies only when the anchor predates the bucket. Consumers holding durable storage should; one
+that holds only a NATS client keeps today's conservative behaviour by leaving it unset.
+
     guard = ReplayGuard(
         nats_client, bucket_name="pop_nonces", ttl_seconds=120,
         verifier_future_tolerance=timedelta(seconds=60),
@@ -50,7 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from threetears.observe import get_logger
@@ -60,6 +67,8 @@ if TYPE_CHECKING:
     # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
     # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
     from threetears.nats.kv import KvBucketLike, KvCapable
+
+    from threetears.core.coordination.replay_anchor import ReplayAnchor
 
 __all__ = ["CLOCK_DRIFT_ALLOWANCE", "ReplayGuard"]
 
@@ -82,6 +91,7 @@ class ReplayGuard:
         bucket_name: str,
         ttl_seconds: int,
         verifier_future_tolerance: timedelta,
+        anchor: "ReplayAnchor | None" = None,
     ) -> None:
         """configure the guard; defer bucket binding until the first record.
 
@@ -102,6 +112,15 @@ class ReplayGuard:
             no default: it is a property of the verifier, which confirms it with
             :meth:`require_covers`. MUST NOT be negative
         :ptype verifier_future_tolerance: timedelta
+        :param anchor: durable record of when this ledger FIRST existed
+            (:mod:`threetears.core.coordination.replay_anchor`). Without one the guard cannot
+            tell a first run from a wipe and applies the watermark to both -- correct after a
+            wipe, and on a first run a window of refusals protecting nothing. With one, the
+            watermark applies only when the anchor predates the bucket, which is what a wipe
+            looks like. Optional because the registry server and the tool pod deliberately hold
+            only a NATS client, and a minute of refused internal RPC that retries does not
+            justify wiring durable storage into them
+        :ptype anchor: ReplayAnchor | None
         :raises ValueError: when ``ttl_seconds`` is not positive or the tolerance is negative
         """
         if ttl_seconds <= 0:
@@ -114,6 +133,11 @@ class ReplayGuard:
         self._bucket_name = bucket_name
         self._ttl = timedelta(seconds=ttl_seconds)
         self._verifier_future_tolerance = verifier_future_tolerance
+        self._anchor = anchor
+        # Read once, at the first record, and kept: the anchor is a fact about this ledger's
+        # whole history, so re-reading it per artifact would put a durable round trip on the
+        # hot path to learn something that cannot change while the process runs.
+        self._ledger_first_existed: datetime | None = None
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -191,7 +215,7 @@ class ReplayGuard:
             # later, which refuses more, never less.
             date_created = await bucket.date_created()
             refusal_reach = self._verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE
-            if issued_at < date_created + refusal_reach:
+            if await self._bucket_replaced_a_lost_one(date_created) and issued_at < date_created + refusal_reach:
                 log.warning(
                     "ReplayGuard refused an artifact issued before its bucket was created; "
                     "the bucket was wiped or is new, so an earlier sighting cannot be ruled out",
@@ -206,6 +230,54 @@ class ReplayGuard:
                 )
                 fresh = False
         return fresh
+
+    async def _bucket_replaced_a_lost_one(self, date_created: datetime) -> bool:
+        """whether this bucket replaced an earlier one whose nonces were lost.
+
+        The watermark exists for that case alone. Without an anchor the guard cannot tell it
+        from a first run and must assume it, which is what makes a fresh deployment refuse
+        artifacts it has no reason to doubt.
+
+        **Every failure answers ``True``.** An anchor that cannot be read, or written, leaves the
+        guard exactly as blind as having none, and the blind answer is the conservative one. It
+        must never be the permissive one: an anchor whose write silently failed would read as
+        absent forever, and a guard that treated absence as proof of a first run would skip the
+        watermark after every wipe.
+
+        :param date_created: the bucket's creation time, from the broker's clock
+        :ptype date_created: datetime
+        :return: whether the watermark should be applied
+        :rtype: bool
+        """
+        replaced = True
+        if self._anchor is not None:
+            if self._ledger_first_existed is None:
+                try:
+                    self._ledger_first_existed = await self._anchor.first_existed(
+                        self._bucket_name, now=datetime.now(UTC)
+                    )
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
+                    # Deliberately broad, and narrow in effect: an anchor is a Protocol, so the
+                    # storage failures an implementation raises are not this module's to
+                    # enumerate. Every one of them means the same thing here -- the guard cannot
+                    # tell -- and the answer is to keep today's conservative behaviour. Logged
+                    # with the type and message, because a permanently unreachable anchor is a
+                    # silent return to a window an operator was told had gone.
+                    log.warning(
+                        "replay anchor unreadable; falling back to the creation-time watermark",
+                        extra={
+                            "extra_data": {
+                                "bucket": self._bucket_name,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
+                        },
+                    )
+            if self._ledger_first_existed is not None:
+                # The anchor is stamped on this fleet's clock and the creation time on the
+                # broker's, so the same drift the watermark allows for applies to the
+                # comparison. Inside that band the two happened together, which is a first run.
+                replaced = self._ledger_first_existed < date_created - CLOCK_DRIFT_ALLOWANCE
+        return replaced
 
     async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""

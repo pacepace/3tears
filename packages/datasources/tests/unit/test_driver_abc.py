@@ -42,6 +42,7 @@ class TestDriverAbstractness:
             "begin",
             "list_tables",
             "list_columns",
+            "relation_fingerprint",
             "table_hashes",
             "test_connection",
             "close",

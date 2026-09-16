@@ -8,6 +8,8 @@ listeners on ONE registry is the thing that is forbidden.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from pydantic import BaseModel
 
@@ -104,3 +106,36 @@ async def _record(sink: list[str], message: _Message) -> None:
     :rtype: None
     """
     sink.append(message.value)
+
+
+@pytest.mark.asyncio
+async def test_bucket_age_makes_an_established_bucket() -> None:
+    """The affordance every verifier test needs, and the reason it exists.
+
+    `ReplayGuard` refuses an artifact issued before its bucket was created plus the verifier's
+    tolerance. A fake bucket created at the instant a test mints its artifact is inside that
+    window by construction, so the obvious test of replay semantics fails with a replay refusal
+    that has nothing to do with replay -- the same trap the first real call after a broker
+    restart hits.
+    """
+    aged = FakeNatsClient(bucket_age=timedelta(hours=1))
+    bucket = await aged.kv_bucket(name="nonces")
+    age = datetime.now(UTC) - await bucket.date_created()
+    assert age >= timedelta(minutes=59), "bucket_age did not push the creation time back"
+
+
+@pytest.mark.asyncio
+async def test_without_bucket_age_a_bucket_is_brand_new() -> None:
+    # the default must stay the real client's behaviour, or a watermark test written against
+    # the fake would silently stop exercising the refusal it exists for.
+    client = FakeNatsClient()
+    bucket = await client.kv_bucket(name="nonces")
+    age = datetime.now(UTC) - await bucket.date_created()
+    assert age < timedelta(seconds=5), "a fresh bucket should report roughly now"
+
+
+def test_a_negative_bucket_age_is_refused() -> None:
+    # a bucket created in the future would make the watermark refuse everything, which reads as
+    # a guard defect rather than as a mis-built double.
+    with pytest.raises(ValueError, match="bucket_age"):
+        FakeNatsClient(bucket_age=timedelta(seconds=-1))

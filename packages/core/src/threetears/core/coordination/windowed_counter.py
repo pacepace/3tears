@@ -225,10 +225,14 @@ class WindowedCounter:
         """
         try:
             entity = await self._collection.get(self._row_id(key))
-        except _DEGRADABLE_FAILURES as exc:
+        except STORAGE_FAILURES as exc:
+            # STORAGE_FAILURES, not the degradable set the write path catches: this is a pure
+            # read through the collection, so no compare-and-swap runs and
+            # ConcurrentModificationError cannot arise here. Catching it anyway would offer an
+            # operator a cause this path cannot produce.
             if self._fail_open:
                 log.warning(
-                    "windowed counter failing open; storage failed or every compare-and-swap round was lost",
+                    "windowed counter failing open on a storage failure",
                     extra={"extra_data": {"purpose": self._purpose, "error": f"{type(exc).__name__}: {exc}"}},
                 )
                 return None
