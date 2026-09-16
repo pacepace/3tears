@@ -14,6 +14,7 @@ from uuid_utils import uuid7
 
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
+    from threetears.core.collections.generation import GenerationSource
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
@@ -97,11 +98,20 @@ class CacheInvalidationMessage(BaseModel):
         cannot prove self-origin and evicts (the historical behaviour),
         which is safe: a redundant local eviction only forces a
         pull-through, never stale data.
+    :ivar l2_current_scope: the L2 key scope whose entry for this pk the
+        publisher left current, set only by a revision-fenced write
+        (:meth:`BaseCollection.l2_cas_mutate`). A receiver sharing that
+        scope shares that key and skips its L2 eviction: the key already
+        holds the newest value, and for a compare-and-swap counter it is
+        the only copy newer than L3, so deleting it would move the counter
+        backwards. ``None`` for every unfenced write, whose L2 put can land
+        out of order and still needs the eviction to heal.
     """
 
     table: str
     ids: list[str]
     origin: str | None = None
+    l2_current_scope: str | None = None
 
 
 class CollectionRegistry:
@@ -143,6 +153,9 @@ class CollectionRegistry:
         # registering, so a bound stored there would be silently dropped by a
         # later ``register()`` call. Separate dict, separate lifetime.
         self._l1_max_ages: dict[str, float | None] = {}
+        # The write generation a negative-caching collection stamps its absences with. One per
+        # registry: every collection on it answers to the same principal's view of the world.
+        self._generation_source: GenerationSource | None = None
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
@@ -405,6 +418,29 @@ class CollectionRegistry:
             )
         self._l1_max_ages[table_name] = max_age_seconds
 
+    def set_generation_source(self, source: GenerationSource) -> None:
+        """wire the write generation negative-caching collections on this registry stamp absences with.
+
+        Required before constructing any collection that sets
+        :attr:`BaseCollection.negative_cache_max_age` and has an L3 pool: without it an absence
+        could only be invalidated by timing, which races.
+
+        :param source: the generation source, normally ``threetears.epoch``'s
+        :ptype source: GenerationSource
+        :return: nothing
+        :rtype: None
+        """
+        self._generation_source = source
+
+    @property
+    def generation_source(self) -> GenerationSource | None:
+        """the write generation source wired on this registry, or ``None``.
+
+        :return: the source, or ``None`` when none is wired
+        :rtype: GenerationSource | None
+        """
+        return self._generation_source
+
     def get_l1_max_age(self, table_name: str) -> float | None:
         """Return the configured L1 max age for a collection, or ``None``.
 
@@ -545,7 +581,12 @@ class CollectionRegistry:
             #
             # The arity check is hoisted above this rather than left where it was, because
             # ``l2_key`` normalises the pk and raises on a mismatch; it touches no L1.
-            await collection.delete_l2_entry(entity_id)
+            #
+            # Skipped only when a revision-fenced writer says it left THIS scope's key current:
+            # the key is shared, already newest, and deleting it would discard the only copy of a
+            # compare-and-swap value that L3 may not hold yet.
+            if message.l2_current_scope is None or message.l2_current_scope != self._kv_key_scope:
+                await collection.delete_l2_entry(entity_id)
 
             l1 = self.get_l1_backend(message.table)
             if l1 is None:
@@ -581,6 +622,35 @@ class CollectionRegistry:
         )
         self._nats_client = nats_client
         self._invalidation_subscription = subscription
+
+    async def close_collections(self) -> None:
+        """close every registered collection that has something to shut down.
+
+        The teardown owner for a collection's own background work: a write-behind coordination
+        collection starts a periodic flusher from its write path, and the final flush is the
+        difference between a clean shutdown losing nothing and losing one flush interval. Without
+        an owner here, the only caller of that ``aclose`` was a test, and the task leaked at loop
+        close.
+
+        Runs beside :meth:`stop_invalidation_listener` in a process's shutdown path and follows
+        the same rules: a no-op when nothing needs closing, and one collection's failure does not
+        abandon the rest, because a teardown that stops halfway leaves the task it was there to
+        stop still running.
+
+        :return: nothing
+        :rtype: None
+        """
+        for table, collection in list(self._collections.items()):
+            try:
+                # a declared seam on BaseCollection, not a getattr probe: the default is a no-op,
+                # so a collection that starts nothing costs nothing, and a typo in an override is
+                # a type error rather than a teardown that quietly skipped it.
+                await collection.aclose()
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- one table must not abandon the rest
+                log.error(
+                    "closing a collection failed; continuing with the rest of the teardown",
+                    extra={"extra_data": {"table": table, "error": f"{type(exc).__name__}: {exc}"}},
+                )
 
     async def stop_invalidation_listener(self) -> None:
         """drop this registry's cache-invalidation subscription.
@@ -628,6 +698,8 @@ class CollectionRegistry:
         nats_client: NatsClient | None,
         table_name: str,
         entity_id: Any,
+        *,
+        l2_key_current: bool = False,
     ) -> None:
         """publish cache invalidation signal for an entity.
 
@@ -657,6 +729,11 @@ class CollectionRegistry:
         :param entity_id: pk value (single-pk) or tuple of pk values
             in declared order (composite-pk)
         :ptype entity_id: Any
+        :param l2_key_current: the write was revision-fenced and left this
+            registry's scoped L2 key holding the newest value, so receivers
+            sharing the scope keep it (see
+            :attr:`CacheInvalidationMessage.l2_current_scope`)
+        :ptype l2_key_current: bool
         :return: nothing
         :rtype: None
         """
@@ -686,7 +763,12 @@ class CollectionRegistry:
         else:
             values = (entity_id,)
         ids = [str(v) for v in values]  # convert at border: invalidation wire-envelope pk values
-        message = CacheInvalidationMessage(table=table_name, ids=ids, origin=self._origin_id)
+        message = CacheInvalidationMessage(
+            table=table_name,
+            ids=ids,
+            origin=self._origin_id,
+            l2_current_scope=self._kv_key_scope if l2_key_current else None,
+        )
         try:
             await nats_client.publish(
                 subject=Subjects.cache_invalidate(),

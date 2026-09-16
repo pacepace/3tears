@@ -20,6 +20,8 @@ requires docker; marked integration. run with::
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import asyncio
 import time
 from typing import Any
@@ -98,7 +100,12 @@ class _Signer:
 class _StubReplayGuard:
     """accepts every first-seen nonce; the real guard's compare-and-set has its own tests."""
 
-    async def record_unique(self, nonce: str) -> bool:
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """a stub guard is sized for any verifier; the real check has its own tests."""
+
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        if issued_at.tzinfo is None:
+            raise ValueError("record_unique requires a timezone-aware issued_at")
         return True
 
 

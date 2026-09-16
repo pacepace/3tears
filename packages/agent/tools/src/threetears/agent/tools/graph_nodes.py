@@ -67,6 +67,7 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage, ToolMessage
 
+from threetears.agent.tools.text_window import window_text
 from threetears.agent.tools.chunker import ChunkResult, chunk_content
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
@@ -348,8 +349,12 @@ def create_context_save_node(
 
             raw = msg.content or ""
             content: str = raw if isinstance(raw, str) else str(raw)
-            if len(content) > max_content:
-                content = content[:max_content] + "\n[Content truncated]"
+            # The copy kept here is a window, and it says so: the whole result
+            # is chunked below, so the rest is found by searching those rather
+            # than by asking the tool again.
+            content = window_text(content, max_chars=max_content).rendered(
+                how="the whole result is kept as chunks; search them for the rest"
+            )
 
             short_desc = content[:200]
             long_desc = content[:1000]

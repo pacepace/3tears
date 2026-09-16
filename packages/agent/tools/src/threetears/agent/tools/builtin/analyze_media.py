@@ -36,6 +36,7 @@ from threetears.agent.tools.protocols import (
     TranscriptionProvider,
     VisionProvider,
 )
+from threetears.agent.tools.text_window import window_text
 from threetears.observe import get_logger
 
 __all__ = [
@@ -454,13 +455,14 @@ class AnalyzeMediaTool(TearsTool):
                 f"Analyzer '{acfg.name}' has no text QA capability.",
             )
 
-        truncated = extracted[: self._doc_max_chars]
+        # The analyser reads a window of the document, and the answer says which
+        # part it read: an analysis of the first pages, presented as an analysis
+        # of the whole document, is the failure this note exists to prevent.
+        window = window_text(extracted, max_chars=self._doc_max_chars)
         suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
+        window_note = window.note(how="this analysis covers that part of the document only")
         doc_prompt = (
-            f"{question}\n\n"
-            f"--- DOCUMENT TEXT ---\n{truncated}"
-            f"{' [truncated]' if len(extracted) > self._doc_max_chars else ''}"
-            f"{suffix}"
+            f"{question}\n\n--- DOCUMENT TEXT ---\n{window.text}{chr(10) + window_note if window_note else ''}{suffix}"
         )
 
         try:
@@ -499,10 +501,9 @@ class AnalyzeMediaTool(TearsTool):
 
             await self._fire_callback(mid_str, "description", result_text)
 
-        return result_text or _tool_error(
-            "document analysis",
-            "Model returned empty response.",
-        )
+        if not result_text:
+            return _tool_error("document analysis", "Model returned empty response.")
+        return f"{result_text}\n\n{window_note}" if window_note else result_text
 
     async def _handle_audio_video(
         self,
@@ -589,8 +590,10 @@ class AnalyzeMediaTool(TearsTool):
         # Fetch any existing description
         description = await self._storage.get_content(mid, "description")
 
+        spoken = window_text(transcript, max_chars=self._transcript_max_chars)
         parts = [
-            f"**Transcript** ({info.media_category}):\n{transcript[: self._transcript_max_chars]}",
+            f"**Transcript** ({info.media_category}):\n"
+            + spoken.rendered(how="the whole transcript is stored with the media"),
         ]
         if description:
             parts.append(f"\n\n**Analysis:**\n{description}")

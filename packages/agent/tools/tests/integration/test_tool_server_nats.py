@@ -23,6 +23,7 @@ from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
+from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
@@ -41,6 +42,49 @@ pytestmark = [
 
 
 # -- helpers --
+
+
+async def _warm_the_replay_watermark(nc: NatsClient, pod_id: str) -> None:
+    """make the pod's nonce bucket exist, then wait until it will accept an assertion.
+
+    The pod's replay guard refuses any assertion issued before its bucket's creation time plus
+    its reach: a nonce it cannot find might have been wiped rather than never seen. The tool-pod
+    guard passes a future tolerance of zero, so the reach is :data:`CLOCK_DRIFT_ALLOWANCE` alone
+    -- and the bucket is created lazily by the FIRST call, so that call is always inside its own
+    window, however long the test waited beforehand.
+
+    So this does what production does: one call lands and is refused (creating the bucket), and
+    every call after the window is accepted. That is the documented cost of failing closed after
+    a wipe -- 5s for tool-pod assertions in ``docs/design-durable-coordination.md`` -- and a
+    test that skipped it was asserting against the window rather than against the round trip.
+
+    :param nc: a connected client on the pod's namespace
+    :ptype nc: NatsClient
+    :param pod_id: the pod whose guard is being warmed
+    :ptype pod_id: str
+    :return: nothing
+    :rtype: None
+    """
+    payload = json.dumps(
+        _signed_call_payload(
+            pod_id=pod_id,
+            tool_name="integration.stub",
+            tool_version="1.0",
+            arguments={"message": "warm"},
+            correlation_id=str(uuid4()),
+        )
+    ).encode("utf-8")
+    refused = json.loads(
+        await nc.request_raw(
+            subject=Subjects.tools_internal(pod_id),
+            payload=payload,
+            timeout=timedelta(seconds=5),
+        )
+    )
+    assert refused["success"] is False, "the first call after a bucket is created must be refused"
+    # two seconds of margin, not a fraction: a proxy assertion's ``iat`` is whole seconds, so
+    # a freshly minted one can read up to a second EARLIER than the moment it was minted.
+    await asyncio.sleep(CLOCK_DRIFT_ALLOWANCE.total_seconds() + 2.0)
 
 
 class IntegrationStubTool(TearsTool):
@@ -145,6 +189,8 @@ class TestToolServerNatsIntegration:
                 client_name="tool-server-itest",
             )
 
+            await _warm_the_replay_watermark(nc, pod_id)
+
             call_subject = Subjects.tools_internal(pod_id)
             correlation_id = str(uuid4())
             # the enforce-only pod verifies the identity token + the proxy assertion (bound to THIS
@@ -229,6 +275,8 @@ class TestToolServerNatsIntegration:
                 nats_subject_namespace=namespace,
                 client_name="composite-itest",
             )
+
+            await _warm_the_replay_watermark(nc, composite_pod_id)
 
             # the registry would forward on the registered (composite) pod-id verbatim; the rendered
             # subject is a TWO-token ``tools.internal.{agent_id}.{instance}`` under the agent subtree.

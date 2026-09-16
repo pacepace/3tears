@@ -18,8 +18,8 @@ same predicate, same schedule). It is deliberately duplicated rather than import
 must not depend on the aibots SDK (the dependency runs the other way), so the shared timing contract
 is carried as a parallel copy with matching values.
 
-Unlike the agent runtime -- which learns its NATS-JWT TTL from the Hub handshake reply -- a standalone
-tool pod receives no such handshake, so the TTL DURATION is sourced from the pod's own config
+A standalone tool pod sources its NATS-JWT TTL DURATION from its own config (the agent runtime reads
+the same value off the Hub handshake reply instead)
 (:func:`threetears.agent.tools.config.get_nats_user_jwt_ttl_seconds`, env-overridable, defaulting to
 the same value the minting side defaults to). The schedule is anchored at the most recent
 (re)connect: the loop sleeps
