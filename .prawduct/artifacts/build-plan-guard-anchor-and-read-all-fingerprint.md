@@ -53,10 +53,16 @@ and no coordination write moves onto a per-request path.
   not worth a second round trip | relayed from Pace via the delivery session, 2026-09-16]
 
 **Open assumptions:**
-- [ASSUMPTION: one fingerprint expression is portable across Redshift, Snowflake, BigQuery,
-  Postgres and Yugabyte | HIGH impact -- Chunk 02 is not deliverable without one. Row-constructor
-  syntax is already known NOT to be portable | Chunk 02 settles it against each dialect before
-  implementing]
+- ~~[ASSUMPTION: one fingerprint expression is portable across Redshift, Snowflake, BigQuery,
+  Postgres and Yugabyte]~~ **WRONG, and it changed the design.** Turning a hash into a summable
+  number has no shared spelling: Postgres casts through `bit(32)`, Redshift has `STRTOL`,
+  Snowflake has `TO_NUMBER` with a format model. `read_all` also cannot choose per dialect --
+  the query wire carries no datasource type. So the fingerprint became a DRIVER method with a
+  declarative ask on the wire, which is Pace's option C, chosen 2026-09-16 over a weaker
+  portable approximation. Two further facts found while settling it: BigQuery is a STUB (every
+  method raises), so the live set is Postgres/Yugabyte, Redshift and Snowflake; and BigQuery
+  will need a dialect seam in the shared key-expression builder, because its `MD5` returns BYTES
+  and its cast is `STRING` rather than `VARCHAR`. Recorded at that driver's call site.
 - [ASSUMPTION: NULL key values contribute to the fingerprint | HIGH impact -- a NULL row swap
   goes unseen otherwise | Chunk 02 tests it explicitly]
 - [ASSUMPTION: identity and hub both have a coordination-backed registry available at the point
@@ -69,7 +75,7 @@ instance of each dialect, rather than against a fake.
 ## Status
 
 - [x] Chunk 01: The first-creation anchor
-- [ ] Chunk 02: read_all proves completeness by fingerprint
+- [x] Chunk 02: read_all proves completeness by fingerprint
 - [ ] Chunk 03: Wire identity and hub onto the anchor
 
 ## Chunk 01: The first-creation anchor

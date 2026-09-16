@@ -4,11 +4,14 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.43.0 -- unreleased
+## v0.44.0 -- unreleased
+
+0.43.0 was never released. Everything under it ships here, so the "Before you bump" notes
+below are 0.44.0's notes -- read them, they include two that are outages if missed.
 
 ### Before you bump to this version
 
-Releasing 0.43.0 changes nothing on its own: every consumer pins 3tears by range and installs
+Releasing 0.44.0 changes nothing on its own: every consumer pins 3tears by range and installs
 what its own `uv.lock` resolved, so nothing picks this up until a repo bumps deliberately. These
 are what that bump costs, and two of them are outages if missed. Read them before raising the
 pin, not after.
