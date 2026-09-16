@@ -188,6 +188,17 @@ packages (bumped in lock-step).
   written to L3 before the call returns. It is deliberately not a `ReplayGuard`: watermarking a
   30-day ledger would refuse every token outstanding when the broker last restarted. Its
   compare-and-swap IS the fence, so an L2 failure propagates rather than degrading.
+- **`threetears.enforcement.memory_only_kv`**: the memory-only KV gate leaves one repo's tests
+  and becomes a domain every consumer can adopt, the way the fake-parity walker did. A consumer
+  adds a four-line shell.
+  - **It has no exemption mechanism.** Each of the four file-backed buckets this rule removed
+    carried a specific, honest rationale naming the work that would remove it, and that is how
+    they stayed for months. The work is done, so the escape hatch went with it: a file-backed
+    bucket cannot be exempted now, only designed out.
+  - Its scan covers nested package families (`packages/agent/tools/src`) as well as flat packages
+    and a plain `src` layout. A single `packages/*/src` glob matched none of the agent packages,
+    so they went unscanned while the gate read green -- and the gate now FAILS when its globs
+    match no file at all, rather than passing by scanning nothing.
 - `threetears.core.coordination.revocation.hashed_denylist_key`: the stored form of a denylist
   key, public because a caller comparing against a stored key needs the same function rather than
   a second copy of it.

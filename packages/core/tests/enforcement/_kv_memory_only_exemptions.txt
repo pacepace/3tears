@@ -1,9 +1,0 @@
-# Every NATS KV bucket is memory-backed. NATS is L2; durability is L3's job.
-#
-# Format: a `# rationale: <reason>` line, then one `path:line:callee` triple.
-# A rationale naming no specific mechanism is refused by the gate.
-#
-# EVERY ENTRY BELOW IS TEMPORARY and tracked by
-# docs/design-durable-coordination.md. They are not exceptions to the rule --
-# they are the work the rule exists to force, listed so the gate can go strict
-# today rather than after it.

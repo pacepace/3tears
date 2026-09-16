@@ -70,7 +70,17 @@ the verifier's future tolerance, passed at construction with no default, plus a 
 named drift allowance between those hosts, added by the guard. Each verifier calls
 `require_covers` with its own leeway, so widening a leeway later fails loudly instead of
 silently reopening the hole: at construction for the registry proxy and the tool server, and
-on every request for `validate_dpop_proof`, which is a function with no construction step. The cost is bounded and visible: for that long after a wipe,
+on every request for `validate_dpop_proof`, which is a function with no construction step.
+
+**The first call after a bucket is created is itself refused**, and that is worth stating on its
+own because it surprised this repo's own integration tests. The bucket is opened lazily by the
+first `record_unique`, so that call creates it and then compares its artifact against a creation
+time of a moment ago -- inside the window by construction. In production the bucket outlives every
+pod restart (it lives with the broker), so this is paid once per broker lifetime, not once per
+pod: a fresh cluster or a broker restart refuses tool-pod calls for about five seconds, and a
+caller that retries gets through. A test standing up a fresh namespace pays it every run, which
+is why `test_tool_server_nats.py` warms the bucket and waits the window out rather than
+pretending the first call should succeed. The cost is bounded and visible: for that long after a wipe,
 fresh artifacts are refused. A missing `created` raises rather than admits.
 
 **Some guards are removed rather than watermarked.** Where the guarded artifact is itself a

@@ -98,6 +98,9 @@ class PeriodicFlusher:
             try:
                 await task
             except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation we just requested, awaited only to join the
+                # task before the final flush. Logging it would report a shutdown step as an
+                # event, and re-raising would abandon the flush this method exists to run.
                 pass
         await self._flush_once()
 
