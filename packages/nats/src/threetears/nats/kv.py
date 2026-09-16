@@ -981,6 +981,20 @@ class NatsKvBucket:
         the ``Nats-TTL`` header added. The server's two wrong-last-sequence codes are the lost
         compare-and-swap; anything else it refuses is a failure.
 
+        **This path deliberately does not self-heal a vanished stream, and :meth:`update` does.**
+        ``update`` reopens and retries on any exception it did not pass through, so a stream wiped
+        and recreated under it heals silently. Here the whole of ``APIError`` is passed through --
+        ``_run_with_reopen`` selects by exception TYPE, and the lost compare-and-swap is an
+        ``APIError`` distinguished only by its ``err_code``, so passing the code's class through
+        is the only way to reach the branch below. ``stream not found`` rides the same class and
+        therefore surfaces as a ``KvError`` rather than reopening.
+
+        Accepted rather than overlooked. The window is the gap after the ``get_entry`` that
+        produced ``revision`` succeeded, and a compare-and-swap against a recreated stream has
+        lost by definition -- so the caller retrying is the correct outcome either way. Closing it
+        would mean giving ``_run_with_reopen`` a predicate instead of a type tuple, which is a
+        change to the machinery every KV operation runs through.
+
         :param key: key to update
         :ptype key: str
         :param value: bytes to store

@@ -3,8 +3,15 @@
 A write-behind collection puts its L3 write in a :class:`~threetears.core.collections.flush.WriteBuffer`
 and something has to drain it. Nothing in 3tears did: ``flush_pending`` had no production caller
 anywhere, so a write-behind counter would have sat unflushed until its consumer happened to call
-one. Rather than adding a lifecycle hook to four consumer repos, the primitive that declares
-write-behind owns a flusher and starts it on its first write.
+one. Rather than adding a lifecycle hook to four consumer repos, the COLLECTION arms a flusher
+from its own write paths -- ``CoordinationCollection.l2_cas_mutate`` and ``save_entity``, which
+call ``ensure_flushing`` after every write -- and ``CollectionRegistry.close_collections()``
+stops it.
+
+**Not the primitive.** An earlier draft put the arming in each primitive, and a primitive that
+forgot the call would buffer rows nothing ever flushed: silent durability loss, which is the one
+thing write-behind exists to bound. Making it the collection's invariant means a wave-2 primitive
+gets it without knowing it exists.
 
 The interval is the whole exposure: a broker wipe loses at most the increments written since the
 last flush, which is the trade counters accept and revocations do not.

@@ -33,6 +33,7 @@ without L2 two replicas can both be told they were first. That is ``RedemptionLe
 
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable
@@ -58,7 +59,7 @@ from threetears.core.config import CoreConfig, DefaultCoreConfig
 from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.data.schema import ColumnDef, IndexDef as DdlIndexDef, TableDef
 from threetears.core.entities.base import BaseEntity
-from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.core.exceptions import DataLayerUnavailableError, L2ScopeNotConfiguredError
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
@@ -179,11 +180,14 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         *,
         max_retries: int = 8,
     ) -> CasMutation:
-        """compare-and-swap, with this table's flusher armed by the write itself.
+        """compare-and-swap, with this table's flusher armed and its sweep driven by the write.
 
-        The arming lives here rather than in each primitive: it is the collection's own
-        invariant, and a wave-2 primitive that forgot the call would buffer rows nothing ever
-        flushed -- the silent durability loss write-behind exists to bound.
+        Both live here rather than in each primitive: they are the collection's own invariants,
+        and a wave-2 primitive that forgot either would buffer rows nothing ever flushed -- the
+        silent durability loss write-behind exists to bound -- or grow a table for a 400-day ttl
+        with nothing saying so. The sweep is self-throttled and failure-contained
+        (:meth:`sweep_expired_if_due`), so driving it from every write path costs a monotonic
+        clock read per write outside its interval.
 
         :param entity_id: pk value or tuple of pk values in declared order
         :ptype entity_id: Any
@@ -196,10 +200,11 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         """
         outcome = await super().l2_cas_mutate(entity_id, mutate, max_retries=max_retries)
         self.ensure_flushing()
+        await self.sweep_expired_if_due()
         return outcome
 
     async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
-        """save, with this table's flusher armed by the write itself.
+        """save, with this table's flusher armed and its sweep driven by the write.
 
         :param entity: the entity to persist
         :ptype entity: BaseEntity
@@ -210,6 +215,7 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         """
         await super().save_entity(entity, conn=conn)
         self.ensure_flushing()
+        await self.sweep_expired_if_due()
 
     def ensure_flushing(self) -> None:
         """start this collection's periodic flusher, once, if it defers L3 writes.
@@ -283,6 +289,38 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
             "(identity-edge); a wiring gap anywhere else",
             extra={"extra_data": {"table": self.table_name}},
         )
+
+    def l2_key(self, entity_id: Any) -> str:
+        """the L2 key for one ``(purpose, key)`` pair, digested so neither half can bleed.
+
+        :meth:`BaseCollection.l2_key` joins pk values with ``"_"`` and keeps the result verbatim
+        when it is grammar-safe, and its docstring names the precondition that makes that sound:
+        a caller introducing underscore-bearing grammar-safe pk values must escape or override.
+        These tables break it. ``purpose`` is caller-chosen and ``key`` is caller-supplied, and
+        :class:`~threetears.core.coordination.idempotency.IdempotencyKeyStore` deliberately does
+        not digest its key, so ``("jobs", "user_42")`` and ``("jobs_user", "42")`` would join to
+        one L2 key while staying distinct rows in L1 and L3. Two stores whose purposes are
+        prefix-related would then share an L2 entry and answer each other's callers.
+
+        Digesting unconditionally, over the same ``\\x1f`` join
+        :meth:`BaseCollection._absent_marker_key` uses, removes the ambiguity rather than
+        documenting it: the separator cannot occur in either half.
+
+        :param entity_id: pk value or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: grammar-safe nats KV key, scoped by principal and table name
+        :rtype: str
+        :raises L2ScopeNotConfiguredError: when the registry carries no ``kv_key_scope``
+        """
+        scope = self._registry.kv_key_scope
+        if scope is None:
+            raise L2ScopeNotConfiguredError(
+                f"{self.table_name}: no kv_key_scope on this collection's registry, so its L2 "
+                f"keys would carry no principal segment. wire it with "
+                f"registry.configure(kv_key_scope=threetears.nats.kv_key_scope_for(...))"
+            )
+        body = "\x1f".join(str(v) for v in self.normalize_pk(entity_id))
+        return f"{scope}.{self.table_name}.{hashlib.sha256(body.encode('utf-8')).hexdigest()}"
 
     @property
     def entity_class(self) -> type[CoordinationRow]:

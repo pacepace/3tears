@@ -125,7 +125,7 @@ packages (bumped in lock-step).
   and `CollectionRegistry.generation_source`.
 - `threetears.epoch.EpochGenerationSource` and `Subjects.collection_generation_epoch`: a
   table's write generation as one `"{incarnation}:{count}"` value in the epoch bucket.
-- **Per-entry KV lifetimes.** `NatsKvBucket.create` and `.update` (and `KvBucketLike`) take an
+- **Per-entry KV lifetimes.** `NatsKvBucket.put`, `.create` and `.update` (and `KvBucketLike`) take an
   optional `ttl`. `allow_msg_ttl` joins the reconciled stream fields: a declaring opener enables
   it in place on a bucket created before this package set it (existing entries are kept; it
   cannot be disabled again), while a binding opener tolerates its absence and only its TTL'd
@@ -155,19 +155,26 @@ packages (bumped in lock-step).
 - Expired coordination rows are swept inline, bounded, at most once per interval per process
   (`sweep_expired`). Correctness never waits on it: an expired row is already absent at every
   tier. It is not a scheduled job because two of the four consumers run no scheduler.
-- **BREAKING: `WindowedCounter` and `NatsKvAttemptLimiter` keep their counts in L3, not in a
+- **BREAKING: `WindowedCounter` and the attempt limiter keep their counts in L3, not in a
   file-backed KV bucket.** A broker restart no longer releases every account currently locked out
   or restarts every in-flight brute-force budget.
+  - **BREAKING: `NatsKvAttemptLimiter` is renamed `CollectionAttemptLimiter` and moves from
+    `threetears.iam.stores.nats_kv` to `threetears.iam.stores.attempt_limiter`.** It holds no
+    bucket any more, so the old name described the one property that stopped being true, in the
+    direction that matters: a reader would under-trust a counter that is now durable. Renamed in
+    the same release as the constructor break, so every call site is touched once. No alias.
   - `WindowedCounter(registry, *, purpose=..., window_seconds=..., fail_open=..., clock=...)`
     replaces `WindowedCounter(nats_client, *, bucket_name=...)`, and
-    `NatsKvAttemptLimiter(registry, *, purpose=...)` replaces its `nats_client, bucket_name=`
+    `CollectionAttemptLimiter(registry, *, purpose=...)` replaces its `nats_client, bucket_name=`
     form. Every method surface is unchanged. `purpose` carries what the bucket name carried, so
     counters over one table never share a budget; the `bucket_name` property is now `purpose`.
   - Counts are a compare-and-swap against L2 with the row written behind to L3, so a wipe costs
     at most the increments since the last flush. The counter starts its own flusher.
   - `fail_open` now covers every storage failure the counter can see (L2 and L3), not only
     `KvError`; the set is `threetears.core.coordination.tables.STORAGE_FAILURES`, deliberately
-    named rather than `Exception` so a wiring error still propagates.
+    named rather than `Exception` so a wiring error still propagates. It also covers exhausted
+    compare-and-swap contention (`ConcurrentModificationError`), which is this counter's expected
+    shape under a burst against one key -- exactly when a `fail_open` throttle must not 500.
   - Migration: build one `CollectionRegistry` per process (L1, L2, and L3 where the process has a
     database), register `threetears.core.coordination.migrations`, and pass the registry. A
     process with no L3 keeps counting in L2 across its replicas.

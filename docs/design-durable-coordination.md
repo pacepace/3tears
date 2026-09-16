@@ -8,10 +8,12 @@
 through `BaseCollection`, which already puts L1 and L2 in front of L3 so hot reads never
 touch the database.
 
-Enforced by `packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py`. When the
-last file-backed site in this repo is gone, the gate moves to `threetears.enforcement`,
-consumer repos adopt it, and it loses its exemption mechanism: file-backed KV then cannot
-be exempted, only designed out.
+Enforced by `threetears.enforcement.memory_only_kv`, which consumer repos import and run;
+`packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py` is now a four-line shell
+over it. The last file-backed site in this repo is gone, and the gate has **no exemption
+mechanism**: `_kv_memory_only_exemptions.txt` and the code that read it were deleted, so
+file-backed KV cannot be exempted, only designed out. The walker scans nested package families
+too, and refuses to pass when its globs match nothing.
 
 ## Why file storage is the wrong answer even where it works
 
@@ -103,8 +105,12 @@ wiped while the artifact survives. Consuming the artifact itself cannot split th
 the last flush: the next increment starts from L3, which holds the last flushed count, not
 from any pod's unflushed buffer. That is a few extra attempts against a throttle, and it is
 not worth a database write on every login or API call. Revocations lose nothing. A
-write-behind collection needs something to drive `flush_pending` on an interval; nothing in
-3tears does that on its own, so each primitive that declares write-behind wires one.
+write-behind collection needs something to drive `flush_pending` on an interval. The
+COLLECTION owns that, not the primitive: `CoordinationCollection.l2_cas_mutate` and
+`save_entity` arm a `threetears.core.coordination.flusher.PeriodicFlusher` on the first write,
+so a wave-2 primitive cannot forget it. Wire no flusher of your own; the one thing a consuming
+process must do is call `CollectionRegistry.close_collections()` in its shutdown path, or the
+last interval's rows are lost.
 
 ### Hot-path cost
 
@@ -199,16 +205,18 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    guarantee also holds only for writes made through the collection's own write paths
    (`save_entity` and `l2_cas_mutate`). An L3 write that bypasses them advances nothing:
    ad-hoc SQL through `l3_pool`, or a subclass that writes its own SQL and then fills L2. So a
-   collection that caches absences writes only through those paths. Nothing enforces that yet;
-   the durable primitives that opt in are built that way, and a structural check lands with
-   them.
+   collection that caches absences writes only through those paths, and
+   `packages/core/tests/enforcement/test_negative_cache_write_paths.py` is the structural check
+   that holds it. It resolves base classes within one module, so a cross-module subclass of a
+   negative-caching collection is out of its reach; nothing in the repo is in that shape, and
+   the walker's own docstring says so.
 
    *Which writes need no advance, and why that is not a loophole.* A marker only ever claims a
    key is ABSENT, so a write that cannot make a key present cannot make a marker wrong. `delete`
    is one. So is the expired-row sweep the coordination tables ship: every tier already reads an
    expired row as absent, so removing it changes no answer. Those two are the whole list, and
-   the structural check must permit exactly that shape rather than be widened to fit whatever
-   code it meets.
+   the structural check permits exactly that shape. Encode a new shape there rather than
+   widening the check to fit whatever code it meets.
 
    *What still needs the max age.* A write that commits and then fails to advance the
    generation leaves older markers answering; the writer raises, and the max age bounds the
@@ -224,7 +232,11 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
    and L3. Reporting reads that serve an entity's own internals still see it, so an entity
    held past its expiry can still be saved. The L3 check runs on the fetched row, so any
    `fetch_from_store` inherits it; a collection may also filter in SQL. A sweep is table-size
-   hygiene only, and each durable primitive that adopts expiry owns one for its table.
+   hygiene only, and the COLLECTION drives it, beside the flusher: `l2_cas_mutate` and
+   `save_entity` call `sweep_expired_if_due` after every write, which is self-throttled to once
+   per interval per process and contains its own failures, so a failed sweep never fails the
+   throttle or claim that triggered it. It is not each primitive's to remember, for the same
+   reason the flusher is not: four primitives already disagreed about where to call it.
 3. **`l2_cas_mutate` on a three-tier collection.** The L2 revision stays the concurrency
    fence; L3 becomes the durable record behind it.
    - When L2 holds no live row, the callback is shown L3's row, so a wipe does not reset a

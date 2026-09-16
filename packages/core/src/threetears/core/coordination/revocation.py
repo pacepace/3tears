@@ -154,10 +154,6 @@ class RevocationGuard:
         else:
             existing.set_data({**existing.to_dict(), **row})
             await self._collection.save_entity(existing)
-        # the revocations table's only sweep driver. The sweep is per collection instance, so a
-        # sibling primitive sweeping the redemptions table does nothing for this one, and
-        # revocations are the table whose rows would otherwise accumulate for a 400-day ttl.
-        await self._collection.sweep_expired_if_due()
 
     async def revoked_at(self, key: str) -> datetime | None:
         """the recorded revocation moment for ``key``, or ``None`` when never revoked.
@@ -287,7 +283,6 @@ class RedemptionLedger:
             return "noop", None
 
         outcome = await self._collection.l2_cas_mutate(row_id, _claim_if_absent)
-        await self._collection.sweep_expired_if_due()
         was_first: bool = outcome.action == "created"
         return was_first
 

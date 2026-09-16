@@ -145,6 +145,19 @@ class IdempotencyKeyStore:
             raise ValueError("IdempotencyKeyStore purpose must be a non-empty name, e.g. 'export_jobs'")
         if ttl is not None and ttl <= timedelta(0):
             raise ValueError(f"IdempotencyKeyStore ttl must be positive when set, got {ttl}")
+        if ttl is None:
+            # Once per constructed store, for the same reason a registry with no L3 gets a line:
+            # deliberate and mistaken look identical from outside. A row written with no expiry
+            # is skipped by every tier's expiry check AND by `sweep_expired`, whose predicate is
+            # `expires_at IS NOT NULL`, so the table grows without bound and the sweep's own
+            # `rows_deleted=0` reads exactly like a healthy table with nothing due. Without this
+            # line the only person who ever learns is one who reads the ttl parameter docstring.
+            log.warning(
+                "idempotency claims are being stored with no expiry; this table grows without "
+                "bound and the expiry sweep will never remove one of its rows. Deliberate only "
+                "where something else bounds the key space",
+                extra={"extra_data": {"purpose": purpose}},
+            )
         self._purpose = purpose
         self._ttl = ttl
         self._collection = coordination_collection(registry, CoordinationClaimsCollection, config)
@@ -199,7 +212,6 @@ class IdempotencyKeyStore:
             return "noop", None
 
         outcome = await self._collection.l2_cas_mutate(self._row_id(key), _claim_if_absent)
-        await self._collection.sweep_expired_if_due()
         if outcome.action == "created" and outcome.row is not None:
             return ClaimResult(status="claimed", record=_record_from_row(outcome.row))
         existing = await self.get(key)

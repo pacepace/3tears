@@ -1,7 +1,7 @@
 """generic windowed attempt counter -- a rate-limiter / throttle primitive.
 
 Sibling to :class:`~threetears.core.coordination.replay_guard.ReplayGuard` and
-:class:`~threetears.core.coordination.replay_guard.RevocationGuard`, but a different shape: those
+:class:`~threetears.core.coordination.revocation.RevocationGuard`, but a different shape: those
 answer "have I seen this exact key"; this answers "how many times has this key been attempted
 inside a fixed window anchored at its first attempt" -- what a throttle needs ("no more than N
 login attempts per IP per minute")::
@@ -45,6 +45,7 @@ from threetears.core.coordination.tables import (
     CoordinationCountersCollection,
     coordination_collection,
 )
+from threetears.core.exceptions import ConcurrentModificationError
 from threetears.observe import get_logger
 
 __all__ = ["WindowState", "WindowedCounter"]
@@ -54,6 +55,20 @@ log = get_logger(__name__)
 #: compare-and-swap rounds this counter allows per increment. See the call site for why it is not
 #: the framework default.
 _MAX_CAS_ATTEMPTS: Final = 30
+
+#: what a ``fail_open`` counter degrades on: storage being unreachable, plus losing every
+#: compare-and-swap round.
+#:
+#: ``ConcurrentModificationError`` is here and NOT in :data:`STORAGE_FAILURES` because the counter
+#: is the one primitive for which exhausted contention is an expected operating condition rather
+#: than a signal. Its traffic shape is a burst against ONE key -- a credential-stuffing run against
+#: one account -- which is exactly when every replica contends on that key's fence, and exactly
+#: when the throttle matters most. Raising there would turn the attack into a 500 on the request
+#: path of a counter whose posture promises the opposite.
+#:
+#: ``IdempotencyKeyStore`` deliberately reads the same exception as its own signal, so widening
+#: the shared tuple would break it.
+_DEGRADABLE_FAILURES: Final[tuple[type[BaseException], ...]] = (*STORAGE_FAILURES, ConcurrentModificationError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,10 +114,12 @@ class WindowedCounter:
             attempt in it. MUST be positive: a non-positive window would mean the count never
             resets
         :ptype window_seconds: int
-        :param fail_open: on a storage failure (L2 or L3), whether to treat the key as NOT over
-            any threshold (``True`` -- :meth:`record_attempt` and :meth:`count` return ``0`` and a
-            warning is logged) rather than propagating for the caller to deny (``False``, the
-            default)
+        :param fail_open: on a storage failure (L2 or L3) or exhausted compare-and-swap
+            contention, whether to treat the key as NOT over any threshold (``True`` --
+            :meth:`record_attempt` and :meth:`count` return ``0`` and a warning is logged) rather
+            than propagating for the caller to deny (``False``, the default). Contention counts
+            because a burst against one key is this counter's expected shape, not an anomaly --
+            see :data:`_DEGRADABLE_FAILURES`
         :ptype fail_open: bool
         :param clock: the time source, injectable so a test can stand on the window boundary
         :ptype clock: Callable[[], float]
@@ -163,13 +180,15 @@ class WindowedCounter:
             Hashed into a fixed-length form before storage, so the raw identifier is never a key
         :ptype key: str
         :return: the attempt count within the live window (``>= 1``), or ``0`` when this counter
-            is ``fail_open`` and storage failed
+            is ``fail_open`` and storage failed or every compare-and-swap round was lost
         :rtype: int
         :raises threetears.nats.KvError: on an L2 failure, when ``fail_open=False``
+        :raises threetears.core.exceptions.ConcurrentModificationError: when every
+            compare-and-swap round was lost, and ``fail_open=False``
         """
         try:
             return await self._record_attempt(key)
-        except STORAGE_FAILURES as exc:
+        except _DEGRADABLE_FAILURES as exc:
             if self._fail_open:
                 log.warning(
                     "windowed counter failing open on a storage failure",
@@ -206,7 +225,7 @@ class WindowedCounter:
         """
         try:
             entity = await self._collection.get(self._row_id(key))
-        except STORAGE_FAILURES as exc:
+        except _DEGRADABLE_FAILURES as exc:
             if self._fail_open:
                 log.warning(
                     "windowed counter failing open on a storage failure",
@@ -236,7 +255,7 @@ class WindowedCounter:
         """
         try:
             await self._collection.delete(self._row_id(key))
-        except STORAGE_FAILURES as exc:
+        except _DEGRADABLE_FAILURES as exc:
             log.warning(
                 "windowed counter could not clear a counter; it expires with its window",
                 extra={"extra_data": {"purpose": self._purpose, "error": f"{type(exc).__name__}: {exc}"}},
@@ -291,7 +310,6 @@ class WindowedCounter:
         # three quarters of a 25-connection integration run, where 30 raised none. A budget tuned
         # for the quiet path fails precisely when the counter is the control that matters.
         outcome = await self._collection.l2_cas_mutate(row_id, _increment, max_retries=_MAX_CAS_ATTEMPTS)
-        await self._collection.sweep_expired_if_due()
         return int(outcome.row["count"]) if outcome.row is not None else 1
 
     def _row_id(self, key: str) -> tuple[str, str]:

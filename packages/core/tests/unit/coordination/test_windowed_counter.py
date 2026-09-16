@@ -13,7 +13,9 @@ the wiring in these fixtures changed):
   counter's own clock;
 - a row carries the expiry its window implies, so a closed window is absent at every tier;
 - a non-positive ``window_seconds`` and an empty purpose are rejected at construction;
-- fail-closed (default) propagates a storage failure; fail-open returns 0 instead;
+- fail-closed (default) propagates a storage failure, and exhausted compare-and-swap
+  contention, which is this counter's expected shape under a burst; fail-open returns 0 for
+  both instead;
 - the count survives an L2 wipe when there is an L3 behind it.
 """
 
@@ -24,6 +26,7 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -31,6 +34,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination import WindowedCounter
 from threetears.core.coordination.tables import CoordinationCountersCollection, coordination_collection
+from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import KvError
 
@@ -261,6 +265,37 @@ class TestWindowedCounter:
         assert await counter.record_attempt("x") == 0
         assert await counter.count("x") == 0
         assert await counter.is_over_threshold("x", threshold=1) is False
+
+    @pytest.mark.asyncio
+    async def test_exhausted_contention_propagates_fail_closed_by_default(self) -> None:
+        counter = _counter(_registry(_Nats()))
+        with (
+            mock.patch.object(
+                CoordinationCountersCollection,
+                "l2_cas_mutate",
+                side_effect=ConcurrentModificationError("coordination_counters", ("throttle", "x"), None),
+            ),
+            pytest.raises(ConcurrentModificationError),
+        ):
+            await counter.record_attempt("x")
+
+    @pytest.mark.asyncio
+    async def test_exhausted_contention_fails_open_when_the_posture_says_so(self) -> None:
+        """A burst against ONE key is this counter's expected shape, not an anomaly.
+
+        `l2_cas_mutate` raises `ConcurrentModificationError` when its budget runs out, and that
+        budget is raised to 30 precisely because a credential-stuffing run contends on one key.
+        `ConcurrentModificationError` is not in `STORAGE_FAILURES`, so a `fail_open` counter used
+        to propagate it -- turning the attack into a 500 on the request path of the control that
+        exists to answer it. identity-edge's route throttles are the ones that would have worn it.
+        """
+        counter = _counter(_registry(_Nats()), fail_open=True)
+        with mock.patch.object(
+            CoordinationCountersCollection,
+            "l2_cas_mutate",
+            side_effect=ConcurrentModificationError("coordination_counters", ("throttle", "x"), None),
+        ):
+            assert await counter.record_attempt("x") == 0
 
     @pytest.mark.asyncio
     async def test_clear_resets_the_counter_and_never_raises(self) -> None:

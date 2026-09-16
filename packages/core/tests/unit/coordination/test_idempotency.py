@@ -129,6 +129,26 @@ class TestClaim:
         assert (await imports.claim("same-id")).status == "claimed"
 
     @pytest.mark.asyncio
+    async def test_prefix_related_purposes_do_not_share_an_l2_entry(self) -> None:
+        """("jobs", "user_42") and ("jobs_user", "42") are different claims.
+
+        `BaseCollection.l2_key` joins pk values with "_" and keeps a grammar-safe result
+        verbatim, and this store deliberately does not digest its key, so these two pairs
+        joined to ONE L2 key while staying distinct rows in L1 and L3. The second claimer
+        was then shown the first's row and told "exists" for a key nobody had claimed --
+        and a later `get` handed it the other domain's stored result. "exports"/"imports"
+        above cannot collide, so nothing caught it.
+
+        `CoordinationCollection.l2_key` digests over a \\x1f join, which no caller-supplied
+        half can contain.
+        """
+        registry = _registry(_Nats())
+        jobs = _store(registry, purpose="jobs")
+        jobs_user = _store(registry, purpose="jobs_user")
+        assert (await jobs.claim("user_42")).status == "claimed"
+        assert (await jobs_user.claim("42")).status == "claimed"
+
+    @pytest.mark.asyncio
     async def test_concurrent_claim_of_same_key_has_one_winner(self) -> None:
         store = _store(purpose="race")
         outcomes = await asyncio.gather(*[store.claim("dup") for _ in range(8)])

@@ -178,7 +178,7 @@ class ReplayGuard:
         :rtype: bool
         :raises ValueError: when ``issued_at`` is timezone-naive
         :raises threetears.nats.KvError: on a KV transport failure, or when the bucket's creation
-            time cannot be read — the caller MUST treat this as a failed check and DENY
+            time cannot be read -- the caller MUST treat this as a failed check and DENY
             (fail-closed), never as fresh
         """
         if issued_at.tzinfo is None:

@@ -60,28 +60,28 @@ __all__: list[str] = []
 # packages/core/tests/enforcement/, four levels under the repo root.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 
-# package source roots to walk for TableSchema declarations.
-# The agent packages live at ``packages/agent/<name>``, NOT ``packages/agent-<name>``: the
-# hyphenated spellings were configured here, matched no directory, and were skipped in silence, so
-# three of the five packages this gate claims to cover were asserted against nothing while it read
-# green. ``test_every_configured_root_exists`` now fails on a path that is not there.
-_PACKAGE_SRC_ROOTS: list[Path] = [
-    _REPO_ROOT / "packages" / "core" / "src",
-    _REPO_ROOT / "packages" / "agent" / "tools" / "src",
-    _REPO_ROOT / "packages" / "agent" / "workspace" / "src",
-    _REPO_ROOT / "packages" / "agent" / "memory" / "src",
-    _REPO_ROOT / "packages" / "conversations" / "src",
-]
+# package source roots to walk for TableSchema declarations, DERIVED rather than listed.
+#
+# A hand-written list was wrong twice over. Three of its five entries were spelled
+# ``packages/agent-tools`` against a tree that has ``packages/agent/tools``, so they matched no
+# directory and were skipped in silence while the gate read green. And five was never the number:
+# eleven packages declare a ``TableSchema``, so six were unwalked by construction -- among them
+# ``agent/acl``, ``agent/knowledge`` and ``datasources``, which all declare ``DATETIMETZ_TYPE``
+# columns. A gate whose coverage is a list drifts from the tree the moment the tree grows.
+#
+# Both globs are required: flat packages live at ``packages/<name>/src`` and the agent family at
+# ``packages/agent/<name>/src``. ``test_every_derived_root_exists`` fails when either matches
+# nothing, which is the false-green this derivation exists to prevent -- the same shape
+# ``threetears.enforcement.memory_only_kv`` and ``test_negative_cache_write_paths.py`` use.
+_PACKAGE_SRC_ROOTS: list[Path] = sorted(path for path in _REPO_ROOT.glob("packages/*/src") if path.is_dir()) + sorted(
+    path for path in _REPO_ROOT.glob("packages/*/*/src") if path.is_dir()
+)
 
-# package migration roots to walk for SQL declarations.
-_PACKAGE_MIGRATION_ROOTS: list[Path] = [
-    _REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core" / "data" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core" / "coordination" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "agent" / "tools" / "src" / "threetears" / "agent" / "tools" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "agent" / "workspace" / "src" / "threetears" / "agent" / "workspace" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "agent" / "memory" / "src" / "threetears" / "agent" / "memory" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "conversations" / "src" / "threetears" / "conversations" / "migrations",  # noqa: E501
-]
+# package migration roots to walk for SQL declarations: every ``migrations`` package beneath a
+# source root, so a package that grows one is covered the day it does.
+_PACKAGE_MIGRATION_ROOTS: list[Path] = sorted(
+    {path for root in _PACKAGE_SRC_ROOTS for path in root.glob("**/migrations") if path.is_dir()}
+)
 
 _DATETIME_TYPE_NAMES = frozenset({"DATETIMETZ_TYPE"})
 
@@ -753,18 +753,30 @@ def _rendered_tables(src_roots: list[Path], migration_roots: list[Path]) -> tupl
     return (rendered, violations)
 
 
-def test_every_configured_root_exists() -> None:
-    """a configured root that matches no directory is a package asserted against nothing.
+def test_every_derived_root_exists() -> None:
+    """the roots are derived, so the failure to guard against is a glob that matched nothing.
 
-    Three of the five source roots were spelled ``packages/agent-tools`` and similar against a
-    tree that has ``packages/agent/tools``; each was skipped in silence and the gate read green.
+    A list of roots drifted from the tree twice: three entries were spelled
+    ``packages/agent-tools`` against a tree that has ``packages/agent/tools`` and matched nothing,
+    and six packages declaring a ``TableSchema`` were never listed at all. Deriving the roots
+    fixes both, and moves the failure mode: a glob that stops matching (a layout change, a
+    relocated repo root) would silently walk nothing and read green. So assert the globs found
+    something, and that everything they found is real.
 
     :return: nothing
     :rtype: None
-    :raises AssertionError: when a configured root does not exist
+    :raises AssertionError: when a glob matched nothing, or a derived root does not exist
     """
+    assert _PACKAGE_SRC_ROOTS, (
+        f"no package source roots under {_REPO_ROOT}/packages -- the walker would check nothing "
+        f"and this gate would read green"
+    )
+    assert _PACKAGE_MIGRATION_ROOTS, (
+        "no migration roots beneath any package source root -- no SQL column type would be "
+        "discovered and every declaration would read as unmigrated"
+    )
     missing = [str(root) for root in (*_PACKAGE_SRC_ROOTS, *_PACKAGE_MIGRATION_ROOTS) if not root.exists()]
-    assert not missing, "configured roots that do not exist (so nothing in them is checked):\n  " + "\n  ".join(missing)
+    assert not missing, "derived roots that do not exist (so nothing in them is checked):\n  " + "\n  ".join(missing)
 
 
 def test_column_type_alignment() -> None:

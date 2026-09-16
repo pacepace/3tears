@@ -5,7 +5,17 @@ generation, and only two paths do that: ``BaseCollection.save_entity`` and
 ``BaseCollection.l2_cas_mutate``. A collection that opts into ``negative_cache_max_age`` and then
 writes L3 some other way -- its own SQL through ``l3_pool``, or filling L2 directly through
 ``_save_to_l2`` -- commits a row that every recorded absence keeps hiding until the max age
-lapses. The record says this absolutely; this walker is what makes it true.
+lapses. The record states this as an invariant; this walker is what holds it.
+
+**What it reaches, stated rather than implied.** Base classes are resolved inside one parsed
+module at a time, so a class that opts in by inheriting ``negative_cache_max_age`` from a base in
+ANOTHER module reads as not-opted-in and its own L3 writes are not flagged. Nothing in this repo
+is in that shape, and the walker is not exported to consumer repos the way
+``threetears.enforcement.memory_only_kv`` is, so the gap is bounded by the tree it walks. Say so
+here rather than let the paragraph above read as a closure it is not: a gate believed to cover
+more than it does is how the defect it exists for gets back in. Resolving bases across the
+scanned roots is what would close it, and a cross-module subclass of a negative-caching
+collection is the reason to build that.
 
 **Two shapes are permitted, and the list is closed.** A marker only ever claims a key is ABSENT,
 so a write that cannot make a key present cannot make a marker wrong:
