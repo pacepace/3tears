@@ -266,9 +266,13 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
   collection is registered per table, so a table per bucket would mean seven collections and
   seven migrations for one process. The rows stay separated by `purpose`, and
   `coordination_collection` hands every primitive the one shared collection.
-- **Every tier is optional.** identity-edge has no L3 by design and still throttles across
-  replicas on L2 alone; a registry with no L2 counts per process. A collection with no L3 reports
-  its writes as done rather than raising, because there was nothing to write to.
+- **Which tiers are optional depends on what the primitive promises.** identity-edge has no L3 by
+  design and still throttles across replicas on L2 alone; a registry with no L2 counts per
+  process. A collection with no L3 reports its writes as done rather than raising, because there
+  was nothing to write to, and logs that once per table so a wiring gap is not mistaken for the
+  deliberate case. But a primitive whose contract is exactly-once -- the redemption ledger, the
+  idempotency store -- refuses a registry with no L2 at construction: the compare-and-swap is the
+  guarantee, and without it two replicas can both be told they were first.
 - **One declaration, two readers.** The migration renders its DDL from the same `TableSchema` the
   collection reads, so a consumer's table cannot drift from the table the code expects. A
   consumer that cannot run DDL -- an agent or tool pod, whose broker refuses it -- declares the

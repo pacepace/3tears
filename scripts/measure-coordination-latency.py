@@ -87,7 +87,13 @@ async def _timed(operation: Any, rounds: int = _ROUNDS) -> tuple[float, float]:
 
 
 async def _migrated_pool(db_url: str) -> asyncpg.Pool:
-    """a schema with the coordination tables, and a pool bound to it."""
+    """create a throwaway schema with the coordination tables, and bind a pool to it.
+
+    :param db_url: the database to create the schema in
+    :ptype db_url: str
+    :return: a pool whose search_path is that schema
+    :rtype: asyncpg.Pool
+    """
     schema = f"measure_{uuid.uuid4().hex[:8]}"
     admin = await asyncpg.connect(db_url)
     try:
@@ -103,7 +109,15 @@ async def _migrated_pool(db_url: str) -> asyncpg.Pool:
 
 
 async def _measure(nats_url: str, db_url: str) -> None:
-    """measure every hot operation on both paths and print the table."""
+    """measure every hot operation on both paths and print the comparison table.
+
+    :param nats_url: a live broker to measure against
+    :ptype nats_url: str
+    :param db_url: a live database to measure against
+    :ptype db_url: str
+    :return: nothing
+    :rtype: None
+    """
     namespace = f"measure{uuid.uuid4().hex[:6]}"
     set_default_namespace(namespace)
     pool = await _migrated_pool(db_url)
@@ -177,7 +191,11 @@ async def _measure(nats_url: str, db_url: str) -> None:
 
 
 def main() -> None:
-    """parse arguments and run the measurement."""
+    """parse arguments and run the measurement, starting containers when no URLs are given.
+
+    :return: nothing
+    :rtype: None
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nats", help="nats:// URL of a live broker; omit to start a container")
     parser.add_argument("--db", help="postgresql:// URL of a live database; omit to start a container")

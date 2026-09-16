@@ -185,7 +185,8 @@ class WindowedCounter:
         :ptype key: str
         :return: the live count, 0 when absent, expired, or (when ``fail_open``) storage failed
         :rtype: int
-        :raises threetears.nats.KvError: on an L2 failure, when ``fail_open=False``
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure, when
+            ``fail_open=False``. An L2 failure degrades: the read falls through to L3
         """
         state = await self.state(key)
         return 0 if state is None else state.count
@@ -200,7 +201,8 @@ class WindowedCounter:
         :ptype key: str
         :return: the live window state, or ``None``
         :rtype: WindowState | None
-        :raises threetears.nats.KvError: on an L2 failure, when ``fail_open=False``
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure, when
+            ``fail_open=False``. An L2 failure degrades: the read falls through to L3
         """
         try:
             entity = await self._collection.get(self._row_id(key))
@@ -249,7 +251,8 @@ class WindowedCounter:
         :ptype threshold: int
         :return: whether the key is currently over threshold
         :rtype: bool
-        :raises threetears.nats.KvError: on an L2 failure, when ``fail_open=False``
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure, when
+            ``fail_open=False``. An L2 failure degrades: the read falls through to L3
         """
         return await self.count(key) >= threshold
 

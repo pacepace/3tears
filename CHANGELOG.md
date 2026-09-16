@@ -140,8 +140,10 @@ packages (bumped in lock-step).
   `coordination_claims`, `coordination_revocations` and `coordination_redemptions`, the L3 tables
   the durable coordination primitives move onto. Each is keyed `(purpose, key)`, where `purpose`
   carries what a KV bucket name used to, so the many primitives one process builds share one
-  collection per table (`coordination_collection`). Every tier is optional: a process with no L3
-  (identity-edge) or no L2 still runs them.
+  collection per table (`coordination_collection`). A process with no L3 (identity-edge) or no L2
+  still runs a counter, whose worst case without a tier is a lost increment. A primitive whose
+  contract is exactly-once refuses a registry with no L2 at construction, because the
+  compare-and-swap is that guarantee: `RedemptionLedger` and `IdempotencyKeyStore`.
 - **`threetears.core.coordination.migrations.register(runner, scope=...)`**: core's first package
   migration. It creates the four tables by rendering each collection's declared `TableSchema`
   (`table_def_for`), so the migrated table cannot drift from the table the collection reads. A

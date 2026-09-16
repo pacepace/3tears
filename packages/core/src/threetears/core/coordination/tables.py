@@ -17,12 +17,18 @@ seven migrations for a consumer to apply. ``purpose`` carries what the bucket na
 rows stay separated by it, and one shared collection serves every instance
 (:func:`coordination_collection`).
 
-**Every tier is optional, and that is deliberate.** identity-edge has no L3 by design and no
-database credential; a counter there runs L1+L2 and still throttles across replicas. A registry
-with no L2 (scriob's control plane today) runs L1+L3, which is correct within one process but
-counts per replica. Neither is refused, because refusing would take a degraded throttle offline
-rather than leaving it weaker -- but a missing L3 is logged once per table, since the deliberate
-case and a wiring gap look identical from the outside and only the log tells them apart.
+**Which tiers are optional depends on what the primitive promises.** identity-edge has no L3 by
+design and no database credential; a counter there runs L1+L2 and still throttles across
+replicas, because a counter's worst case without durability is a lost increment. A registry with
+no L2 (scriob's control plane today) runs L1+L3, correct within one process but counting per
+replica. Neither is refused for a counter -- refusing would take a degraded throttle offline
+rather than leaving it weaker -- though a missing L3 is logged once per table, since the
+deliberate case and a wiring gap look identical from outside and only the log tells them apart.
+
+**A primitive whose contract is exactly-once refuses a registry with no L2**
+(:meth:`CoordinationCollection.require_l2_fence`): the compare-and-swap IS that guarantee, and
+without L2 two replicas can both be told they were first. That is ``RedemptionLedger`` and
+``IdempotencyKeyStore`` today.
 """
 
 from __future__ import annotations

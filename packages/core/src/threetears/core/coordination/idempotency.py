@@ -246,7 +246,8 @@ class IdempotencyKeyStore:
         :ptype key: str
         :return: the current record, or ``None`` when never claimed or expired
         :rtype: IdempotencyRecord | None
-        :raises threetears.nats.KvError: on an L2 failure
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure. An L2
+            failure degrades: the read falls through to L3
         """
         entity = await self._collection.get(self._row_id(key))
         return None if entity is None else _record_from_row(entity.to_dict())
