@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## v0.43.0 -- unreleased
 
+### Before you bump to this version
+
+Releasing 0.43.0 changes nothing on its own: every consumer pins 3tears by range and installs
+what its own `uv.lock` resolved, so nothing picks this up until a repo bumps deliberately. These
+are what that bump costs, and two of them are outages if missed. Read them before raising the
+pin, not after.
+
+- **The hub does not start on this release until its DPoP guard passes
+  `verifier_future_tolerance`.** `ReplayGuard` now requires it, and `hub-dpop-nonces` is built
+  in `aibots/hub/app.py`. The failure is at startup, so it is loud rather than subtle, but a
+  bump that does not land this change in the same commit will not boot.
+- **Copy the live revocation buckets into the new tables BEFORE identity's new code rolls, or
+  revoked tokens become valid again.** `RevocationGuard` and the refresh-token jti ledger move
+  from KV to L3, and the new tables start empty. Every outstanding revocation lives only in the
+  old bucket until it is copied. This is a security regression if skipped and it is silent:
+  nothing fails, tokens you revoked simply start working.
+- **Roll the hub before any pod, in every environment.** Coordination rows carry a per-entry
+  TTL, which a collections bucket created before this release refuses until a DECLARING process
+  reconciles `allow_msg_ttl` on it. Pods bind rather than declare, so until the hub rolls, a
+  pod's counter increment and every claim or redemption RAISE rather than degrade -- and a
+  fail-closed counter then denies, which is a login outage rather than a degraded cache. Check
+  `nats stream info KV_{ns}-collections` reports `allow_msg_ttl: true` before rolling pods. Only
+  the shared collections bucket is affected; no nonce bucket writes a per-entry TTL.
+- **A `fail_open` `WindowedCounter` now degrades on exhausted compare-and-swap contention**, not
+  only on a storage failure, and that contention is attacker-inducible: a burst against one key
+  is what produces it. Default-closed and opt-in, so it is a posture rather than a weakening --
+  but wire `fail_open=True` throttles knowing it, and leave credential lockout, which has
+  nothing behind it, fail-closed.
+- **A bucket's storage is never reconciled.** After this release the new code binds the existing
+  file-backed nonce streams; each stays file-backed until deleted by name, and that deletion is
+  a wipe, so calls through that guard are refused for the guard's watermark reach while it is
+  recreated. Do it deliberately, dry run first, and verify with a real sign-in.
+
+Full rationale, and which consumer owns which step, in `docs/design-durable-coordination.md`.
+
 ### Added
 
 - `NatsKvBucket.date_created()` and `KvBucketLike.date_created`: the backing stream's
