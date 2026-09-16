@@ -52,7 +52,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, model_validator
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger, traced
@@ -69,6 +69,8 @@ __all__ = [
     "DatasourceQueryResponse",
     "DatasourceQueryResult",
     "IncompleteReadError",
+    "RelationFingerprintRequest",
+    "RelationFingerprintResult",
     "read_all",
 ]
 
@@ -96,6 +98,49 @@ DEFAULT_QUERY_TIMEOUT_SECONDS: float = 120.0
 #: beside the client deadline so the two cannot drift apart; the hub's responder
 #: imports it rather than choosing its own.
 QUERY_STATEMENT_TIMEOUT_SECONDS: int = 100
+
+
+class RelationFingerprintRequest(BaseModel):
+    """ask the hub to count and fingerprint a relation, instead of running SQL.
+
+    Declarative rather than a statement, because the statement is dialect-specific
+    and the caller does not know which engine answers. Turning a hash into a
+    summable number is spelled three different ways across the admitted engines, so
+    the caller names WHAT it wants fingerprinted and the driver writes the SQL.
+
+    :param relation: schema-qualified relation name
+    :ptype relation: str
+    :param key_columns: the ordering columns the digest is computed over -- the same
+        key the caller pages by, so the digest describes exactly the rows it is reading.
+        Spelled ``key_columns`` rather than ``key`` because the secrets gate cannot tell a
+        database key from a credential by name, and states the database meaning in the name
+        rather than asking a reader to trust a pattern
+    :ptype key_columns: list[str]
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    relation: str
+    key_columns: list[str]
+
+
+class RelationFingerprintResult(BaseModel):
+    """a relation's row count and key digest at one instant.
+
+    Compared for equality against a later reading of the same relation. The digest
+    is OPAQUE: never parsed, never compared across engines, never carried across a
+    driver upgrade.
+
+    :param row_count: rows in the relation at the moment of the read
+    :ptype row_count: int
+    :param digest: opaque value identifying the ordering-key values present
+    :ptype digest: str
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    row_count: int
+    digest: str
 
 
 class DatasourceQueryRequest(BaseModel):
@@ -144,8 +189,36 @@ class DatasourceQueryRequest(BaseModel):
     correlation_id: UUID
     identity_token: SecretStr
     user_identity_token: SecretStr | None = None
-    query: str
+    query: str | None = None
     params: list[Any] = Field(default_factory=list)
+    fingerprint: RelationFingerprintRequest | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_operation(self) -> "DatasourceQueryRequest":
+        """require exactly one of ``query`` and ``fingerprint``.
+
+        The two are alternative asks on one subject, and the alternative to this
+        check is a model that can represent a request meaning nothing (neither
+        set) or two things at once (both set). Refused at the border, so no
+        handler below has to decide which one wins.
+
+        Reusing the subject rather than minting a second one is deliberate: a new
+        subject is a new NATS grant on a security surface, and it would buy
+        nothing -- the hub verifies the forwarded identity and evaluates
+        ``datasource.read`` on the same namespace for either ask.
+
+        :return: the validated request
+        :rtype: DatasourceQueryRequest
+        :raises ValueError: when neither or both are set
+        """
+        asked = [
+            name for name, value in (("query", self.query), ("fingerprint", self.fingerprint)) if value is not None
+        ]
+        if len(asked) != 1:
+            raise ValueError(
+                f"a datasource request carries exactly one of query or fingerprint, got {asked or 'neither'}"
+            )
+        return self
 
     @field_serializer("identity_token", "user_identity_token", when_used="json")
     def _emit_token_on_the_wire(self, value: SecretStr | None) -> str | None:
@@ -194,6 +267,11 @@ class DatasourceQueryResponse(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     correlation_id: UUID | None = None
+    #: set only in answer to a ``fingerprint`` request; ``None`` for a query, whose
+    #: answer is ``rows``. A separate field rather than a row, because a caller
+    #: comparing two readings must not have to know which column the digest landed in
+    #: or what the driver called it.
+    fingerprint: RelationFingerprintResult | None = None
 
 
 class DatasourceQueryResult(BaseModel):
@@ -317,6 +395,76 @@ class DatasourceQueryClient:
         return token
 
     @traced
+    async def relation_fingerprint(
+        self,
+        datasource_name: str,
+        *,
+        relation: str,
+        key: Sequence[str],
+        user_identity_token: str | None = None,
+        correlation_id: UUID | None = None,
+    ) -> RelationFingerprintResult:
+        """count and fingerprint a relation, for a caller proving a read was complete.
+
+        The caller names WHAT to fingerprint rather than sending SQL, because the
+        statement is dialect-specific: the hash-to-number step is spelled three
+        different ways across the admitted engines, and a client reaching a
+        datasource through the hub does not know which one answers.
+
+        Compare two readings for equality. An unchanged pair means the relation
+        held still between them; ``row_count`` separately answers whether a paged
+        read returned all of it.
+
+        :param datasource_name: the datasource's name as the hub's ``datasources``
+            table holds it
+        :ptype datasource_name: str
+        :param relation: schema-qualified relation name
+        :ptype relation: str
+        :param key: the ordering columns the digest is computed over
+        :ptype key: Sequence[str]
+        :param user_identity_token: the per-turn user assertion when a human is
+            in the loop; ``None`` evaluates the principal's own grants alone
+        :ptype user_identity_token: str | None
+        :param correlation_id: trace id to carry; generated when omitted
+        :ptype correlation_id: UUID | None
+        :return: the relation's current row count and key digest
+        :rtype: RelationFingerprintResult
+        :raises DatasourceQueryError: on a refusal, a transport failure, or a
+            success carrying no fingerprint -- which would otherwise read as a
+            relation that had not changed
+        """
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id if correlation_id is not None else uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            user_identity_token=SecretStr(user_identity_token) if user_identity_token is not None else None,
+            fingerprint=RelationFingerprintRequest(relation=relation, key_columns=list(key)),
+        )
+        subject = Subjects.datasource_query(datasource_name)
+        try:
+            response: DatasourceQueryResponse = await self._nats_client.request(
+                subject=subject,
+                message=request,
+                response_type=DatasourceQueryResponse,
+                timeout=self._timeout,
+            )
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"relation fingerprint on {datasource_name!r}: {exc}") from exc
+
+        if not response.success:
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"relation fingerprint on {datasource_name!r} was refused",
+            )
+        if response.fingerprint is None:
+            # A success with no fingerprint is a hub that did not understand the ask.
+            # Refusing beats returning a sentinel: a caller comparing two of those
+            # would find them equal and conclude the relation had not changed.
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE",
+                f"relation fingerprint on {datasource_name!r} returned success with no fingerprint",
+            )
+        return response.fingerprint
+
     async def query(
         self,
         datasource_name: str,
@@ -489,21 +637,30 @@ async def read_all(
     cursor, and the rest of that run is not greater. A hand-written helper
     returned 3 of 8 rows and reported success.
 
-    **What makes the read complete.** The relation is COUNTED before paging
-    begins, and a read that does not return that many rows raises. That is the
-    contract, and it is deliberately not a statement about any mechanism: it
-    holds for the ways to lose a row described below, and for the ones nobody has
-    thought of. Four releases of this function each shipped a guard that was
-    correct about the failure it named and blind to the next one, which is the
-    evidence that enumerating mechanisms does not converge.
+    **What makes the read complete.** The relation is COUNTED AND FINGERPRINTED
+    before paging begins and again after the last page. A read that does not
+    return as many rows as the count raises, and so does one where the two
+    readings differ. That is the contract, and it is deliberately not a statement
+    about any mechanism: it holds for the ways to lose a row described below, and
+    for the ones nobody has thought of. Four releases of this function each
+    shipped a guard that was correct about the failure it named and blind to the
+    next one, which is the evidence that enumerating mechanisms does not converge.
 
-    The count and the pages are not one transaction. A relation written during
-    the read will not match, and that raises too: on a changing relation there is
-    no whole relation to return, and this function promises the whole relation.
+    **Why a count alone was not enough.** A count proves only THAT the right
+    number of rows arrived. A delete and an insert landing during the read leave
+    it unchanged, so a list half from before the change and half from after --
+    a state of the relation that never existed at any instant -- passed as
+    complete. The digest over the ordering key is what sees that.
 
-    Everything below is still here because a count says only THAT rows are
-    missing. These say WHICH mechanism lost them, which is what an operator needs
-    at three in the morning.
+    The readings and the pages are not one transaction, and no portable way to
+    ask for that exists across the admitted engines. So a relation written during
+    the read is REPORTED rather than serialised around: on a changing relation
+    there is no whole relation to return, and this function promises the whole
+    relation.
+
+    Everything below is still here because the readings say only THAT rows are
+    missing or changed. These say WHICH mechanism lost them, which is what an
+    operator needs at three in the morning.
 
     **The sentinel.** Each page asks for ``page_size + 1`` rows.
     The extra row is a SENTINEL, not data: getting it back proves more rows
@@ -599,8 +756,7 @@ async def read_all(
     # during the read will not match. That is reported rather than hidden: on a
     # relation that is changing there is no "whole relation" to return, and this
     # function's promise is the whole relation or a raise.
-    counted = await client.query(datasource_name, f"SELECT COUNT(*) AS total FROM {relation}")
-    expected = _only_value(datasource_name, relation, counted)
+    before = await client.relation_fingerprint(datasource_name, relation=relation, key=key)
 
     rows: list[dict[str, Any]] = []
     cursor: tuple[Any, ...] | None = None
@@ -632,14 +788,14 @@ async def read_all(
                     f"over duplicates, or rows were deleted mid-read. {len(rows)} rows were read and they "
                     f"are NOT the whole relation."
                 )
-            return _proven(datasource_name, relation, key, rows, expected)
+            return await _proven(client, datasource_name, relation, key, rows, before)
 
         had_more = len(page.rows) > page_size
         if not had_more:
             # No sentinel: the warehouse had nothing past this page, so every row
             # is safe to keep and there is no boundary to worry about.
             rows.extend(page.rows)
-            return _proven(datasource_name, relation, key, rows, expected)
+            return await _proven(client, datasource_name, relation, key, rows, before)
 
         # A KEY GROUP MUST NOT STRADDLE THE BOUNDARY. The next page asks for rows
         # strictly greater than the cursor, so any row sharing the cursor's key is
@@ -687,66 +843,36 @@ async def read_all(
     )
 
 
-def _only_value(datasource_name: str, relation: str, counted: DatasourceQueryResult) -> int:
-    """read the single value of a single-column, single-row result.
-
-    Reads it POSITIONALLY rather than by name, because the name is not portable.
-    ``SELECT COUNT(*) AS total`` comes back as ``total`` from postgres and
-    redshift, which fold unquoted identifiers to lower case, and as ``TOTAL``
-    from snowflake, which folds to upper. Indexing the alias therefore works on
-    the engines it was written against and raises ``KeyError`` on one this
-    function's own docstring claims to support -- an untyped failure crossing a
-    driver boundary, which tells an operator nothing about the cause.
-
-    :param datasource_name: the datasource queried, as the hub names it
-    :ptype datasource_name: str
-    :param relation: the relation counted, named in the failure message
-    :ptype relation: str
-    :param counted: the result of the count query
-    :ptype counted: DatasourceQueryResult
-    :return: the counted rows
-    :rtype: int
-    :raises IncompleteReadError: when the result cannot be read as one number
-    """
-    if not counted.rows:
-        raise IncompleteReadError(
-            f"{datasource_name}: counting {relation} returned no row at all. a count returns exactly one "
-            f"row on every engine, so the read cannot be shown to be complete and is refused rather than "
-            f"assumed empty."
-        )
-
-    values = list(counted.rows[0].values())
-    if len(values) != 1:
-        raise IncompleteReadError(
-            f"{datasource_name}: counting {relation} returned {len(values)} columns rather than one, so "
-            f"which of them is the count cannot be determined and completeness cannot be established."
-        )
-
-    try:
-        total = int(values[0])
-    except (TypeError, ValueError) as exc:
-        raise IncompleteReadError(
-            f"{datasource_name}: counting {relation} returned {values[0]!r}, which is not a number, so "
-            f"completeness cannot be established."
-        ) from exc
-
-    return total
-
-
-def _proven(
+async def _proven(
+    client: DatasourceQueryClient,
     datasource_name: str,
     relation: str,
     key: Sequence[str],
     rows: list[dict[str, Any]],
-    expected: int,
+    before: RelationFingerprintResult,
 ) -> list[dict[str, Any]]:
-    """return ``rows`` only if it holds every row the relation counted.
+    """return ``rows`` only if it provably holds the whole relation, unchanged.
 
     The completeness check of last resort, and the only one that does not depend
     on naming the mechanism that lost a row. Guards elsewhere in this module each
     catch one skip and say something useful about it; this catches any skip at
     all, including the ones nobody has thought of yet.
 
+    **Two questions, and a count answers only the first.** The row count says
+    whether the read returned as many rows as the relation held. The digest says
+    whether they were the same rows: a delete and an insert during the read leave
+    the count identical, so a list half old and half new passes a count check
+    while being a state of the relation that never existed at any instant.
+
+    The second fingerprint is taken AFTER the last page, so the pair brackets the
+    whole read. Neither reading shares a transaction with the pages -- there is no
+    cross-engine way to ask for that through this wire -- so a relation written
+    during the read is REPORTED rather than serialised around. On a changing
+    relation there is no whole relation to return, and this function's promise is
+    the whole relation or a raise.
+
+    :param client: the client the second fingerprint is taken through
+    :ptype client: DatasourceQueryClient
     :param datasource_name: the datasource read, as the hub names it
     :ptype datasource_name: str
     :param relation: the table or view read
@@ -755,24 +881,35 @@ def _proven(
     :ptype key: Sequence[str]
     :param rows: every row collected by the paging loop
     :ptype rows: list[dict[str, Any]]
-    :param expected: the row count taken before paging began
-    :ptype expected: int
+    :param before: the fingerprint taken before paging began
+    :ptype before: RelationFingerprintResult
     :return: ``rows`` unchanged, when it is provably complete
     :rtype: list[dict[str, Any]]
-    :raises IncompleteReadError: when the count and the rows disagree
+    :raises IncompleteReadError: when the row count disagrees, or the relation
+        changed under the read
     """
-    if len(rows) != expected:
-        short = expected - len(rows)
+    if len(rows) != before.row_count:
+        short = before.row_count - len(rows)
         cause = (
             f"{short} row(s) were never returned. the usual cause is a value the ordering key cannot "
             f"page past: a NULL in {tuple(key)} is skipped by every keyset predicate, because "
-            f"`column > ?` is NULL rather than true for such a row, and so is every row ordered after "
+            f"`column > $1` is NULL rather than true for such a row, and so is every row ordered after "
             f"it. read with a key whose columns are NOT NULL."
             if short > 0
             else f"{-short} row(s) MORE than the count arrived, so {relation} was written during the read."
         )
         raise IncompleteReadError(
-            f"{datasource_name}: {relation} counted {expected} rows and the read returned {len(rows)}. {cause}"
+            f"{datasource_name}: {relation} counted {before.row_count} rows and the read returned {len(rows)}. {cause}"
+        )
+
+    after = await client.relation_fingerprint(datasource_name, relation=relation, key=key)
+    if after != before:
+        raise IncompleteReadError(
+            f"{datasource_name}: {relation} changed while it was being read. the row count and the "
+            f"ordering-key digest taken before the first page do not match the pair taken after the "
+            f"last, so these {len(rows)} rows are not any one state of the relation -- they may hold "
+            f"rows that no longer exist beside rows that did not exist when the read began. re-read "
+            f"once the relation is settled."
         )
 
     return rows

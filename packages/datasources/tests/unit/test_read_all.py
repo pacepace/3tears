@@ -26,6 +26,7 @@ sentinel row, these tests fail.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 from uuid import uuid7
 
@@ -35,6 +36,7 @@ from threetears.datasources.drivers._util import _translate_placeholders
 from threetears.datasources.query_client import (
     DatasourceQueryResult,
     IncompleteReadError,
+    RelationFingerprintResult,
     read_all,
 )
 
@@ -89,11 +91,12 @@ class _PagingWarehouse:
         # thinks it means, rather than silently shifting by one.
         self.pages: list[str] = []
         self.page_params: list[list[Any]] = []
-        # What the driver calls the count column, and what it answers. Drivers
-        # disagree on both, so the tests can vary them.
-        self.count_column = "total"
-        self.count_value: Any = None
-        self.count_returns_nothing = False
+        # How many fingerprints have been asked for. `read_all` takes one before
+        # the first page and one after the last, so a test can act between them.
+        self.fingerprints = 0
+        # Called after each fingerprint, so a test can mutate the relation mid-read
+        # exactly where a warehouse would.
+        self.on_fingerprint: Any = None
 
     def forwarded_identity_token(self) -> str:
         """
@@ -101,6 +104,27 @@ class _PagingWarehouse:
         :rtype: str
         """
         return "fake-identity-token"
+
+    def replace_rows(self, rows: list[dict[str, Any]]) -> None:
+        """swap the relation's contents, as a concurrent writer would.
+
+        Public because a test drives it from outside: a mid-read mutation is the
+        thing under test, not an internal of the fake.
+
+        :param rows: the relation's new contents, in any order
+        :ptype rows: list[dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        self._rows = sorted(rows, key=lambda r: tuple(r[c] for c in _KEY))
+
+    def current_rows(self) -> list[dict[str, Any]]:
+        """the relation's contents right now.
+
+        :return: the rows, key order
+        :rtype: list[dict[str, Any]]
+        """
+        return list(self._rows)
 
     async def query(
         self,
@@ -125,18 +149,6 @@ class _PagingWarehouse:
         bound = list(params or [])
         self.params.append(bound)
 
-        if "COUNT(*)" in query:
-            # The fake counts the relation honestly, including rows its own keyset
-            # filter would never serve. That is the whole point of the check under
-            # test: a warehouse knows about rows the predicate cannot reach.
-            answer = len(self._rows) if self.count_value is None else self.count_value
-            return DatasourceQueryResult(
-                rows=[] if self.count_returns_nothing else [{self.count_column: answer}],
-                row_count=0 if self.count_returns_nothing else 1,
-                truncated=False,
-                correlation_id=uuid7(),
-            )
-
         self.pages.append(query)
         self.page_params.append(bound)
 
@@ -155,6 +167,44 @@ class _PagingWarehouse:
             truncated=False,
             correlation_id=uuid7(),
         )
+
+    async def relation_fingerprint(
+        self,
+        datasource_name: str,
+        *,
+        relation: str,
+        key: Any,
+        **_: Any,
+    ) -> RelationFingerprintResult:
+        """fingerprint the relation the way a warehouse would: over what it HOLDS.
+
+        Computed from the whole dataset, including rows this fake's own keyset
+        filter would never serve -- which is the point of the check under test. A
+        warehouse knows about rows the predicate cannot reach.
+
+        :param datasource_name: unused; the fake serves one relation
+        :ptype datasource_name: str
+        :param relation: unused; the fake serves one relation
+        :ptype relation: str
+        :param key: the ordering columns the digest covers
+        :ptype key: Any
+        :return: the relation's current count and digest
+        :rtype: RelationFingerprintResult
+        """
+        self.fingerprints += 1
+        columns = tuple(key)
+        # NULL rendered distinctly from an empty string, mirroring the real key
+        # expression -- otherwise a NULL-for-empty swap would fingerprint the same.
+        payload = "\x1e".join(
+            "\x1f".join("\x00" if row.get(c) is None else str(row[c]) for c in columns) for row in self._rows
+        )
+        result = RelationFingerprintResult(
+            row_count=len(self._rows),
+            digest=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        )
+        if self.on_fingerprint is not None:
+            self.on_fingerprint(self)
+        return result
 
 
 async def _read(warehouse: _PagingWarehouse, **kwargs: Any) -> list[dict[str, Any]]:
@@ -707,14 +757,6 @@ class _WarehouseWithNullKeys:
         :return: the page or the count
         :rtype: DatasourceQueryResult
         """
-        if "COUNT(*)" in query:
-            return DatasourceQueryResult(
-                rows=[{"total": len(self._rows)}],
-                row_count=1,
-                truncated=False,
-                correlation_id=uuid7(),
-            )
-
         bound = list(params or [])
         candidates = self._rows
         if bound:
@@ -737,6 +779,38 @@ class _WarehouseWithNullKeys:
             row_count=len(served),
             truncated=False,
             correlation_id=uuid7(),
+        )
+
+    async def relation_fingerprint(
+        self,
+        datasource_name: str,
+        *,
+        relation: str,
+        key: Any,
+        **_: Any,
+    ) -> RelationFingerprintResult:
+        """fingerprint over every row the relation HOLDS, unreachable ones included.
+
+        That is what makes the NULL-keyed row detectable at all: the paging
+        predicate can never serve it, so only a count taken by the warehouse itself
+        knows it is there.
+
+        :param datasource_name: unused; the fake serves one relation
+        :ptype datasource_name: str
+        :param relation: unused; the fake serves one relation
+        :ptype relation: str
+        :param key: the ordering columns the digest covers
+        :ptype key: Any
+        :return: the relation's current count and digest
+        :rtype: RelationFingerprintResult
+        """
+        columns = tuple(key)
+        payload = "\x1e".join(
+            "\x1f".join("\x00" if row.get(c) is None else str(row[c]) for c in columns) for row in self._rows
+        )
+        return RelationFingerprintResult(
+            row_count=len(self._rows),
+            digest=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         )
 
 
@@ -857,54 +931,71 @@ class TestARowTheKeyCannotReachIsNotLost:
         assert len(rows) == len(dataset)
 
 
-class TestTheCountIsReadPortably:
-    """the count column's NAME differs by engine, so it is read by position.
+class TestARelationThatChangedUnderTheReadIsRefused:
+    """the case a row COUNT cannot see, and the reason the check is a fingerprint.
 
-    Postgres and redshift fold unquoted identifiers to lower case and return
-    ``total``; snowflake folds to upper and returns ``TOTAL``. Indexing the alias
-    works on the engines it was written against and raises KeyError on one this
-    function claims to support. Reported by a consumer whose fake returned a
-    different name and got a KeyError instead of a typed error.
+    A delete and an insert landing during the read leave the count identical. The
+    rows returned are then half from before the change and half from after -- a
+    state of the relation that never existed at any instant -- and a count check
+    passes them as complete. `read_all` promises the whole relation, so it has to
+    refuse this, and only a digest over the key can tell.
     """
 
-    @pytest.mark.parametrize("column_name", ["total", "TOTAL", "count", "c", "?column?"])
     @pytest.mark.asyncio
-    async def test_any_column_name_is_accepted(self, column_name: str) -> None:
+    async def test_a_swap_that_preserves_the_row_count_is_still_refused(self) -> None:
         """
-        :param column_name: what the driver happens to call the count column
-        :ptype column_name: str
         :return: nothing
         :rtype: None
         """
-        dataset = [_row("ca", "2026-01"), _row("ny", "2026-01"), _row("tx", "2026-01")]
+        dataset = [_row(f"s{i:02d}", "2026-01") for i in range(6)]
         warehouse = _PagingWarehouse(dataset)
-        warehouse.count_column = column_name
+
+        def _swap_one_row_after_the_first_reading(fake: _PagingWarehouse) -> None:
+            # exactly one out, exactly one in: the count is untouched, which is
+            # precisely what made this invisible before.
+            if fake.fingerprints == 1:
+                fake.replace_rows(
+                    [r for r in fake.current_rows() if r["jurisdiction"] != "s02"] + [_row("s99", "2026-01")]
+                )
+
+        warehouse.on_fingerprint = _swap_one_row_after_the_first_reading
+
+        with pytest.raises(IncompleteReadError, match="changed while it was being read"):
+            await _read(warehouse, page_size=2)
+
+    @pytest.mark.asyncio
+    async def test_the_row_count_alone_would_have_passed_that_swap(self) -> None:
+        """Pins WHY the digest is load-bearing, not merely present.
+
+        If this ever fails, the swap above stopped being count-invisible and the
+        test above would pass for the wrong reason.
+
+        :return: nothing
+        :rtype: None
+        """
+        dataset = [_row(f"s{i:02d}", "2026-01") for i in range(6)]
+        warehouse = _PagingWarehouse(dataset)
+        before = await warehouse.relation_fingerprint("d", relation="r", key=_KEY)
+
+        warehouse.replace_rows(
+            [r for r in warehouse.current_rows() if r["jurisdiction"] != "s02"] + [_row("s99", "2026-01")]
+        )
+        after = await warehouse.relation_fingerprint("d", relation="r", key=_KEY)
+
+        assert after.row_count == before.row_count, "the swap was supposed to preserve the count"
+        assert after.digest != before.digest, "the digest was supposed to notice"
+
+    @pytest.mark.asyncio
+    async def test_a_relation_that_held_still_is_returned(self) -> None:
+        """the check must not refuse an honest read; both readings agree.
+
+        :return: nothing
+        :rtype: None
+        """
+        dataset = [_row(f"s{i:02d}", "2026-01") for i in range(6)]
+        warehouse = _PagingWarehouse(dataset)
 
         rows = await _read(warehouse, page_size=2)
 
-        assert len(rows) == len(dataset)
-
-    @pytest.mark.asyncio
-    async def test_a_count_returning_no_row_is_refused_not_assumed_empty(self) -> None:
-        """An engine answering nothing must not be read as "the relation is empty".
-
-        :return: nothing
-        :rtype: None
-        """
-        warehouse = _PagingWarehouse([_row("ca", "2026-01")])
-        warehouse.count_returns_nothing = True
-
-        with pytest.raises(IncompleteReadError, match="returned no row at all"):
-            await _read(warehouse, page_size=2)
-
-    @pytest.mark.asyncio
-    async def test_a_count_that_is_not_a_number_is_refused(self) -> None:
-        """
-        :return: nothing
-        :rtype: None
-        """
-        warehouse = _PagingWarehouse([_row("ca", "2026-01")])
-        warehouse.count_value = "not a number"
-
-        with pytest.raises(IncompleteReadError, match="which is not a number"):
-            await _read(warehouse, page_size=2)
+        assert len(rows) == 6
+        assert warehouse.fingerprints == 2, "one reading before the first page and one after the last"
