@@ -6,81 +6,6 @@ packages (bumped in lock-step).
 
 ## v0.43.0 -- unreleased
 
-### Changed
-
-- **BREAKING: `ReplayGuard` is memory-backed and fails closed after a wipe.** A broker
-  restart empties a memory bucket, and every handle on every replica then keeps working
-  silently against the empty bucket, so a nonce recorded before the wipe could not refuse
-  its replay. A fresh record now also reads the bucket's creation time from the server and
-  refuses anything issued before it. File storage did not close this either: it reopened
-  the replay window on any loss of the JetStream volume.
-  - `ReplayGuard(..., verifier_future_tolerance=timedelta(...))` is required: how far ahead
-    of its clock the verifier accepts the artifact's issue time. The guard adds
-    `CLOCK_DRIFT_ALLOWANCE` (5s, verifier-vs-broker drift) itself. For that total after a
-    wipe, fresh artifacts are refused too: 65s for registry PoP and DPoP, 5s for tool-pod
-    proxy assertions.
-  - Verifiers refuse a guard sized below their own leeway: `validate_dpop_proof` raises
-    `ValueError` when `iat_window` exceeds the guard's tolerance, and `CallProxy` and
-    `ToolServer` raise at construction. Widening a leeway can no longer silently reopen the
-    replay hole.
-  - `record_unique(nonce, *, issued_at=...)` is required: the artifact's signed or
-    server-held issue time, timezone-aware, no later than the earliest moment it could
-    first have been accepted.
-  - `verify_pop_proof` returns `VerifiedPopProof(jti, issued_at)` instead of the bare `jti`.
-  - Migration: pass `verifier_future_tolerance` at every construction and `issued_at` at
-    every `record_unique` call. `validate_dpop_proof` passes the proof's `iat` itself; its
-    guard needs `verifier_future_tolerance` of at least the `iat_window` you pass
-    (`DEFAULT_IAT_WINDOW` by default). A guard sized too small makes `validate_dpop_proof`
-    raise on every request, not at startup, because it is a function with no construction
-    step. `CallProxy` and `ToolServer` do refuse at construction.
-  - A construction without `verifier_future_tolerance` fails with `TypeError`. The hub's
-    DPoP guard (`hub-dpop-nonces`) is one, so the hub does not start on this release until
-    it passes one.
-  - **Only single-use nonces migrate this way.** A `ReplayGuard` used as a long-lived ledger
-    is not a nonce guard: identity's refresh-token jti ledger (`identity-revocation-jti`, a
-    30-day TTL) would refuse every outstanding refresh token for up to 30 days after a
-    broker wipe. Move such a ledger to an L3 collection rather than watermarking it, and
-    leave its bucket alone until then.
-  - **Existing nonce buckets stay file-backed until deleted.** The bucket names are
-    unchanged and a bucket's storage is never reconciled, so on a cluster that already has
-    them this release binds the existing FILE streams (logging the storage drift on every
-    open). This repo's are `{ns}-pop_nonces` and `{ns}-proxy_assertion_nonces`; the hub's
-    `hub-dpop-nonces` and identity's nonce buckets follow the same step when those
-    consumers release. Delete each by name once every replica of its consumer runs this
-    release; the next record recreates it memory-backed. A deletion is a wipe, so calls
-    through that guard are refused for its reach afterwards. Ledger buckets (above) are NOT part
-    of this step: they stay where they are until their consumer moves to the L3 ledger.
-    - The `RevocationGuard`, idempotency and windowed-counter buckets are not part of it either,
-      for the opposite reason: nothing opens them any more. Those three primitives moved to L3 in
-      this same release (below), so their buckets are dead state to be copied into the new tables
-      and then deleted -- see "The live buckets are converted, not abandoned" in
-      `docs/design-durable-coordination.md`. Skipping the copy is the difference between a
-      revoked session staying revoked and becoming valid again.
-- **BREAKING: `BaseCollection.l2_cas_mutate` returns a `CasMutation`** (`action` of created,
-  updated, deleted or noop, and the row written) instead of `None`. On a collection with an L3
-  pool it is now three-tier:
-  - When L2 holds no live row the callback is shown L3's row, so a broker wipe no longer resets
-    a counter to zero.
-  - The won result is persisted to L3 per `l3_write_policy`, deletes always synchronously.
-  - A persist that fails withdraws the won L2 value (deleted at the revision it won) and then
-    raises, so a retry never sees a write it was told failed. That includes a persist that
-    affects no row, which raises `RuntimeError`.
-  - A table that fences every L3 write (`cas_null_safe`) raises `ValueError` before L2 is
-    touched.
-  - Its invalidation broadcast tells listeners in the same L2 scope to keep the key, which is
-    the fence and may be newer than L3. Listeners in other scopes still evict.
-  - Collections without an L3 pool, including the presence collections, behave as before.
-  - Migration: callers that ignored the return value need no change.
-- `CacheInvalidationMessage` gains `l2_current_scope`, and `CollectionRegistry.publish_invalidation`
-  gains `l2_key_current`. A receiver on an older release ignores the field and evicts as before, so
-  roll every replica of a principal that uses a three-tier `l2_cas_mutate` together.
-- **Reconciling a KV stream no longer asks for unreconciled changes.** The in-place update is
-  built from the live stream config with only the reconciled fields changed. It used to send
-  the whole requested config, so a legacy file-backed bucket opened by a declarer asking for
-  memory failed the update over storage. That failure was reported as a missing grant, and it
-  blocked the `allow_msg_ttl` enable. Differences outside the reconciled set are now always
-  reported at WARNING, including when a reconcile also ran.
-
 ### Added
 
 - `NatsKvBucket.date_created()` and `KvBucketLike.date_created`: the backing stream's
@@ -253,6 +178,106 @@ packages (bumped in lock-step).
 - The column-type alignment gate understands rendered migrations: a table whose DDL comes from its
   own `TableSchema` is checked through the renderer's type map instead of a SQL literal, and a
   renderer that maps `DATETIMETZ_TYPE` to anything but `TIMESTAMPTZ` fails the gate.
+
+- **One way to hand back a result too long to send whole**
+  (`threetears.agent.tools.text_window`). Every tool that returns text met the same
+  wall and each had solved it alone: cut at some number, append a phrase, discard
+  the rest. The phrase told a model that something was missing and never how to get
+  it, and what was cut was gone. Found in a consumer's production logs: a whitepaper
+  came back cut at exactly 15,000 characters and was discussed as if whole, and a
+  smart-home device list was cut before the room the person had asked about, so the
+  agent reported that the room did not exist. `window_text` returns a slice, the
+  offset the next slice starts at, the total size, and a note naming the exact call
+  that returns the next part; `WindowedInput` is the `offset` argument, worded once.
+
+### Changed
+
+- **BREAKING: `ReplayGuard` is memory-backed and fails closed after a wipe.** A broker
+  restart empties a memory bucket, and every handle on every replica then keeps working
+  silently against the empty bucket, so a nonce recorded before the wipe could not refuse
+  its replay. A fresh record now also reads the bucket's creation time from the server and
+  refuses anything issued before it. File storage did not close this either: it reopened
+  the replay window on any loss of the JetStream volume.
+  - `ReplayGuard(..., verifier_future_tolerance=timedelta(...))` is required: how far ahead
+    of its clock the verifier accepts the artifact's issue time. The guard adds
+    `CLOCK_DRIFT_ALLOWANCE` (5s, verifier-vs-broker drift) itself. For that total after a
+    wipe, fresh artifacts are refused too: 65s for registry PoP and DPoP, 5s for tool-pod
+    proxy assertions.
+  - Verifiers refuse a guard sized below their own leeway: `validate_dpop_proof` raises
+    `ValueError` when `iat_window` exceeds the guard's tolerance, and `CallProxy` and
+    `ToolServer` raise at construction. Widening a leeway can no longer silently reopen the
+    replay hole.
+  - `record_unique(nonce, *, issued_at=...)` is required: the artifact's signed or
+    server-held issue time, timezone-aware, no later than the earliest moment it could
+    first have been accepted.
+  - `verify_pop_proof` returns `VerifiedPopProof(jti, issued_at)` instead of the bare `jti`.
+  - Migration: pass `verifier_future_tolerance` at every construction and `issued_at` at
+    every `record_unique` call. `validate_dpop_proof` passes the proof's `iat` itself; its
+    guard needs `verifier_future_tolerance` of at least the `iat_window` you pass
+    (`DEFAULT_IAT_WINDOW` by default). A guard sized too small makes `validate_dpop_proof`
+    raise on every request, not at startup, because it is a function with no construction
+    step. `CallProxy` and `ToolServer` do refuse at construction.
+  - A construction without `verifier_future_tolerance` fails with `TypeError`. The hub's
+    DPoP guard (`hub-dpop-nonces`) is one, so the hub does not start on this release until
+    it passes one.
+  - **Only single-use nonces migrate this way.** A `ReplayGuard` used as a long-lived ledger
+    is not a nonce guard: identity's refresh-token jti ledger (`identity-revocation-jti`, a
+    30-day TTL) would refuse every outstanding refresh token for up to 30 days after a
+    broker wipe. Move such a ledger to an L3 collection rather than watermarking it, and
+    leave its bucket alone until then.
+  - **Existing nonce buckets stay file-backed until deleted.** The bucket names are
+    unchanged and a bucket's storage is never reconciled, so on a cluster that already has
+    them this release binds the existing FILE streams (logging the storage drift on every
+    open). This repo's are `{ns}-pop_nonces` and `{ns}-proxy_assertion_nonces`; the hub's
+    `hub-dpop-nonces` and identity's nonce buckets follow the same step when those
+    consumers release. Delete each by name once every replica of its consumer runs this
+    release; the next record recreates it memory-backed. A deletion is a wipe, so calls
+    through that guard are refused for its reach afterwards. Ledger buckets (above) are NOT part
+    of this step: they stay where they are until their consumer moves to the L3 ledger.
+    - The `RevocationGuard`, idempotency and windowed-counter buckets are not part of it either,
+      for the opposite reason: nothing opens them any more. Those three primitives moved to L3 in
+      this same release (below), so their buckets are dead state to be copied into the new tables
+      and then deleted -- see "The live buckets are converted, not abandoned" in
+      `docs/design-durable-coordination.md`. Skipping the copy is the difference between a
+      revoked session staying revoked and becoming valid again.
+- **BREAKING: `BaseCollection.l2_cas_mutate` returns a `CasMutation`** (`action` of created,
+  updated, deleted or noop, and the row written) instead of `None`. On a collection with an L3
+  pool it is now three-tier:
+  - When L2 holds no live row the callback is shown L3's row, so a broker wipe no longer resets
+    a counter to zero.
+  - The won result is persisted to L3 per `l3_write_policy`, deletes always synchronously.
+  - A persist that fails withdraws the won L2 value (deleted at the revision it won) and then
+    raises, so a retry never sees a write it was told failed. That includes a persist that
+    affects no row, which raises `RuntimeError`.
+  - A table that fences every L3 write (`cas_null_safe`) raises `ValueError` before L2 is
+    touched.
+  - Its invalidation broadcast tells listeners in the same L2 scope to keep the key, which is
+    the fence and may be newer than L3. Listeners in other scopes still evict.
+  - Collections without an L3 pool, including the presence collections, behave as before.
+  - Migration: callers that ignored the return value need no change.
+- `CacheInvalidationMessage` gains `l2_current_scope`, and `CollectionRegistry.publish_invalidation`
+  gains `l2_key_current`. A receiver on an older release ignores the field and evicts as before, so
+  roll every replica of a principal that uses a three-tier `l2_cas_mutate` together.
+- **Reconciling a KV stream no longer asks for unreconciled changes.** The in-place update is
+  built from the live stream config with only the reconciled fields changed. It used to send
+  the whole requested config, so a legacy file-backed bucket opened by a declarer asking for
+  memory failed the update over storage. That failure was reported as a missing grant, and it
+  blocked the `allow_msg_ttl` enable. Differences outside the reconciled set are now always
+  reported at WARNING, including when a reconcile also ran.
+
+
+- **`web_fetch` and `parse_document` take an `offset`** and window their result
+  instead of cutting it: a long page or document is read in parts, and nothing is
+  discarded. `web_fetch`'s result metadata carries `window` (`offset`, `total_chars`,
+  `next_offset`) for a caller that wants it typed. The MCP definition takes the
+  argument's wording from `WindowedInput`, so the two schemas cannot drift.
+- **`dictionary`, the context-save node and `analyze_media`** use the same note.
+  The last two say where the rest is rather than naming a call nobody can make, and
+  the media analyser's answer now says which part of a document it read -- it had
+  been analysing the first 12,000 characters and presenting that as the document.
+- A test fails any tool under `agent/tools` that writes a truncation phrase of its
+  own. It is what found the analyser and the save node.
+
 
 ## v0.42.0 -- 2026-09-15
 

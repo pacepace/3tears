@@ -39,7 +39,7 @@ dependencies = [
     # and single-use tickets, each short-lived and TTL'd, which is a KV
     # bucket's job -- losing one costs whoever is mid-login a retry. Attempt
     # counters are NOT in that list any more: a lockout that resets on every
-    # broker restart is not a lockout, so NatsKvAttemptLimiter keeps its counts
+    # broker restart is not a lockout, so CollectionAttemptLimiter keeps its counts
     # in L3 through a collection and NATS is the fence in front of it.
     "3tears-nats[client]>=0.43.0,<0.44.0",
     # argon2id for password hashing, bcrypt for verify-then-upgrade of hashes

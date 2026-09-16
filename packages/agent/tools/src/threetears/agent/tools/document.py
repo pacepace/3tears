@@ -23,7 +23,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from threetears.agent.tools.text_window import WindowedInput, window_text
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import get_logger, traced
@@ -1118,7 +1120,7 @@ def _parse_latex(
 # -- parse_document tool factory ----------------------------------------------
 
 
-class ParseDocumentInput(BaseModel):
+class ParseDocumentInput(WindowedInput):
     """Input schema for the parse_document tool."""
 
     content_base64: str = Field(description="Base64-encoded file content")
@@ -1148,7 +1150,7 @@ def create_parse_document_tool(
     ocr = ocr_config or OcrConfig()
 
     @tool("parse_document", args_schema=ParseDocumentInput)
-    async def parse_document_tool(content_base64: str, filename: str) -> str:
+    async def parse_document_tool(content_base64: str, filename: str, offset: int = 0) -> str:
         """Parse binary document content into clean markdown text."""
         try:
             data = base64.b64decode(content_base64)
@@ -1175,9 +1177,11 @@ def create_parse_document_tool(
         except Exception as exc:
             return _tool_error("parse_document", "parse", str(exc))
 
-        text = result.text
-        if len(text) > _PARSE_DOCUMENT_MAX_CHARS:
-            text = text[:_PARSE_DOCUMENT_MAX_CHARS] + "\n\n[Content truncated]"
+        # Windowed, not cut: a document past the bound is read in parts, and
+        # the note names the call for the next one (``text_window``).
+        text = window_text(result.text, offset=offset, max_chars=_PARSE_DOCUMENT_MAX_CHARS).rendered(
+            tool="parse_document"
+        )
 
         # Build response with metadata
         parts = []
