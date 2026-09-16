@@ -339,12 +339,30 @@ class FakeNatsClient:
     real listener against it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, bucket_age: timedelta | None = None) -> None:
         """initialize with empty bucket registry.
 
+        :param bucket_age: how long ago every bucket this client creates reports having been
+            created. ``None`` means now, which is the real client's behaviour for a fresh bucket.
+
+            **What this exists for.** ``ReplayGuard`` refuses an artifact issued before its
+            bucket was created plus the verifier's tolerance, because after a wipe it cannot
+            rule out an earlier sighting. A fake bucket created at the instant the test mints
+            its artifact is inside that window BY CONSTRUCTION, so every verifier test written
+            the obvious way fails with a replay refusal that has nothing to do with replay. The
+            same trap is documented for the first real call after a broker restart.
+
+            A test about replay semantics should therefore ask for an ESTABLISHED bucket, and
+            this is the one-line way to get one; a test about the watermark itself leaves this
+            ``None`` and uses :meth:`FakeKvBucket.wipe` to place the creation time deliberately.
+        :ptype bucket_age: timedelta | None
         :return: None
         :rtype: None
+        :raises ValueError: when ``bucket_age`` is negative
         """
+        if bucket_age is not None and bucket_age < timedelta(0):
+            raise ValueError(f"FakeNatsClient bucket_age must not be negative, got {bucket_age}")
+        self._bucket_age = bucket_age
         self._buckets: dict[str, FakeKvBucket] = {}
         self.published: list[Any] = []
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
@@ -446,5 +464,9 @@ class FakeNatsClient:
                 ttl=ttl if isinstance(ttl, timedelta) else None,
                 storage=storage,
             )
+            if self._bucket_age is not None:
+                # `wipe` is how a creation time is placed, and on a bucket with no entries it
+                # removes nothing -- so this ages the bucket without pretending anything was lost.
+                bucket.wipe(date_created=datetime.now(UTC) - self._bucket_age)
             self._buckets[name] = bucket
         return bucket

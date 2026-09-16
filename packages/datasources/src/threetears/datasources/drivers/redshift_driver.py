@@ -163,6 +163,7 @@ from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers._util import (
     _translate_placeholders,
+    build_relation_key_expression,
     build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
     build_set_statement_timeout_sql,
@@ -171,6 +172,7 @@ from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
     Driver,
+    RelationFingerprint,
     TableRow,
     Transaction,
     _check_otel_metrics,
@@ -1920,6 +1922,56 @@ class RedshiftDriver(Driver):
 
     @traced
     @_observed(driver_type="redshift")
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+        """count and fingerprint ``relation`` over ``key``, in one statement.
+
+        Redshift turns a hash into a summable number with ``STRTOL``, which
+        Postgres does not have and Snowflake spells as ``TO_NUMBER`` with a
+        format model. That divergence is the whole reason this is a driver
+        method: a caller reaching a datasource through the hub cannot know which
+        of the three is answering.
+
+        The per-row value is cast to ``DECIMAL(38,0)`` before summing. Redshift's
+        ``SUM`` over ``BIGINT`` stays ``BIGINT`` and would wrap on a large enough
+        relation -- and a wrapped sum fingerprints two different relations
+        identically, which is the one failure a change-probe must not have.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the ordering columns, TRUSTED identifiers
+        :ptype key: list[str]
+        :return: the relation's current row count and key digest
+        :rtype: RelationFingerprint
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        key_expression = build_relation_key_expression(key)
+        sql = (
+            "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
+            "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
+            f"FROM (SELECT {key_expression} AS k FROM {relation}) AS fingerprint_source"
+        )
+
+        def _do_sync(conn: RedshiftConnection) -> RelationFingerprint:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(sql)
+                row = cursor.fetchone()
+                return RelationFingerprint(row_count=int(row[0]), digest=str(row[1]))
+            finally:
+                cursor.close()
+
+        async def _op(conn: RedshiftConnection) -> Any:
+            return await self._bridge.to_thread_with_cancel(
+                lambda: _do_sync(conn),
+                cancel_cb=conn.close,
+            )
+
+        result: RelationFingerprint = await self._acquire_and_run(_op)
+        return result
+
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape (Tier-2 change-probe).
 

@@ -266,3 +266,123 @@ class TestReplayGuardAfterAWipe:
         stamped = created + timedelta(seconds=1)
         assert await guard.record_unique("n", issued_at=stamped) is False
         assert await guard.record_unique("n", issued_at=created + 2 * _REACH) is False
+
+
+class _StubAnchor:
+    """a `ReplayAnchor` whose recorded first-existence moment the test chooses.
+
+    Deliberately not a fake of the coordination tables: these tests are about what the GUARD
+    does with the anchor's answer, and a collection-backed double would make every one of them
+    depend on the storage path too. `CollectionReplayAnchor`'s own behaviour is tested against
+    the tables in `test_replay_anchor.py`.
+    """
+
+    def __init__(self, first_existed: datetime | None = None, *, fails: Exception | None = None) -> None:
+        self._first_existed = first_existed
+        self._fails = fails
+        self.calls = 0
+
+    async def first_existed(self, purpose: str, *, now: datetime) -> datetime:
+        del purpose
+        self.calls += 1
+        if self._fails is not None:
+            raise self._fails
+        # `None` models the first caller: nothing was recorded, so this call's clock becomes the
+        # ledger's birth time -- which is what the real claim-or-read returns.
+        return self._first_existed if self._first_existed is not None else now
+
+
+class TestReplayGuardWithAnAnchor:
+    """the anchor tells a first run from a wipe, so only the wipe pays the refusal window."""
+
+    @pytest.mark.asyncio
+    async def test_a_first_run_admits_an_artifact_the_watermark_alone_would_refuse(
+        self, client: FakeNatsClient
+    ) -> None:
+        # the case the anchor exists for: a bucket created moments ago, an artifact issued now,
+        # and nothing that could have been recorded before either. Without an anchor this is
+        # refused for the whole reach -- a fresh deployment refusing logins it has no reason to
+        # doubt.
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = datetime.now(UTC)
+        bucket.wipe(date_created=created)
+        anchor = _StubAnchor()
+        guard = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            anchor=anchor,
+        )
+        assert await guard.record_unique("n", issued_at=created + timedelta(seconds=1)) is True
+
+    @pytest.mark.asyncio
+    async def test_a_wipe_still_refuses_inside_the_window(self, client: FakeNatsClient) -> None:
+        # the anchor narrows the watermark to the case it was written for; it does not retire it.
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = datetime.now(UTC)
+        bucket.wipe(date_created=created)
+        anchor = _StubAnchor(created - timedelta(hours=3))
+        guard = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            anchor=anchor,
+        )
+        assert await guard.record_unique("n", issued_at=created + timedelta(seconds=1)) is False
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_anchor_keeps_the_watermark(self, client: FakeNatsClient) -> None:
+        # the blind answer must be the conservative one: an anchor that cannot be read leaves the
+        # guard exactly as unable to tell as having none, so it behaves as if it had none.
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = datetime.now(UTC)
+        bucket.wipe(date_created=created)
+        anchor = _StubAnchor(fails=KvError("anchor unreachable"))
+        guard = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            anchor=anchor,
+        )
+        assert await guard.record_unique("n", issued_at=created + timedelta(seconds=1)) is False
+
+    @pytest.mark.asyncio
+    async def test_a_replay_is_still_refused_on_a_first_run(self, client: FakeNatsClient) -> None:
+        # skipping the watermark must not skip the guard: the second sighting of a nonce is a
+        # replay whatever the anchor says.
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = datetime.now(UTC)
+        bucket.wipe(date_created=created)
+        guard = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            anchor=_StubAnchor(),
+        )
+        issued_at = created + timedelta(seconds=1)
+        assert await guard.record_unique("n", issued_at=issued_at) is True
+        assert await guard.record_unique("n", issued_at=issued_at) is False
+
+    @pytest.mark.asyncio
+    async def test_the_anchor_is_read_once_not_per_artifact(self, client: FakeNatsClient) -> None:
+        # the whole point of an anchor being affordable: it is a fact about the ledger's history,
+        # which cannot change while the process runs, so it must not cost a durable round trip
+        # per artifact.
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = datetime.now(UTC)
+        bucket.wipe(date_created=created)
+        anchor = _StubAnchor()
+        guard = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            anchor=anchor,
+        )
+        for nonce in ("a", "b", "c"):
+            await guard.record_unique(nonce, issued_at=created + timedelta(seconds=1))
+        assert anchor.calls == 1

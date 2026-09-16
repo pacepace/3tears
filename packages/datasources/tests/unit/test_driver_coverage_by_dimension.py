@@ -58,6 +58,19 @@ class _RecordingDriver(Driver):
     async def list_columns(self, schemas: list[str]) -> list[ColumnRow]:
         return []
 
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> Any:
+        """stub fingerprint; the ABC requires the method.
+
+        :param relation: the relation to fingerprint
+        :ptype relation: str
+        :param key: the ordering columns
+        :ptype key: list[str]
+        :return: never returns
+        :rtype: Any
+        :raises NotImplementedError: this double has no relation to fingerprint
+        """
+        raise NotImplementedError("this driver double has no relation to fingerprint")
+
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         return {}
 

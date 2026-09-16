@@ -170,7 +170,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.datasources.config import BigQueryConnectionConfig
-from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow, Transaction
+from threetears.datasources.drivers.base import ColumnRow, Driver, RelationFingerprint, TableRow, Transaction
 from threetears.observe import get_logger
 
 __all__ = ["BigQueryDriver"]
@@ -276,6 +276,28 @@ class BigQueryDriver(Driver):
         :raises NotImplementedError: stub method; see module docstring
         """
         raise NotImplementedError(f"BigQueryDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
+
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+        """count and fingerprint a relation over its key -- NOT YET IMPLEMENTED.
+
+        When this driver is built, note that BigQuery diverges further than the
+        other engines: ``MD5()`` returns BYTES rather than a hex string, so the
+        hash needs ``TO_HEX(MD5(k))`` before the substring, and the cast in
+        :func:`threetears.datasources.drivers._util.build_relation_key_expression`
+        is ``STRING`` rather than ``VARCHAR``. The shared builder will need a
+        dialect seam before this driver can use it.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the ordering columns, TRUSTED identifiers
+        :ptype key: list[str]
+        :return: never returns
+        :rtype: RelationFingerprint
+        :raises NotImplementedError: stub method; see module docstring
+        """
+        raise NotImplementedError(
+            f"BigQueryDriver.relation_fingerprint is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
+        )
 
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over column shape (computed python-side) -- NOT YET IMPLEMENTED.
