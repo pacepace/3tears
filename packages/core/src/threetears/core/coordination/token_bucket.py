@@ -8,8 +8,7 @@ reimplementation of the same idea
 one reusable, correct-by-construction primitive: tokens refill
 continuously at a fixed rate up to a capacity ceiling; each claim
 consumes tokens atomically via a CAS read-modify-write loop, the same
-shape :class:`KVLease`/:class:`IdempotencyKeyStore` (this module's
-siblings) already use.
+shape :class:`KVLease` (this module's sibling) already uses.
 
 usage::
 
@@ -66,10 +65,10 @@ _DEFAULT_KV_TTL: Final[timedelta] = timedelta(hours=1)
 #: bounded CAS retry budget for claim()'s read-modify-write, when the CAS
 #: update loses to a DIFFERENT concurrent claimer on the SAME key -- not
 #: the same thing as "insufficient tokens" (see claim()'s docstring).
-#: deliberately higher than IdempotencyKeyStore's 8 (this module's sibling):
+#: deliberately higher than a framework compare-and-swap's default 8:
 #: this primitive's whole point is many pods hammering the SAME shared
 #: bucket key -- a genuinely hotter access pattern than a mostly-distinct-
-#: per-operation idempotency key. 30 matches 14-eng-ai-survey's own
+#: per-operation claim key. 30 matches 14-eng-ai-survey's own
 #: empirically-tuned constant for this exact shape (IndexesData/
 #: SplitAssignmentsData, tuned against a live 20-way concurrent
 #: integration test after 8 proved insufficient under real multi-
@@ -99,7 +98,7 @@ class TokenClaimResult:
     miss is an expected, common, per-request outcome rather than an
     exceptional one -- ``claim`` never raises for "not enough tokens
     right now," it always returns a result the caller inspects. this
-    matches :class:`IdempotencyKeyStore`'s own claim()-returns-a-result
+    matches the claim()-returns-a-result
     convention more closely than :class:`KVLease`'s mutex semantics.
 
     :param claimed: whether tokens were successfully consumed

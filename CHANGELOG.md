@@ -164,6 +164,28 @@ packages (bumped in lock-step).
   - Migration: build one `CollectionRegistry` per process (L1, L2, and L3 where the process has a
     database), register `threetears.core.coordination.migrations`, and pass the registry. A
     process with no L3 keeps counting in L2 across its replicas.
+- **BREAKING: `RevocationGuard` keeps standing revocations in L3, not in a file-backed KV
+  bucket**, and moves to `threetears.core.coordination.revocation` (still exported from
+  `threetears.core.coordination`). A broker restart no longer forgets an active revocation.
+  - `RevocationGuard(registry, *, purpose=..., ttl_seconds=...)` replaces the
+    `nats_client, bucket_name=` form; every method surface is unchanged.
+  - Nearly every check is of a key nobody revoked, and that answer is served from an
+    absent-marker: one L3 read per write generation instead of one per request.
+  - An entry expires a ttl after the REVOCATION, not after the write, so re-recording a narrowed
+    cutoff cannot extend how long it is remembered past the sessions it exists to block.
+  - What "fail closed" means has changed with the tier that holds the truth: an L2 outage no
+    longer denies, because the write still commits to L3 and the read still falls through to it.
+    An L3 failure propagates, because "no answer" must never read as "not revoked".
+- **`RedemptionLedger` (new)**: the durable single-use ledger a refresh-token `jti` store needs --
+  one sighting is legitimate, a second is reuse, remembered for the artifact's whole life and
+  written to L3 before the call returns. It is deliberately not a `ReplayGuard`: watermarking a
+  30-day ledger would refuse every token outstanding when the broker last restarted. Its
+  compare-and-swap IS the fence, so an L2 failure propagates rather than degrading.
+- **A new gate holds the negative-caching invariant structurally**
+  (`test_negative_cache_write_paths.py`): a collection that caches absences may not fill L2 from a
+  method of its own, because a row committed outside `save_entity`/`l2_cas_mutate` stays hidden by
+  every recorded absence. Two shapes are permitted and the list is closed: `delete`, and an
+  expired-row sweep. It discovers package roots rather than listing them.
 - **BREAKING: `IdempotencyKeyStore` keeps its claims in L3, not in a file-backed KV bucket.** A
   broker restart no longer resurrects a completed operation so a retry runs it a second time.
   - `IdempotencyKeyStore(registry, *, purpose=..., ttl=...)` replaces
