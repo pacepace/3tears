@@ -298,6 +298,29 @@ class TestWindowedCounter:
             assert await counter.record_attempt("x") == 0
 
     @pytest.mark.asyncio
+    async def test_recording_an_attempt_drives_this_table_s_sweep(self) -> None:
+        """The compare-and-swap seam, not the save_entity one.
+
+        The sweep moved out of the four primitives and into the collection's own write paths.
+        `save_entity` is covered by the revocation guard's sweep test; nothing covered
+        `l2_cas_mutate`, which is the path every counter and every idempotency claim takes --
+        so deleting that call would silently stop those two tables sweeping while the
+        revocations table kept working and the suite stayed green.
+        """
+        registry = _registry(_Nats(), _Store())
+        counter = _counter(registry)
+        collection = _counters(registry)
+        swept: list[str] = []
+
+        async def _record_sweep() -> int:
+            swept.append(collection.table_name)
+            return 0
+
+        collection.sweep_expired_if_due = _record_sweep  # type: ignore[method-assign]
+        await counter.record_attempt("k")
+        assert swept == ["coordination_counters"], "nothing sweeps the counters table"
+
+    @pytest.mark.asyncio
     async def test_clear_resets_the_counter_and_never_raises(self) -> None:
         counter = _counter(_registry(_Nats()))
         await counter.record_attempt("k")

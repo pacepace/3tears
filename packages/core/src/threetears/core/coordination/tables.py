@@ -387,7 +387,7 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         change any read's answer, and an absent-marker only ever claims absence.
 
         Raises on a storage failure, so a caller sweeping deliberately sees it;
-        :meth:`sweep_expired_if_due`, which runs from a primitive's write path, contains it.
+        :meth:`sweep_expired_if_due`, which this collection's write paths drive, contains it.
 
         :param now: the moment to compare against, for tests; defaults to now
         :ptype now: datetime | None
@@ -420,10 +420,11 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
     async def sweep_expired_if_due(self) -> int:
         """run :meth:`sweep_expired` at most once per interval in this process, failures contained.
 
-        This is the seam a primitive calls from its own write path, so a failed sweep must not
-        fail the throttle or claim that triggered it: table-size hygiene the docstring above says
-        correctness never waits on cannot be what denies a login. The interval stamp is advanced
-        before the statement runs, so a failing sweep self-throttles to one attempt per interval.
+        Driven by this collection's own write paths (:meth:`l2_cas_mutate`, :meth:`save_entity`),
+        so a failed sweep must not fail the throttle or claim that triggered it: table-size
+        hygiene the docstring above says correctness never waits on cannot be what denies a
+        login. The interval stamp is advanced before the statement runs, so a failing sweep
+        self-throttles to one attempt per interval.
 
         :return: rows deleted, 0 when the interval has not elapsed or the sweep failed
         :rtype: int

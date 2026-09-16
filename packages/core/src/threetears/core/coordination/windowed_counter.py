@@ -191,7 +191,7 @@ class WindowedCounter:
         except _DEGRADABLE_FAILURES as exc:
             if self._fail_open:
                 log.warning(
-                    "windowed counter failing open on a storage failure",
+                    "windowed counter failing open; storage failed or every compare-and-swap round was lost",
                     extra={"extra_data": {"purpose": self._purpose, "error": f"{type(exc).__name__}: {exc}"}},
                 )
                 return 0
@@ -228,7 +228,7 @@ class WindowedCounter:
         except _DEGRADABLE_FAILURES as exc:
             if self._fail_open:
                 log.warning(
-                    "windowed counter failing open on a storage failure",
+                    "windowed counter failing open; storage failed or every compare-and-swap round was lost",
                     extra={"extra_data": {"purpose": self._purpose, "error": f"{type(exc).__name__}: {exc}"}},
                 )
                 return None
