@@ -18,6 +18,9 @@ public surface:
 - :class:`LeaseLost` — raised when ownership changes mid-operation
 - :class:`ReplayGuard` -- single-use nonce guard (shared, fail-closed) for replay protection, for
   the seconds an artifact is acceptable; memory-backed, and a wipe fails closed
+- :class:`ReplayAnchor` / :class:`CollectionReplayAnchor` -- the durable record of when a
+  ledger first existed, which is what lets a guard tell a wipe from a first run instead of
+  paying the wipe's refusal window on both
 - :class:`RevocationGuard` -- timestamped revocation entries in L3 (fail-closed), for the
   "denylist everything that started before this moment" shape a bare presence test can't express
 - :class:`RedemptionLedger` -- a durable single-use ledger in L3 (fail-closed), for an artifact
@@ -57,6 +60,7 @@ from threetears.core.coordination.lease import (
     LeaseTimeout,
     LeaseUnavailable,
 )
+from threetears.core.coordination.replay_anchor import CollectionReplayAnchor, ReplayAnchor
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.coordination.revocation import RedemptionLedger, RevocationGuard
 from threetears.core.coordination.token_bucket import (
@@ -79,7 +83,9 @@ __all__ = [
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",
+    "CollectionReplayAnchor",
     "RedemptionLedger",
+    "ReplayAnchor",
     "ReplayGuard",
     "RevocationGuard",
     "TokenBucket",

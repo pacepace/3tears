@@ -49,6 +49,17 @@ Full rationale, and which consumer owns which step, in `docs/design-durable-coor
   restart.
 - `ReplayGuard.require_covers()`, `ReplayGuard.verifier_future_tolerance`, and
   `threetears.core.coordination.replay_guard.CLOCK_DRIFT_ALLOWANCE`.
+- **`ReplayAnchor` and `CollectionReplayAnchor`, and an optional `anchor=` on `ReplayGuard`**:
+  the durable record of when a ledger FIRST existed, which is what lets a guard tell a wipe from
+  a first run. Without one the guard cannot distinguish them and applies its creation-time
+  watermark to both -- right after a wipe, and on a first run a window in which every artifact
+  is refused although nothing was ever recorded to replay. That window is the verifier's
+  tolerance plus the drift allowance, so a fresh deployment refuses logins for about a minute,
+  and any test whose bucket is younger than that refuses everything. With an anchor the
+  watermark applies only when the anchor predates the bucket. The anchor is read once per guard,
+  never on the per-artifact path, and every failure to read or write it falls back to the
+  watermark -- the blind answer stays the conservative one. Optional because the registry server
+  and the tool pod deliberately hold only a NATS client; they keep today's behaviour.
 - `threetears.registry.proxy.POP_LEEWAY_SECONDS`, public so a pop replay guard can be sized
   from the proxy's own value.
 - **`BaseCollection.negative_cache_max_age`**: opt in to recording a full miss as an
