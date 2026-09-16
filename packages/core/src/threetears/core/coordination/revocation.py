@@ -55,12 +55,12 @@ from threetears.core.coordination.tables import (
 )
 from threetears.observe import get_logger
 
-__all__ = ["RedemptionLedger", "RevocationGuard"]
+__all__ = ["RedemptionLedger", "RevocationGuard", "hashed_denylist_key"]
 
 log = get_logger(__name__)
 
 
-def _hashed(key: str) -> str:
+def hashed_denylist_key(key: str) -> str:
     """the stored form of a denylist key.
 
     Hashed so the raw identifier -- a principal id, a customer id, a token id -- is never a stored
@@ -201,7 +201,7 @@ class RevocationGuard:
         :return: ``(purpose, hashed key)`` in declared column order
         :rtype: tuple[str, str]
         """
-        return (self._purpose, _hashed(key))
+        return (self._purpose, hashed_denylist_key(key))
 
 
 class RedemptionLedger:
@@ -299,4 +299,4 @@ class RedemptionLedger:
         :return: ``(purpose, hashed key)`` in declared column order
         :rtype: tuple[str, str]
         """
-        return (self._purpose, _hashed(key))
+        return (self._purpose, hashed_denylist_key(key))

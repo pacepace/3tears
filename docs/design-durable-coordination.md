@@ -110,7 +110,24 @@ write-behind collection needs something to drive `flush_pending` on an interval;
   the marker), batched flushes, and rare revocation writes. The generation is per table, so
   this is cheap only for tables written rarely; see "What one generation per table costs".
 
-These are measured, not assumed, before the primitives adopt them.
+**Measured, not assumed.** `scripts/measure-coordination-latency.py` runs each hot operation on
+both paths against one broker and one database, 200 rounds each. On a 2026-09-16 developer
+machine with containerised NATS and Postgres:
+
+| Operation | Path | Median | p95 | L3 reads |
+|---|---|---|---|---|
+| counter increment | bare KV (the old path) | 0.805 ms | 1.717 ms | -- |
+| counter increment | collection | 0.924 ms | 1.886 ms | 0 |
+| revocation check, not revoked | bare KV (the old path) | 0.388 ms | 0.618 ms | -- |
+| revocation check, not revoked | collection | 0.455 ms | 2.187 ms | 50 per 200 checks |
+| revocation check, revoked | collection | 0.042 ms | 0.055 ms | 0 |
+
+What the numbers say. A counter increment costs about 0.12 ms more than the bucket it replaced,
+which is the price of durability on a path that already paid for a NATS round trip. A check of a
+key nobody revoked costs about 0.07 ms more at the median; the 200 checks covered 50 distinct
+keys and made 50 L3 reads, one per key -- every later check was a marker hit, which is the claim
+negative caching exists to make. A check of a key that IS revoked is an L1 hit at 0.04 ms and no
+L3 read at all. Re-run the script rather than trusting this table.
 
 ## What `BaseCollection` gains
 

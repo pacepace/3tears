@@ -181,6 +181,12 @@ packages (bumped in lock-step).
   written to L3 before the call returns. It is deliberately not a `ReplayGuard`: watermarking a
   30-day ledger would refuse every token outstanding when the broker last restarted. Its
   compare-and-swap IS the fence, so an L2 failure propagates rather than degrading.
+- `threetears.core.coordination.revocation.hashed_denylist_key`: the stored form of a denylist
+  key, public because a caller comparing against a stored key needs the same function rather than
+  a second copy of it.
+- `scripts/measure-coordination-latency.py`: runs each hot coordination operation on both the new
+  path and the bare-KV path it replaced, against one broker and one database. The results are in
+  the design doc's hot-path section, and re-running the script beats trusting the table.
 - **A new gate holds the negative-caching invariant structurally**
   (`test_negative_cache_write_paths.py`): a collection that caches absences may not fill L2 from a
   method of its own, because a row committed outside `save_entity`/`l2_cas_mutate` stays hidden by
