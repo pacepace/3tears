@@ -31,6 +31,7 @@ from uuid import uuid7
 
 import pytest
 
+from threetears.datasources.drivers._util import _translate_placeholders
 from threetears.datasources.query_client import (
     DatasourceQueryResult,
     IncompleteReadError,
@@ -466,8 +467,34 @@ class TestThePredicateIsPortableAndBound:
         await _read(warehouse, page_size=2)
 
         predicate = warehouse.pages[1]
-        assert "(jurisdiction > ?) OR (jurisdiction = ? AND period > ?)" in predicate
+        assert "(jurisdiction > $1) OR (jurisdiction = $2 AND period > $3)" in predicate
         assert "(jurisdiction, period) >" not in predicate
+
+    @pytest.mark.asyncio
+    async def test_the_predicate_survives_translation_for_every_driver_style(self) -> None:
+        """The property the emitted spelling exists to satisfy, asserted instead of the spelling.
+
+        Every driver normalises placeholders through `_translate_placeholders`, which knows
+        ``$N`` and nothing else. This suite's warehouse records SQL rather than executing it, so
+        a predicate the drivers cannot translate looks identical here to one they can -- which
+        is how a `?` predicate passed for as long as it did, with a test asserting the very
+        spelling that could not run.
+
+        :return: nothing
+        :rtype: None
+        """
+        warehouse = _PagingWarehouse([_row(f"s{i:02d}", "2026-01") for i in range(6)])
+
+        await _read(warehouse, page_size=2)
+
+        predicate = warehouse.pages[1]
+        expected = len(warehouse.page_params[1])
+        for style, marker in (("pyformat", "%s"), ("numeric", ":"), ("named-at", "@p")):
+            translated = _translate_placeholders(predicate, style)
+            assert "$" not in translated, f"{style} left an untranslated placeholder: {translated}"
+            assert translated.count(marker) == expected, (
+                f"{style} produced {translated.count(marker)} placeholders for {expected} parameters"
+            )
 
     @pytest.mark.asyncio
     async def test_cursor_values_are_bound_not_interpolated(self) -> None:

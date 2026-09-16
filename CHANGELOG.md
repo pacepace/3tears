@@ -41,6 +41,21 @@ pin, not after.
 
 Full rationale, and which consumer owns which step, in `docs/design-durable-coordination.md`.
 
+### Fixed
+
+- **Keyset paging emitted `?` placeholders no driver could translate, so page two never ran**
+  (#467). Every driver normalises through `_translate_placeholders`, which recognises `$N` and
+  nothing else; a `?` reached the engine verbatim with bound values and nothing to bind them to.
+  Page one carries no cursor and therefore no placeholders, so single-page reads and any
+  relation smaller than one page succeeded -- the failure armed on the day a relation outgrew a
+  page, and presented as `QUERY_EXECUTION_ERROR`, or as upstream-unavailable to a consumer.
+  `_keyset_predicate` now numbers `$N` in emission order.
+
+  The suite asserted the broken spelling verbatim, and its warehouse double records SQL rather
+  than executing it, so nothing in it could tell a translatable predicate from an untranslatable
+  one. That assertion is replaced by one that translates the predicate for every driver style
+  and checks that no placeholder survives untranslated and the count matches the parameters.
+
 ### Added
 
 - `NatsKvBucket.date_created()` and `KvBucketLike.date_created`: the backing stream's

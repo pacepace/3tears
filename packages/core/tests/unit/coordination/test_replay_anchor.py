@@ -65,6 +65,7 @@ class _Store:
         return "DELETE 0"
 
 
+# parity-with: threetears.core.collections.generation.GenerationSource
 class _FakeGenerations:
     """the write-generation source a negative-caching collection refuses to be built without."""
 

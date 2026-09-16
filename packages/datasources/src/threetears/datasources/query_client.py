@@ -784,9 +784,22 @@ def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tup
     Nested OR rather than a row constructor, for portability across every
     datasource type the platform admits. For key ``(a, b)`` the shape is::
 
-        WHERE (a > ?) OR (a = ? AND b > ?)
+        WHERE (a > $1) OR (a = $2 AND b > $3)
 
     Values bind as parameters, so a cursor value never reaches the SQL as text.
+
+    **``$N``, not ``?``, and the distinction is the whole reason page two
+    executes.** Every driver normalises placeholders through
+    :func:`threetears.datasources.drivers._util._translate_placeholders`, which
+    recognises ``$N`` alone -- rewriting it to ``%s``, ``:N`` or ``@pN`` for the
+    engine in front of it. A ``?`` is not a placeholder to any of them, so it
+    travels to the engine verbatim and the bound values arrive with nothing to
+    bind to.
+
+    Page one hid that for as long as it existed: with no cursor this returns no
+    fragment and no parameters, so single-page reads and every relation smaller
+    than one page succeed. The failure arms on the day a relation outgrows a
+    page.
 
     :param key: the ordering columns, TRUSTED identifiers
     :ptype key: Sequence[str]
@@ -801,8 +814,12 @@ def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tup
     clauses: list[str] = []
     params: list[Any] = []
     for index, column in enumerate(key):
-        equalities = " AND ".join(f"{earlier} = ?" for earlier in key[:index])
-        comparison = f"{column} > ?"
+        # numbered in emission order, so the Nth placeholder names the Nth
+        # parameter appended just below and the two cannot drift apart.
+        equalities = " AND ".join(
+            f"{earlier} = ${len(params) + offset + 1}" for offset, earlier in enumerate(key[:index])
+        )
+        comparison = f"{column} > ${len(params) + index + 1}"
         clauses.append(f"({equalities} AND {comparison})" if equalities else f"({comparison})")
         params.extend(cursor[:index])
         params.append(cursor[index])
