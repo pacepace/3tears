@@ -4,6 +4,35 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Added
+
+- **One way to hand back a result too long to send whole**
+  (`threetears.agent.tools.text_window`). Every tool that returns text met the same
+  wall and each had solved it alone: cut at some number, append a phrase, discard
+  the rest. The phrase told a model that something was missing and never how to get
+  it, and what was cut was gone. Found in a consumer's production logs: a whitepaper
+  came back cut at exactly 15,000 characters and was discussed as if whole, and a
+  smart-home device list was cut before the room the person had asked about, so the
+  agent reported that the room did not exist. `window_text` returns a slice, the
+  offset the next slice starts at, the total size, and a note naming the exact call
+  that returns the next part; `WindowedInput` is the `offset` argument, worded once.
+
+### Changed
+
+- **`web_fetch` and `parse_document` take an `offset`** and window their result
+  instead of cutting it: a long page or document is read in parts, and nothing is
+  discarded. `web_fetch`'s result metadata carries `window` (`offset`, `total_chars`,
+  `next_offset`) for a caller that wants it typed. The MCP definition takes the
+  argument's wording from `WindowedInput`, so the two schemas cannot drift.
+- **`dictionary`, the context-save node and `analyze_media`** use the same note.
+  The last two say where the rest is rather than naming a call nobody can make, and
+  the media analyser's answer now says which part of a document it read -- it had
+  been analysing the first 12,000 characters and presenting that as the document.
+- A test fails any tool under `agent/tools` that writes a truncation phrase of its
+  own. It is what found the analyser and the save node.
+
 ## v0.42.0 -- 2026-09-15
 
 ### Added
