@@ -6,12 +6,64 @@ packages (bumped in lock-step).
 
 ## v0.44.0 -- unreleased
 
-0.43.0 was never released. Everything under it ships here, so the "Before you bump" notes
-below are 0.44.0's notes -- read them, they include two that are outages if missed.
+A consumer coming from 0.42.0 gets everything 0.43.0 shipped as well, so read that release's
+"Before you bump" section below in addition to this one -- two of its notes are outages if
+missed. 0.43.0 reached PyPI but was never tagged, which is why its section is dated and this
+one starts a new version rather than amending it.
+
+### Added
+
+- **`ReplayAnchor` and `CollectionReplayAnchor`, and an optional `anchor=` on `ReplayGuard`**:
+  the durable record of when a ledger FIRST existed, which is what lets a guard tell a wipe from
+  a first run. Without one the guard cannot distinguish them and applies its creation-time
+  watermark to both -- right after a wipe, and on a first run a window in which every artifact
+  is refused although nothing was ever recorded to replay. That window is the verifier's
+  tolerance plus the drift allowance, so a fresh deployment refuses logins for about a minute,
+  and any test whose bucket is younger than that refuses everything. With an anchor the
+  watermark applies only when the anchor predates the bucket. The anchor is read once per guard,
+  never on the per-artifact path, and every failure to read or write it falls back to the
+  watermark -- the blind answer stays the conservative one. Optional because the registry server
+  and the tool pod deliberately hold only a NATS client; they keep today's behaviour.
+- **`Driver.relation_fingerprint` and `RelationFingerprint`**: a relation's row count and a
+  digest over its ordering key, in one statement. `read_all` takes one before the first page
+  and one after the last and raises when they differ, REPLACING the `COUNT` it used to prove
+  completeness with. A count proves only THAT the right number of rows arrived -- a delete plus
+  an insert during the read leaves it unchanged, so a list half from before the change and half
+  from after passed as complete. A DRIVER method because the hash-to-number step has no portable
+  spelling: Postgres casts through `bit(32)`, Redshift has `STRTOL`, Snowflake has `TO_NUMBER`
+  with a format model, and a caller reaching a datasource through the hub does not know which
+  engine answers. Snowflake and BigQuery refuse by name.
+- **`RelationFingerprintRequest` / `RelationFingerprintResult` on the datasource query wire**,
+  and `DatasourceQueryClient.relation_fingerprint`. The ask rides the EXISTING query subject
+  rather than a new one: a second subject is a new NATS grant on a security surface and would
+  buy nothing, since the hub verifies the forwarded identity and evaluates `datasource.read` on
+  the same namespace either way. A model validator requires exactly one of `query` and
+  `fingerprint`.
+- `build_relation_key_expression`: the dialect-independent half of a fingerprint, rendering a
+  row's key as text with a NULL distinguished from an empty string. Coalescing both to `''`
+  would leave a NULL-for-empty row swap invisible, which is the blindness a fingerprint
+  replaces a count to remove.
+
+### Fixed
+
+- **Keyset paging emitted `?` placeholders no driver could translate, so page two never ran**
+  (#467). Every driver normalises through `_translate_placeholders`, which recognises `$N` and
+  nothing else; a `?` reached the engine verbatim with bound values and nothing to bind them to.
+  Page one carries no cursor and therefore no placeholders, so single-page reads and any
+  relation smaller than one page succeeded -- the failure armed on the day a relation outgrew a
+  page, and presented as `QUERY_EXECUTION_ERROR`, or as upstream-unavailable to a consumer.
+  `_keyset_predicate` now numbers `$N` in emission order.
+
+  The suite asserted the broken spelling verbatim, and its warehouse double records SQL rather
+  than executing it, so nothing in it could tell a translatable predicate from an untranslatable
+  one. That assertion is replaced by one that translates the predicate for every driver style
+  and checks that no placeholder survives untranslated and the count matches the parameters.
+
+## v0.43.0 -- 2026-09-16
 
 ### Before you bump to this version
 
-Releasing 0.44.0 changes nothing on its own: every consumer pins 3tears by range and installs
+Releasing 0.43.0 changes nothing on its own: every consumer pins 3tears by range and installs
 what its own `uv.lock` resolved, so nothing picks this up until a repo bumps deliberately. These
 are what that bump costs, and two of them are outages if missed. Read them before raising the
 pin, not after.
@@ -44,21 +96,6 @@ pin, not after.
 
 Full rationale, and which consumer owns which step, in `docs/design-durable-coordination.md`.
 
-### Fixed
-
-- **Keyset paging emitted `?` placeholders no driver could translate, so page two never ran**
-  (#467). Every driver normalises through `_translate_placeholders`, which recognises `$N` and
-  nothing else; a `?` reached the engine verbatim with bound values and nothing to bind them to.
-  Page one carries no cursor and therefore no placeholders, so single-page reads and any
-  relation smaller than one page succeeded -- the failure armed on the day a relation outgrew a
-  page, and presented as `QUERY_EXECUTION_ERROR`, or as upstream-unavailable to a consumer.
-  `_keyset_predicate` now numbers `$N` in emission order.
-
-  The suite asserted the broken spelling verbatim, and its warehouse double records SQL rather
-  than executing it, so nothing in it could tell a translatable predicate from an untranslatable
-  one. That assertion is replaced by one that translates the predicate for every driver style
-  and checks that no placeholder survives untranslated and the count matches the parameters.
-
 ### Added
 
 - `NatsKvBucket.date_created()` and `KvBucketLike.date_created`: the backing stream's
@@ -67,17 +104,6 @@ Full rationale, and which consumer owns which step, in `docs/design-durable-coor
   restart.
 - `ReplayGuard.require_covers()`, `ReplayGuard.verifier_future_tolerance`, and
   `threetears.core.coordination.replay_guard.CLOCK_DRIFT_ALLOWANCE`.
-- **`ReplayAnchor` and `CollectionReplayAnchor`, and an optional `anchor=` on `ReplayGuard`**:
-  the durable record of when a ledger FIRST existed, which is what lets a guard tell a wipe from
-  a first run. Without one the guard cannot distinguish them and applies its creation-time
-  watermark to both -- right after a wipe, and on a first run a window in which every artifact
-  is refused although nothing was ever recorded to replay. That window is the verifier's
-  tolerance plus the drift allowance, so a fresh deployment refuses logins for about a minute,
-  and any test whose bucket is younger than that refuses everything. With an anchor the
-  watermark applies only when the anchor predates the bucket. The anchor is read once per guard,
-  never on the per-artifact path, and every failure to read or write it falls back to the
-  watermark -- the blind answer stays the conservative one. Optional because the registry server
-  and the tool pod deliberately hold only a NATS client; they keep today's behaviour.
 - `threetears.registry.proxy.POP_LEEWAY_SECONDS`, public so a pop replay guard can be sized
   from the proxy's own value.
 - **`BaseCollection.negative_cache_max_age`**: opt in to recording a full miss as an
