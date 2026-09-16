@@ -34,6 +34,7 @@ from typing import Any
 import pytest
 from pydantic import JsonValue
 
+from threetears.agent.tools.text_window import NOTE_ALLOWANCE
 from threetears.agent.tools.builtin.web_fetch import WebFetchTool, create_web_fetch_tool
 from threetears.agent.tools.builtin.web_search import WebSearchTool, create_web_search_tool
 from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_REFUSED
@@ -355,13 +356,48 @@ class TestWebFetchCarriesStructure:
         assert facets[EXTRACTION_STATUS_FACET] == "complete"
 
     @pytest.mark.asyncio
-    async def test_the_text_is_cut_to_the_configured_character_bound(self) -> None:
+    async def test_a_page_past_the_bound_comes_back_as_a_part_that_names_the_next_call(self) -> None:
+        """Windowed, not cut: what is past the bound is one call away, not discarded.
+
+        A whitepaper used to come back cut at the bound with "[Content truncated]"
+        and no way to ask for the rest, and was discussed as if whole (metallm
+        conv 01a097bc, 2026-09-16).
+        """
         tool = WebFetchTool(max_chars=60, transport=_StubFetchTransport())
 
         result = await tool.execute(url=_PAGE_URL)
 
-        assert len(result.content) <= 60
-        assert result.content.endswith("[Content truncated]")
+        body, _, note = result.content.partition("\n\n[characters ")
+        assert len(body) <= 60
+        assert note, "a part must say it is a part"
+        assert "call web_fetch again with offset=60" in note
+        assert result.metadata["window"]["offset"] == 0
+        assert result.metadata["window"]["next_offset"] == 60
+
+    @pytest.mark.asyncio
+    async def test_the_offsets_walk_the_whole_page_with_nothing_lost(self) -> None:
+        tool = WebFetchTool(max_chars=60, transport=_StubFetchTransport())
+
+        read, offset = "", 0
+        while True:
+            result = await tool.execute(url=_PAGE_URL, offset=offset)
+            read += result.content.split("\n\n[characters ")[0]
+            next_offset = result.metadata["window"]["next_offset"]
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        whole = await tool.execute(url=_PAGE_URL, offset=0)
+        assert len(read) == whole.metadata["window"]["total_chars"]
+
+    @pytest.mark.asyncio
+    async def test_a_page_inside_the_bound_says_nothing_about_parts(self) -> None:
+        tool = WebFetchTool(max_chars=1_000_000, transport=_StubFetchTransport())
+
+        result = await tool.execute(url=_PAGE_URL)
+
+        assert "[characters " not in result.content
+        assert result.metadata["window"]["next_offset"] is None
 
 
 class TestWebFetchHonoursRobots:
@@ -470,19 +506,22 @@ class TestWebFetchFailsTyped:
 class TestTheCharacterBoundHoldsAtItsEdges:
     """``max_chars`` is deployment config, so it must hold for the values a deployment can set.
 
-    The existing pin uses 60, comfortably past the truncation marker's own
-    length. Under it the arithmetic goes negative and the slice runs from the
+    It bounds the page text; the note saying which part this is rides on top of
+    it, within ``NOTE_ALLOWANCE``. Before windowing, a bound under the old
+    marker's own length made the arithmetic negative and the slice ran from the
     *end* of the string, returning more than the bound rather than less.
     """
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("max_chars", [1, 10, 21, 22, 23, 200])
-    async def test_the_result_never_exceeds_the_bound(self, max_chars: int) -> None:
+    async def test_the_page_text_never_exceeds_the_bound(self, max_chars: int) -> None:
         tool = WebFetchTool(max_chars=max_chars, transport=_StubFetchTransport())
 
         result = await tool.execute(url=_PAGE_URL)
 
-        assert len(result.content) <= max_chars, f"max_chars={max_chars} returned {len(result.content)} chars"
+        body = result.content.split("\n\n[characters ")[0]
+        assert len(body) <= max_chars, f"max_chars={max_chars} returned {len(body)} chars of page"
+        assert len(result.content) <= max_chars + NOTE_ALLOWANCE, "the note outgrew its allowance"
 
     @pytest.mark.asyncio
     async def test_a_bound_under_the_marker_does_not_return_the_tail_of_the_page(self) -> None:
@@ -491,7 +530,7 @@ class TestTheCharacterBoundHoldsAtItsEdges:
 
         result = await tool.execute(url=_PAGE_URL)
 
-        assert "social animals" not in result.content
+        assert "social animals" not in result.content.split("\n\n[characters ")[0]
 
 
 class TestTheDefaultWiringMeetsARealServer:
