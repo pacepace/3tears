@@ -377,13 +377,22 @@ class TestParseDocumentTool:
         assert "[TOOL ERROR]" in result
         assert "format" in result.lower()
 
-    async def test_truncation(self):
+    async def test_a_document_past_the_bound_comes_back_as_a_part(self):
+        """Windowed, not cut: the note names the call that returns the next part."""
         tool = self._create()
         # 20K chars of text
         big_text = ("word " * 4000).encode()
         content = base64.b64encode(big_text).decode()
         result = await tool.ainvoke({"content_base64": content, "filename": "big.txt"})
-        assert "[Content truncated]" in result
+        assert "call parse_document again with offset=15000" in result
+
+    async def test_the_next_part_carries_on_where_the_first_stopped(self):
+        tool = self._create()
+        big_text = ("word " * 4000).encode()
+        content = base64.b64encode(big_text).decode()
+        second = await tool.ainvoke({"content_base64": content, "filename": "big.txt", "offset": 15000})
+        assert "characters 15,000-20,000 of 20,000" in second
+        assert "the end of it" in second
 
 
 # -- ParseDocumentInput schema ------------------------------------------------
