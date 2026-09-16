@@ -20,19 +20,22 @@ rows stay separated by it, and one shared collection serves every instance
 **Every tier is optional, and that is deliberate.** identity-edge has no L3 by design and no
 database credential; a counter there runs L1+L2 and still throttles across replicas. A registry
 with no L2 (scriob's control plane today) runs L1+L3, which is correct within one process but
-counts per replica; the primitives log that rather than refusing, because refusing would take a
-degraded throttle offline instead of leaving it weaker.
+counts per replica. Neither is refused, because refusing would take a degraded throttle offline
+rather than leaving it weaker -- but a missing L3 is logged once per table, since the deliberate
+case and a wiring gap look identical from the outside and only the log tells them apart.
 """
 
 from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta
+from collections.abc import Callable
 from typing import Any, ClassVar, Final, Literal, TypeVar
 
 from asyncpg import PostgresError
 from sqlalchemy import MetaData
 
+from threetears.core.collections.base import CasMutation
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -147,6 +150,7 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         super().__init__(*args, **kwargs)
         self._next_expiry_sweep = 0.0
         self._flusher: PeriodicFlusher | None = None
+        self._warned_no_durable_tier = False
         if self._l1 is not None:
             # These tables are the framework's, not the consumer's, so nothing else declares them
             # to L1. Initialising here is the same move the absent-marker table makes, and it is
@@ -162,13 +166,50 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         """
         return self._write_buffer
 
+    async def l2_cas_mutate(
+        self,
+        entity_id: Any,
+        mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]],
+        *,
+        max_retries: int = 8,
+    ) -> CasMutation:
+        """compare-and-swap, with this table's flusher armed by the write itself.
+
+        The arming lives here rather than in each primitive: it is the collection's own
+        invariant, and a wave-2 primitive that forgot the call would buffer rows nothing ever
+        flushed -- the silent durability loss write-behind exists to bound.
+
+        :param entity_id: pk value or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param mutate: the mutation callback, as :meth:`BaseCollection.l2_cas_mutate` documents
+        :ptype mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]]
+        :param max_retries: how many compare-and-swap rounds to allow
+        :ptype max_retries: int
+        :return: what the mutation did
+        :rtype: CasMutation
+        """
+        outcome = await super().l2_cas_mutate(entity_id, mutate, max_retries=max_retries)
+        self.ensure_flushing()
+        return outcome
+
+    async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
+        """save, with this table's flusher armed by the write itself.
+
+        :param entity: the entity to persist
+        :ptype entity: BaseEntity
+        :param conn: optional backend connection the L3 write joins
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        """
+        await super().save_entity(entity, conn=conn)
+        self.ensure_flushing()
+
     def ensure_flushing(self) -> None:
         """start this collection's periodic flusher, once, if it defers L3 writes.
 
-        Called from the write path of every primitive over the table: nothing else in a consumer
-        drains a write buffer, so a write-behind counter whose flusher was never started would
-        keep its increments until the process happened to call ``flush_pending``, which no
-        consumer does.
+        Armed by this collection's own write paths above, so a primitive cannot forget it.
+        Public because a consumer wiring a collection outside those paths may still need it.
 
         :return: nothing
         :rtype: None
@@ -211,8 +252,31 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         :rtype: int
         """
         if self.l3_pool is None:
+            self._warn_no_durable_tier_once()
             return 1
         return await super().save_to_store(data, original_timestamp, conn=conn)
+
+    def _warn_no_durable_tier_once(self) -> None:
+        """say once per table that this process is keeping coordination state without L3.
+
+        Running without L3 is deliberate in one deployment (identity-edge holds no database) and
+        a wiring mistake everywhere else, and the two are indistinguishable from the outside: the
+        writes succeed either way and the state simply does not survive a broker restart. One line
+        per table per process is what tells an operator which one they are looking at. Once,
+        because this sits on the write path of a throttle.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._warned_no_durable_tier:
+            return
+        self._warned_no_durable_tier = True
+        log.warning(
+            "coordination state has no durable tier on this registry; it lives in L1 and L2 only "
+            "and a broker restart loses it. Deliberate for a process with no database "
+            "(identity-edge); a wiring gap anywhere else",
+            extra={"extra_data": {"table": self.table_name}},
+        )
 
     @property
     def entity_class(self) -> type[CoordinationRow]:
@@ -231,6 +295,34 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         :rtype: str
         """
         return self.schema.name
+
+    def require_l2_fence(self, primitive: str) -> None:
+        """refuse a primitive whose contract is exactly-once when nothing fences it.
+
+        ``l2_cas_mutate`` is a compare-and-swap against L2, and with no L2 client it degrades to a
+        plain read-modify-write through L1 and L3. That is fine for a counter, which loses at worst
+        an increment -- and wrong for a claim or a redemption, whose whole contract is that exactly
+        one caller across every replica is told it was first: two replicas that both read absent
+        would both be told "created", because the L3 upsert resolves the conflict instead of
+        refusing it.
+
+        Refused at construction rather than logged, on the same reasoning
+        ``BaseCollection._refuse_unsound_negative_cache`` uses: a guarantee that quietly does not
+        hold is worse than a process that will not start.
+
+        :param primitive: the primitive's name, for the message
+        :ptype primitive: str
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when this collection has no L2 client
+        """
+        if self._nats_client is None:
+            raise ValueError(
+                f"{primitive} needs an L2 client: its exactly-once guarantee is a compare-and-swap "
+                f"against L2, and without one two replicas can both be told they were first. Pass a "
+                f"registry configured with l2_client= (and a kv_key_scope), or use a primitive whose "
+                f"contract survives a single-process fence"
+            )
 
     async def sweep_expired(self, *, now: datetime | None = None, batch: int = _SWEEP_BATCH) -> int:
         """delete rows whose expiry has passed from L3, in one bounded statement.

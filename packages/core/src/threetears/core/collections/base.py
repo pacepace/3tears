@@ -218,9 +218,19 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: commits and then fails to advance the generation, and it is the server-side lifetime that
     #: keeps markers from filling the shared L2 bucket. Opting in requires a generation source on
     #: the registry, refuses deferred L3 flushes (a write visible before its row lands would be
-    #: hidden by a marker recorded in between), refuses subscript writes (fire-and-forget cannot
-    #: report a generation it failed to advance), and makes ``save_entity``, ``reload_entity`` and
-    #: ``delete`` raise when their L2 write fails. Ignored without an L3 pool or an L2 client.
+    #: hidden by a marker recorded in between), and refuses subscript writes (fire-and-forget
+    #: cannot report a generation it failed to advance).
+    #:
+    #: A failed L2 write degrades exactly as it does on any collection: the marker it did not
+    #: replace was stamped before the commit advanced the generation, so it has already stopped
+    #: answering.
+    #:
+    #: **Wiring.** Without an L3 pool the opt-in is inert -- there is no durable tier for an
+    #: absence to be an absence OF. With an L3 pool it is live whether or not an L2 client is
+    #: wired, deliberately: a writer that has L3 and no L2 must still advance the generation,
+    #: because the absences it has to invalidate were recorded by OTHER pods that do have L2. So
+    #: construction still requires a generation source there, and still refuses the write shapes
+    #: above.
     negative_cache_max_age: ClassVar[timedelta | None] = None
 
     #: The column holding each row's expiry time, or ``None`` for rows that never expire.
@@ -1718,6 +1728,22 @@ class BaseCollection(ABC, Generic[EntityT]):
         return self.exists_in_cache_sync(entity_id)
 
     # --- Cache coherence signaling ---
+
+    async def aclose(self) -> None:
+        """stop whatever background work this collection started. A no-op by default.
+
+        The teardown seam :meth:`CollectionRegistry.close_collections` calls on every registered
+        collection. Declared here rather than discovered with ``getattr`` so a subclass's typo or
+        changed signature fails as a type error rather than as a logged teardown failure, and so
+        an unrelated ``aclose`` on somebody else's object is never called at registry teardown.
+
+        Most collections start nothing and inherit this. A collection that does -- a coordination
+        table's periodic flusher -- overrides it and owes its last flush here.
+
+        :return: nothing
+        :rtype: None
+        """
+        return None
 
     async def _publish_invalidation(self, entity_id: Any, *, l2_key_current: bool = False) -> None:
         """Signal other pods to evict this entity from their L1 caches.

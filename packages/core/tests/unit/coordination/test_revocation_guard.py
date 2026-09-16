@@ -31,6 +31,7 @@ import pytest
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination import RedemptionLedger, RevocationGuard
+from threetears.core.coordination.tables import CoordinationRevocationsCollection, coordination_collection
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import KvError
@@ -290,6 +291,25 @@ class TestRevocationGuard:
         row = next(iter(store.rows.values()))
         assert row["expires_at"] == _NOW + timedelta(hours=1)
 
+    @pytest.mark.asyncio
+    async def test_recording_a_revocation_drives_this_table_s_sweep(self) -> None:
+        # the sweep is per collection instance, so a sibling primitive sweeping the redemptions
+        # table does nothing here. Without a driver of its own, expired revocation rows -- ttl
+        # 400 days in identity -- would accumulate in L3 forever.
+        store = _Store()
+        registry = _registry(_Nats(), store)
+        guard = _guard(registry)
+        collection = coordination_collection(registry, CoordinationRevocationsCollection)
+        swept: list[str] = []
+
+        async def _record_sweep() -> int:
+            swept.append(collection.table_name)
+            return 0
+
+        collection.sweep_expired_if_due = _record_sweep  # type: ignore[method-assign]
+        await guard.record_revocation("sub:p1", revoked_at=_NOW)
+        assert swept == ["coordination_revocations"], "nothing sweeps the revocations table"
+
     def test_a_non_positive_ttl_is_refused(self) -> None:
         with pytest.raises(ValueError, match="ttl_seconds"):
             _guard(ttl_seconds=0)
@@ -386,3 +406,10 @@ class TestRedemptionLedger:
     def test_an_empty_purpose_is_refused(self) -> None:
         with pytest.raises(ValueError, match="purpose"):
             _ledger(purpose="")
+
+    def test_a_registry_with_no_l2_is_refused(self) -> None:
+        # without L2 the compare-and-swap degrades to a read-modify-write, and two replicas that
+        # both read absent are both told they were first -- the one thing this primitive may not
+        # do. A guarantee that quietly does not hold is worse than a process that will not start.
+        with pytest.raises(ValueError, match="needs an L2 client"):
+            _ledger(_registry(None, _Store()))

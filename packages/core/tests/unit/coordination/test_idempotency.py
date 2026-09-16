@@ -329,6 +329,12 @@ class TestConstruction:
         row = next(iter(durable.rows.values()))
         assert row["expires_at"] - row["date_claimed"] == timedelta(hours=24)
 
+    def test_a_registry_with_no_l2_is_refused(self) -> None:
+        # "claimed" versus "exists" is the compare-and-swap; without L2 two replicas that both
+        # read absent would both do the work, which is what a claim exists to prevent.
+        with pytest.raises(ValueError, match="needs an L2 client"):
+            _store(_registry(None, _Store()))
+
     def test_every_store_over_the_table_shares_one_collection(self) -> None:
         registry = _registry(_Nats())
         first = _store(registry, purpose="a")

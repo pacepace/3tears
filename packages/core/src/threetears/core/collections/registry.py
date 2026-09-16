@@ -641,11 +641,11 @@ class CollectionRegistry:
         :rtype: None
         """
         for table, collection in list(self._collections.items()):
-            closer = getattr(collection, "aclose", None)
-            if closer is None:
-                continue
             try:
-                await closer()
+                # a declared seam on BaseCollection, not a getattr probe: the default is a no-op,
+                # so a collection that starts nothing costs nothing, and a typo in an override is
+                # a type error rather than a teardown that quietly skipped it.
+                await collection.aclose()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- one table must not abandon the rest
                 log.error(
                     "closing a collection failed; continuing with the rest of the teardown",

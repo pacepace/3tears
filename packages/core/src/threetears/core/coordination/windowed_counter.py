@@ -288,7 +288,6 @@ class WindowedCounter:
         # three quarters of a 25-connection integration run, where 30 raised none. A budget tuned
         # for the quiet path fails precisely when the counter is the control that matters.
         outcome = await self._collection.l2_cas_mutate(row_id, _increment, max_retries=_MAX_CAS_ATTEMPTS)
-        self._collection.ensure_flushing()
         await self._collection.sweep_expired_if_due()
         return int(outcome.row["count"]) if outcome.row is not None else 1
 

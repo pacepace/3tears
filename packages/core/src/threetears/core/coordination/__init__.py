@@ -1,4 +1,13 @@
-"""cross-pod coordination primitives backed by NATS JetStream KV.
+"""cross-pod coordination primitives.
+
+Two backings, chosen by what a broker restart must cost:
+
+- **NATS JetStream KV** for state whose whole life is shorter than the next restart matters --
+  leases, single-use nonces, token buckets, in-flight counters. Losing it costs a retry.
+- **L3 through a collection**, with L1 and L2 in front, for state a restart must not lose:
+  attempt counters, idempotency claims, standing revocations and single-use redemptions. Those
+  take a registry rather than a NATS client, and their tables live in
+  :mod:`threetears.core.coordination.tables`.
 
 public surface:
 

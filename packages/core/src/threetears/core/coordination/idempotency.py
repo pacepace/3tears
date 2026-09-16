@@ -148,6 +148,9 @@ class IdempotencyKeyStore:
         self._purpose = purpose
         self._ttl = ttl
         self._collection = coordination_collection(registry, CoordinationClaimsCollection, config)
+        # "claimed" versus "exists" is a compare-and-swap against L2. Without one it is a
+        # read-modify-write, and two replicas that both read absent would both do the work.
+        self._collection.require_l2_fence("IdempotencyKeyStore")
 
     @property
     def purpose(self) -> str:
@@ -196,7 +199,6 @@ class IdempotencyKeyStore:
             return "noop", None
 
         outcome = await self._collection.l2_cas_mutate(self._row_id(key), _claim_if_absent)
-        self._collection.ensure_flushing()
         await self._collection.sweep_expired_if_due()
         if outcome.action == "created" and outcome.row is not None:
             return ClaimResult(status="claimed", record=_record_from_row(outcome.row))
@@ -290,7 +292,6 @@ class IdempotencyKeyStore:
             ) from exc
         if missing:
             raise IdempotencyKeyNotFound(f"idempotency key not found: {key!r}")
-        self._collection.ensure_flushing()
 
     def _row_id(self, key: str) -> tuple[str, str]:
         """the row this key addresses.

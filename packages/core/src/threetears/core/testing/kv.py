@@ -381,19 +381,32 @@ class FakeNatsClient:
         :rtype: object
         """
         del kwargs
-        self._subscribers.setdefault(str(subject), []).append((cb, message_type))
-        return object()
+        entry = (cb, message_type)
+        self._subscribers.setdefault(str(subject), []).append(entry)
+        return (str(subject), entry)
 
     async def unsubscribe(self, subscription: Any) -> None:
-        """drop a subscription handle.
+        """drop the one subscription this handle names.
+
+        Only that one: two L2-live registries in one process subscribe and stop independently,
+        and a fake that cleared every subscriber could not express one listener stopping while
+        another kept running -- so a test written against it passed or failed for reasons
+        unrelated to the code under test.
 
         :param subscription: the handle :meth:`subscribe_typed` returned
         :ptype subscription: Any
         :return: None
         :rtype: None
         """
-        del subscription
-        self._subscribers.clear()
+        if not isinstance(subscription, tuple) or len(subscription) != 2:
+            return
+        subject, entry = subscription
+        entries = self._subscribers.get(subject)
+        if entries is None or entry not in entries:
+            return
+        entries.remove(entry)
+        if not entries:
+            del self._subscribers[subject]
 
     async def kv_bucket(
         self,

@@ -134,7 +134,8 @@ class RevocationGuard:
         :return: nothing
         :rtype: None
         :raises ValueError: when ``revoked_at`` is timezone-naive
-        :raises threetears.nats.KvError: on an L2 failure -- the caller MUST deny
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure -- the
+            caller MUST deny. An L2 failure degrades: the write still commits to L3
         """
         if revoked_at.tzinfo is None:
             raise ValueError("RevocationGuard.record_revocation requires a timezone-aware revoked_at")
@@ -150,9 +151,13 @@ class RevocationGuard:
         }
         if existing is None:
             await self._collection.save_entity(self._collection.create(row))
-            return
-        existing.set_data({**existing.to_dict(), **row})
-        await self._collection.save_entity(existing)
+        else:
+            existing.set_data({**existing.to_dict(), **row})
+            await self._collection.save_entity(existing)
+        # the revocations table's only sweep driver. The sweep is per collection instance, so a
+        # sibling primitive sweeping the redemptions table does nothing for this one, and
+        # revocations are the table whose rows would otherwise accumulate for a 400-day ttl.
+        await self._collection.sweep_expired_if_due()
 
     async def revoked_at(self, key: str) -> datetime | None:
         """the recorded revocation moment for ``key``, or ``None`` when never revoked.
@@ -161,7 +166,8 @@ class RevocationGuard:
         :ptype key: str
         :return: the recorded moment, or ``None``
         :rtype: datetime | None
-        :raises threetears.nats.KvError: on an L2 failure -- the caller MUST deny
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure -- the
+            caller MUST deny. An L2 failure degrades: the read falls through to L3
         """
         entity = await self._collection.get(self._row_id(key))
         if entity is None:
@@ -184,7 +190,8 @@ class RevocationGuard:
         :return: whether the key is revoked as of ``moment``
         :rtype: bool
         :raises ValueError: when ``moment`` is timezone-naive
-        :raises threetears.nats.KvError: on an L2 failure -- the caller MUST deny
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure -- the
+            caller MUST deny. An L2 failure degrades: the read falls through to L3
         """
         if moment.tzinfo is None:
             raise ValueError("RevocationGuard.is_revoked_before requires a timezone-aware moment")
@@ -237,6 +244,9 @@ class RedemptionLedger:
         self._purpose = purpose
         self._ttl = timedelta(seconds=ttl_seconds)
         self._collection = coordination_collection(registry, CoordinationRedemptionsCollection, config)
+        # "exactly one caller is told True" is a compare-and-swap against L2. Without one it is a
+        # read-modify-write, and two replicas that both read absent are both told they were first.
+        self._collection.require_l2_fence("RedemptionLedger")
 
     @property
     def purpose(self) -> str:
@@ -278,7 +288,8 @@ class RedemptionLedger:
 
         outcome = await self._collection.l2_cas_mutate(row_id, _claim_if_absent)
         await self._collection.sweep_expired_if_due()
-        return outcome.action == "created"
+        was_first: bool = outcome.action == "created"
+        return was_first
 
     async def was_redeemed(self, key: str) -> bool:
         """whether ``key`` has already been spent, recording nothing.
@@ -287,7 +298,8 @@ class RedemptionLedger:
         :ptype key: str
         :return: whether a live entry exists
         :rtype: bool
-        :raises threetears.nats.KvError: on an L2 failure -- the caller MUST deny
+        :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure -- the
+            caller MUST deny. An L2 failure degrades: the read falls through to L3
         """
         return await self._collection.get(self._row_id(key)) is not None
 

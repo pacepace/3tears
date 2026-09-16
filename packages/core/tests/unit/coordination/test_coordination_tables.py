@@ -300,6 +300,19 @@ class TestTheTiersAreOptional:
             assert outcome.row is not None and outcome.row["count"] == 1
             await collection.aclose()
 
+    @pytest.mark.asyncio
+    async def test_a_write_with_no_durable_tier_says_so_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        # running without L3 is deliberate for identity-edge and a wiring gap everywhere else, and
+        # the writes succeed either way -- so the log line is the only thing that tells them apart.
+        registry = _registry(l2=_Nats())
+        collection = coordination_collection(registry, CoordinationRedemptionsCollection, _config())
+        with caplog.at_level("WARNING"):
+            for key in ("a", "b", "c"):
+                entity = collection.create({"purpose": "jti", "key": key, "expires_at": None})
+                await collection.save_entity(entity)
+        warnings = [r for r in caplog.records if "no durable tier" in r.getMessage()]
+        assert len(warnings) == 1, "a throttle's write path must not log once per write"
+
     def test_the_revocations_table_caches_absences_and_writes_l3_synchronously(self) -> None:
         assert CoordinationRevocationsCollection.negative_cache_max_age is not None
         assert CoordinationRevocationsCollection.l3_write_policy == "synchronous"

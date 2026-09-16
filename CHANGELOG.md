@@ -48,9 +48,14 @@ packages (bumped in lock-step).
     `hub-dpop-nonces` and identity's nonce buckets follow the same step when those
     consumers release. Delete each by name once every replica of its consumer runs this
     release; the next record recreates it memory-backed. A deletion is a wipe, so calls
-    through that guard are refused for its reach afterwards. Ledger buckets (above), and the
-    `RevocationGuard`, idempotency and windowed-counter buckets, are still deliberately
-    file-backed and are NOT part of this step.
+    through that guard are refused for its reach afterwards. Ledger buckets (above) are NOT part
+    of this step: they stay where they are until their consumer moves to the L3 ledger.
+    - The `RevocationGuard`, idempotency and windowed-counter buckets are not part of it either,
+      for the opposite reason: nothing opens them any more. Those three primitives moved to L3 in
+      this same release (below), so their buckets are dead state to be copied into the new tables
+      and then deleted -- see "The live buckets are converted, not abandoned" in
+      `docs/design-durable-coordination.md`. Skipping the copy is the difference between a
+      revoked session staying revoked and becoming valid again.
 - **BREAKING: `BaseCollection.l2_cas_mutate` returns a `CasMutation`** (`action` of created,
   updated, deleted or noop, and the row written) instead of `None`. On a collection with an L3
   pool it is now three-tier:
