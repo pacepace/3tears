@@ -73,6 +73,7 @@ __all__ = [
     "CoordinationRevocationsCollection",
     "CoordinationRow",
     "coordination_collection",
+    "replay_anchor_metadata",
     "table_def_for",
 ]
 
@@ -574,6 +575,32 @@ _DDL_TYPES: Final[dict[str, str]] = {
     BYTES_TYPE: "bytea",
     DATETIMETZ_TYPE: "timestamptz",
 }
+
+
+def replay_anchor_metadata() -> "MetaData":
+    """the coordination tables a tool pod needs for its replay anchor, as SQLAlchemy metadata.
+
+    **A tool pod needs this table without ever naming a coordination primitive.** The SDK builds
+    a :class:`~threetears.core.coordination.replay_anchor.CollectionReplayAnchor` for every pod
+    that has a collection registry, and that anchor claims its first-existence row in
+    ``coordination_redemptions``. A pod whose declaration omits the table gets an anchor whose
+    every read raises ``relation "coordination_redemptions" does not exist`` -- which the guard
+    treats as "cannot tell" and answers conservatively, so the pod silently keeps the very
+    cold-start refusal the anchor exists to remove. Nothing fails loudly; the first proxied call
+    after each restart is simply refused as a replay that never happened.
+
+    **Only the table the anchor uses**, rather than every coordination table. The other three
+    back primitives a tool pod does not run, and a declaration is what the Hub CREATES from --
+    so declaring them would put three unused tables in every pod's schema forever. It would
+    also drag `coordination_claims`'s ``BYTEA`` columns through each pod's own
+    SQLAlchemy-to-Hub type mapping, which several pods do not have and should not need.
+
+    :return: metadata carrying ``coordination_redemptions`` alone
+    :rtype: sqlalchemy.MetaData
+    """
+    metadata = MetaData()
+    CoordinationRedemptionsCollection.schema.to_sqlalchemy_table(metadata)
+    return metadata
 
 
 def table_def_for(schema: TableSchema) -> TableDef:

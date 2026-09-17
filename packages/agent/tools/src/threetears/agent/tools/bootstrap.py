@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING
 from threetears.core.collections import bind_collections_bucket
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.nats import Principal, kv_key_scope_for
 from threetears.observe import (
     HealthCheck,
@@ -367,6 +368,21 @@ class ToolServerBootstrap:
                 nats_client,
             )
             server.attach_object_resolution_cache(self._object_resolutions)
+            # THE SAME ARGUMENT, for the proxy-assertion guard. Without an anchor that guard
+            # cannot tell a bucket it never had from one it lost, so it applies its
+            # creation-time watermark to both -- and `proxy_assertion_nonces` is memory-backed,
+            # so it dies with the broker. Every cold start therefore refused its first proxied
+            # call, naming `proxy assertion nonce replay`, which is the one thing that had not
+            # happened.
+            #
+            # WIRED HERE BECAUSE NOWHERE ELSE CAN. An anchor reads through this registry, which
+            # needs a connected NATS client -- and the thing that connects is the ToolServer the
+            # pod has already finished constructing by then. So a pod cannot pass one at
+            # construction without deferring the lookup by hand, and every pod that did not
+            # think to got a silent refusal window after every restart. This callback runs
+            # BEFORE `serve` builds the guard, so the ordering is guaranteed rather than hoped
+            # for, and a pod that supplied its own anchor keeps it.
+            server.attach_assertion_replay_anchor(CollectionReplayAnchor(registry))
 
         server.add_connected_callback(_on_connected)
 
