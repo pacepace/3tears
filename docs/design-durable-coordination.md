@@ -318,10 +318,12 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
 - **hub**: its DPoP guard (`hub-dpop-nonces`, built in `aibots/hub/app.py`) gains
   `verifier_future_tolerance` covering the `iat_window` it validates with. Without it the hub
   fails at startup on this release. `validate_dpop_proof` passes `issued_at` itself.
-- **identity's refresh-token jti ledger is not a nonce guard.** It is a `ReplayGuard` over a
-  30-day TTL (`identity-revocation-jti`). Watermarked, a broker wipe would refuse every
-  outstanding refresh token for up to 30 days. It moves to an L3 collection instead, and it
-  keeps its file-backed bucket until then.
+- **identity's refresh-token jti ledger is not a nonce guard.** It was a `ReplayGuard` over a
+  30-day TTL in a bucket of its own. Watermarked, a broker wipe would refuse every outstanding
+  refresh token for up to 30 days, which is why it could not be one. It is an L3 collection
+  now, a `purpose` named `identity-revocation-jti` rather than a bucket of that name -- the
+  move this bullet used to describe as pending. The bucket is decommissioned, and the name was
+  dropped from `threetears.iam.buckets` in 0.45.1 so the platform stops granting it.
 - **registry and tool runtime** (this repo): the PoP and proxy-assertion guards.
 - **survey**: the entry-challenge guard, the panel lockout counter, and idempotency claims.
 - **scriob**: its login throttle.
