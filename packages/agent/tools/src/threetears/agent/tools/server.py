@@ -54,7 +54,6 @@ from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolve
 from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
 from threetears.core.namespaces import build_tool_namespace_name
-from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
 from threetears.core.security.identity_token import (
@@ -185,7 +184,7 @@ _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
 _UNHEALTHY_EXIT_THRESHOLD: int = 3
 
 if TYPE_CHECKING:
-    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.coordination.replay_anchor import ReplayAnchor
 
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
@@ -839,7 +838,7 @@ class ToolServer:
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
         jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         assertion_replay_guard: "ReplayGuard | None" = None,
-        replay_anchor_registry: "CollectionRegistry | None" = None,
+        assertion_replay_anchor: "ReplayAnchor | None" = None,
         object_store: "ObjectStore | None" = None,
         object_resolver: "ObjectResolver | None" = None,
         engagement_resolver: "EngagementScopeResolver | None" = None,
@@ -978,11 +977,12 @@ class ToolServer:
             tool that raises its OWN ``TimeoutError`` within the ceiling is
             unaffected -- that stays an ordinary tool failure. Must be > 0.
         :ptype max_call_seconds: float | None
-        :param replay_anchor_registry: the pod's collection registry, used ONLY to anchor the
-            self-provisioned assertion replay guard so it can tell a first run from a wiped
-            bucket. ``None`` for a pod that has none, which leaves that guard refusing every
-            assertion issued within the clock-drift allowance of its bucket's creation
-        :ptype replay_anchor_registry: CollectionRegistry | None
+        :param assertion_replay_anchor: the durable first-existence record for the
+            self-provisioned assertion replay guard, so it can tell a first run from a wiped
+            bucket. ``None`` for a pod with nowhere to record one, which leaves that guard
+            refusing every assertion issued within the clock-drift allowance of its bucket's
+            creation -- five seconds after every NATS restart, reported as replay
+        :ptype assertion_replay_anchor: ReplayAnchor | None
         :param assertion_replay_guard: the single-use guard for inbound proxy-assertion nonces, or
             ``None`` to self-provision one in :meth:`serve` over the pod's connection. REQUIRED at
             verify time either way: a pod with no guard refuses every call rather than skipping
@@ -1065,9 +1065,11 @@ class ToolServer:
         # connection; callers driving handle_call without serve() (tests) inject one here. an injected
         # guard must be sized for this pod's assertion leeway, or a replay stamped at that edge would
         # pass its wipe check: refused at construction rather than discovered after a restart.
-        # held for the self-provisioned guard below, which is built at serve() time when
-        # the connection exists. None for a pod with no registry; see that site.
-        self._replay_anchor_registry = replay_anchor_registry
+        # held for the self-provisioned guard below, which is built at serve() time when the
+        # connection exists. Typed as the PROTOCOL, not as the concrete CollectionReplayAnchor:
+        # a pod supplies one over its registry, and a test supplies a double, and neither has
+        # to stand up L3 to say `this ledger existed before now`.
+        self._assertion_replay_anchor = assertion_replay_anchor
         if assertion_replay_guard is not None:
             assertion_replay_guard.require_covers(timedelta(seconds=_ASSERTION_LEEWAY_SECONDS))
         self._assertion_replay_guard: ReplayGuard | None = assertion_replay_guard
@@ -1600,17 +1602,16 @@ class ToolServer:
             # rather than hidden: the fix for it is giving the pod a registry, not weakening the
             # guard, and a guard that guessed permissively would be the wrong answer here.
             #
-            # INJECTED, not reached for. The registry belongs to the pod's bootstrap, which
-            # builds it only once NATS is up and never for a pod that declared no collection
-            # tables -- so this server takes it as a parameter rather than assuming an attribute
-            # that does not exist on it.
-            anchor = CollectionReplayAnchor(self._replay_anchor_registry) if self._replay_anchor_registry else None
+            # INJECTED, and typed as the Protocol. The registry an anchor reads through belongs
+            # to the pod's bootstrap, which builds it only once NATS is up and never for a pod that
+            # declared no collection tables -- so this server takes the ANCHOR rather than the
+            # registry, and a caller with no L3 can still supply one.
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
                 bucket_name="proxy_assertion_nonces",
                 ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
                 verifier_future_tolerance=timedelta(seconds=_ASSERTION_LEEWAY_SECONDS),
-                anchor=anchor,
+                anchor=self._assertion_replay_anchor,
             )
 
         # DQ-B7 queue-group sweep: call_subject and probe_subject are
