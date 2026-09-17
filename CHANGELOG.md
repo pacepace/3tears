@@ -4,7 +4,37 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.45.0 -- unreleased
+## v0.45.1 -- 2026-09-16
+
+### Changed
+
+- **`threetears.iam.buckets.IDENTITY_KV_BUCKETS` drops eleven names, 25 to 14.** They were
+  declared for a shape identity had already stopped using, so the platform rendered a grant for
+  eleven buckets nothing opens. The distinction that removes them is the one this module's own
+  docstring draws and the tuple contradicted: a `purpose` is not a bucket.
+
+  Six were deleted outright -- the authorization-code, OIDC-state, GitHub-state,
+  passkey-challenge, TOTP partial-auth and SAML `InResponseTo` guards. Each guarded an artifact
+  identity itself wrote, so it is now consumed by a revision-guarded delete of that record, and
+  the nonce bucket beside it was dead weight. Five moved off KV: the spray counter and both
+  revocation ledgers are `BaseCollection`-backed and live in the shared collections bucket under
+  identity's key scope, while the SAML-assertion and OAuth-client-assertion guards store nothing
+  at all now and watermark against a signed issue time.
+
+  **This is a grant narrowing, not a behaviour change.** Nothing in this library ever defaulted
+  to one of these names -- every site took the name from its caller -- so no consumer can pick
+  one up by upgrading. The only reader of the tuple is `14-eng-ai-bot`'s static-NATS-grant
+  generator, and the four configs it renders must be regenerated against this release. The two
+  directions are both pinned: `14-eng-ai-bot-identity`'s
+  `test_identity_kv_buckets_are_declared` fails if a bucket identity opens is missing here, and
+  now also if a name here has no opener.
+
+  **How eleven dead names shipped in 0.45.0.** That gate hard-imports this module, and it was
+  written while identity was still pinned to 0.44.0, where the module does not exist. It failed
+  at collection rather than at an assertion, so it read as a repin chore rather than as an
+  unverified gate, and it went to develop unrun. A gate that cannot import is not a gate.
+
+## v0.45.0 -- 2026-09-16
 
 ### Added
 
