@@ -15,6 +15,7 @@ from threetears.agent.tools.object_resolution_collection import (
     OBJECT_RESOLUTIONS_TABLE,
     ObjectResolutionCollection,
 )
+from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.nats import Principal, kv_key_scope_for
 from threetears.observe import HealthTier
 
@@ -61,12 +62,16 @@ class _FakeToolServer:
         self.pod_id = pod_id
         self.connected_callbacks: list[Any] = []
         self.object_resolution_cache: Any = None
+        self.assertion_replay_anchor: Any = None
 
     def add_connected_callback(self, callback: Any) -> None:
         self.connected_callbacks.append(callback)
 
     def attach_object_resolution_cache(self, cache: Any) -> None:
         self.object_resolution_cache = cache
+
+    def attach_assertion_replay_anchor(self, anchor: Any) -> None:
+        self.assertion_replay_anchor = anchor
 
     async def serve(self) -> None:
         self.serve_called = True
@@ -253,6 +258,36 @@ class TestTheCollectionStackRidesTheLifecycle:
         await run_task
 
         client.unsubscribe.assert_awaited_once()
+
+    async def test_the_replay_anchor_is_wired_without_the_host_asking(self) -> None:
+        """the proxy-assertion guard's durable first-existence record, wired here or nowhere.
+
+        Without an anchor the guard cannot tell a bucket it never had from one it lost, so
+        it applies its creation-time watermark to both -- and `proxy_assertion_nonces` is
+        memory-backed, so it dies with the broker. Every cold start then refused its first
+        proxied call, naming a replay that had not happened.
+
+        A pod CANNOT do this for itself: an anchor reads through the collection registry,
+        which needs a connected NATS client, and the thing that connects is the very
+        ToolServer the pod has finished constructing by then. So it is wired from the
+        connected callback, which runs before `serve` builds the guard. An anchor a host
+        had to remember to build is one a host will forget to build.
+        """
+        server = _FakeToolServer()
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await server.connected_callbacks[0](_stack_nats_client())
+        await run_task
+
+        assert isinstance(server.assertion_replay_anchor, CollectionReplayAnchor)
 
 
 class TestUnoverriddenHooks:

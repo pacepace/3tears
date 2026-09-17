@@ -1144,6 +1144,37 @@ class ToolServer:
         """
         self._object_resolution_cache = cache
 
+    def attach_assertion_replay_anchor(self, anchor: "ReplayAnchor") -> None:
+        """hand the proxy-assertion guard the durable first-existence record it needs.
+
+        The third lifecycle-owner seam, and the same shape as the two above for the same
+        reason: an anchor reads through the pod's collection registry, which exists only once
+        the connection is up, while the guard below is built moments later inside
+        :meth:`serve`. ``ToolServerBootstrap`` calls this from its connected callback, which
+        runs BEFORE that construction, so the ordering is guaranteed rather than hoped for.
+
+        **Why the SDK does this instead of the pod.** Without an anchor the guard cannot tell a
+        bucket it never had from one it lost, so it applies its creation-time watermark to both
+        -- and ``proxy_assertion_nonces`` is memory-backed, so it dies with the broker. Every
+        cold start therefore refused its first proxied call, naming ``proxy assertion nonce
+        replay``, which is the one thing that had not happened. A pod could pass its own anchor,
+        but it cannot build one at construction time: the registry needs a connected NATS
+        client, and the thing that connects is this server. So every pod that tried would have
+        to defer the lookup by hand, and a pod that did not try got a silent five-second
+        refusal window after every restart. An anchor a host had to remember to build is one a
+        host will forget to build.
+
+        A pod that supplied its own ``assertion_replay_anchor`` keeps it: that is a decision
+        made elsewhere, and this is a default, not an override.
+
+        :param anchor: the durable record of when this pod's nonce buckets first existed
+        :ptype anchor: ReplayAnchor
+        :return: nothing
+        :rtype: None
+        """
+        if self._assertion_replay_anchor is None:
+            self._assertion_replay_anchor = anchor
+
     @property
     def owned_namespaces(self) -> tuple[str, ...] | None:
         """the namespaces this pod OWNS, as its registration reply named them.
