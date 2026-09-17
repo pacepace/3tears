@@ -54,36 +54,38 @@ IDENTITY_JS_STREAMS: Final[tuple[str, ...]] = ("audit",)
 
 #: every KV bucket identity-core and identity-edge open, unprefixed, sorted.
 #:
-#: ``oauth_client_assertions`` is the one name breaking the ``identity-`` convention. It is
-#: recorded as it is rather than corrected here: renaming a bucket strands the keys in the
-#: old one, and a replay guard that forgets what it has seen is a replay window, not a
-#: cosmetic issue. The rename belongs with a migration, not with a grant list.
+#: Eleven replay-guard names that stood here are GONE, and both reasons are the "a purpose is
+#: not a bucket" distinction above, arrived at from two directions. Five became a ``purpose``
+#: row-key prefix in the shared collections bucket -- the spray counter, both revocation
+#: ledgers, and the SAML-assertion and OAuth-client-assertion guards, the latter two now
+#: watermarked against a signed issue time rather than remembering nonces at all. Six were
+#: deleted outright: the artifact each guarded is a server-side record identity itself wrote,
+#: so it is consumed by a revision-guarded delete of that record. A separate nonce bucket is a
+#: second stream that can sit on another node, and wiping it while the guarded record survives
+#: reopens the very replay window it exists to close.
+#:
+#: They are removed rather than left behind because an unused grant is not free. It is a bucket
+#: this service may open and does not, which an operator reading the rendered conf reads as a
+#: live dependency.
+#:
+#: ``oauth_client_assertions`` was the one name breaking the ``identity-`` convention, and it
+#: left as a purpose keeping that spelling: a rename strands the keys in the old bucket, and a
+#: replay guard that forgets what it has seen is a replay window rather than a cosmetic issue.
 IDENTITY_KV_BUCKETS: Final[tuple[str, ...]] = (
     "identity-apikey-verify-cache",
     "identity-core-healthcheck",
-    "identity-core-spray-counter",
     "identity-devx-bootstrap",
     "identity-dpop-nonces",
     "identity-email-change-tokens",
     "identity-flow-origin",
     "identity-github-state",
-    "identity-github-state-replay",
-    "identity-oauth-auth-code-replay",
     "identity-oauth-auth-codes",
     "identity-oidc-state",
-    "identity-oidc-state-replay",
-    "identity-passkey-challenge-replay",
     "identity-passkey-challenges",
     "identity-recovery-tokens",
     "identity-refresh-replay-grace",
-    "identity-revocation-jti",
-    "identity-revocation-standing",
-    "identity-saml-assertion-replay",
-    "identity-saml-inresponseto-replay",
     "identity-saml-pending",
     "identity-totp-partial-auth",
-    "identity-totp-partial-auth-replay",
-    "oauth_client_assertions",
 )
 
 #: the L2 key scopes identity's collections write under in the SHARED ``{ns}-collections``
