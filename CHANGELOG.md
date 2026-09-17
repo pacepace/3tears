@@ -4,6 +4,37 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.45.0 -- unreleased
+
+### Added
+
+- **`threetears.iam.buckets`**: the JetStream resources the identity service opens --
+  `IDENTITY_KV_BUCKETS` (25), `IDENTITY_JS_STREAMS` (1) and `IDENTITY_KV_KEY_SCOPES` (2) --
+  declared once, here, for the two repositories that must agree on them and cannot import each
+  other. `14-eng-ai-bot-identity` OPENS them; `14-eng-ai-bot`'s static-NATS-grant generator
+  GRANTS them, because identity connects as a static user whose permissions that generator
+  renders.
+
+  **The failure this closes does not raise.** An ungranted JetStream call blocks to its deadline
+  and reports an unreachable broker, so a resource the grant misses is a ten-second hang inside a
+  login, read as a network fault. It cost a platform-wide outage of exactly that shape: identity
+  began writing a `RedemptionLedger` into the shared collections bucket while the deployment's
+  conf still denied it that bucket, its api-key verification RPC stopped answering, and every
+  admin route returned `401 authentication required` with the real cause a five-second timeout in
+  another service's log.
+
+  **Nothing here is authoritative on its own.** `14-eng-ai-bot-identity` carries
+  `test_identity_kv_buckets_are_declared`, which walks its own source for every bucket and stream
+  opener -- through imported constants, parameter defaults and `super().__init__` pass-throughs --
+  and fails if one names a resource absent from these tuples. The declaration cannot silently fall
+  behind the code that opens it.
+
+#### Before you bump
+
+Nothing to do: this release only ADDS a module. No existing import, signature or behaviour
+changes. A consumer that does not grant NATS permissions for the identity service can ignore it
+entirely.
+
 ## v0.44.0 -- unreleased
 
 A consumer coming from 0.42.0 gets everything 0.43.0 shipped as well, so read that release's
