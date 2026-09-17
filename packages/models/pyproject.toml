@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-models"
-version = "0.44.0"
+version = "0.45.0"
 description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -12,8 +12,8 @@ authors = [{name = "pace"}]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "3tears-media-contracts>=0.44.0,<0.45.0",
-    "3tears-observe>=0.44.0,<0.45.0",
+    "3tears-media-contracts>=0.45.0,<0.46.0",
+    "3tears-observe>=0.45.0,<0.46.0",
     "pydantic>=2.0",
     "langchain-core>=0.3",
     # direct dependency, not just transitive-via-langchain-anthropic: the
@@ -44,7 +44,7 @@ dependencies = [
 # claude-agent-sdk is bounded directly, not left to langchain-claude-code's open range: the session
 # pool drives private SDK internals (the query's control requests and in-process server table),
 # verified against 0.2.116-0.2.118. A minor release may move them; the pool turns itself off if so.
-claude-cli = ["langchain-claude-code>=0.1.0", "claude-agent-sdk>=0.2.116,<0.3", "3tears-langgraph>=0.44.0,<0.45.0"]
+claude-cli = ["langchain-claude-code>=0.1.0", "claude-agent-sdk>=0.2.116,<0.3", "3tears-langgraph>=0.45.0,<0.46.0"]
 voyageai = ["langchain-voyageai>=0.3"]
 whisper = ["httpx>=0.27"]
 image = ["httpx>=0.27"]

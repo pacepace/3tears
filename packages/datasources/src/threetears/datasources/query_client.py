@@ -47,12 +47,13 @@ the prefix, a derivation refuses it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, field_validator, model_validator
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger, traced
@@ -99,6 +100,21 @@ DEFAULT_QUERY_TIMEOUT_SECONDS: float = 120.0
 #: imports it rather than choosing its own.
 QUERY_STATEMENT_TIMEOUT_SECONDS: int = 100
 
+#: one unquoted SQL identifier, the shape every admitted engine accepts unquoted.
+#:
+#: Deliberately NOT permitting a quoted identifier. A quoted name may contain the quote
+#: character doubled, so admitting them means implementing the escaping too -- and getting
+#: that wrong reopens exactly the hole this closes, in a form that reads as handled. A
+#: relation needing quoting is a relation this ask does not serve.
+_IDENTIFIER_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
+#: a relation: one identifier, or two joined by a single dot (``schema.table``).
+#:
+#: Two parts at most. A three-part ``catalog.schema.table`` is admitted by some engines and
+#: not others, and the value is interpolated verbatim, so widening this is a per-engine
+#: decision rather than a regex change.
+_RELATION_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?$")
+
 
 class RelationFingerprintRequest(BaseModel):
     """ask the hub to count and fingerprint a relation, instead of running SQL.
@@ -116,12 +132,71 @@ class RelationFingerprintRequest(BaseModel):
         database key from a credential by name, and states the database meaning in the name
         rather than asking a reader to trust a pattern
     :ptype key_columns: list[str]
+    :raises ValueError: if ``relation`` or any ``key_columns`` entry is not a plain SQL
+        identifier, or if ``key_columns`` is empty
     """
 
     model_config = ConfigDict(extra="forbid")
 
     relation: str
     key_columns: list[str]
+
+    @field_validator("relation")
+    @classmethod
+    def _relation_is_an_identifier(cls, value: str) -> str:
+        """refuse anything that is not one or two plain identifiers joined by a dot.
+
+        **THIS IS THE INJECTION BOUNDARY, and it is the only one.** Every driver
+        implementing ``relation_fingerprint`` interpolates this value straight into a
+        statement -- it has to, because a relation name cannot be a bind parameter in any
+        admitted engine -- and each documents it as a TRUSTED identifier. Nothing made it
+        trusted: these fields arrive off the wire, and the broker's fingerprint branch
+        deliberately skips ``validate_read_sql`` because the ask is declarative rather than
+        a statement. So the trust the drivers assume is established HERE or nowhere, and
+        ``fingerprint.relation = 'x; DROP TABLE y --'`` reaches the warehouse.
+
+        Validated at the MODEL rather than at each broker, because there is one model and
+        several brokers, and a check per caller is a check somebody adds a caller without.
+
+        :param value: the proposed relation name
+        :ptype value: str
+        :return: the value unchanged
+        :rtype: str
+        :raises ValueError: if it is not ``name`` or ``schema.name``, each a plain
+            identifier
+        """
+        if not _RELATION_GRAMMAR.match(value):
+            raise ValueError(
+                f"relation {value!r} is not a plain SQL identifier or schema-qualified pair; "
+                f"it is interpolated into a statement, so it must match "
+                f"{_RELATION_GRAMMAR.pattern}"
+            )
+        return value
+
+    @field_validator("key_columns")
+    @classmethod
+    def _key_columns_are_identifiers(cls, value: list[str]) -> list[str]:
+        """refuse an empty key, and any entry that is not a plain identifier.
+
+        Empty is refused here rather than at the driver because every driver already
+        raises on it separately -- surfacing as a warehouse error the caller cannot tell
+        from a connection fault, rather than as the malformed request it is.
+
+        :param value: the proposed ordering columns
+        :ptype value: list[str]
+        :return: the value unchanged
+        :rtype: list[str]
+        :raises ValueError: if empty, or if any entry is not a plain identifier
+        """
+        if not value:
+            raise ValueError("key_columns must name at least one column; the digest has no order without it")
+        bad = [c for c in value if not _IDENTIFIER_GRAMMAR.match(c)]
+        if bad:
+            raise ValueError(
+                f"key_columns {bad!r} are not plain SQL identifiers; they are interpolated "
+                f"into a statement, so each must match {_IDENTIFIER_GRAMMAR.pattern}"
+            )
+        return value
 
 
 class RelationFingerprintResult(BaseModel):
