@@ -22,6 +22,7 @@ from threetears.core.collections.bucket import (
     bind_collections_bucket,
 )
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.security import (
@@ -743,6 +744,25 @@ class RegistryServer:
             # the proxy accepts a pop iat up to its leeway ahead of its clock; the guard's wipe check
             # is sized for exactly that, and CallProxy refuses a guard that is not.
             verifier_future_tolerance=timedelta(seconds=POP_LEEWAY_SECONDS),
+            # ANCHORED, and without this EVERY TOOL CALL IS REFUSED for the leeway window after
+            # any NATS restart. `pop_nonces` is memory-backed on purpose -- a nonce is burned on
+            # every proof-carrying call, so a durable write would sit on the hottest path there
+            # is -- which means the bucket dies with the broker. A guard with no anchor cannot
+            # tell a bucket it never had from one it lost, so it assumes the worse and applies
+            # its creation-time watermark to both: on a FIRST run, where nothing was ever
+            # recorded and no replay is possible, every proof issued before the bucket existed
+            # is refused as `pop nonce replay`.
+            #
+            # Observed, not reasoned: a proof issued 0.4s before creation, refused against a
+            # 65s reach, surfacing as `pop verification failed (IdentityTokenError)` with the
+            # real cause visible only in a log line the default formatter drops. The hub's DPoP
+            # guard was given an anchor for exactly this; this one was the twin left behind, and
+            # `tests/integration/test_tool_server_registry.py` and `test_timeout_chain.py` in
+            # 14-eng-ai-bot have been red on it ever since -- unseen, because that repo's CI
+            # runs only `tests/unit/` and `tests/enforcement/`.
+            #
+            # The anchor is ONE row read once at boot, so it costs the hot path nothing.
+            anchor=CollectionReplayAnchor(collection_registry),
         )
 
         # one in-flight-requests gauge for this registry replica: the CallProxy
