@@ -4,6 +4,43 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.46.0 -- 2026-09-17
+
+### The proxy-assertion guard no longer refuses the first call after a restart
+
+A tool pod's `proxy_assertion_nonces` bucket is memory-backed, so it dies with the
+broker. Facing a bucket it has just created, `ReplayGuard` cannot tell "never existed"
+from "existed and was wiped", and a wipe would have erased the record of nonces already
+spent -- so it fails safe and refuses anything issued before the bucket's creation time.
+The result was that the first proxied call after every cold start was refused, naming
+`proxy assertion nonce replay`, which is the one thing that had not happened. A caller
+that retried never noticed; a caller that made a single call, like a deployment's own
+ingress verification, failed.
+
+`ReplayGuard` already had the mechanism to resolve this -- an `anchor` recording when a
+bucket FIRST existed, which distinguishes a first run from a wipe -- but a tool pod could
+not supply one. An anchor reads through the pod's collection registry, which needs a
+connected NATS client, and the thing that connects is the very `ToolServer` the pod has
+finished constructing by then.
+
+- `ToolServer.attach_assertion_replay_anchor` is a new lifecycle seam, alongside
+  `add_connected_callback` and `attach_object_resolution_cache`.
+- `ToolServerBootstrap` now wires a `CollectionReplayAnchor` from its connected callback,
+  which runs before `serve` builds the guard. **Every pod with a collection registry gets
+  this with no code of its own**, and a pod that supplies its own anchor keeps it.
+- `threetears.core.coordination.tables.replay_anchor_metadata()` exports the one table the
+  anchor claims its row in, `coordination_redemptions`, in the shape a pod's Hub table
+  declaration is built from. Only that table: the other three coordination tables back
+  primitives a tool pod does not run, and a declaration is what the Hub CREATES from.
+
+The watermark itself is unchanged. It is the only thing stopping a pre-wipe assertion
+being replayed through an empty bucket, and a pod with no registry still has no anchor --
+it keeps the existing window, which closes when it gains a registry for its own reasons.
+
+**A minor bump rather than a patch**, per BLD-7QM3: two packages gained public API, and
+every intra-family bound reads `>=0.45.0,<0.46.0`, so shipping this on the same minor line
+would let pip resolve a sibling that lacks these names.
+
 ## v0.45.1 -- 2026-09-16
 
 ### Changed
