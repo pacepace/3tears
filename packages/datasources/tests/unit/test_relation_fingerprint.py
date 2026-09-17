@@ -25,8 +25,10 @@ cross-check here even in principle.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.datasources.drivers._util import build_relation_key_expression
+from threetears.datasources.query_client import RelationFingerprintRequest
 
 
 class TestTheKeyExpressionSeesEveryDifference:
@@ -95,3 +97,86 @@ class TestTheUnbuiltDriversRefuseByName:
         )
         with pytest.raises(NotImplementedError, match="relation_fingerprint"):
             await driver.relation_fingerprint("s.t", ["k"])
+
+
+class TestTheAskCannotCarrySql:
+    """the relation and its key columns are INTERPOLATED, so the model is the only gate.
+
+    Every driver implementing ``relation_fingerprint`` writes these two values straight into
+    a statement -- it has to, because a relation name cannot be a bind parameter in any
+    admitted engine -- and each documents them as TRUSTED identifiers. Nothing made them
+    trusted: they arrive off the wire, and the hub's fingerprint branch deliberately skips
+    ``validate_read_sql`` because the ask is declarative rather than a statement.
+
+    So the trust the drivers assume is established at this model or nowhere. These are the
+    payloads that reached the warehouse before it was.
+    """
+
+    @pytest.mark.parametrize(
+        "relation",
+        [
+            "public.orders; DROP TABLE users --",
+            "public.orders WHERE 1=1",
+            "(SELECT 1)",
+            "public.orders UNION SELECT password FROM secrets",
+            'public."orders"',
+            "public.orders--",
+            "a.b.c",
+            "",
+            " public.orders",
+            "public. orders",
+        ],
+    )
+    def test_a_relation_that_is_not_an_identifier_is_refused(self, relation: str) -> None:
+        """
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValidationError):
+            RelationFingerprintRequest(relation=relation, key_columns=["id"])
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "id; DROP TABLE users --",
+            "id, (SELECT password FROM secrets)",
+            "id)",
+            '"id"',
+            "",
+            "1",
+        ],
+    )
+    def test_a_key_column_that_is_not_an_identifier_is_refused(self, column: str) -> None:
+        """
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValidationError):
+            RelationFingerprintRequest(relation="public.orders", key_columns=["id", column])
+
+    def test_an_empty_key_is_refused_here_rather_than_at_the_warehouse(self) -> None:
+        """every driver raises on this separately, and that reads as a connection fault.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValidationError):
+            RelationFingerprintRequest(relation="public.orders", key_columns=[])
+
+    @pytest.mark.parametrize(
+        "relation",
+        ["orders", "public.orders", "_private.t$1", "Schema.Table"],
+    )
+    def test_a_real_relation_still_passes(self, relation: str) -> None:
+        """the positive half, which is not decoration.
+
+        A validator that refused everything would pass every case above and break every
+        caller -- and the fingerprint path is a change-probe, so it would fail as "the
+        relation changed" rather than as a refused request.
+
+        :return: nothing
+        :rtype: None
+        """
+        asked = RelationFingerprintRequest(relation=relation, key_columns=["id", "created_at"])
+        assert asked.relation == relation
+        assert asked.key_columns == ["id", "created_at"]
