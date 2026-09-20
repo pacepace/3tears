@@ -1645,20 +1645,34 @@ class ToolServer:
                 anchor=self._assertion_replay_anchor,
             )
 
-        # DQ-B7 queue-group sweep: call_subject and probe_subject are
-        # pod-specific (``{ns}.tools.internal.{pod_id}`` /
-        # ``{ns}.tools.probe.{pod_id}``); only this pod's connection
-        # binds them, so a queue group would be redundant. heartbeat
-        # publishes are write-only and need no queue group.
+        # QUEUE-GROUPED, because a pod identity is not a process. The DQ-B7 sweep
+        # left these ungrouped on the premise that "only this pod's connection
+        # binds them" -- true of one process per pod id, and FALSE of every
+        # Kubernetes Deployment with replicas > 1, where N processes share one
+        # registered identity and all N bind the same pod-scoped subject.
+        #
+        # Without a group NATS broadcasts, so each call is delivered to every
+        # replica. They all handle it, and the first to reach the shared
+        # proxy-assertion ReplayGuard consumes the assertion's nonce -- so every
+        # other replica rejects the SAME call as `proxy assertion nonce replay`.
+        # The hub turns that into a 502. Observed on cobalt-prod 2026-09-20 with
+        # two replicas: one correlation id, both pods, one rejection.
+        #
+        # THE QUEUE NAME IS THE SUBJECT PATH, matching `nats/forward.py`. It has
+        # to be stable across restarts and distinct per pod identity, and the
+        # subject already is both -- it carries the pod id, so two DIFFERENT tool
+        # pods never share a group and a restarted replica rejoins its own.
+        #
+        # Heartbeat publishes are write-only and still need no queue group.
         call_subject = Subjects.tools_internal(self._pod_id)
-        await self._nc.subscribe(subject=call_subject, cb=self.handle_call)
+        await self._nc.subscribe(subject=call_subject, queue=call_subject.path, cb=self.handle_call)
         log.info(
             "subscribed to call subject",
-            extra={"extra_data": {"subject": call_subject.path}},
+            extra={"extra_data": {"subject": call_subject.path, "queue": call_subject.path}},
         )
 
         probe_subject = Subjects.tools_probe(self._pod_id)
-        await self._nc.subscribe(subject=probe_subject, cb=self.handle_probe)
+        await self._nc.subscribe(subject=probe_subject, queue=probe_subject.path, cb=self.handle_probe)
         log.info(
             "subscribed to probe subject",
             extra={"extra_data": {"subject": probe_subject.path}},

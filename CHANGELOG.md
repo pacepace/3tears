@@ -4,6 +4,36 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.46.1 -- 2026-09-20
+
+### Tool pods can run more than one replica
+
+A pod identity is not a process. The tool server subscribed to its call and probe
+subjects with no queue group, on the premise -- stated in the DQ-B7 sweep -- that
+"only this pod's connection binds them". That holds for one process per pod id and
+fails for every Kubernetes Deployment with `replicas > 1`, where N processes share
+ONE registered identity and all N bind the same pod-scoped subject.
+
+Without a queue group NATS broadcasts, so each call reached every replica. They all
+handled it, and whichever hit the shared `proxy_assertion_nonces` bucket first
+consumed the assertion's nonce -- so every other replica rejected the SAME call as
+`proxy assertion nonce replay`. The caller was told the platform refused a request
+that was perfectly good.
+
+Both subscriptions now take `queue=<subject path>`, matching the convention in
+`nats/forward.py`. The queue name has to be stable across restarts and distinct per
+pod identity; the subject is both, because it already carries the pod id. Two
+different tool pods never share a group, and a restarted replica rejoins its own.
+
+The probe is safer grouped rather than riskier: it answers `ProbeAck(pod_id, ready)`
+-- "this pod is reachable" -- so one reply is the complete answer. Ungrouped, N
+replicas each replied to the same reply subject and the prober collected N duplicate
+acks for one question.
+
+Found on cobalt-prod running two EVD tool pod replicas: one correlation id in both
+pods, one binding the replay guard, the other rejecting. **This affected every tool
+pod in the estate**; EVD was simply the first to try scaling one.
+
 ## v0.46.0 -- 2026-09-17
 
 ### The proxy-assertion guard no longer refuses the first call after a restart
