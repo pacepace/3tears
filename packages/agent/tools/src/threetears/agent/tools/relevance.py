@@ -228,8 +228,15 @@ class ToolRelevanceIndex:
             self._cache.popitem(last=False)
         return embeddings
 
-    async def _rank(self, tools: list[BaseTool], query: str) -> tuple[list[BaseTool], str | None]:
-        """Embed + rank; returns ``(ranked_tools, fallback_reason)``.
+    async def _rank(self, tools: list[BaseTool], query: str) -> tuple[list[tuple[BaseTool, float]], str | None]:
+        """Embed + rank; returns ``(ranked_pairs, fallback_reason)``.
+
+        Each pair is a tool and its cosine similarity to the query, most
+        relevant first. The score is carried rather than discarded because a
+        caller deciding *whether* to act on the top hit needs it: an ordering
+        alone makes the nearest tool look equally relevant to "what time is
+        it" and to "morning, you". :meth:`select` and :meth:`search` keep
+        their tool-only contracts and drop it.
 
         ``fallback_reason`` is ``None`` on success. On any embedding failure
         the ranked list is empty and the caller substitutes the full catalog
@@ -246,7 +253,7 @@ class ToolRelevanceIndex:
             (t, _cosine_similarity(query_vec, tool_embeddings[t.name])) for t in tools
         ]
         scored.sort(key=lambda pair: pair[1], reverse=True)
-        return [t for t, _ in scored], None
+        return scored, None
 
     async def select(self, tools: list[BaseTool], query: str) -> ToolSelectionResult:
         """Return the top-K most relevant tools for ``query``.
@@ -284,7 +291,50 @@ class ToolRelevanceIndex:
 
         if fallback_reason is not None:
             return ToolSelectionResult(selected=list(tools), fallback_used=True, fallback_reason=fallback_reason)
-        return ToolSelectionResult(selected=ranked[: self._top_k])
+        return ToolSelectionResult(selected=[tool for tool, _ in ranked][: self._top_k])
+
+    async def search_scored(self, tools: list[BaseTool], query: str, limit: int = 5) -> list[tuple[BaseTool, float]]:
+        """Rank ``tools`` by relevance to ``query``, keeping each score.
+
+        :meth:`search` answers "which tools are closest". This answers "and
+        how close", which is the question a caller must ask before acting on
+        a hit without a model in the loop. Ranking alone cannot separate a
+        message that wants a tool from one that merely sits nearest to it:
+        every message has a closest tool, including "morning, you".
+
+        Same soft-fail contract as :meth:`search` -- an embedder failure, a
+        run past the latency ceiling, or an empty catalog returns no hits
+        rather than a guess, because "nothing was relevant enough" is a
+        normal answer here and a wrong fetch is not.
+
+        :param tools: the catalog to rank (the caller decides scope)
+        :ptype tools: list[BaseTool]
+        :param query: natural-language text to rank against
+        :ptype query: str
+        :param limit: maximum number of hits to return
+        :ptype limit: int
+        :return: up to ``limit`` ``(tool, score)`` pairs, most relevant
+            first; empty on failure, timeout, or an empty catalog
+        :rtype: list[tuple[BaseTool, float]]
+        """
+        if not tools:
+            return []
+        try:
+            ranked, fallback_reason = await asyncio.wait_for(self._rank(tools, query), timeout=self._latency_ceiling_s)
+        except TimeoutError:
+            _log.warning(
+                "tool-relevance scored search exceeded latency ceiling; returning no hits",
+                extra={
+                    "extra_data": {
+                        "tool_count": len(tools),
+                        "ceiling_s": self._latency_ceiling_s,
+                    }
+                },
+            )
+            return []
+        if fallback_reason is not None:
+            return []
+        return ranked[:limit]
 
     async def search(self, tools: list[BaseTool], query: str, limit: int = 5) -> list[BaseTool]:
         """Rank ``tools`` (typically the FULL catalog) by relevance to ``query``.
@@ -327,7 +377,7 @@ class ToolRelevanceIndex:
             return []
         if fallback_reason is not None:
             return []
-        return ranked[:limit]
+        return [tool for tool, _ in ranked][:limit]
 
 
 class _ToolSearchInput(BaseModel):

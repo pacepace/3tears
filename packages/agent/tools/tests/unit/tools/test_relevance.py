@@ -514,3 +514,74 @@ async def test_tool_search_hits_are_deduplicated_by_caller_not_this_module() -> 
 
     assert len(hits) == 2
     assert [t.name for t in hits[0]] == [t.name for t in hits[1]] == ["target_tool"]
+
+
+async def test_search_scored_returns_the_similarity_beside_each_tool() -> None:
+    """The score is the point: ranking alone cannot tell a message that wants
+    a tool from one that merely sits nearest to it. Every query has a closest
+    tool, so a caller acting on the top hit without a model in the loop needs
+    to know how close it actually was.
+    """
+    tools = _catalog(5)
+    vectors = {_tool_text(t): [0.0, 1.0] for t in tools}
+    vectors[_tool_text(tools[3])] = [1.0, 0.0]
+    vectors["query"] = [1.0, 0.0]
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors), top_k=2)
+
+    hits = await index.search_scored(tools, "query", limit=2)
+
+    assert [t.name for t, _ in hits] == ["tool_3", "tool_0"]
+    best, best_score = hits[0]
+    _, runner_up_score = hits[1]
+    assert best.name == "tool_3"
+    assert best_score == 1.0
+    assert runner_up_score < best_score
+
+
+async def test_search_scored_separates_a_near_match_from_a_far_one() -> None:
+    """The same catalog against two queries: one a tool answers, one it does
+    not. Both have a top hit; only one of them should be acted on, and the
+    score is the only thing that says so.
+    """
+    tools = _catalog(3)
+    vectors = {_tool_text(t): [0.0, 1.0] for t in tools}
+    vectors[_tool_text(tools[0])] = [1.0, 0.0]
+    vectors["wants the tool"] = [1.0, 0.0]
+    # Deliberately aligned with nothing in the catalog: a message that sits
+    # between the tools rather than on one. Using a vector that matches the
+    # other tools exactly would score 1.0 and prove nothing.
+    vectors["wants nothing"] = [1.0, 1.0]
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors), top_k=2)
+
+    wanted = await index.search_scored(tools, "wants the tool", limit=1)
+    unwanted = await index.search_scored(tools, "wants nothing", limit=1)
+
+    # Which tool wins the far query is not the contract -- with nothing
+    # aligned, the hits tie and stable order decides. The score is the
+    # contract: it is what separates "this message wants a tool" from "this
+    # message has a nearest tool", and every message has the latter.
+    assert wanted[0][0].name == "tool_0"
+    assert wanted[0][1] == 1.0
+    assert unwanted[0][1] < wanted[0][1], "a far match must not score like a near one"
+
+
+async def test_search_scored_returns_empty_on_embedder_failure() -> None:
+    """Same soft-fail contract as search(): no hits rather than a guess."""
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+
+    assert await index.search_scored(_catalog(5), "query") == []
+
+
+async def test_search_scored_returns_empty_on_latency_ceiling() -> None:
+    tools = _catalog(5)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    embedder = _FakeEmbeddings(vectors, sleep_s=0.2)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=2, latency_ceiling_s=0.01)
+
+    assert await index.search_scored(tools, "query") == []
+
+
+async def test_search_scored_on_empty_catalog_returns_empty() -> None:
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}), top_k=2)
+
+    assert await index.search_scored([], "query") == []
