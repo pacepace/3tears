@@ -161,6 +161,36 @@ _BOUND_TOOL_PREFIX = f"mcp__{TOOL_SERVER_NAME}__"
 #: What the CLI's tool handler answers. No model turn reads it: the call ends first.
 _HANDED_BACK = "This tool call was handed to the caller."
 
+#: The CLI's own tool for a structured answer. Asked for a schema (``--json-schema``), the model
+#: answers by calling it, and the CLI puts the answer on ``ResultMessage.structured_output``. It is
+#: the CLI's, never the caller's: a caller's tool arrives under :data:`_BOUND_TOOL_PREFIX`.
+_STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+
+
+def _output_format(output_config: Any) -> dict[str, Any]:
+    """The Agent SDK's ``output_format`` for the Messages API's ``output_config``.
+
+    Structured output is asked for the way the anthropic provider spells it everywhere else --
+    ``output_config={"format": {"type": "json_schema", "schema": ...}}``, from
+    ``anthropic_structured_output_kwargs`` -- because a subscription token resolves to this backend
+    under the SAME provider, and a caller cannot tell which one it holds. The SDK has no
+    ``output_config``: its options drop an unknown key without a word, so the schema never reached
+    the CLI and the model answered in prose (found live: every split on a subscription decision
+    model refused, "the provider was asked for JSON and did not return it"). The SDK spells the same
+    directive ``output_format``, which the CLI takes as ``--json-schema``.
+
+    :param output_config: the ``output_config`` a caller bound
+    :ptype output_config: Any
+    :return: the equivalent ``output_format``
+    :rtype: dict[str, Any]
+    :raises ValueError: when ``output_config`` asks for anything but a JSON schema -- a directive
+        this backend cannot honour is refused, never dropped
+    """
+    fmt = output_config.get("format") if isinstance(output_config, dict) else None
+    if not isinstance(fmt, dict) or fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
+        raise ValueError(f"a subscription model can only honour a json_schema output_config, not {output_config!r}")
+    return {"type": "json_schema", "schema": fmt["schema"]}
+
 
 def is_subscription_token(credential: str) -> bool:
     """True when ``credential`` is a Claude subscription OAuth token (vs an API key)."""
@@ -284,6 +314,21 @@ def _subscription_model_cls() -> type:
             for what an un-isolated CLI reads.
             """
             overrides.setdefault("tools", self.tools)
+            if "output_config" in overrides:
+                overrides["output_format"] = _output_format(overrides.pop("output_config"))
+            from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415
+
+            # The base class keeps only keys ClaudeAgentOptions declares and drops the rest without
+            # a word. A dropped key is a directive the caller believes was sent -- which is how a
+            # schema went missing -- so each one is named.
+            dropped = sorted(
+                k for k in overrides if not k.startswith("_") and k not in ClaudeAgentOptions.__dataclass_fields__
+            )
+            if dropped:
+                _logger.warning(
+                    "A subscription model has no option for these; they were not sent",
+                    extra={"extra_data": {"dropped": dropped}},
+                )
             options = super()._build_options(**overrides)
             isolation = claude_cli_isolation(self.oauth_token)
             # A caller that deliberately points the CLI at a configuration or directory of its
@@ -487,7 +532,7 @@ def _subscription_model_cls() -> type:
             }
             calls: list[dict[str, Any]] = []
             for block in blocks:
-                if not isinstance(block, ToolUseBlock):
+                if not isinstance(block, ToolUseBlock) or block.name == _STRUCTURED_OUTPUT_TOOL:
                     continue
                 name = block.name
                 if name.startswith(_BOUND_TOOL_PREFIX):
@@ -539,6 +584,10 @@ def _subscription_model_cls() -> type:
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
                         generation_info = _generation_info(msg, tool_calls)
+                        if options.output_format is not None and msg.structured_output is not None:
+                            # The answer is the structured one. The model's prose before it is
+                            # not: asked for a shape, Haiku still wrote a paragraph first.
+                            return json.dumps(msg.structured_output), tool_calls, generation_info
             return "\n".join(all_text), tool_calls, generation_info
 
         def _create_ai_message(
@@ -598,6 +647,12 @@ def _subscription_model_cls() -> type:
             # matching the SDK's own framing (deltas for a message's blocks, then one
             # AssistantMessage closing it).
             streamed_block_indices: set[int] = set()
+            # Asked for a shape, the answer is the structured output on the result, and the prose the
+            # model writes on the way is held rather than streamed: a caller parsing the stream as
+            # JSON must not be handed a paragraph first. Held, not thrown away -- when no structured
+            # answer comes, the prose is what the caller gets, so its failure names what was said.
+            structured = options.output_format is not None
+            held: list[str] = []
 
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
@@ -616,6 +671,8 @@ def _subscription_model_cls() -> type:
                         block_index = event.get("index")
                         if isinstance(block_index, int):
                             streamed_block_indices.add(block_index)
+                        if structured:
+                            continue
                         chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
                         if run_manager:
                             await run_manager.on_llm_new_token(text, chunk=chunk)
@@ -623,6 +680,11 @@ def _subscription_model_cls() -> type:
 
                     elif isinstance(msg, AssistantMessage):
                         text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
+                        if structured:
+                            if text:
+                                held.append(text)
+                            tool_calls.extend(self._caller_tool_calls(msg.content))
+                            continue
                         # Fallback path only: if StreamEvent deltas already covered this message's
                         # text (the common case), re-yielding it here would double every character.
                         if text and not streamed_block_indices:
@@ -637,9 +699,18 @@ def _subscription_model_cls() -> type:
                         self._last_result = msg
                         generation_info = _generation_info(msg, tool_calls)
                         usage = _usage_metadata(msg.usage)
+                        content = ""
+                        if structured:
+                            content = (
+                                json.dumps(msg.structured_output)
+                                if msg.structured_output is not None
+                                else "\n".join(held)
+                            )
+                            if content and run_manager:
+                                await run_manager.on_llm_new_token(content)
                         yield ChatGenerationChunk(
                             message=AIMessageChunk(
-                                content="",
+                                content=content,
                                 chunk_position="last",
                                 tool_call_chunks=[
                                     {

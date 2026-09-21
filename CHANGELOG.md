@@ -4,6 +4,27 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.47.1 -- 2026-09-21
+
+### A subscription model is sent the schema it was asked for
+
+A caller asks the anthropic provider for a JSON shape with `output_config`, from
+`structured_output_kwargs("anthropic", ...)`. A subscription token (`sk-ant-oat…`)
+resolves to the Claude CLI backend under the same provider, and the Agent SDK has
+no `output_config`: `langchain-claude-code` builds its options from the fields
+`ClaudeAgentOptions` declares and drops any other key without a word. The schema
+never reached the CLI, the model was sent a plain prompt, and it answered one.
+Every structured call on a subscription model failed to parse, and nothing
+logged why.
+
+The SDK spells the same directive `output_format`, which the CLI takes as
+`--json-schema`. The subscription model now translates one into the other, and
+returns the CLI's `structured_output` as the reply -- on `ainvoke` and on
+`astream` -- rather than the text the model wrote before its `StructuredOutput`
+call. That call is the CLI's own and is no longer handed back as a tool call.
+An `output_config` it cannot translate raises instead of being dropped, and any
+other key the SDK has no option for is logged as not sent.
+
 ## v0.47.0 -- 2026-09-21
 
 ### Tool relevance can report how relevant, not just what ranked
