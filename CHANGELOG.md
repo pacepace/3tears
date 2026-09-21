@@ -4,6 +4,27 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.48.0 -- 2026-09-21
+
+### A caller can have each retrieved memory say when it was written
+
+`MemoryRetriever.retrieve` and `retrieve_with_candidates` take an optional
+`user_timezone` (an IANA name). When given, each memory line carries when it was
+written, in that timezone, with the time of day:
+` (written Wed 13 May 2026, 9:30 PM PDT)`. When omitted, the lines are exactly
+as before; the rows carry `date_created` either way, and showing it is the
+consumer's choice.
+
+Without it every memory read as current. Live, a memory from May stating that
+"memory clears between threads" sat beside the person's name from September
+with nothing to tell them apart, and the agent greeted the person as someone
+whose history had been wiped. Local time rather than a UTC date, because that
+is how the person remembers it: 04:30 UTC on the 14th is the evening of the
+13th in Los Angeles.
+
+Minor rather than patch: a new parameter on a public method. 0.47.2 was cut on
+develop and never released; this supersedes it.
+
 ## v0.47.1 -- 2026-09-21
 
 ### A subscription model is sent the schema it was asked for
