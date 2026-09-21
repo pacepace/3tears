@@ -4,6 +4,26 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.47.0 -- 2026-09-21
+
+### Tool relevance can report how relevant, not just what ranked
+
+`ToolRelevanceIndex` computed a cosine similarity for every tool, sorted by it,
+and then threw the numbers away. `select` returns a top-K subset and `search`
+returns "most relevant first"; neither says how close anything actually was.
+
+That is enough for narrowing a bound surface, where the model still decides what
+to call. It is not enough for a caller that wants to act on the top hit without a
+model in the loop, because ranking alone cannot separate a message that wants a
+tool from one that merely sits nearest to it. Every message has a nearest tool,
+including "morning, you".
+
+`search_scored` returns `(tool, score)` pairs, most relevant first, under the
+same soft-fail contract as `search`: an embedder failure, a run past the latency
+ceiling, or an empty catalog returns no hits rather than a guess. `_rank` now
+carries the scores it already had; `select` and `search` drop them and behave
+exactly as before.
+
 ## v0.46.1 -- 2026-09-20
 
 ### Tool pods can run more than one replica
