@@ -345,6 +345,43 @@ class TestFormatMemoryContext:
         assert "likes cats" in result
         assert "memory_recall" in result
 
+    def test_each_memory_says_when_it_was_written(self) -> None:
+        """Without a date every memory reads as current.
+
+        Live, a memory from May stating that "memory clears between threads" sat
+        beside the person's name from September with nothing to tell them apart,
+        and the agent greeted the person as someone whose history had been wiped.
+        """
+        memories = [
+            {
+                "memory_id": uuid.uuid7(),
+                "content": "old claim",
+                "summary": None,
+                "hybrid_score": 0.5,
+                "date_created": datetime(2026, 5, 14, 9, 30, tzinfo=timezone.utc),
+            },
+            {
+                "memory_id": uuid.uuid7(),
+                "content": "iso row",
+                "summary": None,
+                "hybrid_score": 0.5,
+                "date_created": "2026-09-13T08:00:00+00:00",
+            },
+        ]
+
+        result = _format_memory_context(memories, detail_threshold=0.85)
+
+        assert "(written 2026-05-14) old claim" in result
+        assert "(written 2026-09-13) iso row" in result
+
+    def test_a_memory_with_no_date_is_shown_without_one(self) -> None:
+        memories = [{"memory_id": uuid.uuid7(), "content": "undated", "summary": None, "hybrid_score": 0.5}]
+
+        result = _format_memory_context(memories, detail_threshold=0.85)
+
+        assert "written" not in result
+        assert "] undated" in result
+
     def test_the_header_does_not_claim_every_memory_is_about_the_user(self) -> None:
         """Memories are extracted from conversations, so many are about the agent.
 

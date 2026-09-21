@@ -200,6 +200,28 @@ def _mmr_rerank(
     return selected
 
 
+def _written(mem: dict[str, Any]) -> str:
+    """When a memory was written, as `` (written YYYY-MM-DD)``, or ``""`` when unknown.
+
+    Without it every memory reads as current. Live, a memory from May stating
+    that "memory clears between threads" sat beside the person's name from
+    September with nothing to tell them apart, and the agent greeted the person
+    as someone whose history had been wiped. The date is on the row; the agent
+    was never shown it.
+
+    :param mem: a retrieved memory row
+    :ptype mem: dict[str, Any]
+    :return: the date suffix, or ``""``
+    :rtype: str
+    """
+    written = mem.get("date_created")
+    if isinstance(written, datetime):
+        return f" (written {written.date().isoformat()})"
+    if isinstance(written, str) and len(written) >= 10:
+        return f" (written {written[:10]})"
+    return ""
+
+
 def _format_memory_context(
     memories: list[dict[str, Any]],
     media_content: list[dict[str, Any]] | None = None,
@@ -288,7 +310,7 @@ def _format_memory_context(
             text, detailed = _get_display_text(mem, detail_threshold)
             marker = " (detailed)" if detailed else ""
             mem_id = str(mem["memory_id"])
-            lines.append(f"- [mem:{mem_id}] {text}{marker}")
+            lines.append(f"- [mem:{mem_id}]{_written(mem)} {text}{marker}")
 
     if media_content:
         if lines:
