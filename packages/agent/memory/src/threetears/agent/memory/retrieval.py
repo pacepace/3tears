@@ -22,7 +22,8 @@ from __future__ import annotations
 import asyncio
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 from uuid import UUID
 
@@ -200,26 +201,60 @@ def _mmr_rerank(
     return selected
 
 
-def _written(mem: dict[str, Any]) -> str:
-    """When a memory was written, as `` (written YYYY-MM-DD)``, or ``""`` when unknown.
+def _written(mem: dict[str, Any], tz: tzinfo | None) -> str:
+    """When a memory was written, in the person's own time, or ``""`` when unknown.
 
     Without it every memory reads as current. Live, a memory from May stating
     that "memory clears between threads" sat beside the person's name from
     September with nothing to tell them apart, and the agent greeted the person
-    as someone whose history had been wiped. The date is on the row; the agent
+    as someone whose history had been wiped. The time is on the row; the agent
     was never shown it.
+
+    Local time with the time of day, because that is how the person remembers
+    it: a UTC date puts a late evening on the wrong day, and a bare date loses
+    whether it was a morning or a night.
 
     :param mem: a retrieved memory row
     :ptype mem: dict[str, Any]
-    :return: the date suffix, or ``""``
+    :param tz: the person's timezone, or ``None`` when the caller does not want
+        times shown -- the row still carries ``date_created`` either way
+    :ptype tz: tzinfo | None
+    :return: the suffix, e.g. `` (written Thu 14 May 2026, 2:30 AM PDT)``, or ``""``
     :rtype: str
     """
+    if tz is None:
+        return ""
     written = mem.get("date_created")
-    if isinstance(written, datetime):
-        return f" (written {written.date().isoformat()})"
-    if isinstance(written, str) and len(written) >= 10:
-        return f" (written {written[:10]})"
-    return ""
+    if isinstance(written, str):
+        try:
+            written = datetime.fromisoformat(written)
+        except ValueError:
+            return ""
+    if not isinstance(written, datetime):
+        return ""
+    if written.tzinfo is None:
+        written = written.replace(tzinfo=timezone.utc)
+    local = written.astimezone(tz)
+    return f" (written {local.strftime('%a %-d %b %Y, %-I:%M %p %Z')})"
+
+
+def resolve_timezone(name: str | None) -> tzinfo | None:
+    """The named IANA timezone; ``None`` when no name was given; UTC when the name is unknown.
+
+    ``None`` is the caller saying it does not want times on its memory lines.
+    An unknown name is a caller that asked for them, so it gets UTC, labelled.
+
+    :param name: an IANA name such as ``America/Los_Angeles``
+    :ptype name: str | None
+    :return: the timezone, or ``None``
+    :rtype: tzinfo | None
+    """
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError, ValueError:
+        return timezone.utc
 
 
 def _format_memory_context(
@@ -228,6 +263,7 @@ def _format_memory_context(
     memory_chunks: list[dict[str, Any]] | None = None,
     detail_threshold: float = 0.85,
     ledgered_ids: set[str] | None = None,
+    tz: tzinfo | None = None,
 ) -> str:
     """Format retrieved memories, media content, and chunks as structured context.
 
@@ -241,6 +277,9 @@ def _format_memory_context(
     :ptype detail_threshold: float
     :param ledgered_ids: IDs to exclude (already surfaced)
     :ptype ledgered_ids: set[str] | None
+    :param tz: the person's timezone; when given, each memory line says when it
+        was written, in that timezone. ``None`` leaves the lines as they were
+    :ptype tz: tzinfo | None
     :return: formatted context string
     :rtype: str
     """
@@ -310,7 +349,7 @@ def _format_memory_context(
             text, detailed = _get_display_text(mem, detail_threshold)
             marker = " (detailed)" if detailed else ""
             mem_id = str(mem["memory_id"])
-            lines.append(f"- [mem:{mem_id}]{_written(mem)} {text}{marker}")
+            lines.append(f"- [mem:{mem_id}]{_written(mem, tz)} {text}{marker}")
 
     if media_content:
         if lines:
@@ -493,6 +532,7 @@ class MemoryRetriever:
         surfaced_ids: set[str] | None = None,
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
+        user_timezone: str | None = None,
     ) -> str | None:
         """full retrieval pipeline; returns formatted context or ``None``.
 
@@ -515,6 +555,9 @@ class MemoryRetriever:
         :param caller_agent_id: invoking agent UUID; owner short-
             circuit applies when equal to ``agent_id``
         :ptype caller_agent_id: UUID | None
+        :param user_timezone: IANA timezone; when given, each memory line says
+            when it was written, in local time. ``None`` shows no times
+        :ptype user_timezone: str | None
         :return: formatted context string or ``None``
         :rtype: str | None
         :raises MemoryAccessDenied: when rbac enforcement denies
@@ -527,6 +570,7 @@ class MemoryRetriever:
             surfaced_ids=surfaced_ids,
             caller_user_id=caller_user_id,
             caller_agent_id=caller_agent_id,
+            user_timezone=user_timezone,
         )
         return result.context
 
@@ -541,6 +585,7 @@ class MemoryRetriever:
         surfaced_ids: set[str] | None = None,
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
+        user_timezone: str | None = None,
     ) -> RetrievalResult:
         """Full retrieval pipeline returning structured results.
 
@@ -561,6 +606,10 @@ class MemoryRetriever:
         :ptype caller_user_id: UUID | None
         :param caller_agent_id: invoking agent UUID
         :ptype caller_agent_id: UUID | None
+        :param user_timezone: IANA timezone; when given, each memory line says
+            when it was written, in local time. ``None`` shows no times; the
+            rows carry ``date_created`` either way
+        :ptype user_timezone: str | None
         :return: structured retrieval results
         :rtype: RetrievalResult
         :raises MemoryAccessDenied: when rbac enforcement denies
@@ -687,6 +736,7 @@ class MemoryRetriever:
             memory_chunks,
             detail_threshold=cfg.detail_threshold,
             ledgered_ids=ledgered_ids,
+            tz=resolve_timezone(user_timezone),
         )
 
         return RetrievalResult(

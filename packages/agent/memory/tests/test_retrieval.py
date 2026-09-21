@@ -27,6 +27,7 @@ from threetears.agent.memory.retrieval import (
     _build_fts_query,
     _cosine_sim,
     _format_memory_context,
+    resolve_timezone,
     _get_display_text,
     _mmr_rerank,
     _normalize_fts_scores,
@@ -345,12 +346,14 @@ class TestFormatMemoryContext:
         assert "likes cats" in result
         assert "memory_recall" in result
 
-    def test_each_memory_says_when_it_was_written(self) -> None:
-        """Without a date every memory reads as current.
+    def test_each_memory_says_when_it_was_written_in_the_persons_own_time(self) -> None:
+        """Without a time every memory reads as current.
 
         Live, a memory from May stating that "memory clears between threads" sat
         beside the person's name from September with nothing to tell them apart,
         and the agent greeted the person as someone whose history had been wiped.
+        Local time with the time of day, because that is how the person remembers
+        it: 04:30 UTC on the 14th is the evening of the 13th in Los Angeles.
         """
         memories = [
             {
@@ -358,26 +361,58 @@ class TestFormatMemoryContext:
                 "content": "old claim",
                 "summary": None,
                 "hybrid_score": 0.5,
-                "date_created": datetime(2026, 5, 14, 9, 30, tzinfo=timezone.utc),
+                "date_created": datetime(2026, 5, 14, 4, 30, tzinfo=timezone.utc),
             },
             {
                 "memory_id": uuid.uuid7(),
                 "content": "iso row",
                 "summary": None,
                 "hybrid_score": 0.5,
-                "date_created": "2026-09-13T08:00:00+00:00",
+                "date_created": "2026-09-13T16:05:00+00:00",
             },
         ]
 
-        result = _format_memory_context(memories, detail_threshold=0.85)
+        result = _format_memory_context(memories, detail_threshold=0.85, tz=resolve_timezone("America/Los_Angeles"))
 
-        assert "(written 2026-05-14) old claim" in result
-        assert "(written 2026-09-13) iso row" in result
+        assert "(written Wed 13 May 2026, 9:30 PM PDT) old claim" in result
+        assert "(written Sun 13 Sep 2026, 9:05 AM PDT) iso row" in result
+
+    def test_a_caller_that_passes_no_timezone_gets_no_times(self) -> None:
+        """The rows carry date_created either way; showing it is the caller's choice."""
+        memories = [
+            {
+                "memory_id": uuid.uuid7(),
+                "content": "dated",
+                "summary": None,
+                "hybrid_score": 0.5,
+                "date_created": datetime(2026, 5, 14, 4, 30, tzinfo=timezone.utc),
+            }
+        ]
+
+        result = _format_memory_context(memories, detail_threshold=0.85, tz=resolve_timezone(None))
+
+        assert "written" not in result
+        assert "] dated" in result
+
+    def test_an_unknown_timezone_is_shown_in_utc_and_says_so(self) -> None:
+        memories = [
+            {
+                "memory_id": uuid.uuid7(),
+                "content": "dated",
+                "summary": None,
+                "hybrid_score": 0.5,
+                "date_created": datetime(2026, 5, 14, 4, 30, tzinfo=timezone.utc),
+            }
+        ]
+
+        result = _format_memory_context(memories, detail_threshold=0.85, tz=resolve_timezone("Not/AZone"))
+
+        assert "(written Thu 14 May 2026, 4:30 AM UTC) dated" in result
 
     def test_a_memory_with_no_date_is_shown_without_one(self) -> None:
         memories = [{"memory_id": uuid.uuid7(), "content": "undated", "summary": None, "hybrid_score": 0.5}]
 
-        result = _format_memory_context(memories, detail_threshold=0.85)
+        result = _format_memory_context(memories, detail_threshold=0.85, tz=resolve_timezone("UTC"))
 
         assert "written" not in result
         assert "] undated" in result
