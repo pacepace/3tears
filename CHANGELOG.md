@@ -4,6 +4,17 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.47.2 -- 2026-09-21
+
+### A retrieved memory says when it was written
+
+`_format_memory_context` listed memories with no date, so every one read as
+current. Live, a memory from May stating that "memory clears between threads"
+sat beside the person's name from September with nothing to tell them apart,
+and the agent greeted the person as someone whose history had been wiped. Each
+memory line now carries ` (written YYYY-MM-DD)` from the row's `date_created`,
+which the hybrid search already returns.
+
 ## v0.47.1 -- 2026-09-21
 
 ### A subscription model is sent the schema it was asked for
