@@ -474,6 +474,7 @@ markers = [
     # subject IS the guard. Without the opt-out the guard's live socket.getaddrinfo runs in a
     # network-isolated unit runner and hangs; neutralized by default, exercised only here.
     "real_ssrf_guard: exercise the real ScrapeTool SSRF guard rather than the neutralized stub",
+    "enforcement: a structural rule over the source tree rather than a behaviour",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level
