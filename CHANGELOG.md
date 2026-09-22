@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## v0.49.0 -- 2026-09-22
 
+### A runaway AI-proposed regex is cut off instead of hanging the process
+
+scrape's eval loop validates each regex the LLM proposes (and replays cached
+regex recipes) against the page text. It ran them on stdlib `re`, which cannot
+be interrupted, on the caller's event-loop thread. A lazily repeated group can
+backtrack catastrophically: live, a proposed
+`(?P<employer>[^\n]+)\n(?:[^\n]+\n)*?COUNTY:...` ran for 20+ minutes on one
+state's WARN page and stopped every other task in the process.
+
+Matching now runs in `threetears.scrape.bounded_regex`: a small worker process
+that imports only the standard library and matches with stdlib `re`, so results
+are exactly what they were. It is started once and reused. A candidate still
+matching after `REGEX_TIMEOUT_SECONDS` (5s) is rejected like an invalid one, and
+the worker is killed and replaced. Syntax errors are still reported in-process,
+unchanged. The eval loop validates candidates and replays recipes with
+`asyncio.to_thread`, so the event loop keeps serving other tasks while a
+candidate is checked. Concurrent threads take turns on the worker. Any
+interruption mid-call (a signal, `KeyboardInterrupt`, an error) discards the
+worker, so no caller can receive another's answer. A forked child starts its
+own worker. The worker caps its own CPU time per request, so it can't run on for
+hours if its parent dies mid-match. A worker failure rejects that one candidate
+instead of aborting the round.
+
 ### A slow fire no longer holds up every other kind in the tick
 
 `scheduled_tick_job` awaits each handler inline, so a tick lasts as long as all

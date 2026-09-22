@@ -1732,3 +1732,58 @@ class TestJudgeMultiRowExtraction:
         [message] = call.args[0]
         image_blocks = [block for block in message.content if block.get("type") == "image_url"]
         assert len(image_blocks) == 2
+
+
+class TestRegexValidationRunsOffTheEventLoop:
+    async def test_a_backtracking_candidate_does_not_stall_the_event_loop(self, monkeypatch):
+        """A regex candidate may take up to REGEX_TIMEOUT_SECONDS to be rejected. The eval loop
+        validates off the event loop, so other tasks keep running meanwhile: a heartbeat every 20ms
+        must never see a gap anywhere near the candidate's 0.5s."""
+        import time
+
+        import threetears.scrape.extraction as extraction
+
+        monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 0.5)
+        lines = "".join(
+            f"<p>Employer {i}</p><p>Address {i}</p><p>COUNTY: Salt Lake</p><p>Notice received</p>"
+            f"<p># AFFECTED: {i}</p><p>EFFECTIVE DATE: 1/1/2020</p>"
+            for i in range(400)
+        )
+        page = f"<html><body>{lines}</body></html>"
+        backtracking = (
+            r"(?P<employer>[^\n]+)\n(?:[^\n]+\n)*?COUNTY:\s*[^\n]+\n# AFFECTED:\s*(?P<affected_count>\d+)"
+            r"\nEFFECTIVE DATE:\s*[^\n]+\nNO SUCH LINE"
+        )
+        recipe_collection, extraction_collection = _collections()
+        candidates = _RegexCandidateStrategyList(candidates=[_RegexCandidateStrategy(pattern=backtracking)])
+        fake_extraction_model, _ = _fake_structured_model(candidates)
+
+        beats: list[float] = []
+        stop = asyncio.Event()
+
+        async def _heartbeat() -> None:
+            while not stop.is_set():
+                beats.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        heartbeat = asyncio.create_task(_heartbeat())
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_extraction_model):
+            started = time.monotonic()
+            extraction_row = await run_eval_loop(
+                "warn_act_ut",
+                page,
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="regex",
+            )
+            elapsed = time.monotonic() - started
+        stop.set()
+        await heartbeat
+
+        assert extraction_row.validation_status == "failed"
+        assert elapsed >= 0.5, "the candidate was not actually run to its limit -- this case proves nothing"
+        gaps = [later - earlier for earlier, later in zip(beats, beats[1:], strict=False)]
+        assert max(gaps) < 0.3, f"the event loop stalled for {max(gaps):.2f}s while validating"
