@@ -19,10 +19,19 @@ outcome. Along the way it:
   is single-pod, exactly as for the tick.
 - **bounds concurrency** (``max_concurrent``) and **each fire's duration**
   (``fire_timeout_seconds``, per kind through ``fire_timeout_seconds_by_kind``).
+- optionally keeps **kinds that share something off each other** (``exclusion_groups``, kind ->
+  group name). Kinds in one group never run at the same time; they take turns in the order they
+  reach the group. A fire waits for its group's turn BEFORE it takes a concurrency slot and before
+  its timeout starts, so waiting costs neither. The reaper counts from the tick, though, so the
+  wait is bounded by the time left before the kind's reap threshold: a fire still waiting then is
+  recorded as failed, naming its group. Groups hold within one :class:`BackgroundDispatch`
+  instance, so within one process -- where what they protect (one client object, one file handle)
+  lives. A fire waiting for its turn already holds its kind's cross-pod in-flight lock: it is in
+  flight, so another pod records that kind as skipped rather than running it twice.
 - **never lets the reaper take a live fire.** The reaper counts from the tick, so a fire's body
   runs under the smaller of its own timeout and the time left before its kind's reap threshold
-  (less a margin); a fire that waited so long for a free slot that none is left is recorded as
-  failed without running. At construction, a timeout that could not fit under that threshold is
+  (less a margin), and a fire still waiting for a free slot (or its group's turn) when that time
+  runs out is recorded then, as failed without running. At construction, a timeout that could not fit under that threshold is
   refused outright.
 - **finalizes and counts** each fire exactly once (``finalize_success`` / ``finalize_failed``,
   ``inc_fire`` / ``inc_failure``); the tick counts nothing for a handed-off fire. A timeout names
@@ -64,6 +73,7 @@ from threetears.scheduled_jobs.events import (
     EVENT_FIRE_COMPLETED,
     EVENT_FIRE_FAILED,
     EVENT_FIRE_SKIPPED_IN_FLIGHT,
+    EVENT_FIRE_WAITING_EXCLUSION_GROUP,
 )
 from threetears.scheduled_jobs.metrics import ScheduledJobsMetricsEmitter, get_scheduled_jobs_emitter
 from threetears.scheduled_jobs.protocols import FireStore
@@ -142,6 +152,7 @@ class BackgroundDispatch:
         fire_timeout_seconds: float = DEFAULT_FIRE_TIMEOUT_SECONDS,
         fire_timeout_seconds_by_kind: Mapping[str, float] | None = None,
         emitter: ScheduledJobsMetricsEmitter | None = None,
+        exclusion_groups: Mapping[str, str] | None = None,
     ) -> None:
         """Build the dispatcher; validate its limits against the pump's reap thresholds.
 
@@ -160,8 +171,14 @@ class BackgroundDispatch:
         :ptype fire_timeout_seconds_by_kind: Mapping[str, float] | None
         :param emitter: metrics emitter; defaults to the process-wide scheduled-jobs emitter
         :ptype emitter: ScheduledJobsMetricsEmitter | None
-        :raises ValueError: when a limit is not a positive number, or a fire timeout does not fit
-            below the reap threshold (less :data:`REAP_MARGIN_SECONDS`) of the kinds it applies to
+        :param exclusion_groups: kind -> group name. Kinds sharing a group never run at the same
+            time: they take turns in the order they reach the group, waiting before they take a slot
+            and before their timeout starts, but no longer than their reap deadline allows. A kind
+            absent from the mapping belongs to no group. Held within this instance only.
+        :ptype exclusion_groups: Mapping[str, str] | None
+        :raises ValueError: when a limit is not a positive number, a fire timeout does not fit
+            below the reap threshold (less :data:`REAP_MARGIN_SECONDS`) of the kinds it applies to,
+            or a group name is empty
         """
         if not max_concurrent >= 1:
             raise ValueError(f"max_concurrent must be at least 1, got {max_concurrent}")
@@ -172,6 +189,10 @@ class BackgroundDispatch:
             if not seconds > 0:
                 raise ValueError(f"fire_timeout_seconds_by_kind[{kind!r}] must be a positive number, got {seconds!r}")
         _check_timeouts_fit_reap(fire_timeout_seconds, by_kind, config)
+        groups = dict(exclusion_groups or {})
+        for kind, group in groups.items():
+            if not isinstance(group, str) or not group:
+                raise ValueError(f"exclusion_groups[{kind!r}] must be a non-empty group name, got {group!r}")
 
         self._fire_store = fire_store
         self._config = config
@@ -180,6 +201,16 @@ class BackgroundDispatch:
         self._default_timeout = float(fire_timeout_seconds)
         self._timeouts_by_kind: Mapping[str, float] = MappingProxyType(by_kind)
         self._emitter = emitter
+        self._groups: Mapping[str, str] = MappingProxyType(groups)
+        # One turn per group, FIFO (asyncio.Lock wakes its waiters in arrival order), and which kind
+        # holds it, for the waiting event.
+        self._group_turns: Mapping[str, asyncio.Lock] = MappingProxyType(
+            {group: asyncio.Lock() for group in sorted(set(groups.values()))}
+        )
+        self._group_holders: dict[str, str] = {}
+        # Fires waiting for or holding each group's turn: the waiting event keys off this, not off
+        # the lock, which reads free for a moment while the turn passes to the next in line.
+        self._group_queued: dict[str, int] = dict.fromkeys(self._group_turns, 0)
         self._in_flight: dict[str, UUID] = {}
         # Every fire handed off and not yet settled: the one record of what this instance still
         # owes a row. Popped exactly once, by whichever path settles the fire.
@@ -203,6 +234,16 @@ class BackgroundDispatch:
         :rtype: float
         """
         return self._timeouts_by_kind.get(kind, self._default_timeout)
+
+    def exclusion_group_for(self, kind: str) -> str | None:
+        """The exclusion group a fire of ``kind`` takes turns in, or ``None``.
+
+        :param kind: the job kind
+        :ptype kind: str
+        :return: the group name, or ``None`` for a kind in no group
+        :rtype: str | None
+        """
+        return self._groups.get(kind)
 
     def wrap(self, callback: DispatchCallback) -> DispatchCallback:
         """Return a callback the pump can route to: it hands each fire off and runs ``callback``.
@@ -332,26 +373,100 @@ class BackgroundDispatch:
             await self._settle(trigger, fire_id, outcome)
 
     async def _run_body(self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID) -> _Outcome:
-        configured = self.fire_timeout_for(trigger.kind)
-        async with self._slots:
+        group = self._groups.get(trigger.kind)
+        outcome: _Outcome
+        if group is None:
+            outcome = await self._run_in_slot(callback, trigger, fire_id, waited_for="a free slot")
+        else:
+            outcome = await self._run_in_turn(callback, trigger, fire_id, group)
+        return outcome
+
+    async def _run_in_turn(
+        self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID, group: str
+    ) -> _Outcome:
+        # The group's turn first, then a slot, then the timeout: waiting for a turn costs no slot
+        # and none of the fire's own limit. The reap clock does keep running, so the wait for the
+        # turn is bounded by it: a fire still waiting when its time runs out is recorded here, before
+        # the reaper could take its row.
+        turn = self._group_turns[group]
+        if self._group_queued[group] > 0:
+            _log_waiting(trigger, fire_id, group, self._group_holders.get(group))
+        self._group_queued[group] += 1
+        try:
             reap = reap_after_seconds_for_kind(self._config, trigger.kind)
-            left = (
-                trigger.fired_at + timedelta(seconds=reap - REAP_MARGIN_SECONDS) - datetime.now(UTC)
-            ).total_seconds()
+            deadline = asyncio.timeout(_reap_time_left(trigger, reap))
+            got_turn = False
+            try:
+                async with deadline:
+                    await turn.acquire()
+                got_turn = True
+            except TimeoutError:
+                if not deadline.expired():
+                    raise
             outcome: _Outcome
-            if not left > 0:
+            if not got_turn:
                 outcome = _Outcome(
                     JobFireResult(
                         status="failed",
                         error=(
-                            f"{trigger.kind}: waited so long for a free slot that running it now would outlive "
-                            f"its {reap}s reap threshold; the fire was not run"
+                            f"{trigger.kind}: waited so long for its turn in exclusion group {group!r} that running it "
+                            f"now would outlive its {reap}s reap threshold; the fire was not run"
                         ),
                     ),
                     _TIMEOUT,
                 )
             else:
-                outcome = await self._call(callback, trigger, fire_id, min(configured, left), clamped=left < configured)
+                self._group_holders[group] = trigger.kind
+                try:
+                    outcome = await self._run_in_slot(
+                        callback,
+                        trigger,
+                        fire_id,
+                        waited_for=f"a free slot after its turn in exclusion group {group!r}",
+                    )
+                finally:
+                    self._group_holders.pop(group, None)
+                    turn.release()
+        finally:
+            self._group_queued[group] -= 1
+        return outcome
+
+    async def _run_in_slot(
+        self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID, *, waited_for: str
+    ) -> _Outcome:
+        # The wait for a slot is bounded by the reap clock too: a fire still waiting when its time
+        # runs out is recorded here, before the reaper could take its row.
+        configured = self.fire_timeout_for(trigger.kind)
+        reap = reap_after_seconds_for_kind(self._config, trigger.kind)
+        no_time = _Outcome(
+            JobFireResult(
+                status="failed",
+                error=(
+                    f"{trigger.kind}: waited so long for {waited_for} that running it now would outlive "
+                    f"its {reap}s reap threshold; the fire was not run"
+                ),
+            ),
+            _TIMEOUT,
+        )
+        deadline = asyncio.timeout(_reap_time_left(trigger, reap))
+        got_slot = False
+        try:
+            async with deadline:
+                await self._slots.acquire()
+            got_slot = True
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+        outcome = no_time
+        if got_slot:
+            try:
+                left = _reap_time_left(trigger, reap)
+                if left > 0:
+                    outcome = await self._call(
+                        callback, trigger, fire_id, min(configured, left), clamped=left < configured
+                    )
+            finally:
+                self._slots.release()
         return outcome
 
     async def _call(
@@ -529,6 +644,25 @@ def _check_timeouts_fit_reap(default_timeout: float, by_kind: Mapping[str, float
             f"{REAP_MARGIN_SECONDS:g}s margin, so the reaper could record a live fire as failed; lower it or "
             "raise dispatch_reap_after_seconds"
         )
+
+
+def _reap_time_left(trigger: JobTrigger, reap: int) -> float:
+    """Seconds until ``trigger``'s fire must stop: its reap threshold (counted from the tick) less the margin."""
+    return (trigger.fired_at + timedelta(seconds=reap - REAP_MARGIN_SECONDS) - datetime.now(UTC)).total_seconds()
+
+
+def _log_waiting(trigger: JobTrigger, fire_id: UUID, group: str, holder: str | None) -> None:
+    log.info(
+        EVENT_FIRE_WAITING_EXCLUSION_GROUP,
+        extra={
+            "extra_data": {
+                "fire_id": str(fire_id),  # convert at border: log extra_data field
+                "kind": trigger.kind,
+                "group": group,
+                "holder_kind": holder,
+            }
+        },
+    )
 
 
 def _log_skip(trigger: JobTrigger, fire_id: UUID, reason: str) -> None:

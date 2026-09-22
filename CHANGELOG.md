@@ -46,11 +46,27 @@ recorded as a success whose output carries `IN_FLIGHT_SKIP_OUTPUT_KEY`. It
 bounds concurrency and each fire's duration (per kind if needed). Because the
 reaper counts from the tick, a fire runs under the smaller of its own timeout
 and the time left before its kind's reap threshold (less `REAP_MARGIN_SECONDS`),
-so the reaper never takes a live fire; a timeout that could never fit is refused
+and a fire still waiting for a slot when that time runs out is recorded then, so
+the reaper never takes a live fire; a timeout that could never fit is refused
 at construction. Each fire is finalized exactly once, counted in the metrics by
 the dispatcher itself (timeouts and cancellations under their own new failure
 reasons, `timeout` and `cancelled`), and `aclose()` records what it cancels. A
 timed-out fire names its kind and the limit.
+
+Kinds that share something (a source's poll and backfill working through one
+client object, say) can be kept off each other with
+`BackgroundDispatch(exclusion_groups={kind: group})`: kinds in one group take
+turns in the order they reach the group. A fire waits for its group's turn
+before it takes a concurrency slot and before its timeout starts, so waiting
+costs neither; the reap clock keeps running and bounds the wait, and a fire
+still waiting when its time runs out is recorded as failed without running,
+naming its group. `EVENT_FIRE_WAITING_EXCLUSION_GROUP` logs each wait with the
+kind holding the turn. Groups hold within one `BackgroundDispatch` (one
+process), which is where what they protect lives. A fire waiting for its turn
+already holds its kind's cross-pod in-flight lock: it is in flight, so another
+pod records that kind as skipped rather than running it twice. Found in the first consumer's
+review: its own per-client lock was taken inside the fire, so a fire waiting its
+turn would hold a slot and run down its own limit.
 
 The tick now also logs `EVENT_FIRE_FAILED` for a handler that returns
 `status='failed'`, as `events.py` always said it did; before, only a raised
@@ -62,7 +78,7 @@ writes and counts nothing more for that fire. A process that dies mid-fire
 leaves the row to the reaper, exactly as an inline fire would.
 
 Minor: a new class, a new `JobFireResult` field (defaulted to `False`, so every
-existing handler is unchanged), a new function, new constants, three new event
+existing handler is unchanged), a new function, new constants, four new event
 names and two new failure-metric reasons. A pump that does not wrap its handlers
 behaves exactly as before, apart from the added log line for a returned failure.
 
