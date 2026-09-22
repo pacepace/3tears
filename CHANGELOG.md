@@ -101,6 +101,28 @@ read. "No matching tools found." is reserved for a search that ran.
 
 Minor: a new constructor parameter, a new method and a new public type.
 
+### Every tool pod gets a replay anchor, so its first call after a cold start is not refused
+
+`ToolServerBootstrap` now builds the pod's collection stack for EVERY pod, not
+only one that passes `collection_tables`. A pod that declares none gets an empty
+table set plus the runtime's own collections, and with them the
+`CollectionReplayAnchor` 0.46.0 wired for the proxy-assertion guard.
+
+0.46.0 attached the anchor from the stack's connected callback, but built the
+stack only for a pod that passed its own tables -- and none did: not the aibots
+SDK's tool pods, not the built-in `threetears.agent.tools.serve`. With no anchor
+the guard cannot tell a first run from a wipe, so the first proxied call after
+every cold start was refused as `proxy assertion nonce replay`. Live, on a fresh
+stack: the admin agent's first tool call refused, the retry on the same
+conversation answered. The only test over the wiring asserted the anchor's type
+and never called it; a new one drives a bare pod's anchor through the real
+collection path.
+
+Behavior change: a pod that declares no tables now binds the shared `collections`
+bucket at connect, and fails closed if it cannot, exactly as a pod with tables
+already did. Every tool pod's minted grant already carries that bucket under its
+own scope, and a registry proxying the pod's calls needs the bucket itself.
+
 ## v0.48.0 -- 2026-09-21
 
 ### A caller can have each retrieved memory say when it was written
