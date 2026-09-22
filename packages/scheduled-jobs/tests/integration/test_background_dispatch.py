@@ -9,7 +9,10 @@ Two of its promises only mean something against the real things:
   ``JobFireCollection``, real Postgres);
 - the same kind handed to two pods at once runs on one of them: the other's fire is recorded as
   skipped, in flight on another pod (two real NATS connections contending for the real
-  ``nats_distributed_lock`` key).
+  ``nats_distributed_lock`` key);
+- two kinds in one exclusion group, due in the same real tick, run one after the other: the second
+  row stays ``'dispatching'`` while the first body runs, then finalizes with its own result, and a
+  kind outside the group finishes meanwhile (real tick, real rows, real NATS in-flight locks).
 """
 
 from __future__ import annotations
@@ -231,3 +234,68 @@ async def test_the_same_kind_handed_to_two_pods_runs_on_one(
     finally:
         await pod_a.aclose()
         await pod_b.aclose()
+
+
+async def test_kinds_in_one_exclusion_group_due_in_one_tick_take_turns(
+    pool: asyncpg.Pool, two_pods: tuple[NatsClient, NatsClient]
+) -> None:
+    schedule_store, fire_store = _stores(pool)
+    due = datetime.now(UTC) - timedelta(seconds=5)
+    jobs = {kind: (await _seed_job(pool, kind, next_fire_at=due))[1] for kind in ("poll:g", "backfill:g", "poll:free")}
+
+    started = {kind: asyncio.Event() for kind in jobs}
+    release = {kind: asyncio.Event() for kind in jobs}
+    order: list[str] = []
+
+    async def _body(trigger: JobTrigger, _f: UUID) -> JobFireResult:
+        order.append(f"start {trigger.kind}")
+        started[trigger.kind].set()
+        await release[trigger.kind].wait()
+        order.append(f"end {trigger.kind}")
+        return JobFireResult(output={"body": trigger.kind})
+
+    background = BackgroundDispatch(
+        fire_store,
+        config=DEFAULT_JOB_CONFIG,
+        nats_client=two_pods[0],
+        exclusion_groups={"poll:g": "g", "backfill:g": "g"},
+    )
+    routes = {kind: background.wrap(_body) for kind in jobs}
+    release["poll:free"].set()
+    try:
+        await asyncio.wait_for(
+            scheduled_tick_job(schedule_store, fire_store, routes, nats_client=two_pods[0]), timeout=10
+        )
+        await asyncio.wait_for(started["poll:free"].wait(), timeout=10)
+        first = await _first_started(started, ("poll:g", "backfill:g"))
+        second = "backfill:g" if first == "poll:g" else "poll:g"
+        for _ in range(100):
+            if (await _fire_row(pool, jobs["poll:free"]))["status"] != "dispatching":
+                break
+            await asyncio.sleep(0.05)
+        assert (await _fire_row(pool, jobs["poll:free"]))["status"] == "succeeded"
+        await asyncio.sleep(0.2)
+        assert not started[second].is_set(), "both kinds of the group ran at once"
+        assert (await _fire_row(pool, jobs[second]))["status"] == "dispatching"
+
+        release[first].set()
+        await asyncio.wait_for(started[second].wait(), timeout=10)
+        release[second].set()
+        await asyncio.wait_for(background.join(), timeout=10)
+
+        assert order.index(f"end {first}") < order.index(f"start {second}")
+        for kind, job in jobs.items():
+            row = await _fire_row(pool, job)
+            assert (row["status"], row["output"]) == ("succeeded", {"body": kind})
+    finally:
+        await background.aclose()
+
+
+async def _first_started(started: dict[str, asyncio.Event], kinds: tuple[str, ...]) -> str:
+    """Wait until one of *kinds* has started and return it."""
+    waits = {asyncio.ensure_future(started[kind].wait()): kind for kind in kinds}
+    done, pending = await asyncio.wait(waits, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    assert done, f"none of {kinds} started"
+    return waits[next(iter(done))]
