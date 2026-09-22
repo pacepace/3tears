@@ -46,6 +46,7 @@ import signal
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
+from sqlalchemy import MetaData
 from threetears.core.collections import bind_collections_bucket
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -64,8 +65,6 @@ from threetears.agent.tools.l1_cache import TOOL_POD_L1_DB_NAME, create_tool_pod
 from threetears.agent.tools.object_resolution_collection import ObjectResolutionCollection
 
 if TYPE_CHECKING:
-    from sqlalchemy import MetaData
-
     from threetears.agent.tools.server import ToolServer
     from threetears.nats import NatsClient
 
@@ -264,11 +263,11 @@ class ToolServerBootstrap:
         :ptype service_name: str
         :param log_level: log level name (e.g. ``"INFO"``, ``"DEBUG"``)
         :ptype log_level: str
-        :param collection_tables: the pod's Collection tables. supplying them opts this pod into a
-            three-tier stack (:func:`build_tool_pod_collection_stack`), built once the pod's NATS
-            connection exists and torn down with it. the TABLES are the opt-in rather than a flag:
-            a collection stack with nothing in it would bind the shared bucket for a pod that never
-            reads it. ``None`` -> the pod holds no collections, which is the historical shape
+        :param collection_tables: the pod's OWN Collection tables, mirrored into its tiers
+            alongside the runtime's. the stack (:func:`build_tool_pod_collection_stack`) is built
+            for every pod once its NATS connection exists and torn down with it, because the
+            runtime holds collections on every pod's behalf -- the proxy-assertion replay anchor
+            among them. ``None`` -> the pod declares none of its own
         :ptype collection_tables: MetaData | None
         :param health_port: port the readiness HealthServer binds to;
             defaults to THREETEARS_TOOL_SERVER_HEALTH_PORT env var,
@@ -297,13 +296,12 @@ class ToolServerBootstrap:
     def collection_registry(self) -> CollectionRegistry | None:
         """the pod's three-tier registry, once its NATS connection has been established.
 
-        ``None`` until then, and ``None`` forever for a pod that declared no
-        ``collection_tables``. Tools read it lazily rather than at construction time, because the
+        ``None`` until then. Tools read it lazily rather than at construction time, because the
         connection the stack rides on does not exist until :meth:`ToolServer.serve` opens it --
         which is still strictly before the pod subscribes its call subject, so no tool call can
-        arrive while this is unset for a pod that opted in.
+        arrive while this is unset.
 
-        :return: the configured registry, or ``None`` when the pod holds no collections
+        :return: the configured registry, or ``None`` before the connection exists
         :rtype: CollectionRegistry | None
         """
         return self._collection_registry
@@ -312,12 +310,11 @@ class ToolServerBootstrap:
     def object_resolutions(self) -> ObjectResolutionCollection | None:
         """the runtime's two-tier object-resolution store, once NATS is up.
 
-        ``None`` until the connection exists, and ``None`` forever for a pod that
-        declared no ``collection_tables``. Exposed for the same reason
+        ``None`` until the connection exists. Exposed for the same reason
         :attr:`collection_registry` is: a host that wants to read or drop a mapping of
         its own has one object to reach for rather than a second store of its own.
 
-        :return: the collection, or ``None`` when the pod holds no collections
+        :return: the collection, or ``None`` before the connection exists
         :rtype: ObjectResolutionCollection | None
         """
         return self._object_resolutions
@@ -325,7 +322,8 @@ class ToolServerBootstrap:
     def install_collection_stack(self, server: "ToolServer") -> None:
         """arrange for the pod's collection stack to be built the moment NATS is up.
 
-        A no-op for a pod that declared no ``collection_tables``. Registered as a CONNECTED
+        Built for every pod: one that declared no ``collection_tables`` still gets the runtime's
+        own collections, the replay anchor among them. Registered as a CONNECTED
         callback rather than built inline, because :meth:`ToolServer.serve` is what opens the
         connection -- and the callback runs before the pod subscribes its call subject and
         publishes its registration manifest, so the pod is never discoverable with its own
@@ -341,9 +339,12 @@ class ToolServerBootstrap:
         :return: nothing
         :rtype: None
         """
-        tables = self._collection_tables
-        if tables is None:
-            return
+        # EVERY pod gets the stack, declared tables or not. The runtime holds collections of its
+        # own on every pod's behalf -- the object-resolution cache and the proxy-assertion replay
+        # anchor -- and the anchor is not optional: without it the guard cannot tell a bucket it
+        # never had from one it lost, so every cold start refused the pod's first proxied call.
+        # Gating the stack on host tables left every pod that declared none with exactly that.
+        tables = self._collection_tables if self._collection_tables is not None else MetaData()
 
         async def _on_connected(nats_client: "NatsClient") -> None:
             """build the pod's tiers on the freshly-established connection.

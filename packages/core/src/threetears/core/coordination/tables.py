@@ -580,14 +580,14 @@ _DDL_TYPES: Final[dict[str, str]] = {
 def replay_anchor_metadata() -> "MetaData":
     """the coordination tables a tool pod needs for its replay anchor, as SQLAlchemy metadata.
 
-    **A tool pod needs this table without ever naming a coordination primitive.** The SDK builds
-    a :class:`~threetears.core.coordination.replay_anchor.CollectionReplayAnchor` for every pod
-    that has a collection registry, and that anchor claims its first-existence row in
-    ``coordination_redemptions``. A pod whose declaration omits the table gets an anchor whose
-    every read raises ``relation "coordination_redemptions" does not exist`` -- which the guard
-    treats as "cannot tell" and answers conservatively, so the pod silently keeps the very
-    cold-start refusal the anchor exists to remove. Nothing fails loudly; the first proxied call
-    after each restart is simply refused as a replay that never happened.
+    **Only a registry with an L3 tier needs this declared.** ``ToolServerBootstrap`` builds a
+    :class:`~threetears.core.coordination.replay_anchor.CollectionReplayAnchor` for EVERY tool
+    pod, over the pod's L1 + L2 stack; that stack has no L3 tier, and the collection creates its
+    own L1 table, so a tool pod declares nothing. A consumer whose registry DOES carry L3 must
+    have ``coordination_redemptions`` in that schema: without it every anchor read raises
+    ``relation "coordination_redemptions" does not exist``, which the guard treats as "cannot
+    tell" and answers conservatively -- silently keeping the very cold-start refusal the anchor
+    exists to remove.
 
     **Only the table the anchor uses**, rather than every coordination table. The other three
     back primitives a tool pod does not run, and a declaration is what the Hub CREATES from --
