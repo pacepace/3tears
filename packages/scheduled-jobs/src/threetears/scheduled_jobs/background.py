@@ -18,27 +18,29 @@ outcome. Along the way it:
   when fires ran inside it -- and a held lock records the same kind of skip. ``nats_client=None``
   is single-pod, exactly as for the tick.
 - **bounds concurrency** (``max_concurrent``) and **each fire's duration**
-  (``fire_timeout_seconds``, per kind through ``fire_timeout_seconds_by_kind``). A timeout is
-  refused at construction unless it is below the reap threshold the pump's ``JobConfig`` gives
-  that kind, because otherwise the reaper would record a live fire as failed.
-- **finalizes and counts** each fire itself (``finalize_success`` / ``finalize_failed``,
+  (``fire_timeout_seconds``, per kind through ``fire_timeout_seconds_by_kind``).
+- **never lets the reaper take a live fire.** The reaper counts from the tick, so a fire's body
+  runs under the smaller of its own timeout and the time left before its kind's reap threshold
+  (less a margin); a fire that waited so long for a free slot that none is left is recorded as
+  failed without running. At construction, a timeout that could not fit under that threshold is
+  refused outright.
+- **finalizes and counts** each fire exactly once (``finalize_success`` / ``finalize_failed``,
   ``inc_fire`` / ``inc_failure``); the tick counts nothing for a handed-off fire. A timeout names
-  the kind and the limit; an exception with empty text is recorded by its type name.
+  the kind and the limit, and an exception with empty text is recorded by its type name. The
+  finalize write runs as its own shielded task, so cancelling a fire cannot cut its record short.
 
 If the process dies mid-fire the row stays ``'dispatching'`` and the tick's reaper records it as
 failed, exactly as for a pod that dies inside an inline fire. :meth:`BackgroundDispatch.aclose`
-cancels what is still running and records each such fire as failed, saying why.
+cancels what is still running and records each such fire as failed, saying why; a fire whose
+body had already finished keeps its real result.
 
-Usage::
+Usage (pass the SAME config to both, so the reap thresholds agree)::
 
-    background = BackgroundDispatch(fire_store, nats_client=nats, config=config)
+    background = BackgroundDispatch(fire_store, config=config, nats_client=nats)
     routes = {kind: background.wrap(handler) for kind, handler in handlers.items()}
     await scheduled_tick_job(schedule_store, fire_store, routes, nats_client=nats, config=config)
     ...
     await background.aclose()  # on shutdown
-
-Time a fire spends waiting for a free slot counts against its kind's reap threshold but not
-against its fire timeout; size ``max_concurrent`` so a backlog drains well inside that threshold.
 """
 
 from __future__ import annotations
@@ -50,13 +52,14 @@ import hashlib
 import re
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from threetears.observe import get_logger
 
-from threetears.scheduled_jobs.config import DEFAULT_JOB_CONFIG, JobConfig, reap_after_seconds_for_kind
+from threetears.scheduled_jobs.config import JobConfig, reap_after_seconds_for_kind
 from threetears.scheduled_jobs.events import (
     EVENT_FIRE_COMPLETED,
     EVENT_FIRE_FAILED,
@@ -75,6 +78,7 @@ __all__ = [
     "DEFAULT_MAX_CONCURRENT_FIRES",
     "IN_FLIGHT_LOCK_KEY_PREFIX",
     "IN_FLIGHT_SKIP_OUTPUT_KEY",
+    "REAP_MARGIN_SECONDS",
     "BackgroundDispatch",
     "in_flight_lock_key",
 ]
@@ -84,25 +88,41 @@ log = get_logger(__name__)
 #: Default cap on fire bodies running at once in one :class:`BackgroundDispatch`.
 DEFAULT_MAX_CONCURRENT_FIRES: Final[int] = 8
 
-#: Default per-fire limit, in seconds. Below the platform's 900s reap threshold with room to spare.
+#: Default per-fire limit, in seconds. Well inside the platform's 900s reap threshold.
 DEFAULT_FIRE_TIMEOUT_SECONDS: Final[float] = 300.0
+
+#: How long before its kind's reap threshold a fire is made to stop, so it is finalized before the
+#: reaper (which counts from the tick) could take it. Also the headroom the construction check
+#: demands between a fire timeout and that threshold.
+REAP_MARGIN_SECONDS: Final[float] = 30.0
 
 #: Prefix of the cross-pod lock key a fire holds while it runs (see :func:`in_flight_lock_key`).
 IN_FLIGHT_LOCK_KEY_PREFIX: Final[str] = "scheduled_jobs_in_flight."
-
-# The JetStream KV key grammar nats-server enforces -- the same pattern core's collections check
-# their L2 key bodies against. A key outside it is refused with JetStream.InvalidKeyError.
-_KV_KEY_GRAMMAR: Final = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
 
 #: Output key marking a fire recorded as skipped because its kind was still running. A consumer
 #: that measures progress from fire outputs should leave these rows out of that measurement.
 IN_FLIGHT_SKIP_OUTPUT_KEY: Final[str] = "skipped"
 
+# The JetStream KV key grammar nats-server enforces -- the same pattern core's collections check
+# their L2 key bodies against. A key outside it is refused with JetStream.InvalidKeyError.
+_KV_KEY_GRAMMAR: Final = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
+
 _SKIPPED_HERE: Final[str] = "previous fire still in flight"
 _SKIPPED_ELSEWHERE: Final[str] = "fire in flight on another pod"
 
-# The same bounded failure reason the tick records for a failed handler (metrics.py).
+# Bounded failure reasons (metrics.py documents the set).
 _HANDLER_EXCEPTION: Final[str] = "handler_exception"
+_TIMEOUT: Final[str] = "timeout"
+_CANCELLED: Final[str] = "cancelled"
+_OTHER: Final[str] = "other"
+
+
+@dataclasses.dataclass(frozen=True)
+class _Outcome:
+    """A fire's result plus the bounded reason to count it under if it failed."""
+
+    result: JobFireResult
+    failure_reason: str = _HANDLER_EXCEPTION
 
 
 class BackgroundDispatch:
@@ -116,17 +136,19 @@ class BackgroundDispatch:
         self,
         fire_store: FireStore,
         *,
+        config: JobConfig,
         nats_client: KvCapable | None = None,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT_FIRES,
         fire_timeout_seconds: float = DEFAULT_FIRE_TIMEOUT_SECONDS,
         fire_timeout_seconds_by_kind: Mapping[str, float] | None = None,
-        config: JobConfig = DEFAULT_JOB_CONFIG,
         emitter: ScheduledJobsMetricsEmitter | None = None,
     ) -> None:
         """Build the dispatcher; validate its limits against the pump's reap thresholds.
 
         :param fire_store: the same fire store the pump uses; background fires finalize through it
         :ptype fire_store: FireStore
+        :param config: the SAME config the pump is given; its reap thresholds bound every fire
+        :ptype config: JobConfig
         :param nats_client: :class:`threetears.nats.NatsClient` for the cross-pod in-flight lock,
             or ``None`` for a single pod (the one-fire-per-kind rule then holds in-process only)
         :ptype nats_client: KvCapable | None
@@ -136,32 +158,35 @@ class BackgroundDispatch:
         :ptype fire_timeout_seconds: float
         :param fire_timeout_seconds_by_kind: per-kind limits overriding ``fire_timeout_seconds``
         :ptype fire_timeout_seconds_by_kind: Mapping[str, float] | None
-        :param config: the pump's operational config; its reap thresholds bound the timeouts
-        :ptype config: JobConfig
         :param emitter: metrics emitter; defaults to the process-wide scheduled-jobs emitter
         :ptype emitter: ScheduledJobsMetricsEmitter | None
-        :raises ValueError: when a limit is not positive, or a fire timeout is not below the reap
-            threshold of the kinds it applies to
+        :raises ValueError: when a limit is not a positive number, or a fire timeout does not fit
+            below the reap threshold (less :data:`REAP_MARGIN_SECONDS`) of the kinds it applies to
         """
-        if max_concurrent < 1:
+        if not max_concurrent >= 1:
             raise ValueError(f"max_concurrent must be at least 1, got {max_concurrent}")
-        if fire_timeout_seconds <= 0:
-            raise ValueError(f"fire_timeout_seconds must be positive, got {fire_timeout_seconds:g}")
+        if not fire_timeout_seconds > 0:
+            raise ValueError(f"fire_timeout_seconds must be a positive number, got {fire_timeout_seconds!r}")
         by_kind = dict(fire_timeout_seconds_by_kind or {})
         for kind, seconds in by_kind.items():
-            if seconds <= 0:
-                raise ValueError(f"fire_timeout_seconds_by_kind[{kind!r}] must be positive, got {seconds:g}")
+            if not seconds > 0:
+                raise ValueError(f"fire_timeout_seconds_by_kind[{kind!r}] must be a positive number, got {seconds!r}")
         _check_timeouts_fit_reap(fire_timeout_seconds, by_kind, config)
 
         self._fire_store = fire_store
+        self._config = config
         self._nats_client = nats_client
         self._slots = asyncio.Semaphore(max_concurrent)
         self._default_timeout = float(fire_timeout_seconds)
         self._timeouts_by_kind: Mapping[str, float] = MappingProxyType(by_kind)
         self._emitter = emitter
         self._in_flight: dict[str, UUID] = {}
+        # Every fire handed off and not yet settled: the one record of what this instance still
+        # owes a row. Popped exactly once, by whichever path settles the fire.
         self._pending: dict[UUID, tuple[JobTrigger, float]] = {}
+        self._started: set[UUID] = set()
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._writes: set[asyncio.Task[None]] = set()
         self._closed = False
 
     @property
@@ -170,7 +195,7 @@ class BackgroundDispatch:
         return MappingProxyType(dict(self._in_flight))
 
     def fire_timeout_for(self, kind: str) -> float:
-        """The limit a fire of ``kind`` runs under.
+        """The configured limit for a fire of ``kind`` (before the reap-deadline clamp).
 
         :param kind: the job kind
         :ptype kind: str
@@ -195,20 +220,25 @@ class BackgroundDispatch:
         return _hand_off
 
     async def join(self) -> None:
-        """Wait until every fire handed off so far (and any handed off meanwhile) is finalized."""
-        while self._tasks:
-            await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
+        """Wait until every fire handed off so far (and any handed off meanwhile) is recorded."""
+        while self._tasks or self._writes:
+            await asyncio.gather(*list(self._tasks.values()), *list(self._writes), return_exceptions=True)
 
     async def aclose(self) -> None:
-        """Stop: refuse new fires, cancel the running ones, and record each as failed."""
+        """Stop: refuse new fires, cancel the running ones, and record each as failed.
+
+        A fire whose body had already finished keeps its real result; a fire cancelled before its
+        task ever started is recorded here, since it never reached its own handler.
+        """
         self._closed = True
         tasks = list(self._tasks.values())
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        # A task cancelled before it ever started never reached its own handler.
-        for fire_id, (trigger, started) in list(self._pending.items()):
-            await self._finalize(trigger, fire_id, self._cancelled(trigger, started))
+        for fire_id, (trigger, handed_off_at) in list(self._pending.items()):
+            if fire_id not in self._started:
+                await self._finalize(trigger, fire_id, self._cancelled(trigger, handed_off_at))
+        await self.join()
 
     # ------------------------------------------------------------------
 
@@ -241,84 +271,176 @@ class BackgroundDispatch:
 
     def _forget(self, kind: str, fire_id: UUID, _done: asyncio.Task[None]) -> None:
         self._tasks.pop(fire_id, None)
+        self._started.discard(fire_id)
         if self._in_flight.get(kind) == fire_id:
             del self._in_flight[kind]
 
     async def _run(self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID) -> None:
+        self._started.add(fire_id)
         # local import: the same optional-NATS stance as the tick engine's own lock import.
         from threetears.nats import LockHeld, nats_distributed_lock  # noqa: PLC0415
         from threetears.nats.errors import KvError  # noqa: PLC0415
 
-        result: JobFireResult | None = None
+        outcome: _Outcome | None = None
         try:
             try:
                 async with nats_distributed_lock(self._nats_client, in_flight_lock_key(trigger.kind)):
-                    result = await self._run_body(callback, trigger, fire_id)
+                    outcome = await self._run_body(callback, trigger, fire_id)
             except LockHeld:
                 _log_skip(trigger, fire_id, _SKIPPED_ELSEWHERE)
-                result = JobFireResult(status="succeeded", output={IN_FLIGHT_SKIP_OUTPUT_KEY: _SKIPPED_ELSEWHERE})
+                outcome = _Outcome(
+                    JobFireResult(status="succeeded", output={IN_FLIGHT_SKIP_OUTPUT_KEY: _SKIPPED_ELSEWHERE})
+                )
             except KvError as exc:
                 # The lock only saves duplicate work across pods; losing it must not silence the
-                # fire (the tick lock takes the same stance). If the body already ran, the lock's
-                # release failed and the result stands.
+                # fire (the tick lock takes the same stance). Raised AFTER the body ran, it is the
+                # lock's release that failed, and the fire's own result stands.
                 log.warning(
-                    "scheduled_jobs background: in-flight lock unavailable; running the fire without it",
-                    extra={"extra_data": {"kind": trigger.kind, "error_type": type(exc).__name__, "error": str(exc)}},
-                )
-                if result is None:
-                    result = await self._run_body(callback, trigger, fire_id)
-        except asyncio.CancelledError:
-            started = self._pending.get(fire_id, (trigger, time.monotonic()))[1]
-            await self._finalize(trigger, fire_id, self._cancelled(trigger, started))
-            raise
-        # Every path above sets a result; a body that itself handed the fire off keeps its own owner.
-        if result is not None and not result.handed_off:
-            await self._finalize(trigger, fire_id, result)
-
-    async def _run_body(self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID) -> JobFireResult:
-        limit = self.fire_timeout_for(trigger.kind)
-        async with self._slots:
-            started = time.monotonic()
-            deadline = asyncio.timeout(limit)
-            try:
-                async with deadline:
-                    result = await callback(trigger, fire_id)
-            except TimeoutError as exc:
-                if deadline.expired():
-                    message = f"{trigger.kind}: fire exceeded its {limit:g}s limit and was cancelled"
-                else:
-                    message = str(exc) or type(exc).__name__
-                result = JobFireResult(status="failed", error=message)
-            except Exception as exc:  # noqa: BLE001 - boundary: a background fire's failure is its failed row
-                log.exception(
-                    EVENT_FIRE_FAILED,
+                    "scheduled_jobs background: in-flight lock unavailable",
                     extra={
                         "extra_data": {
-                            "job_id": str(trigger.job_id),  # convert at border: log extra_data field
-                            "fire_id": str(fire_id),  # convert at border: log extra_data field
                             "kind": trigger.kind,
+                            "body_ran": outcome is not None,
                             "error_type": type(exc).__name__,
+                            "error": str(exc),
                         }
                     },
                 )
-                result = JobFireResult(status="failed", error=str(exc) or type(exc).__name__)
-            if result.latency_ms is None and not result.handed_off:
-                result = dataclasses.replace(result, latency_ms=_elapsed_ms(started))
-        return result
+                if outcome is None:
+                    outcome = await self._run_body(callback, trigger, fire_id)
+            except Exception as exc:  # noqa: BLE001 - boundary: a lock that fails for any other reason (a misconfigured bucket, a TTL mismatch) must fail the fire loudly, not vanish with the task
+                log.exception(
+                    "scheduled_jobs background: the in-flight lock failed",
+                    extra={"extra_data": {"kind": trigger.kind, "body_ran": outcome is not None}},
+                )
+                if outcome is None:
+                    outcome = _Outcome(
+                        JobFireResult(
+                            status="failed",
+                            error=(
+                                f"{trigger.kind}: the in-flight lock failed "
+                                f"({type(exc).__name__}: {str(exc) or 'no detail'}); the fire was not run"
+                            ),
+                        ),
+                        _OTHER,
+                    )
+        except asyncio.CancelledError:
+            if outcome is None:
+                outcome = _Outcome(self._cancelled(trigger, self._handed_off_at(fire_id)), _CANCELLED)
+            raise
+        finally:
+            await self._settle(trigger, fire_id, outcome)
 
-    def _cancelled(self, trigger: JobTrigger, started: float) -> JobFireResult:
+    async def _run_body(self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID) -> _Outcome:
+        configured = self.fire_timeout_for(trigger.kind)
+        async with self._slots:
+            reap = reap_after_seconds_for_kind(self._config, trigger.kind)
+            left = (
+                trigger.fired_at + timedelta(seconds=reap - REAP_MARGIN_SECONDS) - datetime.now(UTC)
+            ).total_seconds()
+            outcome: _Outcome
+            if not left > 0:
+                outcome = _Outcome(
+                    JobFireResult(
+                        status="failed",
+                        error=(
+                            f"{trigger.kind}: waited so long for a free slot that running it now would outlive "
+                            f"its {reap}s reap threshold; the fire was not run"
+                        ),
+                    ),
+                    _TIMEOUT,
+                )
+            else:
+                outcome = await self._call(callback, trigger, fire_id, min(configured, left), clamped=left < configured)
+        return outcome
+
+    async def _call(
+        self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID, limit: float, *, clamped: bool
+    ) -> _Outcome:
+        started = time.monotonic()
+        deadline = asyncio.timeout(limit)
+        outcome: _Outcome
+        try:
+            async with deadline:
+                outcome = _Outcome(await callback(trigger, fire_id))
+        except TimeoutError as exc:
+            if deadline.expired():
+                what = "the time left before its reap threshold" if clamped else "its limit"
+                outcome = _Outcome(
+                    JobFireResult(
+                        status="failed",
+                        error=f"{trigger.kind}: fire exceeded {what} ({limit:g}s) and was cancelled",
+                    ),
+                    _TIMEOUT,
+                )
+            else:
+                outcome = _Outcome(JobFireResult(status="failed", error=str(exc) or type(exc).__name__))
+        except Exception as exc:  # noqa: BLE001 - boundary: a background fire's failure is its failed row
+            log.exception(
+                "scheduled_jobs background: a fire's body raised",
+                extra={
+                    "extra_data": {
+                        "fire_id": str(fire_id),  # convert at border: log extra_data field
+                        "kind": trigger.kind,
+                        "error_type": type(exc).__name__,
+                    }
+                },
+            )
+            outcome = _Outcome(JobFireResult(status="failed", error=str(exc) or type(exc).__name__))
+        if outcome.result.latency_ms is None and not outcome.result.handed_off:
+            outcome = dataclasses.replace(
+                outcome, result=dataclasses.replace(outcome.result, latency_ms=_elapsed_ms(started))
+            )
+        return outcome
+
+    def _handed_off_at(self, fire_id: UUID) -> float:
+        entry = self._pending.get(fire_id)
+        return entry[1] if entry is not None else time.monotonic()
+
+    def _cancelled(self, trigger: JobTrigger, handed_off_at: float) -> JobFireResult:
         reason = (
             "cancelled because BackgroundDispatch was closed before the fire finished"
             if self._closed
             else "cancelled before the fire finished"
         )
-        return JobFireResult(status="failed", error=f"{trigger.kind}: {reason}", latency_ms=_elapsed_ms(started))
+        return JobFireResult(status="failed", error=f"{trigger.kind}: {reason}", latency_ms=_elapsed_ms(handed_off_at))
 
-    async def _finalize(self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult) -> None:
+    async def _settle(self, trigger: JobTrigger, fire_id: UUID, outcome: _Outcome | None) -> None:
+        if fire_id not in self._pending:
+            return
+        if outcome is None:
+            # Only a non-Exception BaseException (KeyboardInterrupt, SystemExit) gets here.
+            outcome = _Outcome(
+                JobFireResult(
+                    status="failed",
+                    error=f"{trigger.kind}: interrupted before the fire finished",
+                    latency_ms=_elapsed_ms(self._handed_off_at(fire_id)),
+                ),
+                _OTHER,
+            )
+        if outcome.result.handed_off:
+            # The body handed the fire on to yet another owner, which now holds the row.
+            self._pending.pop(fire_id, None)
+        else:
+            await self._finalize(trigger, fire_id, outcome.result, outcome.failure_reason)
+
+    async def _finalize(
+        self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str = _CANCELLED
+    ) -> None:
         if self._pending.pop(fire_id, None) is None:
             return
+        # Its own task, shielded: cancelling the fire (aclose) must not cut the record short.
+        write = asyncio.get_running_loop().create_task(
+            self._write(trigger, fire_id, result, failure_reason), name=f"scheduled-jobs:finalize:{trigger.kind}"
+        )
+        self._writes.add(write)
+        write.add_done_callback(self._writes.discard)
+        await asyncio.shield(write)
+
+    async def _write(self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str) -> None:
+        failed = result.status == "failed"
         try:
-            if result.status == "failed":
+            if failed:
                 await self._fire_store.finalize_failed(
                     trigger.partition_key,
                     fire_id,
@@ -347,48 +469,19 @@ class BackgroundDispatch:
             return
         emitter = self._emitter if self._emitter is not None else get_scheduled_jobs_emitter()
         emitter.inc_fire(status=result.status, schedule_type=trigger.schedule_type)
-        if result.status == "failed":
-            emitter.inc_failure(reason=_HANDLER_EXCEPTION)
-        log.info(
-            EVENT_FIRE_COMPLETED,
-            extra={
-                "extra_data": {
-                    "fire_id": str(fire_id),  # convert at border: log extra_data field
-                    "kind": trigger.kind,
-                    "status": result.status,
-                    "latency_ms": result.latency_ms,
-                    "error": result.error,
-                }
-            },
-        )
-
-
-def _check_timeouts_fit_reap(default_timeout: float, by_kind: Mapping[str, float], config: JobConfig) -> None:
-    """Refuse a fire timeout that would let the reaper record a live fire as failed.
-
-    :param default_timeout: the limit for kinds without their own
-    :ptype default_timeout: float
-    :param by_kind: per-kind limits
-    :ptype by_kind: Mapping[str, float]
-    :param config: the pump's config, carrying the reap thresholds
-    :ptype config: JobConfig
-    :raises ValueError: naming the kind and both numbers
-    """
-    for kind in sorted(set(by_kind) | set(config.dispatch_reap_after_seconds_by_kind)):
-        timeout = by_kind.get(kind, default_timeout)
-        reap = reap_after_seconds_for_kind(config, kind)
-        if timeout >= reap:
-            raise ValueError(
-                f"the {timeout:g}s fire timeout for kind {kind!r} is not below its {reap}s reap threshold, so the "
-                "reaper would record the live fire as failed; lower the timeout or raise "
-                f"dispatch_reap_after_seconds_by_kind[{kind!r}]"
+        detail = {
+            "job_id": str(trigger.job_id),  # convert at border: log extra_data field
+            "fire_id": str(fire_id),  # convert at border: log extra_data field
+            "kind": trigger.kind,
+            "status": result.status,
+            "latency_ms": result.latency_ms,
+        }
+        if failed:
+            emitter.inc_failure(reason=failure_reason)
+            log.error(
+                EVENT_FIRE_FAILED, extra={"extra_data": {**detail, "reason": failure_reason, "error": result.error}}
             )
-    if default_timeout >= config.dispatch_reap_after_seconds:
-        raise ValueError(
-            f"fire_timeout_seconds ({default_timeout:g}s) is not below the {config.dispatch_reap_after_seconds}s "
-            "reap threshold, so the reaper would record a live fire as failed; lower it or raise "
-            "dispatch_reap_after_seconds"
-        )
+        log.info(EVENT_FIRE_COMPLETED, extra={"extra_data": detail})
 
 
 def in_flight_lock_key(kind: str) -> str:
@@ -405,6 +498,37 @@ def in_flight_lock_key(kind: str) -> str:
     """
     body = kind if _KV_KEY_GRAMMAR.match(kind) else hashlib.sha256(kind.encode("utf-8")).hexdigest()
     return f"{IN_FLIGHT_LOCK_KEY_PREFIX}{body}"
+
+
+def _check_timeouts_fit_reap(default_timeout: float, by_kind: Mapping[str, float], config: JobConfig) -> None:
+    """Refuse a fire timeout that could not finish before the reaper takes the fire.
+
+    Written as ``not (timeout < budget)`` so a NaN, which compares false both ways, is refused.
+
+    :param default_timeout: the limit for kinds without their own
+    :ptype default_timeout: float
+    :param by_kind: per-kind limits
+    :ptype by_kind: Mapping[str, float]
+    :param config: the pump's config, carrying the reap thresholds
+    :ptype config: JobConfig
+    :raises ValueError: naming the kind and both numbers
+    """
+    for kind in sorted(set(by_kind) | set(config.dispatch_reap_after_seconds_by_kind)):
+        timeout = by_kind.get(kind, default_timeout)
+        reap = reap_after_seconds_for_kind(config, kind)
+        if not timeout < reap - REAP_MARGIN_SECONDS:
+            raise ValueError(
+                f"the {timeout!r}s fire timeout for kind {kind!r} does not fit below its {reap}s reap threshold "
+                f"less the {REAP_MARGIN_SECONDS:g}s margin, so the reaper could record the live fire as failed; "
+                f"lower the timeout or raise dispatch_reap_after_seconds_by_kind[{kind!r}]"
+            )
+    reap = config.dispatch_reap_after_seconds
+    if not default_timeout < reap - REAP_MARGIN_SECONDS:
+        raise ValueError(
+            f"fire_timeout_seconds ({default_timeout!r}s) does not fit below the {reap}s reap threshold less the "
+            f"{REAP_MARGIN_SECONDS:g}s margin, so the reaper could record a live fire as failed; lower it or "
+            "raise dispatch_reap_after_seconds"
+        )
 
 
 def _log_skip(trigger: JobTrigger, fire_id: UUID, reason: str) -> None:

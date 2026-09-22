@@ -35,17 +35,18 @@ from threetears.scheduled_jobs.config import DEFAULT_JOB_CONFIG
 from threetears.scheduled_jobs.protocols import FireStore
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
 
-_NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
-
-def _trigger(kind: str = "demo", schedule_type: str = "interval") -> JobTrigger:
+def _trigger(kind: str = "demo", schedule_type: str = "interval", *, fired_ago: float = 0.0) -> JobTrigger:
+    """A trigger stamped as the tick would stamp it: fired just now (or ``fired_ago`` seconds ago),
+    because the reaper -- and so BackgroundDispatch's deadline -- counts from that instant."""
+    fired_at = datetime.now(UTC) - timedelta(seconds=fired_ago)
     return JobTrigger(
         job_id=uuid4(),
         partition_key=uuid4(),
         kind=kind,
         schedule_type=schedule_type,
-        fired_at=_NOW,
-        scheduled_fire_at=_NOW,
+        fired_at=fired_at,
+        scheduled_fire_at=fired_at,
     )
 
 
@@ -138,6 +139,12 @@ class _CtxRaisingOnEnter:
         return False
 
 
+def _dispatch(fire_store: FireStore | None = None, **kwargs: Any) -> BackgroundDispatch:
+    """A BackgroundDispatch over the platform config unless a test names its own."""
+    kwargs.setdefault("config", DEFAULT_JOB_CONFIG)
+    return BackgroundDispatch(fire_store if fire_store is not None else _FakeFireStore(), **kwargs)
+
+
 def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any, keys: list[str] | None = None) -> None:
     def _factory(_client: Any, key: str, **_kw: Any) -> Any:
         if keys is not None:
@@ -154,7 +161,7 @@ def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any, keys: list[str] | Non
 
 async def test_the_wrapped_callback_hands_off_at_once_and_the_task_finalizes_the_real_result() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires)
+    dispatch = _dispatch(fires)
     release = asyncio.Event()
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
@@ -180,7 +187,7 @@ async def test_the_wrapped_callback_hands_off_at_once_and_the_task_finalizes_the
 
 async def test_a_status_the_body_reports_is_persisted_verbatim() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires)
+    dispatch = _dispatch(fires)
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult(status="skipped_busy", latency_ms=42)
@@ -193,7 +200,7 @@ async def test_a_status_the_body_reports_is_persisted_verbatim() -> None:
 
 async def test_a_failed_result_finalizes_failed_with_its_error() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires)
+    dispatch = _dispatch(fires)
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult(status="failed", error="upstream said no")
@@ -206,7 +213,7 @@ async def test_a_failed_result_finalizes_failed_with_its_error() -> None:
 
 async def test_a_raised_exception_finalizes_failed_with_its_text() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires)
+    dispatch = _dispatch(fires)
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         raise ValueError("bad page 3")
@@ -218,7 +225,7 @@ async def test_a_raised_exception_finalizes_failed_with_its_text() -> None:
 
 async def test_an_exception_with_no_text_is_recorded_by_its_type_name() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires)
+    dispatch = _dispatch(fires)
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         raise RuntimeError()
@@ -230,7 +237,7 @@ async def test_an_exception_with_no_text_is_recorded_by_its_type_name() -> None:
 
 async def test_a_timed_out_body_is_cancelled_and_names_its_kind_and_limit() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires, fire_timeout_seconds=0.05)
+    dispatch = _dispatch(fires, fire_timeout_seconds=0.05)
     cancelled = asyncio.Event()
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
@@ -244,11 +251,11 @@ async def test_a_timed_out_body_is_cancelled_and_names_its_kind_and_limit() -> N
     await dispatch.wrap(_body)(_trigger(kind="poll:warn_act"), uuid4())
     await dispatch.join()
     assert cancelled.is_set()
-    assert fires.failed[0]["error"] == "poll:warn_act: fire exceeded its 0.05s limit and was cancelled"
+    assert fires.failed[0]["error"] == "poll:warn_act: fire exceeded its limit (0.05s) and was cancelled"
 
 
 async def test_a_per_kind_timeout_overrides_the_default() -> None:
-    dispatch = BackgroundDispatch(
+    dispatch = _dispatch(
         _FakeFireStore(), fire_timeout_seconds=300, fire_timeout_seconds_by_kind={"poll:warn_act": 600}
     )
     assert dispatch.fire_timeout_for("poll:warn_act") == 600
@@ -257,7 +264,7 @@ async def test_a_per_kind_timeout_overrides_the_default() -> None:
 
 async def test_a_body_that_itself_hands_off_is_not_finalized_twice() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires)
+    dispatch = _dispatch(fires)
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult(handed_off=True)
@@ -270,7 +277,7 @@ async def test_a_body_that_itself_hands_off_is_not_finalized_twice() -> None:
 
 async def test_a_finalize_that_fails_is_logged_and_releases_the_kind(caplog: pytest.LogCaptureFixture) -> None:
     """A lost write leaves the row in flight for the reaper; it must not wedge the kind."""
-    dispatch = BackgroundDispatch(_FakeFireStore(raise_on_finalize=True))
+    dispatch = _dispatch(_FakeFireStore(raise_on_finalize=True))
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult()
@@ -289,7 +296,7 @@ async def test_a_finalize_that_fails_is_logged_and_releases_the_kind(caplog: pyt
 
 async def test_a_kind_already_in_flight_records_the_new_fire_as_skipped() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires)
+    dispatch = _dispatch(fires)
     release = asyncio.Event()
     runs = 0
 
@@ -316,7 +323,7 @@ async def test_a_kind_already_in_flight_records_the_new_fire_as_skipped() -> Non
 
 
 async def test_different_kinds_run_at_the_same_time() -> None:
-    dispatch = BackgroundDispatch(_FakeFireStore())
+    dispatch = _dispatch(_FakeFireStore())
     both_running = asyncio.Event()
     running: set[str] = set()
 
@@ -335,7 +342,7 @@ async def test_different_kinds_run_at_the_same_time() -> None:
 
 
 async def test_max_concurrent_bounds_the_bodies_running_at_once() -> None:
-    dispatch = BackgroundDispatch(_FakeFireStore(), max_concurrent=2)
+    dispatch = _dispatch(_FakeFireStore(), max_concurrent=2)
     release = asyncio.Event()
     active = 0
     peak = 0
@@ -375,7 +382,7 @@ async def test_each_fire_holds_the_in_flight_lock_for_its_kind(monkeypatch: pyte
 
     _patch_lock(monkeypatch, _Healthy(), keys)
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires, nats_client=object())
+    dispatch = _dispatch(fires, nats_client=object())
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult()
@@ -408,7 +415,7 @@ def test_kinds_that_differ_only_in_punctuation_get_different_keys() -> None:
 async def test_a_kind_in_flight_on_another_pod_records_the_fire_as_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_lock(monkeypatch, _CtxRaisingOnEnter(LockHeld("held")))
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires, nats_client=object())
+    dispatch = _dispatch(fires, nats_client=object())
     ran = False
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
@@ -427,7 +434,7 @@ async def test_a_broken_lock_degrades_open_and_the_body_still_runs(monkeypatch: 
     silence the fire."""
     _patch_lock(monkeypatch, _CtxRaisingOnEnter(KvError("nats: no response from stream")))
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires, nats_client=object())
+    dispatch = _dispatch(fires, nats_client=object())
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult(output={"ran": True})
@@ -444,12 +451,12 @@ async def test_a_broken_lock_degrades_open_and_the_body_still_runs(monkeypatch: 
 
 def test_a_default_timeout_that_outlives_the_reap_threshold_is_refused() -> None:
     with pytest.raises(ValueError, match="reap"):
-        BackgroundDispatch(_FakeFireStore(), fire_timeout_seconds=900, config=_Config(fallback=900))
+        _dispatch(_FakeFireStore(), fire_timeout_seconds=900, config=_Config(fallback=900))
 
 
 def test_a_per_kind_timeout_that_outlives_its_reap_threshold_is_refused() -> None:
     with pytest.raises(ValueError, match="poll:warn_act"):
-        BackgroundDispatch(
+        _dispatch(
             _FakeFireStore(),
             fire_timeout_seconds_by_kind={"poll:warn_act": 1800},
             config=_Config(fallback=900),
@@ -458,11 +465,11 @@ def test_a_per_kind_timeout_that_outlives_its_reap_threshold_is_refused() -> Non
 
 def test_the_default_timeout_is_checked_against_a_kind_whose_reap_threshold_is_lower() -> None:
     with pytest.raises(ValueError, match="poll:quick"):
-        BackgroundDispatch(_FakeFireStore(), fire_timeout_seconds=300, config=_Config(by_kind={"poll:quick": 120}))
+        _dispatch(_FakeFireStore(), fire_timeout_seconds=300, config=_Config(by_kind={"poll:quick": 120}))
 
 
 def test_a_long_per_kind_timeout_fits_under_a_raised_reap_threshold() -> None:
-    dispatch = BackgroundDispatch(
+    dispatch = _dispatch(
         _FakeFireStore(),
         fire_timeout_seconds_by_kind={"poll:warn_act": 1800},
         config=_Config(by_kind={"poll:warn_act": 2400}),
@@ -480,7 +487,7 @@ def test_a_long_per_kind_timeout_fits_under_a_raised_reap_threshold() -> None:
 )
 def test_nonsense_limits_are_refused(kwargs: dict[str, Any], match: str) -> None:
     with pytest.raises(ValueError, match=match):
-        BackgroundDispatch(_FakeFireStore(), **kwargs)
+        _dispatch(_FakeFireStore(), **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +497,7 @@ def test_nonsense_limits_are_refused(kwargs: dict[str, Any], match: str) -> None
 
 async def test_a_background_fire_reports_its_outcome_to_the_metrics() -> None:
     emitter = _RecordingEmitter()
-    dispatch = BackgroundDispatch(_FakeFireStore(), emitter=emitter)  # type: ignore[arg-type]
+    dispatch = _dispatch(_FakeFireStore(), emitter=emitter)  # type: ignore[arg-type]
 
     async def _ok(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult()
@@ -512,7 +519,7 @@ async def test_a_background_fire_reports_its_outcome_to_the_metrics() -> None:
 
 async def test_aclose_cancels_what_is_running_and_records_why() -> None:
     fires = _FakeFireStore()
-    dispatch = BackgroundDispatch(fires)
+    dispatch = _dispatch(fires)
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         await asyncio.sleep(10)
@@ -533,7 +540,7 @@ async def test_aclose_cancels_what_is_running_and_records_why() -> None:
 
 
 async def test_a_closed_dispatcher_refuses_new_fires_as_failed() -> None:
-    dispatch = BackgroundDispatch(_FakeFireStore())
+    dispatch = _dispatch(_FakeFireStore())
     await dispatch.aclose()
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
@@ -543,3 +550,274 @@ async def test_a_closed_dispatcher_refuses_new_fires_as_failed() -> None:
     assert result.handed_off is False
     assert result.status == "failed"
     assert result.error == "poll:late: BackgroundDispatch is closed; the fire was not run"
+
+
+# ---------------------------------------------------------------------------
+# settle exactly once: the paths where a fire could be finalized twice, never, or falsely
+# ---------------------------------------------------------------------------
+
+
+class _LockReleasing:
+    """A lock that is acquired cleanly and then either blocks or raises on release."""
+
+    def __init__(self, *, on_exit: BaseException | None = None) -> None:
+        self.releasing = asyncio.Event()
+        self.release = asyncio.Event()
+        self._on_exit = on_exit
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_: Any) -> bool:
+        self.releasing.set()
+        if self._on_exit is not None:
+            raise self._on_exit
+        await self.release.wait()
+        return False
+
+
+class _GatedFireStore(_FakeFireStore):
+    """A fire store whose success write parks until released -- a slow database write."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writing = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def finalize_success(
+        self,
+        partition_key: UUID,
+        fire_id: UUID,
+        *,
+        status: str = "succeeded",
+        output: dict[str, Any] | None = None,
+        latency_ms: int | None = None,
+    ) -> None:
+        self.writing.set()
+        await self.release.wait()
+        await super().finalize_success(partition_key, fire_id, status=status, output=output, latency_ms=latency_ms)
+
+
+async def test_a_body_that_hands_off_again_is_never_written_even_by_aclose() -> None:
+    """Another owner holds that row; aclose must not stamp 'cancelled' onto it."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires)
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(handed_off=True)
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await dispatch.join()
+    await dispatch.aclose()
+    assert fires.succeeded == []
+    assert fires.failed == []
+
+
+async def test_a_cancel_during_lock_release_keeps_the_real_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    lock = _LockReleasing()
+    _patch_lock(monkeypatch, lock)
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, nats_client=object())
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(output={"watermark": 42})
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await asyncio.wait_for(lock.releasing.wait(), timeout=1)
+    await dispatch.aclose()
+    assert fires.failed == []
+    assert fires.succeeded[0]["output"] == {"watermark": 42}
+
+
+async def test_a_kverror_on_lock_release_keeps_the_real_result_and_runs_the_body_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_lock(monkeypatch, _LockReleasing(on_exit=KvError("nats: key delete failed")))
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, nats_client=object())
+    runs = 0
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        nonlocal runs
+        runs += 1
+        return JobFireResult(output={"ran": runs})
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await dispatch.join()
+    assert runs == 1
+    assert fires.succeeded[0]["output"] == {"ran": 1}
+
+
+@pytest.mark.parametrize("exc", [ValueError("ttl mismatch on scheduler-locks"), RuntimeError()])
+async def test_a_lock_that_fails_otherwise_fails_the_fire_loudly_without_running_it(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    """Neither LockHeld nor KvError -- a misconfigured bucket, a TTL mismatch: the fire must be
+    recorded as failed with the reason, not vanish with its task."""
+    _patch_lock(monkeypatch, _CtxRaisingOnEnter(exc))
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, nats_client=object())
+    ran = False
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        nonlocal ran
+        ran = True
+        return JobFireResult()
+
+    await dispatch.wrap(_body)(_trigger(kind="poll:x"), uuid4())
+    await dispatch.join()
+    assert ran is False
+    error = fires.failed[0]["error"]
+    assert error.startswith(f"poll:x: the in-flight lock failed ({type(exc).__name__}: ")
+    assert error.endswith("the fire was not run")
+
+
+async def test_a_cancel_during_the_finalize_write_does_not_cut_the_record_short() -> None:
+    fires = _GatedFireStore()
+    dispatch = _dispatch(fires)
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(output={"done": True})
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await asyncio.wait_for(fires.writing.wait(), timeout=1)
+    closing = asyncio.get_running_loop().create_task(dispatch.aclose())
+    await asyncio.sleep(0.01)
+    fires.release.set()
+    await asyncio.wait_for(closing, timeout=1)
+    assert fires.succeeded[0]["output"] == {"done": True}
+    assert fires.failed == []
+
+
+async def test_aclose_records_a_fire_whose_task_never_started() -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires)
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult()
+
+    fire_id = uuid4()
+    await dispatch.wrap(_body)(_trigger(kind="poll:never"), fire_id)
+    await dispatch.aclose()  # before the loop ever ran the task
+    assert [f["fire_id"] for f in fires.failed] == [fire_id]
+    assert fires.failed[0]["error"] == (
+        "poll:never: cancelled because BackgroundDispatch was closed before the fire finished"
+    )
+    assert fires.succeeded == []
+
+
+# ---------------------------------------------------------------------------
+# the reaper's clock
+# ---------------------------------------------------------------------------
+
+
+async def test_a_fire_with_no_time_left_before_its_reap_threshold_is_not_run() -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(
+        fires,
+        fire_timeout_seconds_by_kind={"poll:k": 20},
+        config=_Config(by_kind={"poll:k": 60}),
+    )
+    ran = False
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        nonlocal ran
+        ran = True
+        return JobFireResult()
+
+    # 60s threshold, 30s margin, fired 45s ago: nothing left.
+    await dispatch.wrap(_body)(_trigger(kind="poll:k", fired_ago=45), uuid4())
+    await dispatch.join()
+    assert ran is False
+    assert fires.failed[0]["error"] == (
+        "poll:k: waited so long for a free slot that running it now would outlive its 60s reap threshold; "
+        "the fire was not run"
+    )
+
+
+async def test_a_fire_is_stopped_before_its_reap_threshold_even_inside_its_own_timeout() -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(
+        fires,
+        fire_timeout_seconds_by_kind={"poll:k": 60},
+        config=_Config(by_kind={"poll:k": 100}),
+    )
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        await asyncio.sleep(10)
+        return JobFireResult()
+
+    # 100s threshold, 30s margin, fired 69.9s ago: ~0.1s left, far under its own 60s timeout.
+    await dispatch.wrap(_body)(_trigger(kind="poll:k", fired_ago=69.9), uuid4())
+    await asyncio.wait_for(dispatch.join(), timeout=5)
+    assert fires.failed[0]["error"].startswith("poll:k: fire exceeded the time left before its reap threshold (")
+
+
+def test_a_nan_timeout_is_refused() -> None:
+    with pytest.raises(ValueError, match="fire_timeout_seconds"):
+        _dispatch(fire_timeout_seconds=float("nan"))
+
+
+def test_a_timeout_inside_the_threshold_but_inside_the_margin_is_refused() -> None:
+    with pytest.raises(ValueError, match="margin"):
+        _dispatch(fire_timeout_seconds=880, config=_Config(fallback=900))
+
+
+# ---------------------------------------------------------------------------
+# what gets recorded, and counted
+# ---------------------------------------------------------------------------
+
+
+async def test_a_timeout_the_body_raises_itself_is_recorded_as_its_own_error() -> None:
+    """Only the dispatcher's own deadline reads as 'exceeded its limit'."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, fire_timeout_seconds=60)
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        raise TimeoutError("upstream read timed out")
+
+    await dispatch.wrap(_body)(_trigger(), uuid4())
+    await dispatch.join()
+    assert fires.failed[0]["error"] == "upstream read timed out"
+
+
+async def test_a_timeout_is_counted_as_a_timeout_not_a_handler_exception(caplog: pytest.LogCaptureFixture) -> None:
+    emitter = _RecordingEmitter()
+    dispatch = _dispatch(fire_timeout_seconds=0.05, emitter=emitter)  # type: ignore[arg-type]
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        await asyncio.sleep(10)
+        return JobFireResult()
+
+    with caplog.at_level("ERROR"):
+        await dispatch.wrap(_body)(_trigger(schedule_type="interval"), uuid4())
+        await dispatch.join()
+    assert emitter.fires == [("failed", "interval")]
+    assert emitter.failures == ["timeout"]
+    assert [r.getMessage() for r in caplog.records].count("3tears.scheduled_jobs.fire.failed") == 1
+
+
+async def test_a_returned_failure_is_logged_as_a_failed_fire(caplog: pytest.LogCaptureFixture) -> None:
+    dispatch = _dispatch()
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult(status="failed", error="upstream said no")
+
+    with caplog.at_level("ERROR"):
+        await dispatch.wrap(_body)(_trigger(), uuid4())
+        await dispatch.join()
+    assert [r.getMessage() for r in caplog.records].count("3tears.scheduled_jobs.fire.failed") == 1
+
+
+async def test_a_cross_pod_skip_is_counted_as_a_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_lock(monkeypatch, _CtxRaisingOnEnter(LockHeld("held")))
+    emitter = _RecordingEmitter()
+    dispatch = _dispatch(nats_client=object(), emitter=emitter)  # type: ignore[arg-type]
+
+    async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult()
+
+    await dispatch.wrap(_body)(_trigger(schedule_type="cron"), uuid4())
+    await dispatch.join()
+    assert emitter.fires == [("succeeded", "cron")]
+    assert emitter.failures == []

@@ -30,6 +30,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.scheduled_jobs import (
+    DEFAULT_JOB_CONFIG,
     IN_FLIGHT_SKIP_OUTPUT_KEY,
     BackgroundDispatch,
     JobFireCollection,
@@ -133,7 +134,7 @@ async def test_a_slow_fire_does_not_hold_up_the_tick_and_finalizes_its_own_row(p
     async def _fast(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult(output={"body": "fast"})
 
-    background = BackgroundDispatch(fire_store)
+    background = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG)
     routes = {"slow": background.wrap(_slow), "fast": background.wrap(_fast)}
     try:
         await asyncio.wait_for(scheduled_tick_job(schedule_store, fire_store, routes), timeout=10)
@@ -202,8 +203,8 @@ async def test_the_same_kind_handed_to_two_pods_runs_on_one(
         await release.wait()
         return JobFireResult(output={"ran": True})
 
-    pod_a = BackgroundDispatch(fire_store, nats_client=two_pods[0])
-    pod_b = BackgroundDispatch(fire_store, nats_client=two_pods[1])
+    pod_a = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, nats_client=two_pods[0])
+    pod_b = BackgroundDispatch(fire_store, config=DEFAULT_JOB_CONFIG, nats_client=two_pods[1])
     try:
         assert (await pod_a.wrap(_body)(trigger, first_fire)).handed_off is True
         for _ in range(100):  # let pod A take the in-flight lock before pod B tries

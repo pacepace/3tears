@@ -244,7 +244,11 @@ class ScheduledJobsMetricsEmitter:
         """Increment :data:`SCHEDULED_JOBS_FAILURES_TOTAL` by reason.
 
         Reasons (bounded): ``handler_exception``, ``claim_lost``,
-        ``reaped``, ``unrouted_kind``, ``other``. ``unrouted_kind`` is
+        ``reaped``, ``unrouted_kind``, ``timeout``, ``cancelled``, ``other``.
+        ``timeout`` and ``cancelled`` are recorded by
+        :class:`~threetears.scheduled_jobs.background.BackgroundDispatch`: a
+        fire that ran out of time, and one cancelled before it finished
+        (``aclose``), so an alert can tell a hung fire from a crashing one. ``unrouted_kind`` is
         the routing refusal -- a due row whose ``kind`` has no registered
         handler on the pump that scanned it. It carries no ``kind``
         label because ``kind`` is unbounded (see

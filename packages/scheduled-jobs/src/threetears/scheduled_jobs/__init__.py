@@ -42,6 +42,7 @@ from threetears.scheduled_jobs.background import (
     DEFAULT_MAX_CONCURRENT_FIRES,
     IN_FLIGHT_LOCK_KEY_PREFIX,
     IN_FLIGHT_SKIP_OUTPUT_KEY,
+    REAP_MARGIN_SECONDS,
     BackgroundDispatch,
     in_flight_lock_key,
 )
@@ -134,6 +135,7 @@ __all__ = [
     "FORBIDDEN_LABEL_NAMES",
     "IN_FLIGHT_LOCK_KEY_PREFIX",
     "IN_FLIGHT_SKIP_OUTPUT_KEY",
+    "REAP_MARGIN_SECONDS",
     "SCHEDULED_JOBS_DRIFT_SECONDS",
     "SCHEDULED_JOBS_FAILURES_TOTAL",
     "SCHEDULED_JOBS_FIRES_TOTAL",

@@ -45,11 +45,14 @@ What it gives you:
   time: in-process, and across pods through `nats_distributed_lock` on
   `in_flight_lock_key(kind)`. A fire that finds its kind still running is
   recorded as a success whose output carries `IN_FLIGHT_SKIP_OUTPUT_KEY`.
-  `max_concurrent` bounds how many run at once, and per-kind fire
-  timeouts are refused at construction unless they sit below that kind's
-  reap threshold. A process that dies mid-fire leaves the row to the
-  reaper, as before; `aclose()` records what it cancels. Opt-in: a pump
-  that does not wrap its handlers behaves exactly as before.
+  `max_concurrent` bounds how many run at once. The reaper counts from the
+  tick, so each fire runs under the smaller of its own timeout and the time
+  left before its kind's reap threshold (less `REAP_MARGIN_SECONDS`), and a
+  timeout that could never fit is refused at construction; pass the pump's
+  own `config`. Each fire is recorded exactly once: a process that dies
+  mid-fire leaves the row to the reaper, as before, and `aclose()` records
+  what it cancels (a fire whose body already finished keeps its result).
+  Opt-in: a pump that does not wrap its handlers behaves exactly as before.
 - **`compute_next_fire_at(...)`** -- the pure reschedule math for every
   schedule type (`daily_at`, `every_n_hours`, `random_within_window`,
   `one_shot_at`, `cron`, `relative_delay`, `interval`) and both

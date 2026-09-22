@@ -603,6 +603,20 @@ async def _dispatch_one(
     # non-exceptional failure with its own error string. Route that to
     # finalize_failed so the ``error`` field is not dropped on the floor.
     if result.status == "failed":
+        # events.py documents EVENT_FIRE_FAILED as covering a returned failure too, not only a
+        # raised one; without this a handler that reports its own failure is invisible in the logs.
+        log.error(
+            EVENT_FIRE_FAILED,
+            extra={
+                "extra_data": {
+                    "job_id": str(schedule.job_id),
+                    "fire_id": str(fire_id),  # convert at border: fire-failed log extra_data field
+                    "partition_key": str(schedule.partition_key),
+                    "schedule_type": schedule.schedule_type,
+                    "error": result.error,
+                }
+            },
+        )
         await fire_store.finalize_failed(
             schedule.partition_key,
             fire_id,

@@ -658,3 +658,22 @@ class TestHandedOffFire:
         await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         assert JobFireResult().handed_off is False
         assert len(fires.succeeded) == 1
+
+
+class TestReturnedFailureIsLogged:
+    """``events.py`` documents ``EVENT_FIRE_FAILED`` as covering a returned failure, not only a raised one."""
+
+    async def test_a_returned_failure_emits_the_failed_event(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            return JobFireResult(status="failed", error="downstream rejected")
+
+        with caplog.at_level("ERROR"):
+            await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert fires.failed[0]["error"] == "downstream rejected"
+        assert [r.getMessage() for r in caplog.records].count(tick_mod.EVENT_FIRE_FAILED) == 1
