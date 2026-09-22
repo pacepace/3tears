@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## v0.49.0 -- 2026-09-22
 
+### A slow fire no longer holds up every other kind in the tick
+
+`scheduled_tick_job` awaits each handler inline, so a tick lasts as long as all
+its fires together. In a consumer routing 52 kinds through one pump, ticks
+landed every ~18 minutes: a kind scheduled every 60 seconds fired 36 times in
+11 hours, waiting behind a five-minute backfill, a websocket listened to for
+three, and a handful of others.
+
+`BackgroundDispatch` wraps a pump's handlers. Each fire is handed off, runs as
+its own task, and finalizes its own `job_fires` row with its real outcome, so
+the tick returns as soon as every row is staged. One fire per kind is in flight
+at a time, in the process and across pods (`nats_distributed_lock` on
+`in_flight_lock_key(kind)`); a fire that finds its kind still running is
+recorded as a success whose output carries `IN_FLIGHT_SKIP_OUTPUT_KEY`. It
+bounds concurrency and each fire's duration (per kind if needed), refuses any
+fire timeout that is not below that kind's reap threshold, counts each fire in
+the metrics itself, and on `aclose()` records what it cancels. A timed-out fire
+names its kind and the limit.
+
+The engine gains one branch for it: a handler that returns
+`JobFireResult(handed_off=True)` leaves the row `'dispatching'`, and the tick
+writes and counts nothing more for that fire. A process that dies mid-fire
+leaves the row to the reaper, exactly as an inline fire would.
+
+Minor: a new class, a new `JobFireResult` field (defaulted to `False`, so every
+existing handler is unchanged), a new function, new constants and three new
+event names. A pump that does not wrap its handlers behaves exactly as before.
+
 ### `tool_search` waits for a cold catalog, and says when it did not finish
 
 `ToolRelevanceIndex` takes `search_latency_ceiling_s`, a separate ceiling for

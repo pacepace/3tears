@@ -604,3 +604,57 @@ class TestFireLatencyIsMeasuredByTheEngine:
 
         await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
         assert fires.succeeded[0]["latency_ms"] == 250
+
+
+class TestHandedOffFire:
+    """A callback that hands its fire off leaves the row in flight; its new owner finalizes it.
+
+    ``BackgroundDispatch`` returns ``handed_off=True`` while the fire's body is still running in a
+    task of its own. If the engine finalized that result the row would read as finished before the
+    work ran, and a task that finished first would have its real outcome overwritten.
+    """
+
+    async def test_the_engine_neither_finalizes_nor_counts_a_handed_off_fire(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        counted: list[str] = []
+
+        class _RecordingEmitter:
+            # parity-exempt: records only the two counters the handed-off branch must not touch, a strict subset of ScheduledJobsMetricsEmitter
+            def inc_fire(self, *, status: str, schedule_type: str) -> None:
+                counted.append(status)
+
+            def inc_failure(self, *, reason: str) -> None:
+                counted.append(f"failure:{reason}")
+
+            def observe_tick_duration(self, seconds: float) -> None:
+                return None
+
+            def observe_drift(self, seconds: float) -> None:
+                return None
+
+        monkeypatch.setattr(tick_mod, "get_scheduled_jobs_emitter", _RecordingEmitter)
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            return JobFireResult(status="succeeded", handed_off=True)
+
+        with caplog.at_level("INFO"):
+            await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+
+        assert len(fires.created) == 1, "the in-flight row is still staged"
+        assert fires.succeeded == []
+        assert fires.failed == []
+        assert counted == []
+        assert any(r.getMessage() == tick_mod.EVENT_FIRE_HANDED_OFF for r in caplog.records)
+
+    async def test_a_fire_that_is_not_handed_off_still_finalizes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The default is unchanged: ``handed_off`` defaults to False and the engine finalizes."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
+        assert JobFireResult().handed_off is False
+        assert len(fires.succeeded) == 1

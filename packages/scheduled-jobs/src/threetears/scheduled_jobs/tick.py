@@ -97,6 +97,7 @@ from threetears.scheduled_jobs.events import (
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
     EVENT_FIRE_FAILED,
+    EVENT_FIRE_HANDED_OFF,
     EVENT_FIRE_REAPED,
     EVENT_FIRE_SKIPPED_BUSY,
     EVENT_FIRE_UNROUTED_KIND,
@@ -173,8 +174,11 @@ async def scheduled_tick_job(
     per kind group, enumerates due schedules of the routed kinds, claims
     each via optimistic-CAS, writes the initial in-flight fire row, and
     invokes the handler registered for that row's ``kind``. The handler
-    is awaited inline; long-running bodies are expected to
-    ``asyncio.create_task`` internally so the tick returns as soon as the
+    is awaited inline, so a tick lasts as long as its slowest fires
+    together. For bodies that take long, wrap the handlers in
+    :class:`~threetears.scheduled_jobs.background.BackgroundDispatch`: each
+    fire is handed off (``JobFireResult.handed_off``), runs as its own
+    task, and finalizes its own row, so the tick returns as soon as every
     row is staged.
 
     ``nats_client`` is typed ``Any`` to keep the NATS client an optional
@@ -572,6 +576,26 @@ async def _dispatch_one(
         )
         emitter.inc_fire(status="failed", schedule_type=schedule.schedule_type)
         emitter.inc_failure(reason="handler_exception")
+        return
+
+    # A handed-off fire belongs to whoever took it (BackgroundDispatch): its
+    # row stays 'dispatching' until that owner finalizes it, and the reaper
+    # records it as failed if the owner is lost. Writing anything here would
+    # record a finish before the work ran -- or overwrite the real outcome of
+    # an owner that finished first -- and would count the fire twice.
+    if result.handed_off:
+        log.info(
+            EVENT_FIRE_HANDED_OFF,
+            extra={
+                "extra_data": {
+                    "job_id": str(schedule.job_id),
+                    "fire_id": str(fire_id),  # convert at border: fire-handed-off log extra_data field
+                    "partition_key": str(schedule.partition_key),
+                    "kind": schedule.kind,
+                    "schedule_type": schedule.schedule_type,
+                }
+            },
+        )
         return
 
     # A dispatch callback may return ``JobFireResult(status='failed',

@@ -35,6 +35,21 @@ What it gives you:
   `DEFAULT_TICK_LOCK_KEY`; consumers running more than one pump in a
   process MUST vary it, or the pumps serialise against each other for no
   reason.
+- **`BackgroundDispatch` -- for fires that take long.** The pump awaits
+  each handler inline, so a tick lasts as long as all its fires together
+  and a kind due every minute waits behind every slow one. Wrap the
+  handlers (`routes = {kind: background.wrap(h) ...}`) and each fire is
+  handed off (`JobFireResult.handed_off`: the tick leaves the row
+  `'dispatching'` and moves on), runs as its own task, and finalizes its
+  own row with its real outcome. One fire per kind is in flight at a
+  time: in-process, and across pods through `nats_distributed_lock` on
+  `in_flight_lock_key(kind)`. A fire that finds its kind still running is
+  recorded as a success whose output carries `IN_FLIGHT_SKIP_OUTPUT_KEY`.
+  `max_concurrent` bounds how many run at once, and per-kind fire
+  timeouts are refused at construction unless they sit below that kind's
+  reap threshold. A process that dies mid-fire leaves the row to the
+  reaper, as before; `aclose()` records what it cancels. Opt-in: a pump
+  that does not wrap its handlers behaves exactly as before.
 - **`compute_next_fire_at(...)`** -- the pure reschedule math for every
   schedule type (`daily_at`, `every_n_hours`, `random_within_window`,
   `one_shot_at`, `cron`, `relative_delay`, `interval`) and both
