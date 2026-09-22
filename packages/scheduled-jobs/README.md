@@ -53,6 +53,17 @@ What it gives you:
   mid-fire leaves the row to the reaper, as before, and `aclose()` records
   what it cancels (a fire whose body already finished keeps its result).
   Opt-in: a pump that does not wrap its handlers behaves exactly as before.
+  **Exclusion groups** keep kinds that share something (one client object,
+  one file handle) off each other: `exclusion_groups={kind: group}`. Kinds
+  in one group never run at the same time; they take turns in the order
+  they reach the group. A fire waits for its group's turn *before* it takes
+  a slot and before its timeout starts, so waiting costs neither; the reap
+  clock does keep running, so the wait is bounded by it, and a fire still
+  waiting when its time runs out is recorded as failed without running,
+  naming its group. `EVENT_FIRE_WAITING_EXCLUSION_GROUP` logs each wait with
+  the kind holding the turn. Groups hold within one `BackgroundDispatch`
+  (one process). A waiting fire holds its kind's cross-pod in-flight lock,
+  so another pod records that kind as skipped instead of running it twice.
 - **`compute_next_fire_at(...)`** -- the pure reschedule math for every
   schedule type (`daily_at`, `every_n_hours`, `random_within_window`,
   `one_shot_at`, `cron`, `relative_delay`, `interval`) and both

@@ -25,6 +25,7 @@ __all__ = [
     "EVENT_FIRE_SKIPPED_BUSY",
     "EVENT_FIRE_SKIPPED_IN_FLIGHT",
     "EVENT_FIRE_UNROUTED_KIND",
+    "EVENT_FIRE_WAITING_EXCLUSION_GROUP",
     "EVENT_TICK_COMPLETED",
     "EVENT_TICK_STARTED",
 ]
@@ -73,3 +74,8 @@ EVENT_FIRE_HANDED_OFF: str = "3tears.scheduled_jobs.fire.handed_off"
 # the same kind was still running, in this process or on another pod.
 EVENT_FIRE_COMPLETED: str = "3tears.scheduled_jobs.fire.completed"
 EVENT_FIRE_SKIPPED_IN_FLIGHT: str = "3tears.scheduled_jobs.fire.skipped_in_flight"
+# ``EVENT_FIRE_WAITING_EXCLUSION_GROUP`` is a fire waiting for its turn in
+# its exclusion group because another kind of the group is running or
+# queued; it carries the group and the kind holding the turn (``None``
+# for the moment the turn is passing to the next fire in line).
+EVENT_FIRE_WAITING_EXCLUSION_GROUP: str = "3tears.scheduled_jobs.fire.waiting_exclusion_group"

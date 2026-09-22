@@ -32,6 +32,7 @@ from threetears.nats.errors import KvError
 
 from threetears.scheduled_jobs.background import IN_FLIGHT_SKIP_OUTPUT_KEY, BackgroundDispatch, in_flight_lock_key
 from threetears.scheduled_jobs.config import DEFAULT_JOB_CONFIG
+from threetears.scheduled_jobs.events import EVENT_FIRE_WAITING_EXCLUSION_GROUP
 from threetears.scheduled_jobs.protocols import FireStore
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
 
@@ -753,6 +754,79 @@ async def test_a_fire_is_stopped_before_its_reap_threshold_even_inside_its_own_t
     assert fires.failed[0]["error"].startswith("poll:k: fire exceeded the time left before its reap threshold (")
 
 
+async def test_a_fire_waiting_for_a_slot_is_recorded_at_its_reap_deadline() -> None:
+    """One slot, held by a long fire. The other has 0.2s before its reap threshold (60s less the
+    30s margin, fired 29.8s ago): it must be recorded then, while the holder still runs -- not
+    when the slot frees, by which time the reaper could have taken its row."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(
+        fires,
+        max_concurrent=1,
+        fire_timeout_seconds_by_kind={"poll:long": 20, "poll:short": 20},
+        config=_Config(by_kind={"poll:long": 60, "poll:short": 60}),
+    )
+    body = _Gated("poll:long", "poll:short")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="poll:long"), uuid4())
+    await body.started["poll:long"].wait()
+    await wrapped(_trigger(kind="poll:short", fired_ago=29.8), uuid4())
+
+    for _ in range(100):
+        if fires.failed:
+            break
+        await asyncio.sleep(0.02)
+    assert [row["error"] for row in fires.failed] == [
+        "poll:short: waited so long for a free slot that running it now would outlive its 60s reap threshold; "
+        "the fire was not run"
+    ]
+    body.release["poll:long"].set()
+    await dispatch.join()
+    assert not body.started["poll:short"].is_set()
+    assert len(fires.failed) == 1
+
+
+async def test_a_cancelled_fire_gives_its_slot_back() -> None:
+    """One slot. Cancelling the fire that holds it must free it for the next one, or every
+    cancelled fire would lose a slot until nothing ran at all."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, max_concurrent=1)
+    body = _Gated("poll:a", "poll:b")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="poll:a"), uuid4())
+    await body.started["poll:a"].wait()
+    await wrapped(_trigger(kind="poll:b"), uuid4())
+    await asyncio.sleep(0.02)
+    [holder] = [task for task in asyncio.all_tasks() if task.get_name() == "scheduled-jobs:poll:a"]
+
+    holder.cancel()
+    await asyncio.wait_for(body.started["poll:b"].wait(), timeout=1)
+    body.release["poll:b"].set()
+    await dispatch.join()
+    assert len(fires.succeeded) == 1
+
+
+async def test_a_finished_fire_gives_back_exactly_one_slot() -> None:
+    """One slot. After a fire finishes, two more must still run one at a time: a slot released
+    twice would quietly raise the concurrency cap by one per fire."""
+    dispatch = _dispatch(_FakeFireStore(), max_concurrent=1)
+
+    async def _quick(_t: JobTrigger, _f: UUID) -> JobFireResult:
+        return JobFireResult()
+
+    await dispatch.wrap(_quick)(_trigger(kind="poll:first"), uuid4())
+    await dispatch.join()
+
+    body = _Gated("poll:b", "poll:c")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="poll:b"), uuid4())
+    await wrapped(_trigger(kind="poll:c"), uuid4())
+    await asyncio.sleep(0.05)
+    assert [kind for kind, event in body.started.items() if event.is_set()] == ["poll:b"]
+    for event in body.release.values():
+        event.set()
+    await dispatch.join()
+
+
 def test_a_nan_timeout_is_refused() -> None:
     with pytest.raises(ValueError, match="fire_timeout_seconds"):
         _dispatch(fire_timeout_seconds=float("nan"))
@@ -821,3 +895,426 @@ async def test_a_cross_pod_skip_is_counted_as_a_success(monkeypatch: pytest.Monk
     await dispatch.join()
     assert emitter.fires == [("succeeded", "cron")]
     assert emitter.failures == []
+
+
+# ---------------------------------------------------------------------------
+# exclusion groups
+# ---------------------------------------------------------------------------
+
+
+class _Gated:
+    """A body per kind that records when it starts and ends, and parks until that kind is released."""
+
+    def __init__(self, *kinds: str) -> None:
+        self.events: list[str] = []
+        self.started = {kind: asyncio.Event() for kind in kinds}
+        self.release = {kind: asyncio.Event() for kind in kinds}
+
+    async def __call__(self, trigger: JobTrigger, _f: UUID) -> JobFireResult:
+        self.events.append(f"start {trigger.kind}")
+        self.started[trigger.kind].set()
+        await self.release[trigger.kind].wait()
+        self.events.append(f"end {trigger.kind}")
+        return JobFireResult()
+
+
+async def test_kinds_in_one_group_take_turns_in_arrival_order() -> None:
+    body = _Gated("poll:g", "backfill:g", "backfill:g_old")
+    dispatch = _dispatch(
+        _FakeFireStore(),
+        exclusion_groups={"poll:g": "g", "backfill:g": "g", "backfill:g_old": "g"},
+    )
+    wrapped = dispatch.wrap(body)
+    for kind in ("backfill:g", "poll:g", "backfill:g_old"):
+        assert (await wrapped(_trigger(kind=kind), uuid4())).handed_off
+    await body.started["backfill:g"].wait()
+    await asyncio.sleep(0.05)
+    assert body.events == ["start backfill:g"], "a second kind of the group started while the first ran"
+
+    body.release["backfill:g"].set()
+    await body.started["poll:g"].wait()
+    body.release["poll:g"].set()
+    await body.started["backfill:g_old"].wait()
+    body.release["backfill:g_old"].set()
+    await dispatch.join()
+    assert body.events == [
+        "start backfill:g",
+        "end backfill:g",
+        "start poll:g",
+        "end poll:g",
+        "start backfill:g_old",
+        "end backfill:g_old",
+    ]
+
+
+async def test_kinds_in_different_groups_or_none_run_at_the_same_time() -> None:
+    body = _Gated("poll:a", "poll:b", "poll:free")
+    dispatch = _dispatch(_FakeFireStore(), exclusion_groups={"poll:a": "a", "poll:b": "b"})
+    wrapped = dispatch.wrap(body)
+    for kind in ("poll:a", "poll:b", "poll:free"):
+        await wrapped(_trigger(kind=kind), uuid4())
+    for kind in ("poll:a", "poll:b", "poll:free"):
+        await asyncio.wait_for(body.started[kind].wait(), timeout=1)
+    for event in body.release.values():
+        event.set()
+    await dispatch.join()
+
+
+async def test_a_fire_waiting_for_its_turn_holds_no_slot() -> None:
+    """Two slots. The group's first kind takes one; its sibling waits for the group's turn. If the
+    waiting sibling held the second slot, the ungrouped kind could not start."""
+    body = _Gated("poll:g", "backfill:g", "poll:free")
+    dispatch = _dispatch(_FakeFireStore(), max_concurrent=2, exclusion_groups={"poll:g": "g", "backfill:g": "g"})
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="poll:g"), uuid4())
+    await body.started["poll:g"].wait()
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await asyncio.sleep(0.02)
+    await wrapped(_trigger(kind="poll:free"), uuid4())
+
+    await asyncio.wait_for(body.started["poll:free"].wait(), timeout=1)
+    assert not body.started["backfill:g"].is_set()
+    for event in body.release.values():
+        event.set()
+    await dispatch.join()
+
+
+async def test_waiting_for_a_turn_uses_none_of_the_fires_own_limit() -> None:
+    """backfill:g has a 0.2s limit and waits 0.3s for poll:g (1s limit) to finish, then runs 0.01s.
+    Were the wait counted against its limit, it would be cut off before it ever started."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(
+        fires,
+        fire_timeout_seconds=0.2,
+        fire_timeout_seconds_by_kind={"poll:g": 1.0},
+        exclusion_groups={"poll:g": "g", "backfill:g": "g"},
+    )
+
+    async def _body(trigger: JobTrigger, _f: UUID) -> JobFireResult:
+        await asyncio.sleep(0.3 if trigger.kind == "poll:g" else 0.01)
+        return JobFireResult(output={"kind": trigger.kind})
+
+    wrapped = dispatch.wrap(_body)
+    await wrapped(_trigger(kind="poll:g"), uuid4())
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await dispatch.join()
+
+    assert fires.failed == []
+    assert sorted(row["output"]["kind"] for row in fires.succeeded) == ["backfill:g", "poll:g"]
+
+
+async def test_waiting_for_a_turn_still_runs_down_the_reap_clock() -> None:
+    """The reaper counts from the tick, so a turn waited for is time gone: with 60s to its reap
+    threshold less the 30s margin, fired 29.8s ago, the sibling has 0.2s. It is recorded at that
+    deadline -- while the holder is still running -- never run, and never recorded twice."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(
+        fires,
+        fire_timeout_seconds_by_kind={"poll:k": 20, "backfill:k": 20},
+        config=_Config(by_kind={"poll:k": 60, "backfill:k": 60}),
+        exclusion_groups={"poll:k": "k", "backfill:k": "k"},
+    )
+    body = _Gated("poll:k", "backfill:k")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="poll:k"), uuid4())
+    await body.started["poll:k"].wait()
+    waiting = uuid4()
+    await wrapped(_trigger(kind="backfill:k", fired_ago=29.8), waiting)
+
+    for _ in range(100):
+        if fires.failed:
+            break
+        await asyncio.sleep(0.02)
+    assert not body.release["poll:k"].is_set(), "the holder is still running"
+    assert fires.failed == [
+        {
+            "fire_id": waiting,
+            "error": (
+                "backfill:k: waited so long for its turn in exclusion group 'k' that running it now would "
+                "outlive its 60s reap threshold; the fire was not run"
+            ),
+            "latency_ms": fires.failed[0]["latency_ms"],
+        }
+    ]
+
+    body.release["poll:k"].set()
+    await dispatch.join()
+    assert not body.started["backfill:k"].is_set()
+    assert len(fires.failed) == 1
+    assert len(fires.succeeded) == 1
+
+
+async def test_a_sibling_with_a_shorter_reap_threshold_is_recorded_before_the_reaper_could_take_it() -> None:
+    """Kinds in one group need not share a reap threshold. The holder has 100s to its threshold;
+    the waiter has 60s and was fired 29.8s ago. Its wait must end at ITS deadline, not the holder's
+    -- otherwise the reaper fails its row and the dispatcher later writes it again."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(
+        fires,
+        fire_timeout_seconds_by_kind={"backfill:long": 60, "poll:short": 20},
+        config=_Config(by_kind={"backfill:long": 100, "poll:short": 60}),
+        exclusion_groups={"backfill:long": "g", "poll:short": "g"},
+    )
+    body = _Gated("backfill:long", "poll:short")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="backfill:long"), uuid4())
+    await body.started["backfill:long"].wait()
+    await wrapped(_trigger(kind="poll:short", fired_ago=29.8), uuid4())
+
+    for _ in range(100):
+        if fires.failed:
+            break
+        await asyncio.sleep(0.02)
+    [failed] = fires.failed
+    assert failed["error"].startswith("poll:short: waited so long for its turn in exclusion group 'g'"), failed
+    body.release["backfill:long"].set()
+    await dispatch.join()
+    assert len(fires.failed) == 1
+
+
+async def test_a_fire_that_fails_hands_the_turn_on() -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, exclusion_groups={"poll:g": "g", "backfill:g": "g"})
+    queued = asyncio.Event()
+
+    async def _body(trigger: JobTrigger, _f: UUID) -> JobFireResult:
+        if trigger.kind == "backfill:g":
+            await queued.wait()  # hold the turn until the sibling is really waiting for it
+            raise RuntimeError("upstream down")
+        return JobFireResult()
+
+    wrapped = dispatch.wrap(_body)
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await asyncio.sleep(0.02)
+    await wrapped(_trigger(kind="poll:g"), uuid4())
+    await asyncio.sleep(0.02)
+    queued.set()
+    await asyncio.wait_for(dispatch.join(), timeout=1)
+
+    assert [row["error"] for row in fires.failed] == ["upstream down"]
+    assert len(fires.succeeded) == 1
+
+
+async def test_a_cancelled_holder_hands_the_turn_on() -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, exclusion_groups={"poll:g": "g", "backfill:g": "g"})
+    body = _Gated("backfill:g", "poll:g")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await body.started["backfill:g"].wait()
+    await wrapped(_trigger(kind="poll:g"), uuid4())
+    await asyncio.sleep(0.02)
+    [holder] = [task for task in asyncio.all_tasks() if task.get_name() == "scheduled-jobs:backfill:g"]
+
+    holder.cancel()
+    await asyncio.wait_for(body.started["poll:g"].wait(), timeout=1)
+    body.release["poll:g"].set()
+    await dispatch.join()
+
+    assert [row["error"] for row in fires.failed] == ["backfill:g: cancelled before the fire finished"]
+    assert len(fires.succeeded) == 1
+
+
+async def test_a_fire_that_times_out_hands_the_turn_on() -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, fire_timeout_seconds=0.05, exclusion_groups={"poll:g": "g", "backfill:g": "g"})
+
+    async def _body(trigger: JobTrigger, _f: UUID) -> JobFireResult:
+        if trigger.kind == "backfill:g":
+            await asyncio.sleep(10)
+        return JobFireResult()
+
+    wrapped = dispatch.wrap(_body)
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await wrapped(_trigger(kind="poll:g"), uuid4())
+    await asyncio.wait_for(dispatch.join(), timeout=2)
+
+    assert [row["error"] for row in fires.failed] == ["backfill:g: fire exceeded its limit (0.05s) and was cancelled"]
+    assert len(fires.succeeded) == 1
+
+
+async def test_aclose_cancels_a_fire_waiting_for_its_turn_and_records_why() -> None:
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, exclusion_groups={"poll:g": "g", "backfill:g": "g"})
+    body = _Gated("poll:g", "backfill:g")
+    wrapped = dispatch.wrap(body)
+    running, waiting = uuid4(), uuid4()
+    await wrapped(_trigger(kind="poll:g"), running)
+    await body.started["poll:g"].wait()
+    await wrapped(_trigger(kind="backfill:g"), waiting)
+    await asyncio.sleep(0.02)
+
+    await dispatch.aclose()
+
+    assert not body.started["backfill:g"].is_set()
+    assert {row["fire_id"]: row["error"] for row in fires.failed} == {
+        running: "poll:g: cancelled because BackgroundDispatch was closed before the fire finished",
+        waiting: "backfill:g: cancelled because BackgroundDispatch was closed before the fire finished",
+    }
+    assert dispatch.in_flight == {}
+
+
+async def test_a_turn_is_free_again_after_a_waiter_is_cancelled() -> None:
+    """Cancelling a fire while it waits must not leave the group's turn held or its holder stale."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(fires, exclusion_groups={"poll:g": "g", "backfill:g": "g", "backfill:g_old": "g"})
+    body = _Gated("poll:g", "backfill:g", "backfill:g_old")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="poll:g"), uuid4())
+    await body.started["poll:g"].wait()
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await asyncio.sleep(0.02)
+    [waiter] = [task for task in asyncio.all_tasks() if task.get_name() == "scheduled-jobs:backfill:g"]
+    waiter.cancel()
+    await asyncio.sleep(0.02)
+
+    body.release["poll:g"].set()
+    await wrapped(_trigger(kind="backfill:g_old"), uuid4())
+    await asyncio.wait_for(body.started["backfill:g_old"].wait(), timeout=1)
+    body.release["backfill:g_old"].set()
+    await dispatch.join()
+    assert not body.started["backfill:g"].is_set()
+    assert fires.failed[0]["error"] == "backfill:g: cancelled before the fire finished"
+
+
+async def test_a_fire_waiting_for_its_turn_is_logged_with_the_kind_holding_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dispatch = _dispatch(_FakeFireStore(), exclusion_groups={"poll:g": "g", "backfill:g": "g"})
+    body = _Gated("poll:g", "backfill:g")
+    wrapped = dispatch.wrap(body)
+    caplog.set_level("INFO")
+    await wrapped(_trigger(kind="poll:g"), uuid4())
+    await body.started["poll:g"].wait()
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await asyncio.sleep(0.02)
+
+    [record] = [r for r in caplog.records if r.getMessage() == EVENT_FIRE_WAITING_EXCLUSION_GROUP]
+    detail = record.extra_data  # type: ignore[attr-defined]
+    assert (detail["kind"], detail["group"], detail["holder_kind"]) == ("backfill:g", "g", "poll:g")
+
+    for event in body.release.values():
+        event.set()
+    await dispatch.join()
+
+
+async def test_the_waiting_event_names_whoever_holds_the_turn_now(caplog: pytest.LogCaptureFixture) -> None:
+    dispatch = _dispatch(_FakeFireStore(), exclusion_groups={"a:g": "g", "b:g": "g", "c:g": "g"})
+    body = _Gated("a:g", "b:g", "c:g")
+    wrapped = dispatch.wrap(body)
+    caplog.set_level("INFO")
+    await wrapped(_trigger(kind="a:g"), uuid4())
+    await body.started["a:g"].wait()
+    await wrapped(_trigger(kind="b:g"), uuid4())
+    await asyncio.sleep(0.02)
+    body.release["a:g"].set()
+    await body.started["b:g"].wait()
+    await wrapped(_trigger(kind="c:g"), uuid4())
+    await asyncio.sleep(0.02)
+
+    waits = [
+        (r.extra_data["kind"], r.extra_data["holder_kind"])  # type: ignore[attr-defined]
+        for r in caplog.records
+        if r.getMessage() == EVENT_FIRE_WAITING_EXCLUSION_GROUP
+    ]
+    assert waits == [("b:g", "a:g"), ("c:g", "b:g")]
+    for event in body.release.values():
+        event.set()
+    await dispatch.join()
+
+
+async def test_a_fire_arriving_while_the_turn_passes_still_logs_its_wait(caplog: pytest.LogCaptureFixture) -> None:
+    """Releasing the holder and handing off a new fire in one synchronous step makes the newcomer
+    check the group after the holder has released the turn but before the next in line has taken
+    it -- the moment a lock reads free although a fire is queued. The newcomer still waits, so it
+    must still be logged."""
+    dispatch = _dispatch(_FakeFireStore(), exclusion_groups={"a:g": "g", "b:g": "g", "c:g": "g"})
+    body = _Gated("a:g", "b:g", "c:g")
+    wrapped = dispatch.wrap(body)
+    caplog.set_level("INFO")
+    await wrapped(_trigger(kind="a:g"), uuid4())
+    await body.started["a:g"].wait()
+    await wrapped(_trigger(kind="b:g"), uuid4())
+    await asyncio.sleep(0.02)
+
+    body.release["a:g"].set()
+    await wrapped(_trigger(kind="c:g"), uuid4())  # hands off at once; no await in between
+    await body.started["b:g"].wait()
+    await asyncio.sleep(0.02)
+
+    waiting = [
+        r.extra_data["kind"]  # type: ignore[attr-defined]
+        for r in caplog.records
+        if r.getMessage() == EVENT_FIRE_WAITING_EXCLUSION_GROUP
+    ]
+    assert waiting == ["b:g", "c:g"]
+    for event in body.release.values():
+        event.set()
+    await dispatch.join()
+
+
+async def test_the_group_queue_empties_after_a_waiter_gives_up(caplog: pytest.LogCaptureFixture) -> None:
+    """A waiter that runs out of time leaves the group's queue. Once the holder is done too, the
+    next fire finds nobody ahead of it and must not be logged as waiting."""
+    fires = _FakeFireStore()
+    dispatch = _dispatch(
+        fires,
+        fire_timeout_seconds_by_kind={"poll:k": 20, "backfill:k": 20},
+        config=_Config(by_kind={"poll:k": 60, "backfill:k": 60}),
+        exclusion_groups={"poll:k": "k", "backfill:k": "k"},
+    )
+    body = _Gated("poll:k", "backfill:k")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="poll:k"), uuid4())
+    await body.started["poll:k"].wait()
+    await wrapped(_trigger(kind="backfill:k", fired_ago=29.8), uuid4())
+    for _ in range(100):
+        if fires.failed:
+            break
+        await asyncio.sleep(0.02)
+    body.release["poll:k"].set()
+    await dispatch.join()
+
+    caplog.clear()
+    caplog.set_level("INFO")
+    body.release["backfill:k"].set()
+    await wrapped(_trigger(kind="backfill:k"), uuid4())
+    await dispatch.join()
+    assert not [r for r in caplog.records if r.getMessage() == EVENT_FIRE_WAITING_EXCLUSION_GROUP]
+    assert body.started["backfill:k"].is_set()
+
+
+async def test_the_group_queue_empties_after_a_waiter_is_cancelled(caplog: pytest.LogCaptureFixture) -> None:
+    """The same for a waiter cancelled while it waits."""
+    dispatch = _dispatch(_FakeFireStore(), exclusion_groups={"poll:g": "g", "backfill:g": "g"})
+    body = _Gated("poll:g", "backfill:g")
+    wrapped = dispatch.wrap(body)
+    await wrapped(_trigger(kind="poll:g"), uuid4())
+    await body.started["poll:g"].wait()
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await asyncio.sleep(0.02)
+    [waiter] = [task for task in asyncio.all_tasks() if task.get_name() == "scheduled-jobs:backfill:g"]
+    waiter.cancel()
+    await asyncio.sleep(0.02)
+    body.release["poll:g"].set()
+    await dispatch.join()
+
+    caplog.clear()
+    caplog.set_level("INFO")
+    body.release["backfill:g"].set()
+    await wrapped(_trigger(kind="backfill:g"), uuid4())
+    await dispatch.join()
+    assert not [r for r in caplog.records if r.getMessage() == EVENT_FIRE_WAITING_EXCLUSION_GROUP]
+    assert body.started["backfill:g"].is_set()
+
+
+def test_exclusion_group_for_reports_a_kinds_group() -> None:
+    dispatch = _dispatch(exclusion_groups={"poll:g": "g"})
+    assert dispatch.exclusion_group_for("poll:g") == "g"
+    assert dispatch.exclusion_group_for("poll:free") is None
+
+
+@pytest.mark.parametrize("group", ["", None, 3])
+def test_a_group_name_that_is_not_a_non_empty_string_is_refused(group: Any) -> None:
+    with pytest.raises(ValueError, match="exclusion_groups"):
+        _dispatch(exclusion_groups={"poll:g": group})
