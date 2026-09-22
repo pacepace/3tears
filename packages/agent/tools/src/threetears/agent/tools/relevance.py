@@ -55,6 +55,7 @@ from threetears.observe import get_logger
 
 __all__ = [
     "ToolRelevanceIndex",
+    "ToolSearchResult",
     "ToolSelectionResult",
     "create_tool_search_tool",
 ]
@@ -128,6 +129,26 @@ class ToolSelectionResult:
     fallback_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class ToolSearchResult:
+    """What one search of the catalog came back with.
+
+    :meth:`ToolRelevanceIndex.search` drops the reason and returns the hits
+    alone. ``tool_search`` needs the reason: a search that never finished is
+    not a search that found nothing, and telling the model "no matching
+    tools" when the index was still warming up sends it back to the person
+    saying the tool does not exist.
+
+    :ivar hits: up to ``limit`` tools, most relevant first; empty when the
+        catalog is empty or the search did not run to completion
+    :ivar fallback_reason: ``"embedder_error"``, ``"latency_ceiling"``, or
+        ``None`` when the search ran to completion
+    """
+
+    hits: list[BaseTool]
+    fallback_reason: str | None = None
+
+
 class ToolRelevanceIndex:
     """Embeds tool name+description and a query; returns a relevant top-K subset.
 
@@ -143,10 +164,29 @@ class ToolRelevanceIndex:
         top_k: int = DEFAULT_TOP_K,
         latency_ceiling_s: float = DEFAULT_LATENCY_CEILING_S,
         cache_size: int = DEFAULT_CACHE_SIZE,
+        search_latency_ceiling_s: float | None = None,
     ) -> None:
+        """
+        :param latency_ceiling_s: how long :meth:`select` waits before it
+            falls back to the full catalog. Tight, because a turn is waiting
+            on it and the fallback costs nothing but precision.
+        :ptype latency_ceiling_s: float
+        :param search_latency_ceiling_s: how long :meth:`search`,
+            :meth:`search_scored` and :meth:`search_outcome` wait. Defaults
+            to ``latency_ceiling_s``. A ``tool_search`` call is the model
+            asking for a tool it needs, mid-turn, and has no fallback: a
+            search cut off at the select ceiling comes back empty and reads
+            as "there is no such tool". A cold catalog embeds in more than a
+            select ceiling sized for the warm case, so a caller gives the
+            search its own, longer, wait.
+        :ptype search_latency_ceiling_s: float | None
+        """
         self._embedder = embedder
         self._top_k = top_k
         self._latency_ceiling_s = latency_ceiling_s
+        self._search_latency_ceiling_s = (
+            latency_ceiling_s if search_latency_ceiling_s is None else search_latency_ceiling_s
+        )
         self._cache_size = cache_size
         # content_hash -> {tool_name: embedding_vector}. OrderedDict as a
         # simple bounded LRU (move-to-end on hit, popitem(last=False) on
@@ -319,22 +359,28 @@ class ToolRelevanceIndex:
         """
         if not tools:
             return []
-        try:
-            ranked, fallback_reason = await asyncio.wait_for(self._rank(tools, query), timeout=self._latency_ceiling_s)
-        except TimeoutError:
-            _log.warning(
-                "tool-relevance scored search exceeded latency ceiling; returning no hits",
-                extra={
-                    "extra_data": {
-                        "tool_count": len(tools),
-                        "ceiling_s": self._latency_ceiling_s,
-                    }
-                },
-            )
-            return []
+        ranked, fallback_reason = await self._rank_for_search(tools, query, what="scored search")
         if fallback_reason is not None:
             return []
         return ranked[:limit]
+
+    async def _rank_for_search(
+        self, tools: list[BaseTool], query: str, *, what: str
+    ) -> tuple[list[tuple[BaseTool, float]], str | None]:
+        """:meth:`_rank` under the search ceiling; a timeout is a fallback reason, not an exception."""
+        try:
+            return await asyncio.wait_for(self._rank(tools, query), timeout=self._search_latency_ceiling_s)
+        except TimeoutError:
+            _log.warning(
+                f"tool-relevance {what} exceeded latency ceiling; returning no hits",
+                extra={
+                    "extra_data": {
+                        "tool_count": len(tools),
+                        "ceiling_s": self._search_latency_ceiling_s,
+                    }
+                },
+            )
+            return [], "latency_ceiling"
 
     async def search(self, tools: list[BaseTool], query: str, limit: int = 5) -> list[BaseTool]:
         """Rank ``tools`` (typically the FULL catalog) by relevance to ``query``.
@@ -343,10 +389,12 @@ class ToolRelevanceIndex:
         a failed OR slow search soft-fails to an empty list of hits.
         ``tool_search`` failing to find anything is a normal, recoverable
         outcome for its caller -- it does not gate a turn's entire tool
-        surface the way :meth:`select` does. Still bounded by the SAME
-        latency ceiling as :meth:`select` (both share one embedder and one
-        failure surface) -- an unresponsive-but-not-raising embedder must
-        not hang a mid-turn ``tool_search`` call indefinitely.
+        surface the way :meth:`select` does. Bounded by the search ceiling
+        (``search_latency_ceiling_s``, the select ceiling unless the caller
+        set one) -- an unresponsive-but-not-raising embedder must not hang a
+        mid-turn ``tool_search`` call indefinitely. A caller that needs to
+        tell "nothing matched" from "did not finish" uses
+        :meth:`search_outcome`.
 
         :param tools: the catalog to search (the caller decides scope -- the
             sign-off contract for ``tool_search`` is that this is the FULL
@@ -360,24 +408,27 @@ class ToolRelevanceIndex:
             failure, timeout, or an empty catalog
         :rtype: list[BaseTool]
         """
+        return (await self.search_outcome(tools, query, limit=limit)).hits
+
+    async def search_outcome(self, tools: list[BaseTool], query: str, limit: int = 5) -> ToolSearchResult:
+        """:meth:`search`, keeping why the hits are empty when they are.
+
+        :param tools: the catalog to search (the caller decides scope)
+        :ptype tools: list[BaseTool]
+        :param query: natural-language description of the desired tool
+        :ptype query: str
+        :param limit: maximum number of hits to return
+        :ptype limit: int
+        :return: the hits and, when the search did not run to completion,
+            the reason
+        :rtype: ToolSearchResult
+        """
         if not tools:
-            return []
-        try:
-            ranked, fallback_reason = await asyncio.wait_for(self._rank(tools, query), timeout=self._latency_ceiling_s)
-        except TimeoutError:
-            _log.warning(
-                "tool-relevance search exceeded latency ceiling; returning no hits",
-                extra={
-                    "extra_data": {
-                        "tool_count": len(tools),
-                        "ceiling_s": self._latency_ceiling_s,
-                    }
-                },
-            )
-            return []
+            return ToolSearchResult(hits=[])
+        ranked, fallback_reason = await self._rank_for_search(tools, query, what="search")
         if fallback_reason is not None:
-            return []
-        return [tool for tool, _ in ranked][:limit]
+            return ToolSearchResult(hits=[], fallback_reason=fallback_reason)
+        return ToolSearchResult(hits=[tool for tool, _ in ranked][:limit])
 
 
 class _ToolSearchInput(BaseModel):
@@ -426,7 +477,29 @@ def create_tool_search_tool(
 
     async def _search(query: str) -> str:
         catalog = full_catalog_provider()
-        matches = await index.search(catalog, query, limit=limit)
+        outcome = await index.search_outcome(catalog, query, limit=limit)
+        matches = outcome.hits
+        if outcome.fallback_reason is not None:
+            # The search did not run, so nothing was found and nothing was
+            # ruled out. Live (metallm, the first turn after a deploy): a
+            # cold catalog ran past the ceiling, the model read "No matching
+            # tools found." and told the person the tool did not exist.
+            _log.info(
+                "tool_search: did not finish",
+                extra={
+                    "extra_data": {
+                        "query": query[:200],
+                        "catalog_size": len(catalog),
+                        "reason": outcome.fallback_reason,
+                    }
+                },
+            )
+            if outcome.fallback_reason == "latency_ceiling":
+                return (
+                    "Tool search did not finish in time. Nothing was found and nothing was ruled out. "
+                    "Run the same search once more."
+                )
+            return "Tool search failed: the tool index could not be read. Nothing was found and nothing was ruled out."
         if not matches:
             _log.info(
                 "tool_search: no matches",

@@ -4,6 +4,27 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.49.0 -- 2026-09-22
+
+### `tool_search` waits for a cold catalog, and says when it did not finish
+
+`ToolRelevanceIndex` takes `search_latency_ceiling_s`, a separate ceiling for
+`search`, `search_scored` and the new `search_outcome`. It defaults to
+`latency_ceiling_s`, so nothing changes for a caller that does not set it.
+`select` keeps the tight ceiling: past it the turn binds the full catalog and
+goes on. A `tool_search` call has no such fallback. Cut off, it came back empty,
+and empty read as "there is no such tool". Live, the first turn after a deploy:
+74 tools, cold cache, the search ran past a 1.0s ceiling sized for the warm
+case, and the agent told the person conversation search did not exist.
+
+`search_outcome` returns `ToolSearchResult(hits, fallback_reason)`, and the
+`tool_search` tool uses it: a search that ran past the ceiling now says "Tool
+search did not finish in time. Nothing was found and nothing was ruled out. Run
+the same search once more." and an embedder failure says the index could not be
+read. "No matching tools found." is reserved for a search that ran.
+
+Minor: a new constructor parameter, a new method and a new public type.
+
 ## v0.48.0 -- 2026-09-21
 
 ### A caller can have each retrieved memory say when it was written
