@@ -123,6 +123,23 @@ bucket at connect, and fails closed if it cannot, exactly as a pod with tables
 already did. Every tool pod's minted grant already carries that bucket under its
 own scope, and a registry proxying the pod's calls needs the bucket itself.
 
+### `NamespaceCollection.list_owned_by` finds what a namespace owns
+
+A namespace's `owner_namespace` names its owner through a foreign key onto the
+unique name index, and that key refuses to delete an owner while anything still
+names it. So removing a namespace means removing what it owns first; this is the
+method that finds it. It spans both partitions -- an agent's channel and memory rows
+are customer-scoped, a tool its pods publish may be platform-scoped -- and leaves
+out the owner's own self-reference, which an agent namespace carries and which a
+walker must not follow. An empty name owns nothing.
+
+A new integration test measures the foreign key itself: the parent side IS enforced
+for DELETE against a real Postgres, as it was against YugabyteDB, so a consumer that
+deletes an owner first gets a `ForeignKeyViolationError`. Only a rename goes
+unenforced.
+
+Minor: a new method.
+
 ## v0.48.0 -- 2026-09-21
 
 ### A caller can have each retrieved memory say when it was written

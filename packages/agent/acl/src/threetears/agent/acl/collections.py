@@ -1483,6 +1483,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "list_ids_by_customer_and_type",
             "list_all_ids",
             "list_ids_under_name",
+            # an owner's rows sit in both partitions (a customer-scoped channel
+            # beside a platform-scoped tool), so the by-owner walk names both.
+            "list_owned_by",
             "get_by_name",
             "get_by_agent_id",
             "get_by_owner_and_customer",
@@ -2063,6 +2066,41 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 for row in rows
                 if row["namespace_id"] is not None and row["name"] is not None and namespace_contains(node, row["name"])
             ]
+        return result
+
+    async def list_owned_by(self, owner_name: str) -> list[NamespaceEntity]:
+        """return every namespace whose ``owner_namespace`` is ``owner_name``, except the owner itself.
+
+        the finding half of tearing a namespace down. ``owner_namespace`` names its
+        owner through a foreign key onto the unique name index, and that key refuses
+        to delete an owner while any row still names it -- so a caller removing a
+        namespace removes what this returns first, walking it again for each child
+        that owns rows of its own.
+
+        an agent's namespace names ITSELF as its owner. that self-reference is left
+        out: it does not block the owner's own delete, and a walker that followed it
+        would never finish.
+
+        spans both row_scope partitions: an agent's channel and memory rows are
+        customer-scoped while a tool its pods publish may be platform-scoped. rows
+        are NOT promoted into L1/L2 -- the caller is about to delete them.
+
+        :param owner_name: the owning namespace's name; an empty name owns nothing,
+            never every ownerless row
+        :ptype owner_name: str
+        :return: the owned namespace entities, ordered by ``namespace_id``
+        :rtype: list[NamespaceEntity]
+        """
+        result: list[NamespaceEntity] = []
+        if owner_name and self.l3_pool is not None:
+            rows = await self.l3_pool.fetch(
+                "SELECT * FROM namespaces"
+                " WHERE row_scope IN ('platform', 'customer')"
+                "   AND owner_namespace = $1 AND name <> $1"
+                " ORDER BY namespace_id",
+                owner_name,
+            )
+            result = [self.entity_class(self._coerce_row(dict(row)), is_new=False, collection=self) for row in rows]
         return result
 
     async def list_tool_namespaces_for_actor(
