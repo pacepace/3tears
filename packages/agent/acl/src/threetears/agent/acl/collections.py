@@ -1486,6 +1486,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # an owner's rows sit in both partitions (a customer-scoped channel
             # beside a platform-scoped tool), so the by-owner walk names both.
             "list_owned_by",
+            # a schema is named from either partition, so "is anyone left" asks both.
+            "schema_in_use",
             "get_by_name",
             "get_by_agent_id",
             "get_by_owner_and_customer",
@@ -2101,6 +2103,30 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 owner_name,
             )
             result = [self.entity_class(self._coerce_row(dict(row)), is_new=False, collection=self) for row in rows]
+        return result
+
+    async def schema_in_use(self, schema_name: str) -> bool:
+        """return whether any namespace row still names ``schema_name``.
+
+        one schema can be named by several rows: a workspace namespace records its
+        AGENT's schema as its own ``schema_name``. so a caller that deletes a row
+        may drop that row's schema only once this answers ``False`` -- dropping it
+        on the strength of one row would take every other row's data with it.
+
+        :param schema_name: the schema to check; an empty name is never in use
+        :ptype schema_name: str
+        :return: ``True`` while at least one row names the schema
+        :rtype: bool
+        """
+        result = False
+        if schema_name and self.l3_pool is not None:
+            result = bool(
+                await self.l3_pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM namespaces"
+                    " WHERE row_scope IN ('platform', 'customer') AND schema_name = $1)",
+                    schema_name,
+                )
+            )
         return result
 
     async def list_tool_namespaces_for_actor(

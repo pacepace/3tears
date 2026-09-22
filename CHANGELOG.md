@@ -138,7 +138,13 @@ for DELETE against a real Postgres, as it was against YugabyteDB, so a consumer 
 deletes an owner first gets a `ForeignKeyViolationError`. Only a rename goes
 unenforced.
 
-Minor: a new method.
+`NamespaceCollection.schema_in_use` answers the other half: whether any row still
+names a schema. One schema can be named by several rows -- a workspace namespace
+records its agent's schema as its own `schema_name` -- so a caller that deletes a
+row drops its schema only once this answers `False`. Dropping on the strength of
+one row takes every other row's data with it.
+
+Minor: two new methods.
 
 ## v0.48.0 -- 2026-09-21
 

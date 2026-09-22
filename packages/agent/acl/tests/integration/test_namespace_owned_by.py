@@ -213,3 +213,47 @@ class TestWhyTheListExists:
             remaining = await conn.fetchval("SELECT count(*) FROM namespaces")
 
         assert remaining == 0
+
+
+class TestSchemaInUse:
+    """``schema_in_use`` says whether any row still names a schema.
+
+    A workspace namespace records its AGENT's schema as its own ``schema_name``,
+    so one schema can be named by several rows. Whoever deletes a row may drop its
+    schema only once no row names it any more.
+    """
+
+    async def test_a_schema_a_remaining_row_names_is_in_use(self, pg_pool: asyncpg.Pool) -> None:
+        """the agent still names the schema its workspace shared."""
+        agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
+        schema = f"agent_{agent_id.hex}"
+        await _agent_with_children(pg_pool, agent_id, customer_id)
+        workspace_id = await _insert(
+            pg_pool,
+            name=f"workspaces.{agent_id.hex}.notes",
+            namespace_type="workspace",
+            owner_namespace=f"agents.{agent_id}",
+            customer_id=customer_id,
+        )
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE namespaces SET schema_name = $1 WHERE namespace_id = $2 OR name = $3",
+                schema,
+                workspace_id,
+                f"agents.{agent_id}",
+            )
+            await conn.execute("DELETE FROM namespaces WHERE namespace_id = $1", workspace_id)
+
+        assert await _collection(pg_pool).schema_in_use(schema) is True
+
+    async def test_a_schema_no_row_names_is_free(self, pg_pool: asyncpg.Pool) -> None:
+        """once the last row naming it is gone, the schema is free to drop."""
+        await _agent_with_children(pg_pool, uuid.uuid4(), uuid.uuid4())
+
+        assert await _collection(pg_pool).schema_in_use(f"agent_{uuid.uuid4().hex}") is False
+
+    async def test_an_empty_schema_name_is_never_in_use(self, pg_pool: asyncpg.Pool) -> None:
+        """rows with no schema do not make the empty name look taken."""
+        await _agent_with_children(pg_pool, uuid.uuid4(), uuid.uuid4())
+
+        assert await _collection(pg_pool).schema_in_use("") is False
