@@ -701,9 +701,13 @@ async def _regenerate(
     """
     source = shape.source(html)
     candidates = await shape.generate(source, schema, n=candidate_count, model_id=extraction_model_id, api_key=api_key)
+    # Validation runs off the event loop: a regex candidate's matching can take up to
+    # REGEX_TIMEOUT_SECONDS (in bounded_regex's worker process), and CSS parsing of a large page is
+    # slow too. The calling thread only waits meanwhile, so the loop keeps serving other tasks.
+    validations = [await asyncio.to_thread(shape.validate, source, candidate, schema) for candidate in candidates]
     survivors = [
         (candidate, validation)
-        for candidate, validation in ((c, shape.validate(source, c, schema)) for c in candidates)
+        for candidate, validation in zip(candidates, validations, strict=True)
         if validation.valid
     ]
 
@@ -810,7 +814,7 @@ async def _run_reuse_cycle(
       failure and let the threshold decide, which is the right response to "our selectors
       are wrong" and the safe response to "we could not tell".
     """
-    check = _check_reuse(shape, existing_recipe, html, schema, target_id)
+    check = await asyncio.to_thread(_check_reuse, shape, existing_recipe, html, schema, target_id)
     if check.valid:
         return await _commit_reuse(
             existing_recipe,
