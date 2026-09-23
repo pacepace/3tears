@@ -336,6 +336,26 @@ class _Checkout:
     poisoned: bool = False
 
 
+def _report_late_terminate(unit: asyncio.Future[None]) -> None:
+    """say how a terminate finished after nobody was waiting for it.
+
+    :param unit: the finished terminate
+    :ptype unit: asyncio.Future[None]
+    :return: nothing
+    :rtype: None
+    """
+    if unit.cancelled():
+        return
+    error = unit.exception()
+    if error is None:
+        log.info("redshift server-side terminate finished after its wait ended")
+    else:
+        log.warning(
+            "redshift server-side terminate failed after its wait ended: %s",
+            type(error).__name__,
+        )
+
+
 def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionConfig) -> None:
     """apply aggressive OS-level TCP keepalive on a redshift_connector connection.
 
@@ -771,6 +791,10 @@ class RedshiftDriver(Driver):
                 user=cfg.username,
                 password=password.get_secret_value(),
                 sslmode=cfg.sslmode,
+                # bounds the login: every login with this credential waits its turn behind
+                # the one in flight, so an unbounded hang would stall them all. redshift_connector
+                # leaves it on the socket for the connection's life, so it is lifted below.
+                timeout=cfg.connect_timeout_seconds,
                 # redshift_connector.connect (2.1.7) accepts only the tcp_keepalive
                 # BOOL. the granular idle / interval / count are applied post-connect
                 # via setsockopt (see _apply_socket_keepalive) -- passing them as
@@ -798,6 +822,19 @@ class RedshiftDriver(Driver):
         # timeout can cancel. Applied here (not as connect kwargs) because
         # redshift_connector's connect() has no granular keepalive parameters.
         _apply_socket_keepalive(conn, cfg)
+        # lift the connect timeout: left on, it would fail every statement longer than the
+        # login bound with a "connection time out". a socket this cannot reach would carry
+        # that failure to a long build hours later, so the login fails now, naming it.
+        sock = getattr(conn, "_usock", None)
+        if sock is None:
+            with self._suppress_close():
+                conn.close()
+            raise DriverConnectError(
+                f"connected to {cfg.host}:{cfg.port}/{cfg.database} but redshift_connector exposes no socket "
+                f"to lift the {cfg.connect_timeout_seconds}s login timeout from, so every statement longer "
+                "than it would fail; the installed redshift_connector is not one this driver supports"
+            )
+        sock.settimeout(None)
         return conn
 
     def _open_connection_sync(self) -> RedshiftConnection:
@@ -1306,11 +1343,28 @@ class RedshiftDriver(Driver):
         :rtype: None
         """
         cancel_failed = _get_cancellation_failed_counter()
+        # its own task, shielded from the timeout: the timeout ends the WAIT, not the
+        # terminate. the unit keeps this credential's login slot until its login resolves
+        # and records a refusal if there is one -- a timeout that tore it down would free
+        # the slot under a login still in flight and lose that refusal.
+        unit: asyncio.Future[None] = asyncio.ensure_future(
+            guarded_connect(self._connect_guard, lambda: asyncio.to_thread(self._terminate_backend_sync, pid))
+        )
         try:
-            await asyncio.wait_for(
-                guarded_connect(self._connect_guard, lambda: asyncio.to_thread(self._terminate_backend_sync, pid)),
-                timeout=_CANCEL_TIMEOUT_SECONDS,
+            await asyncio.wait_for(asyncio.shield(unit), timeout=_CANCEL_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            unit.add_done_callback(_report_late_terminate)
+            raise
+        except TimeoutError:
+            unit.add_done_callback(_report_late_terminate)
+            log.warning(
+                "redshift server-side terminate (pg_terminate_backend) did not finish within %ss for pid=%s; "
+                "it goes on in the background",
+                _CANCEL_TIMEOUT_SECONDS,
+                pid,
             )
+            if cancel_failed is not None:
+                cancel_failed.add(1, attributes={"driver_type": "redshift"})
         except DriverCredentialPausedError:
             log.warning(
                 "redshift server-side terminate skipped for pid=%s: the datasource's credential is paused, so no "
@@ -1320,7 +1374,7 @@ class RedshiftDriver(Driver):
             )
             if cancel_failed is not None:
                 cancel_failed.add(1, attributes={"driver_type": "redshift"})
-        except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001 -- best-effort terminate
+        except Exception as exc:  # noqa: BLE001 -- best-effort terminate
             log.warning(
                 "redshift server-side terminate (pg_terminate_backend) failed for pid=%s: %s",
                 pid,

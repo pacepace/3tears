@@ -70,7 +70,7 @@ agent's query), so one wrong stored password locked a production account in abou
 log in through `guarded_connect` on every login -- asyncpg through the pool's
 `connect=` hook, so a pool's replacement connections are guarded too, and Redshift's
 query-cancel login as well, through the same login routine as every other so its
-connect settings cannot drift -- and the guard hears every refusal and every success. The
+connect settings cannot drift -- and the guard hears every refusal. The
 guard the package ships, `CredentialRefusalGuards`, does two things:
 
 - It pauses a refused credential for the fleet. The pause is kept in a
@@ -99,7 +99,11 @@ AsyncpgDriver now creates its owned pool once when several first callers arrive
 together; each used to build its own, logging in once apiece and leaking all but one.
 RedshiftDriver no longer strands a connection a login opens after its caller gave up:
 a query cancelled mid-login, or a query-cancel whose timeout fired mid-login, now
-closes what the login opened.
+closes what the login opened, and a query-cancel that outlasts its timeout keeps its
+turn until its login resolves, so a refusal it meets is still recorded. Because every
+login waits its turn, a login is bounded: `RedshiftConnectionConfig` takes
+`connect_timeout_seconds` (default 30), passed to `redshift_connector.connect` and
+lifted from the socket once the connection is open, so it bounds only the login.
 `asyncpg>=0.30` is the declared floor, which `create_pool(connect=)` needs.
 
 ### NatsClient renews its own credential
@@ -154,7 +158,9 @@ spec and publishes once. A close that fails is logged and the rebuild proceeds. 
 rebuild that now builds no tools still publishes the reduced manifest, since losing
 tools is a change; a build that raises leaves the spec forgotten -- a narrowed spec
 must never keep its wider tools -- publishes the reduced manifest, and re-raises.
-Rebuilds of one spec are serialized, so two overlapping ones cannot leak a resource.
+Rebuilds of one spec are serialized -- with each other, with `deregister_spec` and
+with `start()`, so a retried `start()` closes what a failed one built -- so no two
+overlapping ones can leak a resource.
 Refreshing is `register_spec` alone.
 
 **Breaking:** `DynamicToolPod` subclasses implement `spec_key(spec) -> str`, the key

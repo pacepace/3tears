@@ -644,6 +644,83 @@ class TestNoLoginIsLeftOpen:
             await driver.close()
 
         connection.close.assert_called_once()
+        # the timeout ended the wait, not the terminate: the query was still killed.
+        executed = [call.args[0] for call in connection.cursor.return_value.execute.call_args_list]
+        assert "SELECT pg_terminate_backend(4242)" in executed
+
+    async def test_a_terminate_that_outlasts_its_timeout_still_records_a_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the slot is held until the login resolves, so the refusal it meets is not lost."""
+        monkeypatch.setattr("threetears.datasources.drivers.redshift_driver._CANCEL_TIMEOUT_SECONDS", 0.05)
+        datasource_id = uuid.uuid4()
+        guards = _replica(_Nats())
+        driver = RedshiftDriver(
+            _redshift_config(),
+            datasource_name="ds",
+            connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
+        )
+
+        def _slow_refusal(**kwargs: Any) -> MagicMock:
+            del kwargs
+            import time
+
+            time.sleep(0.2)
+            raise _refused()
+
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                side_effect=_slow_refusal,
+            ):
+                await driver._terminate_backend(4242)  # noqa: SLF001 -- times out; the pause is the effect
+                async with asyncio.timeout(2.0):
+                    while await guards.refused_at(datasource_id, _REVISION) is None:
+                        await asyncio.sleep(0.02)
+        finally:
+            await driver.close()
+
+
+class TestALoginIsBounded:
+    """every login with a credential waits its turn, so one that hung must not hang forever."""
+
+    async def test_the_login_carries_its_bound_and_lifts_it_once_open(self) -> None:
+        driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
+        connection = MagicMock()
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (1,)
+        connection.cursor.return_value = cursor
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                return_value=connection,
+            ) as connect:
+                await driver.test_connection()
+        finally:
+            await driver.close()
+
+        assert connect.call_args.kwargs["timeout"] == _redshift_config().connect_timeout_seconds
+        # left on, the bound would fail every statement longer than it.
+        connection._usock.settimeout.assert_called_with(None)  # noqa: SLF001 -- redshift_connector's socket is the contract
+
+    async def test_a_connection_whose_socket_cannot_be_reached_is_refused(self) -> None:
+        """a bound that cannot be lifted would fail a long build hours later; the login fails now instead."""
+        driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
+        # a connection object that carries no socket attribute at all
+        connection = MagicMock(spec=["cursor", "commit", "close"])
+        try:
+            with (
+                patch(
+                    "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                    return_value=connection,
+                ),
+                pytest.raises(DriverConnectError, match="login timeout"),
+            ):
+                await driver.test_connection()
+        finally:
+            await driver.close()
+
+        connection.close.assert_called_once()
 
     async def test_a_caller_cancelled_mid_login_does_not_strand_the_connection(self) -> None:
         driver = RedshiftDriver(_redshift_config(), datasource_name="ds")

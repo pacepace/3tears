@@ -610,6 +610,50 @@ async def test_a_rebuild_that_raises_forgets_the_spec_and_says_so() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_retried_start_closes_what_the_failed_one_built() -> None:
+    """a host retries start() after a build fails part-way; the retry must not leak the first attempt."""
+    fake = _FakeToolServer()
+    first_a = _StubSpec("ds_a", tool_count=1)
+    specs = [first_a, _StubSpec("ds_b", tool_count=1, fail_build=True)]
+    pod = _StubPod(specs, fake)
+
+    with pytest.raises(ValueError, match="server url"):
+        await pod.start()
+
+    second_a = _StubSpec("ds_a", tool_count=1)
+    specs[:] = [second_a, _StubSpec("ds_b", tool_count=1)]
+    await pod.start()
+
+    assert first_a.resource is not None and second_a.resource is not None
+    assert first_a.resource.close_count == 1
+    assert second_a.resource.close_count == 0
+    assert sorted(t.mcp_name() for t in fake.registered) == ["ds_a.tool0", "ds_b.tool0"]
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_deregister_racing_a_rebuild_waits_for_it() -> None:
+    """the deregister runs after the rebuild it raced, so it removes what the rebuild registered."""
+    fake = _FakeToolServer()
+    pod = _StubPod([], fake)
+    await _serving(pod, fake)
+    gate = asyncio.Event()
+    rebuilt = _StubSpec("ds_race", tool_count=1, build_gate=gate)
+
+    racing = asyncio.gather(pod.register_spec(rebuilt), pod.deregister_spec("ds_race"))
+    await asyncio.sleep(0)
+    gate.set()
+    await racing
+
+    assert rebuilt.resource is not None
+    assert rebuilt.resource.close_count == 1
+    assert fake.registered == []
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
 async def test_overlapping_rebuilds_of_one_spec_leave_one_resource() -> None:
     """two rebuilds racing on one key: the first's resource is closed by the second, never leaked."""
     fake = _FakeToolServer()

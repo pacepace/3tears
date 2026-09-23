@@ -330,6 +330,9 @@ class RedshiftConnectionConfig(BaseModel):
         as the connection-level ceiling. per-statement overrides are
         passed to ``fetch`` / ``execute`` as ``timeout_seconds=`` and sit
         below it. trade-off: same as ``command_timeout_seconds`` above
+    :param connect_timeout_seconds: bound on one login. logins with one
+        credential wait their turn, so an unbounded hung login would stall
+        the rest; lifted from the socket once the connection is open
     """
 
     model_config = _CONNECTION_CONFIG
@@ -385,6 +388,15 @@ class RedshiftConnectionConfig(BaseModel):
         "kills a query whose caller has gone away. a build datasource inverts that -- no caller "
         "waits on it and the pod does not stop an abandoned call -- so it carries a ceiling "
         "sized to the longest legitimate statement instead",
+    )
+    connect_timeout_seconds: int = Field(
+        default=30,
+        gt=0,
+        description="seconds a login may take -- TCP connect, TLS, authentication -- before it fails. "
+        "every login with one credential waits its turn behind the one in flight, so a login that "
+        "hung with no bound would stall every other login with that credential in the process. "
+        "applied to the login only: the driver lifts it from the socket once the connection is open, "
+        "so a statement may still run as long as query_timeout_seconds allows",
     )
     tcp_keepalive: bool = Field(
         default=True,
