@@ -681,6 +681,84 @@ class TestNoLoginIsLeftOpen:
             await driver.close()
 
 
+class TestTheCancelHoldsTheLoginSlotForTheLoginOnly:
+    """the guard serializes LOGINS; a cancel's terminate statement must not stall the next one."""
+
+    async def test_another_login_proceeds_while_a_terminate_runs(self) -> None:
+        datasource_id = uuid.uuid4()
+        guards = _replica(_Nats())
+        driver = RedshiftDriver(
+            _redshift_config(),
+            datasource_name="ds",
+            connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
+        )
+        loop = asyncio.get_running_loop()
+        terminating = asyncio.Event()
+        connection = MagicMock()
+
+        def _slow_terminate(sql: str) -> None:
+            del sql
+            import time
+
+            loop.call_soon_threadsafe(terminating.set)
+            time.sleep(0.3)
+
+        connection.cursor.return_value.execute.side_effect = _slow_terminate
+        other = guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds")
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                return_value=connection,
+            ):
+                cancelling = asyncio.create_task(driver._terminate_backend(4242))  # noqa: SLF001 -- the cancel path is the contract
+                await terminating.wait()
+                async with asyncio.timeout(0.15):
+                    assert await guarded_connect(other, AsyncMock(return_value="connection")) == "connection"
+                await cancelling
+        finally:
+            await driver.close()
+
+    async def test_a_cancelled_caller_still_terminates_and_closes(self, caplog: pytest.LogCaptureFixture) -> None:
+        """the caller giving up ends its wait; the terminate runs on, and says how it finished."""
+        driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
+        loop = asyncio.get_running_loop()
+        login_started = asyncio.Event()
+        closed = asyncio.Event()
+        connection = MagicMock()
+        connection.close.side_effect = lambda: loop.call_soon_threadsafe(closed.set)
+
+        def _slow_login(**kwargs: Any) -> MagicMock:
+            del kwargs
+            import time
+
+            loop.call_soon_threadsafe(login_started.set)
+            time.sleep(0.2)
+            return connection
+
+        try:
+            with (
+                caplog.at_level("INFO", logger="threetears.datasources.drivers.redshift_driver"),
+                patch(
+                    "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                    side_effect=_slow_login,
+                ),
+            ):
+                cancelling = asyncio.create_task(driver._terminate_backend(4242))  # noqa: SLF001 -- the cancel path is the contract
+                await login_started.wait()
+                cancelling.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await cancelling
+                async with asyncio.timeout(2.0):
+                    await closed.wait()
+                await asyncio.sleep(0.05)
+        finally:
+            await driver.close()
+
+        executed = [call.args[0] for call in connection.cursor.return_value.execute.call_args_list]
+        assert "SELECT pg_terminate_backend(4242)" in executed
+        assert any("finished after its wait ended" in r.getMessage() for r in caplog.records)
+
+
 class TestALoginIsBounded:
     """every login with a credential waits its turn, so one that hung must not hang forever."""
 

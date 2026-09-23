@@ -591,6 +591,23 @@ async def test_a_build_that_reports_another_key_is_refused() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_refuses_a_build_that_reports_another_key() -> None:
+    """start() goes through the same replace as register_spec, key check and all."""
+    fake = _FakeToolServer()
+    mismatched = _StubSpec("ds_a", built_key="ds_b")
+    pod = _StubPod([mismatched], fake)
+
+    with pytest.raises(ValueError, match="spec_key"):
+        await pod.start()
+
+    assert mismatched.resource is not None
+    assert mismatched.resource.close_count == 1
+    assert fake.registered == []
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_rebuild_that_raises_forgets_the_spec_and_says_so() -> None:
     """the old tools are gone -- a narrowed spec must not keep its wider ones -- and the registry is told."""
     fake = _FakeToolServer()

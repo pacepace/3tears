@@ -102,7 +102,8 @@ a query cancelled mid-login, or a query-cancel whose timeout fired mid-login, no
 closes what the login opened, and a query-cancel that outlasts its timeout keeps its
 turn until its login resolves, so a refusal it meets is still recorded. Because every
 login waits its turn, a login is bounded: `RedshiftConnectionConfig` takes
-`connect_timeout_seconds` (default 30), passed to `redshift_connector.connect` and
+`connect_timeout_seconds` (default 30), the limit on each network wait during a login
+(not a total deadline; DNS is outside it), passed to `redshift_connector.connect` and
 lifted from the socket once the connection is open, so it bounds only the login.
 `asyncpg>=0.30` is the declared floor, which `create_pool(connect=)` needs.
 
@@ -164,8 +165,8 @@ overlapping ones can leak a resource.
 Refreshing is `register_spec` alone.
 
 **Breaking:** `DynamicToolPod` subclasses implement `spec_key(spec) -> str`, the key
-`build_tools` reports for that spec; `register_spec` raises `ValueError` when the two
-disagree.
+`build_tools` reports for that spec; `register_spec` and `start()` raise `ValueError`
+when the two disagree, closing what the build returned.
 
 ## v0.49.0 -- 2026-09-22
 
