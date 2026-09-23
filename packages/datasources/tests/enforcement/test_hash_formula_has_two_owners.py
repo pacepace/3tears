@@ -2,10 +2,9 @@
 
 three sides must agree byte for byte: ``column_hash_payload`` in python, and
 the asyncpg and Redshift ``table_hashes`` SQL. a restated copy anywhere else
-drifts. when 066cb549 moved to hashing each column before the aggregate, a copy
-in the Redshift live test did not follow and failed against correct code, and
-docstrings went on describing the old formula to the next driver's implementer
--- one of them citing a constant by a name that no longer existed.
+stops agreeing, silently, the next time the formula changes; and a docstring
+that cites a constant by a name that no longer exists sends the next driver's
+implementer to nothing.
 """
 
 from __future__ import annotations
