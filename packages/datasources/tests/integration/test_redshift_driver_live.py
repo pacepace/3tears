@@ -6,20 +6,21 @@ on the ``reporting_prod`` schema in under 60s -- the call that
 ``asyncpg`` could never complete (timed out at 60s / 120s / 300s in
 production).
 
-env-gated:
+gated by the ``redshift_config`` fixture in this directory's conftest
+(``tests/unit/_helpers/redshift_live_gate.py``):
 
-- ``OTS_REDSHIFT_PASSWORD`` MUST be set. when ``CI=1`` we
+- ``OTS_REDSHIFT_PASSWORD`` MUST be set. when ``CI=1`` the tests
   :func:`pytest.fail` (not skip) because the whole point of this
   driver is the cross-engine proof; silently no-op'ing in CI defeats
-  it. when ``CI`` is unset (local dev), we :func:`pytest.skip` so
+  it. when ``CI`` is unset (local dev), they :func:`pytest.skip` so
   laptop runs don't crash without the secret in the environment.
-- CI's integration job does not run ``packages/datasources``, so in
-  practice these run only by hand -- which is how the hash test below
-  stayed red against correct code from 2026-07-31 until it was next run.
-
-the credential is the ots agent's, for a production warehouse user, and
-Redshift locks a user after five failed logins: confirm ONE login with
-the password before running the file, never a run of refusals.
+- the credential is the ots agent's, for a production warehouse user,
+  and Redshift locks a user after five failed logins. the gate logs in
+  ONCE per session before any test does; if the warehouse refuses,
+  every live test fails with that refusal and none sends the password
+  again, so a stale password costs one failed login, never a run.
+- CI's integration job does not run ``packages/datasources``, so these
+  run only by hand.
 
 run locally, from the repo root:
 
@@ -34,7 +35,6 @@ run locally, from the repo root:
 from __future__ import annotations
 
 import asyncio
-import os
 import tracemalloc
 from typing import Any
 
@@ -43,7 +43,6 @@ import pytest
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers.base import Driver
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
-from threetears.datasources.entities import DataSourceType
 from threetears.datasources.introspection import compute_column_hash
 
 from ..unit._helpers.cancellation_contract import (
@@ -53,49 +52,15 @@ from ..unit._helpers.cancellation_contract import (
 pytestmark = [pytest.mark.integration, pytest.mark.live]
 
 
-# ---------------------------------------------------------------------------
-# Env gate (DS-11-09): CI-required, locally skip-friendly
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def redshift_creds() -> dict[str, Any]:
-    """gate the live tests on ``OTS_REDSHIFT_PASSWORD``.
-
-    when ``CI=1`` and the env var is missing: :func:`pytest.fail`
-    (the smoking-gun proof for the asyncpg-fix migration cannot run
-    silently). when ``CI`` is unset: :func:`pytest.skip`.
-
-    :return: connection-config dict for the central-reporting cluster
-    :rtype: dict[str, Any]
-    """
-    pw = os.environ.get("OTS_REDSHIFT_PASSWORD")
-    if not pw:
-        if os.environ.get("CI"):
-            pytest.fail(
-                "OTS_REDSHIFT_PASSWORD missing in CI; the smoking-gun "
-                "proof that redshift_connector fixes the asyncpg-hangs bug "
-                "cannot run"
-            )
-        pytest.skip("OTS_REDSHIFT_PASSWORD not set; live test skipped locally")
-    return {
-        "host": "central.c30hiwrajgjj.us-east-1.redshift.amazonaws.com",
-        "port": 5439,
-        "database": "analytics",
-        "username": "fourteen_eng_ai_bot_agent_ots",
-        "password_ref": "env://OTS_REDSHIFT_PASSWORD",
-    }
-
-
 def _make_config(
-    creds: dict[str, Any],
+    base: RedshiftConnectionConfig,
     *,
     allowed_schemas: list[str] | None = None,
 ) -> RedshiftConnectionConfig:
-    """build a :class:`RedshiftConnectionConfig` from the creds dict.
+    """the gated connection, with this module's pool and timeout settings.
 
-    :param creds: dict from the :func:`redshift_creds` fixture
-    :ptype creds: dict[str, Any]
+    :param base: the connection from the ``redshift_config`` fixture
+    :ptype base: RedshiftConnectionConfig
     :param allowed_schemas: optional schemas to set on the connection's
         ``search_path`` at open time; defaults to ``[]`` so the
         backend default applies
@@ -103,17 +68,14 @@ def _make_config(
     :return: live config pointing at central-reporting
     :rtype: RedshiftConnectionConfig
     """
-    return RedshiftConnectionConfig(
-        datasource_type=DataSourceType.REDSHIFT,
-        host=creds["host"],
-        port=creds["port"],
-        database=creds["database"],
-        username=creds["username"],
-        password_ref=creds["password_ref"],
-        executor_max_workers=4,
-        connection_cache_size=2,
-        query_timeout_seconds=120,
-        allowed_schemas=allowed_schemas or [],
+    return RedshiftConnectionConfig.model_validate(
+        {
+            **base.model_dump(exclude_unset=True),
+            "executor_max_workers": 4,
+            "connection_cache_size": 2,
+            "query_timeout_seconds": 120,
+            "allowed_schemas": allowed_schemas or [],
+        }
     )
 
 
@@ -124,12 +86,6 @@ def _make_config(
 
 def _python_column_hash(cols: list[dict[str, Any]]) -> str:
     """python-side hash, delegating to the CANONICAL library helper.
-
-    This used to carry its own copy of the payload formula. When Redshift's
-    LISTAGG limit forced the canonical payload to hash each column before the
-    aggregate, the asyncpg live test's copy was replaced with a delegation and
-    this one was missed: the cross-language test then failed against correct
-    code, unnoticed, because nothing runs this file on a schedule.
 
     A test that re-implements the thing it verifies proves the two
     implementations agree, which is not the claim. Delegating means the
@@ -153,7 +109,7 @@ class TestSmokingGun:
     """the load-bearing proof: ``redshift_connector`` succeeds where ``asyncpg`` hung."""
 
     @pytest.mark.asyncio
-    async def test_list_columns_completes(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_list_columns_completes(self, redshift_config: RedshiftConnectionConfig) -> None:
         """THE proof point: ``list_columns(['reporting_prod'])`` returns >5000 rows in <60s.
 
         on ``asyncpg`` against ``information_schema.columns`` this
@@ -164,7 +120,7 @@ class TestSmokingGun:
         returns in well under 60s -- typically <30s even on a busy
         cluster.
         """
-        config = _make_config(redshift_creds)
+        config = _make_config(redshift_config)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         try:
             cols = await asyncio.wait_for(
@@ -184,12 +140,12 @@ class TestSmokingGun:
             await driver.close()
 
     @pytest.mark.asyncio
-    async def test_list_tables_completes(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_list_tables_completes(self, redshift_config: RedshiftConnectionConfig) -> None:
         """``list_tables(['reporting_prod'])`` returns >0 tables in <30s.
 
         SVV_TABLES is sub-second on a healthy cluster.
         """
-        config = _make_config(redshift_creds)
+        config = _make_config(redshift_config)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         try:
             tables = await asyncio.wait_for(
@@ -202,14 +158,14 @@ class TestSmokingGun:
             await driver.close()
 
     @pytest.mark.asyncio
-    async def test_table_hashes_returns_per_table_entries(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_table_hashes_returns_per_table_entries(self, redshift_config: RedshiftConnectionConfig) -> None:
         """``table_hashes`` returns one entry per table in the schema.
 
         the LISTAGG + MD5 hash runs over SVV_COLUMNS (Redshift-native
         system view; ``information_schema.columns`` doesn't allow
         aggregates).
         """
-        config = _make_config(redshift_creds)
+        config = _make_config(redshift_config)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         try:
             hashes = await asyncio.wait_for(
@@ -235,14 +191,14 @@ class TestHashEquivalence:
     """python-side ``_python_column_hash`` byte-equals warehouse-side MD5."""
 
     @pytest.mark.asyncio
-    async def test_python_and_sql_hashes_agree(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_python_and_sql_hashes_agree(self, redshift_config: RedshiftConnectionConfig) -> None:
         """call :meth:`table_hashes` + recompute in python; assert equality.
 
         the cross-language invariant for the Tier-2 change-probe.
         run against the smallest table we can find in reporting_prod
         to keep the test bounded.
         """
-        config = _make_config(redshift_creds)
+        config = _make_config(redshift_config)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         try:
             tables = await asyncio.wait_for(
@@ -285,7 +241,7 @@ class TestStreaming:
     """:meth:`fetch_iter` streams without OOMing on large result sets."""
 
     @pytest.mark.asyncio
-    async def test_fetch_iter_streams_large_result(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_fetch_iter_streams_large_result(self, redshift_config: RedshiftConnectionConfig) -> None:
         """LIMIT 50000 over information_schema; streaming stays bounded.
 
         compares tracemalloc peak between ``fetch`` (materialize-
@@ -294,7 +250,7 @@ class TestStreaming:
         information_schema.columns is large enough on reporting_prod
         for the difference to be measurable.
         """
-        config = _make_config(redshift_creds)
+        config = _make_config(redshift_config)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         try:
             # SVV_COLUMNS is fast (Redshift-native system view).
@@ -347,13 +303,13 @@ class TestRedshiftDriverCancellation(DriverCancellationContractTest):
     """
 
     @pytest.fixture(autouse=True)
-    def _wire_fixtures(self, redshift_creds: dict[str, Any]) -> None:
+    def _wire_fixtures(self, redshift_config: RedshiftConnectionConfig) -> None:
         """capture creds so the mixin methods can build a driver."""
-        self._creds = redshift_creds
+        self._base = redshift_config
 
     async def make_slow_driver(self) -> Driver:
         """build a live :class:`RedshiftDriver`."""
-        return RedshiftDriver(_make_config(self._creds), datasource_name="central-reporting")
+        return RedshiftDriver(_make_config(self._base), datasource_name="central-reporting")
 
     def slow_sql(self) -> str:
         """return a Redshift-flavored slow query.
@@ -377,7 +333,7 @@ class TestCancellationObservable:
     """cancellation fires WLM cancellation visibly + cache stays consistent."""
 
     @pytest.mark.asyncio
-    async def test_cancellation_via_wait_for_timeout(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_cancellation_via_wait_for_timeout(self, redshift_config: RedshiftConnectionConfig) -> None:
         """``wait_for(slow_query, timeout=5)`` raises TimeoutError.
 
         uses a cross-join slow query (``pg_sleep`` is restricted on
@@ -386,7 +342,7 @@ class TestCancellationObservable:
         races with leader-node lag; the cancellation propagation is
         the contract.
         """
-        config = _make_config(redshift_creds)
+        config = _make_config(redshift_config)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         # heavy cross-join over SVV_COLUMNS -> O(n^2) over 6000-row
         # input is reliably multi-second; 1s wait_for fires well
@@ -434,9 +390,9 @@ class TestRollbackOnError:
     """
 
     @pytest.mark.asyncio
-    async def test_session_not_poisoned_after_query_error(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_session_not_poisoned_after_query_error(self, redshift_config: RedshiftConnectionConfig) -> None:
         """bad SELECT raises; subsequent good SELECT on same driver succeeds."""
-        config = _make_config(redshift_creds)
+        config = _make_config(redshift_config)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         try:
             # deliberately bad query: this table does not exist.
@@ -472,9 +428,9 @@ class TestCloseDrainsCache:
     """:meth:`close` drains the connection cache without leaking."""
 
     @pytest.mark.asyncio
-    async def test_close_drains_cache(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_close_drains_cache(self, redshift_config: RedshiftConnectionConfig) -> None:
         """run a query (fills cache), close, assert cache is empty."""
-        config = _make_config(redshift_creds)
+        config = _make_config(redshift_config)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         await driver.fetch("SELECT 1")
         # cache should now have one connection
@@ -503,10 +459,10 @@ class TestSearchPathOnOpen:
     @pytest.mark.asyncio
     async def test_unqualified_table_resolves_via_search_path(
         self,
-        redshift_creds: dict[str, Any],
+        redshift_config: RedshiftConnectionConfig,
     ) -> None:
         """``allowed_schemas=['reporting_prod']`` -> unqualified select works."""
-        config = _make_config(redshift_creds, allowed_schemas=["reporting_prod"])
+        config = _make_config(redshift_config, allowed_schemas=["reporting_prod"])
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         try:
             # use information_schema as the cross-cluster-stable probe:
@@ -523,14 +479,14 @@ class TestSearchPathOnOpen:
     @pytest.mark.asyncio
     async def test_empty_allowed_schemas_leaves_default_search_path(
         self,
-        redshift_creds: dict[str, Any],
+        redshift_config: RedshiftConnectionConfig,
     ) -> None:
         """empty ``allowed_schemas`` -> reporting_prod NOT injected.
 
         proves we don't quietly bake a default into the driver; the
         backend's own ``search_path`` is what callers see.
         """
-        config = _make_config(redshift_creds, allowed_schemas=[])
+        config = _make_config(redshift_config, allowed_schemas=[])
         driver = RedshiftDriver(config, datasource_name="central-reporting")
         try:
             rows = await driver.fetch("SHOW search_path")

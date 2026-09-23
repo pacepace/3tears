@@ -2,14 +2,14 @@
 
 three contracts under test:
 
-1. :func:`compute_column_hash` produces the SAME byte output as the
-   driver-side SQL ``MD5(STRING_AGG(column_name || ':' || data_type
-   || ':' || COALESCE(is_nullable, ''), ',' ORDER BY ordinal_position
-   ))``. byte-equivalence is verified against real warehouses in the
-   driver integration tests (``test_asyncpg_driver_live`` /
+1. :func:`compute_column_hash` produces the SAME byte output as each
+   SQL driver's ``table_hashes``; the formula is described once, in
+   :func:`~threetears.datasources.introspection.column_hash_payload`.
+   byte-equivalence is verified against real warehouses in the driver
+   integration tests (``test_asyncpg_driver_live`` /
    ``test_redshift_driver_live``); this file covers the python-side
    invariants: order-insensitivity, sorting by ordinal, raw
-   ``is_nullable`` handling.
+   ``is_nullable`` handling, and the payload's fixed size per column.
 
 2. :class:`IntrospectionDiff` carries the right work lists +
    summary counts.

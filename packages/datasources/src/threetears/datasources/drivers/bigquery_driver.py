@@ -101,8 +101,7 @@ Tier-2 column hash
     :class:`RedshiftDriver`'s warehouse-side SQL, which hashes each
     column before the aggregate (see
     :func:`~threetears.datasources.introspection.column_hash_payload`);
-    a copy stops agreeing the next time that formula changes, as the
-    copies in the live tests did.
+    a copy stops agreeing the next time that formula changes.
 
 Pool / executor / timeout knobs
     every knob reads from :class:`BigQueryConnectionConfig`. the

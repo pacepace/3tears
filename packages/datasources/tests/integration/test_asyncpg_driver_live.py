@@ -144,15 +144,9 @@ async def seeded_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
 def _python_column_hash(cols: list[dict[str, Any]]) -> str:
     """python-side hash, delegating to the CANONICAL library helper.
 
-    This used to carry its own copy of the payload formula, with a TODO to
-    lift it into ``threetears.datasources.introspection``. The copy then did
-    exactly what a duplicated formula does: when Redshift's LISTAGG limit
-    forced the canonical payload to pre-hash each column, this one did not
-    follow, and the cross-language invariant test failed against correct code.
-
     A test that re-implements the thing it verifies proves the two
     implementations agree, which is not the claim. Delegating means the
-    assertion now compares the WAREHOUSE against the LIBRARY, which is.
+    assertion compares the WAREHOUSE against the LIBRARY, which is.
 
     :param cols: column rows carrying ``column_name``, ``data_type``,
         ``is_nullable``, ``ordinal_position``

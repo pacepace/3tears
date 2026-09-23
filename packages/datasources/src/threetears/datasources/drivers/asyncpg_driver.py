@@ -232,13 +232,14 @@ ORDER BY table_schema, table_name, ordinal_position
 
 #: per-table MD5 over the column shape (Tier-2 change-probe).
 #:
-#: the formula ``column_name || ':' || data_type || ':' ||
-#: COALESCE(is_nullable, '')`` is byte-for-byte the same payload as
-#: the python-side helper in ``datasource-task-02`` (see test
-#: ``test_table_hash_python_byte_equivalence`` for the cross-language
-#: invariant). swapping the COALESCE for an alternative null handling
-#: silently breaks the Tier-2 probe -- DO NOT change without updating
-#: the python helper in lockstep.
+#: byte-for-byte the payload
+#: :func:`threetears.datasources.introspection.column_hash_payload`
+#: describes and :func:`~threetears.datasources.introspection.compute_column_hash`
+#: hashes; ``TestTier2HashEquivalence`` in
+#: ``tests/integration/test_asyncpg_driver_live.py`` checks the two
+#: against a real engine. swapping the COALESCE for an alternative null
+#: handling silently breaks the Tier-2 probe -- DO NOT change without
+#: updating the python helper in lockstep.
 #: Per-column pre-hash before the aggregate. PostgreSQL's STRING_AGG has no
 #: 65535-byte ceiling, so this is not needed HERE -- it is needed for the
 #: formula to stay byte-identical to the Redshift driver and to
@@ -1142,8 +1143,9 @@ class AsyncpgDriver(Driver):
         """compute per-table MD5 over the column shape (Tier-2 change-probe).
 
         the warehouse-side MD5 formula in :data:`_POSTGRES_TABLE_HASHES_SQL`
-        is byte-equivalent to the python-side ``_compute_column_hash``
-        helper specified in ``datasource-task-02``. equality is the
+        is byte-equivalent to the python-side
+        :func:`~threetears.datasources.introspection.compute_column_hash`
+        over the same rows. equality is the
         cross-language invariant that makes the Tier-2 probe work --
         see ``tests/integration/test_asyncpg_driver_live.py`` for the
         cross-check.
