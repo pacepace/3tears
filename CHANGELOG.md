@@ -58,6 +58,8 @@ changed. Without it the hub carried its own copy of the parent walk and the thre
 customer walls, which could drift from the decision the evaluator makes for the
 group's people.
 
+Minor: a new `EvaluationContext` field.
+
 ### A credential the warehouse refused is not sent again, by any replica
 
 A warehouse counts every failed login against the account and locks it after a
@@ -105,7 +107,14 @@ login waits its turn, a login is bounded: `RedshiftConnectionConfig` takes
 `connect_timeout_seconds` (default 30), the limit on each network wait during a login
 (not a total deadline; DNS is outside it), passed to `redshift_connector.connect` and
 lifted from the socket once the connection is open, so it bounds only the login.
+Lifting it reaches the socket `redshift_connector` exposes as `_usock`; a connection
+without one is refused at login rather than carrying the bound into every statement,
+so an upgrade of `redshift-connector` that renames it fails loudly at the first login.
 `asyncpg>=0.30` is the declared floor, which `create_pool(connect=)` needs.
+
+Minor: new public types (`ConnectGuard`, `CredentialRefusalGuards`,
+`DriverCredentialPausedError`, `guarded_connect`), a new `create_driver` parameter and
+a new `RedshiftConnectionConfig` field, all defaulted.
 
 ### NatsClient renews its own credential
 
@@ -143,6 +152,9 @@ the auth-callout minted a credential for, passing its reply drain as
 `before_renewal` and its grace (`DRAIN_BEFORE_RENEWAL_SECONDS`) as
 `drain_grace_seconds`; its separate start-up TTL check is gone, so one judge decides.
 
+Minor, with one removed module and one removed function: a new `NatsClient` method, a
+new module and new public constants.
+
 ### A rebuilt dynamic tool pod spec is announced once, never as an empty manifest
 
 Refreshing a spec -- a datasource whose credential or definition changed -- was
@@ -167,6 +179,8 @@ Refreshing is `register_spec` alone.
 **Breaking:** `DynamicToolPod` subclasses implement `spec_key(spec) -> str`, the key
 `build_tools` reports for that spec; `register_spec` and `start()` raise `ValueError`
 when the two disagree, closing what the build returned.
+
+Minor, with one new abstract method every subclass must implement.
 
 ## v0.49.0 -- 2026-09-22
 

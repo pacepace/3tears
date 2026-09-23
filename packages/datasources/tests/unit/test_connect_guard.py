@@ -414,7 +414,7 @@ class TestLoginsGoOneAtATime:
 
 
 class TestARefusingWarehouseCostsOneLogin:
-    """the #523 acceptance: passes on two replicas against a refusing warehouse, one login."""
+    """the hub issue #523 acceptance: passes on two replicas against a refusing warehouse, one login."""
 
     async def test_every_pass_after_the_first_is_refused_without_a_login(self) -> None:
         nats = _Nats()

@@ -250,6 +250,10 @@ class DynamicToolPod(ABC, Generic[SpecT]):
 
         :return: nothing
         :rtype: None
+        :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
+            for any loaded spec
+        :raises Exception: whatever :meth:`build_tools` raised for a spec, after the
+            reduced manifest is published
         """
         server = self.build_tool_server()
         self._tool_server = server

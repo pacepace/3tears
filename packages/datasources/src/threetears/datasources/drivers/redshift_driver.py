@@ -766,10 +766,9 @@ class RedshiftDriver(Driver):
         """log in: open a ``redshift_connector.Connection`` with the datasource's credential (sync).
 
         THE ONE login routine, shared by the session this driver serves queries on
-        and the connection the cancel path terminates a backend from. the cancel
-        path once carried its own copy, which dropped ``sslmode`` within a release
-        and could no longer reach a verify-full cluster; one routine cannot drift
-        from itself. every caller runs it under the connect guard.
+        and the connection the cancel path terminates a backend from, so the two
+        cannot disagree on TLS or the connect timeout. every caller runs it under
+        the connect guard.
 
         :return: the connection, with TCP keepalive applied and nothing else set
         :rtype: RedshiftConnection
@@ -1327,7 +1326,11 @@ class RedshiftDriver(Driver):
         :return: nothing
         :rtype: None
         :raises DriverCredentialPausedError: when the guard holds the credential refused
+        :raises DriverMissingCredentialError: when no password resolves; nothing is sent
         :raises DriverAuthError: when the server refuses the login; the guard recorded it
+        :raises DriverConnectError: on any other login failure
+        :raises Exception: any ``redshift_connector`` failure of the terminate
+            statement itself propagates; the connection is closed first
         """
         conn = await guarded_connect(self._connect_guard, lambda: asyncio.to_thread(self._login_sync))
         await asyncio.to_thread(self._terminate_on_sync, conn, pid)
