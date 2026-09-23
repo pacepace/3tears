@@ -7,6 +7,10 @@ public surface (DS-09-09):
   construct a concrete driver instance
 - :class:`TableRow` / :class:`ColumnRow` -- pinned row shapes returned
   by ``list_tables`` / ``list_columns``
+- :class:`DriverConnectError` / :class:`DriverAuthError` /
+  :class:`DriverMissingCredentialError` -- the connection-failure types
+  EVERY driver raises, so a caller catches them once rather than once
+  per backend (see :mod:`threetears.datasources.drivers.errors`)
 
 concrete driver classes (``AsyncpgDriver``, ``RedshiftDriver``,
 ``SnowflakeDriver``, ``BigQueryDriver``) are NOT re-exported here. they
@@ -28,11 +32,19 @@ verifies this in a clean subprocess on every test run.
 from __future__ import annotations
 
 from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow
+from threetears.datasources.drivers.errors import (
+    DriverAuthError,
+    DriverConnectError,
+    DriverMissingCredentialError,
+)
 from threetears.datasources.drivers.factory import create_driver
 
 __all__ = [
     "ColumnRow",
     "Driver",
+    "DriverAuthError",
+    "DriverConnectError",
+    "DriverMissingCredentialError",
     "TableRow",
     "create_driver",
 ]
