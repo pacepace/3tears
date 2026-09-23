@@ -19,7 +19,7 @@ from threetears.agent.tools.object_resolution_collection import (
 )
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.nats import Principal, kv_key_scope_for
+from threetears.nats import Principal, Subjects, kv_key_scope_for
 from threetears.observe import HealthTier
 
 
@@ -204,6 +204,49 @@ class TestTheCollectionStackRidesTheLifecycle:
 
         assert recorded == first
         assert later == first, "a later reader must get the ledger's birth time, not its own clock"
+
+    async def test_an_in_process_pod_gets_no_tool_pod_stack(self) -> None:
+        """a pod running inside an agent process is not a tool-pod principal.
+
+        It rides the agent's injected connection, authenticated as the AGENT, and its pod id
+        is ``{agent_id}.{instance}`` rather than a ``tool_pods.id``. No tool-pod key scope can
+        be derived from that id, and the connection's grant carries the agent's scope, not
+        ``tool_pod-<hex>``. Building the stack for it raised inside the connected callback on
+        every start, which exited the process and fed a supervisor restart loop.
+        """
+        server = _FakeToolServer(pod_id=Subjects.agent_inprocess_pod_id(uuid.uuid4(), uuid.uuid4()))
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        await bootstrap.run_async()
+
+        assert server.serve_called is True
+        assert server.connected_callbacks == []
+        assert bootstrap.collection_registry is None
+        assert bootstrap.object_resolutions is None
+        assert server.assertion_replay_anchor is None
+
+    async def test_an_in_process_pod_that_declares_tables_is_refused_before_it_serves(self) -> None:
+        """declared tables need a tool-pod identity to scope them, and this pod has none.
+
+        Refused at wiring with the terminal config type, so ``run`` exits ``EX_CONFIG`` once
+        instead of the connected callback raising on every restart.
+        """
+        server = _FakeToolServer(pod_id=Subjects.agent_inprocess_pod_id(uuid.uuid4(), uuid.uuid4()))
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+
+        with pytest.raises(ToolPodConfigError) as caught:
+            await bootstrap.run_async()
+
+        assert caught.value.variable == "collection_tables"
+        assert server.pod_id in str(caught.value)
+        assert server.serve_called is False
+        assert server.connected_callbacks == []
 
     async def test_the_runtime_collection_is_built_and_handed_to_the_server(self) -> None:
         """the stack carries a payload: the resolver's cache is wired without the host asking.

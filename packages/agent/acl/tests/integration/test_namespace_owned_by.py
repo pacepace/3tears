@@ -25,8 +25,10 @@ from threetears.core.config import DefaultCoreConfig
 pytestmark = pytest.mark.integration
 
 
-#: the real shape: composite primary key, the partition CHECK, and the
-#: ``owner_namespace`` foreign key onto the unique name index (v089).
+#: the real shape: composite primary key, the partition CHECK, the
+#: ``owner_namespace`` foreign key onto the unique name index (v089), and the
+#: partial unique index that lets only workspace rows share a schema name (the
+#: hub's ``idx_namespaces_schema_name_non_workspace``, applied in the fixture).
 _NAMESPACES_DDL = """
 CREATE TABLE namespaces (
     row_scope varchar(8) NOT NULL,
@@ -75,6 +77,10 @@ async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
             await conn.execute("CREATE UNIQUE INDEX namespaces_id_unique ON namespaces (namespace_id)")
             await conn.execute("CREATE UNIQUE INDEX idx_namespaces_name ON namespaces (name)")
             await conn.execute(
+                "CREATE UNIQUE INDEX idx_namespaces_schema_name_non_workspace ON namespaces (schema_name)"
+                " WHERE namespace_type <> 'workspace' AND schema_name IS NOT NULL"
+            )
+            await conn.execute(
                 "ALTER TABLE namespaces ADD CONSTRAINT namespaces_owner_namespace_fkey"
                 " FOREIGN KEY (owner_namespace) REFERENCES namespaces(name)"
             )
@@ -100,6 +106,7 @@ async def _insert(
     namespace_type: str,
     owner_namespace: str | None,
     customer_id: uuid.UUID | None,
+    schema_name: str | None = None,
 ) -> uuid.UUID:
     """write one namespace row the way the hub's emitters leave it."""
     namespace_id = uuid.uuid4()
@@ -107,13 +114,14 @@ async def _insert(
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_namespace,"
-            " customer_id, date_created, date_updated) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)",
+            " customer_id, schema_name, date_created, date_updated) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)",
             "platform" if customer_id is None else "customer",
             namespace_id,
             name,
             namespace_type,
             owner_namespace,
             customer_id,
+            schema_name,
             now,
         )
     return namespace_id
@@ -175,8 +183,17 @@ class TestListOwnedBy:
         assert {entity.id for entity in owned} == {second_ids["channel"], second_ids["memory"], second_ids["tool"]}
 
     async def test_an_empty_owner_owns_nothing(self, pg_pool: asyncpg.Pool) -> None:
-        """an empty name expands to nothing, never to every ownerless row."""
-        await _agent_with_children(pg_pool, uuid.uuid4(), uuid.uuid4())
+        """an empty name owns nothing, even where a row really is owned by the empty name.
+
+        The table is seeded with exactly that row, so the query WOULD return it: this
+        fails if the empty-name guard is removed, where a table holding only NULL owners
+        could not tell.
+        """
+        customer_id = uuid.uuid4()
+        await _insert(pg_pool, name="", namespace_type="agent", owner_namespace=None, customer_id=customer_id)
+        await _insert(
+            pg_pool, name="channels.web.orphan", namespace_type="channel", owner_namespace="", customer_id=customer_id
+        )
 
         assert await _collection(pg_pool).list_owned_by("") == []
 
@@ -192,7 +209,11 @@ class TestWhyTheListExists:
     """the foreign key refuses to delete an owner while a child still names it."""
 
     async def test_deleting_an_owner_before_its_children_is_refused(self, pg_pool: asyncpg.Pool) -> None:
-        """the parent side IS enforced for DELETE; only a rename slips past it."""
+        """the parent side IS enforced for DELETE, here as on YugabyteDB.
+
+        What YugabyteDB leaves unenforced is a parent RENAME (per the hub's v089 migration);
+        Postgres refuses that too. This test measures the delete only.
+        """
         agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
         await _agent_with_children(pg_pool, agent_id, customer_id)
 
@@ -246,14 +267,75 @@ class TestSchemaInUse:
 
         assert await _collection(pg_pool).schema_in_use(schema) is True
 
-    async def test_a_schema_no_row_names_is_free(self, pg_pool: asyncpg.Pool) -> None:
-        """once the last row naming it is gone, the schema is free to drop."""
+    async def test_a_schema_no_row_ever_named_is_free(self, pg_pool: asyncpg.Pool) -> None:
+        """a schema nothing names is free to drop."""
         await _agent_with_children(pg_pool, uuid.uuid4(), uuid.uuid4())
 
         assert await _collection(pg_pool).schema_in_use(f"agent_{uuid.uuid4().hex}") is False
 
+    async def test_the_schema_is_free_once_the_last_row_naming_it_is_gone(self, pg_pool: asyncpg.Pool) -> None:
+        """deleting one of two rows leaves the schema in use; deleting the last frees it."""
+        agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
+        agent_ns = f"agents.{agent_id}"
+        schema = f"agent_{agent_id.hex}"
+        await _insert(
+            pg_pool,
+            name=agent_ns,
+            namespace_type="agent",
+            owner_namespace=None,
+            customer_id=customer_id,
+            schema_name=schema,
+        )
+        workspace_id = await _insert(
+            pg_pool,
+            name=f"workspaces.{agent_id.hex}.notes",
+            namespace_type="workspace",
+            owner_namespace=agent_ns,
+            customer_id=customer_id,
+            schema_name=schema,
+        )
+        collection = _collection(pg_pool)
+
+        async with pg_pool.acquire() as conn:
+            await conn.execute("DELETE FROM namespaces WHERE namespace_id = $1", workspace_id)
+        after_first = await collection.schema_in_use(schema)
+        async with pg_pool.acquire() as conn:
+            await conn.execute("DELETE FROM namespaces WHERE name = $1", agent_ns)
+        after_last = await collection.schema_in_use(schema)
+
+        assert after_first is True
+        assert after_last is False
+
+    async def test_a_platform_row_naming_the_schema_keeps_it_in_use(self, pg_pool: asyncpg.Pool) -> None:
+        """the check spans both partitions: a platform row names a schema as surely as a customer row.
+
+        The v052 system namespace is platform-scoped and carries a schema, so a check that
+        read only the customer partition would report that schema free to drop.
+        """
+        await _insert(
+            pg_pool,
+            name="system",
+            namespace_type="system",
+            owner_namespace=None,
+            customer_id=None,
+            schema_name="platform",
+        )
+
+        assert await _collection(pg_pool).schema_in_use("platform") is True
+
     async def test_an_empty_schema_name_is_never_in_use(self, pg_pool: asyncpg.Pool) -> None:
-        """rows with no schema do not make the empty name look taken."""
-        await _agent_with_children(pg_pool, uuid.uuid4(), uuid.uuid4())
+        """an empty name is never in use, even where a row really carries the empty schema name.
+
+        Seeded with exactly that row, so the query WOULD find it: this fails if the
+        empty-name guard is removed, where a table holding only NULL schemas could not tell.
+        """
+        await _insert(
+            pg_pool,
+            name="shared.blank",
+            namespace_type="shared",
+            owner_namespace=None,
+            customer_id=None,
+            schema_name="",
+        )
 
         assert await _collection(pg_pool).schema_in_use("") is False

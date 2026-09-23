@@ -177,12 +177,16 @@ from threetears.datasources.drivers.base import (
     _instrument_cache,
     _observed,
 )
+from threetears.datasources.drivers.errors import (
+    DriverConnectError,
+    connect_error_from,
+    optional_password,
+)
 from threetears.observe import get_logger, traced
 
 __all__ = [
     "AsyncpgDriver",
     "DriverCancellationError",
-    "DriverConnectError",
     "DriverQueryError",
 ]
 
@@ -254,21 +258,6 @@ _PING_SQL = "SELECT 1"
 # ---------------------------------------------------------------------------
 # Exception types (DS-10-11)
 # ---------------------------------------------------------------------------
-
-
-class DriverConnectError(Exception):
-    """raised when connect / auth fails.
-
-    the message intentionally carries the host / port / database
-    identifiers (safe to log) but NEVER the resolved password value.
-    callers should raise the wrapper with ``from None`` to break the
-    cause chain -- the original asyncpg exception sometimes embeds the
-    password in nested context, which would defeat the sanitization.
-
-    :param message: human-readable description; MUST NOT carry the
-        password value or any other resolved secret
-    :ptype message: str
-    """
 
 
 class DriverQueryError(Exception):
@@ -486,9 +475,13 @@ class AsyncpgDriver(Driver):
 
         :return: live owned pool
         :rtype: asyncpg.Pool
-        :raises DriverConnectError: on auth / network / DNS failure;
-            the wrapper carries host/port/database (safe to log) but
-            never the password
+        :raises DriverMissingCredentialError: before any network attempt,
+            when a configured ``password_ref`` resolves to nothing
+        :raises DriverAuthError: when the server refuses the login;
+            carries its SQLSTATE and message
+        :raises DriverConnectError: on any other connect failure; the
+            wrapper carries host/port/database (safe to log) but never
+            the password
         """
         # agent-internal MUST not reach here -- the factory passes
         # external_pool= for that case. defending against a future
@@ -500,11 +493,13 @@ class AsyncpgDriver(Driver):
                 " (Hub's L3 pool); cannot open a fresh pool from agent_internal"
             )
         cfg: _PgConfig = self._config
-        # SecretStr round-trip: resolve only if password_ref is set;
-        # local dev / trust-auth setups legitimately have no password.
-        # ``.get_secret_value()`` is called inside the ``create_pool``
-        # call site to keep the value off any intermediate variable
-        # (see DS-10-10).
+        # SecretStr round-trip: a config with no password_ref connects with
+        # none (local dev / trust-auth setups legitimately have no password);
+        # one whose reference resolves to nothing is refused here, before any
+        # network attempt. the value stays a SecretStr and
+        # ``.get_secret_value()`` is called inside the ``create_pool`` call
+        # site, so no intermediate ``str`` holds it (see DS-10-10).
+        password = optional_password(cfg, datasource_name=self._datasource_name)
         #
         # search_path: when ``allowed_schemas`` is non-empty, pass the
         # value through asyncpg's ``server_settings`` connect kwarg.
@@ -531,20 +526,26 @@ class AsyncpgDriver(Driver):
                 port=cfg.port,
                 database=cfg.database,
                 user=cfg.username,
-                password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
+                password=(password.get_secret_value() if password is not None else None),
                 min_size=cfg.pool_min_size,
                 max_size=cfg.pool_max_size,
                 command_timeout=cfg.command_timeout_seconds,
                 **connect_kwargs,
                 **get_pg_pool_kwargs(),
             )
-        except Exception:
+        except Exception as exc:
             # break the cause chain (``from None``) so the original
             # asyncpg error -- which sometimes embeds the password
             # value in nested context -- does NOT reach loggers /
-            # tracebacks via ``__cause__``. the wrapper's message is
-            # the only thing callers see.
-            raise DriverConnectError(f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}") from None
+            # tracebacks via ``__cause__``. its type, and when the
+            # server answered, its SQLSTATE and message, are read off
+            # it first: a refused login must not read like an
+            # unreachable host to a caller deciding whether to retry.
+            raise connect_error_from(
+                f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}",
+                exc,
+                password=password,
+            ) from None
         # asyncpg.create_pool can return None on edge cases; guard
         # against the typing.
         if pool is None:
@@ -1123,6 +1124,11 @@ class AsyncpgDriver(Driver):
             await self._acquire_and_run(
                 lambda conn: conn.fetchval(_PING_SQL),
             )
+        except DriverConnectError:
+            # already sanitized by the pool open, and it may be the auth type a
+            # caller stops retrying on: re-wrapping it would drop both that type
+            # and the server's reason.
+            raise
         except Exception:
             # sanitize: the wrapper carries the connection identity
             # (safe to log) but never the password. ``from None``

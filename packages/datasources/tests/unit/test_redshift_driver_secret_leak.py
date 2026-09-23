@@ -21,10 +21,8 @@ from __future__ import annotations
 import pytest
 
 from threetears.datasources.config import RedshiftConnectionConfig
-from threetears.datasources.drivers.redshift_driver import (
-    DriverConnectError,
-    RedshiftDriver,
-)
+from threetears.datasources.drivers import DriverConnectError
+from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
 

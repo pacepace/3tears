@@ -21,10 +21,8 @@ from __future__ import annotations
 import pytest
 
 from threetears.datasources.config import PostgresConnectionConfig
-from threetears.datasources.drivers.asyncpg_driver import (
-    AsyncpgDriver,
-    DriverConnectError,
-)
+from threetears.datasources.drivers import DriverConnectError
+from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.entities import DataSourceType
 
 

@@ -31,11 +31,18 @@ no cache concern.
 
 the stack now carries a payload rather than only an empty tier: the runtime's own
 :class:`~threetears.agent.tools.object_resolution_collection.ObjectResolutionCollection`
-is built here too and handed to the server, so a pod that declares collection tables
-gets a resolution cache shared with its replicas instead of a per-process dict. it is
-wired by the lifecycle owner rather than by the host pod on purpose -- it backs a
-resolver the host never constructs either, and a store the host has to remember to
-build is one the host will forget to build.
+and the proxy-assertion replay anchor are built here too and handed to the server, so
+every tool-pod principal -- whether or not it declares collection tables of its own --
+gets a resolution cache shared with its replicas instead of a per-process dict, and a
+guard that can tell a first run from a lost bucket. they are wired by the lifecycle
+owner rather than by the host pod on purpose -- they back a resolver and a guard the
+host never constructs either, and a store the host has to remember to build is one the
+host will forget to build.
+
+a pod running INSIDE an agent process gets none of this. it rides the agent's
+connection, authenticated as the agent, with an ``{agent_id}.{instance}`` pod id from
+which no tool-pod key scope can be derived; declaring collection tables on such a pod
+is refused as a :class:`ToolPodConfigError`.
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ import os
 import signal
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from sqlalchemy import MetaData
 from threetears.core.collections import bind_collections_bucket
@@ -117,8 +125,9 @@ class ToolPodConfigError(ValueError):
 
     :param message: operator-facing description of what is wrong and how to fix it
     :ptype message: str
-    :param variable: name of the environment variable at fault. required, because
-        an operator reading one ERROR line needs the thing to go change, and a
+    :param variable: name of the environment variable, or of the bootstrap
+        parameter when no variable is involved, at fault. required, because an
+        operator reading one ERROR line needs the thing to go change, and a
         message that only says "config is invalid" sends them to the source
     :ptype variable: str
     """
@@ -128,13 +137,36 @@ class ToolPodConfigError(ValueError):
 
         :param message: operator-facing description of the fault
         :ptype message: str
-        :param variable: environment variable name at fault
+        :param variable: environment variable (or bootstrap parameter) name at fault
         :ptype variable: str
         :return: None
         :rtype: None
         """
         super().__init__(message)
         self.variable = variable
+
+
+def _is_tool_pod_id(pod_id: str) -> bool:
+    """whether ``pod_id`` names a tool-pod principal rather than an in-process pod.
+
+    A tool pod's id is its ``tool_pods.id``, a single uuid token, and the auth callout pins
+    it as ``claims.sub``. An in-process pod's id is
+    :meth:`~threetears.nats.Subjects.agent_inprocess_pod_id` -- ``{agent_id}.{instance}`` --
+    and that pod connects as its agent. The test is the one
+    :func:`~threetears.nats.kv_key_scope_for` applies to a tool-pod scope, so a pod this
+    answers ``True`` for is exactly a pod that scope can be derived for.
+
+    :param pod_id: the id the tool server was constructed with
+    :ptype pod_id: str
+    :return: ``True`` when ``pod_id`` is a uuid
+    :rtype: bool
+    """
+    result = True
+    try:
+        UUID(pod_id)
+    except ValueError:
+        result = False
+    return result
 
 
 async def build_tool_pod_collection_stack(
@@ -265,9 +297,11 @@ class ToolServerBootstrap:
         :ptype log_level: str
         :param collection_tables: the pod's OWN Collection tables, mirrored into its tiers
             alongside the runtime's. the stack (:func:`build_tool_pod_collection_stack`) is built
-            for every pod once its NATS connection exists and torn down with it, because the
-            runtime holds collections on every pod's behalf -- the proxy-assertion replay anchor
-            among them. ``None`` -> the pod declares none of its own
+            for every tool-pod principal once its NATS connection exists and torn down with it,
+            because the runtime holds collections on every such pod's behalf -- the
+            proxy-assertion replay anchor among them. an in-process pod (one whose pod id is not
+            a uuid) gets no stack, and passing tables for one is a :class:`ToolPodConfigError`.
+            ``None`` -> the pod declares none of its own
         :ptype collection_tables: MetaData | None
         :param health_port: port the readiness HealthServer binds to;
             defaults to THREETEARS_TOOL_SERVER_HEALTH_PORT env var,
@@ -296,12 +330,14 @@ class ToolServerBootstrap:
     def collection_registry(self) -> CollectionRegistry | None:
         """the pod's three-tier registry, once its NATS connection has been established.
 
-        ``None`` until then. Tools read it lazily rather than at construction time, because the
-        connection the stack rides on does not exist until :meth:`ToolServer.serve` opens it --
-        which is still strictly before the pod subscribes its call subject, so no tool call can
-        arrive while this is unset.
+        ``None`` until then, and ``None`` forever for an in-process pod, which holds no tool-pod
+        stack. Tools read it lazily rather than at construction time, because the connection
+        the stack rides on does not exist until :meth:`ToolServer.serve` opens it -- which is
+        still strictly before the pod subscribes its call subject, so no tool call can arrive
+        at a tool-pod principal while this is unset.
 
-        :return: the configured registry, or ``None`` before the connection exists
+        :return: the configured registry, or ``None`` before the connection exists or for an
+            in-process pod
         :rtype: CollectionRegistry | None
         """
         return self._collection_registry
@@ -310,11 +346,13 @@ class ToolServerBootstrap:
     def object_resolutions(self) -> ObjectResolutionCollection | None:
         """the runtime's two-tier object-resolution store, once NATS is up.
 
-        ``None`` until the connection exists. Exposed for the same reason
-        :attr:`collection_registry` is: a host that wants to read or drop a mapping of
-        its own has one object to reach for rather than a second store of its own.
+        ``None`` until the connection exists, and ``None`` forever for an in-process pod.
+        Exposed for the same reason :attr:`collection_registry` is: a host that wants to
+        read or drop a mapping of its own has one object to reach for rather than a second
+        store of its own.
 
-        :return: the collection, or ``None`` before the connection exists
+        :return: the collection, or ``None`` before the connection exists or for an
+            in-process pod
         :rtype: ObjectResolutionCollection | None
         """
         return self._object_resolutions
@@ -322,8 +360,8 @@ class ToolServerBootstrap:
     def install_collection_stack(self, server: "ToolServer") -> None:
         """arrange for the pod's collection stack to be built the moment NATS is up.
 
-        Built for every pod: one that declared no ``collection_tables`` still gets the runtime's
-        own collections, the replay anchor among them. Registered as a CONNECTED
+        Built for every tool-pod principal: one that declared no ``collection_tables`` still gets
+        the runtime's own collections, the replay anchor among them. Registered as a CONNECTED
         callback rather than built inline, because :meth:`ToolServer.serve` is what opens the
         connection -- and the callback runs before the pod subscribes its call subject and
         publishes its registration manifest, so the pod is never discoverable with its own
@@ -334,16 +372,42 @@ class ToolServerBootstrap:
         configuration naming it could drift from the authenticated identity, and a key scope that
         drifts from the grant is a dead cache that logs nothing.
 
+        An in-process pod -- one whose pod id is not a uuid, because it runs inside an agent
+        process on the agent's connection -- is not a tool-pod principal. It gets no stack, as
+        before this stack existed; declaring tables on one is refused here, before the pod
+        serves, rather than failing inside the connected callback on every restart.
+
         :param server: the tool server whose connection the stack rides on
         :ptype server: ToolServer
         :return: nothing
         :rtype: None
+        :raises ToolPodConfigError: if an in-process pod declares ``collection_tables``
         """
-        # EVERY pod gets the stack, declared tables or not. The runtime holds collections of its
-        # own on every pod's behalf -- the object-resolution cache and the proxy-assertion replay
-        # anchor -- and the anchor is not optional: without it the guard cannot tell a bucket it
-        # never had from one it lost, so every cold start refused the pod's first proxied call.
-        # Gating the stack on host tables left every pod that declared none with exactly that.
+        # ONLY a tool-pod principal gets the stack. A pod running inside an agent process rides
+        # the agent's injected connection, authenticated as the AGENT, with a pod id of
+        # ``{agent_id}.{instance}``: no tool-pod key scope derives from that id, and the grant it
+        # connected with carries the agent's scope rather than ``tool_pod-<hex>``. Building the
+        # stack for it raised inside the connected callback on every start.
+        if not _is_tool_pod_id(server.pod_id):
+            if self._collection_tables is not None:
+                raise ToolPodConfigError(
+                    f"{self._service_name} declares collection tables but runs as in-process pod "
+                    f"{server.pod_id!r} on an agent's connection. Collection tables are scoped to a "
+                    f"tool pod's own identity (a tool_pods.id uuid); run this pod as its own tool "
+                    f"pod, or declare no tables.",
+                    variable="collection_tables",
+                )
+            log.info(
+                "in-process pod rides its agent's connection; no tool-pod collection stack",
+                extra={"extra_data": {"service": self._service_name, "pod_id": server.pod_id}},
+            )
+            return
+        # EVERY tool-pod principal gets the stack, declared tables or not. The runtime holds
+        # collections of its own on every pod's behalf -- the object-resolution cache and the
+        # proxy-assertion replay anchor -- and the anchor is not optional: without it the guard
+        # cannot tell a bucket it never had from one it lost, so every cold start refused the
+        # pod's first proxied call. Gating the stack on host tables left every pod that declared
+        # none with exactly that.
         tables = self._collection_tables if self._collection_tables is not None else MetaData()
 
         async def _on_connected(nats_client: "NatsClient") -> None:

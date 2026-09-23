@@ -24,9 +24,13 @@ from threetears.datasources.config import (
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
+from threetears.datasources.drivers import (
+    DriverAuthError,
+    DriverConnectError,
+    DriverMissingCredentialError,
+)
 from threetears.datasources.drivers.asyncpg_driver import (
     AsyncpgDriver,
-    DriverConnectError,
     _POSTGRES_COLUMNS_SQL,
     _POSTGRES_TABLE_HASHES_SQL,
     _POSTGRES_TABLES_SQL,
@@ -523,6 +527,91 @@ class TestPoolCreation:
         # message carries identity but no backend internals
         assert "localhost" in str(exc_info.value)
         assert "kapow" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_login_is_an_auth_error_carrying_the_servers_reason(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """the server's SQLSTATE and message survive the ``from None`` that drops the chain.
+
+        Without them a refused login reads exactly like an unreachable host, and a caller
+        that retries it is the thing that locks the account.
+        """
+        monkeypatch.setenv("MY_PG_PW", "horse-battery-staple")
+        cfg = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="h",
+            database="x",
+            username="u",
+            password_ref="env://MY_PG_PW",
+        )
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            AsyncMock(
+                side_effect=asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "u"')
+            ),
+        )
+        driver = AsyncpgDriver(cfg)
+
+        with pytest.raises(DriverAuthError) as exc_info:
+            await driver.fetch("SELECT 1")
+
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.sqlstate == "28P01"
+        assert 'password authentication failed for user "u"' in str(exc_info.value)
+        assert "horse-battery-staple" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_a_reference_that_resolves_to_nothing_is_refused_before_any_connect(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """a named credential that is absent is a missing credential, not a network failure."""
+        monkeypatch.delenv("MISSING_PG_PW", raising=False)
+        cfg = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="h",
+            database="x",
+            username="u",
+            password_ref="env://MISSING_PG_PW",
+        )
+        create_pool_mock = AsyncMock()
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            create_pool_mock,
+        )
+        driver = AsyncpgDriver(cfg, datasource_name="reporting")
+
+        with pytest.raises(DriverMissingCredentialError) as exc_info:
+            await driver.fetch("SELECT 1")
+
+        create_pool_mock.assert_not_awaited()
+        assert "reporting" in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+    @pytest.mark.asyncio
+    async def test_test_connection_keeps_the_auth_type(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        postgres_config: PostgresConnectionConfig,
+    ) -> None:
+        """the connection probe must not re-wrap an auth refusal into a plain connect error.
+
+        That re-wrap dropped both the type a caller stops retrying on and the server's reason.
+        """
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            AsyncMock(
+                side_effect=asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "u"')
+            ),
+        )
+        driver = AsyncpgDriver(postgres_config)
+
+        with pytest.raises(DriverAuthError) as exc_info:
+            await driver.test_connection()
+
+        assert exc_info.value.sqlstate == "28P01"
 
 
 class TestServerSettingsSearchPath:

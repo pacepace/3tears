@@ -2087,14 +2087,24 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         customer-scoped while a tool its pods publish may be platform-scoped. rows
         are NOT promoted into L1/L2 -- the caller is about to delete them.
 
+        with no L3 pool this raises rather than answering an empty list: an empty list
+        tells a teardown walker the owner is a leaf, and that is a guess when nothing was
+        asked.
+
         :param owner_name: the owning namespace's name; an empty name owns nothing,
             never every ownerless row
         :ptype owner_name: str
         :return: the owned namespace entities, ordered by ``namespace_id``
         :rtype: list[NamespaceEntity]
+        :raises RuntimeError: if the collection has no L3 pool to ask
         """
+        if self.l3_pool is None:
+            raise RuntimeError(
+                "NamespaceCollection.list_owned_by requires an L3 pool: without one it cannot tell "
+                "an owner with no children from one it never checked",
+            )
         result: list[NamespaceEntity] = []
-        if owner_name and self.l3_pool is not None:
+        if owner_name:
             rows = await self.l3_pool.fetch(
                 "SELECT * FROM namespaces"
                 " WHERE row_scope IN ('platform', 'customer')"
@@ -2113,13 +2123,25 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         may drop that row's schema only once this answers ``False`` -- dropping it
         on the strength of one row would take every other row's data with it.
 
+        spans both row_scope partitions: a platform row names a schema as surely as a
+        customer row does (the system namespace carries one).
+
+        with no L3 pool this raises rather than answering: ``False`` means "safe to
+        drop", and a caller acts on it with ``DROP SCHEMA ... CASCADE``.
+
         :param schema_name: the schema to check; an empty name is never in use
         :ptype schema_name: str
         :return: ``True`` while at least one row names the schema
         :rtype: bool
+        :raises RuntimeError: if the collection has no L3 pool to ask
         """
+        if self.l3_pool is None:
+            raise RuntimeError(
+                "NamespaceCollection.schema_in_use requires an L3 pool: answering without one would "
+                "report a schema free to drop without checking whether any row still names it",
+            )
         result = False
-        if schema_name and self.l3_pool is not None:
+        if schema_name:
             result = bool(
                 await self.l3_pool.fetchval(
                     "SELECT EXISTS (SELECT 1 FROM namespaces"
