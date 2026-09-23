@@ -15,22 +15,38 @@ does not assemble -- the memory block, the memory ledger -- carries its own rule
 (:func:`explained_fence`), so every consumer gets both.
 
 Both tags carry the nonce, and a fence tag inside the text is disarmed: planted
-text cannot close its own fence, whether or not it guesses the nonce.
+text cannot close its own fence, whether or not it guesses the nonce. So the
+nonce need not be secret, and a block that is rendered again and again -- the
+memory block, the ledger, the tool-result previews, folded into a system prompt
+on every model call -- takes one derived from its own text (:func:`nonce_for`):
+the same material renders byte-identical, and a cached prompt stays cached.
+
+What is fenced here is what the platform itself places in a prompt: stored
+memories, media excerpts and chunk headlines, the ledger, tool-result previews,
+the memories the dream and extraction read, a document under analysis. A tool's
+return reaches the model through the consumer's tool loop, which fences it there
+(metallm does); the platform's own agent path does not yet. Text a model wrote
+-- a memory it extracted, a variable it set, a summary -- is passed on as that
+model's words, not fenced.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 import secrets
 from collections.abc import Iterable
 from typing import Any
 
 from langchain_core.messages import BaseMessage, SystemMessage
+from threetears.observe import get_logger
 
 __all__ = [
     "explained_fence",
     "is_fenced",
     "mint_nonce",
+    "nonce_for",
+    "nonces_in",
     "rules_missing",
     "untrusted_fence",
     "untrusted_rule",
@@ -43,6 +59,8 @@ _FENCE_TAG = re.compile(r"<(\s*/?\s*untrusted)", re.IGNORECASE)
 #: A fence's opener, as :func:`untrusted_fence` writes it, and the nonce it names.
 _OPENER = re.compile(r"<untrusted nonce=([\w-]+)>")
 
+log = get_logger(__name__)
+
 
 def mint_nonce() -> str:
     """a random fence tag; one per turn, or per block a turn does not assemble.
@@ -51,6 +69,28 @@ def mint_nonce() -> str:
     :rtype: str
     """
     return secrets.token_hex(8)
+
+
+def nonce_for(text: str) -> str:
+    """a fence tag derived from the material, the same every time it is rendered.
+
+    :param text: the material the fence will carry
+    :ptype text: str
+    :return: sixteen hex characters
+    :rtype: str
+    """
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def nonces_in(text: str) -> list[str]:
+    """every fence ``text`` opens, in order, each once.
+
+    :param text: rendered prompt text
+    :ptype text: str
+    :return: the nonces
+    :rtype: list[str]
+    """
+    return list(dict.fromkeys(_OPENER.findall(text)))
 
 
 def untrusted_fence(nonce: str, text: str) -> str:
@@ -63,7 +103,11 @@ def untrusted_fence(nonce: str, text: str) -> str:
     :return: the fenced text, any fence tag inside it disarmed
     :rtype: str
     """
-    inert = _FENCE_TAG.sub(r"&lt;\1", text)
+    inert, disarmed = _FENCE_TAG.subn(r"&lt;\1", text)
+    if disarmed:
+        # A tag inside material is someone trying to end the fence early. Nothing
+        # breaks, but the attempt is worth seeing.
+        log.info("disarmed %d fence tag(s) inside material", disarmed)
     return f"<untrusted nonce={nonce}>\n{inert}\n</untrusted nonce={nonce}>"
 
 
@@ -103,12 +147,13 @@ def explained_fence(text: str, *, nonce: str | None = None) -> str:
 
     :param text: the material
     :ptype text: str
-    :param nonce: the fence tag; a fresh one when not given
+    :param nonce: the fence tag; one derived from ``text`` when not given, so an
+        unchanged block renders the same every time
     :ptype nonce: str | None
     :return: the rule, then the fenced text
     :rtype: str
     """
-    tag = nonce or mint_nonce()
+    tag = nonce or nonce_for(text)
     return f"{untrusted_rule(tag)}\n{untrusted_fence(tag, text)}"
 
 
@@ -134,7 +179,7 @@ def rules_missing(texts: Iterable[str], *, explained: str) -> str:
     :return: the missing rules, one paragraph each, or ``""``
     :rtype: str
     """
-    nonces = dict.fromkeys(n for text in texts for n in _OPENER.findall(text))
+    nonces = dict.fromkeys(n for text in texts for n in nonces_in(text))
     return "\n\n".join(untrusted_rule(n) for n in nonces if untrusted_rule(n) not in explained)
 
 

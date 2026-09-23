@@ -359,6 +359,15 @@ class TestFormatMemoryContext:
         assert result.startswith(untrusted_rule(nonce))
         assert "What you remember" in outside and "chunk_recall" in outside, "the headers are the block's own words"
 
+    def test_the_same_memories_render_the_same_block(self) -> None:
+        """The block is folded into a cached system prompt; a fresh tag every call would miss the cache."""
+        memories = [{"memory_id": uuid.uuid7(), "content": "likes cats", "summary": None, "hybrid_score": 0.5}]
+        chunks = [{"chunk_id": uuid.uuid7(), "summary": "a headline"}]
+        first = _format_memory_context(memories, memory_chunks=chunks, detail_threshold=0.85)
+        assert first == _format_memory_context(memories, memory_chunks=chunks, detail_threshold=0.85)
+        other = [{**memories[0], "content": "likes dogs"}]
+        assert first != _format_memory_context(other, memory_chunks=chunks, detail_threshold=0.85)
+
     def test_memories_section(self) -> None:
         memories = [
             {"memory_id": uuid.uuid7(), "content": "likes cats", "summary": None, "hybrid_score": 0.5},

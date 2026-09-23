@@ -580,3 +580,12 @@ async def test_the_ledger_reads_a_stored_description_as_material(ctx: ToolContex
     assert order in ledger and order not in outside
     assert untrusted_rule(nonce) in ledger
     assert "memory_recall" in outside
+
+
+@pytest.mark.asyncio
+async def test_unchanged_blocks_render_the_same_every_call(ctx: ToolContextManager) -> None:
+    """Both blocks are folded into a cached system prompt on every model call."""
+    await ctx.save_tool_result("fetch", "page", short_desc="a page")
+    await ctx.add_ledger_ref("00000000-0000-0000-0000-0000000000bb", "memory", "a memory")
+    assert ctx.build_conversation_context() == ctx.build_conversation_context()
+    assert ctx.build_ledger_prompt() == ctx.build_ledger_prompt()
