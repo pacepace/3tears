@@ -241,7 +241,7 @@ ORDER BY table_schema, table_name
 #:
 #: NOTE: SVV_COLUMNS' ``data_type`` strings differ from
 #: ``information_schema.columns`` (e.g. ``character varying`` vs
-#: ``VARCHAR``). the python-side ``_compute_column_hash`` MUST be
+#: ``VARCHAR``). the python-side ``compute_column_hash`` MUST be
 #: applied over the same rows that the warehouse-side MD5 sees, so
 #: as long as both sides observe SVV_COLUMNS, byte-equivalence holds.
 #: cross-driver hash equivalence (asyncpg vs redshift) is NOT
@@ -2012,7 +2012,7 @@ class RedshiftDriver(Driver):
         ``is_nullable`` is preserved as the raw warehouse string
         (``'YES'`` / ``'NO'``) -- never normalized to bool. the
         Tier-2 hash depends on byte-equality with the warehouse-side
-        MD5 in :data:`_REDSHIFT_TABLE_HASHES_SQL`.
+        MD5 in :data:`_REDSHIFT_TABLE_HASHES_SQL_TEMPLATE`.
 
         THIS IS THE METHOD whose timeout drove the whole datasource
         migration; on Redshift's ``reporting_prod`` schema this call
@@ -2120,12 +2120,15 @@ class RedshiftDriver(Driver):
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape (Tier-2 change-probe).
 
-        the warehouse-side MD5 in :data:`_REDSHIFT_TABLE_HASHES_SQL`
-        is byte-equivalent to the python-side ``_compute_column_hash``
-        helper from ``datasource-task-02`` AND to the same SQL on
-        :class:`AsyncpgDriver`. equality across drivers is the
-        cross-engine invariant that lets the Tier-2 probe live in
-        Hub agnostic of which warehouse it's hashing.
+        the warehouse-side MD5 in :data:`_REDSHIFT_TABLE_HASHES_SQL_TEMPLATE`
+        is byte-equivalent to the python-side
+        :func:`~threetears.datasources.introspection.compute_column_hash`
+        over the same ``SVV_COLUMNS`` rows. that equivalence holds per
+        driver, not across drivers: ``SVV_COLUMNS`` spells ``data_type``
+        differently from ``information_schema.columns``, so one table
+        hashes differently here and on :class:`AsyncpgDriver`. the probe
+        only ever compares a table's hash with its own earlier hash from
+        the same datasource, so it needs no more than that.
 
         :param schemas: schema-name allow-list
         :ptype schemas: list[str]

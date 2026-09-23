@@ -23,8 +23,9 @@ The ABC is intentionally minimal:
 - **Row shapes are pinned** via :class:`TableRow` and :class:`ColumnRow`.
   The ``is_nullable`` field is the raw warehouse string
   (``'YES'``/``'NO'``/``''``), NOT a boolean -- the Tier-2 column hash
-  from datasource-task-02 depends on byte-equality with the warehouse-
-  side MD5, which uses the raw value.
+  (:func:`threetears.datasources.introspection.compute_column_hash`)
+  depends on byte-equality with the warehouse-side MD5, which uses the
+  raw value.
 
 Observability contract (DS-09-11):
 
@@ -131,11 +132,11 @@ class ColumnRow(TypedDict):
     """canonical row shape returned by :meth:`Driver.list_columns`.
 
     ``is_nullable`` is the RAW warehouse value (``'YES'`` / ``'NO'`` /
-    ``''``), NOT a boolean. the Tier-2 column hash in
-    datasource-task-02 computes MD5 over a concatenation of the column
-    metadata WITH the raw nullable string; converting to bool here
-    would make the python-side hash diverge from the warehouse-side
-    MD5, breaking the change-probe contract.
+    ``''``), NOT a boolean. the Tier-2 column hash
+    (:func:`threetears.datasources.introspection.column_hash_payload`
+    describes its formula) includes the raw nullable string; converting
+    to bool here would make the python-side hash diverge from the
+    warehouse-side MD5, breaking the change-probe contract.
 
     :key table_schema: schema name (matches warehouse
         ``information_schema.columns.table_schema``)
@@ -966,8 +967,11 @@ class Driver(ABC):
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape; Tier-2 change-probe.
 
-        MUST byte-equal the python-side ``_compute_column_hash`` from
-        datasource-task-02 over identical input. the warehouse-side
+        MUST byte-equal the python-side
+        :func:`~threetears.datasources.introspection.compute_column_hash`
+        over identical input; the formula is described once, in
+        :func:`~threetears.datasources.introspection.column_hash_payload`.
+        the warehouse-side
         MD5 hashes the raw ``is_nullable`` string (``'YES'`` / ``'NO'``
         / ``''``) -- using a boolean here makes the python-side hash
         diverge and breaks the probe.
