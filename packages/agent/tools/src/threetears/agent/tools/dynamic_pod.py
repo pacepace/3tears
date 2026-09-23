@@ -126,6 +126,10 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         self._serve_task: asyncio.Task[None] | None = None
         self._resources: dict[str, Any] = {}
         self._tool_names: dict[str, list[str]] = {}
+        # one lock per spec key: two overlapping rebuilds of one spec would each
+        # forget, build and register, and the second registration would overwrite
+        # the first's bookkeeping -- a resource never closed, tools never tracked.
+        self._spec_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def pod_id(self) -> str:
@@ -368,6 +372,10 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         pod whose only tools are this spec's, the reduced manifest is empty, and the registry
         refuses an empty manifest moments before the real one lands.
 
+        a build that raises leaves the spec forgotten, and the reduced manifest is
+        published so the registry stops advertising its old tools. rebuilds of one
+        spec are serialized; rebuilds of different specs are not.
+
         safe to call before :meth:`start` has built the server: the guard makes it a no-op.
 
         :param spec: spec to build + register tools for
@@ -375,20 +383,32 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :return: nothing
         :rtype: None
         :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
+        :raises Exception: whatever :meth:`build_tools` raised, after the reduced manifest is published
         """
         server = self._tool_server
         if server is None:
             return
         key = self.spec_key(spec)
-        _known, had_tools = await self._forget(key)
-        built = await self.build_tools(spec)
-        if built.key != key:
-            raise ValueError(
-                f"{type(self).__name__}.build_tools returned key {built.key!r} for a spec whose spec_key is "
-                f"{key!r}; the two must agree, or a rebuild forgets one registration and replaces another"
-            )
-        self._register_built(built)
-        await self._announce(server, built, manifest_changed=bool(built.tools) or had_tools)
+        async with self._spec_locks.setdefault(key, asyncio.Lock()):
+            _known, had_tools = await self._forget(key)
+            try:
+                built = await self.build_tools(spec)
+            except Exception:
+                # the spec's old tools are already gone -- deliberately, so a narrowed
+                # spec never leaves its wider tools dispatchable -- so the registry is
+                # told now, as a deregister would tell it, rather than advertising
+                # tools this pod no longer serves until the next heartbeat.
+                if had_tools and server.is_connected:
+                    await server.publish_registration()
+                raise
+            if built.key != key:
+                await self._close_quietly(built.key, built.resource)
+                raise ValueError(
+                    f"{type(self).__name__}.build_tools returned key {built.key!r} for a spec whose spec_key is "
+                    f"{key!r}; the two must agree, or a rebuild forgets one registration and replaces another"
+                )
+            self._register_built(built)
+            await self._announce(server, built, manifest_changed=bool(built.tools) or had_tools)
 
     async def _announce(self, server: ToolServer, built: BuiltSpec, *, manifest_changed: bool) -> None:
         """publish the manifest after a registration, or leave it to whoever can do it safely.
@@ -442,7 +462,8 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :return: true when the spec was known (tools or resource removed)
         :rtype: bool
         """
-        removed, _had_tools = await self._forget(key)
+        async with self._spec_locks.setdefault(key, asyncio.Lock()):
+            removed, _had_tools = await self._forget(key)
         server = self._tool_server
         if removed and server is not None and server.is_connected:
             await server.publish_registration()
@@ -471,17 +492,30 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             for tool_key in tool_keys:
                 mcp_name = tool_key.split("@", 1)[0]
                 server.unregister(mcp_name)
-        if resource is not None:
-            try:
-                await self.close_resource(resource)
-            except Exception:  # prawduct:allow prawduct/broad-except -- a resource's close may raise anything; the spec is already forgotten and the rebuild must proceed
-                log.exception(
-                    "dynamic tool pod could not close a forgotten spec's resource; it may still hold "
-                    "connections until the process ends: key=%s pod_id=%s",
-                    key,
-                    self._pod_id,
-                )
+        await self._close_quietly(key, resource)
         return tool_keys is not None or resource is not None, bool(tool_keys)
+
+    async def _close_quietly(self, key: str, resource: Any) -> None:
+        """close a resource the pod no longer tracks, logging rather than raising a failure.
+
+        :param key: the spec key it belonged to, for the log
+        :ptype key: str
+        :param resource: the resource, or ``None``
+        :ptype resource: Any
+        :return: nothing
+        :rtype: None
+        """
+        if resource is None:
+            return
+        try:
+            await self.close_resource(resource)
+        except Exception:  # prawduct:allow prawduct/broad-except -- a resource's close may raise anything; the spec is already forgotten and the caller must proceed
+            log.exception(
+                "dynamic tool pod could not close a forgotten spec's resource; it may still hold "
+                "connections until the process ends: key=%s pod_id=%s",
+                key,
+                self._pod_id,
+            )
 
     def _register_built(self, built: BuiltSpec) -> None:
         """register a built spec's tools and record its bookkeeping.

@@ -6,8 +6,9 @@ the contract (hub issue #523, the lockout it closes):
   and a paused connect raises :class:`DriverCredentialPausedError` without a login;
 - the pause belongs to the refused CREDENTIAL: a holder of a superseded one cannot pause
   the credential that replaced it, and replacing a credential needs no step to resume;
-- a burst of logins with a credential not yet proven in this process costs one login, and
-  once one succeeds logins run side by side again;
+- logins with a credential go one at a time, always, so a burst against a refusing
+  warehouse costs one login -- a cold start's, and the first after a warehouse-side
+  password change on a credential that worked a moment ago;
 - several background passes against a refusing warehouse cost exactly one login;
 - a missing credential, refused before any login, pauses nothing;
 - clearing the pause (a new credential, a successful probe) lets the next login through;
@@ -222,7 +223,6 @@ class _ScriptedGuard(ConnectGuard):
         """
         self.admit_error = admit_error
         self.refusals: list[DriverAuthError] = []
-        self.successes = 0
         self.slots_entered = 0
 
     def serialized(self) -> AbstractAsyncContextManager[None]:
@@ -258,14 +258,6 @@ class _ScriptedGuard(ConnectGuard):
         """
         self.refusals.append(error)
 
-    def record_success(self) -> None:
-        """count the success.
-
-        :return: nothing
-        :rtype: None
-        """
-        self.successes += 1
-
 
 class TestGuardedConnect:
     """the one place a login meets its guard."""
@@ -287,14 +279,12 @@ class TestGuardedConnect:
             await guarded_connect(guard, AsyncMock(side_effect=refusal))
 
         assert guard.refusals == [refusal]
-        assert guard.successes == 0
 
-    async def test_a_success_is_recorded_inside_the_slot(self) -> None:
+    async def test_the_login_runs_in_its_slot(self) -> None:
         guard = _ScriptedGuard()
 
         assert await guarded_connect(guard, AsyncMock(return_value="connection")) == "connection"
 
-        assert guard.successes == 1
         assert guard.slots_entered == 1
 
     @pytest.mark.parametrize(
@@ -315,7 +305,6 @@ class TestGuardedConnect:
             await guarded_connect(guard, AsyncMock(side_effect=error))
 
         assert guard.refusals == []
-        assert guard.successes == 0
 
     async def test_no_guard_is_a_plain_login(self) -> None:
         login = AsyncMock(return_value="connection")
@@ -355,8 +344,8 @@ class TestThePauseBelongsToACredential:
             _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision="", datasource_name="ds")
 
 
-class TestLoginsQueueUntilOneSucceeds:
-    """a burst before the credential is proven here costs one login; after, logins run side by side."""
+class TestLoginsGoOneAtATime:
+    """every login with a credential waits its turn, so a burst against a refusing warehouse costs one."""
 
     async def test_a_burst_of_cold_logins_against_a_refusing_warehouse_costs_one(self) -> None:
         """five at once is a Redshift lock on its own, before the first refusal could be recorded."""
@@ -382,42 +371,37 @@ class TestLoginsQueueUntilOneSucceeds:
         assert connect.call_count == 1
         assert sorted(type(o).__name__ for o in outcomes) == ["DriverAuthError"] + ["DriverCredentialPausedError"] * 4
 
-    async def test_once_proven_logins_run_side_by_side(self) -> None:
+    async def test_logins_wait_their_turn_even_after_a_success(self) -> None:
+        """a credential that worked is not trusted to keep working: its logins still queue."""
         guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
         await guarded_connect(guard, AsyncMock(return_value="first"))
-        both_in = asyncio.Event()
         inside = 0
+        most_at_once = 0
 
         async def _login() -> str:
-            nonlocal inside
+            nonlocal inside, most_at_once
             inside += 1
-            if inside == 2:
-                both_in.set()
-            await asyncio.wait_for(both_in.wait(), timeout=1.0)
+            most_at_once = max(most_at_once, inside)
+            await asyncio.sleep(0.01)
+            inside -= 1
             return "connection"
 
-        results = await asyncio.gather(guarded_connect(guard, _login), guarded_connect(guard, _login))
+        results = await asyncio.gather(*(guarded_connect(guard, _login) for _ in range(5)))
 
-        assert results == ["connection", "connection"]
+        assert results == ["connection"] * 5
+        assert most_at_once == 1
 
-    async def test_a_refusal_after_a_success_makes_logins_queue_again(self) -> None:
-        """a password changed on the warehouse side is a cold credential again.
+    async def test_a_password_changed_on_the_warehouse_costs_one_login(self) -> None:
+        """the gap this closes: a login succeeded, then someone changed the password on the warehouse.
 
-        the pause is cleared (a probe succeeded) so only the queue stands between a burst and
-        the warehouse: were the credential still trusted from its earlier success, every login
-        in the burst would be sent.
+        nothing here learns of that change until a login is refused. were logins trusted after
+        the earlier success, the next burst -- a pool refilling, five queries at once -- would send
+        the old password five times, and five failures is a Redshift lock.
         """
-        datasource_id = uuid.uuid4()
-        guards = _replica(_Nats())
-        guard = guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds")
+        guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
         await guarded_connect(guard, AsyncMock(return_value="first"))
-        with pytest.raises(DriverAuthError):
-            await guarded_connect(guard, AsyncMock(side_effect=DriverAuthError("refused", sqlstate="28000")))
-        await guards.clear(datasource_id, _REVISION)
-        entered = asyncio.Event()
 
         async def _refused_login() -> str:
-            entered.set()
             await asyncio.sleep(0.01)
             raise DriverAuthError("refused", sqlstate="28000")
 
@@ -604,6 +588,98 @@ class TestTheCancelPathLogsInUnderTheGuard:
             await driver.close()
 
         assert await guards.refused_at(datasource_id, _REVISION) is not None
+
+
+class TestNoLoginIsLeftOpen:
+    """a connection opened by a login nobody is waiting for any more is closed, not dropped.
+
+    a login cannot be interrupted once its worker thread starts, so a caller that
+    gives up mid-login -- a cancelled query, a cancel path that timed out -- leaves
+    the thread to finish and open a connection with nothing holding it. one of
+    those held a production pool slot for hours.
+    """
+
+    async def test_the_cancel_login_uses_the_same_connect_settings_as_every_login(self) -> None:
+        """the cancel path's own copy of the login once dropped sslmode, and failed on verify-full."""
+        driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
+        connection = MagicMock()
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                return_value=connection,
+            ) as connect:
+                await driver._terminate_backend(4242)  # noqa: SLF001 -- the cancel path's login is the contract
+        finally:
+            await driver.close()
+
+        assert connect.call_args.kwargs["sslmode"] == _redshift_config().sslmode
+        connection.close.assert_called_once()
+
+    async def test_a_terminate_that_outlasts_its_timeout_still_closes_its_connection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("threetears.datasources.drivers.redshift_driver._CANCEL_TIMEOUT_SECONDS", 0.05)
+        driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
+        connection = MagicMock()
+        closed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        connection.close.side_effect = lambda: loop.call_soon_threadsafe(closed.set)
+
+        def _slow_login(**kwargs: Any) -> MagicMock:
+            del kwargs
+            import time
+
+            time.sleep(0.2)
+            return connection
+
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                side_effect=_slow_login,
+            ):
+                await driver._terminate_backend(4242)  # noqa: SLF001 -- times out; the close is the effect
+                async with asyncio.timeout(2.0):
+                    await closed.wait()
+        finally:
+            await driver.close()
+
+        connection.close.assert_called_once()
+
+    async def test_a_caller_cancelled_mid_login_does_not_strand_the_connection(self) -> None:
+        driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
+        connection = MagicMock()
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (1,)
+        connection.cursor.return_value = cursor
+        login_started = asyncio.Event()
+        closed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        connection.close.side_effect = lambda: loop.call_soon_threadsafe(closed.set)
+
+        def _slow_login(**kwargs: Any) -> MagicMock:
+            del kwargs
+            import time
+
+            loop.call_soon_threadsafe(login_started.set)
+            time.sleep(0.2)
+            return connection
+
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                side_effect=_slow_login,
+            ):
+                acquiring = asyncio.create_task(driver._acquire_connection())  # noqa: SLF001 -- the login path under test
+                await login_started.wait()
+                acquiring.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await acquiring
+                async with asyncio.timeout(2.0):
+                    await closed.wait()
+        finally:
+            await driver.close()
+
+        connection.close.assert_called_once()
 
 
 class TestTheFactoryHandsTheGuardOn:

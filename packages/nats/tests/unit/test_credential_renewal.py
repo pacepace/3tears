@@ -1,4 +1,4 @@
-"""a connection whose credential expires is renewed before it does, by the client itself (#514).
+"""a connection whose credential expires is renewed before it does, by the client itself (hub issue #514).
 
 The auth-callout mints each connection's user JWT with a finite TTL, and at expiry the server
 closes the connection in a way forever-reconnect does not cover. Three callers each grew their

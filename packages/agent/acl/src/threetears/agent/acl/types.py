@@ -503,7 +503,7 @@ class EvaluationResult:
 
     - :attr:`trails` — every grant path on the one side that ran.
     - :attr:`user_actions` for a user- or group-member evaluation, or
-      :attr:`agent_actions` for an agent-only one — the set the side
+      :attr:`agent_actions` for an agent-only one -- the set the side
       that ran contributed; the other is left empty.
     - :attr:`limiting_side` left at :attr:`LimitingSide.NEITHER`.
 

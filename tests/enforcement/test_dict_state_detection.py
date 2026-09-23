@@ -246,6 +246,17 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/agent/tools/src/threetears/agent/tools/dynamic_pod.py",
+        class_name="DynamicToolPod",
+        attr_name="_spec_locks",
+        rationale=(
+            "spec_key -> asyncio.Lock serializing register_spec / deregister_spec for one spec in "
+            "this process, so two overlapping rebuilds cannot overwrite each other's bookkeeping; "
+            "a lock is an in-process synchronisation primitive, not state -- it cannot be serialized "
+            "into an L1/L2/L3 backend, and it guards the pod-local _resources / _tool_names above"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/backends/sql.py",
         class_name="SqlL3Backend",
         attr_name="_schemas",

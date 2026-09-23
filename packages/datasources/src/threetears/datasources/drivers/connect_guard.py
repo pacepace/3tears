@@ -8,19 +8,20 @@ coverage pass, an agent's query. one wrong stored password locked a production a
 about 75 minutes of background passes.
 
 a driver given a :class:`ConnectGuard` logs in through :func:`guarded_connect`, which asks
-the guard before every login and tells it of every refusal and every success. the guard
+the guard before every login and tells it of every refusal. the guard
 :mod:`threetears.datasources` ships, :class:`CredentialRefusalGuards`, does two things:
 
 - **it pauses a refused credential for the fleet.** a refusal is remembered in a
   :class:`~threetears.core.coordination.WindowedCounter` -- shared by every replica through
   L2, durable in L3 -- so after it no replica logs in with that credential again: a connect
   raises :class:`DriverCredentialPausedError` without contacting the warehouse.
-- **it lets one login at a time through until one succeeds.** a burst of connects on a
-  process that has not yet logged in with a credential -- a restart, a pool's first fill, a
-  fan-out of queries -- would otherwise send every login before the first refusal is
-  recorded, and a burst of five is a Redshift lock on its own. once a login with the
-  credential succeeds, logins run concurrently again. the serialization is per process, so a
-  burst across replicas costs at most one login per replica.
+- **it lets one login with a credential through at a time, always.** a burst of connects --
+  a restart, a pool's first fill, a fan-out of queries, the first connects after someone
+  changed the password on the warehouse itself -- would otherwise send every login before
+  the first refusal is recorded, and a burst of five is a Redshift lock on its own. a
+  credential that worked an hour ago is no exception: a warehouse-side change makes it a
+  refused one with no signal here. only LOGINS wait; queries on open connections do not.
+  the queue is per process, so a burst across replicas costs at most one login per replica.
 
 **the pause belongs to a CREDENTIAL, not to a datasource.** the owner names the credential
 with a revision it chooses -- anything that changes when the credential is replaced and is
@@ -45,8 +46,8 @@ failures away.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import Final, Protocol, TypeVar
 from uuid import UUID
@@ -81,10 +82,10 @@ T = TypeVar("T")
 
 
 class ConnectGuard(Protocol):
-    """what a driver asks before a login and tells after one, for ONE credential."""
+    """what a driver asks before a login and tells after a refusal, for ONE credential."""
 
     def serialized(self) -> AbstractAsyncContextManager[None]:
-        """hold one login's slot: one at a time until a login with the credential succeeds.
+        """hold one login's slot: logins with the credential go one at a time.
 
         :return: a context held for the whole login, the admission check included
         :rtype: AbstractAsyncContextManager[None]
@@ -108,18 +109,13 @@ class ConnectGuard(Protocol):
         :rtype: None
         """
 
-    def record_success(self) -> None:
-        """remember that a login with this credential succeeded, so logins stop queuing.
-
-        :return: nothing
-        :rtype: None
-        """
-
 
 async def guarded_connect(guard: ConnectGuard | None, connect: Callable[[], Awaitable[T]]) -> T:
-    """run one login under ``guard``: queued, admitted, and its outcome recorded.
+    """run one login under ``guard``: in its turn, admitted, and a refusal recorded.
 
     the one place a driver's login meets its guard, so every driver pauses the same way.
+    the slot is held until the login's outcome is known, so the next login in the queue is
+    admitted against a pause this one may have just set.
     a :class:`DriverMissingCredentialError` or :class:`DriverCredentialPausedError` is not
     recorded: each is raised before any login, so the warehouse counted nothing.
 
@@ -143,7 +139,6 @@ async def guarded_connect(guard: ConnectGuard | None, connect: Callable[[], Awai
         except DriverAuthError as exc:
             await guard.record_refusal(exc)
             raise
-        guard.record_success()
     return result
 
 
@@ -178,7 +173,7 @@ class CredentialRefusalGuards:
         :raises ValueError: when ``pause_seconds`` is not positive
         """
         self._counter = WindowedCounter(registry, purpose=_PURPOSE, window_seconds=pause_seconds, fail_open=True)
-        self._local = _ProvenCredentials()
+        self._queues = _LoginQueues()
 
     def for_credential(
         self,
@@ -207,7 +202,7 @@ class CredentialRefusalGuards:
             )
         return _CredentialGuard(
             counter=self._counter,
-            local=self._local,
+            queues=self._queues,
             key=_key(datasource_id, credential_revision),
             datasource_id=datasource_id,
             datasource_name=datasource_name,
@@ -247,91 +242,53 @@ class CredentialRefusalGuards:
         :return: nothing
         :rtype: None
         """
-        await _record(self._counter, self._local, _key(datasource_id, credential_revision))
+        await self._counter.record_attempt(_key(datasource_id, credential_revision))
 
 
-class _ProvenCredentials:
-    """this process's own record: which credentials it has logged in with, and their queues.
+class _LoginQueues:
+    """this process's login queues: one per credential, so its logins go one at a time.
 
-    per process on purpose. the queue orders THIS process's logins; the fleet's knowledge of
-    a refusal is the counter's. a credential leaves the proven set when it is refused, so its
-    logins queue again.
+    per process on purpose: the queue orders THIS process's logins, and the fleet's knowledge
+    of a refusal is the counter's.
     """
 
     def __init__(self) -> None:
-        """start with nothing proven and no queues.
+        """start with no queues.
 
         :return: None
         :rtype: None
         """
-        self._proven: set[str] = set()
         self._queues: dict[str, asyncio.Lock] = {}
 
-    def mark_proven(self, key: str) -> None:
-        """a login with this credential succeeded here, so its logins stop queuing.
+    def slot(self, key: str) -> asyncio.Lock:
+        """the queue one credential's logins wait in.
 
         :param key: the credential's key
         :ptype key: str
-        :return: nothing
-        :rtype: None
+        :return: its queue; hold it for the whole login
+        :rtype: asyncio.Lock
         """
-        self._proven.add(key)
-        # not needed again unless the credential is later refused; a caller already waiting
-        # on it holds its own reference and is let through by the re-check in slot().
-        self._queues.pop(key, None)
-
-    def forget(self, key: str) -> None:
-        """the credential was refused, so its logins queue again.
-
-        :param key: the credential's key
-        :ptype key: str
-        :return: nothing
-        :rtype: None
-        """
-        self._proven.discard(key)
-
-    @asynccontextmanager
-    async def slot(self, key: str) -> AsyncIterator[None]:
-        """hold one login's place in the credential's queue, until it is proven.
-
-        :param key: the credential's key
-        :ptype key: str
-        :return: a context held for the whole login
-        :rtype: AsyncIterator[None]
-        """
-        queue: asyncio.Lock | None = None
-        if key not in self._proven:
-            queue = self._queues.setdefault(key, asyncio.Lock())
-            await queue.acquire()
-            if key in self._proven:
-                # proven while this caller waited: go ahead alongside everyone else.
-                queue.release()
-                queue = None
-        try:
-            yield
-        finally:
-            if queue is not None:
-                queue.release()
+        return self._queues.setdefault(key, asyncio.Lock())
 
 
 class _CredentialGuard:
-    """:class:`ConnectGuard` for one credential, over the process's counter and record."""
+    """:class:`ConnectGuard` for one credential, over the fleet's pauses and this process's queue."""
 
     def __init__(
         self,
         *,
         counter: WindowedCounter,
-        local: _ProvenCredentials,
+        queues: _LoginQueues,
         key: str,
         datasource_id: UUID,
         datasource_name: str,
     ) -> None:
-        """bind the shared pause and this process's record to one credential.
+        """bind the shared pause and this process's queue to one credential.
 
         :param counter: the fleet's pauses
         :ptype counter: WindowedCounter
-        :param local: this process's proven credentials and queues
-        :ptype local: _ProvenCredentials
+        :param queues: this process's login queues
+        :ptype queues: _LoginQueues
         :param key: the credential's counter key
         :ptype key: str
         :param datasource_id: the datasource the credential belongs to
@@ -342,18 +299,18 @@ class _CredentialGuard:
         :rtype: None
         """
         self._counter = counter
-        self._local = local
+        self._queues = queues
         self._key = key
         self._datasource_id = datasource_id
         self._datasource_name = datasource_name
 
     def serialized(self) -> AbstractAsyncContextManager[None]:
-        """hold one login's slot until the credential is proven in this process.
+        """hold this credential's login slot.
 
         :return: the slot
         :rtype: AbstractAsyncContextManager[None]
         """
-        return self._local.slot(self._key)
+        return self._queues.slot(self._key)
 
     async def admit(self) -> None:
         """refuse the login when the credential is paused.
@@ -379,7 +336,7 @@ class _CredentialGuard:
         :return: nothing
         :rtype: None
         """
-        await _record(self._counter, self._local, self._key)
+        await self._counter.record_attempt(self._key)
         log.error(
             "datasource credential refused; pausing every login with it until it is replaced or a connection test "
             "succeeds",
@@ -392,14 +349,6 @@ class _CredentialGuard:
                 }
             },
         )
-
-    def record_success(self) -> None:
-        """the credential worked here, so later logins with it run concurrently.
-
-        :return: nothing
-        :rtype: None
-        """
-        self._local.mark_proven(self._key)
 
 
 async def _refused_at(counter: WindowedCounter, key: str) -> datetime | None:
@@ -414,22 +363,6 @@ async def _refused_at(counter: WindowedCounter, key: str) -> datetime | None:
     """
     state = await counter.state(key)
     return None if state is None else datetime.fromtimestamp(state.window_start, tz=UTC)
-
-
-async def _record(counter: WindowedCounter, local: _ProvenCredentials, key: str) -> None:
-    """pause the credential under ``key`` for the fleet, and stop trusting it here.
-
-    :param counter: the fleet's pauses
-    :ptype counter: WindowedCounter
-    :param local: this process's record
-    :ptype local: _ProvenCredentials
-    :param key: the credential's key
-    :ptype key: str
-    :return: nothing
-    :rtype: None
-    """
-    local.forget(key)
-    await counter.record_attempt(key)
 
 
 def _key(datasource_id: UUID, credential_revision: str) -> str:

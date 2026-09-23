@@ -186,7 +186,7 @@ from threetears.datasources.drivers.errors import (
     connect_error_from,
     required_password,
 )
-from threetears.observe import get_logger, traced
+from threetears.observe import get_logger, spawn_background, traced
 
 __all__ = [
     "DriverCancellationError",
@@ -742,15 +742,16 @@ class RedshiftDriver(Driver):
     # Connection lifecycle
     # -------------------------------------------------------------------
 
-    def _open_connection_sync(self) -> RedshiftConnection:
-        """open a fresh ``redshift_connector.Connection`` (sync).
+    def _login_sync(self) -> RedshiftConnection:
+        """log in: open a ``redshift_connector.Connection`` with the datasource's credential (sync).
 
-        called from a worker thread via the bridge. issues
-        ``SET statement_timeout`` once so the server-side cancel
-        fires cleanly if a query overruns
-        :attr:`RedshiftConnectionConfig.query_timeout_seconds`.
+        THE ONE login routine, shared by the session this driver serves queries on
+        and the connection the cancel path terminates a backend from. the cancel
+        path once carried its own copy, which dropped ``sslmode`` within a release
+        and could no longer reach a verify-full cluster; one routine cannot drift
+        from itself. every caller runs it under the connect guard.
 
-        :return: live connection with statement_timeout configured
+        :return: the connection, with TCP keepalive applied and nothing else set
         :rtype: RedshiftConnection
         :raises DriverMissingCredentialError: before any network attempt, when no
             password resolves -- an empty one is a failed login Redshift counts
@@ -797,6 +798,26 @@ class RedshiftDriver(Driver):
         # timeout can cancel. Applied here (not as connect kwargs) because
         # redshift_connector's connect() has no granular keepalive parameters.
         _apply_socket_keepalive(conn, cfg)
+        return conn
+
+    def _open_connection_sync(self) -> RedshiftConnection:
+        """open a fresh session for queries: log in, then configure it (sync).
+
+        called from a worker thread via the bridge. issues
+        ``SET statement_timeout`` once so the server-side cancel
+        fires cleanly if a query overruns
+        :attr:`RedshiftConnectionConfig.query_timeout_seconds`.
+
+        :return: live connection with statement_timeout configured
+        :rtype: RedshiftConnection
+        :raises DriverMissingCredentialError: before any network attempt, when no
+            password resolves
+        :raises DriverAuthError: when the server refuses the login
+        :raises DriverConnectError: on any other connect or setup failure; the
+            wrapper carries host/port/database but NEVER the password
+        """
+        cfg = self._config
+        conn = self._login_sync()
         # apply the server-side statement timeout once per connection.
         # Redshift expects milliseconds AND does not accept bind params
         # in ``SET`` statements (parser rejects ``SET x = $1`` with
@@ -996,21 +1017,48 @@ class RedshiftDriver(Driver):
         miss_counter = _get_cache_miss_counter()
         if miss_counter is not None:
             miss_counter.add(1, attributes={"datasource_name": self._datasource_name})
-        # NOT to_thread_with_cancel here -- open is a one-shot
-        # ; cancellation during connect would leave a half-open
-        # connection which the worker thread closes naturally when
-        # the call returns. use the bridge's executor directly via
-        # a no-cancel-cb path. the login runs under the connect guard, so a
-        # credential already refused is not sent again and a new refusal
-        # pauses it for every replica.
-        new_conn = await guarded_connect(
-            self._connect_guard,
-            lambda: self._bridge.to_thread_with_cancel(
-                self._open_connection_sync,
-                cancel_cb=lambda: None,
-            ),
+        # the login runs under the connect guard, so a credential already
+        # refused is not sent again and a new refusal pauses it for every
+        # replica. it runs as its own task, shielded: a login cannot be
+        # interrupted once its worker thread has started, so a caller cancelled
+        # mid-login would otherwise abandon a connection the thread goes on to
+        # open, with nothing left holding it to close. when that happens the
+        # connection is closed as soon as the login finishes.
+        opening: asyncio.Future[RedshiftConnection] = asyncio.ensure_future(
+            guarded_connect(
+                self._connect_guard,
+                lambda: self._bridge.to_thread_with_cancel(
+                    self._open_connection_sync,
+                    cancel_cb=lambda: None,
+                ),
+            )
         )
+        try:
+            new_conn = await asyncio.shield(opening)
+        except asyncio.CancelledError:
+            opening.add_done_callback(self._close_abandoned_login)
+            raise
         return new_conn
+
+    def _close_abandoned_login(self, opening: asyncio.Future[RedshiftConnection]) -> None:
+        """close the connection a login opened after its caller was cancelled.
+
+        a failed login opened nothing; its error was the caller's to see, and the
+        caller is gone, so it is read here only so asyncio does not report it
+        as never retrieved.
+
+        :param opening: the finished login
+        :ptype opening: asyncio.Future[RedshiftConnection]
+        :return: nothing
+        :rtype: None
+        """
+        if opening.cancelled() or opening.exception() is not None:
+            return
+        spawn_background(
+            self._evict_connection(opening.result()),
+            name="redshift-close-abandoned-login",
+            logger=log,
+        )
 
     def _reset_session_sync(self, conn: RedshiftConnection, restore_timeout: bool) -> None:
         """close the open transaction and restore the timeout ceiling (sync).
@@ -1194,64 +1242,32 @@ class RedshiftDriver(Driver):
                 cancel_cb=lambda: None,
             )
 
-    def _open_terminate_connection_sync(self) -> RedshiftConnection:
-        """open the fresh connection the cancel path terminates a backend from (sync).
+    def _terminate_backend_sync(self, pid: int) -> None:
+        """log in, ``pg_terminate_backend(<pid>)``, and close -- one unit on one thread (sync).
 
-        a LOGIN like any other, so it runs under the connect guard (see
-        :meth:`_terminate_backend`) and a refusal is classified the same way
-        :meth:`_open_connection_sync` classifies one. uses EXACTLY the five connect
-        kwargs of :meth:`_open_connection_sync` -- no statement_timeout, search_path
-        or extra kwargs.
-
-        :return: the connection
-        :rtype: RedshiftConnection
-        :raises DriverMissingCredentialError: before any network attempt, when no
-            password resolves
-        :raises DriverAuthError: when the server refuses the login
-        :raises DriverConnectError: on any other connect failure; carries
-            host/port/database but NEVER the password
-        """
-        cfg = self._config
-        password = required_password(cfg, datasource_name=self._datasource_name)
-        try:
-            conn: RedshiftConnection = redshift_connector.connect(
-                host=cfg.host,
-                port=cfg.port,
-                database=cfg.database,
-                user=cfg.username,
-                password=password.get_secret_value(),
-            )
-        except Exception as exc:
-            # ``from None`` for the reason _open_connection_sync gives: the original
-            # exception may carry connection detail, so only its type and the server's
-            # SQLSTATE and message survive.
-            raise connect_error_from(
-                f"terminate connection failed for {cfg.host}:{cfg.port}/{cfg.database}",
-                exc,
-                password=password,
-            ) from None
-        return conn
-
-    def _terminate_backend_sync(self, conn: RedshiftConnection, pid: int) -> None:
-        """``pg_terminate_backend(<pid>)`` on ``conn``, then close it (sync).
-
-        called from a worker thread on the cancel path. closing the
-        CLIENT socket of the running connection does NOT kill the
+        closing the CLIENT socket of the running connection does NOT kill the
         SERVER-SIDE Redshift query; a fresh connection issuing
-        ``pg_terminate_backend`` does (our DB user is not a superuser,
-        so ``CANCEL`` does not work but ``pg_terminate_backend`` does).
-        the connection is always closed in a ``finally``.
+        ``pg_terminate_backend`` does (our DB user is not a superuser, so
+        ``CANCEL`` does not work but ``pg_terminate_backend`` does).
 
-        :param conn: the fresh connection :meth:`_open_terminate_connection_sync` opened
-        :ptype conn: RedshiftConnection
+        ONE thread call, not a login and then a terminate: the caller bounds the
+        whole cancel with a timeout, and a timeout that fired between two calls
+        left the login's connection open with nothing to close it and the query
+        never terminated. inside one call the connection is closed in a
+        ``finally`` whether or not anyone is still waiting.
+
         :param pid: server-side backend pid to terminate; captured from
             the server at open via ``pg_backend_pid()``, never user SQL
         :ptype pid: int
         :return: nothing
         :rtype: None
-        :raises Exception: any redshift_connector failure propagates to
-            the async wrapper, which logs + swallows it (best-effort)
+        :raises DriverMissingCredentialError: before any network attempt, when no
+            password resolves
+        :raises DriverAuthError: when the server refuses the login
+        :raises Exception: any other failure propagates to the async wrapper,
+            which logs and swallows it (best-effort)
         """
+        conn = self._login_sync()
         try:
             cursor = conn.cursor()
             try:
@@ -1267,22 +1283,6 @@ class RedshiftDriver(Driver):
             with self._suppress_close():
                 conn.close()
 
-    async def _terminate_backend_guarded(self, pid: int) -> None:
-        """log in under the connect guard, then terminate ``pid`` from that connection.
-
-        :param pid: server-side backend pid to terminate
-        :ptype pid: int
-        :return: nothing
-        :rtype: None
-        :raises DriverCredentialPausedError: when the guard holds this credential refused
-        :raises DriverAuthError: when the server refuses the login; the guard recorded it
-        """
-        conn = await guarded_connect(
-            self._connect_guard,
-            lambda: asyncio.to_thread(self._open_terminate_connection_sync),
-        )
-        await asyncio.to_thread(self._terminate_backend_sync, conn, pid)
-
     async def _terminate_backend(self, pid: int) -> None:
         """terminate the server-side backend ``pid`` best-effort via a fresh connection.
 
@@ -1293,8 +1293,9 @@ class RedshiftDriver(Driver):
         and says so -- the server-side query then runs on until its
         ``statement_timeout``.
 
-        runs in a worker thread wrapped in ``asyncio.wait_for`` so a hung connect /
-        terminate cannot pin the cancellation path. NEVER raises: a TimeoutError /
+        runs in ONE worker-thread call wrapped in ``asyncio.wait_for`` so a hung
+        connect / terminate cannot pin the cancellation path, and a timeout never
+        strands the connection the thread opened. NEVER raises: a TimeoutError /
         Exception is logged at WARNING (and the ``cancellation.failed`` counter is
         bumped) so the failure is observable, never silent -- the client-socket close
         + evict path still runs regardless.
@@ -1306,7 +1307,10 @@ class RedshiftDriver(Driver):
         """
         cancel_failed = _get_cancellation_failed_counter()
         try:
-            await asyncio.wait_for(self._terminate_backend_guarded(pid), timeout=_CANCEL_TIMEOUT_SECONDS)
+            await asyncio.wait_for(
+                guarded_connect(self._connect_guard, lambda: asyncio.to_thread(self._terminate_backend_sync, pid)),
+                timeout=_CANCEL_TIMEOUT_SECONDS,
+            )
         except DriverCredentialPausedError:
             log.warning(
                 "redshift server-side terminate skipped for pid=%s: the datasource's credential is paused, so no "

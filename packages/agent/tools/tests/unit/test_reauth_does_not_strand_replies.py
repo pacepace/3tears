@@ -33,11 +33,13 @@ from threetears.agent.tools import server as tool_server_module
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
 from threetears.nats import (
+    PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS,
     REAUTH_BUFFER_SECONDS,
     REAUTH_LEEWAY_SECONDS,
     IncomingMessage,
     seconds_until_reauth,
     set_default_namespace,
+    unsafe_reauth_delay_reason,
 )
 
 from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
@@ -212,14 +214,22 @@ class TestTheTwoBudgetsAreRelated:
         assert seconds_until_reauth(ttl) < usable
 
     def test_the_platform_default_cannot_carry_a_long_tool_call(self) -> None:
-        """Pins the incoherence this fix exists for: at the default TTL, a scan
-        tool's 1200s budget is an order of magnitude past what the connection
-        can survive. If someone raises the default, this test is where they find
-        out the relationship is deliberate."""
-        default_ttl = 150
-        scan_tool_timeout = 1200
+        """Pins the incoherence this fix exists for: at the platform's default TTL, a
+        scan tool's 1200s budget is far past what one connection survives even with
+        the drain, so a long call must take the durable path. Asked of the renewal
+        loop's own judge with the real default, so raising the default is where
+        someone finds out the relationship is deliberate."""
+        scan_tool_timeout = 1200.0
+        ttl = PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
 
-        assert scan_tool_timeout > default_ttl - REAUTH_LEEWAY_SECONDS
+        reason = unsafe_reauth_delay_reason(
+            seconds_until_reauth(ttl),
+            ttl,
+            longest_request_seconds=scan_tool_timeout,
+            drain_grace_seconds=REAUTH_BUFFER_SECONDS,
+        )
+
+        assert reason is not None
 
 
 class TestTheSynchronousBudgetFitsInsideTheDrainGrace:

@@ -69,19 +69,20 @@ agent's query), so one wrong stored password locked a production account in abou
 `create_driver` takes a `connect_guard`. The Postgres, Yugabyte and Redshift drivers
 log in through `guarded_connect` on every login -- asyncpg through the pool's
 `connect=` hook, so a pool's replacement connections are guarded too, and Redshift's
-query-cancel login as well -- and the guard hears every refusal and every success. The
+query-cancel login as well, through the same login routine as every other so its
+connect settings cannot drift -- and the guard hears every refusal and every success. The
 guard the package ships, `CredentialRefusalGuards`, does two things:
 
 - It pauses a refused credential for the fleet. The pause is kept in a
   `core.coordination.WindowedCounter`: one refusal pauses the credential for every
   replica sharing L2, and a paused connect raises `DriverCredentialPausedError` (a
   `DriverAuthError`) without contacting the warehouse.
-- It lets one login at a time through until one succeeds. A burst of connects on a
-  process that has not yet logged in with a credential -- a restart, a pool's first
-  fill, a fan-out of queries -- would otherwise send every login before the first
-  refusal was recorded, and a burst of five is a Redshift lock on its own. After a
-  success, logins run concurrently again. A burst across replicas costs at most one
-  login per replica.
+- It lets one login with a credential through at a time, always. A burst of connects
+  -- a restart, a pool's first fill, a fan-out of queries, the first connects after
+  someone changed the password on the warehouse itself -- would otherwise send every
+  login before the first refusal was recorded, and a burst of five is a Redshift lock
+  on its own. Only logins wait; queries on open connections do not. A burst across
+  replicas costs at most one login per replica.
 
 The pause belongs to a credential, not to a datasource:
 `for_credential(datasource_id, credential_revision=..., datasource_name=...)`, where the
@@ -96,6 +97,9 @@ a refusal, and the factory logs that a guard handed to them is not honoured.
 
 AsyncpgDriver now creates its owned pool once when several first callers arrive
 together; each used to build its own, logging in once apiece and leaking all but one.
+RedshiftDriver no longer strands a connection a login opens after its caller gave up:
+a query cancelled mid-login, or a query-cancel whose timeout fired mid-login, now
+closes what the login opened.
 `asyncpg>=0.30` is the declared floor, which `create_pool(connect=)` needs.
 
 ### NatsClient renews its own credential
@@ -148,7 +152,10 @@ publishing nothing -- BEFORE building the new one, so a rebuild never holds two
 resources against a warehouse user's connection limit; then it registers the rebuilt
 spec and publishes once. A close that fails is logged and the rebuild proceeds. A
 rebuild that now builds no tools still publishes the reduced manifest, since losing
-tools is a change. Refreshing is `register_spec` alone.
+tools is a change; a build that raises leaves the spec forgotten -- a narrowed spec
+must never keep its wider tools -- publishes the reduced manifest, and re-raises.
+Rebuilds of one spec are serialized, so two overlapping ones cannot leak a resource.
+Refreshing is `register_spec` alone.
 
 **Breaking:** `DynamicToolPod` subclasses implement `spec_key(spec) -> str`, the key
 `build_tools` reports for that spec; `register_spec` raises `ValueError` when the two
