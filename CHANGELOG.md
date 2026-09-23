@@ -38,10 +38,11 @@ cached.
 **Changed shape, for anyone matching text:** the memory block, the ledger and the
 `[Tool Results]` section carry their items inside a fence, led by the rule; the
 dream's, extraction's and document analysis's prompts carry the fence and the
-rule. Headers and recall affordances are unchanged.
+rule. Headers and recall affordances are unchanged. A tool's return and text a model
+wrote are not fenced by the platform; the adoption doc says why and who does it.
 
-Minor: a tool's return and text a model wrote are not fenced by the platform;
-the adoption doc says why and who does it.
+Minor: a new public module, `threetears.langgraph.fence`, and a changed shape for
+the memory block, the ledger and the tool-result previews.
 
 ## v0.49.0 -- 2026-09-22
 
