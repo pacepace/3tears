@@ -165,7 +165,7 @@ the auth-callout minted a credential for, passing its reply drain as
 Minor, with one removed module and one removed function: a new `NatsClient` method, a
 new module and new public constants.
 
-### A rebuilt dynamic tool pod spec is announced once, never as an empty manifest
+### A refreshed dynamic tool pod spec is announced once, with no empty manifest in between
 
 Refreshing a spec -- a datasource whose credential or definition changed -- was
 `deregister_spec` then `register_spec`, and the deregister published the reduced
@@ -178,9 +178,13 @@ registered under `spec_key(spec)` -- its tools unregistered, its resource closed
 publishing nothing -- BEFORE building the new one, so a rebuild never holds two
 resources against a warehouse user's connection limit; then it registers the rebuilt
 spec and publishes once. A close that fails is logged and the rebuild proceeds. A
-rebuild that now builds no tools still publishes the reduced manifest, since losing
-tools is a change; a build that raises leaves the spec forgotten -- a narrowed spec
-must never keep its wider tools -- publishes the reduced manifest, and re-raises.
+rebuild that builds no tools where the spec had some still publishes the reduced
+manifest, since losing tools is a change; a build that raises leaves the spec
+forgotten -- a narrowed spec must never keep its wider tools -- and re-raises,
+publishing the reduced manifest first when the spec held tools and the pod is
+serving. For a pod whose only tools were that spec's, either manifest is empty and
+the Registry refuses it, so the old tools stay listed there until the pod registers
+tools again; the pod refuses a call that reaches them.
 Rebuilds of one spec are serialized -- with each other, with `deregister_spec` and
 with `start()`, so a retried `start()` closes what a failed one built -- so no two
 overlapping ones can leak a resource.
