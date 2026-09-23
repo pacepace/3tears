@@ -65,6 +65,19 @@ are in `threetears.nats` (`seconds_until_reauth`, `has_schedulable_ttl`, the
 calls `renew_credential` instead and deletes it. `ToolServer` does, passing its
 reply drain as `before_renewal`.
 
+### A rebuilt dynamic tool pod spec is announced once, never as an empty manifest
+
+Refreshing a spec -- a datasource whose credential or definition changed -- was
+`deregister_spec` then `register_spec`, and the deregister published the reduced
+manifest in between. For a pod whose only tools are that spec's, the manifest was
+empty, which the Registry refuses ("tools list is required and must not be empty"),
+moments before the real one landed: a WARNING on every credential refresh.
+
+`DynamicToolPod.replace_spec(spec)` builds the new tools, drops the old ones and
+closes the old resource without publishing, registers the rebuilt spec, and publishes
+once. A rebuild that now builds no tools still publishes the reduced manifest, since
+losing tools is a change; an unknown key is registered.
+
 ## v0.49.0 -- 2026-09-22
 
 ### A runaway AI-proposed regex is cut off instead of hanging the process

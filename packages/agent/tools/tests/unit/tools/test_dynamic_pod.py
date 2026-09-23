@@ -109,6 +109,8 @@ class _FakeToolServer(ToolServer):
         self.registered: list[TearsTool] = []
         self.unregistered: list[str] = []
         self.publish_count = 0
+        # how many tools each published manifest carried, in publish order.
+        self.published_tool_counts: list[int] = []
         self.shutdown_count = 0
         self.serve_count = 0
         self._connected = False
@@ -155,6 +157,7 @@ class _FakeToolServer(ToolServer):
         :rtype: None
         """
         self.publish_count += 1
+        self.published_tool_counts.append(len(self.registered))
 
     async def shutdown(self) -> None:
         """record a shutdown and release the serve gate.
@@ -406,6 +409,88 @@ async def test_deregister_spec_unregisters_closes_and_publishes() -> None:
     assert fake.registered == []
     assert resource.close_count == 1
     assert fake.publish_count == 1
+
+    await pod.stop()
+
+
+async def _serving(pod: _StubPod, fake: _FakeToolServer) -> None:
+    """start the pod and let its serve loop bind, as a live pod has.
+
+    :param pod: the pod
+    :ptype pod: _StubPod
+    :param fake: its server
+    :ptype fake: _FakeToolServer
+    :return: nothing
+    :rtype: None
+    """
+    await pod.start()
+    await asyncio.sleep(0)
+    fake.set_connected(True)
+
+
+@pytest.mark.asyncio
+async def test_replace_spec_announces_the_rebuilt_tools_once_and_never_an_empty_manifest() -> None:
+    """a refreshed spec swaps its tools with ONE publish.
+
+    refreshing as deregister-then-register published the reduced manifest in between, and for a
+    pod whose only tools are that spec's it was empty -- which the registry refuses, moments
+    before the real one lands, on every credential refresh.
+    """
+    fake = _FakeToolServer()
+    old = _StubSpec("ds_only", tool_count=2)
+    old_resource = old.resource
+    assert old_resource is not None
+    pod = _StubPod([old], fake)
+    await _serving(pod, fake)
+
+    await pod.replace_spec(_StubSpec("ds_only", tool_count=3))
+
+    assert fake.published_tool_counts == [3]
+    assert fake.unregistered == ["ds_only.tool0", "ds_only.tool1"]
+    assert len(fake.registered) == 3
+    assert old_resource.close_count == 1
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_replace_spec_that_now_builds_nothing_announces_the_reduced_manifest() -> None:
+    """losing a spec's tools changes the manifest, so it is published -- unlike a first build of none."""
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_a", tool_count=1), _StubSpec("ds_b", tool_count=2)], fake)
+    await _serving(pod, fake)
+
+    await pod.replace_spec(_StubSpec("ds_b", tool_count=0))
+
+    assert fake.published_tool_counts == [1]
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_replace_spec_of_an_unknown_key_registers_it() -> None:
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_a", tool_count=1)], fake)
+    await _serving(pod, fake)
+
+    await pod.replace_spec(_StubSpec("ds_new", tool_count=2))
+
+    assert fake.published_tool_counts == [3]
+    assert fake.unregistered == []
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_replace_spec_before_the_serve_loop_binds_leaves_the_publish_to_it() -> None:
+    fake = _FakeToolServer()
+    pod = _StubPod([], fake)
+    await pod.start()
+    fake.set_connected(True)
+
+    await pod.replace_spec(_StubSpec("ds_first", tool_count=2))
+
+    assert fake.publish_count == 0
 
     await pod.stop()
 

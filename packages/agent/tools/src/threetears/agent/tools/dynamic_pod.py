@@ -355,8 +355,50 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             return
         built = await self.build_tools(spec)
         self._register_built(built)
+        await self._announce(server, built, manifest_changed=bool(built.tools))
+
+    @traced
+    async def replace_spec(self, spec: SpecT) -> None:
+        """rebuild a spec's tools in place, announcing the change ONCE.
+
+        a refresh -- a datasource whose credential or definition changed -- used to be
+        :meth:`deregister_spec` then :meth:`register_spec`, and the deregister published the
+        reduced manifest in between. for a pod whose only tools are this spec's that manifest
+        is empty, which the registry refuses, moments before the real one lands. this drops
+        the old tools and closes the old resource WITHOUT publishing, registers the rebuilt
+        spec, and publishes once, exactly as :meth:`register_spec` would.
+
+        the old tools going away is itself a manifest change, so a rebuild that now builds no
+        tools still publishes, where a first build of none does not. an unknown key is simply
+        registered. safe to call before :meth:`start` has built the server.
+
+        :param spec: the spec to rebuild
+        :ptype spec: SpecT
+        :return: nothing
+        :rtype: None
+        """
+        server = self._tool_server
+        if server is None:
+            return
+        built = await self.build_tools(spec)
+        _removed, had_tools = await self._forget(built.key, keep=built.resource)
+        self._register_built(built)
+        await self._announce(server, built, manifest_changed=bool(built.tools) or had_tools)
+
+    async def _announce(self, server: ToolServer, built: BuiltSpec, *, manifest_changed: bool) -> None:
+        """publish the manifest after a registration, or leave it to whoever can do it safely.
+
+        :param server: the pod's tool server
+        :ptype server: ToolServer
+        :param built: the spec just registered
+        :ptype built: BuiltSpec
+        :param manifest_changed: whether the registration changed what a manifest carries
+        :ptype manifest_changed: bool
+        :return: nothing
+        :rtype: None
+        """
         serving = self._ensure_serving()
-        if not built.tools:
+        if not manifest_changed:
             log.info(
                 "dynamic tool pod spec built no tools; manifest unchanged: key=%s pod_id=%s",
                 built.key,
@@ -387,25 +429,15 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         via :meth:`close_resource`, and -- when the server is connected --
         publishes the reduced manifest once. returns whether the spec was
         known so callers can distinguish a real deregister from a no-op.
+        a spec being rebuilt goes through :meth:`replace_spec` instead.
 
         :param key: spec key to deregister
         :ptype key: str
         :return: true when the spec was known (tools or resource removed)
         :rtype: bool
         """
-        tool_keys = self._tool_names.pop(key, None)
-        resource = self._resources.pop(key, None)
-        removed = tool_keys is not None or resource is not None
-
+        removed, _had_tools = await self._forget(key)
         server = self._tool_server
-        if tool_keys is not None and server is not None:
-            for tool_key in tool_keys:
-                mcp_name = tool_key.split("@", 1)[0]
-                server.unregister(mcp_name)
-
-        if resource is not None:
-            await self.close_resource(resource)
-
         if removed and server is not None and server.is_connected:
             await server.publish_registration()
             log.info(
@@ -414,6 +446,28 @@ class DynamicToolPod(ABC, Generic[SpecT]):
                 self._pod_id,
             )
         return removed
+
+    async def _forget(self, key: str, *, keep: object | None = None) -> tuple[bool, bool]:
+        """drop a spec's tools and close its resource, publishing nothing.
+
+        :param key: spec key to drop
+        :ptype key: str
+        :param keep: a resource NOT to close even if it is the tracked one -- a rebuild that
+            handed back the same object is still using it
+        :ptype keep: object | None
+        :return: whether the spec was known, and whether it had tools
+        :rtype: tuple[bool, bool]
+        """
+        tool_keys = self._tool_names.pop(key, None)
+        resource = self._resources.pop(key, None)
+        server = self._tool_server
+        if tool_keys is not None and server is not None:
+            for tool_key in tool_keys:
+                mcp_name = tool_key.split("@", 1)[0]
+                server.unregister(mcp_name)
+        if resource is not None and resource is not keep:
+            await self.close_resource(resource)
+        return tool_keys is not None or resource is not None, bool(tool_keys)
 
     def _register_built(self, built: BuiltSpec) -> None:
         """register a built spec's tools and record its bookkeeping.
