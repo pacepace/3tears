@@ -104,6 +104,20 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     from threetears.nats.kv import NatsKvBucket
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
 
+from threetears.nats.credential_renewal import (
+    NATS_USER_JWT_TTL_ENV,
+    PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS,
+    REAUTH_BUFFER_SECONDS,
+    REAUTH_LEEWAY_SECONDS,
+    REAUTH_MARGIN_SECONDS,
+    REAUTH_MIN_SLEEP_SECONDS,
+    REAUTH_RETRY_SECONDS,
+    REAUTH_UNKNOWN_TTL_RECHECK_SECONDS,
+    has_schedulable_ttl,
+    nats_user_jwt_ttl_seconds,
+    seconds_until_reauth,
+    unsafe_reauth_delay_reason,
+)
 from threetears.nats.errors import (
     KvConfigMismatch,
     KvError,
@@ -319,6 +333,19 @@ __all__ = [
     "NatsClient",
     "Subscription",
     "TokenCallback",
+    # renewing a connection whose credential expires (NatsClient.renew_credential's arithmetic)
+    "NATS_USER_JWT_TTL_ENV",
+    "PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS",
+    "REAUTH_BUFFER_SECONDS",
+    "REAUTH_LEEWAY_SECONDS",
+    "REAUTH_MARGIN_SECONDS",
+    "REAUTH_MIN_SLEEP_SECONDS",
+    "REAUTH_RETRY_SECONDS",
+    "REAUTH_UNKNOWN_TTL_RECHECK_SECONDS",
+    "has_schedulable_ttl",
+    "nats_user_jwt_ttl_seconds",
+    "seconds_until_reauth",
+    "unsafe_reauth_delay_reason",
     # subjects
     "PipeDirection",
     "Subject",

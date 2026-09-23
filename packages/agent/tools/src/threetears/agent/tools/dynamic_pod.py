@@ -8,7 +8,8 @@ remove a spec's tools and re-publish. :class:`DynamicToolPod` owns that
 lifecycle: the :class:`ToolServer` construction, the serve-task spawn,
 the per-spec ``spec_key -> tool_keys`` bookkeeping, register / deregister
 / publish, and resource teardown. a subclass supplies only the domain-
-specific parts: :meth:`DynamicToolPod.load_specs` (how to load specs) and
+specific parts: :meth:`DynamicToolPod.load_specs` (how to load specs),
+:meth:`DynamicToolPod.spec_key` (the key a spec registers under) and
 :meth:`DynamicToolPod.build_tools` (how to build a spec's tools plus an
 optional closeable resource).
 
@@ -70,8 +71,9 @@ class DynamicToolPod(ABC, Generic[SpecT]):
     the base constructs and owns one
     :class:`~threetears.agent.tools.server.ToolServer`, spawns the serve
     loop, and tracks per-spec ``key -> tool_keys`` bookkeeping plus each
-    spec's optional closeable resource. subclasses implement the two
-    domain hooks -- :meth:`load_specs` (startup spec discovery) and
+    spec's optional closeable resource. subclasses implement the three
+    domain hooks -- :meth:`load_specs` (startup spec discovery),
+    :meth:`spec_key` (the key a spec registers under) and
     :meth:`build_tools` (build one spec's tools + resource) -- and MAY
     override the non-abstract :meth:`on_started` (register deployment-wide
     singleton tools) and :meth:`close_resource` (custom teardown) hooks.
@@ -125,6 +127,10 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         self._serve_task: asyncio.Task[None] | None = None
         self._resources: dict[str, Any] = {}
         self._tool_names: dict[str, list[str]] = {}
+        # one lock per spec key: two overlapping rebuilds of one spec would each
+        # forget, build and register, and the second registration would overwrite
+        # the first's bookkeeping -- a resource never closed, tools never tracked.
+        self._spec_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def pod_id(self) -> str:
@@ -165,6 +171,22 @@ class DynamicToolPod(ABC, Generic[SpecT]):
 
         :return: specs to build tools for
         :rtype: list[SpecT]
+        """
+        ...
+
+    @abstractmethod
+    def spec_key(self, spec: SpecT) -> str:
+        """the bookkeeping key a spec registers under, known before its tools are built.
+
+        :meth:`register_spec` needs it BEFORE the build: a spec already registered under
+        the key is forgotten -- its tools dropped and its resource closed -- before the new
+        one is built, so a rebuild never holds two resources at once. :meth:`build_tools`
+        must return a :class:`BuiltSpec` carrying this same key.
+
+        :param spec: the spec
+        :ptype spec: SpecT
+        :return: its key (the datasource name, the API source name, ...)
+        :rtype: str
         """
         ...
 
@@ -228,13 +250,20 @@ class DynamicToolPod(ABC, Generic[SpecT]):
 
         :return: nothing
         :rtype: None
+        :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
+            for any loaded spec
+        :raises Exception: whatever :meth:`build_tools` raised for a spec; nothing is
+            published, since the server does not serve until every spec is registered
         """
         server = self.build_tool_server()
         self._tool_server = server
         specs = await self.load_specs()
         for spec in specs:
-            built = await self.build_tools(spec)
-            self._register_built(built)
+            # through the same per-spec lock and replace as register_spec: a retried
+            # start() (a build that failed part-way through) and a register_spec that
+            # lands while this loop runs must neither overwrite what is already held.
+            # the serve loop publishes the manifest, so nothing is announced here.
+            await self._replace_spec(server, spec)
         await self.on_started()
         if self._ensure_serving():
             log.info(
@@ -325,15 +354,19 @@ class DynamicToolPod(ABC, Generic[SpecT]):
 
     @traced
     async def register_spec(self, spec: SpecT) -> None:
-        """build + register a spec's tools, make sure they are served, and announce them once.
+        """register a spec's tools, replacing any it already had, and announce the result once.
 
-        builds the spec's tools via :meth:`build_tools`, registers them on the ToolServer,
-        and ensures the serve loop is running, because ``serve()`` is what subscribes the
-        pod's call and probe subjects. the manifest is then announced by whichever party
-        can do it safely:
+        a spec already registered under :meth:`spec_key` is forgotten first, publishing
+        nothing: its tools are unregistered, so a tool the rebuild no longer builds cannot
+        stay dispatchable, and its resource is closed BEFORE the new one is built, so a
+        rebuild never holds two -- a datasource driver's pool counts against the warehouse
+        user's connection limit. a failed close is logged and does not abort the rebuild.
+        the spec is then built and registered, the serve loop is made sure of (``serve()``
+        is what subscribes the pod's call and probe subjects), and the manifest is announced
+        ONCE by whichever party can do it safely:
 
-        - a spec that built no tools changes nothing a manifest carries, so nothing is
-          published;
+        - a registration that changed nothing a manifest carries -- no tools before, none
+          now -- publishes nothing;
         - when the serve loop has already bound its subjects
           (:attr:`~threetears.agent.tools.server.ToolServer.is_ready`) and the connection
           is up, this publishes the updated manifest;
@@ -343,20 +376,87 @@ class DynamicToolPod(ABC, Generic[SpecT]):
           fail, and since it does not probe an endpoint it already holds, the loop's own
           publish would not probe again, leaving the tools pending until the next heartbeat.
 
+        one publish, never a deregister's reduced manifest followed by the rebuilt one: for a
+        pod whose only tools are this spec's, the reduced manifest is empty, and the registry
+        refuses an empty manifest moments before the real one lands.
+
+        a build that raises leaves the spec forgotten; when the spec held tools and the
+        server is serving, it publishes the reduced manifest, as :meth:`deregister_spec`
+        does -- which the registry refuses when it is empty, so a pod's last spec stays
+        listed there until the pod registers tools again. rebuilds of one spec are serialized, with each other and with
+        :meth:`start`; rebuilds of different specs are not.
+
         safe to call before :meth:`start` has built the server: the guard makes it a no-op.
 
         :param spec: spec to build + register tools for
         :ptype spec: SpecT
         :return: nothing
         :rtype: None
+        :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
+        :raises Exception: whatever :meth:`build_tools` raised; when the spec held tools and
+            the server is serving, the reduced manifest is published first
         """
         server = self._tool_server
         if server is None:
             return
-        built = await self.build_tools(spec)
-        self._register_built(built)
+        built, had_tools = await self._replace_spec(server, spec)
+        await self._announce(server, built, manifest_changed=bool(built.tools) or had_tools)
+
+    async def _replace_spec(self, server: ToolServer, spec: SpecT) -> tuple[BuiltSpec, bool]:
+        """forget what the spec's key holds, build it, and register it -- under the key's lock.
+
+        the one path that writes a spec's bookkeeping, shared by :meth:`start` and
+        :meth:`register_spec`, so neither can overwrite what the other holds.
+
+        :param server: the pod's tool server
+        :ptype server: ToolServer
+        :param spec: the spec to build and register
+        :ptype spec: SpecT
+        :return: the registered spec, and whether the key held tools before
+        :rtype: tuple[BuiltSpec, bool]
+        :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
+        :raises Exception: whatever :meth:`build_tools` raised; when the spec held tools and
+            the server is serving, the reduced manifest is published first
+        """
+        key = self.spec_key(spec)
+        async with self._spec_locks.setdefault(key, asyncio.Lock()):
+            _known, had_tools = await self._forget(key)
+            try:
+                built = await self.build_tools(spec)
+            except Exception:
+                # the spec's old tools are already gone -- deliberately, so a narrowed
+                # spec never leaves its wider tools dispatchable -- and the reduced
+                # manifest is published, as a deregister publishes it. for a pod whose
+                # only tools were this spec's that manifest is empty and the registry
+                # refuses it, so there the old tools stay listed until the pod registers
+                # tools again; a call reaching them is refused by this pod, which no
+                # longer serves them.
+                if had_tools and server.is_connected:
+                    await server.publish_registration()
+                raise
+            if built.key != key:
+                await self._close_quietly(built.key, built.resource)
+                raise ValueError(
+                    f"{type(self).__name__}.build_tools returned key {built.key!r} for a spec whose spec_key is "
+                    f"{key!r}; the two must agree, or a rebuild forgets one registration and replaces another"
+                )
+            self._register_built(built)
+        return built, had_tools
+
+    async def _announce(self, server: ToolServer, built: BuiltSpec, *, manifest_changed: bool) -> None:
+        """publish the manifest after a registration, or leave it to whoever can do it safely.
+
+        :param server: the pod's tool server
+        :ptype server: ToolServer
+        :param built: the spec just registered
+        :ptype built: BuiltSpec
+        :param manifest_changed: whether the registration changed what a manifest carries
+        :ptype manifest_changed: bool
+        :return: nothing
+        :rtype: None
+        """
         serving = self._ensure_serving()
-        if not built.tools:
+        if not manifest_changed:
             log.info(
                 "dynamic tool pod spec built no tools; manifest unchanged: key=%s pod_id=%s",
                 built.key,
@@ -387,25 +487,17 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         via :meth:`close_resource`, and -- when the server is connected --
         publishes the reduced manifest once. returns whether the spec was
         known so callers can distinguish a real deregister from a no-op.
+        a spec being rebuilt goes through :meth:`register_spec` instead, which
+        publishes once rather than the reduced manifest and then the rebuilt one.
 
         :param key: spec key to deregister
         :ptype key: str
         :return: true when the spec was known (tools or resource removed)
         :rtype: bool
         """
-        tool_keys = self._tool_names.pop(key, None)
-        resource = self._resources.pop(key, None)
-        removed = tool_keys is not None or resource is not None
-
+        async with self._spec_locks.setdefault(key, asyncio.Lock()):
+            removed, _had_tools = await self._forget(key)
         server = self._tool_server
-        if tool_keys is not None and server is not None:
-            for tool_key in tool_keys:
-                mcp_name = tool_key.split("@", 1)[0]
-                server.unregister(mcp_name)
-
-        if resource is not None:
-            await self.close_resource(resource)
-
         if removed and server is not None and server.is_connected:
             await server.publish_registration()
             log.info(
@@ -414,6 +506,49 @@ class DynamicToolPod(ABC, Generic[SpecT]):
                 self._pod_id,
             )
         return removed
+
+    async def _forget(self, key: str) -> tuple[bool, bool]:
+        """drop a spec's tools and close its resource, publishing nothing.
+
+        a failed close is logged rather than raised: the spec is already gone from the
+        bookkeeping, and aborting here would leave a rebuild with no tools at all.
+
+        :param key: spec key to drop
+        :ptype key: str
+        :return: whether the spec was known, and whether it had tools
+        :rtype: tuple[bool, bool]
+        """
+        tool_keys = self._tool_names.pop(key, None)
+        resource = self._resources.pop(key, None)
+        server = self._tool_server
+        if tool_keys is not None and server is not None:
+            for tool_key in tool_keys:
+                mcp_name = tool_key.split("@", 1)[0]
+                server.unregister(mcp_name)
+        await self._close_quietly(key, resource)
+        return tool_keys is not None or resource is not None, bool(tool_keys)
+
+    async def _close_quietly(self, key: str, resource: Any) -> None:
+        """close a resource the pod no longer tracks, logging rather than raising a failure.
+
+        :param key: the spec key it belonged to, for the log
+        :ptype key: str
+        :param resource: the resource, or ``None``
+        :ptype resource: Any
+        :return: nothing
+        :rtype: None
+        """
+        if resource is None:
+            return
+        try:
+            await self.close_resource(resource)
+        except Exception:  # prawduct:allow prawduct/broad-except -- a resource's close may raise anything; the spec is already forgotten and the caller must proceed
+            log.exception(
+                "dynamic tool pod could not close a forgotten spec's resource; it may still hold "
+                "connections until the process ends: key=%s pod_id=%s",
+                key,
+                self._pod_id,
+            )
 
     def _register_built(self, built: BuiltSpec) -> None:
         """register a built spec's tools and record its bookkeeping.

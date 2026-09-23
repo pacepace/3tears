@@ -177,6 +177,9 @@ from threetears.datasources.drivers.base import (
     _instrument_cache,
     _observed,
 )
+from pydantic import SecretStr
+
+from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
 from threetears.datasources.drivers.errors import (
     DriverConnectError,
     connect_error_from,
@@ -399,6 +402,7 @@ class AsyncpgDriver(Driver):
         *,
         external_pool: asyncpg.Pool[Any] | None = None,
         datasource_name: str = "unknown",
+        connect_guard: ConnectGuard | None = None,
     ) -> None:
         """capture config + optional borrowed pool. no I/O.
 
@@ -409,16 +413,25 @@ class AsyncpgDriver(Driver):
         :param datasource_name: name of the datasource this driver serves;
             surfaces on every OTel metric
         :ptype datasource_name: str
+        :param connect_guard: asked before every login the owned pool makes and
+            told of every refusal; ``None`` for an unguarded driver. a borrowed
+            pool logs into no warehouse, so it is never consulted there
+        :ptype connect_guard: ConnectGuard | None
         :return: nothing
         :rtype: None
         """
         self._config = config
+        self._connect_guard = connect_guard
         self._external_pool = external_pool
         # the pool is None until first use OR a borrowed pool is
         # supplied; ``_owns_pool`` distinguishes the lifecycle paths
         # so :meth:`close` knows whether to call ``pool.close()``.
         self._pool: asyncpg.Pool[Any] | None = external_pool
         self._owns_pool = external_pool is None
+        # held while the owned pool is created, so concurrent first callers share one pool:
+        # without it each built its own -- one login apiece with the same credential -- and
+        # every pool but the last was never closed.
+        self._pool_lock = asyncio.Lock()
         self._closed = False
         # read by :func:`_observed` as the ``datasource_name`` attribute
         # on every emitted metric. the Hub-side caller (shards 13/14)
@@ -440,6 +453,8 @@ class AsyncpgDriver(Driver):
         owned-pool path (postgres / yugabyte): the first call creates
         the asyncpg pool sized from the config's documented defaults
         via :func:`threetears.core.utils.pg_pool_kwargs.get_pg_pool_kwargs`.
+        concurrent first callers wait on one creation rather than each
+        building a pool.
 
         :return: the live :class:`asyncpg.Pool` (owned or borrowed)
         :rtype: asyncpg.Pool
@@ -452,8 +467,11 @@ class AsyncpgDriver(Driver):
             raise RuntimeError("AsyncpgDriver is closed")
         pool = self._pool
         if pool is None:
-            pool = await self._create_owned_pool()
-            self._pool = pool
+            async with self._pool_lock:
+                pool = self._pool
+                if pool is None:
+                    pool = await self._create_owned_pool()
+                    self._pool = pool
         return pool
 
     async def _create_owned_pool(self) -> asyncpg.Pool[Any]:
@@ -477,6 +495,8 @@ class AsyncpgDriver(Driver):
         :rtype: asyncpg.Pool
         :raises DriverMissingCredentialError: before any network attempt,
             when a configured ``password_ref`` resolves to nothing
+        :raises DriverCredentialPausedError: before any network attempt,
+            when the connect guard holds this credential refused
         :raises DriverAuthError: when the server refuses the login;
             carries its SQLSTATE and message
         :raises DriverConnectError: on any other connect failure; the
@@ -521,6 +541,9 @@ class AsyncpgDriver(Driver):
             connect_kwargs: dict[str, Any] = {}
             if server_settings is not None:
                 connect_kwargs["server_settings"] = server_settings
+            # every login the pool makes -- the first ``min_size`` and each one it
+            # opens later to replace a closed connection -- goes through
+            # ``_connect_one``, so a credential refused mid-life is paused too.
             pool = await asyncpg.create_pool(
                 host=cfg.host,
                 port=cfg.port,
@@ -530,9 +553,15 @@ class AsyncpgDriver(Driver):
                 min_size=cfg.pool_min_size,
                 max_size=cfg.pool_max_size,
                 command_timeout=cfg.command_timeout_seconds,
+                connect=self._connect_one,
                 **connect_kwargs,
                 **get_pg_pool_kwargs(),
             )
+        except DriverConnectError:
+            # ``_connect_one`` already classified it (and a guard already heard
+            # of a refusal); re-wrapping would read the server's reason off our
+            # own exception and lose it.
+            raise
         except Exception as exc:
             # break the cause chain (``from None``) so the original
             # asyncpg error -- which sometimes embeds the password
@@ -551,6 +580,46 @@ class AsyncpgDriver(Driver):
         if pool is None:
             raise DriverConnectError(f"connection returned no pool for {cfg.host}:{cfg.port}/{cfg.database}")
         return pool
+
+    async def _connect_one(self, *args: Any, **kwargs: Any) -> asyncpg.Connection[Any]:
+        """open ONE pooled connection, under this datasource's connect guard.
+
+        the pool calls this instead of :func:`asyncpg.connect` for every
+        connection it makes, with the arguments it would have passed there, so
+        each login is admitted by the guard first and a refusal is classified
+        and recorded before it reaches the pool.
+
+        :param args: positional connect arguments, forwarded unchanged
+        :ptype args: Any
+        :param kwargs: keyword connect arguments, forwarded unchanged; its
+            ``password`` is read only to mask it out of a server message
+        :ptype kwargs: Any
+        :return: the new connection
+        :rtype: asyncpg.Connection
+        :raises DriverCredentialPausedError: when the guard holds this
+            credential refused; no login is attempted
+        :raises DriverAuthError: when the server refuses the login
+        :raises DriverConnectError: on any other connect failure
+        """
+        raw_password = kwargs.get("password")
+        password = SecretStr(raw_password) if isinstance(raw_password, str) else None
+        host, port, database = kwargs.get("host"), kwargs.get("port"), kwargs.get("database")
+
+        async def _login() -> asyncpg.Connection[Any]:
+            try:
+                connection: asyncpg.Connection[Any] = await asyncpg.connect(*args, **kwargs)
+            except Exception as exc:
+                # classified here, inside the pool, because the pool would
+                # otherwise hand the raw backend exception -- which can carry the
+                # password in nested context -- to whichever caller it reaches.
+                raise connect_error_from(
+                    f"connection failed for {host}:{port}/{database}",
+                    exc,
+                    password=password,
+                ) from None
+            return connection
+
+        return await guarded_connect(self._connect_guard, _login)
 
     async def _reset_statement_timeout(self, conn: asyncpg.Connection[Any]) -> None:
         """restore the connection's session-default ``statement_timeout``.

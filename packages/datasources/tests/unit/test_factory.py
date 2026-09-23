@@ -23,6 +23,7 @@ we also assert the failure modes:
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 from typing import Any
@@ -52,8 +53,8 @@ class _StubDriver(Driver):
 
     factory tests stub out the per-backend driver module to return
     instances of this class so we can assert (1) the right import
-    path was taken and (2) the right args (notably ``external_pool=``
-    + ``datasource_name=``) reached the constructor.
+    path was taken and (2) the right args (notably ``external_pool=``,
+    ``datasource_name=`` + ``connect_guard=``) reached the constructor.
     """
 
     def __init__(
@@ -62,10 +63,12 @@ class _StubDriver(Driver):
         *,
         external_pool: Any = None,
         datasource_name: str = "unknown",
+        connect_guard: Any = None,
     ) -> None:
         self.config = config
         self.external_pool = external_pool
         self.datasource_name = datasource_name
+        self.connect_guard = connect_guard
 
     async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         return []
@@ -285,6 +288,80 @@ class TestDatasourceNamePlumbing:
         )
         driver = create_driver(config, datasource_name="bq-events")
         assert driver.datasource_name == "bq-events"  # type: ignore[attr-defined]
+
+
+def _guardable_configs() -> list[Any]:
+    """one config per backend whose driver honours a connect guard.
+
+    :return: Postgres, Yugabyte and Redshift configs
+    :rtype: list[Any]
+    """
+    return [
+        PostgresConnectionConfig(datasource_type=DataSourceType.POSTGRES, host="localhost", database="x"),
+        YugabyteConnectionConfig(datasource_type=DataSourceType.YUGABYTE, host="localhost", database="x"),
+        RedshiftConnectionConfig(datasource_type=DataSourceType.REDSHIFT, host="cluster.example.com", database="a"),
+    ]
+
+
+def _unguardable_configs() -> list[Any]:
+    """one config per backend whose driver cannot honour a connect guard yet.
+
+    :return: Snowflake and BigQuery configs
+    :rtype: list[Any]
+    """
+    return [
+        SnowflakeConnectionConfig(
+            datasource_type=DataSourceType.SNOWFLAKE, account="acct", warehouse="wh", user="u", password_ref="env://X"
+        ),
+        BigQueryConnectionConfig(
+            datasource_type=DataSourceType.BIGQUERY, project_id="p", credentials_json_ref="env://X"
+        ),
+    ]
+
+
+class TestConnectGuardPlumbing:
+    """the guard reaches every driver that honours one, and a caller is told when it cannot.
+
+    dropping the argument on one arm would leave that backend's datasources unguarded -- every
+    background pass another failed login -- while every other test stayed green.
+    """
+
+    @pytest.mark.parametrize("config", _guardable_configs(), ids=lambda c: c.datasource_type.value)
+    def test_a_guardable_backend_receives_the_guard(
+        self, stub_driver_modules: dict[str, type[_StubDriver]], config: Any
+    ) -> None:
+        guard = object()
+
+        driver = create_driver(config, datasource_name="ds", connect_guard=guard)  # type: ignore[arg-type]
+
+        assert driver.connect_guard is guard  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("config", _unguardable_configs(), ids=lambda c: c.datasource_type.value)
+    def test_an_unguardable_backend_says_the_guard_is_not_honoured(
+        self,
+        stub_driver_modules: dict[str, type[_StubDriver]],
+        caplog: pytest.LogCaptureFixture,
+        config: Any,
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="threetears.datasources.drivers.factory"):
+            create_driver(config, datasource_name="ds", connect_guard=object())  # type: ignore[arg-type]
+
+        assert any(
+            "not honoured" in r.getMessage() and getattr(r, "extra_data", {}).get("datasource_name") == "ds"
+            for r in caplog.records
+        )
+
+    @pytest.mark.parametrize("config", _unguardable_configs(), ids=lambda c: c.datasource_type.value)
+    def test_no_guard_is_no_warning(
+        self,
+        stub_driver_modules: dict[str, type[_StubDriver]],
+        caplog: pytest.LogCaptureFixture,
+        config: Any,
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="threetears.datasources.drivers.factory"):
+            create_driver(config, datasource_name="ds")
+
+        assert not caplog.records
 
 
 class TestRealDriverModulesLoadable:

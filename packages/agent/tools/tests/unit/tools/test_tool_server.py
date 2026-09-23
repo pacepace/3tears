@@ -298,6 +298,7 @@ class TestToolServerServe:
         server.register(tool)
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()
@@ -353,6 +354,7 @@ class TestToolServerServe:
         server.add_connected_callback(_hook)
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()
@@ -397,6 +399,7 @@ class TestToolServerServe:
 
         order: list[str] = []
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock(side_effect=lambda **_: order.append("subscribe"))
         mock_nc.publish = AsyncMock(side_effect=lambda **_: order.append("publish"))
@@ -439,6 +442,7 @@ class TestToolServerServe:
         server.register(tool)
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()
@@ -494,6 +498,7 @@ class TestToolServerServe:
         server.register(StubTool(name="test.stub", version="1.0"))
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()
@@ -532,6 +537,7 @@ class TestToolServerServe:
         server.register(tool)
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()
@@ -725,6 +731,7 @@ class TestToolServerHeartbeat:
         server.register(tool)
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         # Healthy NATS: the heartbeat loop's liveness supervisor os._exit(1)s the
         # PROCESS after a sustained-unhealthy streak, and ToolServer.is_healthy is
@@ -783,6 +790,7 @@ class TestToolServerShutdown:
         server.register(tool)
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         # healthy connection so the heartbeat-loop liveness supervisor does not trip its os._exit
         # crash-recycle during this short-interval test (bare AsyncMock leaves is_closed truthy).
@@ -918,6 +926,7 @@ class TestToolServerProbe:
         server.register(tool)
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()
@@ -969,6 +978,7 @@ class TestToolServerProbe:
             order.append(f"publish:{path}")
 
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock(side_effect=record_subscribe)
         mock_nc.publish = AsyncMock(side_effect=record_publish)
@@ -1438,6 +1448,7 @@ class TestToolServerInjectedNatsClient:
     async def test_shutdown_closes_self_owned_client(self) -> None:
         """server-owned connection is shut down (drain + close) on ``shutdown()``."""
         nc = AsyncMock()
+        nc.renew_credential = MagicMock()  # synchronous on the real client
         # serve() self-provisions a Hub-JWKS provider over the opened client (enforce-only); feed
         # the mock a JWKS reply so the best-effort initial fetch parses.
         nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
@@ -2002,6 +2013,7 @@ class TestToolServerAuthToken:
     def _mock_nc() -> AsyncMock:
         """a mock NatsClient wired enough for serve()'s JWKS warm-up + publishes."""
         mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
         mock_nc.is_connected = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()

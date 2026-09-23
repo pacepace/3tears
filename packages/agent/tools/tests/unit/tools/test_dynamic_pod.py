@@ -79,17 +79,25 @@ class _StubTool(TearsTool):
 class _StubResource:
     """closeable resource that records how many times it was closed."""
 
-    def __init__(self) -> None:
-        """initialize the resource with a zeroed close counter."""
+    def __init__(self, *, fail_close: bool = False) -> None:
+        """initialize the resource with a zeroed close counter.
+
+        :param fail_close: whether :meth:`close` raises, as a driver whose pool close times out does
+        :ptype fail_close: bool
+        """
         self.close_count = 0
+        self._fail_close = fail_close
 
     async def close(self) -> None:
         """record a close call.
 
         :return: nothing
         :rtype: None
+        :raises TimeoutError: when built with ``fail_close``
         """
         self.close_count += 1
+        if self._fail_close:
+            raise TimeoutError("pool close timed out")
 
 
 # --- fake tool server (parity via subclass declaration) ---
@@ -109,6 +117,8 @@ class _FakeToolServer(ToolServer):
         self.registered: list[TearsTool] = []
         self.unregistered: list[str] = []
         self.publish_count = 0
+        # how many tools each published manifest carried, in publish order.
+        self.published_tool_counts: list[int] = []
         self.shutdown_count = 0
         self.serve_count = 0
         self._connected = False
@@ -155,6 +165,7 @@ class _FakeToolServer(ToolServer):
         :rtype: None
         """
         self.publish_count += 1
+        self.published_tool_counts.append(len(self.registered))
 
     async def shutdown(self) -> None:
         """record a shutdown and release the serve gate.
@@ -209,7 +220,17 @@ class _FakeToolServer(ToolServer):
 class _StubSpec:
     """spec carrying a key, tools, and an optional resource."""
 
-    def __init__(self, key: str, tool_count: int = 2, with_resource: bool = True) -> None:
+    def __init__(
+        self,
+        key: str,
+        tool_count: int = 2,
+        with_resource: bool = True,
+        *,
+        fail_close: bool = False,
+        built_key: str | None = None,
+        fail_build: bool = False,
+        build_gate: asyncio.Event | None = None,
+    ) -> None:
         """initialize the stub spec.
 
         :param key: spec key
@@ -218,10 +239,21 @@ class _StubSpec:
         :ptype tool_count: int
         :param with_resource: whether the spec owns a closeable resource
         :ptype with_resource: bool
+        :param fail_close: whether the spec's resource raises on close
+        :ptype fail_close: bool
+        :param built_key: the key the build reports, when it should disagree with ``key``
+        :ptype built_key: str | None
+        :param fail_build: whether building this spec raises, as a bad OpenAPI spec does
+        :ptype fail_build: bool
+        :param build_gate: when set, the build waits on it, so a test can overlap two builds
+        :ptype build_gate: asyncio.Event | None
         """
         self.key = key
         self.tool_count = tool_count
-        self.resource: _StubResource | None = _StubResource() if with_resource else None
+        self.resource: _StubResource | None = _StubResource(fail_close=fail_close) if with_resource else None
+        self.built_key = built_key if built_key is not None else key
+        self.fail_build = fail_build
+        self.build_gate = build_gate
 
 
 class _StubPod(DynamicToolPod[_StubSpec]):
@@ -244,6 +276,8 @@ class _StubPod(DynamicToolPod[_StubSpec]):
         self._specs = specs
         self._fake_server = fake_server
         self.on_started_calls = 0
+        # builds and closes in the order they happened, so a test can pin the ordering.
+        self.events: list[str] = []
 
     def build_tool_server(self) -> ToolServer:
         """return the injected fake server.
@@ -261,6 +295,16 @@ class _StubPod(DynamicToolPod[_StubSpec]):
         """
         return list(self._specs)
 
+    def spec_key(self, spec: _StubSpec) -> str:
+        """return the stub spec's key.
+
+        :param spec: the spec
+        :ptype spec: _StubSpec
+        :return: its key
+        :rtype: str
+        """
+        return spec.key
+
     async def build_tools(self, spec: _StubSpec) -> BuiltSpec:
         """build stub tools for ``spec``.
 
@@ -269,8 +313,24 @@ class _StubPod(DynamicToolPod[_StubSpec]):
         :return: built spec
         :rtype: BuiltSpec
         """
+        self.events.append(f"build:{spec.key}")
+        if spec.build_gate is not None:
+            await spec.build_gate.wait()
+        if spec.fail_build:
+            raise ValueError("the spec has no server url")
         tools: list[TearsTool] = [_StubTool(f"{spec.key}.tool{i}") for i in range(spec.tool_count)]
-        return BuiltSpec(key=spec.key, tools=tools, resource=spec.resource)
+        return BuiltSpec(key=spec.built_key, tools=tools, resource=spec.resource)
+
+    async def close_resource(self, resource: object) -> None:
+        """record the close, then close as the base does.
+
+        :param resource: resource to close
+        :ptype resource: object
+        :return: nothing
+        :rtype: None
+        """
+        self.events.append("close")
+        await super().close_resource(resource)
 
     async def on_started(self) -> None:
         """record on_started invocation.
@@ -408,6 +468,230 @@ async def test_deregister_spec_unregisters_closes_and_publishes() -> None:
     assert fake.publish_count == 1
 
     await pod.stop()
+
+
+async def _serving(pod: _StubPod, fake: _FakeToolServer) -> None:
+    """start the pod and let its serve loop bind, as a live pod has.
+
+    :param pod: the pod
+    :ptype pod: _StubPod
+    :param fake: its server
+    :ptype fake: _FakeToolServer
+    :return: nothing
+    :rtype: None
+    """
+    await pod.start()
+    await asyncio.sleep(0)
+    fake.set_connected(True)
+
+
+@pytest.mark.asyncio
+async def test_a_rebuilt_spec_is_announced_once_and_never_as_an_empty_manifest() -> None:
+    """a refreshed spec swaps its tools with ONE publish.
+
+    refreshing as deregister-then-register published the reduced manifest in between, and for a
+    pod whose only tools are that spec's it was empty -- which the registry refuses, moments
+    before the real one lands, on every credential refresh.
+    """
+    fake = _FakeToolServer()
+    old = _StubSpec("ds_only", tool_count=2)
+    old_resource = old.resource
+    assert old_resource is not None
+    pod = _StubPod([old], fake)
+    await _serving(pod, fake)
+
+    await pod.register_spec(_StubSpec("ds_only", tool_count=3))
+
+    assert fake.published_tool_counts == [3]
+    assert fake.unregistered == ["ds_only.tool0", "ds_only.tool1"]
+    assert len(fake.registered) == 3
+    assert old_resource.close_count == 1
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_closes_the_old_resource_before_building_the_new_one() -> None:
+    """a rebuild never holds two resources: a driver's pool counts against the connection limit."""
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_only", tool_count=1)], fake)
+    await _serving(pod, fake)
+    pod.events.clear()
+
+    await pod.register_spec(_StubSpec("ds_only", tool_count=1))
+
+    assert pod.events == ["close", "build:ds_only"]
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_close_does_not_cost_the_rebuilt_tools() -> None:
+    """the old resource's close failing is logged; the rebuilt spec is still registered and announced."""
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_only", tool_count=1, fail_close=True)], fake)
+    await _serving(pod, fake)
+    rebuilt = _StubSpec("ds_only", tool_count=2)
+
+    await pod.register_spec(rebuilt)
+
+    assert len(fake.registered) == 2
+    assert fake.published_tool_counts == [2]
+    await pod.stop()
+    # the rebuilt resource was tracked, so stop() reached it.
+    assert rebuilt.resource is not None
+    assert rebuilt.resource.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_now_builds_nothing_announces_the_reduced_manifest() -> None:
+    """losing a spec's tools changes the manifest, so it is published -- unlike a first build of none."""
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_a", tool_count=1), _StubSpec("ds_b", tool_count=2)], fake)
+    await _serving(pod, fake)
+
+    await pod.register_spec(_StubSpec("ds_b", tool_count=0))
+
+    assert fake.published_tool_counts == [1]
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_new_key_is_registered_without_forgetting_anything() -> None:
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_a", tool_count=1)], fake)
+    await _serving(pod, fake)
+
+    await pod.register_spec(_StubSpec("ds_new", tool_count=2))
+
+    assert fake.published_tool_counts == [3]
+    assert fake.unregistered == []
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_build_that_reports_another_key_is_refused() -> None:
+    """spec_key and the built key must agree, or a rebuild forgets one spec and replaces another."""
+    fake = _FakeToolServer()
+    pod = _StubPod([], fake)
+    await _serving(pod, fake)
+
+    mismatched = _StubSpec("ds_a", built_key="ds_b")
+
+    with pytest.raises(ValueError, match="spec_key"):
+        await pod.register_spec(mismatched)
+
+    # nothing tracks what the build returned, so the pod closes it rather than leak it.
+    assert mismatched.resource is not None
+    assert mismatched.resource.close_count == 1
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_a_build_that_reports_another_key() -> None:
+    """start() goes through the same replace as register_spec, key check and all."""
+    fake = _FakeToolServer()
+    mismatched = _StubSpec("ds_a", built_key="ds_b")
+    pod = _StubPod([mismatched], fake)
+
+    with pytest.raises(ValueError, match="spec_key"):
+        await pod.start()
+
+    assert mismatched.resource is not None
+    assert mismatched.resource.close_count == 1
+    assert fake.registered == []
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_raises_forgets_the_spec_and_says_so() -> None:
+    """the old tools are gone -- a narrowed spec must not keep its wider ones -- and the registry is told."""
+    fake = _FakeToolServer()
+    old = _StubSpec("ds_only", tool_count=2)
+    pod = _StubPod([old], fake)
+    await _serving(pod, fake)
+
+    with pytest.raises(ValueError, match="server url"):
+        await pod.register_spec(_StubSpec("ds_only", fail_build=True))
+
+    assert fake.registered == []
+    assert fake.published_tool_counts == [0]
+    assert old.resource is not None
+    assert old.resource.close_count == 1
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_retried_start_closes_what_the_failed_one_built() -> None:
+    """a host retries start() after a build fails part-way; the retry must not leak the first attempt."""
+    fake = _FakeToolServer()
+    first_a = _StubSpec("ds_a", tool_count=1)
+    specs = [first_a, _StubSpec("ds_b", tool_count=1, fail_build=True)]
+    pod = _StubPod(specs, fake)
+
+    with pytest.raises(ValueError, match="server url"):
+        await pod.start()
+
+    second_a = _StubSpec("ds_a", tool_count=1)
+    specs[:] = [second_a, _StubSpec("ds_b", tool_count=1)]
+    await pod.start()
+
+    assert first_a.resource is not None and second_a.resource is not None
+    assert first_a.resource.close_count == 1
+    assert second_a.resource.close_count == 0
+    assert sorted(t.mcp_name() for t in fake.registered) == ["ds_a.tool0", "ds_b.tool0"]
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_deregister_racing_a_rebuild_waits_for_it() -> None:
+    """the deregister runs after the rebuild it raced, so it removes what the rebuild registered."""
+    fake = _FakeToolServer()
+    pod = _StubPod([], fake)
+    await _serving(pod, fake)
+    gate = asyncio.Event()
+    rebuilt = _StubSpec("ds_race", tool_count=1, build_gate=gate)
+
+    racing = asyncio.gather(pod.register_spec(rebuilt), pod.deregister_spec("ds_race"))
+    await asyncio.sleep(0)
+    gate.set()
+    await racing
+
+    assert rebuilt.resource is not None
+    assert rebuilt.resource.close_count == 1
+    assert fake.registered == []
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_overlapping_rebuilds_of_one_spec_leave_one_resource() -> None:
+    """two rebuilds racing on one key: the first's resource is closed by the second, never leaked."""
+    fake = _FakeToolServer()
+    pod = _StubPod([], fake)
+    await _serving(pod, fake)
+    gate = asyncio.Event()
+    first = _StubSpec("ds_race", tool_count=1, build_gate=gate)
+    second = _StubSpec("ds_race", tool_count=1)
+
+    racing = asyncio.gather(pod.register_spec(first), pod.register_spec(second))
+    await asyncio.sleep(0)
+    gate.set()
+    await racing
+
+    assert first.resource is not None and second.resource is not None
+    assert first.resource.close_count == 1
+    assert second.resource.close_count == 0
+    assert [t.mcp_name() for t in fake.registered] == ["ds_race.tool0"]
+
+    await pod.stop()
+    assert second.resource.close_count == 1
 
 
 @pytest.mark.asyncio

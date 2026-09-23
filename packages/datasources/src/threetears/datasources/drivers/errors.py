@@ -31,6 +31,7 @@ this module keeps the lazy-import contract of :mod:`threetears.datasources.drive
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Final, Protocol
 
 from pydantic import SecretStr
@@ -39,6 +40,7 @@ __all__ = [
     "AUTH_SQLSTATES",
     "DriverAuthError",
     "DriverConnectError",
+    "DriverCredentialPausedError",
     "DriverMissingCredentialError",
     "PasswordConfig",
     "connect_error_from",
@@ -114,6 +116,38 @@ class DriverMissingCredentialError(DriverAuthError):
     login the server counts like any other, so a datasource with no credential configured
     would lock its account on its own.
     """
+
+
+class DriverCredentialPausedError(DriverAuthError):
+    """this datasource's credential was refused earlier, so no login was attempted.
+
+    raised by a driver's connect guard before any network attempt: the warehouse refused
+    this exact credential, and every further login with it counts toward locking the
+    account. the pause lifts when the credential is replaced or an explicit probe with it
+    succeeds (:mod:`threetears.datasources.drivers.connect_guard`).
+
+    a :class:`DriverAuthError`, because it is one: the credential is refused, and a caller
+    that already stops at an auth failure rather than retrying stops here too.
+
+    :param message: description naming the datasource and when it was refused; MUST NOT
+        carry a secret
+    :ptype message: str
+    :param refused_at: when the refusal that paused it happened
+    :ptype refused_at: datetime
+    """
+
+    def __init__(self, message: str, *, refused_at: datetime) -> None:
+        """record when the credential was refused.
+
+        :param message: description, free of secrets
+        :ptype message: str
+        :param refused_at: when the pausing refusal happened
+        :ptype refused_at: datetime
+        :return: None
+        :rtype: None
+        """
+        super().__init__(message)
+        self.refused_at = refused_at
 
 
 class PasswordConfig(Protocol):
