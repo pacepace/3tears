@@ -92,6 +92,13 @@ from threetears.observe import get_logger, representative_exception
 
 from threetears.nats._diagnostics import permissions_violation_remedy
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
+from threetears.nats.credential_renewal import (
+    REAUTH_RETRY_SECONDS,
+    has_schedulable_ttl,
+    nats_user_jwt_ttl_seconds,
+    seconds_until_reauth,
+    unsafe_reauth_delay_reason,
+)
 from threetears.nats.errors import (
     NamespaceNotConfiguredError,
     NatsClientError,
@@ -102,6 +109,7 @@ from threetears.nats.errors import (
     StreamSubjectsOverlapError,
     SubscribeError,
 )
+from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
 from threetears.nats.subjects import Subject, Subjects, set_default_namespace
 
 # JetStream API error code for "subjects overlap with an existing stream": a
@@ -995,6 +1003,7 @@ class NatsClient:
         "_kv_lock",
         "_reconnect_callbacks",
         "_health_state",
+        "_renewal_task",
     )
 
     def __init__(
@@ -1007,6 +1016,9 @@ class NatsClient:
         self._raw = raw
         self._namespace = namespace
         self._client_name = client_name
+        # the credential-renewal loop, when the owner asked for one (:meth:`renew_credential`);
+        # cancelled by :meth:`shutdown`.
+        self._renewal_task: asyncio.Task[None] | None = None
         self._subscriptions: list[Subscription] = []
         self._buckets: dict[str, NatsKvBucket] = {}
         self._kv_lock = asyncio.Lock()
@@ -1450,6 +1462,114 @@ class NatsClient:
         # the method's else-branch, which would _close. nats-py 2.x exposes no public alternative.
         await raw._process_op_err(_NatsStaleConnectionError())  # noqa: SLF001 -- no public force-reconnect; see rationale above
 
+    def renew_credential(
+        self,
+        *,
+        ttl_seconds: Callable[[], int | None] = nats_user_jwt_ttl_seconds,
+        before_renewal: Callable[[int], Awaitable[None]] | None = None,
+        longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS,
+    ) -> None:
+        """keep this connection past its credential's expiry by renewing the credential first.
+
+        A connection authenticated by the auth-callout holds a user JWT with a finite TTL, and
+        at expiry the server closes it in a way forever-reconnect does not cover
+        (:mod:`threetears.nats.credential_renewal`). This runs a loop, owned by the client and
+        stopped by :meth:`shutdown`, that calls :meth:`reconnect` a margin before each expiry so
+        the auth-callout mints a fresh JWT and the connection rides on.
+
+        Opt-in, because only the owner knows the credential expires: a connection
+        authenticated as a static user holds one that never does, and renewing it would drop
+        its requests in flight for nothing. A second call replaces the running loop.
+
+        :param ttl_seconds: reads the credential's current TTL, every cycle -- an agent's from
+            its latest Hub handshake, so a changed TTL reschedules; defaults to the
+            environment (:func:`~threetears.nats.credential_renewal.nats_user_jwt_ttl_seconds`)
+        :ptype ttl_seconds: Callable[[], int | None]
+        :param before_renewal: awaited with the TTL just before each renewal, to settle what
+            the connection owes -- a tool pod drains the replies it still has to send, since
+            a reply cannot be delivered once the connection that received its request is gone
+        :ptype before_renewal: Callable[[int], Awaitable[None]] | None
+        :param longest_request_seconds: the longest request this connection makes; a cadence
+            that could not carry it is logged as an error every cycle, naming the TTL
+        :ptype longest_request_seconds: float
+        :return: nothing
+        :rtype: None
+        """
+        if self._renewal_task is not None:
+            self._renewal_task.cancel()
+        self._renewal_task = asyncio.create_task(
+            self._renew_forever(ttl_seconds, before_renewal, longest_request_seconds),
+            name=f"nats-credential-renewal:{self._client_name}",
+        )
+
+    async def _renew_forever(
+        self,
+        ttl_seconds: Callable[[], int | None],
+        before_renewal: Callable[[int], Awaitable[None]] | None,
+        longest_request_seconds: float,
+    ) -> None:
+        """renew before every expiry until cancelled; a failed renewal retries fast.
+
+        a broad catch keeps one failure from ending the loop -- a connection nearing expiry
+        must never wait a full cycle after a transient error. the TTL is re-read every cycle;
+        an unknown one is re-checked on a short cadence without reconnecting on a guess.
+
+        :param ttl_seconds: reads the current TTL
+        :ptype ttl_seconds: Callable[[], int | None]
+        :param before_renewal: awaited with the TTL before each renewal, or ``None``
+        :ptype before_renewal: Callable[[int], Awaitable[None]] | None
+        :param longest_request_seconds: the longest request the connection makes
+        :ptype longest_request_seconds: float
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            while True:
+                try:
+                    ttl = ttl_seconds()
+                    delay = seconds_until_reauth(ttl)
+                    unsafe = unsafe_reauth_delay_reason(delay, ttl, longest_request_seconds=longest_request_seconds)
+                    if unsafe is not None:
+                        # every cycle, on purpose: this breaks every long request on the connection.
+                        log.error("UNSAFE NATS credential renewal cadence: %s", unsafe)
+                    await asyncio.sleep(delay)
+                    if ttl is None or not has_schedulable_ttl(ttl):
+                        continue
+                    if before_renewal is not None:
+                        await before_renewal(ttl)
+                    await self.reconnect()
+                    log.info(
+                        "NATS credential renewed by a proactive reconnect before it expired",
+                        extra={"extra_data": {"client_name": self._client_name, "ttl_seconds": ttl}},
+                    )
+                except Exception as exc:  # noqa: BLE001 -- the loop must outlive any one failed renewal
+                    log.warning(
+                        "NATS credential renewal failed (retrying in %ss): %s",
+                        REAUTH_RETRY_SECONDS,
+                        exc,
+                        extra={"extra_data": {"client_name": self._client_name}},
+                    )
+                    await asyncio.sleep(REAUTH_RETRY_SECONDS)
+        # NOSILENT: cancellation is how shutdown, or a replacing renew_credential, ends the loop
+        except asyncio.CancelledError:
+            return
+
+    async def _stop_renewal(self) -> None:
+        """cancel the credential-renewal loop, if one runs, and wait for it to end.
+
+        :return: nothing
+        :rtype: None
+        """
+        task = self._renewal_task
+        self._renewal_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested on the line above
+                pass
+
     @property
     def raw(self) -> _NatsPyClient:
         """direct access to underlying nats-py client.
@@ -1487,6 +1607,8 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
+        # first, and even when already closed: a renewal loop must not outlive its client.
+        await self._stop_renewal()
         if self._raw.is_closed:
             return
         for sub in list(self._subscriptions):

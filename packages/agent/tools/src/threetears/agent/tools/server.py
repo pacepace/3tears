@@ -40,16 +40,12 @@ from threetears.agent.tools.config import (
     get_ready_timeout as _get_ready_timeout,
 )
 from threetears.agent.tools.config import (
-    get_nats_user_jwt_ttl_seconds,
-)
-from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
 from threetears.agent.tools.config import (
     get_connect_retry_backoff_cap,
     get_connect_retry_budget,
 )
-from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
@@ -66,13 +62,18 @@ from threetears.core.security.identity_token import (
 )
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
+    REAUTH_BUFFER_SECONDS,
+    REAUTH_LEEWAY_SECONDS,
+    SYNC_REPLY_BUDGET_SECONDS,
     IncomingMessage,
     NatsClient,
     Principal,
     Subject,
     Subjects,
     TokenCallback,
+    has_schedulable_ttl,
     inbox_prefix_for,
+    nats_user_jwt_ttl_seconds,
     result_subject_is_owned_by_pod,
     result_subject_prefix_for_pod,
     set_default_namespace,
@@ -1053,11 +1054,6 @@ class ToolServer:
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
-        # proactive NATS-JWT re-auth loop (only started for the self-owned-connection path in serve()):
-        # forces a reconnect a margin before the auth-callout-minted user JWT expires, so the pod never
-        # hits the terminal auth-close forever-reconnect cannot recover. an INJECTED (agent-owned)
-        # connection has its OWN re-auth loop, so the pod must not double-drive it -- left None there.
-        self._nats_reauth_task: asyncio.Task[None] | None = None
         self._running = False
         self._owned_jwks_provider: CachedHubJwksProvider | None = None
         # the proxy-assertion replay guard is REQUIRED at verify time (a guardless pod must NOT
@@ -1686,13 +1682,17 @@ class ToolServer:
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        # proactive NATS-JWT re-auth: ONLY on the self-owned-connection path. an injected
-        # (agent-owned) connection carries its own re-auth loop on the agent runtime, so the pod must
-        # not race a second reconnect against it. a standalone pod (opened its own connection above)
-        # owns the reconnect and must re-auth before its user JWT expires.
-        if self._owns_nats_connection:
+        # credential renewal: ONLY on the self-owned-connection path. an injected (agent-owned)
+        # connection is renewed by its owner, so the pod must not race a second reconnect against
+        # it. a standalone pod opened its connection above and must renew it before its user JWT
+        # expires; the client runs that loop, and stops it when this pod shuts the client down.
+        if self._owns_nats_connection and self._nc is not None:
             self._warn_if_tool_timeout_exceeds_jwt_ttl()
-            self._nats_reauth_task = asyncio.create_task(self._nats_reauth_loop())
+            self._nc.renew_credential(
+                ttl_seconds=self._current_nats_jwt_ttl_seconds,
+                before_renewal=self.drain_before_reauth,
+                longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS,
+            )
 
         await self._shutdown_event.wait()
 
@@ -3179,36 +3179,15 @@ class ToolServer:
 
         unlike the agent runtime -- which learns its NATS-JWT TTL from the Hub handshake -- a
         standalone tool pod receives no handshake reporting the minted TTL, so the value is sourced
-        from :func:`get_nats_user_jwt_ttl_seconds` (env-overridable, with a platform default). read
-        every cycle so an operator env change reschedules correctly; ``None`` when the config value is
-        non-positive / malformed (unknown -> the loop re-checks rather than churning).
+        from :func:`threetears.nats.nats_user_jwt_ttl_seconds` (env-overridable, with a platform
+        default). read every renewal cycle so an operator env change reschedules correctly; ``None``
+        when the config value is non-positive / malformed (unknown -> the loop re-checks rather than
+        churning).
 
         :return: the connection JWT TTL in seconds, or ``None`` when unknown
         :rtype: int | None
         """
-        return get_nats_user_jwt_ttl_seconds()
-
-    async def _reauth_nats_once(self) -> None:
-        """force ONE proactive NATS reconnect so the auth-callout re-mints a fresh user JWT.
-
-        the reconnect reuses the same nats-py client (the transport cycles), replays subscriptions
-        under their original ``sid``, and re-runs the auth-callout -- minting a FRESH user JWT with
-        full TTL -- so the connection rides on indefinitely and the schedule self-corrects. kept
-        separate from :meth:`_nats_reauth_loop` so the per-pass behaviour is unit-testable without
-        spinning up the loop.
-
-        :return: nothing
-        :rtype: None
-        """
-        nc = self._nc
-        if nc is None:
-            log.debug("NATS re-auth skipped: tool server not connected (no nats_client)")
-            return
-        await nc.reconnect()
-        log.info(
-            "NATS connection re-authenticated via proactive reconnect (fresh user JWT before expiry)",
-            extra={"extra_data": {"pod_id": self._pod_id}},
-        )
+        return nats_user_jwt_ttl_seconds()
 
     async def drain_before_reauth(self, ttl_seconds: int | None) -> None:
         """wait for outstanding replies before recycling the connection.
@@ -3228,7 +3207,7 @@ class ToolServer:
 
         So the re-auth waits for the pod to owe nothing. The wait is BOUNDED by
         the JWT's real deadline, not open-ended: the schedule fires at
-        ``ttl - leeway - buffer``, leaving :data:`nats_reauth.REAUTH_BUFFER_SECONDS`
+        ``ttl - leeway - buffer``, leaving :data:`threetears.nats.REAUTH_BUFFER_SECONDS`
         of slack before the point where the reconnect itself must begin to beat
         expiry. Waiting past that would trade a lost reply for a dead
         connection, which is strictly worse -- so on timeout it reconnects
@@ -3250,7 +3229,7 @@ class ToolServer:
         """
         if self.sync_replies_in_flight == 0:
             return
-        grace = float(nats_reauth.REAUTH_BUFFER_SECONDS)
+        grace = float(REAUTH_BUFFER_SECONDS)
         log.info(
             "NATS re-auth deferred: waiting up to %ss for %d in-flight call(s) to reply",
             grace,
@@ -3290,13 +3269,10 @@ class ToolServer:
         :return: nothing
         :rtype: None
         """
-        from threetears.nats import SYNC_REPLY_BUDGET_SECONDS  # noqa: PLC0415 -- local: import cost only on serve
-
         ttl = self._current_nats_jwt_ttl_seconds()
-        if not nats_reauth.has_schedulable_ttl(ttl):
+        if ttl is None or not has_schedulable_ttl(ttl):
             return
-        assert ttl is not None  # narrowed above
-        usable = ttl - nats_reauth.REAUTH_LEEWAY_SECONDS
+        usable = ttl - REAUTH_LEEWAY_SECONDS
         if usable < SYNC_REPLY_BUDGET_SECONDS:
             log.error(
                 "NATS user JWT TTL is too short to carry even a short tool call: %ss of usable "
@@ -3305,7 +3281,7 @@ class ToolServer:
                 "the connection is recycled underneath them. Raise the pod's NATS user JWT TTL.",
                 usable,
                 ttl,
-                nats_reauth.REAUTH_LEEWAY_SECONDS,
+                REAUTH_LEEWAY_SECONDS,
                 SYNC_REPLY_BUDGET_SECONDS,
                 extra={
                     "extra_data": {
@@ -3316,45 +3292,6 @@ class ToolServer:
                     }
                 },
             )
-
-    async def _nats_reauth_loop(self) -> None:
-        """force a NATS reconnect before the connection's user JWT expires; unkillable + self-healing.
-
-        mirrors the agent runtime's re-auth loop: a ``while True`` whose body is wrapped in a BROAD
-        ``except Exception`` so a single failed re-auth logs and retries FAST
-        (:data:`nats_reauth.REAUTH_RETRY_SECONDS`) instead of ending the loop -- a connection nearing
-        JWT expiry must never wait a full cycle after a transient failure. the sleep before each
-        re-auth is recomputed every cycle from the CURRENT config TTL (never a fixed interval), so a
-        changed TTL reschedules correctly. when the TTL is unknown the loop re-checks on a short
-        cadence WITHOUT reconnecting (it must not churn the connection on a guess; the heartbeat
-        supervisor covers a terminal close in that window). cancellation ends the loop.
-
-        :return: nothing
-        :rtype: None
-        """
-        try:
-            while True:
-                try:
-                    ttl = self._current_nats_jwt_ttl_seconds()
-                    delay = nats_reauth.seconds_until_reauth(ttl)
-                    await asyncio.sleep(delay)
-                    if not nats_reauth.has_schedulable_ttl(ttl):
-                        # TTL still unknown after the wait -- re-check next cycle rather than force a
-                        # reconnect on a guess. SAME predicate the scheduler uses (so the two never
-                        # diverge); the heartbeat supervisor covers any terminal close while unknown.
-                        continue
-                    await self.drain_before_reauth(ttl)
-                    await self._reauth_nats_once()
-                except Exception as exc:
-                    log.warning(
-                        "NATS re-auth failed (retrying in %ss): %s",
-                        nats_reauth.REAUTH_RETRY_SECONDS,
-                        exc,
-                    )
-                    await asyncio.sleep(nats_reauth.REAUTH_RETRY_SECONDS)
-        # NOSILENT: cancellation ends the NATS re-auth loop on tool-server shutdown
-        except asyncio.CancelledError:
-            return
 
     @traced()
     async def shutdown(self) -> None:
@@ -3383,15 +3320,6 @@ class ToolServer:
                 # NOSILENT: this IS the cancellation requested on the line above
                 pass
             self._heartbeat_task = None
-
-        if self._nats_reauth_task is not None:
-            self._nats_reauth_task.cancel()
-            try:
-                await self._nats_reauth_task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
-            self._nats_reauth_task = None
 
         if self._owned_jwks_provider is not None:
             await self._owned_jwks_provider.stop()

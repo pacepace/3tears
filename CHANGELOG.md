@@ -40,6 +40,31 @@ succeeds; unattended, it ends after 30 days. A storage failure fails open. The
 Snowflake and BigQuery drivers do not yet classify a refusal, and the factory logs
 that a guard handed to them is not honoured.
 
+### NatsClient renews its own credential
+
+The auth-callout mints each connection's user JWT with a finite TTL, and at expiry
+the server closes the connection in a way forever-reconnect does not cover. Every
+long-lived caller had to grow its own renewal loop; three existed, and they had
+already diverged -- only the agent runtime's refused a TTL too short for its longest
+request to survive the reconnect.
+
+`NatsClient.renew_credential(ttl_seconds=..., before_renewal=..., longest_request_seconds=...)`
+runs that loop, owned by the client and stopped by `shutdown`. It is opt-in: a
+connection authenticated as a static user holds a credential that never expires, and
+renewing it would drop its requests in flight for nothing. The TTL is read every cycle
+-- an agent's from its handshake, a standalone connection's from
+`FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS` by default -- and a cadence that cannot carry
+the caller's longest request is logged as an error every cycle, naming the TTL. The
+arithmetic lives in `threetears.nats.credential_renewal`, and `REAUTH_MARGIN_SECONDS`
+is exported for the Hub, which refuses to mint a TTL no client could schedule.
+
+**Breaking:** `threetears.agent.tools.nats_reauth` and
+`threetears.agent.tools.config.get_nats_user_jwt_ttl_seconds` are removed. Their names
+are in `threetears.nats` (`seconds_until_reauth`, `has_schedulable_ttl`, the
+`REAUTH_*` constants, `nats_user_jwt_ttl_seconds`); a caller that ran its own loop
+calls `renew_credential` instead and deletes it. `ToolServer` does, passing its
+reply drain as `before_renewal`.
+
 ## v0.49.0 -- 2026-09-22
 
 ### A runaway AI-proposed regex is cut off instead of hanging the process

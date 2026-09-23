@@ -29,10 +29,16 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
-from threetears.agent.tools import nats_reauth
+from threetears.agent.tools import server as tool_server_module
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
-from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.nats import (
+    REAUTH_BUFFER_SECONDS,
+    REAUTH_LEEWAY_SECONDS,
+    IncomingMessage,
+    seconds_until_reauth,
+    set_default_namespace,
+)
 
 from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
@@ -178,14 +184,14 @@ class TestTheWaitIsBounded:
     async def test_a_call_that_outlasts_the_grace_does_not_block_forever(self) -> None:
         server, tool = _idle_server()
         async with _owed_reply(server, tool):
-            # The real grace is REAUTH_BUFFER_SECONDS; patched down so the test does
-            # not sit for 30 seconds proving a timeout fires.
-            original = nats_reauth.REAUTH_BUFFER_SECONDS
+            # The real grace is REAUTH_BUFFER_SECONDS; patched down, where the server
+            # reads it, so the test does not sit for 30 seconds proving a timeout fires.
+            original = tool_server_module.REAUTH_BUFFER_SECONDS
             try:
-                nats_reauth.REAUTH_BUFFER_SECONDS = 0.05
+                tool_server_module.REAUTH_BUFFER_SECONDS = 0.05  # type: ignore[misc]
                 await asyncio.wait_for(server.drain_before_reauth(150), timeout=2.0)
             finally:
-                nats_reauth.REAUTH_BUFFER_SECONDS = original
+                tool_server_module.REAUTH_BUFFER_SECONDS = original  # type: ignore[misc]
 
 
 class TestTheTwoBudgetsAreRelated:
@@ -200,10 +206,10 @@ class TestTheTwoBudgetsAreRelated:
         """The reconnect fires early by design, so the window a call can survive
         in is the TTL minus that margin -- not the TTL."""
         ttl = 150
-        usable = ttl - nats_reauth.REAUTH_LEEWAY_SECONDS
+        usable = ttl - REAUTH_LEEWAY_SECONDS
 
         assert usable < ttl
-        assert nats_reauth.seconds_until_reauth(ttl) < usable
+        assert seconds_until_reauth(ttl) < usable
 
     def test_the_platform_default_cannot_carry_a_long_tool_call(self) -> None:
         """Pins the incoherence this fix exists for: at the default TTL, a scan
@@ -213,7 +219,7 @@ class TestTheTwoBudgetsAreRelated:
         default_ttl = 150
         scan_tool_timeout = 1200
 
-        assert scan_tool_timeout > default_ttl - nats_reauth.REAUTH_LEEWAY_SECONDS
+        assert scan_tool_timeout > default_ttl - REAUTH_LEEWAY_SECONDS
 
 
 class TestTheSynchronousBudgetFitsInsideTheDrainGrace:
@@ -232,7 +238,7 @@ class TestTheSynchronousBudgetFitsInsideTheDrainGrace:
     def test_a_call_chosen_for_the_sync_path_fits_in_the_grace(self) -> None:
         from threetears.nats import SYNC_REPLY_BUDGET_SECONDS
 
-        assert SYNC_REPLY_BUDGET_SECONDS <= nats_reauth.REAUTH_BUFFER_SECONDS, (
+        assert SYNC_REPLY_BUDGET_SECONDS <= REAUTH_BUFFER_SECONDS, (
             "a call the caller chose to answer synchronously can outlast the drain grace, so the "
             "responder will reconnect out from under it and refuse the reply"
         )

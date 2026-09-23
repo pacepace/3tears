@@ -21,7 +21,6 @@ __all__ = [
     "get_engagement_scope_request_timeout",
     "get_jwks_request_timeout",
     "get_namespace_discovery_request_timeout",
-    "get_nats_user_jwt_ttl_seconds",
     "get_object_resolve_request_timeout",
     "get_ready_poll_interval",
     "get_ready_timeout",
@@ -49,21 +48,6 @@ _PLATFORM_DEFAULT_REPORT_TIMEOUT = 120.0
 # wait it out rather than depend on start ordering.
 _PLATFORM_DEFAULT_CONNECT_RETRY_BUDGET = 180.0
 _PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP = 15.0
-# TTL (seconds) a standalone tool pod ASSUMES its auth-callout-minted NATS user JWT carries, so its
-# proactive re-auth loop can schedule a reconnect BEFORE expiry. the pod receives no handshake
-# reporting the minted TTL, so it reads the SAME ``FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS`` env var
-# the minting side reads; this constant is only the fallback for a pod where that var is unset. the
-# library must not import the minting service, hence the parallel default here.
-#
-# The error is not symmetric, so the two directions are worth naming. Assuming LESS than the minted
-# TTL costs only churn: the pod recycles a still-valid credential, and every reconnect re-registers
-# its whole tool manifest. Assuming MORE is fatal: the JWT expires first and nats-py routes the auth
-# ``-ERR`` straight to a terminal close that the forever-reconnect path does not cover. So this value
-# must never exceed the platform's minted TTL -- and it must not be left behind when that TTL moves,
-# which is exactly how it drifted before, having kept a superseded value after the mint was raised.
-#
-# A deployment that tunes the minted TTL MUST set the env var on the tool pod as well.
-_PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS = 300
 
 
 def _env_float(name: str, fallback: float) -> float:
@@ -216,34 +200,6 @@ def get_report_timeout() -> float:
     :rtype: float
     """
     return _env_positive_float("REPORT_TIMEOUT_SECONDS", _PLATFORM_DEFAULT_REPORT_TIMEOUT)
-
-
-def get_nats_user_jwt_ttl_seconds() -> int | None:
-    """return the assumed TTL (seconds) of the pod's auth-callout-minted NATS user JWT, or None.
-
-    the proactive re-auth loop schedules a reconnect ``ttl - margin`` before the JWT expires; since a
-    standalone tool pod gets no handshake reporting the minted TTL, the value comes from
-    ``FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS`` (the SAME env var + default the hub auth-callout
-    responder uses). unset -> the platform default (150). a non-positive or malformed value resolves
-    to ``None`` (UNKNOWN) so the loop re-checks on a cadence rather than churning the connection on a
-    guess -- never a crash on operator misconfig.
-
-    :return: positive int TTL from the env var or the platform default, or ``None`` when the override
-        is non-positive / malformed (treated as unknown)
-    :rtype: int | None
-    """
-    raw = os.environ.get("FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS")
-    if raw is None:
-        result: int | None = _PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
-    else:
-        try:
-            parsed = int(raw)
-        except ValueError:
-            log.warning("invalid FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS=%r; treating NATS-JWT TTL as unknown", raw)
-            result = None
-        else:
-            result = parsed if parsed > 0 else None
-    return result
 
 
 def get_connect_retry_budget() -> float:
