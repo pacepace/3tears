@@ -4,6 +4,198 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.50.0 -- 2026-09-23
+
+### Material read back from storage reaches a model fenced, and the fence explains itself
+
+A model reads everything in its prompt the same way, so a stored memory, a
+document excerpt or a tool's preview that says "ignore your instructions" can be
+followed. `threetears.langgraph.fence` is the platform's fence for material:
+`untrusted_fence` wraps text in `<untrusted nonce=X>` ... `</untrusted nonce=X>`
+and disarms (and logs) any fence tag inside it, so planted text cannot close its
+own fence; `untrusted_rule` says what the fence means; `with_fence_rules` adds
+the rule for every fence a call carries to its system prompt; `rules_missing`
+does the same for a prompt handed over as a string; `explained_fence` puts the
+rule in front of a block that goes into a prompt the caller does not assemble;
+`mint_nonce`, `nonce_for`, `nonces_in` and `is_fenced` make and read the tags.
+`docs/adoption/langgraph.md` says what is fenced and what is not.
+
+Fenced now:
+
+- **The memory block** (`MemoryRetriever.retrieve` -> `RetrievalResult.context`):
+  memories, media excerpts and chunk headlines, each section fenced, the block
+  opening with its rule.
+- **The memory ledger** (`ToolContextManager.build_ledger_prompt`) and the base
+  tool-result previews (`build_conversation_context`).
+- **The dream's consolidation** and **extraction's resolution step**: the stored
+  memories they read.
+- **Document analysis** (`media_analyze`): the document's text.
+
+A block that is rendered again and again takes a nonce derived from its own
+text, so the same material renders byte-identical and a cached prompt stays
+cached.
+
+**Changed shape, for anyone matching text:** the memory block, the ledger and the
+`[Tool Results]` section carry their items inside a fence, led by the rule; the
+dream's, extraction's and document analysis's prompts carry the fence and the
+rule. Headers and recall affordances are unchanged. A tool's return and text a model
+wrote are not fenced by the platform; the adoption doc says why and who does it.
+
+Minor: a new public module, `threetears.langgraph.fence`, and a changed shape for
+the memory block, the ledger and the tool-result previews.
+
+### The evaluator answers for a member of a group
+
+`EvaluationContext` takes a `group_id`: what does a direct member of this group
+reach on this namespace? It is answered alone -- combined with a `user_id` or an
+`agent_id` it raises -- and by the user side's own walk with its first step
+replaced: the group itself is the depth-1 group, then its ancestors to
+`MAX_GROUP_MEMBERSHIP_DEPTH`, the per-group resolution and every cross-customer
+wall, which the two kinds of side now share through one function.
+
+A membership audit needs this to record what nesting one group in another
+changed. Without it the hub carried its own copy of the parent walk and the three
+customer walls, which could drift from the decision the evaluator makes for the
+group's people.
+
+Minor: a new `EvaluationContext` field.
+
+### A credential the warehouse refused is not sent again, by any replica
+
+A warehouse counts every failed login against the account and locks it after a
+handful -- Redshift after five, and it never unlocks by itself. A platform has many
+callers that connect on their own schedule (a reaper, an introspection sweep, an
+agent's query), so one wrong stored password locked a production account in about
+75 minutes of background passes.
+
+`create_driver` takes a `connect_guard`. The Postgres, Yugabyte and Redshift drivers
+log in through `guarded_connect` on every login -- asyncpg through the pool's
+`connect=` hook, so a pool's replacement connections are guarded too, and Redshift's
+query-cancel login as well, through the same login routine as every other so its
+connect settings cannot drift -- and the guard hears every refusal. The
+guard the package ships, `CredentialRefusalGuards`, does two things:
+
+- It pauses a refused credential for the fleet. The pause is kept in a
+  `core.coordination.WindowedCounter`: one refusal pauses the credential for every
+  replica sharing L2, and a paused connect raises `DriverCredentialPausedError` (a
+  `DriverAuthError`) without contacting the warehouse.
+- It lets one login with a credential through at a time, always. A burst of connects
+  -- a restart, a pool's first fill, a fan-out of queries, the first connects after
+  someone changed the password on the warehouse itself -- would otherwise send every
+  login before the first refusal was recorded, and a burst of five is a Redshift lock
+  on its own. Only logins wait; queries on open connections do not. A burst across
+  replicas costs at most one login per replica.
+
+The pause belongs to a credential, not to a datasource:
+`for_credential(datasource_id, credential_revision=..., datasource_name=...)`, where the
+revision is the owner's name for the credential -- anything that changes when it is
+replaced, never the secret or an unkeyed digest of it. Replacing a credential therefore
+lifts the pause by itself, and a holder of the superseded one (a pool not yet rebuilt)
+can only pause the credential it holds. `clear` lifts a pause when a probe -- a driver
+built without a guard -- succeeds, and `record` records a probe's refusal; unattended,
+a pause ends after 30 days. A storage failure fails open, and never replaces the
+refusal the caller has to see. The Snowflake and BigQuery drivers do not yet classify
+a refusal, and the factory logs that a guard handed to them is not honoured.
+
+AsyncpgDriver now creates its owned pool once when several first callers arrive
+together; each used to build its own, logging in once apiece and leaking all but one.
+RedshiftDriver no longer strands a connection a login opens after its caller gave up:
+a query cancelled mid-login, or a query-cancel whose timeout fired mid-login, now
+closes what the login opened, and a query-cancel that outlasts its timeout keeps its
+turn until its login resolves, so a refusal it meets is still recorded. Because every
+login waits its turn, a login is bounded: `RedshiftConnectionConfig` takes
+`connect_timeout_seconds` (default 30), the limit on each network wait during a login
+(not a total deadline; DNS is outside it), passed to `redshift_connector.connect` and
+lifted from the socket once the connection is open, so it bounds only the login.
+Lifting it reaches the socket `redshift_connector` exposes as `_usock`; a connection
+without one is refused at login rather than carrying the bound into every statement,
+so an upgrade of `redshift-connector` that renames it fails loudly at the first login.
+`asyncpg>=0.30` is the declared floor, which `create_pool(connect=)` needs.
+
+A consumer that stores connection configs must store only the fields that were set
+(`model_dump_json(exclude_unset=True)`). The configs refuse keys they do not declare,
+so a full dump -- which writes `connect_timeout_seconds` into every Redshift row --
+cannot be read back after a rollback to 0.49.x. Stored the other way, 0.49.x refuses
+only a config that set the timeout deliberately, since it cannot honour it. Not
+`exclude_defaults`: it drops an explicit value equal to its default, and on Redshift
+a dropped `connection_cache_size` is re-derived from the worker count on read. The
+comment on the configs' shared model config carries the rule, and
+`TestStoredForm` pins it.
+
+Minor: new public types (`ConnectGuard`, `CredentialRefusalGuards`,
+`DriverCredentialPausedError`), a new function (`guarded_connect`), a new
+`create_driver` parameter and a new `RedshiftConnectionConfig` field, all defaulted.
+
+### NatsClient renews its own credential
+
+The auth-callout mints each connection's user JWT with a finite TTL, and at expiry
+the server closes the connection in a way forever-reconnect does not cover. Every
+long-lived caller had to grow its own renewal loop; four existed, and they had
+already diverged -- only the agent runtime's refused a TTL too short for its longest
+request to survive the reconnect, and one retried a failed renewal a full cycle
+later, after the credential had expired.
+
+`NatsClient.renew_credential(ttl_seconds=..., before_renewal=..., longest_request_seconds=..., drain_grace_seconds=...)`
+runs that loop, owned by the client and stopped by `shutdown`. It is opt-in: a
+connection authenticated as a static user holds a credential that never expires, and
+renewing it would drop its requests in flight for nothing. The TTL is read every cycle
+-- an agent's from its handshake, a standalone connection's from
+`FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS` by default. A failed renewal is retried
+after `REAUTH_RETRY_SECONDS`, never after another full cycle. A cadence that cannot
+carry the caller's longest request is logged as an error every cycle, naming the TTL
+and the symptom ("it answers quickly, then hangs"); an owner that holds the connection
+open for requests in flight before renewing passes that grace as
+`drain_grace_seconds`, and it is credited to the window. The arithmetic lives in
+`threetears.nats.credential_renewal`, and `REAUTH_MARGIN_SECONDS` is exported for the
+Hub, which refuses to mint a TTL no client could schedule.
+`PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS` (300) is the TTL the platform's minting
+responder defaults to and the one a connection with no handshake assumes; it is pinned
+at or below the generic responder's `DEFAULT_NATS_USER_JWT_TTL_SECONDS`, since
+assuming more than is minted is fatal and assuming less is only churn.
+
+**Breaking:** `threetears.agent.tools.nats_reauth` and
+`threetears.agent.tools.config.get_nats_user_jwt_ttl_seconds` are removed. Their names
+are in `threetears.nats` (`seconds_until_reauth`, `has_schedulable_ttl`, the
+`REAUTH_*` constants, `nats_user_jwt_ttl_seconds`); a caller that ran its own loop
+calls `renew_credential` instead and deletes it. `ToolServer` does, on a connection
+the auth-callout minted a credential for, passing its reply drain as
+`before_renewal` and its grace (`DRAIN_BEFORE_RENEWAL_SECONDS`) as
+`drain_grace_seconds`; its separate start-up TTL check is gone, so one judge decides.
+
+Minor, with one removed module and one removed function: a new `NatsClient` method, a
+new module and new public constants.
+
+### A refreshed dynamic tool pod spec is announced once, with no empty manifest in between
+
+Refreshing a spec -- a datasource whose credential or definition changed -- was
+`deregister_spec` then `register_spec`, and the deregister published the reduced
+manifest in between. For a pod whose only tools are that spec's, the manifest was
+empty, which the Registry refuses ("tools list is required and must not be empty"),
+moments before the real one landed: a WARNING on every credential refresh.
+
+`DynamicToolPod.register_spec(spec)` now replaces: it forgets the spec already
+registered under `spec_key(spec)` -- its tools unregistered, its resource closed,
+publishing nothing -- BEFORE building the new one, so a rebuild never holds two
+resources against a warehouse user's connection limit; then it registers the rebuilt
+spec and publishes once. A close that fails is logged and the rebuild proceeds. A
+rebuild that builds no tools where the spec had some still publishes the reduced
+manifest, since losing tools is a change; a build that raises leaves the spec
+forgotten -- a narrowed spec must never keep its wider tools -- and re-raises,
+publishing the reduced manifest first when the spec held tools and the pod is
+serving. For a pod whose only tools were that spec's, either manifest is empty and
+the Registry refuses it, so the old tools stay listed there until the pod registers
+tools again; the pod refuses a call that reaches them.
+Rebuilds of one spec are serialized -- with each other, with `deregister_spec` and
+with `start()`, so a retried `start()` closes what a failed one built -- so no two
+overlapping ones can leak a resource.
+Refreshing is `register_spec` alone.
+
+**Breaking:** `DynamicToolPod` subclasses implement `spec_key(spec) -> str`, the key
+`build_tools` reports for that spec; `register_spec` and `start()` raise `ValueError`
+when the two disagree, closing what the build returned.
+
+Minor, with one new abstract method every subclass must implement.
+
 ## v0.49.0 -- 2026-09-22
 
 ### A runaway AI-proposed regex is cut off instead of hanging the process

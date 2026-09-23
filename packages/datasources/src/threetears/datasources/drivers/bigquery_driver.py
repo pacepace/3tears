@@ -94,23 +94,14 @@ Tier-2 column hash
     BigQuery has NO ``MD5(LISTAGG(...))`` equivalent that you can
     run server-side over the metadata catalog -- the metadata lives
     in the REST API, not in queryable tables. compute the hash
-    PYTHON-SIDE using the same payload formula as
-    :class:`AsyncpgDriver` /
-    :class:`RedshiftDriver`'s warehouse-side SQL:
-
-    .. code-block:: python
-
-        payload = ",".join(
-            f"{c['column_name']}:{c['data_type']}:{c['is_nullable']}"
-            for c in sorted(cols, key=lambda c: c['ordinal_position'])
-        )
-        return hashlib.md5(payload.encode()).hexdigest()
-
-    same byte-equivalence contract; just no server-side aggregation
-    available. lift the python helper to
-    :mod:`threetears.datasources.introspection` per shard 13's
-    DS-13-14 note when this implementation lands -- BigQuery will
-    be the first consumer.
+    PYTHON-SIDE by calling
+    :func:`threetears.datasources.introspection.compute_column_hash` on
+    the table's column rows -- never a copy of its formula. it is
+    byte-equivalent to :class:`AsyncpgDriver` /
+    :class:`RedshiftDriver`'s warehouse-side SQL, which hashes each
+    column before the aggregate (see
+    :func:`~threetears.datasources.introspection.column_hash_payload`);
+    a copy stops agreeing the next time that formula changes.
 
 Pool / executor / timeout knobs
     every knob reads from :class:`BigQueryConnectionConfig`. the

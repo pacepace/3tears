@@ -164,11 +164,14 @@ class ColumnRow(TypedDict):
 ```
 
 The `is_nullable` field is the raw warehouse value (`'YES'`, `'NO'`,
-or `''`). NOT a bool. The Tier-2 column hash in `datasource-task-02`
-computes MD5 over a concatenation of column metadata using the raw
-nullable string. If you convert to bool here, the Python-side hash
-diverges from the warehouse-side MD5 and the change-probe breaks for
-this datasource.
+or `''`). NOT a bool. The Tier-2 column hash includes the raw nullable
+string: `threetears.datasources.introspection.column_hash_payload`
+describes the formula, and a driver's `table_hashes` SQL must produce
+what `compute_column_hash` produces over the same rows -- call it, or
+mirror the asyncpg and Redshift SQL constants, never a formula copied
+from prose. If you convert to bool here, the Python-side hash diverges
+from the warehouse-side MD5 and the change-probe breaks for this
+datasource.
 
 `data_type` is also the raw warehouse-reported type string. Don't
 normalize it.
