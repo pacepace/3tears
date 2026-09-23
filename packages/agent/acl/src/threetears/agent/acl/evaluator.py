@@ -39,7 +39,9 @@ resolution rules (in order):
    not be resolved.
 
 2. **side resolution** — for each side caller supplied
-   (user side iff ``user_id`` set; agent side iff ``agent_id`` set):
+   (user side iff ``user_id`` set; agent side iff ``agent_id`` set; a
+   group-member side iff ``group_id`` set, which runs alone and starts
+   from that group instead of loading memberships):
 
      a. consult :meth:`AclCache.get_membership`; on miss call the
         cache's :class:`MembershipLoader` and write back via
@@ -200,12 +202,18 @@ async def evaluate_with_trail(
     :ptype cache: AclCache
     :return: full evaluation result with trails
     :rtype: EvaluationResult
-    :raises ValueError: when ``ctx`` carries neither ``user_id`` nor
-        ``agent_id`` (an evaluation needs at least one actor)
+    :raises ValueError: when ``ctx`` carries none of ``user_id``,
+        ``agent_id`` or ``group_id`` (an evaluation needs an actor), or
+        carries ``group_id`` alongside a user or an agent (a group
+        member is answered alone)
     """
-    if ctx.user_id is None and ctx.agent_id is None:
+    if ctx.group_id is not None and (ctx.user_id is not None or ctx.agent_id is not None):
         raise ValueError(
-            "evaluate_with_trail requires at least one of user_id or agent_id",
+            "evaluate_with_trail answers for a group member alone; group_id cannot be combined with user_id or agent_id",
+        )
+    if ctx.user_id is None and ctx.agent_id is None and ctx.group_id is None:
+        raise ValueError(
+            "evaluate_with_trail requires at least one of user_id, agent_id or group_id",
         )
 
     user_actions: frozenset[str] = frozenset()
@@ -213,6 +221,13 @@ async def evaluate_with_trail(
     user_trails: tuple[Trail, ...] = ()
     agent_trails: tuple[Trail, ...] = ()
     agent_owner_short_circuited = False
+
+    if ctx.group_id is not None:
+        user_actions, user_trails = await _resolve_group_member_side(
+            group_id=ctx.group_id,
+            namespace=ctx.namespace,
+            cache=cache,
+        )
 
     if ctx.user_id is not None:
         user_actions, user_trails = await _resolve_side(
@@ -593,6 +608,61 @@ async def _resolve_side(
         namespace=namespace,
         cache=cache,
     )
+    return await _accumulate_groups(group_ids=eligible_group_ids, namespace=namespace, cache=cache)
+
+
+async def _resolve_group_member_side(
+    *,
+    group_id: UUID,
+    namespace: Namespace,
+    cache: AclCache,
+) -> tuple[frozenset[str], tuple[Trail, ...]]:
+    """compute what a direct member of ``group_id`` reaches on ``namespace``.
+
+    the user side with its first step replaced: a direct member's depth-1
+    group is ``group_id`` itself, so there is no membership row to load or
+    filter. everything after -- the parent expansion to
+    :data:`MAX_GROUP_MEMBERSHIP_DEPTH` and every wall on the way -- is the
+    same code a user member runs through.
+
+    :param group_id: the group whose direct members are evaluated
+    :ptype group_id: UUID
+    :param namespace: namespace under evaluation
+    :ptype namespace: Namespace
+    :param cache: shared :class:`AclCache` carrying loaders + layers
+    :ptype cache: AclCache
+    :return: ``(action_set, trails)`` pair for a direct member
+    :rtype: tuple[frozenset[str], tuple[Trail, ...]]
+    """
+    eligible_group_ids = await _expand_group_parents(
+        direct_group_ids=(group_id,),
+        namespace=namespace,
+        cache=cache,
+    )
+    return await _accumulate_groups(group_ids=eligible_group_ids, namespace=namespace, cache=cache)
+
+
+async def _accumulate_groups(
+    *,
+    group_ids: tuple[UUID, ...],
+    namespace: Namespace,
+    cache: AclCache,
+) -> tuple[frozenset[str], tuple[Trail, ...]]:
+    """union what each reachable group contributes on ``namespace``.
+
+    the one place a side's reachable groups become an action set, shared by
+    every kind of side so their answers cannot drift.
+
+    :param group_ids: every group the side reaches, depth-expanded
+    :ptype group_ids: tuple[UUID, ...]
+    :param namespace: namespace under evaluation
+    :ptype namespace: Namespace
+    :param cache: shared :class:`AclCache` carrying loaders + layers
+    :ptype cache: AclCache
+    :return: ``(action_set, trails)`` pair for the side
+    :rtype: tuple[frozenset[str], tuple[Trail, ...]]
+    """
+    eligible_group_ids = group_ids
     if not eligible_group_ids:
         return frozenset(), ()
 
@@ -996,7 +1066,9 @@ def _assemble_result(
     :return: full evaluation result
     :rtype: EvaluationResult
     """
-    has_user = ctx.user_id is not None
+    # a group-member evaluation runs alone on the member side, so it is
+    # assembled exactly as a user-only one.
+    has_user = ctx.user_id is not None or ctx.group_id is not None
     has_agent = ctx.agent_id is not None
     effective: frozenset[str]
     limiting: LimitingSide

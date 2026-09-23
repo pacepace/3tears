@@ -4,6 +4,22 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### The evaluator answers for a member of a group
+
+`EvaluationContext` takes a `group_id`: what does a direct member of this group
+reach on this namespace? It is answered alone -- combined with a `user_id` or an
+`agent_id` it raises -- and by the user side's own walk with its first step
+replaced: the group itself is the depth-1 group, then its ancestors to
+`MAX_GROUP_MEMBERSHIP_DEPTH`, the per-group resolution and every cross-customer
+wall, which the two kinds of side now share through one function.
+
+A membership audit needs this to record what nesting one group in another
+changed. Without it the hub carried its own copy of the parent walk and the three
+customer walls, which could drift from the decision the evaluator makes for the
+group's people.
+
 ## v0.49.0 -- 2026-09-22
 
 ### A runaway AI-proposed regex is cut off instead of hanging the process

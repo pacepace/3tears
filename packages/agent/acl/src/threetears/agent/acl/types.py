@@ -410,18 +410,30 @@ class EvaluationContext:
     caller is checking for (e.g. ``"read"``, ``"write"``,
     ``"namespace.access"``).
 
+    ``group_id`` asks a third, audit-shaped question: what does a
+    direct member of this group reach? It is answered alone -- never
+    alongside a user or an agent -- by the same walk a user member of
+    the group gets: the group, its ancestors to
+    :data:`MAX_GROUP_MEMBERSHIP_DEPTH`, and every wall. A caller
+    recording what nesting a group changed asks it rather than
+    re-deriving the walk, so the answer cannot drift from the
+    evaluator's own.
+
     :ivar namespace: namespace under evaluation
     :ivar action: action string being checked
     :ivar user_id: invoking user UUID, or ``None`` for an agent-only
         evaluation
     :ivar agent_id: invoking agent UUID, or ``None`` for a user-only
         evaluation
+    :ivar group_id: group whose direct members are being evaluated,
+        or ``None``; exclusive of ``user_id`` and ``agent_id``
     """
 
     namespace: Namespace
     action: str
     user_id: UUID | None = None
     agent_id: UUID | None = None
+    group_id: UUID | None = None
 
 
 @dataclass(frozen=True)
