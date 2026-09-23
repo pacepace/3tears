@@ -63,7 +63,6 @@ from threetears.core.security.identity_token import (
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
     REAUTH_BUFFER_SECONDS,
-    REAUTH_LEEWAY_SECONDS,
     SYNC_REPLY_BUDGET_SECONDS,
     IncomingMessage,
     NatsClient,
@@ -71,7 +70,6 @@ from threetears.nats import (
     Subject,
     Subjects,
     TokenCallback,
-    has_schedulable_ttl,
     inbox_prefix_for,
     nats_user_jwt_ttl_seconds,
     result_subject_is_owned_by_pod,
@@ -213,6 +211,11 @@ _RESULT_DELIVERY_ATTEMPTS = 3
 # pace between those attempts -- long enough for a reconnect to complete, short enough to fit several
 # tries inside any caller's timeout.
 _RESULT_DELIVERY_RETRY_SECONDS = 2.0
+#: how long a credential renewal waits for the replies the pod still owes. the renewal is scheduled
+#: REAUTH_BUFFER_SECONDS before the point the reconnect must start to beat expiry, so that buffer is
+#: exactly the slack a drain may spend; the renewal loop credits the same value to the window a
+#: synchronous call has, so the wait and the safety judgement cannot disagree.
+DRAIN_BEFORE_RENEWAL_SECONDS: Final[float] = float(REAUTH_BUFFER_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -1682,16 +1685,19 @@ class ToolServer:
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        # credential renewal: ONLY on the self-owned-connection path. an injected (agent-owned)
-        # connection is renewed by its owner, so the pod must not race a second reconnect against
-        # it. a standalone pod opened its connection above and must renew it before its user JWT
-        # expires; the client runs that loop, and stops it when this pod shuts the client down.
-        if self._owns_nats_connection and self._nc is not None:
-            self._warn_if_tool_timeout_exceeds_jwt_ttl()
+        # credential renewal: ONLY on the self-owned connection the auth-callout minted a user JWT
+        # for. an injected (agent-owned) connection is renewed by its owner, so the pod must not
+        # race a second reconnect against it. a static user/password or anonymous connection holds
+        # a credential that never expires, so renewing it would drop its requests in flight and
+        # re-register the manifest every cycle for nothing. the client runs the loop, and stops it
+        # when this pod shuts the client down; it also judges whether the cadence can carry a
+        # synchronous call, crediting the drain the pod holds the connection open for.
+        if self._owns_nats_connection and self._auth_token is not None and self._nc is not None:
             self._nc.renew_credential(
                 ttl_seconds=self._current_nats_jwt_ttl_seconds,
                 before_renewal=self.drain_before_reauth,
                 longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS,
+                drain_grace_seconds=DRAIN_BEFORE_RENEWAL_SECONDS,
             )
 
         await self._shutdown_event.wait()
@@ -3229,7 +3235,7 @@ class ToolServer:
         """
         if self.sync_replies_in_flight == 0:
             return
-        grace = float(REAUTH_BUFFER_SECONDS)
+        grace = DRAIN_BEFORE_RENEWAL_SECONDS
         log.info(
             "NATS re-auth deferred: waiting up to %ss for %d in-flight call(s) to reply",
             grace,
@@ -3248,49 +3254,6 @@ class ToolServer:
                 "ran past it.",
                 self.sync_replies_in_flight,
                 extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self.sync_replies_in_flight}},
-            )
-
-    def _warn_if_tool_timeout_exceeds_jwt_ttl(self) -> None:
-        """say loudly when even a SHORT call could not be answered on this connection.
-
-        A long tool no longer needs the connection to outlive it. Past
-        :data:`threetears.nats.SYNC_REPLY_BUDGET_SECONDS` the caller routes the answer to a durable
-        subject this pod holds a standing grant on, so recycling the connection mid-call is
-        harmless -- which is why this no longer compares the JWT TTL against the longest tool
-        timeout, a comparison that would now fire on every pentest pod and mean nothing.
-
-        What remains is the floor underneath that arrangement. A call INSIDE the budget is still
-        answered on the reply inbox and still depends on the drain holding the connection open until
-        the answer is out. A TTL configured so tightly that the drain grace does not fit inside it
-        breaks that floor -- and breaks it for every call, not only the long ones. That is a
-        configuration fact knowable at startup, so it is said here, naming both numbers, rather than
-        discovered from a call that completed and then could not answer.
-
-        :return: nothing
-        :rtype: None
-        """
-        ttl = self._current_nats_jwt_ttl_seconds()
-        if ttl is None or not has_schedulable_ttl(ttl):
-            return
-        usable = ttl - REAUTH_LEEWAY_SECONDS
-        if usable < SYNC_REPLY_BUDGET_SECONDS:
-            log.error(
-                "NATS user JWT TTL is too short to carry even a short tool call: %ss of usable "
-                "connection (TTL %ss minus %ss leeway) against a %ss synchronous-reply budget. "
-                "Calls inside that budget are answered on the reply inbox and will be refused when "
-                "the connection is recycled underneath them. Raise the pod's NATS user JWT TTL.",
-                usable,
-                ttl,
-                REAUTH_LEEWAY_SECONDS,
-                SYNC_REPLY_BUDGET_SECONDS,
-                extra={
-                    "extra_data": {
-                        "pod_id": self._pod_id,
-                        "usable_connection_seconds": usable,
-                        "sync_reply_budget_seconds": SYNC_REPLY_BUDGET_SECONDS,
-                        "nats_user_jwt_ttl_seconds": ttl,
-                    }
-                },
             )
 
     @traced()

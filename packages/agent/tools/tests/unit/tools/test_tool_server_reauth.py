@@ -6,10 +6,12 @@ itself -- the schedule, the loop, surviving a failed renewal, never reconnecting
 :meth:`threetears.nats.NatsClient.renew_credential`'s, and is tested there. What the pod owns, and what
 these tests pin:
 
-1. ``serve`` asks the client to renew only when the pod OWNS its connection;
+1. ``serve`` asks the client to renew only when the pod OWNS its connection and the auth-callout
+   minted its credential -- a static or anonymous credential never expires;
 2. the TTL comes from the pod's environment, read every cycle;
 3. before each renewal the pod drains the replies it still owes, since a reply cannot be delivered once
-   the connection that received its request is gone;
+   the connection that received its request is gone, and the renewal loop credits that drain when it
+   judges whether the cadence can carry a synchronous call;
 4. an injected (agent-owned) connection is renewed by its owner, so the pod never double-drives it.
 """
 
@@ -22,9 +24,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from threetears.agent.tools.server import ToolServer
-from threetears.nats import SYNC_REPLY_BUDGET_SECONDS
+from threetears.nats import REAUTH_BUFFER_SECONDS, SYNC_REPLY_BUDGET_SECONDS
 
 _TTL_ENV = "FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS"
+
+
+def _callout_pod() -> ToolServer:
+    """a standalone pod that authenticates through the auth-callout, as production pods do.
+
+    :return: the server
+    :rtype: ToolServer
+    """
+    return ToolServer(
+        nats_url="nats://localhost:9999",
+        namespace="testns",
+        pod_id="reauth-pod",
+        auth_token=lambda: "identity-jwt",
+    )
 
 
 def _mock_nc() -> AsyncMock:
@@ -74,7 +90,7 @@ class TestServeWiring:
 
     @pytest.mark.asyncio
     async def test_a_pod_renews_the_connection_it_opened(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="reauth-pod")
+        server = _callout_pod()
         mock_nc = _mock_nc()
 
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
@@ -84,10 +100,29 @@ class TestServeWiring:
         kwargs = mock_nc.renew_credential.call_args.kwargs
         assert kwargs["before_renewal"] == server.drain_before_reauth
         assert kwargs["longest_request_seconds"] == SYNC_REPLY_BUDGET_SECONDS
+        # the drain's slack is credited to the cadence, so the one judge of the TTL sees it.
+        assert kwargs["drain_grace_seconds"] == REAUTH_BUFFER_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_a_static_credential_is_never_renewed(self) -> None:
+        """a user/password connection holds a credential that does not expire."""
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace="testns",
+            pod_id="static-pod",
+            nats_user="tool-pod",
+            nats_password="not-a-real-password",
+        )
+        mock_nc = _mock_nc()
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            await _serve_briefly(server)
+
+        mock_nc.renew_credential.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_the_ttl_is_read_from_the_environment_every_cycle(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="reauth-pod")
+        server = _callout_pod()
         mock_nc = _mock_nc()
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             await _serve_briefly(server)

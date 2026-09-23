@@ -428,6 +428,10 @@ class AsyncpgDriver(Driver):
         # so :meth:`close` knows whether to call ``pool.close()``.
         self._pool: asyncpg.Pool[Any] | None = external_pool
         self._owns_pool = external_pool is None
+        # held while the owned pool is created, so concurrent first callers share one pool:
+        # without it each built its own -- one login apiece with the same credential -- and
+        # every pool but the last was never closed.
+        self._pool_lock = asyncio.Lock()
         self._closed = False
         # read by :func:`_observed` as the ``datasource_name`` attribute
         # on every emitted metric. the Hub-side caller (shards 13/14)
@@ -449,6 +453,8 @@ class AsyncpgDriver(Driver):
         owned-pool path (postgres / yugabyte): the first call creates
         the asyncpg pool sized from the config's documented defaults
         via :func:`threetears.core.utils.pg_pool_kwargs.get_pg_pool_kwargs`.
+        concurrent first callers wait on one creation rather than each
+        building a pool.
 
         :return: the live :class:`asyncpg.Pool` (owned or borrowed)
         :rtype: asyncpg.Pool
@@ -461,8 +467,11 @@ class AsyncpgDriver(Driver):
             raise RuntimeError("AsyncpgDriver is closed")
         pool = self._pool
         if pool is None:
-            pool = await self._create_owned_pool()
-            self._pool = pool
+            async with self._pool_lock:
+                pool = self._pool
+                if pool is None:
+                    pool = await self._create_owned_pool()
+                    self._pool = pool
         return pool
 
     async def _create_owned_pool(self) -> asyncpg.Pool[Any]:

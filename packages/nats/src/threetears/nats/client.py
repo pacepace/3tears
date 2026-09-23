@@ -979,6 +979,103 @@ class JetStreamResultWaiter:
             )
 
 
+class _CredentialRenewal:
+    """the loop :meth:`NatsClient.renew_credential` runs: renew before every expiry until cancelled.
+
+    its own class rather than a method of the client, so the client -- which already keeps
+    state it accumulates -- does not also carry a periodic loop, and the loop holds only what
+    it reads.
+    """
+
+    def __init__(
+        self,
+        *,
+        reconnect: Callable[[], Awaitable[None]],
+        client_name: str,
+        ttl_seconds: Callable[[], int | None],
+        before_renewal: Callable[[int], Awaitable[None]] | None,
+        longest_request_seconds: float,
+        drain_grace_seconds: float,
+    ) -> None:
+        """bind the loop to the client it renews.
+
+        :param reconnect: the client's reconnect, which re-runs the auth-callout
+        :ptype reconnect: Callable[[], Awaitable[None]]
+        :param client_name: the client's name, for the log
+        :ptype client_name: str
+        :param ttl_seconds: reads the current TTL
+        :ptype ttl_seconds: Callable[[], int | None]
+        :param before_renewal: awaited with the TTL before each renewal, or ``None``
+        :ptype before_renewal: Callable[[int], Awaitable[None]] | None
+        :param longest_request_seconds: the longest request the connection makes
+        :ptype longest_request_seconds: float
+        :param drain_grace_seconds: how long ``before_renewal`` holds the connection open
+        :ptype drain_grace_seconds: float
+        :return: None
+        :rtype: None
+        """
+        self._reconnect = reconnect
+        self._client_name = client_name
+        self._ttl_seconds = ttl_seconds
+        self._before_renewal = before_renewal
+        self._longest_request_seconds = longest_request_seconds
+        self._drain_grace_seconds = drain_grace_seconds
+
+    async def run(self) -> None:
+        """renew before every expiry until cancelled; a failed renewal retries fast.
+
+        a broad catch keeps one failure from ending the loop, and THE WAIT IS CHOSEN BEFORE IT
+        IS TAKEN, because a failure has to change it: after one the next attempt comes
+        :data:`~threetears.nats.credential_renewal.REAUTH_RETRY_SECONDS` later, never a full
+        cycle -- a failure after the scheduled sleep leaves the credential one retry from
+        expiry, and a second full cycle would land after it. the TTL is re-read every cycle;
+        an unknown one is re-checked on a short cadence without reconnecting on a guess.
+
+        :return: nothing
+        :rtype: None
+        """
+        retry_in: float | None = None
+        try:
+            while True:
+                try:
+                    ttl = self._ttl_seconds()
+                    if retry_in is None:
+                        delay = seconds_until_reauth(ttl)
+                        unsafe = unsafe_reauth_delay_reason(
+                            delay,
+                            ttl,
+                            longest_request_seconds=self._longest_request_seconds,
+                            drain_grace_seconds=self._drain_grace_seconds,
+                        )
+                        if unsafe is not None:
+                            # every cycle, on purpose: this breaks every long request on the connection.
+                            log.error("UNSAFE NATS credential renewal cadence: %s", unsafe)
+                    else:
+                        delay = retry_in
+                    retry_in = None
+                    await asyncio.sleep(delay)
+                    if not has_schedulable_ttl(ttl):
+                        continue
+                    if self._before_renewal is not None:
+                        await self._before_renewal(ttl)
+                    await self._reconnect()
+                    log.info(
+                        "NATS credential renewed by a proactive reconnect before it expired",
+                        extra={"extra_data": {"client_name": self._client_name, "ttl_seconds": ttl}},
+                    )
+                except Exception as exc:  # noqa: BLE001 -- the loop must outlive any one failed renewal
+                    retry_in = REAUTH_RETRY_SECONDS
+                    log.warning(
+                        "NATS credential renewal failed (retrying in %ss): %s",
+                        REAUTH_RETRY_SECONDS,
+                        exc,
+                        extra={"extra_data": {"client_name": self._client_name}},
+                    )
+        # NOSILENT: cancellation is how shutdown, or a replacing renew_credential, ends the loop
+        except asyncio.CancelledError:
+            return
+
+
 class NatsClient:
     """canonical NATS client wrapper.
 
@@ -1468,6 +1565,7 @@ class NatsClient:
         ttl_seconds: Callable[[], int | None] = nats_user_jwt_ttl_seconds,
         before_renewal: Callable[[int], Awaitable[None]] | None = None,
         longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS,
+        drain_grace_seconds: float = 0.0,
     ) -> None:
         """keep this connection past its credential's expiry by renewing the credential first.
 
@@ -1492,67 +1590,23 @@ class NatsClient:
         :param longest_request_seconds: the longest request this connection makes; a cadence
             that could not carry it is logged as an error every cycle, naming the TTL
         :ptype longest_request_seconds: float
+        :param drain_grace_seconds: how long ``before_renewal`` holds the connection open for
+            requests in flight, which widens the window a request has; ``0`` when it does not
+        :ptype drain_grace_seconds: float
         :return: nothing
         :rtype: None
         """
         if self._renewal_task is not None:
             self._renewal_task.cancel()
-        self._renewal_task = asyncio.create_task(
-            self._renew_forever(ttl_seconds, before_renewal, longest_request_seconds),
-            name=f"nats-credential-renewal:{self._client_name}",
+        renewal = _CredentialRenewal(
+            reconnect=self.reconnect,
+            client_name=self._client_name,
+            ttl_seconds=ttl_seconds,
+            before_renewal=before_renewal,
+            longest_request_seconds=longest_request_seconds,
+            drain_grace_seconds=drain_grace_seconds,
         )
-
-    async def _renew_forever(
-        self,
-        ttl_seconds: Callable[[], int | None],
-        before_renewal: Callable[[int], Awaitable[None]] | None,
-        longest_request_seconds: float,
-    ) -> None:
-        """renew before every expiry until cancelled; a failed renewal retries fast.
-
-        a broad catch keeps one failure from ending the loop -- a connection nearing expiry
-        must never wait a full cycle after a transient error. the TTL is re-read every cycle;
-        an unknown one is re-checked on a short cadence without reconnecting on a guess.
-
-        :param ttl_seconds: reads the current TTL
-        :ptype ttl_seconds: Callable[[], int | None]
-        :param before_renewal: awaited with the TTL before each renewal, or ``None``
-        :ptype before_renewal: Callable[[int], Awaitable[None]] | None
-        :param longest_request_seconds: the longest request the connection makes
-        :ptype longest_request_seconds: float
-        :return: nothing
-        :rtype: None
-        """
-        try:
-            while True:
-                try:
-                    ttl = ttl_seconds()
-                    delay = seconds_until_reauth(ttl)
-                    unsafe = unsafe_reauth_delay_reason(delay, ttl, longest_request_seconds=longest_request_seconds)
-                    if unsafe is not None:
-                        # every cycle, on purpose: this breaks every long request on the connection.
-                        log.error("UNSAFE NATS credential renewal cadence: %s", unsafe)
-                    await asyncio.sleep(delay)
-                    if ttl is None or not has_schedulable_ttl(ttl):
-                        continue
-                    if before_renewal is not None:
-                        await before_renewal(ttl)
-                    await self.reconnect()
-                    log.info(
-                        "NATS credential renewed by a proactive reconnect before it expired",
-                        extra={"extra_data": {"client_name": self._client_name, "ttl_seconds": ttl}},
-                    )
-                except Exception as exc:  # noqa: BLE001 -- the loop must outlive any one failed renewal
-                    log.warning(
-                        "NATS credential renewal failed (retrying in %ss): %s",
-                        REAUTH_RETRY_SECONDS,
-                        exc,
-                        extra={"extra_data": {"client_name": self._client_name}},
-                    )
-                    await asyncio.sleep(REAUTH_RETRY_SECONDS)
-        # NOSILENT: cancellation is how shutdown, or a replacing renew_credential, ends the loop
-        except asyncio.CancelledError:
-            return
+        self._renewal_task = asyncio.create_task(renewal.run(), name=f"nats-credential-renewal:{self._client_name}")
 
     async def _stop_renewal(self) -> None:
         """cancel the credential-renewal loop, if one runs, and wait for it to end.

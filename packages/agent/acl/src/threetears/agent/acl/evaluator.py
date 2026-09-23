@@ -161,8 +161,8 @@ async def evaluate_decision(
     cache's :attr:`AclCache.membership_loader` /
     :attr:`AclCache.grant_loader` and are written back.
 
-    :param ctx: evaluation context (namespace, action, optional
-        ``user_id`` and / or ``agent_id``)
+    :param ctx: evaluation context; :class:`EvaluationContext` says
+        which actors it may carry and in which combinations
     :ptype ctx: EvaluationContext
     :param cache: shared :class:`AclCache` carrying loaders + ttl
         layers; required, no silent-bypass path
@@ -187,8 +187,8 @@ async def evaluate_with_trail(
     supplied, populates :attr:`EvaluationResult.user_actions`,
     :attr:`agent_actions`, :attr:`limiting_side`, and per-side
     trails. when only one side is supplied, populates
-    :attr:`EvaluationResult.trails` and leaves intersection
-    fields empty.
+    :attr:`EvaluationResult.trails` and that side's action set, and
+    leaves the other side and :attr:`limiting_side` at their defaults.
 
     consults :class:`AclCache` for membership and per-namespace grant
     layers; on miss falls back to cache's loaders and writes results

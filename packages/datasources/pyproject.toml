@@ -40,7 +40,11 @@ dependencies = [
     # from the previous optional-extras slot; the AsyncpgDriver
     # imports asyncpg at module top.) the other backend libs
     # (redshift / snowflake / bigquery) stay behind extras keys.
-    "asyncpg>=0.29",
+    # 0.30 is the floor the code needs: AsyncpgDriver hands every owned
+    # pool ``create_pool(connect=...)`` so each login meets the connect
+    # guard, and that parameter arrived in 0.30. on 0.29 it would fall
+    # into connect_kwargs and fail every connect with a TypeError.
+    "asyncpg>=0.30",
     # dataset-as-code (dsm-task-02) reads name-keyed
     # ``datasets/*.dataset.yaml`` files. non-optional because the parser
     # is imported from the definition package's public surface, and the

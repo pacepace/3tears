@@ -21,7 +21,7 @@ Hub handshake, a standalone pod from its environment (:func:`nats_user_jwt_ttl_s
 from __future__ import annotations
 
 import os
-from typing import Final
+from typing import Final, TypeIs
 
 from threetears.observe import get_logger
 
@@ -61,27 +61,32 @@ REAUTH_UNKNOWN_TTL_RECHECK_SECONDS: Final[float] = 60.0
 #: the variable a standalone connection reads its TTL from -- the same one the platform's
 #: auth-callout responder mints with, so both sides agree without a handshake.
 NATS_USER_JWT_TTL_ENV: Final[str] = "FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS"
-#: the TTL the platform mints when that variable is unset.
+#: the TTL the platform's auth-callout mints when :data:`NATS_USER_JWT_TTL_ENV` is unset, and
+#: so the TTL a connection with no handshake assumes.
 #:
-#: the error is not symmetric. assuming LESS than the minted TTL costs only churn: a still-valid
-#: credential is recycled, and a tool pod re-registers its manifest on every reconnect. assuming
-#: MORE is fatal: the JWT expires first, and nats-py routes the auth ``-ERR`` to a terminal close
-#: forever-reconnect does not cover. so this must never exceed the platform's minted TTL, and must
-#: move with it -- it drifted once by keeping a superseded value after the mint was raised. a
-#: deployment that tunes the minted TTL sets :data:`NATS_USER_JWT_TTL_ENV` on the client too.
+#: ONE owner: the platform's minting responder takes its default from this constant, so the
+#: mint and the renewal cannot drift apart. it is deliberately NOT
+#: :data:`~threetears.nats.auth_callout_responder.DEFAULT_NATS_USER_JWT_TTL_SECONDS`, the generic
+#: responder's hour-long default. the error is not symmetric: assuming LESS than the minted TTL
+#: costs only churn (a still-valid credential is recycled, and a tool pod re-registers its
+#: manifest), while assuming MORE is fatal (the JWT expires first, and nats-py routes the auth
+#: ``-ERR`` to a terminal close forever-reconnect does not cover). so the assumption is the
+#: shortest default any minter here uses, and a test pins it at or below the generic one. a
+#: deployment that tunes the minted TTL sets :data:`NATS_USER_JWT_TTL_ENV` on both sides.
 PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS: Final[int] = 300
 
 
-def has_schedulable_ttl(ttl_seconds: int | None) -> bool:
+def has_schedulable_ttl(ttl_seconds: int | None) -> TypeIs[int]:
     """whether ``ttl_seconds`` is a TTL a renewal can be scheduled against: a positive int.
 
-    the ONE predicate for "the credential's lifetime is known", shared by the schedule and
-    the loop so "never reconnect on a guess" holds in both.
+    the ONE predicate for "the credential's lifetime is known", shared by the schedule, the
+    safety check and the loop so "never reconnect on a guess" holds in all three. a
+    ``TypeIs`` so a caller needs no separate ``None`` check to use the TTL after it.
 
     :param ttl_seconds: the credential's TTL, or ``None`` when unknown
     :ptype ttl_seconds: int | None
     :return: whether the schedule can use it
-    :rtype: bool
+    :rtype: TypeIs[int]
     """
     return ttl_seconds is not None and ttl_seconds > 0
 
@@ -99,7 +104,7 @@ def seconds_until_reauth(ttl_seconds: int | None) -> float:
     :rtype: float
     """
     result = REAUTH_UNKNOWN_TTL_RECHECK_SECONDS
-    if ttl_seconds is not None and ttl_seconds > 0:
+    if has_schedulable_ttl(ttl_seconds):
         delay = float(ttl_seconds - REAUTH_MARGIN_SECONDS)
         result = delay if delay > REAUTH_MIN_SLEEP_SECONDS else REAUTH_MIN_SLEEP_SECONDS
     return result
@@ -110,14 +115,20 @@ def unsafe_reauth_delay_reason(
     ttl_seconds: int | None,
     *,
     longest_request_seconds: float,
+    drain_grace_seconds: float = 0.0,
 ) -> str | None:
     """why a renewal cadence would cut off requests in flight, or ``None`` when it is safe.
 
     A renewal is a real disconnect: every request in flight loses its reply inbox. So the
-    renewal interval is a hard ceiling on how long any request on the connection may take.
-    When it falls at or below the longest one the caller makes, those requests can never
+    window a request has -- from one renewal to the next, plus however long the owner holds
+    the connection open for it before renewing (``drain_grace_seconds``), never past the
+    point the server's leeway allows -- is a hard ceiling on how long it may take. When that
+    window is no longer than the longest request the caller makes, those requests can never
     finish -- they die at their own timeout, presenting as "it answers quickly, then hangs"
     with nothing in the logs naming the TTL. This names it.
+
+    The ONE judge of that invariant: an owner that drains before renewing passes its grace
+    here rather than judging the TTL a second way.
 
     :param delay_seconds: the scheduled sleep before the next renewal
     :ptype delay_seconds: float
@@ -125,18 +136,29 @@ def unsafe_reauth_delay_reason(
     :ptype ttl_seconds: int | None
     :param longest_request_seconds: the longest request this connection makes
     :ptype longest_request_seconds: float
+    :param drain_grace_seconds: how long the owner holds the connection open for requests in
+        flight before each renewal; ``0`` when it does not drain
+    :ptype drain_grace_seconds: float
     :return: the reason, or ``None`` when the cadence is safe
     :rtype: str | None
     """
     result: str | None = None
-    if has_schedulable_ttl(ttl_seconds) and delay_seconds <= longest_request_seconds:
-        result = (
-            f"the NATS credential TTL is {ttl_seconds}s, so the connection is renewed every "
-            f"{delay_seconds:.0f}s (ttl-{REAUTH_MARGIN_SECONDS}). A renewal DROPS every request in "
-            f"flight, and the longest this connection makes takes up to {longest_request_seconds:.0f}s, "
-            f"so a request longer than {delay_seconds:.0f}s can never finish. Raise "
-            f"{NATS_USER_JWT_TTL_ENV} above {longest_request_seconds + REAUTH_MARGIN_SECONDS:.0f}."
-        )
+    if has_schedulable_ttl(ttl_seconds):
+        window = min(delay_seconds + drain_grace_seconds, float(ttl_seconds - REAUTH_LEEWAY_SECONDS))
+        if window <= longest_request_seconds:
+            grace = f" plus a {drain_grace_seconds:.0f}s drain" if drain_grace_seconds > 0 else ""
+            # the smallest TTL whose window exceeds the request, on both bounds of the window.
+            minimum_ttl = max(
+                longest_request_seconds + REAUTH_MARGIN_SECONDS - drain_grace_seconds,
+                longest_request_seconds + REAUTH_LEEWAY_SECONDS,
+            )
+            result = (
+                f"the NATS credential TTL is {ttl_seconds}s, so the connection is renewed every "
+                f"{delay_seconds:.0f}s (ttl-{REAUTH_MARGIN_SECONDS}){grace}. A renewal DROPS every request in "
+                f"flight, and the longest this connection makes takes up to {longest_request_seconds:.0f}s, "
+                f'so a request longer than {window:.0f}s can never finish -- it presents as "it answers quickly, '
+                f'then hangs". Raise {NATS_USER_JWT_TTL_ENV} above {minimum_ttl:.0f}.'
+            )
     return result
 
 

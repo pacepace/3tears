@@ -29,41 +29,72 @@ agent's query), so one wrong stored password locked a production account in abou
 75 minutes of background passes.
 
 `create_driver` takes a `connect_guard`. The Postgres, Yugabyte and Redshift drivers
-ask it before every login -- asyncpg through the pool's `connect=` hook, so a pool's
-replacement connections are guarded too -- and tell it of every refusal. The guard
-the package ships, `CredentialRefusalGuards`, keeps the pause in a
-`core.coordination.WindowedCounter`: one refusal pauses the credential for every
-replica sharing L2, and a paused connect raises `DriverCredentialPausedError` (a
-`DriverAuthError`) without contacting the warehouse. `clear` lifts it when the
-credential is replaced or a probe with it -- a driver built without a guard --
-succeeds; unattended, it ends after 30 days. A storage failure fails open. The
-Snowflake and BigQuery drivers do not yet classify a refusal, and the factory logs
-that a guard handed to them is not honoured.
+log in through `guarded_connect` on every login -- asyncpg through the pool's
+`connect=` hook, so a pool's replacement connections are guarded too, and Redshift's
+query-cancel login as well -- and the guard hears every refusal and every success. The
+guard the package ships, `CredentialRefusalGuards`, does two things:
+
+- It pauses a refused credential for the fleet. The pause is kept in a
+  `core.coordination.WindowedCounter`: one refusal pauses the credential for every
+  replica sharing L2, and a paused connect raises `DriverCredentialPausedError` (a
+  `DriverAuthError`) without contacting the warehouse.
+- It lets one login at a time through until one succeeds. A burst of connects on a
+  process that has not yet logged in with a credential -- a restart, a pool's first
+  fill, a fan-out of queries -- would otherwise send every login before the first
+  refusal was recorded, and a burst of five is a Redshift lock on its own. After a
+  success, logins run concurrently again. A burst across replicas costs at most one
+  login per replica.
+
+The pause belongs to a credential, not to a datasource:
+`for_credential(datasource_id, credential_revision=..., datasource_name=...)`, where the
+revision is the owner's name for the credential -- anything that changes when it is
+replaced, never the secret or an unkeyed digest of it. Replacing a credential therefore
+lifts the pause by itself, and a holder of the superseded one (a pool not yet rebuilt)
+can only pause the credential it holds. `clear` lifts a pause when a probe -- a driver
+built without a guard -- succeeds, and `record` records a probe's refusal; unattended,
+a pause ends after 30 days. A storage failure fails open, and never replaces the
+refusal the caller has to see. The Snowflake and BigQuery drivers do not yet classify
+a refusal, and the factory logs that a guard handed to them is not honoured.
+
+AsyncpgDriver now creates its owned pool once when several first callers arrive
+together; each used to build its own, logging in once apiece and leaking all but one.
+`asyncpg>=0.30` is the declared floor, which `create_pool(connect=)` needs.
 
 ### NatsClient renews its own credential
 
 The auth-callout mints each connection's user JWT with a finite TTL, and at expiry
 the server closes the connection in a way forever-reconnect does not cover. Every
-long-lived caller had to grow its own renewal loop; three existed, and they had
+long-lived caller had to grow its own renewal loop; four existed, and they had
 already diverged -- only the agent runtime's refused a TTL too short for its longest
-request to survive the reconnect.
+request to survive the reconnect, and one retried a failed renewal a full cycle
+later, after the credential had expired.
 
-`NatsClient.renew_credential(ttl_seconds=..., before_renewal=..., longest_request_seconds=...)`
+`NatsClient.renew_credential(ttl_seconds=..., before_renewal=..., longest_request_seconds=..., drain_grace_seconds=...)`
 runs that loop, owned by the client and stopped by `shutdown`. It is opt-in: a
 connection authenticated as a static user holds a credential that never expires, and
 renewing it would drop its requests in flight for nothing. The TTL is read every cycle
 -- an agent's from its handshake, a standalone connection's from
-`FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS` by default -- and a cadence that cannot carry
-the caller's longest request is logged as an error every cycle, naming the TTL. The
-arithmetic lives in `threetears.nats.credential_renewal`, and `REAUTH_MARGIN_SECONDS`
-is exported for the Hub, which refuses to mint a TTL no client could schedule.
+`FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS` by default. A failed renewal is retried
+after `REAUTH_RETRY_SECONDS`, never after another full cycle. A cadence that cannot
+carry the caller's longest request is logged as an error every cycle, naming the TTL
+and the symptom ("it answers quickly, then hangs"); an owner that holds the connection
+open for requests in flight before renewing passes that grace as
+`drain_grace_seconds`, and it is credited to the window. The arithmetic lives in
+`threetears.nats.credential_renewal`, and `REAUTH_MARGIN_SECONDS` is exported for the
+Hub, which refuses to mint a TTL no client could schedule.
+`PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS` (300) is the TTL the platform's minting
+responder defaults to and the one a connection with no handshake assumes; it is pinned
+at or below the generic responder's `DEFAULT_NATS_USER_JWT_TTL_SECONDS`, since
+assuming more than is minted is fatal and assuming less is only churn.
 
 **Breaking:** `threetears.agent.tools.nats_reauth` and
 `threetears.agent.tools.config.get_nats_user_jwt_ttl_seconds` are removed. Their names
 are in `threetears.nats` (`seconds_until_reauth`, `has_schedulable_ttl`, the
 `REAUTH_*` constants, `nats_user_jwt_ttl_seconds`); a caller that ran its own loop
-calls `renew_credential` instead and deletes it. `ToolServer` does, passing its
-reply drain as `before_renewal`.
+calls `renew_credential` instead and deletes it. `ToolServer` does, on a connection
+the auth-callout minted a credential for, passing its reply drain as
+`before_renewal` and its grace (`DRAIN_BEFORE_RENEWAL_SECONDS`) as
+`drain_grace_seconds`; its separate start-up TTL check is gone, so one judge decides.
 
 ### A rebuilt dynamic tool pod spec is announced once, never as an empty manifest
 
@@ -73,10 +104,17 @@ manifest in between. For a pod whose only tools are that spec's, the manifest wa
 empty, which the Registry refuses ("tools list is required and must not be empty"),
 moments before the real one landed: a WARNING on every credential refresh.
 
-`DynamicToolPod.replace_spec(spec)` builds the new tools, drops the old ones and
-closes the old resource without publishing, registers the rebuilt spec, and publishes
-once. A rebuild that now builds no tools still publishes the reduced manifest, since
-losing tools is a change; an unknown key is registered.
+`DynamicToolPod.register_spec(spec)` now replaces: it forgets the spec already
+registered under `spec_key(spec)` -- its tools unregistered, its resource closed,
+publishing nothing -- BEFORE building the new one, so a rebuild never holds two
+resources against a warehouse user's connection limit; then it registers the rebuilt
+spec and publishes once. A close that fails is logged and the rebuild proceeds. A
+rebuild that now builds no tools still publishes the reduced manifest, since losing
+tools is a change. Refreshing is `register_spec` alone.
+
+**Breaking:** `DynamicToolPod` subclasses implement `spec_key(spec) -> str`, the key
+`build_tools` reports for that spec; `register_spec` raises `ValueError` when the two
+disagree.
 
 ## v0.49.0 -- 2026-09-22
 

@@ -4,18 +4,28 @@ the contract (hub issue #523, the lockout it closes):
 
 - one refusal pauses the credential for EVERY replica sharing the coordination tier,
   and a paused connect raises :class:`DriverCredentialPausedError` without a login;
+- the pause belongs to the refused CREDENTIAL: a holder of a superseded one cannot pause
+  the credential that replaced it, and replacing a credential needs no step to resume;
+- a burst of logins with a credential not yet proven in this process costs one login, and
+  once one succeeds logins run side by side again;
 - several background passes against a refusing warehouse cost exactly one login;
 - a missing credential, refused before any login, pauses nothing;
 - clearing the pause (a new credential, a successful probe) lets the next login through;
 - a probe -- a driver built with no guard -- logs in even while the credential is paused;
-- a coordination store that cannot be read lets the connect go ahead (fail-open);
+- a coordination store that cannot be read lets the connect go ahead, and one that
+  cannot be written never replaces the refusal the caller must see (fail-open);
 - both drivers that classify a refusal consult the guard: Redshift on every fresh
-  connection, asyncpg on every login its pool makes.
+  connection, the cancel path's terminate login included, and asyncpg on every login
+  its pool makes -- which concurrent first callers share rather than each building.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
@@ -26,9 +36,12 @@ import redshift_connector
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.coordination.tables import CoordinationCountersCollection
+from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.datasources.config import PostgresConnectionConfig, RedshiftConnectionConfig
 from threetears.datasources.drivers import (
+    ConnectGuard,
     CredentialRefusalGuards,
     DriverAuthError,
     DriverConnectError,
@@ -43,6 +56,7 @@ from threetears.datasources.entities import DataSourceType
 from threetears.nats import KvError
 
 _PASSWORD_ENV = "TEST_CONNECT_GUARD_PW"
+_REVISION = "rev-1"
 _PASSWORD = "connect-guard-test-password"
 _SCOPE = "connect-guard-test"
 
@@ -130,8 +144,12 @@ class TestOneRefusalPausesTheFleet:
     async def test_a_refusal_on_one_replica_pauses_the_other(self) -> None:
         nats = _Nats()
         datasource_id = uuid.uuid4()
-        here = _replica(nats).for_datasource(datasource_id, datasource_name="influencers-build")
-        there = _replica(nats).for_datasource(datasource_id, datasource_name="influencers-build")
+        here = _replica(nats).for_credential(
+            datasource_id, credential_revision=_REVISION, datasource_name="influencers-build"
+        )
+        there = _replica(nats).for_credential(
+            datasource_id, credential_revision=_REVISION, datasource_name="influencers-build"
+        )
 
         await here.record_refusal(DriverAuthError("refused", sqlstate="28000"))
 
@@ -142,42 +160,118 @@ class TestOneRefusalPausesTheFleet:
 
     async def test_another_datasource_is_not_paused(self) -> None:
         guards = _replica(_Nats())
-        await guards.for_datasource(uuid.uuid4(), datasource_name="a").record_refusal(DriverAuthError("refused"))
+        await guards.for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="a").record_refusal(
+            DriverAuthError("refused")
+        )
 
-        await guards.for_datasource(uuid.uuid4(), datasource_name="b").admit()
+        await guards.for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="b").admit()
 
     async def test_clearing_lets_the_next_login_through(self) -> None:
         """a clear drops the shared row; another replica's cached copy goes with the
         registry's invalidation listener, as for every coordination primitive."""
         datasource_id = uuid.uuid4()
         guards = _replica(_Nats())
-        guard = guards.for_datasource(datasource_id, datasource_name="ds")
+        guard = guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds")
         await guard.record_refusal(DriverAuthError("refused"))
 
-        await guards.clear(datasource_id)
+        await guards.clear(datasource_id, _REVISION)
 
         await guard.admit()
-        assert await guards.refused_at(datasource_id) is None
+        assert await guards.refused_at(datasource_id, _REVISION) is None
 
-    async def test_an_unreadable_store_lets_the_connect_go_ahead(self) -> None:
-        """fail-open: a storage outage must not become an outage of every datasource."""
-        registry = CollectionRegistry()
-        registry.configure(
-            l1_backend=SQLiteBackend(db_name=f"guard_{uuid.uuid4().hex[:8]}"),
-            l2_client=_FailingNats(),
-            kv_key_scope=_SCOPE,
-        )
-        guard = CredentialRefusalGuards(registry).for_datasource(uuid.uuid4(), datasource_name="ds")
+    async def test_an_unreadable_store_lets_the_connect_go_ahead(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """fail-open: a storage outage must not become an outage of every datasource.
+
+        the read raises a storage failure the counter itself sees -- an L2 miss would not do,
+        because the collection already reads a KvError as a miss, and the test would then pass
+        with the guard failing closed.
+        """
+
+        async def _unreadable(self: CoordinationCountersCollection, *args: Any, **kwargs: Any) -> Any:
+            raise DataLayerUnavailableError("l3 down")
+
+        monkeypatch.setattr(CoordinationCountersCollection, "get", _unreadable)
+        guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
 
         await guard.admit()
+
+    async def test_an_unwritable_store_never_replaces_the_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the refusal is what tells the caller to stop; a storage error in its place is retried."""
+
+        async def _unwritable(self: CoordinationCountersCollection, *args: Any, **kwargs: Any) -> Any:
+            raise KvError("kv down")
+
+        monkeypatch.setattr(CoordinationCountersCollection, "l2_cas_mutate", _unwritable)
+        guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
+        refusal = DriverAuthError("refused", sqlstate="28000")
+
+        with pytest.raises(DriverAuthError) as exc_info:
+            await guarded_connect(guard, AsyncMock(side_effect=refusal))
+
+        assert exc_info.value is refusal
+
+
+class _ScriptedGuard(ConnectGuard):
+    """a guard whose admission is scripted and whose calls are recorded."""
+
+    def __init__(self, *, admit_error: Exception | None = None) -> None:
+        """script the admission.
+
+        :param admit_error: what :meth:`admit` raises, or ``None`` to admit
+        :ptype admit_error: Exception | None
+        """
+        self.admit_error = admit_error
+        self.refusals: list[DriverAuthError] = []
+        self.successes = 0
+        self.slots_entered = 0
+
+    def serialized(self) -> AbstractAsyncContextManager[None]:
+        """count the slot and hold nothing.
+
+        :return: the slot
+        :rtype: AbstractAsyncContextManager[None]
+        """
+
+        @asynccontextmanager
+        async def _slot() -> AsyncIterator[None]:
+            self.slots_entered += 1
+            yield
+
+        return _slot()
+
+    async def admit(self) -> None:
+        """admit, or raise the scripted error.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self.admit_error is not None:
+            raise self.admit_error
+
+    async def record_refusal(self, error: DriverAuthError) -> None:
+        """record the refusal.
+
+        :param error: the refusal
+        :ptype error: DriverAuthError
+        :return: nothing
+        :rtype: None
+        """
+        self.refusals.append(error)
+
+    def record_success(self) -> None:
+        """count the success.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.successes += 1
 
 
 class TestGuardedConnect:
     """the one place a login meets its guard."""
 
     async def test_a_paused_credential_never_reaches_the_login(self) -> None:
-        guard = MagicMock()
-        guard.admit = AsyncMock(side_effect=DriverCredentialPausedError("paused", refused_at=MagicMock()))
+        guard = _ScriptedGuard(admit_error=DriverCredentialPausedError("paused", refused_at=datetime.now(UTC)))
         login = AsyncMock()
 
         with pytest.raises(DriverCredentialPausedError):
@@ -186,40 +280,153 @@ class TestGuardedConnect:
         login.assert_not_awaited()
 
     async def test_a_refusal_is_recorded_then_raised(self) -> None:
-        guard = MagicMock()
-        guard.admit = AsyncMock()
-        guard.record_refusal = AsyncMock()
+        guard = _ScriptedGuard()
         refusal = DriverAuthError("refused", sqlstate="28000")
 
         with pytest.raises(DriverAuthError):
             await guarded_connect(guard, AsyncMock(side_effect=refusal))
 
-        guard.record_refusal.assert_awaited_once_with(refusal)
+        assert guard.refusals == [refusal]
+        assert guard.successes == 0
+
+    async def test_a_success_is_recorded_inside_the_slot(self) -> None:
+        guard = _ScriptedGuard()
+
+        assert await guarded_connect(guard, AsyncMock(return_value="connection")) == "connection"
+
+        assert guard.successes == 1
+        assert guard.slots_entered == 1
 
     @pytest.mark.parametrize(
         "error",
         [
             pytest.param(DriverMissingCredentialError("no password"), id="missing-credential-no-login-happened"),
             pytest.param(
-                DriverCredentialPausedError("paused", refused_at=MagicMock()), id="already-paused-no-login-happened"
+                DriverCredentialPausedError("paused", refused_at=datetime.now(UTC)),
+                id="already-paused-no-login-happened",
             ),
             pytest.param(DriverConnectError("host unreachable"), id="not-a-refusal"),
         ],
     )
     async def test_only_a_server_refusal_pauses(self, error: DriverConnectError) -> None:
-        guard = MagicMock()
-        guard.admit = AsyncMock()
-        guard.record_refusal = AsyncMock()
+        guard = _ScriptedGuard()
 
         with pytest.raises(type(error)):
             await guarded_connect(guard, AsyncMock(side_effect=error))
 
-        guard.record_refusal.assert_not_awaited()
+        assert guard.refusals == []
+        assert guard.successes == 0
 
     async def test_no_guard_is_a_plain_login(self) -> None:
         login = AsyncMock(return_value="connection")
 
         assert await guarded_connect(None, login) == "connection"
+
+
+class TestThePauseBelongsToACredential:
+    """a password change must not be undone by a holder of the password it replaced."""
+
+    async def test_a_stale_holder_cannot_pause_the_replacement(self) -> None:
+        """a pool still holding the old password is refused after the new one was stored."""
+        nats = _Nats()
+        datasource_id = uuid.uuid4()
+        stale = _replica(nats).for_credential(datasource_id, credential_revision="old", datasource_name="ds")
+        current = _replica(nats).for_credential(datasource_id, credential_revision="new", datasource_name="ds")
+
+        await stale.record_refusal(DriverAuthError("refused", sqlstate="28000"))
+
+        await current.admit()
+        with pytest.raises(DriverCredentialPausedError):
+            await stale.admit()
+
+    async def test_replacing_a_refused_credential_needs_no_clear(self) -> None:
+        guards = _replica(_Nats())
+        datasource_id = uuid.uuid4()
+        await guards.record(datasource_id, "wrong")
+
+        await guards.for_credential(datasource_id, credential_revision="fixed", datasource_name="ds").admit()
+
+        assert await guards.refused_at(datasource_id, "wrong") is not None
+        assert await guards.refused_at(datasource_id, "fixed") is None
+
+    def test_a_guard_without_a_revision_is_refused(self) -> None:
+        """an empty revision would put every credential the datasource ever has under one pause."""
+        with pytest.raises(ValueError, match="revision"):
+            _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision="", datasource_name="ds")
+
+
+class TestLoginsQueueUntilOneSucceeds:
+    """a burst before the credential is proven here costs one login; after, logins run side by side."""
+
+    async def test_a_burst_of_cold_logins_against_a_refusing_warehouse_costs_one(self) -> None:
+        """five at once is a Redshift lock on its own, before the first refusal could be recorded."""
+        datasource_id = uuid.uuid4()
+        guards = _replica(_Nats())
+        driver = RedshiftDriver(
+            _redshift_config(),
+            datasource_name="ds",
+            connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
+        )
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                side_effect=_refused(),
+            ) as connect:
+                outcomes = await asyncio.gather(
+                    *(driver.test_connection() for _ in range(5)),
+                    return_exceptions=True,
+                )
+        finally:
+            await driver.close()
+
+        assert connect.call_count == 1
+        assert sorted(type(o).__name__ for o in outcomes) == ["DriverAuthError"] + ["DriverCredentialPausedError"] * 4
+
+    async def test_once_proven_logins_run_side_by_side(self) -> None:
+        guard = _replica(_Nats()).for_credential(uuid.uuid4(), credential_revision=_REVISION, datasource_name="ds")
+        await guarded_connect(guard, AsyncMock(return_value="first"))
+        both_in = asyncio.Event()
+        inside = 0
+
+        async def _login() -> str:
+            nonlocal inside
+            inside += 1
+            if inside == 2:
+                both_in.set()
+            await asyncio.wait_for(both_in.wait(), timeout=1.0)
+            return "connection"
+
+        results = await asyncio.gather(guarded_connect(guard, _login), guarded_connect(guard, _login))
+
+        assert results == ["connection", "connection"]
+
+    async def test_a_refusal_after_a_success_makes_logins_queue_again(self) -> None:
+        """a password changed on the warehouse side is a cold credential again.
+
+        the pause is cleared (a probe succeeded) so only the queue stands between a burst and
+        the warehouse: were the credential still trusted from its earlier success, every login
+        in the burst would be sent.
+        """
+        datasource_id = uuid.uuid4()
+        guards = _replica(_Nats())
+        guard = guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds")
+        await guarded_connect(guard, AsyncMock(return_value="first"))
+        with pytest.raises(DriverAuthError):
+            await guarded_connect(guard, AsyncMock(side_effect=DriverAuthError("refused", sqlstate="28000")))
+        await guards.clear(datasource_id, _REVISION)
+        entered = asyncio.Event()
+
+        async def _refused_login() -> str:
+            entered.set()
+            await asyncio.sleep(0.01)
+            raise DriverAuthError("refused", sqlstate="28000")
+
+        login = AsyncMock(side_effect=_refused_login)
+
+        results = await asyncio.gather(*(guarded_connect(guard, login) for _ in range(5)), return_exceptions=True)
+
+        assert login.await_count == 1
+        assert sum(isinstance(r, DriverCredentialPausedError) for r in results) == 4
 
 
 class TestARefusingWarehouseCostsOneLogin:
@@ -238,7 +445,9 @@ class TestARefusingWarehouseCostsOneLogin:
                 driver = RedshiftDriver(
                     _redshift_config(),
                     datasource_name="influencers-build",
-                    connect_guard=guards.for_datasource(datasource_id, datasource_name="influencers-build"),
+                    connect_guard=guards.for_credential(
+                        datasource_id, credential_revision=_REVISION, datasource_name="influencers-build"
+                    ),
                 )
                 try:
                     with pytest.raises(DriverAuthError) as exc_info:
@@ -254,7 +463,7 @@ class TestARefusingWarehouseCostsOneLogin:
         nats = _Nats()
         datasource_id = uuid.uuid4()
         guards = _replica(nats)
-        await guards.record(datasource_id)
+        await guards.record(datasource_id, _REVISION)
         connection = MagicMock()
         cursor = MagicMock()
         cursor.fetchone.return_value = (1,)
@@ -274,12 +483,12 @@ class TestARefusingWarehouseCostsOneLogin:
             guarded = RedshiftDriver(
                 _redshift_config(),
                 datasource_name="ds",
-                connect_guard=guards.for_datasource(datasource_id, datasource_name="ds"),
+                connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
             )
             try:
                 with pytest.raises(DriverCredentialPausedError):
                     await guarded.test_connection()
-                await guards.clear(datasource_id)
+                await guards.clear(datasource_id, _REVISION)
                 await guarded.test_connection()
             finally:
                 await guarded.close()
@@ -309,7 +518,7 @@ class TestAsyncpgGuardsEveryPooledLogin:
         return AsyncpgDriver(
             config,
             datasource_name="pg",
-            connect_guard=guards.for_datasource(datasource_id, datasource_name="pg"),
+            connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="pg"),
         )
 
     async def test_the_pool_logs_in_through_the_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -320,6 +529,27 @@ class TestAsyncpgGuardsEveryPooledLogin:
         await driver._ensure_pool()  # noqa: SLF001 -- the pool's construction arguments are the contract
 
         assert create_pool.await_args.kwargs["connect"] == driver._connect_one  # noqa: SLF001
+
+    async def test_concurrent_first_callers_share_one_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """each first caller building its own pool was one login apiece, and a leaked pool apiece."""
+        created = asyncio.Event()
+
+        async def _slow_create_pool(**kwargs: Any) -> MagicMock:
+            del kwargs
+            await created.wait()
+            return MagicMock()
+
+        create_pool = AsyncMock(side_effect=_slow_create_pool)
+        monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool", create_pool)
+        driver = self._driver(_replica(_Nats()), uuid.uuid4())
+
+        callers = [asyncio.create_task(driver._ensure_pool()) for _ in range(5)]  # noqa: SLF001 -- pool creation is the contract
+        await asyncio.sleep(0)
+        created.set()
+        pools = await asyncio.gather(*callers)
+
+        assert create_pool.await_count == 1
+        assert all(pool is pools[0] for pool in pools)
 
     async def test_a_refused_pooled_login_pauses_the_next(self, monkeypatch: pytest.MonkeyPatch) -> None:
         connect = AsyncMock(side_effect=asyncpg.exceptions.InvalidPasswordError("password authentication failed"))
@@ -334,6 +564,46 @@ class TestAsyncpgGuardsEveryPooledLogin:
 
         assert connect.await_count == 1
         assert _PASSWORD not in str(exc_info.value)
+
+
+class TestTheCancelPathLogsInUnderTheGuard:
+    """cancelling a Redshift query opens a fresh login to terminate its backend; that login is guarded too."""
+
+    async def test_a_paused_credential_skips_the_terminate_login(self) -> None:
+        datasource_id = uuid.uuid4()
+        guards = _replica(_Nats())
+        await guards.record(datasource_id, _REVISION)
+        driver = RedshiftDriver(
+            _redshift_config(),
+            datasource_name="ds",
+            connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
+        )
+        try:
+            with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect") as connect:
+                await driver._terminate_backend(4242)  # noqa: SLF001 -- the cancel path's login is the contract
+        finally:
+            await driver.close()
+
+        connect.assert_not_called()
+
+    async def test_a_refused_terminate_login_pauses_the_credential(self) -> None:
+        datasource_id = uuid.uuid4()
+        guards = _replica(_Nats())
+        driver = RedshiftDriver(
+            _redshift_config(),
+            datasource_name="ds",
+            connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
+        )
+        try:
+            with patch(
+                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+                side_effect=_refused(),
+            ):
+                await driver._terminate_backend(4242)  # noqa: SLF001 -- never raises; the pause is the effect
+        finally:
+            await driver.close()
+
+        assert await guards.refused_at(datasource_id, _REVISION) is not None
 
 
 class TestTheFactoryHandsTheGuardOn:

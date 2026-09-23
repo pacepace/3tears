@@ -184,14 +184,14 @@ class TestTheWaitIsBounded:
     async def test_a_call_that_outlasts_the_grace_does_not_block_forever(self) -> None:
         server, tool = _idle_server()
         async with _owed_reply(server, tool):
-            # The real grace is REAUTH_BUFFER_SECONDS; patched down, where the server
+            # The real grace is DRAIN_BEFORE_RENEWAL_SECONDS; patched down, where the server
             # reads it, so the test does not sit for 30 seconds proving a timeout fires.
-            original = tool_server_module.REAUTH_BUFFER_SECONDS
+            original = tool_server_module.DRAIN_BEFORE_RENEWAL_SECONDS
             try:
-                tool_server_module.REAUTH_BUFFER_SECONDS = 0.05  # type: ignore[misc]
+                tool_server_module.DRAIN_BEFORE_RENEWAL_SECONDS = 0.05  # type: ignore[misc]
                 await asyncio.wait_for(server.drain_before_reauth(150), timeout=2.0)
             finally:
-                tool_server_module.REAUTH_BUFFER_SECONDS = original  # type: ignore[misc]
+                tool_server_module.DRAIN_BEFORE_RENEWAL_SECONDS = original  # type: ignore[misc]
 
 
 class TestTheTwoBudgetsAreRelated:
