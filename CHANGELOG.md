@@ -101,27 +101,47 @@ read. "No matching tools found." is reserved for a search that ran.
 
 Minor: a new constructor parameter, a new method and a new public type.
 
-### Every tool pod gets a replay anchor, so its first call after a cold start is not refused
+### Every tool-pod principal gets a replay anchor, so its first call after a cold start is not refused
 
-`ToolServerBootstrap` now builds the pod's collection stack for EVERY pod, not
-only one that passes `collection_tables`. A pod that declares none gets an empty
-table set plus the runtime's own collections, and with them the
-`CollectionReplayAnchor` 0.46.0 wired for the proxy-assertion guard.
+`ToolServerBootstrap` now builds the pod's collection stack for every tool-pod
+principal -- a pod whose id is its `tool_pods.id` uuid -- not only one that passes
+`collection_tables`. A pod that declares none gets an empty table set plus the
+runtime's own collections, and with them the `CollectionReplayAnchor` 0.46.0 wired
+for the proxy-assertion guard.
 
 0.46.0 attached the anchor from the stack's connected callback, but built the
-stack only for a pod that passed its own tables -- and none did: not the aibots
-SDK's tool pods, not the built-in `threetears.agent.tools.serve`. With no anchor
-the guard cannot tell a first run from a wipe, so the first proxied call after
-every cold start was refused as `proxy assertion nonce replay`. Live, on a fresh
-stack: the admin agent's first tool call refused, the retry on the same
-conversation answered. The only test over the wiring asserted the anchor's type
-and never called it; a new one drives a bare pod's anchor through the real
-collection path.
+stack only for a pod that passed its own tables, and the aibots SDK's tool pods
+and the built-in `threetears.agent.tools.serve` pass none. With no anchor the
+guard cannot tell a first run from a wipe, so the first proxied call after every
+cold start was refused as `proxy assertion nonce replay`. Live, on a fresh stack:
+the admin agent's first tool call refused, the retry on the same conversation
+answered. The only test over the wiring asserted the anchor's type and never
+called it; a new one drives a bare pod's anchor through the real collection path.
 
-Behavior change: a pod that declares no tables now binds the shared `collections`
-bucket at connect, and fails closed if it cannot, exactly as a pod with tables
-already did. Every tool pod's minted grant already carries that bucket under its
-own scope, and a registry proxying the pod's calls needs the bucket itself.
+An in-process pod is not a tool-pod principal and gets no stack, as before. It
+runs inside an agent process on the agent's connection, authenticated as the
+agent, with an `{agent_id}.{instance}` pod id from which no tool-pod key scope can
+be derived. Building the stack for one raised inside the connected callback on
+every start, which exited the process and fed a supervisor restart loop (found in
+review before release: a deployed in-process admin tool pod would have crash-looped
+on the first lock to pick this version up). Declaring
+`collection_tables` on an in-process pod is now refused at wiring as a
+`ToolPodConfigError` naming `collection_tables`, so `run()` exits `EX_CONFIG` once.
+`ToolPodConfigError`'s `variable` may now name a bootstrap parameter where no
+environment variable is at fault. Tool servers the strategy classes run in-process
+are unchanged and still get no anchor from the bootstrap.
+
+Behavior change for every tool-pod principal that declares no tables:
+
+- it binds the shared `collections` bucket at connect, and fails closed if it
+  cannot, exactly as a pod with tables already did. Its minted grant already
+  carries that bucket under its own scope.
+- it subscribes the global cache-invalidation stream, so its L1 drops what a
+  peer replica replaced.
+- its object resolutions are cached in the shared L2 bucket instead of a
+  process-local dict, so one replica's resolution serves the others.
+
+Patch: the stack reaches pods that declared no tables; no API changes.
 
 ### `NamespaceCollection.list_owned_by` finds what a namespace owns
 
@@ -134,17 +154,60 @@ out the owner's own self-reference, which an agent namespace carries and which a
 walker must not follow. An empty name owns nothing.
 
 A new integration test measures the foreign key itself: the parent side IS enforced
-for DELETE against a real Postgres, as it was against YugabyteDB, so a consumer that
-deletes an owner first gets a `ForeignKeyViolationError`. Only a rename goes
-unenforced.
+for DELETE against a real Postgres, as it is against YugabyteDB, so a consumer that
+deletes an owner first gets a `ForeignKeyViolationError`. What YugabyteDB leaves
+unenforced is a parent rename; Postgres refuses that too.
 
 `NamespaceCollection.schema_in_use` answers the other half: whether any row still
-names a schema. One schema can be named by several rows -- a workspace namespace
-records its agent's schema as its own `schema_name` -- so a caller that deletes a
-row drops its schema only once this answers `False`. Dropping on the strength of
-one row takes every other row's data with it.
+names a schema, in either partition. One schema can be named by several rows -- a
+workspace namespace records its agent's schema as its own `schema_name` -- so a
+caller that deletes a row drops its schema only once this answers `False`. Dropping
+on the strength of one row takes every other row's data with it.
+
+Both raise `RuntimeError` on a collection with no L3 pool rather than answering.
+`schema_in_use` answering `False` there would tell a caller a schema is safe to drop
+without anything having been checked. The acl integration tests now run in CI.
 
 Minor: two new methods.
+
+### Every datasource driver raises one set of connection errors, carrying the server's reason
+
+`threetears.datasources.drivers` now exports `DriverConnectError`,
+`DriverAuthError` and `DriverMissingCredentialError`, defined once in
+`threetears.datasources.drivers.errors` and raised by every driver.
+
+**Breaking:** the asyncpg and Redshift driver modules each defined their own,
+unrelated `DriverConnectError`, so a caller holding one could not catch the other.
+Both definitions are gone. Import the type from `threetears.datasources.drivers`;
+`threetears.datasources.drivers.asyncpg_driver.DriverConnectError` and
+`threetears.datasources.drivers.redshift_driver.DriverConnectError` no longer
+exist as exports.
+
+A failed connect keeps the server's reason. The backend exception is still dropped
+with `from None`, because it can carry the password in nested context, but its
+SQLSTATE and message are read off it first and ride on the error (`sqlstate`,
+`server_message`, and in the text). The resolved password is masked out of the
+message. Before, a refused login read `connection failed for host:port/db
+(InterfaceError)`, exactly like an unreachable host, and that hid a locked
+production Redshift account for hours while every retry sent another failing login.
+
+A login the server refuses (SQLSTATE `28000` or `28P01`) raises `DriverAuthError`,
+a `DriverConnectError` subclass, so a caller can stop at the first one: Redshift
+locks a user after five consecutive failures and never unlocks it by itself.
+`AsyncpgDriver.test_connection` no longer re-wraps it into a plain
+`DriverConnectError`.
+
+**Behavior change:** the Redshift driver refuses to connect when no password
+resolves, with `DriverMissingCredentialError` (a `DriverAuthError`) naming the
+datasource, before any network attempt. `RedshiftConnectionConfig.password_ref`
+already documented this ("drivers raise at use time") while the driver connected
+with an empty password, which Redshift counts as a failed login. The asyncpg
+driver keeps connecting with no password when `password_ref` is `None`, which
+Postgres and Yugabyte document as trust authentication. Both drivers refuse a
+`password_ref` that is set but resolves to nothing.
+
+Minor, with one breaking import path: three new public types, a new module, and a
+refusal where the Redshift driver used to send an empty password.
 
 ## v0.48.0 -- 2026-09-21
 
