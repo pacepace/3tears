@@ -4,6 +4,16 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### The document analyzer mints its fence nonce
+
+`analyze_media` read a document's text in one call fenced with a nonce derived from
+the text. Nothing about a single call is cached, so it now mints one
+(`explained_fence(text, nonce=mint_nonce())`), as the rule for fences asks. The
+memory block, the ledger and the tool-result previews keep a derived nonce so they
+stay in the prompt cache. Patch bump.
+
 ## v0.50.0 -- 2026-09-23
 
 ### Material read back from storage reaches a model fenced, and the fence explains itself
