@@ -13,22 +13,27 @@ env-gated:
   driver is the cross-engine proof; silently no-op'ing in CI defeats
   it. when ``CI`` is unset (local dev), we :func:`pytest.skip` so
   laptop runs don't crash without the secret in the environment.
+- CI's integration job does not run ``packages/datasources``, so in
+  practice these run only by hand -- which is how the hash test below
+  stayed red against correct code from 2026-07-31 until it was next run.
 
-run locally:
+the credential is the ots agent's, for a production warehouse user, and
+Redshift locks a user after five failed logins: confirm ONE login with
+the password before running the file, never a run of refusals.
+
+run locally, from the repo root:
 
 .. code-block:: bash
 
-    OTS_REDSHIFT_PASSWORD=$(grep '^OTS_REDSHIFT_PASSWORD=' \\
+    OTS_REDSHIFT_PASSWORD=$(grep '^FOURTEENAIBOTS_OTS_REDSHIFT_PASSWORD=' \\
         /Users/pace/crypt/pub/dev-wsl/vscode/3tears/14-eng-ai-bot-agent-ots/.env \\
-        | cut -d= -f2) \\
-      uv run --project 3tears/packages/datasources pytest \\
-      tests/integration/test_redshift_driver_live.py -v
+        | cut -d= -f2-) \\
+      uv run pytest packages/datasources/tests/integration/test_redshift_driver_live.py -v
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import tracemalloc
 from typing import Any
@@ -39,6 +44,7 @@ from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers.base import Driver
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
+from threetears.datasources.introspection import compute_column_hash
 
 from ..unit._helpers.cancellation_contract import (
     DriverCancellationContractTest,
@@ -117,27 +123,25 @@ def _make_config(
 
 
 def _python_column_hash(cols: list[dict[str, Any]]) -> str:
-    """python-side MD5 over the column shape; cross-language invariant.
+    """python-side hash, delegating to the CANONICAL library helper.
 
-    payload formula: ``column_name + ':' + data_type + ':' + (is_nullable or '')``
-    per column, joined by ``','`` in ascending ``ordinal_position``.
-    matches the SQL ``MD5(LISTAGG(... WITHIN GROUP (ORDER BY ordinal_position)))``
-    in :data:`_REDSHIFT_TABLE_HASHES_SQL` byte-for-byte (Redshift's
-    LISTAGG WITHIN GROUP with the same separator and ordering is
-    byte-equivalent to postgres' STRING_AGG with the same ORDER BY
-    over the same input rows).
+    This used to carry its own copy of the payload formula. When Redshift's
+    LISTAGG limit forced the canonical payload to hash each column before the
+    aggregate, the asyncpg live test's copy was replaced with a delegation and
+    this one was missed: the cross-language test then failed against correct
+    code, unnoticed, because nothing runs this file on a schedule.
 
-    :param cols: column rows (must have ``column_name``, ``data_type``,
-        ``is_nullable``, ``ordinal_position`` keys)
+    A test that re-implements the thing it verifies proves the two
+    implementations agree, which is not the claim. Delegating means the
+    assertion compares the WAREHOUSE against the LIBRARY, which is.
+
+    :param cols: column rows carrying ``column_name``, ``data_type``,
+        ``is_nullable``, ``ordinal_position``
     :ptype cols: list[dict[str, Any]]
     :return: hex MD5 digest
     :rtype: str
     """
-    payload = ",".join(
-        f"{c['column_name']}:{c['data_type']}:{(c['is_nullable'] or '')}"
-        for c in sorted(cols, key=lambda c: c["ordinal_position"])
-    )
-    return hashlib.md5(payload.encode()).hexdigest()  # noqa: S324
+    return compute_column_hash(cols)
 
 
 # ---------------------------------------------------------------------------
