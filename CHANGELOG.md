@@ -4,6 +4,34 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.50.0 -- 2026-09-23
+
+### Material read back from storage reaches a model fenced, and the fence explains itself
+
+A model reads everything in its prompt the same way, so a stored memory, a
+document excerpt or a tool's preview that says "ignore your instructions" can be
+followed. `threetears.langgraph.fence` is the platform's fence for material:
+`untrusted_fence` wraps text in `<untrusted nonce=X>` ... `</untrusted nonce=X>`
+and disarms any fence tag inside it, so planted text cannot close its own
+fence; `untrusted_rule` says what the fence means; `with_fence_rules` adds the
+rule for every fence a call carries to its system prompt; `rules_missing` does
+the same for a prompt handed over as a string; `explained_fence` puts the rule
+in front of a block that goes into a prompt the caller does not assemble.
+
+Fenced now:
+
+- **The memory block** (`retrieve_memory_context`): memories, media excerpts and
+  chunk headlines, each section fenced, the block opening with its rule. Every
+  consumer that places the block in a prompt gets both.
+- **The memory ledger** (`ToolContextManager.build_ledger_prompt`) and the base
+  tool-result previews (`build_conversation_context`).
+- **The dream's consolidation** and **extraction's resolution step**: the stored
+  memories they read.
+- **Document analysis** (`media_analyze`): the document's text.
+
+A consumer that checked the memory block's text by exact match sees the items
+inside a fence now; the headers and the recall affordance are unchanged.
+
 ## v0.49.0 -- 2026-09-22
 
 ### A runaway AI-proposed regex is cut off instead of hanging the process
