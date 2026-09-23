@@ -1634,9 +1634,9 @@ class ToolServer:
             # guard, and a guard that guessed permissively would be the wrong answer here.
             #
             # INJECTED, and typed as the Protocol. The registry an anchor reads through belongs
-            # to the pod's bootstrap, which builds it only once NATS is up and never for a pod that
-            # declared no collection tables -- so this server takes the ANCHOR rather than the
-            # registry, and a caller with no L3 can still supply one.
+            # to the pod's bootstrap, which builds it only once NATS is up and never for an
+            # in-process pod riding its agent's connection -- so this server takes the ANCHOR
+            # rather than the registry, and a caller with no L3 can still supply one.
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
                 bucket_name="proxy_assertion_nonces",

@@ -19,11 +19,13 @@ rotates. The cache is fill-on-resolve, keyed by the VERIFIED
 ``(customer_id, object_id)`` (no cross-tenant reuse); failures are never cached.
 
 **Two caches, and which one you get is a property of the pod, not of this class.**
-A pod that declared Collection tables has a three-tier stack, and
-:class:`ToolServerBootstrap` hands this resolver the runtime's
+A tool-pod principal started through :class:`ToolServerBootstrap` has a collection stack
+whether or not it declared Collection tables of its own, and the bootstrap hands this
+resolver the runtime's
 :class:`~threetears.agent.tools.object_resolution_collection.ObjectResolutionCollection`
 -- L1 in this process, L2 shared with every replica under the pod's own key scope, so a
-resolution one replica paid for serves all of them. A pod that declared none keeps the
+resolution one replica paid for serves all of them. A pod with no stack -- an in-process
+pod riding its agent's connection, or a server built outside the bootstrap -- keeps the
 historical behaviour: a process-local ``dict`` with bounded FIFO eviction, which is a
 real cache for a single replica and no cache at all for the second one.
 
