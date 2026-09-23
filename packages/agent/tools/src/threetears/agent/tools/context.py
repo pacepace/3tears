@@ -10,6 +10,7 @@ from uuid import UUID, uuid7
 from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
 from threetears.observe import get_logger
+from threetears.langgraph.fence import explained_fence
 
 log = get_logger(__name__)
 
@@ -813,12 +814,18 @@ class ToolContextManager:
         """
         if not self._memory_refs_projection:
             return ""
-        lines = ["Previously recalled in this conversation (use memory_recall with the ID and type shown):"]
+        items = []
         for ref in self._memory_refs_projection:
             itype = ref["item_type"]
             tag = f"[{itype}:{ref['item_id']}]"
-            lines.append(f"- {tag} type: {itype} — {ref['short_desc']}")
-        return "\n".join(lines)
+            items.append(f"- {tag} type: {itype} — {ref['short_desc']}")
+        # A description is the stored item's own opening words: fenced as
+        # material, with the rule, since this block goes into a prompt this
+        # code does not assemble.
+        return (
+            "Previously recalled in this conversation (use memory_recall with the ID and type shown):\n"
+            + explained_fence("\n".join(items))
+        )
 
     # ------------------------------------------------------------------
     # Context building
@@ -861,10 +868,11 @@ class ToolContextManager:
             sections.append("\n".join(lines))
 
         if tool_results:
-            lines = ["[Tool Results]"]
-            for item in tool_results:
-                lines.append(f"- [{item['context_id']}] {item['key']}: {item['short_desc']}")
-            sections.append("\n".join(lines))
+            # A preview is the tool's own words: fenced as material, with its rule.
+            previews = "\n".join(
+                f"- [{item['context_id']}] {item['key']}: {item['short_desc']}" for item in tool_results
+            )
+            sections.append(f"[Tool Results]\n{explained_fence(previews)}")
 
         return "\n\n".join(sections)
 

@@ -37,6 +37,7 @@ from threetears.agent.tools.protocols import (
     VisionProvider,
 )
 from threetears.agent.tools.text_window import window_text
+from threetears.langgraph.fence import explained_fence
 from threetears.observe import get_logger
 
 __all__ = [
@@ -461,8 +462,10 @@ class AnalyzeMediaTool(TearsTool):
         window = window_text(extracted, max_chars=self._doc_max_chars)
         suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
         window_note = window.note(how="this analysis covers that part of the document only")
+        # The document's words are material; a document can carry an instruction.
         doc_prompt = (
-            f"{question}\n\n--- DOCUMENT TEXT ---\n{window.text}{chr(10) + window_note if window_note else ''}{suffix}"
+            f"{question}\n\n--- DOCUMENT TEXT ---\n{explained_fence(window.text)}"
+            f"{chr(10) + window_note if window_note else ''}{suffix}"
         )
 
         try:
