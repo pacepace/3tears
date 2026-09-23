@@ -23,6 +23,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
 from uuid_utils import uuid7
 
 from threetears.agent.memory.authorize import (
@@ -560,13 +561,15 @@ class MemoryExtractor:
             )
             prompt = self._build_resolution_prompt(candidates)
             response = await model.ainvoke(
-                [
-                    SystemMessage(
-                        content="You are a memory manager that decides how to handle "
-                        "new memories. Return only valid JSON.",
-                    ),
-                    HumanMessage(content=prompt),
-                ],
+                with_fence_rules(
+                    [
+                        SystemMessage(
+                            content="You are a memory manager that decides how to handle "
+                            "new memories. Return only valid JSON.",
+                        ),
+                        HumanMessage(content=prompt),
+                    ]
+                ),
                 **_invoke_identity_kwargs(user_id, conversation_id),
             )
             content = self._get_response_content(response)
@@ -636,16 +639,19 @@ class MemoryExtractor:
         :return: prompt string
         :rtype: str
         """
+        # An existing memory is read back from storage, and what was stored came
+        # from conversations and tools: it is fenced as material.
+        nonce = mint_nonce()
         sections = []
         for i, c in enumerate(candidates):
             section = f"Candidate {i}:\n  Type: {c['type']}\n  Content: {c['content']}"
             if c["similar_memories"]:
-                section += "\n  Existing similar memories:"
-                for m in c["similar_memories"]:
-                    section += (
-                        f"\n    - ID: {m['memory_id']} | [{m['type_memory']}] "
-                        f"{m['content']} (similarity: {m['similarity']:.0%})"
-                    )
+                existing = "\n".join(
+                    f"    - ID: {m['memory_id']} | [{m['type_memory']}] "
+                    f"{m['content']} (similarity: {m['similarity']:.0%})"
+                    for m in c["similar_memories"]
+                )
+                section += f"\n  Existing similar memories:\n{untrusted_fence(nonce, existing)}"
             else:
                 section += "\n  No similar existing memories found."
             sections.append(section)

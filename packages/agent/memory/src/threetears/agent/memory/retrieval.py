@@ -41,6 +41,7 @@ from langchain_core.embeddings import Embeddings
 
 from threetears.agent.memory.embedding_utils import _estimate_tokens, _safe_aembed_query
 from threetears.agent.memory.types import MemoryConfig
+from threetears.langgraph.fence import nonce_for, untrusted_fence, untrusted_rule
 from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
@@ -267,6 +268,14 @@ def _format_memory_context(
 ) -> str:
     """Format retrieved memories, media content, and chunks as structured context.
 
+    Every memory, media excerpt and chunk headline is read back from storage,
+    and what was stored came from a conversation, a document or a tool: any of
+    it can carry an instruction. Each section's items are fenced, and the block
+    opens with the rule for its fence, so a consumer that places the block
+    anywhere in a prompt gives the model both (``threetears.langgraph.fence``).
+    The fence's tag is derived from the items, so the same memories render the
+    same block and a cached prompt that carries it stays cached.
+
     :param memories: ranked memory rows
     :ptype memories: list[dict[str, Any]]
     :param media_content: ranked media content rows
@@ -284,6 +293,7 @@ def _format_memory_context(
     :rtype: str
     """
     lines: list[str] = []
+    fenced: list[tuple[int, list[str]]] = []
     _ledger = ledgered_ids or set()
 
     if _ledger:
@@ -345,21 +355,27 @@ def _format_memory_context(
             "some are about you and your own work -- a name inside a memory means whoever "
             "it names:"
         )
+        items = []
         for mem in memories:
             text, detailed = _get_display_text(mem, detail_threshold)
             marker = " (detailed)" if detailed else ""
             mem_id = str(mem["memory_id"])
-            lines.append(f"- [mem:{mem_id}]{_written(mem, tz)} {text}{marker}")
+            items.append(f"- [mem:{mem_id}]{_written(mem, tz)} {text}{marker}")
+        fenced.append((len(lines), items))
+        lines.append("")
 
     if media_content:
         if lines:
             lines.append("")
         lines.append("Relevant media context:")
+        items = []
         for mc in media_content:
             text, detailed = _get_display_text(mc, detail_threshold)
             marker = " (detailed)" if detailed else ""
             content_id = str(mc["content_id"])
-            lines.append(f"- [media:{content_id}] {text}{marker}")
+            items.append(f"- [media:{content_id}] {text}{marker}")
+        fenced.append((len(lines), items))
+        lines.append("")
 
     if deduped_chunks:
         if lines:
@@ -389,6 +405,7 @@ def _format_memory_context(
                 len(deduped_chunks),
                 _MAX_SURFACED_CHUNKS,
             )
+        items = []
         for chunk in surfaced_chunks:
             chunk_id = str(chunk["chunk_id"])
             # ``summary`` is the canonical headline. Fall back to a
@@ -433,10 +450,12 @@ def _format_memory_context(
             # The recall-affordance parenthetical is intentional --
             # without it the agent has no way to know it can pull the
             # verbatim chunk content if needed.
-            lines.append(
+            items.append(
                 f"- [chunk:{chunk_id}{location}]{parent_anchor} {headline} "
                 f"(call chunk_recall('{chunk_id}') to read in full)"
             )
+        fenced.append((len(lines), items))
+        lines.append("")
 
     if lines:
         lines.append("")
@@ -446,6 +465,10 @@ def _format_memory_context(
             "Chunk headlines above are summary-only; call chunk_recall(<chunk_id>) "
             "for the verbatim chunk content."
         )
+        tag = nonce_for("\n".join(item for _at, items in fenced for item in items))
+        for at, items in fenced:
+            lines[at] = untrusted_fence(tag, "\n".join(items))
+        lines.insert(0, untrusted_rule(tag))
 
     return "\n".join(lines)
 

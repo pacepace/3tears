@@ -4,7 +4,45 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.50.0 -- 2026-09-23
+
+### Material read back from storage reaches a model fenced, and the fence explains itself
+
+A model reads everything in its prompt the same way, so a stored memory, a
+document excerpt or a tool's preview that says "ignore your instructions" can be
+followed. `threetears.langgraph.fence` is the platform's fence for material:
+`untrusted_fence` wraps text in `<untrusted nonce=X>` ... `</untrusted nonce=X>`
+and disarms (and logs) any fence tag inside it, so planted text cannot close its
+own fence; `untrusted_rule` says what the fence means; `with_fence_rules` adds
+the rule for every fence a call carries to its system prompt; `rules_missing`
+does the same for a prompt handed over as a string; `explained_fence` puts the
+rule in front of a block that goes into a prompt the caller does not assemble;
+`mint_nonce`, `nonce_for`, `nonces_in` and `is_fenced` make and read the tags.
+`docs/adoption/langgraph.md` says what is fenced and what is not.
+
+Fenced now:
+
+- **The memory block** (`MemoryRetriever.retrieve` -> `RetrievalResult.context`):
+  memories, media excerpts and chunk headlines, each section fenced, the block
+  opening with its rule.
+- **The memory ledger** (`ToolContextManager.build_ledger_prompt`) and the base
+  tool-result previews (`build_conversation_context`).
+- **The dream's consolidation** and **extraction's resolution step**: the stored
+  memories they read.
+- **Document analysis** (`media_analyze`): the document's text.
+
+A block that is rendered again and again takes a nonce derived from its own
+text, so the same material renders byte-identical and a cached prompt stays
+cached.
+
+**Changed shape, for anyone matching text:** the memory block, the ledger and the
+`[Tool Results]` section carry their items inside a fence, led by the rule; the
+dream's, extraction's and document analysis's prompts carry the fence and the
+rule. Headers and recall affordances are unchanged. A tool's return and text a model
+wrote are not fenced by the platform; the adoption doc says why and who does it.
+
+Minor: a new public module, `threetears.langgraph.fence`, and a changed shape for
+the memory block, the ledger and the tool-result previews.
 
 ### The evaluator answers for a member of a group
 
