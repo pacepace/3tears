@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,7 +18,8 @@ from threetears.agent.tools.object_resolution_collection import (
     ObjectResolutionCollection,
 )
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
-from threetears.nats import Principal, kv_key_scope_for
+from threetears.core.testing.kv import FakeNatsClient
+from threetears.nats import Principal, Subjects, kv_key_scope_for
 from threetears.observe import HealthTier
 
 
@@ -148,22 +151,102 @@ class TestTheCollectionStackRidesTheLifecycle:
     discoverable while its own collections are still unwired.
     """
 
-    async def test_no_tables_means_no_stack_and_no_callback(self) -> None:
-        """a pod that declares no Collection tables pays for nothing.
+    async def test_a_pod_that_declares_no_tables_still_gets_the_runtime_stack(self) -> None:
+        """the runtime's own collections do not wait for the host to declare one of its own.
 
-        The opt-in is the tables, not a flag: there is no such thing as a collection stack with
-        nothing in it, and building one would bind the shared bucket for a pod that never reads it.
+        Every pod reads the shared bucket whether it declared tables or not: its proxy-assertion
+        guard's replay anchor lives there. Gating the stack on host tables left every pod that
+        declared none -- every SDK tool pod, and the built-in tool server -- with no anchor, so
+        the first proxied call after each cold start was refused as a replay that never happened.
         """
         server = _FakeToolServer()
         server.serve_event.set()
         bootstrap = _ConcreteBootstrap(server=server, register_log=[])
 
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(server.connected_callbacks) == 1
+        await server.connected_callbacks[0](_stack_nats_client())
+        registry = bootstrap.collection_registry
+        await run_task
+
+        assert registry is not None
+        assert isinstance(server.assertion_replay_anchor, CollectionReplayAnchor)
+        assert isinstance(server.object_resolution_cache, ObjectResolutionCollection)
+
+    async def test_a_bare_pods_anchor_answers_over_the_real_collection_path(self) -> None:
+        """the anchor a pod with no tables is handed actually records and re-reads a birth time.
+
+        Driven through the real collection over an in-memory KV rather than a mock, because the
+        wiring existed for a release without ever running: no pod reached it, and the only test
+        over it asserted the anchor's TYPE. The shared bucket is declared first, as the hub
+        declares it -- a pod only ever binds it.
+        """
+        nats = FakeNatsClient()
+        nats.ensure_kv_bucket = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
+        nats.subscribe_typed = AsyncMock(return_value=MagicMock())  # type: ignore[attr-defined]
+        nats.unsubscribe = AsyncMock()  # type: ignore[method-assign]
+        await nats.kv_bucket(name="collections", create_if_missing=True)
+        server = _FakeToolServer(pod_id=str(uuid.uuid4()))
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await server.connected_callbacks[0](nats)
+        anchor = server.assertion_replay_anchor
+        first = datetime.now(UTC)
+        recorded = await anchor.first_existed("proxy_assertion_nonces", now=first)
+        later = await anchor.first_existed("proxy_assertion_nonces", now=first + timedelta(minutes=5))
+        await run_task
+
+        assert recorded == first
+        assert later == first, "a later reader must get the ledger's birth time, not its own clock"
+
+    async def test_an_in_process_pod_gets_no_tool_pod_stack(self) -> None:
+        """a pod running inside an agent process is not a tool-pod principal.
+
+        It rides the agent's injected connection, authenticated as the AGENT, and its pod id
+        is ``{agent_id}.{instance}`` rather than a ``tool_pods.id``. No tool-pod key scope can
+        be derived from that id, and the connection's grant carries the agent's scope, not
+        ``tool_pod-<hex>``. Building the stack for it raised inside the connected callback on
+        every start, which exited the process and fed a supervisor restart loop.
+        """
+        server = _FakeToolServer(pod_id=Subjects.agent_inprocess_pod_id(uuid.uuid4(), uuid.uuid4()))
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
         await bootstrap.run_async()
 
+        assert server.serve_called is True
         assert server.connected_callbacks == []
         assert bootstrap.collection_registry is None
         assert bootstrap.object_resolutions is None
-        assert server.object_resolution_cache is None
+        assert server.assertion_replay_anchor is None
+
+    async def test_an_in_process_pod_that_declares_tables_is_refused_before_it_serves(self) -> None:
+        """declared tables need a tool-pod identity to scope them, and this pod has none.
+
+        Refused at wiring with the terminal config type, so ``run`` exits ``EX_CONFIG`` once
+        instead of the connected callback raising on every restart.
+        """
+        server = _FakeToolServer(pod_id=Subjects.agent_inprocess_pod_id(uuid.uuid4(), uuid.uuid4()))
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+
+        with pytest.raises(ToolPodConfigError) as caught:
+            await bootstrap.run_async()
+
+        assert caught.value.variable == "collection_tables"
+        assert server.pod_id in str(caught.value)
+        assert server.serve_called is False
+        assert server.connected_callbacks == []
 
     async def test_the_runtime_collection_is_built_and_handed_to_the_server(self) -> None:
         """the stack carries a payload: the resolver's cache is wired without the host asking.

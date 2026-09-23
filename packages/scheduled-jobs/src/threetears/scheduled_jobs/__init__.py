@@ -19,6 +19,9 @@ stripped out. The public surface:
   consumer can use as-is.
 - :class:`JobConfig` / :class:`JobTrigger` / :class:`JobFireResult` + the
   schedule-type / fire-status Literals -- the vocabulary.
+- :class:`BackgroundDispatch` -- hands each fire off from the tick and
+  runs it as its own task, one per kind in flight, so a slow fire no
+  longer holds up every other kind in the tick.
 - the event-name constants + the cardinality-bounded metrics emitter.
 
 Version is sourced from the installed package metadata so a release that
@@ -34,6 +37,15 @@ try:
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
+from threetears.scheduled_jobs.background import (
+    DEFAULT_FIRE_TIMEOUT_SECONDS,
+    DEFAULT_MAX_CONCURRENT_FIRES,
+    IN_FLIGHT_LOCK_KEY_PREFIX,
+    IN_FLIGHT_SKIP_OUTPUT_KEY,
+    REAP_MARGIN_SECONDS,
+    BackgroundDispatch,
+    in_flight_lock_key,
+)
 from threetears.scheduled_jobs.collections import (
     JobFireCollection,
     ScheduledJobCollection,
@@ -52,12 +64,16 @@ from threetears.scheduled_jobs.entities import (
     ScheduledJobEntity,
 )
 from threetears.scheduled_jobs.events import (
+    EVENT_FIRE_COMPLETED,
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
     EVENT_FIRE_FAILED,
+    EVENT_FIRE_HANDED_OFF,
     EVENT_FIRE_REAPED,
     EVENT_FIRE_SKIPPED_BUSY,
+    EVENT_FIRE_SKIPPED_IN_FLIGHT,
     EVENT_FIRE_UNROUTED_KIND,
+    EVENT_FIRE_WAITING_EXCLUSION_GROUP,
     EVENT_TICK_COMPLETED,
     EVENT_TICK_STARTED,
 )
@@ -101,18 +117,27 @@ from threetears.scheduled_jobs.types import (
 __all__ = [
     "DEFAULT_DISPATCH_REAP_AFTER_SECONDS",
     "DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND",
+    "DEFAULT_FIRE_TIMEOUT_SECONDS",
     "DEFAULT_JOB_CONFIG",
+    "DEFAULT_MAX_CONCURRENT_FIRES",
     "DEFAULT_TICK_DUE_LIMIT",
     "DEFAULT_TICK_LOCK_KEY",
+    "EVENT_FIRE_COMPLETED",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
     "EVENT_FIRE_FAILED",
+    "EVENT_FIRE_HANDED_OFF",
     "EVENT_FIRE_REAPED",
     "EVENT_FIRE_SKIPPED_BUSY",
+    "EVENT_FIRE_SKIPPED_IN_FLIGHT",
     "EVENT_FIRE_UNROUTED_KIND",
+    "EVENT_FIRE_WAITING_EXCLUSION_GROUP",
     "EVENT_TICK_COMPLETED",
     "EVENT_TICK_STARTED",
     "FORBIDDEN_LABEL_NAMES",
+    "IN_FLIGHT_LOCK_KEY_PREFIX",
+    "IN_FLIGHT_SKIP_OUTPUT_KEY",
+    "REAP_MARGIN_SECONDS",
     "SCHEDULED_JOBS_DRIFT_SECONDS",
     "SCHEDULED_JOBS_FAILURES_TOTAL",
     "SCHEDULED_JOBS_FIRES_TOTAL",
@@ -120,6 +145,7 @@ __all__ = [
     "SCHEDULED_JOBS_PROMETHEUS_NAMES",
     "SCHEDULED_JOBS_TICK_DURATION_SECONDS",
     "UNROUTED_KIND_REASON",
+    "BackgroundDispatch",
     "DispatchCallback",
     "DispatchRoutes",
     "DueSchedule",
@@ -138,6 +164,7 @@ __all__ = [
     "ScheduledJobsMetricsEmitter",
     "compute_next_fire_at",
     "get_scheduled_jobs_emitter",
+    "in_flight_lock_key",
     "job_fires_table",
     "reap_after_seconds_for_kind",
     "register",

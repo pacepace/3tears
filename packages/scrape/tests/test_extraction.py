@@ -1343,3 +1343,339 @@ class TestExtractMultiRowFieldsFromImages:
             result = await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
         assert result == [{"employer": "Acme Corp", "affected_count": 1}]
         assert ainvoke_mock.await_count == 2
+
+
+# ===========================================================================
+# regex candidates run under a time limit, with stdlib re's exact results
+# ===========================================================================
+
+# Live, 2026-09-22: an LLM proposed this shape for a state WARN page whose records carry
+# every literal it needs, but not in the order it needs them. The lazy line-skipping group
+# then backtracks across the rest of the page from every starting line -- quadratic in the
+# page, 20+ minutes on the real one, on the caller's event-loop thread.
+_BACKTRACKING_PATTERN = (
+    r"(?P<employer>[^\n]+)\n(?:[^\n]+\n)*?COUNTY:\s*(?P<county>[^\n]+)\n"
+    r"# AFFECTED:\s*(?P<affected_count>\d+)\nEFFECTIVE DATE:\s*(?P<effective_date>[^\n]+)"
+)
+_BACKTRACKING_PAGE = "".join(
+    f"Employer {i}\nAddress {i}\nCOUNTY: Salt Lake\nNotice received\n# AFFECTED: {i}\nEFFECTIVE DATE: 1/1/2020\n"
+    for i in range(2000)
+)
+_ROW_SCHEMA = {"employer": str, "county": str, "affected_count": int, "effective_date": str}
+
+
+class TestRegexCandidatesRunUnderATimeLimit:
+    @pytest.mark.timeout(60)
+    def test_a_backtracking_row_candidate_is_rejected_not_left_running(self, monkeypatch):
+        import time
+
+        import threetears.scrape.extraction as extraction
+
+        monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 0.5)
+        started = time.monotonic()
+        result = validate_regex_row_candidate(_BACKTRACKING_PAGE, _BACKTRACKING_PATTERN, _ROW_SCHEMA)
+        elapsed = time.monotonic() - started
+
+        assert result.valid is False
+        assert result.errors == ["regex still matching after 0.5s on this page; rejected"]
+        assert elapsed < 5, f"the candidate ran {elapsed:.1f}s despite a 0.5s limit"
+
+    @pytest.mark.timeout(60)
+    def test_a_backtracking_single_match_candidate_is_rejected_not_left_running(self, monkeypatch):
+        import time
+
+        import threetears.scrape.extraction as extraction
+
+        monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 0.5)
+        started = time.monotonic()
+        result = validate_regex_candidate(_BACKTRACKING_PAGE, _BACKTRACKING_PATTERN + r"\nNO SUCH LINE", _ROW_SCHEMA)
+        elapsed = time.monotonic() - started
+
+        assert result.valid is False
+        assert result.errors == ["regex still matching after 0.5s on this page; rejected"]
+        assert elapsed < 5, f"the candidate ran {elapsed:.1f}s despite a 0.5s limit"
+
+    @pytest.mark.timeout(60)
+    def test_the_next_candidate_after_a_timeout_still_runs(self, monkeypatch):
+        import threetears.scrape.extraction as extraction
+
+        monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 0.5)
+        validate_regex_row_candidate(_BACKTRACKING_PAGE, _BACKTRACKING_PATTERN, _ROW_SCHEMA)
+        monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 5.0)
+        schema = {"employer": str, "county": str, "affected_count": int}
+        pattern = r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]*)\nAffected: (?P<affected_count>[^\n]+)"
+        result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, pattern, schema)
+        assert result.valid is True
+        assert len(result.records) == 2
+
+    def test_a_sound_pattern_over_a_large_page_is_not_cut_off(self):
+        page = "".join(f"Employer {i}\nCounty: Wayne\nAffected: {i}\n\n" for i in range(20000))
+        pattern = r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]+)\nAffected: (?P<affected_count>\d+)"
+        result = validate_regex_row_candidate(page, pattern, {"employer": str, "county": str, "affected_count": int})
+        assert result.valid is True
+        assert result.total_rows_matched == 20000
+
+    @pytest.mark.parametrize("pattern", [r"(?V1)(?P<employer>\w+)", r"(?au)(?P<employer>\w+)"])
+    def test_syntax_stdlib_re_refuses_is_still_an_invalid_candidate(self, pattern):
+        result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, pattern, {"employer": str})
+        assert result.valid is False
+        assert any("invalid regex" in e for e in result.errors)
+
+    def test_the_limit_is_public(self):
+        from threetears.scrape import extraction
+
+        assert "REGEX_TIMEOUT_SECONDS" in extraction.__all__
+        assert extraction.REGEX_TIMEOUT_SECONDS >= 1.0
+
+
+# Matching moved into a worker process. Its results must be exactly what stdlib ``re`` gives
+# in-process, including on the Unicode inputs where other engines differ: a vulgar fraction, a
+# letter written as base + combining accent (common in PDF-derived text), and punctuation classes.
+_UNICODE_ROWS = (
+    "Acme 2½ Corp\nCounty: Oakland\n\n"
+    "Cafe\u0301 Zu\u0308rich\nCounty: Wayne\n\n"
+    "Smith & Sons, Inc.\nCounty: Macomb\n\n"
+    "Ōsaka Trading\u00a0Co\nCounty: Kent\n"
+)
+_DIFFERENTIAL_ROW_PATTERNS = [
+    r"(?P<employer>\w+)",
+    r"(?P<employer>\w+\b)",
+    r"(?P<employer>[\w .&-]+)\nCounty: (?P<county>\w+)",
+    r"^(?P<employer>\S[^\n]*)$\n^County:\s*(?P<county>.*?)$",
+    r"(?i)county: (?P<county>macomb|kent)",
+    r"(?P<employer>.+?)\nCounty",
+    r"(?P<employer>[^\n]+)\n(?:[^\n]+\n)*?County: (?P<county>\w+)",
+    r"(?P<employer>[^\n,]+)(?P<suffix>, Inc\.)?\nCounty: (?P<county>\w+)",
+]
+
+
+@pytest.mark.parametrize("pattern", _DIFFERENTIAL_ROW_PATTERNS)
+def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern):
+    import re
+
+    from threetears.scrape.extraction import _normalize_whitespace_text
+
+    compiled = re.compile(pattern, re.MULTILINE | re.DOTALL)
+    expected = [
+        {name: None if value is None else _normalize_whitespace_text(value) for name, value in m.groupdict().items()}
+        for m in compiled.finditer(_UNICODE_ROWS)
+    ]
+    schema = dict.fromkeys(compiled.groupindex, str)
+
+    result = validate_regex_row_candidate(_UNICODE_ROWS, pattern, schema)
+
+    assert expected, f"{pattern!r} matched nothing -- this differential case proves nothing"
+    assert result.total_rows_matched == len(expected)
+    assert result.records == [row for row in expected if all(row.values())]
+
+
+class TestBoundedRegexIsThreadAndForkSafe:
+    @pytest.mark.timeout(60)
+    def test_concurrent_threads_each_get_their_own_answer(self):
+        """One worker, many callers: the lock must keep each request paired with its own answer."""
+        import re
+        from concurrent.futures import ThreadPoolExecutor
+
+        from threetears.scrape.bounded_regex import bounded_matches
+
+        def _call(n: int) -> tuple[int, list[dict[str, str | None]], list[dict[str, str | None]]]:
+            text = "".join(f"row{n}-{i}\n" for i in range(50 + n))
+            pattern = rf"(?P<row>row{n}-\d+)"
+            expected = [m.groupdict() for m in re.finditer(pattern, text)]
+            got = bounded_matches(pattern, re.MULTILINE, text, mode="finditer", timeout=10.0)
+            return n, got, expected
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(_call, [n % 16 for n in range(160)]))
+        for n, got, expected in results:
+            assert got == expected, f"caller {n} got another caller's answer"
+
+    @pytest.mark.timeout(60)
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_a_forked_child_starts_its_own_worker_and_leaves_the_parents_alone(self):
+        """Fork while another thread is inside a slow match, holding the lock. The child inherits
+        that held lock with no thread to release it, and the parent's worker pipes: without its
+        own fresh lock and worker it would hang, or talk over the parent's request."""
+        import multiprocessing
+        import re
+        import threading
+        import time
+
+        from threetears.scrape.bounded_regex import bounded_matches
+
+        slow_done = threading.Event()
+
+        def _slow() -> None:
+            try:
+                bounded_matches(_BACKTRACKING_PATTERN, re.MULTILINE, _BACKTRACKING_PAGE, mode="finditer", timeout=3.0)
+            except TimeoutError:
+                pass
+            slow_done.set()
+
+        holder = threading.Thread(target=_slow)
+        holder.start()
+        time.sleep(0.3)  # the holder is now inside its match, holding the lock
+        context = multiprocessing.get_context("fork")
+        results = context.Queue()
+        child = context.Process(target=_child_matches, args=(results,))
+        child.start()
+        child.join(timeout=20)
+        if child.exitcode is None:
+            child.kill()
+        holder.join()
+
+        assert child.exitcode == 0, "the forked child could not match on its own"
+        assert results.get(timeout=5) == [{"b": "y"}]
+        assert slow_done.is_set()
+        assert bounded_matches(r"(?P<c>z)", re.MULTILINE, "z", mode="search", timeout=10.0) == [{"c": "z"}]
+
+
+def _child_matches(results):  # a forked child's body; module level so the fork context can run it
+    from threetears.scrape.bounded_regex import bounded_matches
+
+    results.put(bounded_matches(r"(?P<b>y)", 0, "y", mode="search", timeout=10.0))
+
+
+class _Interrupted(BaseException):
+    """What a signal handler, KeyboardInterrupt or pytest-timeout raises mid-call."""
+
+
+class TestBoundedRegexSurvivesInterruptionAndFailure:
+    @pytest.mark.timeout(60)
+    def test_an_interrupted_call_never_hands_its_answer_to_the_next_caller(self, monkeypatch):
+        """Interrupt a call after its request is sent and before its answer is read. The worker
+        still owes that answer; kept, it would give it to the next caller instead of theirs."""
+        import threetears.scrape.bounded_regex as bounded_regex
+
+        real_read = vars(bounded_regex)["_read_line_by"]
+        calls = {"n": 0}
+
+        def _interrupted_once(worker, deadline):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _Interrupted
+            return real_read(worker, deadline)
+
+        monkeypatch.setattr(bounded_regex, "_read_line_by", _interrupted_once)
+        with pytest.raises(_Interrupted):
+            bounded_regex.bounded_matches(r"(?P<fruit>apple)", 0, "apple", mode="search", timeout=10.0)
+
+        assert bounded_regex.bounded_matches(r"(?P<veg>kale)", 0, "kale", mode="search", timeout=10.0) == [
+            {"veg": "kale"}
+        ]
+        assert bounded_regex.bounded_matches(r"(?P<nut>pecan)", 0, "pecan", mode="search", timeout=10.0) == [
+            {"nut": "pecan"}
+        ]
+
+    @pytest.mark.timeout(60)
+    def test_an_interrupted_runaway_does_not_block_the_next_large_request(self, monkeypatch):
+        """Interrupt a call while its worker is deep in a runaway match. The next caller sends a
+        large page: kept, the busy worker would never read it and the send would block forever."""
+        import time
+
+        import threetears.scrape.bounded_regex as bounded_regex
+
+        real_read = vars(bounded_regex)["_read_line_by"]
+        calls = {"n": 0}
+
+        def _interrupted_once(worker, deadline):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                time.sleep(0.2)  # the worker is now inside the runaway match
+                raise _Interrupted
+            return real_read(worker, deadline)
+
+        monkeypatch.setattr(bounded_regex, "_read_line_by", _interrupted_once)
+        with pytest.raises(_Interrupted):
+            bounded_regex.bounded_matches(_BACKTRACKING_PATTERN, 0, _BACKTRACKING_PAGE, mode="finditer", timeout=30.0)
+
+        big_page = "x" * 2_000_000 + "needle"
+        started = time.monotonic()
+        found = bounded_regex.bounded_matches(r"(?P<n>needle)", 0, big_page, mode="search", timeout=10.0)
+        assert found == [{"n": "needle"}]
+        assert time.monotonic() - started < 10
+
+    @pytest.mark.timeout(120)
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_a_child_forked_while_another_thread_is_sending_never_hangs(self):
+        """Fork repeatedly while another thread keeps sending large requests. A child that
+        inherited a held buffer lock would hang in its fork hook; every child must finish."""
+        import multiprocessing
+        import threading
+
+        from threetears.scrape.bounded_regex import bounded_matches
+
+        stop = threading.Event()
+        big_page = "y" * 3_000_000 + "needle"
+
+        def _send_forever() -> None:
+            while not stop.is_set():
+                bounded_matches(r"(?P<n>needle)", 0, big_page, mode="search", timeout=30.0)
+
+        sender = threading.Thread(target=_send_forever)
+        sender.start()
+        context = multiprocessing.get_context("fork")
+        exit_codes = []
+        try:
+            for _ in range(12):
+                results = context.Queue()
+                child = context.Process(target=_child_matches, args=(results,))
+                child.start()
+                child.join(timeout=10)
+                if child.exitcode is None:
+                    child.kill()
+                    child.join()
+                exit_codes.append(child.exitcode)
+        finally:
+            stop.set()
+            sender.join()
+        assert exit_codes == [0] * 12, f"forked children hung or failed: {exit_codes}"
+
+    @pytest.mark.timeout(60)
+    def test_an_orphaned_worker_is_stopped_by_its_own_cpu_cap(self):
+        """If the parent dies mid-match nobody kills the worker; its per-request CPU cap must stop
+        a runaway match on its own. Run the worker directly, send a runaway with a 1s cap, and never
+        kill it."""
+        import json
+        import subprocess
+        import sys
+        import time
+
+        import threetears.scrape.bounded_regex as bounded_regex
+
+        worker = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", vars(bounded_regex)["_WORKER_SOURCE"]],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        request = {"pattern": _BACKTRACKING_PATTERN, "flags": 0, "text": _BACKTRACKING_PAGE * 4, "mode": "finditer"}
+        request["cpu_seconds"] = 1
+        assert worker.stdin is not None
+        worker.stdin.write((json.dumps(request) + "\n").encode("ascii"))
+        worker.stdin.flush()
+        started = time.monotonic()
+        try:
+            returncode = worker.wait(timeout=30)
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+                worker.wait()
+            worker.stdin.close()
+        assert returncode != 0, "the worker finished the runaway instead of being stopped"
+        assert time.monotonic() - started < 30
+
+    def test_a_worker_failure_rejects_that_candidate_not_the_round(self, monkeypatch):
+        import threetears.scrape.extraction as extraction
+
+        def _broken(*args, **kwargs):
+            raise RuntimeError("regex worker exited without answering")
+
+        monkeypatch.setattr(extraction, "bounded_matches", _broken)
+        row = validate_regex_row_candidate(_TEXT_ROWS_PAGE, r"(?P<employer>[^\n]+)", {"employer": str})
+        single = validate_regex_candidate(_TEXT_PAGE, r"(?P<employer>[^\n]+)", {"employer": str})
+
+        assert row.valid is False
+        assert row.errors == ["regex could not be evaluated: regex worker exited without answering"]
+        assert single.valid is False
+        assert single.errors == ["regex could not be evaluated: regex worker exited without answering"]

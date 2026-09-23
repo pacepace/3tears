@@ -36,6 +36,9 @@ from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
 from ._helpers.driver_shims import (
+    REDSHIFT_TEST_PASSWORD,
+    REDSHIFT_TEST_PASSWORD_ENV,
+    REDSHIFT_TEST_PASSWORD_REF,
     build_mock_redshift_connection,
     build_transaction_capable_pool,
 )
@@ -46,6 +49,18 @@ _DRIVERS_DIR = Path(__file__).resolve().parents[2] / "src" / "threetears" / "dat
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _redshift_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """make :data:`REDSHIFT_TEST_PASSWORD_REF` resolvable for every test in this module.
+
+    :param monkeypatch: pytest's environment patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: None
+    :rtype: None
+    """
+    monkeypatch.setenv(REDSHIFT_TEST_PASSWORD_ENV, REDSHIFT_TEST_PASSWORD)
 
 
 @pytest.fixture
@@ -61,7 +76,7 @@ def redshift_config() -> RedshiftConnectionConfig:
         port=5439,
         database="analytics",
         username="rs_user",
-        password_ref=None,
+        password_ref=REDSHIFT_TEST_PASSWORD_REF,
         executor_max_workers=1,
         connection_cache_size=1,
         query_timeout_seconds=300,

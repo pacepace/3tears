@@ -35,6 +35,35 @@ What it gives you:
   `DEFAULT_TICK_LOCK_KEY`; consumers running more than one pump in a
   process MUST vary it, or the pumps serialise against each other for no
   reason.
+- **`BackgroundDispatch` -- for fires that take long.** The pump awaits
+  each handler inline, so a tick lasts as long as all its fires together
+  and a kind due every minute waits behind every slow one. Wrap the
+  handlers (`routes = {kind: background.wrap(h) ...}`) and each fire is
+  handed off (`JobFireResult.handed_off`: the tick leaves the row
+  `'dispatching'` and moves on), runs as its own task, and finalizes its
+  own row with its real outcome. One fire per kind is in flight at a
+  time: in-process, and across pods through `nats_distributed_lock` on
+  `in_flight_lock_key(kind)`. A fire that finds its kind still running is
+  recorded as a success whose output carries `IN_FLIGHT_SKIP_OUTPUT_KEY`.
+  `max_concurrent` bounds how many run at once. The reaper counts from the
+  tick, so each fire runs under the smaller of its own timeout and the time
+  left before its kind's reap threshold (less `REAP_MARGIN_SECONDS`), and a
+  timeout that could never fit is refused at construction; pass the pump's
+  own `config`. Each fire is recorded exactly once: a process that dies
+  mid-fire leaves the row to the reaper, as before, and `aclose()` records
+  what it cancels (a fire whose body already finished keeps its result).
+  Opt-in: a pump that does not wrap its handlers behaves exactly as before.
+  **Exclusion groups** keep kinds that share something (one client object,
+  one file handle) off each other: `exclusion_groups={kind: group}`. Kinds
+  in one group never run at the same time; they take turns in the order
+  they reach the group. A fire waits for its group's turn *before* it takes
+  a slot and before its timeout starts, so waiting costs neither; the reap
+  clock does keep running, so the wait is bounded by it, and a fire still
+  waiting when its time runs out is recorded as failed without running,
+  naming its group. `EVENT_FIRE_WAITING_EXCLUSION_GROUP` logs each wait with
+  the kind holding the turn. Groups hold within one `BackgroundDispatch`
+  (one process). A waiting fire holds its kind's cross-pod in-flight lock,
+  so another pod records that kind as skipped instead of running it twice.
 - **`compute_next_fire_at(...)`** -- the pure reschedule math for every
   schedule type (`daily_at`, `every_n_hours`, `random_within_window`,
   `one_shot_at`, `cron`, `relative_delay`, `interval`) and both

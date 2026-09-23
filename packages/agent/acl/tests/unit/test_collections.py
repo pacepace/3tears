@@ -535,6 +535,70 @@ class TestNamespaceListIdsUnderName:
         pool.fetch.assert_not_awaited()
 
 
+class TestNamespaceListOwnedBy:
+    """``NamespaceCollection.list_owned_by`` finds what a namespace owns, or refuses to guess."""
+
+    @pytest.mark.asyncio
+    async def test_the_owned_rows_come_back_as_entities(self) -> None:
+        child_id = uuid7()
+        pool = AsyncMock()
+        pool.fetch.return_value = [
+            {
+                "row_scope": "platform",
+                "namespace_id": child_id,
+                "name": "tools.probe.example.1-0",
+                "namespace_type": "tool",
+                "owner_namespace": "agents.owner",
+            },
+        ]
+        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        owned = await coll.list_owned_by("agents.owner")
+        assert [entity.id for entity in owned] == [child_id]
+        assert pool.fetch.await_args.args[1] == "agents.owner"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_owner_owns_nothing_and_asks_nothing(self) -> None:
+        """an empty name must never reach the query, where it would match every row owned by ``''``."""
+        pool = AsyncMock()
+        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        assert await coll.list_owned_by("") == []
+        pool.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_pool_refuses_rather_than_answering_nothing_is_owned(self) -> None:
+        """an empty list tells a teardown walker the owner is a leaf; with no pool that is a guess."""
+        coll = _make_collection(NamespaceCollection, l3_pool=None)
+        with pytest.raises(RuntimeError, match="list_owned_by requires an L3 pool"):
+            await coll.list_owned_by("agents.owner")
+
+
+class TestNamespaceSchemaInUse:
+    """``NamespaceCollection.schema_in_use`` says whether a schema is still named, or refuses to guess."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("named", [True, False])
+    async def test_it_answers_what_the_table_says(self, named: bool) -> None:
+        pool = AsyncMock()
+        pool.fetchval.return_value = named
+        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        assert await coll.schema_in_use("agent_0123") is named
+        assert pool.fetchval.await_args.args[1] == "agent_0123"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_schema_name_is_never_in_use_and_asks_nothing(self) -> None:
+        pool = AsyncMock()
+        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        assert await coll.schema_in_use("") is False
+        pool.fetchval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_pool_refuses_rather_than_answering_the_schema_is_free(self) -> None:
+        """``False`` means safe to drop; answering it without looking hands a caller a DROP SCHEMA."""
+        coll = _make_collection(NamespaceCollection, l3_pool=None)
+        with pytest.raises(RuntimeError, match="schema_in_use requires an L3 pool"):
+            await coll.schema_in_use("agent_0123")
+
+
 class TestEnsureGroupRoleAssignment:
     """``RoleAssignmentCollection.ensure_group_role_assignment`` idempotent."""
 

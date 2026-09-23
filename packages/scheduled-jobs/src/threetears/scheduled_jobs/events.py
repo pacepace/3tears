@@ -16,12 +16,16 @@ The tick engine logs only ids, the ``kind`` discriminator, the
 from __future__ import annotations
 
 __all__ = [
+    "EVENT_FIRE_COMPLETED",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
     "EVENT_FIRE_FAILED",
+    "EVENT_FIRE_HANDED_OFF",
     "EVENT_FIRE_REAPED",
     "EVENT_FIRE_SKIPPED_BUSY",
+    "EVENT_FIRE_SKIPPED_IN_FLIGHT",
     "EVENT_FIRE_UNROUTED_KIND",
+    "EVENT_FIRE_WAITING_EXCLUSION_GROUP",
     "EVENT_TICK_COMPLETED",
     "EVENT_TICK_STARTED",
 ]
@@ -56,3 +60,22 @@ EVENT_FIRE_REAPED: str = "3tears.scheduled_jobs.fire.reaped"
 # handler is registered -- which also means this event repeats every
 # tick until someone fixes the wiring. That is the intended loudness.
 EVENT_FIRE_UNROUTED_KIND: str = "3tears.scheduled_jobs.fire.unrouted_kind"
+
+# Handoff -- emitted by the tick when a dispatch callback returned
+# ``handed_off=True``: the fire's row stays ``'dispatching'`` and the tick
+# writes nothing more, because the fire now belongs to whoever took it
+# (:class:`~threetears.scheduled_jobs.background.BackgroundDispatch`).
+EVENT_FIRE_HANDED_OFF: str = "3tears.scheduled_jobs.fire.handed_off"
+
+# Background fires -- emitted by :mod:`threetears.scheduled_jobs.background`.
+# ``EVENT_FIRE_COMPLETED`` is a handed-off fire whose row it has just
+# finalized (a failure also emits ``EVENT_FIRE_FAILED``);
+# ``EVENT_FIRE_SKIPPED_IN_FLIGHT`` is a fire recorded as skipped because
+# the same kind was still running, in this process or on another pod.
+EVENT_FIRE_COMPLETED: str = "3tears.scheduled_jobs.fire.completed"
+EVENT_FIRE_SKIPPED_IN_FLIGHT: str = "3tears.scheduled_jobs.fire.skipped_in_flight"
+# ``EVENT_FIRE_WAITING_EXCLUSION_GROUP`` is a fire waiting for its turn in
+# its exclusion group because another kind of the group is running or
+# queued; it carries the group and the kind holding the turn (``None``
+# for the moment the turn is passing to the next fire in line).
+EVENT_FIRE_WAITING_EXCLUSION_GROUP: str = "3tears.scheduled_jobs.fire.waiting_exclusion_group"

@@ -4,6 +4,211 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.49.0 -- 2026-09-22
+
+### A runaway AI-proposed regex is cut off instead of hanging the process
+
+scrape's eval loop validates each regex the LLM proposes (and replays cached
+regex recipes) against the page text. It ran them on stdlib `re`, which cannot
+be interrupted, on the caller's event-loop thread. A lazily repeated group can
+backtrack catastrophically: live, a proposed
+`(?P<employer>[^\n]+)\n(?:[^\n]+\n)*?COUNTY:...` ran for 20+ minutes on one
+state's WARN page and stopped every other task in the process.
+
+Matching now runs in `threetears.scrape.bounded_regex`: a small worker process
+that imports only the standard library and matches with stdlib `re`, so results
+are exactly what they were. It is started once and reused. A candidate still
+matching after `REGEX_TIMEOUT_SECONDS` (5s) is rejected like an invalid one, and
+the worker is killed and replaced. Syntax errors are still reported in-process,
+unchanged. The eval loop validates candidates and replays recipes with
+`asyncio.to_thread`, so the event loop keeps serving other tasks while a
+candidate is checked. Concurrent threads take turns on the worker. Any
+interruption mid-call (a signal, `KeyboardInterrupt`, an error) discards the
+worker, so no caller can receive another's answer. A forked child starts its
+own worker. The worker caps its own CPU time per request, so it can't run on for
+hours if its parent dies mid-match. A worker failure rejects that one candidate
+instead of aborting the round.
+
+### A slow fire no longer holds up every other kind in the tick
+
+`scheduled_tick_job` awaits each handler inline, so a tick lasts as long as all
+its fires together. In a consumer routing 52 kinds through one pump, ticks
+landed every ~18 minutes: a kind scheduled every 60 seconds fired 36 times in
+11 hours, waiting behind a five-minute backfill, a websocket listened to for
+three, and a handful of others.
+
+`BackgroundDispatch` wraps a pump's handlers. Each fire is handed off, runs as
+its own task, and finalizes its own `job_fires` row with its real outcome, so
+the tick returns as soon as every row is staged. One fire per kind is in flight
+at a time, in the process and across pods (`nats_distributed_lock` on
+`in_flight_lock_key(kind)`); a fire that finds its kind still running is
+recorded as a success whose output carries `IN_FLIGHT_SKIP_OUTPUT_KEY`. It
+bounds concurrency and each fire's duration (per kind if needed). Because the
+reaper counts from the tick, a fire runs under the smaller of its own timeout
+and the time left before its kind's reap threshold (less `REAP_MARGIN_SECONDS`),
+and a fire still waiting for a slot when that time runs out is recorded then, so
+the reaper never takes a live fire; a timeout that could never fit is refused
+at construction. Each fire is finalized exactly once, counted in the metrics by
+the dispatcher itself (timeouts and cancellations under their own new failure
+reasons, `timeout` and `cancelled`), and `aclose()` records what it cancels. A
+timed-out fire names its kind and the limit.
+
+Kinds that share something (a source's poll and backfill working through one
+client object, say) can be kept off each other with
+`BackgroundDispatch(exclusion_groups={kind: group})`: kinds in one group take
+turns in the order they reach the group. A fire waits for its group's turn
+before it takes a concurrency slot and before its timeout starts, so waiting
+costs neither; the reap clock keeps running and bounds the wait, and a fire
+still waiting when its time runs out is recorded as failed without running,
+naming its group. `EVENT_FIRE_WAITING_EXCLUSION_GROUP` logs each wait with the
+kind holding the turn. Groups hold within one `BackgroundDispatch` (one
+process), which is where what they protect lives. A fire waiting for its turn
+already holds its kind's cross-pod in-flight lock: it is in flight, so another
+pod records that kind as skipped rather than running it twice. Found in the first consumer's
+review: its own per-client lock was taken inside the fire, so a fire waiting its
+turn would hold a slot and run down its own limit.
+
+The tick now also logs `EVENT_FIRE_FAILED` for a handler that returns
+`status='failed'`, as `events.py` always said it did; before, only a raised
+failure was logged.
+
+The engine gains one branch for it: a handler that returns
+`JobFireResult(handed_off=True)` leaves the row `'dispatching'`, and the tick
+writes and counts nothing more for that fire. A process that dies mid-fire
+leaves the row to the reaper, exactly as an inline fire would.
+
+Minor: a new class, a new `JobFireResult` field (defaulted to `False`, so every
+existing handler is unchanged), a new function, new constants, four new event
+names and two new failure-metric reasons. A pump that does not wrap its handlers
+behaves exactly as before, apart from the added log line for a returned failure.
+
+### `tool_search` waits for a cold catalog, and says when it did not finish
+
+`ToolRelevanceIndex` takes `search_latency_ceiling_s`, a separate ceiling for
+`search`, `search_scored` and the new `search_outcome`. It defaults to
+`latency_ceiling_s`, so nothing changes for a caller that does not set it.
+`select` keeps the tight ceiling: past it the turn binds the full catalog and
+goes on. A `tool_search` call has no such fallback. Cut off, it came back empty,
+and empty read as "there is no such tool". Live, the first turn after a deploy:
+74 tools, cold cache, the search ran past a 1.0s ceiling sized for the warm
+case, and the agent told the person conversation search did not exist.
+
+`search_outcome` returns `ToolSearchResult(hits, fallback_reason)`, and the
+`tool_search` tool uses it: a search that ran past the ceiling now says "Tool
+search did not finish in time. Nothing was found and nothing was ruled out. Run
+the same search once more." and an embedder failure says the index could not be
+read. "No matching tools found." is reserved for a search that ran.
+
+Minor: a new constructor parameter, a new method and a new public type.
+
+### Every tool-pod principal gets a replay anchor, so its first call after a cold start is not refused
+
+`ToolServerBootstrap` now builds the pod's collection stack for every tool-pod
+principal -- a pod whose id is its `tool_pods.id` uuid -- not only one that passes
+`collection_tables`. A pod that declares none gets an empty table set plus the
+runtime's own collections, and with them the `CollectionReplayAnchor` 0.46.0 wired
+for the proxy-assertion guard.
+
+0.46.0 attached the anchor from the stack's connected callback, but built the
+stack only for a pod that passed its own tables, and the aibots SDK's tool pods
+and the built-in `threetears.agent.tools.serve` pass none. With no anchor the
+guard cannot tell a first run from a wipe, so the first proxied call after every
+cold start was refused as `proxy assertion nonce replay`. Live, on a fresh stack:
+the admin agent's first tool call refused, the retry on the same conversation
+answered. The only test over the wiring asserted the anchor's type and never
+called it; a new one drives a bare pod's anchor through the real collection path.
+
+An in-process pod is not a tool-pod principal and gets no stack, as before. It
+runs inside an agent process on the agent's connection, authenticated as the
+agent, with an `{agent_id}.{instance}` pod id from which no tool-pod key scope can
+be derived. Building the stack for one raised inside the connected callback on
+every start, which exited the process and fed a supervisor restart loop (found in
+review before release: a deployed in-process admin tool pod would have crash-looped
+on the first lock to pick this version up). Declaring
+`collection_tables` on an in-process pod is now refused at wiring as a
+`ToolPodConfigError` naming `collection_tables`, so `run()` exits `EX_CONFIG` once.
+`ToolPodConfigError`'s `variable` may now name a bootstrap parameter where no
+environment variable is at fault. Tool servers the strategy classes run in-process
+are unchanged and still get no anchor from the bootstrap.
+
+Behavior change for every tool-pod principal that declares no tables:
+
+- it binds the shared `collections` bucket at connect, and fails closed if it
+  cannot, exactly as a pod with tables already did. Its minted grant already
+  carries that bucket under its own scope.
+- it subscribes the global cache-invalidation stream, so its L1 drops what a
+  peer replica replaced.
+- its object resolutions are cached in the shared L2 bucket instead of a
+  process-local dict, so one replica's resolution serves the others.
+
+Patch: the stack reaches pods that declared no tables; no API changes.
+
+### `NamespaceCollection.list_owned_by` finds what a namespace owns
+
+A namespace's `owner_namespace` names its owner through a foreign key onto the
+unique name index, and that key refuses to delete an owner while anything still
+names it. So removing a namespace means removing what it owns first; this is the
+method that finds it. It spans both partitions -- an agent's channel and memory rows
+are customer-scoped, a tool its pods publish may be platform-scoped -- and leaves
+out the owner's own self-reference, which an agent namespace carries and which a
+walker must not follow. An empty name owns nothing.
+
+A new integration test measures the foreign key itself: the parent side IS enforced
+for DELETE against a real Postgres, as it is against YugabyteDB, so a consumer that
+deletes an owner first gets a `ForeignKeyViolationError`. What YugabyteDB leaves
+unenforced is a parent rename; Postgres refuses that too.
+
+`NamespaceCollection.schema_in_use` answers the other half: whether any row still
+names a schema, in either partition. One schema can be named by several rows -- a
+workspace namespace records its agent's schema as its own `schema_name` -- so a
+caller that deletes a row drops its schema only once this answers `False`. Dropping
+on the strength of one row takes every other row's data with it.
+
+Both raise `RuntimeError` on a collection with no L3 pool rather than answering.
+`schema_in_use` answering `False` there would tell a caller a schema is safe to drop
+without anything having been checked. The acl integration tests now run in CI.
+
+Minor: two new methods.
+
+### Every datasource driver raises one set of connection errors, carrying the server's reason
+
+`threetears.datasources.drivers` now exports `DriverConnectError`,
+`DriverAuthError` and `DriverMissingCredentialError`, defined once in
+`threetears.datasources.drivers.errors` and raised by every driver.
+
+**Breaking:** the asyncpg and Redshift driver modules each defined their own,
+unrelated `DriverConnectError`, so a caller holding one could not catch the other.
+Both definitions are gone. Import the type from `threetears.datasources.drivers`;
+`threetears.datasources.drivers.asyncpg_driver.DriverConnectError` and
+`threetears.datasources.drivers.redshift_driver.DriverConnectError` no longer
+exist as exports.
+
+A failed connect keeps the server's reason. The backend exception is still dropped
+with `from None`, because it can carry the password in nested context, but its
+SQLSTATE and message are read off it first and ride on the error (`sqlstate`,
+`server_message`, and in the text). The resolved password is masked out of the
+message. Before, a refused login read `connection failed for host:port/db
+(InterfaceError)`, exactly like an unreachable host, and that hid a locked
+production Redshift account for hours while every retry sent another failing login.
+
+A login the server refuses (SQLSTATE `28000` or `28P01`) raises `DriverAuthError`,
+a `DriverConnectError` subclass, so a caller can stop at the first one: Redshift
+locks a user after five consecutive failures and never unlocks it by itself.
+`AsyncpgDriver.test_connection` no longer re-wraps it into a plain
+`DriverConnectError`.
+
+**Behavior change:** the Redshift driver refuses to connect when no password
+resolves, with `DriverMissingCredentialError` (a `DriverAuthError`) naming the
+datasource, before any network attempt. `RedshiftConnectionConfig.password_ref`
+already documented this ("drivers raise at use time") while the driver connected
+with an empty password, which Redshift counts as a failed login. The asyncpg
+driver keeps connecting with no password when `password_ref` is `None`, which
+Postgres and Yugabyte document as trust authentication. Both drivers refuse a
+`password_ref` that is set but resolves to nothing.
+
+Minor, with one breaking import path: three new public types, a new module, and a
+refusal where the Redshift driver used to send an empty password.
+
 ## v0.48.0 -- 2026-09-21
 
 ### A caller can have each retrieved memory say when it was written

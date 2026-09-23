@@ -179,11 +179,15 @@ from threetears.datasources.drivers.base import (
     _instrument_cache,
     _observed,
 )
+from threetears.datasources.drivers.errors import (
+    DriverConnectError,
+    connect_error_from,
+    required_password,
+)
 from threetears.observe import get_logger, traced
 
 __all__ = [
     "DriverCancellationError",
-    "DriverConnectError",
     "DriverQueryError",
     "RedshiftDriver",
 ]
@@ -396,17 +400,6 @@ _CANCEL_TIMEOUT_SECONDS = 5.0
 # ---------------------------------------------------------------------------
 # Exception types (DS-11-12)
 # ---------------------------------------------------------------------------
-
-
-class DriverConnectError(Exception):
-    """raised when connect / auth fails.
-
-    the message carries host / port / database (safe to log) but
-    NEVER the resolved password value. callers raise with ``from None``
-    so the original ``redshift_connector`` exception -- which sometimes
-    embeds the password in nested context -- cannot reach loggers via
-    ``__cause__``.
-    """
 
 
 class DriverQueryError(Exception):
@@ -752,17 +745,23 @@ class RedshiftDriver(Driver):
 
         :return: live connection with statement_timeout configured
         :rtype: RedshiftConnection
-        :raises DriverConnectError: on auth/network failure; the
-            wrapper carries host/port/database but NEVER the password
+        :raises DriverMissingCredentialError: before any network attempt, when no
+            password resolves -- an empty one is a failed login Redshift counts
+            toward locking the account
+        :raises DriverAuthError: when the server refuses the login; carries its
+            SQLSTATE and message
+        :raises DriverConnectError: on any other connect failure; the wrapper
+            carries host/port/database but NEVER the password
         """
         cfg = self._config
+        password = required_password(cfg, datasource_name=self._datasource_name)
         try:
             conn = redshift_connector.connect(
                 host=cfg.host,
                 port=cfg.port,
                 database=cfg.database,
                 user=cfg.username,
-                password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
+                password=password.get_secret_value(),
                 sslmode=cfg.sslmode,
                 # redshift_connector.connect (2.1.7) accepts only the tcp_keepalive
                 # BOOL. the granular idle / interval / count are applied post-connect
@@ -774,13 +773,15 @@ class RedshiftDriver(Driver):
         except Exception as exc:
             # break the cause chain (``from None``) so the original redshift_connector
             # exception -- which may embed sensitive connection detail in its message
-            # or nested context -- cannot reach loggers / tracebacks. surface ONLY the
-            # exception TYPE (a class name, never sensitive) so a config / library
-            # error (an unsupported connect kwarg, a bad sslmode) is diagnosable
-            # instead of masked as a bare "connection failed" -- which is exactly how
-            # a total datasource outage hid when connect() rejected a keepalive kwarg.
-            raise DriverConnectError(
-                f"connection failed for {cfg.host}:{cfg.port}/{cfg.database} ({type(exc).__name__})"
+            # or nested context -- cannot reach loggers / tracebacks. what survives is
+            # read off it first: its TYPE, and when the server answered, its SQLSTATE
+            # and message. a bare "connection failed" hid a total outage once (connect
+            # rejecting a keepalive kwarg) and a locked production account again (every
+            # retry another failed login, nothing saying the account was locked).
+            raise connect_error_from(
+                f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}",
+                exc,
+                password=password,
             ) from None
         # Aggressive TCP keepalive so the OS detects a half-dead socket (a silently-
         # dropped Redshift connection while a worker blocks awaiting a query result)
@@ -1205,7 +1206,7 @@ class RedshiftDriver(Driver):
             port=cfg.port,
             database=cfg.database,
             user=cfg.username,
-            password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
+            password=required_password(cfg, datasource_name=self._datasource_name).get_secret_value(),
         )
         try:
             cursor = conn.cursor()

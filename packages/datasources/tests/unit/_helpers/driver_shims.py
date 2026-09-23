@@ -18,18 +18,29 @@ deliberately NOT in the public API: only the test suite imports it.
 from __future__ import annotations
 
 from types import TracebackType
-from typing import Any
+from typing import Any, Final
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 
 __all__ = [
+    "REDSHIFT_TEST_PASSWORD",
+    "REDSHIFT_TEST_PASSWORD_ENV",
+    "REDSHIFT_TEST_PASSWORD_REF",
     "PoolAcquireHandle",
     "build_mock_redshift_connection",
     "build_transaction_capable_pool",
     "is_open_setup_stmt",
     "log_after_first_caller_statement",
 ]
+
+#: the env var a mocked-path Redshift config resolves its password from. the driver
+#: refuses to connect with no password -- an empty one is a failed login Redshift counts
+#: toward locking the account -- so a config that reaches the (mocked) connect carries a
+#: real reference, and the module using it sets this variable.
+REDSHIFT_TEST_PASSWORD_ENV: Final[str] = "TEST_REDSHIFT_SHIM_PW"
+REDSHIFT_TEST_PASSWORD_REF: Final[str] = f"env://{REDSHIFT_TEST_PASSWORD_ENV}"
+REDSHIFT_TEST_PASSWORD: Final[str] = "unit-test-redshift-password"
 
 
 def log_after_first_caller_statement(sql_log: list[str]) -> list[str]:

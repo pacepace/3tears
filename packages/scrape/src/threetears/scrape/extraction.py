@@ -20,7 +20,7 @@ import asyncio
 import base64
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 from bs4 import BeautifulSoup, Comment
 from bs4.element import Tag
@@ -30,11 +30,13 @@ from soupsieve.util import SelectorSyntaxError
 from threetears.models import LlmPurpose
 from threetears.observe import get_logger
 
+from .bounded_regex import bounded_matches
 from .llm_retry import bounded_retry_structured_call
 
 __all__ = [
     "DEFAULT_EXTRACTION_MODEL_ID",
     "MAX_HTML_CHARS_IN_PROMPT",
+    "REGEX_TIMEOUT_SECONDS",
     "DiscoveredField",
     "DiscoverySchemaResult",
     "FieldSchema",
@@ -1123,6 +1125,24 @@ def extract_page_images(html: str) -> list[bytes]:
 #: needing to know to embed inline flags itself.
 _REGEX_FLAGS = re.MULTILINE | re.DOTALL
 
+#: Longest a regex candidate (or a cached regex recipe) may take to match over one page. The
+#: patterns are written by an LLM, and a lazily repeated group can backtrack catastrophically:
+#: live (2026-09-22) a proposed ``(?P<employer>[^\n]+)\n(?:[^\n]+\n)*?COUNTY:...`` ran 20+ minutes
+#: on one state's WARN page, on the caller's event-loop thread, and stopped every other task in the
+#: process. Matching runs in :mod:`threetears.scrape.bounded_regex`'s worker, on stdlib ``re`` (so
+#: results are exactly ``re``'s), and a candidate still matching at the limit is rejected like an
+#: invalid one.
+REGEX_TIMEOUT_SECONDS: Final[float] = 5.0
+
+
+def _timed_out(pattern: str) -> str:
+    """The rejection reason for a regex candidate still matching at :data:`REGEX_TIMEOUT_SECONDS`."""
+    log.warning(
+        "scrape: regex candidate ran past its time limit; rejected",
+        extra={"extra_data": {"timeout_seconds": REGEX_TIMEOUT_SECONDS, "pattern_head": pattern[:120]}},
+    )
+    return f"regex still matching after {REGEX_TIMEOUT_SECONDS:g}s on this page; rejected"
+
 
 def validate_regex_candidate(text: str, pattern: str, schema: FieldSchema) -> ValidationResult:
     """Apply *pattern*'s named groups to *text* and structurally validate the result.
@@ -1144,17 +1164,23 @@ def validate_regex_candidate(text: str, pattern: str, schema: FieldSchema) -> Va
     :rtype: ValidationResult
     """
     try:
-        compiled = re.compile(pattern, _REGEX_FLAGS)
+        re.compile(pattern, _REGEX_FLAGS)  # syntax errors reported here, in-process, as before
+        found = bounded_matches(pattern, _REGEX_FLAGS, text, mode="search", timeout=REGEX_TIMEOUT_SECONDS)
     except re.error as exc:
         result = ValidationResult(valid=False, errors=[f"invalid regex: {exc}"])
+    except TimeoutError:
+        result = ValidationResult(valid=False, errors=[_timed_out(pattern)])
+    except (RuntimeError, ValueError) as exc:
+        # The worker died, answered unreadably, or refused the pattern: this candidate is out,
+        # the rest of the round goes on.
+        result = ValidationResult(valid=False, errors=[f"regex could not be evaluated: {exc}"])
     else:
-        match = compiled.search(text)
-        if match is None:
+        if not found:
             result = ValidationResult(valid=False, errors=["pattern matched nothing"])
         else:
             extracted: dict[str, Any] = {}
             errors: list[str] = []
-            group_dict = match.groupdict()
+            group_dict = found[0]
             for field_name, expected_type in schema.items():
                 raw = group_dict.get(field_name)
                 if raw is None:
@@ -1193,17 +1219,22 @@ def validate_regex_row_candidate(text: str, pattern: str, schema: FieldSchema) -
     :rtype: RowValidationResult
     """
     try:
-        compiled = re.compile(pattern, _REGEX_FLAGS)
+        re.compile(pattern, _REGEX_FLAGS)  # syntax errors reported here, in-process, as before
+        matches = bounded_matches(pattern, _REGEX_FLAGS, text, mode="finditer", timeout=REGEX_TIMEOUT_SECONDS)
     except re.error as exc:
         result = RowValidationResult(valid=False, errors=[f"invalid regex: {exc}"])
+    except TimeoutError:
+        result = RowValidationResult(valid=False, errors=[_timed_out(pattern)])
+    except (RuntimeError, ValueError) as exc:
+        # The worker died, answered unreadably, or refused the pattern: this candidate is out,
+        # the rest of the round goes on.
+        result = RowValidationResult(valid=False, errors=[f"regex could not be evaluated: {exc}"])
     else:
-        matches = list(compiled.finditer(text))
         errors: list[str] = []
         records_out: list[dict[str, Any]] = []
-        for match_index, match in enumerate(matches):
+        for match_index, group_dict in enumerate(matches):
             row_extracted: dict[str, Any] = {}
             row_errors: list[str] = []
-            group_dict = match.groupdict()
             for field_name, expected_type in schema.items():
                 raw = group_dict.get(field_name)
                 if raw is None:
