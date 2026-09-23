@@ -112,9 +112,19 @@ without one is refused at login rather than carrying the bound into every statem
 so an upgrade of `redshift-connector` that renames it fails loudly at the first login.
 `asyncpg>=0.30` is the declared floor, which `create_pool(connect=)` needs.
 
+A consumer that stores connection configs must store only the fields that were set
+(`model_dump_json(exclude_unset=True)`). The configs refuse keys they do not declare,
+so a full dump -- which writes `connect_timeout_seconds` into every Redshift row --
+cannot be read back after a rollback to 0.49.x. Stored the other way, 0.49.x refuses
+only a config that set the timeout deliberately, since it cannot honour it. Not
+`exclude_defaults`: it drops an explicit value equal to its default, and on Redshift
+a dropped `connection_cache_size` is re-derived from the worker count on read. The
+comment on the configs' shared model config carries the rule, and
+`TestStoredForm` pins it.
+
 Minor: new public types (`ConnectGuard`, `CredentialRefusalGuards`,
-`DriverCredentialPausedError`, `guarded_connect`), a new `create_driver` parameter and
-a new `RedshiftConnectionConfig` field, all defaulted.
+`DriverCredentialPausedError`), a new function (`guarded_connect`), a new
+`create_driver` parameter and a new `RedshiftConnectionConfig` field, all defaulted.
 
 ### NatsClient renews its own credential
 

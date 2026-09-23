@@ -252,8 +252,8 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :rtype: None
         :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
             for any loaded spec
-        :raises Exception: whatever :meth:`build_tools` raised for a spec, after the
-            reduced manifest is published
+        :raises Exception: whatever :meth:`build_tools` raised for a spec; nothing is
+            published, since the server does not serve until every spec is registered
         """
         server = self.build_tool_server()
         self._tool_server = server
@@ -380,10 +380,10 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         pod whose only tools are this spec's, the reduced manifest is empty, and the registry
         refuses an empty manifest moments before the real one lands.
 
-        a build that raises leaves the spec forgotten and publishes the reduced
-        manifest, as :meth:`deregister_spec` does -- which the registry refuses when it
-        is empty, so a pod's last spec stays listed there until the pod registers tools
-        again. rebuilds of one spec are serialized, with each other and with
+        a build that raises leaves the spec forgotten; when the spec held tools and the
+        server is serving, it publishes the reduced manifest, as :meth:`deregister_spec`
+        does -- which the registry refuses when it is empty, so a pod's last spec stays
+        listed there until the pod registers tools again. rebuilds of one spec are serialized, with each other and with
         :meth:`start`; rebuilds of different specs are not.
 
         safe to call before :meth:`start` has built the server: the guard makes it a no-op.
@@ -393,7 +393,8 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :return: nothing
         :rtype: None
         :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
-        :raises Exception: whatever :meth:`build_tools` raised, after the reduced manifest is published
+        :raises Exception: whatever :meth:`build_tools` raised; when the spec held tools and
+            the server is serving, the reduced manifest is published first
         """
         server = self._tool_server
         if server is None:
@@ -414,7 +415,8 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :return: the registered spec, and whether the key held tools before
         :rtype: tuple[BuiltSpec, bool]
         :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
-        :raises Exception: whatever :meth:`build_tools` raised, after the reduced manifest is published
+        :raises Exception: whatever :meth:`build_tools` raised; when the spec held tools and
+            the server is serving, the reduced manifest is published first
         """
         key = self.spec_key(spec)
         async with self._spec_locks.setdefault(key, asyncio.Lock()):

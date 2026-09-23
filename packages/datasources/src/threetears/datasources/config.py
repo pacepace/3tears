@@ -129,10 +129,24 @@ _VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite", "build", "publish
 #: with the file on disk still reading 14400.
 #:
 #: refusal (rather than the tolerate-and-report policy the relations wire
-#: uses) is right here because this config is read by the process that OWNS
-#: it: the driver is constructed from the same checkout that declares these
-#: fields, so there is no older reader to be tolerant for. an unrecognised
-#: key is an authoring slip, always.
+#: uses) is right here because tolerating a key it does not know would let a
+#: reader run without a setting someone chose -- the same silent revert, one
+#: release apart.
+#:
+#: an older reader does exist: a consumer that stores a config and is rolled
+#: back to an earlier release reads what the newer one wrote. so STORE ONLY
+#: THE FIELDS THAT WERE SET -- ``model_dump_json(exclude_unset=True)`` -- never
+#: the full dump, which writes every default, including fields the earlier
+#: release does not declare, and makes every row it touched unreadable after a
+#: rollback. stored that way, an earlier release refuses only a config that
+#: deliberately uses a setting it cannot honour. ``exclude_defaults`` is not a
+#: substitute: it drops an explicit choice that happens to equal today's
+#: default, so that choice moves silently when the default does -- and on a
+#: Redshift config it can change the value at once: an explicit
+#: ``connection_cache_size`` equal to its default is dropped, then re-derived
+#: from ``executor_max_workers`` on read, a different value whenever the
+#: worker count is not its own default. a value a validator derives counts as
+#: set and is stored.
 _CONNECTION_CONFIG = ConfigDict(populate_by_name=True, extra="forbid")
 
 
