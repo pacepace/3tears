@@ -179,6 +179,7 @@ from threetears.datasources.drivers.base import (
     _instrument_cache,
     _observed,
 )
+from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
 from threetears.datasources.drivers.errors import (
     DriverConnectError,
     connect_error_from,
@@ -667,6 +668,7 @@ class RedshiftDriver(Driver):
         config: RedshiftConnectionConfig,
         *,
         datasource_name: str = "unknown",
+        connect_guard: ConnectGuard | None = None,
     ) -> None:
         """capture config; build bridge + cache; register finalize. no I/O.
 
@@ -675,10 +677,14 @@ class RedshiftDriver(Driver):
         :param datasource_name: name of the datasource the driver
             serves; surfaces on every emitted OTel metric
         :ptype datasource_name: str
+        :param connect_guard: asked before every fresh login and told of every
+            refusal; ``None`` for an unguarded driver (an explicit probe)
+        :ptype connect_guard: ConnectGuard | None
         :return: nothing
         :rtype: None
         """
         self._config = config
+        self._connect_guard = connect_guard
         # bridge sized from config -- the enforcement test catches
         # inline literals. construction does NOT spawn workers; the
         # executor is started lazily on first submission.
@@ -953,6 +959,8 @@ class RedshiftDriver(Driver):
         :return: a connection ready for use
         :rtype: RedshiftConnection
         :raises RuntimeError: if the driver was previously closed
+        :raises DriverCredentialPausedError: on a cache miss, when the connect
+            guard holds this credential refused; no login is attempted
         :raises DriverConnectError: on auth/network failure
         """
         if self._closed:
@@ -991,10 +999,15 @@ class RedshiftDriver(Driver):
         # ; cancellation during connect would leave a half-open
         # connection which the worker thread closes naturally when
         # the call returns. use the bridge's executor directly via
-        # a no-cancel-cb path.
-        new_conn = await self._bridge.to_thread_with_cancel(
-            self._open_connection_sync,
-            cancel_cb=lambda: None,
+        # a no-cancel-cb path. the login runs under the connect guard, so a
+        # credential already refused is not sent again and a new refusal
+        # pauses it for every replica.
+        new_conn = await guarded_connect(
+            self._connect_guard,
+            lambda: self._bridge.to_thread_with_cancel(
+                self._open_connection_sync,
+                cancel_cb=lambda: None,
+            ),
         )
         return new_conn
 

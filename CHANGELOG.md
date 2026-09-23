@@ -20,6 +20,26 @@ changed. Without it the hub carried its own copy of the parent walk and the thre
 customer walls, which could drift from the decision the evaluator makes for the
 group's people.
 
+### A credential the warehouse refused is not sent again, by any replica
+
+A warehouse counts every failed login against the account and locks it after a
+handful -- Redshift after five, and it never unlocks by itself. A platform has many
+callers that connect on their own schedule (a reaper, an introspection sweep, an
+agent's query), so one wrong stored password locked a production account in about
+75 minutes of background passes.
+
+`create_driver` takes a `connect_guard`. The Postgres, Yugabyte and Redshift drivers
+ask it before every login -- asyncpg through the pool's `connect=` hook, so a pool's
+replacement connections are guarded too -- and tell it of every refusal. The guard
+the package ships, `CredentialRefusalGuards`, keeps the pause in a
+`core.coordination.WindowedCounter`: one refusal pauses the credential for every
+replica sharing L2, and a paused connect raises `DriverCredentialPausedError` (a
+`DriverAuthError`) without contacting the warehouse. `clear` lifts it when the
+credential is replaced or a probe with it -- a driver built without a guard --
+succeeds; unattended, it ends after 30 days. A storage failure fails open. The
+Snowflake and BigQuery drivers do not yet classify a refusal, and the factory logs
+that a guard handed to them is not honoured.
+
 ## v0.49.0 -- 2026-09-22
 
 ### A runaway AI-proposed regex is cut off instead of hanging the process

@@ -8,9 +8,14 @@ public surface (DS-09-09):
 - :class:`TableRow` / :class:`ColumnRow` -- pinned row shapes returned
   by ``list_tables`` / ``list_columns``
 - :class:`DriverConnectError` / :class:`DriverAuthError` /
-  :class:`DriverMissingCredentialError` -- the connection-failure types
+  :class:`DriverMissingCredentialError` /
+  :class:`DriverCredentialPausedError` -- the connection-failure types
   EVERY driver raises, so a caller catches them once rather than once
   per backend (see :mod:`threetears.datasources.drivers.errors`)
+- :class:`ConnectGuard` / :class:`CredentialRefusalGuards` /
+  :func:`guarded_connect` -- a credential the warehouse refused is not
+  tried again by any replica until it is replaced or a probe succeeds
+  (see :mod:`threetears.datasources.drivers.connect_guard`)
 
 concrete driver classes (``AsyncpgDriver``, ``RedshiftDriver``,
 ``SnowflakeDriver``, ``BigQueryDriver``) are NOT re-exported here. they
@@ -32,19 +37,31 @@ verifies this in a clean subprocess on every test run.
 from __future__ import annotations
 
 from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow
+from threetears.datasources.drivers.connect_guard import (
+    DEFAULT_PAUSE_SECONDS,
+    ConnectGuard,
+    CredentialRefusalGuards,
+    guarded_connect,
+)
 from threetears.datasources.drivers.errors import (
     DriverAuthError,
     DriverConnectError,
+    DriverCredentialPausedError,
     DriverMissingCredentialError,
 )
 from threetears.datasources.drivers.factory import create_driver
 
 __all__ = [
+    "DEFAULT_PAUSE_SECONDS",
     "ColumnRow",
+    "ConnectGuard",
+    "CredentialRefusalGuards",
     "Driver",
     "DriverAuthError",
     "DriverConnectError",
+    "DriverCredentialPausedError",
     "DriverMissingCredentialError",
     "TableRow",
     "create_driver",
+    "guarded_connect",
 ]

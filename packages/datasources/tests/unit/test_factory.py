@@ -52,8 +52,8 @@ class _StubDriver(Driver):
 
     factory tests stub out the per-backend driver module to return
     instances of this class so we can assert (1) the right import
-    path was taken and (2) the right args (notably ``external_pool=``
-    + ``datasource_name=``) reached the constructor.
+    path was taken and (2) the right args (notably ``external_pool=``,
+    ``datasource_name=`` + ``connect_guard=``) reached the constructor.
     """
 
     def __init__(
@@ -62,10 +62,12 @@ class _StubDriver(Driver):
         *,
         external_pool: Any = None,
         datasource_name: str = "unknown",
+        connect_guard: Any = None,
     ) -> None:
         self.config = config
         self.external_pool = external_pool
         self.datasource_name = datasource_name
+        self.connect_guard = connect_guard
 
     async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         return []
