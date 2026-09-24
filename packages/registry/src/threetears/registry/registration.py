@@ -520,6 +520,16 @@ class RegistrationHandler:
         """
         if not manifest.pod_id:
             return "pod_id is required"
+        try:
+            # routing reads an endpoint's owner from its pod-id, so an id that names no owner could
+            # never be routed. refused here, loudly, rather than admitted as an endpoint that sits
+            # in the catalog routable by no caller.
+            Subjects.agent_inprocess_owner_id(manifest.pod_id)
+        except ValueError as exc:
+            return (
+                f"pod_id cannot be routed: {exc}. a Tool Pod's id is one token; an agent's in-process "
+                "server's id is Subjects.agent_inprocess_pod_id(agent_id, instance)"
+            )
         if not manifest.tools:
             return "tools list is required and must not be empty"
         result = None

@@ -610,6 +610,11 @@ class CallResponse(BaseModel):
     :ptype metadata: dict[str, Any] | None
     :param error: error message if execution failed
     :ptype error: str | None
+    :param error_code: machine-readable code for a refusal the pod names, read by the registry
+        straight into :attr:`threetears.registry.proxy.ProxyCallResponse.error_code`. ``None`` for
+        a success and for every failure the pod does not name -- a tool that raised, a gate that
+        reports only a reason
+    :ptype error_code: str | None
     :param context: unified identity + trace envelope echoed from the
         inbound :class:`CallRequest`; ``None`` when the inbound request
         carried no context
@@ -620,6 +625,7 @@ class CallResponse(BaseModel):
     content: str
     metadata: dict[str, Any] | None = None
     error: str | None = None
+    error_code: str | None = None
     context: CallContext | None = None
 
 
@@ -873,7 +879,11 @@ class ToolServer:
         :ptype nats_user: str | None
         :param nats_password: NATS static password paired with ``nats_user``
         :ptype nats_password: str | None
-        :param pod_id: unique pod identifier (generated if not provided)
+        :param pod_id: unique pod identifier (generated if not provided). a single token makes
+            this a Tool Pod's server, which serves every caller; an agent's in-process server is
+            given :meth:`~threetears.nats.Subjects.agent_inprocess_pod_id`, and then serves ONLY
+            the agent that id names -- any other verified caller is refused
+            ``TOOL_CALLER_NOT_OWNER``
         :ptype pod_id: str | None
         :param heartbeat_interval: seconds between heartbeat publishes
         :ptype heartbeat_interval: float
@@ -995,9 +1005,10 @@ class ToolServer:
         :ptype assertion_replay_guard: ReplayGuard | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
-            ``max_call_seconds`` is set to a non-positive value, or an injected
+            ``max_call_seconds`` is set to a non-positive value, an injected
             ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
-            pod's assertion leeway
+            pod's assertion leeway, or ``pod_id`` is dotted -- an agent's shape -- but names no
+            agent (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`)
         """
         if not nats_url and nats_client is None:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
@@ -1016,6 +1027,13 @@ class ToolServer:
         self._nats_user = nats_user
         self._nats_password = nats_password
         self._pod_id = pod_id or str(uuid7())
+        # the agent this server belongs to, read from its own pod-id the way the registry reads
+        # it, or None for a Tool Pod's server. an in-process tool answers from its agent's own
+        # state, so the pod refuses any other caller even though the registry already routes by
+        # owner: a registry predating that rule, or a fault in it, must not be able to hand this
+        # agent's state to another. a dotted id naming no agent raises here, at construction --
+        # no agent's grant could ever carry its probe, so it would sit pending forever.
+        self._owning_agent_id: UUID | None = Subjects.agent_inprocess_owner_id(self._pod_id)
         # SELF-IDENTITY, learned from the registration reply and never derived locally.
         # ``None`` is "not learned yet"; an empty tuple is a real answer, because a pod
         # with no ``tool_pods`` row and no owning agent genuinely owns nothing. Collapsing
@@ -2344,6 +2362,30 @@ class ToolServer:
             reason = f"proxy assertion verification failed ({kind})"
         return reason
 
+    def _foreign_caller_rejection(self, request: CallRequest) -> str | None:
+        """refuse a verified caller that is not the agent this in-process server belongs to.
+
+        An in-process tool answers from its own agent's state -- that agent's scope, its
+        per-conversation store -- so serving another agent's call hands that caller this agent's
+        state. The registry routes by owner and should never deliver such a call; this is the same
+        rule held at the pod, for a registry predating it or a fault in it. A Tool Pod's server has
+        no owner and serves everyone. Runs after identity verification, so the caller compared is
+        the one the Hub token names, never the envelope's claim.
+
+        :param request: the identity-verified call request
+        :ptype request: CallRequest
+        :return: the rejection reason, or ``None`` when the call may proceed
+        :rtype: str | None
+        """
+        result: str | None = None
+        caller = request.context.agent_id if request.context is not None else None
+        if self._owning_agent_id is not None and caller != self._owning_agent_id:
+            result = (
+                f"caller {caller} is not agent {self._owning_agent_id}, whose in-process tool server this is; an "
+                "agent's in-process tool answers only its own agent"
+            )
+        return result
+
     async def handle_call(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler for incoming tool call request.
 
@@ -2361,6 +2403,12 @@ class ToolServer:
         ``agent``/``customer``) from the :class:`CallContext` for the
         duration of the dispatch so every log line in this handler and
         its callees renders with those tags.
+
+        an agent's in-process server (a dotted pod-id) answers only the
+        agent that owns it: once identity and the proxy assertion verify,
+        any other verified caller is refused ``TOOL_CALLER_NOT_OWNER``
+        before the tool is looked up. a Tool Pod's server serves every
+        caller.
 
         audit-task-01 (AUD-03): every dispatch -- including malformed
         requests, unknown-tool rejections, and raising tools -- emits a
@@ -2568,8 +2616,8 @@ class ToolServer:
         split out of :meth:`handle_call` so the public NATS callback can
         bracket the dispatch in the in-flight-requests gauge without
         re-indenting the whole body. the full handler contract (identity
-        verification, proxy-assertion check, baseline audit) is documented
-        on :meth:`handle_call`.
+        verification, proxy-assertion check, owner check, baseline audit) is
+        documented on :meth:`handle_call`.
 
         :param msg: incoming wrapper envelope carrying the call request
         :ptype msg: IncomingMessage
@@ -2746,6 +2794,31 @@ class ToolServer:
                 )
                 outcome = "failure"
                 failure_reason = assertion_rejection
+                return
+
+            owner_rejection = self._foreign_caller_rejection(request)
+            if owner_rejection is not None:
+                error_response = CallResponse(
+                    success=False,
+                    content="",
+                    error=owner_rejection,
+                    error_code="TOOL_CALLER_NOT_OWNER",
+                    context=request.context,
+                )
+                await self._answer(msg, error_response, delivery_subject)
+                log.warning(
+                    "pod refused call: the verified caller is not the agent this in-process server belongs to",
+                    extra={
+                        "extra_data": {
+                            "reason": owner_rejection,
+                            "pod_id": self._pod_id,
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                outcome = "failure"
+                failure_reason = owner_rejection
                 return
 
             tool = self._tools.get(tool_key)

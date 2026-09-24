@@ -743,6 +743,53 @@ class Subjects:
         """
         return f"{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(instance_id)}"
 
+    @classmethod
+    def agent_inprocess_owner_id(cls, pod_id: str) -> UUID | None:
+        """read the agent that owns a tool routing pod-id, or ``None`` for a Tool Pod.
+
+        The inverse of :meth:`agent_inprocess_pod_id`, for the registry and the serving pod, which
+        both have to answer "whose process is this endpoint?" from the pod-id alone.
+
+        A Tool Pod's id is one token and it serves every caller, so it has no owner. A pod-id with
+        a structural dot lives under the ``tools.{internal,probe}.{agent_id}.>`` subtree that only
+        the agent named by its FIRST token is granted (:meth:`tools_probe_agent_subtree`). So an
+        endpoint that passed the registry's reachability probe under a dotted id was answered by
+        that agent's own connection, and the first token proves the owner without trusting
+        anything the registering manifest claimed. The whole subtree belongs to that agent, so
+        tokens past the second change nothing.
+
+        A dotted id whose first token is not a canonically spelled agent UUID is refused rather
+        than read as a Tool Pod. Every agent grant is keyed on ``str(agent_uuid)``, so such an id
+        names no agent that could answer for it, and reading it as ownerless would make it
+        callable by everyone -- the failure this method exists to prevent.
+
+        :param pod_id: a tool routing pod-id, as registered in the catalog
+        :ptype pod_id: str
+        :return: the owning agent's id, or ``None`` when ``pod_id`` is a single-token Tool Pod id
+        :rtype: UUID | None
+        :raises ValueError: when ``pod_id`` is empty, has an empty token, or is dotted and does not
+            lead with a canonically spelled UUID
+        """
+        tokens = pod_id.split(".")
+        if not all(tokens):
+            raise ValueError(f"tool routing pod-id {pod_id!r} has an empty token")
+        if len(tokens) == 1:
+            return None
+        head = tokens[0]
+        try:
+            owner = UUID(head)
+        except ValueError:
+            raise ValueError(
+                f"tool routing pod-id {pod_id!r} is dotted, so it is an agent's, but {head!r} is not an agent id"
+            ) from None
+        if str(owner) != head:
+            # the grant is keyed on the canonical spelling; any other spelling of the same uuid is
+            # a token no agent's subtree contains.
+            raise ValueError(
+                f"tool routing pod-id {pod_id!r} spells its agent id {head!r} non-canonically; expected {str(owner)!r}"
+            )
+        return owner
+
     # ------------------------------------------------------------------
     # tools -- asynchronous result delivery
     #

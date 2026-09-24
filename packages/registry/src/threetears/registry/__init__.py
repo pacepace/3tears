@@ -44,7 +44,7 @@ from threetears.registry.l1_cache import (
 from threetears.registry.proxy import CallProxy
 from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
 from threetears.registry.registration import RegistrationHandler, RegistrationResponse
-from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
+from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy, endpoints_callable_by
 from threetears.registry.server import RegistryServer
 
 __all__ = [
@@ -74,5 +74,6 @@ __all__ = [
     "ToolPodAuth",
     "ToolPodAuthenticator",
     "create_registry_l1_backend",
+    "endpoints_callable_by",
     "pod_heartbeats_table",
 ]

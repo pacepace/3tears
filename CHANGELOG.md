@@ -4,6 +4,65 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### An agent's in-process tool is routed only to that agent
+
+When several agents served the same tool on their own in-process ToolServers,
+the Registry merged them into one catalog entry. It then routed each call
+least-busy with a random tie-break, whoever the caller was. Two examples are
+`aibots.knowledge_drafts` and `threetears.context_recall`. So agent A's call
+usually landed on agent B's process and was answered from B's state: A's drafts
+were refused or filtered by B's scope, and A's conversation was "not found" in
+B's store.
+
+Ownership now decides where a call may go, before the routing strategy runs:
+
+- **Routing (`CallProxy`).** An endpoint whose pod-id is an agent's in-process
+  composite (`{agent_id}.{instance}`) is eligible only when that agent is the
+  VERIFIED caller. A Tool Pod's single-token endpoint serves every caller, as
+  before. Replicas of the same agent still share its calls least-busy, and
+  failover stays inside the caller's own endpoints. The new
+  `threetears.registry.routing.endpoints_callable_by` is the one rule; the
+  `RoutingStrategy` protocol is unchanged.
+- **A caller that serves no endpoint of an agent-owned tool** is answered
+  `TOOL_UNAVAILABLE`, and the error text names the cause. This applies to an
+  agent that does not serve the tool and to a tool pod. If only the caller's own
+  endpoint is pending, the answer is `TOOL_NOT_READY`. A peer's pending endpoint
+  no longer yields `TOOL_NOT_READY`.
+- **Discovery** offers a tool as available only when the requester could reach
+  one of its endpoints. `endpoint_count` now counts only those endpoints. The
+  requester is named by `DiscoverRequest.agent_id`: an agent id, or the composite
+  pod-id a ToolServer polls under in `wait_until_ready`. A requester that names
+  no agent is shown only Tool Pod tools. The field is self-asserted and only
+  narrows the view. The call path enforces ownership on the verified identity.
+- **Registration** refuses a dotted pod-id whose first token is not a
+  canonically spelled agent UUID. No agent's grant could ever carry its probe,
+  so such an endpoint would sit pending forever. An endpoint like that loaded
+  from older shared state is routable by no one.
+- **The serving pod holds the same line.** A ToolServer built with an agent's
+  composite pod-id refuses any other verified caller with the new code
+  `TOOL_CALLER_NOT_OWNER`, before the tool runs. This covers a registry that
+  predates this rule. A Tool Pod's server is unchanged. `CallResponse` gains an
+  optional `error_code`, which the registry already reads into
+  `ProxyCallResponse.error_code`. A ToolServer given a dotted pod-id that names
+  no agent now raises `ValueError` at construction.
+- **New helper.** `Subjects.agent_inprocess_owner_id(pod_id)` is the inverse of
+  `agent_inprocess_pod_id`. It returns the owning agent's UUID, `None` for a
+  Tool Pod id, and raises `ValueError` for a dotted id that names no agent.
+
+**Rollout order:** registry first, then agents. An agent pod on this release
+behind an older registry refuses misrouted calls with `TOOL_CALLER_NOT_OWNER`
+instead of answering them wrongly.
+
+**For consumers:** map `TOOL_CALLER_NOT_OWNER` wherever pod error codes are
+turned into user-facing answers. Until then it takes the unmapped-code fallback.
+The Registry's own refusals reuse existing codes.
+
+Minor: a new public helper, a new public routing function, an optional
+`CallResponse` field, and a new pod refusal code. Routing, discovery and
+registration change behavior as described above.
+
 ## v0.50.0 -- 2026-09-23
 
 ### Material read back from storage reaches a model fenced, and the fence explains itself

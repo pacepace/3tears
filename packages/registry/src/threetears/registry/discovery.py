@@ -4,17 +4,24 @@ subscribes to NATS discovery subject, resolves pinned tool
 manifests against catalog, and returns full schemas for
 available tools. each tool appears once regardless of how
 many pod endpoints serve it.
+
+a tool is offered as available only when the requester could
+actually be routed to one of its endpoints: another agent's
+in-process endpoint does not count (see
+:func:`threetears.registry.routing.endpoints_callable_by`).
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from pydantic import BaseModel
 
 from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import get_logger
-from threetears.registry.catalog import ToolCatalog
+from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.routing import endpoints_callable_by
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient, Subscription
@@ -51,7 +58,10 @@ class DiscoverToolEntry(BaseModel):
 class DiscoverRequest(BaseModel):
     """discovery request from agent.
 
-    :param agent_id: unique identifier of requesting agent
+    :param agent_id: the requesting agent's id, or -- when a ToolServer polls for its own
+        readiness -- the polling server's pod-id; an agent's in-process server polls under its
+        ``{agent_id}.{instance}`` composite, which names that agent. self-asserted: it decides what
+        the requester is SHOWN, never what it may call
     :ptype agent_id: str
     :param tool_manifest: list of pinned tools to resolve
     :ptype tool_manifest: list[DiscoverToolEntry]
@@ -80,7 +90,8 @@ class DiscoverResultEntry(BaseModel):
     :ptype timeout_seconds: float | None
     :param requires_confirmation: whether calls to the tool must be gated behind human-in-the-loop approval
     :ptype requires_confirmation: bool
-    :param endpoint_count: number of pod endpoints serving this tool
+    :param endpoint_count: number of pod endpoints serving this tool that the requester could be
+        routed to; another agent's in-process endpoints are not counted
     :ptype endpoint_count: int
     """
 
@@ -207,10 +218,11 @@ class DiscoveryHandler:
                 )
             return
 
+        requester_id = _requester_agent_id(request.agent_id)
         if request.tool_manifest:
-            tools = self._resolve_manifest(request.tool_manifest)
+            tools = self._resolve_manifest(request.tool_manifest, requester_id)
         else:
-            tools = self._list_all_available()
+            tools = self._list_all_available(requester_id)
 
         response = DiscoverResponse(
             agent_id=request.agent_id,
@@ -232,40 +244,35 @@ class DiscoveryHandler:
             },
         )
 
-    def _list_all_available(self) -> list[DiscoverResultEntry]:
-        """return all available tools from catalog.
+    def _list_all_available(self, requester_id: UUID | None) -> list[DiscoverResultEntry]:
+        """return every tool the requester could be routed to right now.
 
         used when agent sends empty manifest (discover all).
         each tool appears once with endpoint_count for observability.
 
+        :param requester_id: the agent the requester names, or ``None`` when it names none
+        :ptype requester_id: UUID | None
         :return: list of all available tool results with schemas
         :rtype: list[DiscoverResultEntry]
         """
         results: list[DiscoverResultEntry] = []
-        for entry in self._catalog.list_available():
-            results.append(
-                DiscoverResultEntry(
-                    name=entry.tool_name,
-                    version=entry.tool_version,
-                    status="available",
-                    description=entry.description,
-                    input_schema=entry.input_schema,
-                    output_schema=entry.output_schema,
-                    timeout_seconds=entry.timeout_seconds,
-                    requires_confirmation=entry.requires_confirmation,
-                    endpoint_count=len(entry.endpoints),
-                )
-            )
+        for entry in self._catalog.search():
+            callable_endpoints = endpoints_callable_by(entry.endpoints, requester_id)
+            if _any_available(callable_endpoints):
+                results.append(_available_result(entry, callable_endpoints))
         return results
 
     def _resolve_manifest(
         self,
         manifest: list[DiscoverToolEntry],
+        requester_id: UUID | None,
     ) -> list[DiscoverResultEntry]:
         """resolve pinned tool manifest against catalog.
 
         :param manifest: list of pinned tools to resolve
         :ptype manifest: list[DiscoverToolEntry]
+        :param requester_id: the agent the requester names, or ``None`` when it names none
+        :ptype requester_id: UUID | None
         :return: list of resolved tool results with schemas or unavailable status
         :rtype: list[DiscoverResultEntry]
         """
@@ -273,18 +280,9 @@ class DiscoveryHandler:
         for tool_ref in manifest:
             full_name = f"{tool_ref.name}@{tool_ref.version}"
             entry = self._catalog.get(full_name)
-            if entry is not None and entry.status == "available":
-                result_entry = DiscoverResultEntry(
-                    name=entry.tool_name,
-                    version=entry.tool_version,
-                    status="available",
-                    description=entry.description,
-                    input_schema=entry.input_schema,
-                    output_schema=entry.output_schema,
-                    timeout_seconds=entry.timeout_seconds,
-                    requires_confirmation=entry.requires_confirmation,
-                    endpoint_count=len(entry.endpoints),
-                )
+            callable_endpoints = endpoints_callable_by(entry.endpoints, requester_id) if entry is not None else []
+            if entry is not None and _any_available(callable_endpoints):
+                result_entry = _available_result(entry, callable_endpoints)
             else:
                 result_entry = DiscoverResultEntry(
                     name=tool_ref.name,
@@ -293,3 +291,69 @@ class DiscoveryHandler:
                 )
             results.append(result_entry)
         return results
+
+
+def _requester_agent_id(claimed: str) -> UUID | None:
+    """the agent a discovery requester names, or ``None`` when it names none.
+
+    An agent sends its own id. A ToolServer polling for its own readiness sends its pod-id instead:
+    a Tool Pod's is one token and names no agent it could own an in-process endpoint for, and an
+    agent's in-process server's is the ``{agent_id}.{instance}`` composite, which names that agent.
+    Anything else -- a display name, ``"unknown"`` -- names no agent and is shown the Tool Pod
+    tools alone.
+
+    The claim is self-asserted and that is acceptable for exactly this use: it narrows what the
+    requester is shown, and the call path enforces ownership on the VERIFIED identity regardless,
+    so a requester that misnames itself misleads only itself.
+
+    :param claimed: the request's ``agent_id`` field
+    :ptype claimed: str
+    :return: the named agent's id, or ``None``
+    :rtype: UUID | None
+    """
+    result: UUID | None = None
+    try:
+        result = Subjects.agent_inprocess_owner_id(claimed)
+        if result is None:
+            parsed = UUID(claimed)
+            result = parsed if str(parsed) == claimed else None
+    except ValueError:
+        # NOSILENT: "this requester names no agent" is the answer; it is shown the Tool Pod
+        # tools, which every caller may use. logging each such request would log every readiness
+        # poll a non-agent pod makes.
+        result = None
+    return result
+
+
+def _any_available(endpoints: list[ToolEndpoint]) -> bool:
+    """whether any of ``endpoints`` is confirmed routable.
+
+    :param endpoints: endpoints the requester may be routed to
+    :ptype endpoints: list[ToolEndpoint]
+    :return: true when at least one is available; pending ones are not yet routable
+    :rtype: bool
+    """
+    return any(endpoint.status == "available" for endpoint in endpoints)
+
+
+def _available_result(entry: CatalogEntry, callable_endpoints: list[ToolEndpoint]) -> DiscoverResultEntry:
+    """the discovery result for a tool the requester can reach.
+
+    :param entry: the tool's catalog entry
+    :ptype entry: CatalogEntry
+    :param callable_endpoints: the entry's endpoints the requester may be routed to
+    :ptype callable_endpoints: list[ToolEndpoint]
+    :return: the available result, counting only the requester's endpoints
+    :rtype: DiscoverResultEntry
+    """
+    return DiscoverResultEntry(
+        name=entry.tool_name,
+        version=entry.tool_version,
+        status="available",
+        description=entry.description,
+        input_schema=entry.input_schema,
+        output_schema=entry.output_schema,
+        timeout_seconds=entry.timeout_seconds,
+        requires_confirmation=entry.requires_confirmation,
+        endpoint_count=len(callable_endpoints),
+    )

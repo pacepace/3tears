@@ -121,6 +121,55 @@ def test_agent_inprocess_pod_id_composes_two_token_routing_key() -> None:
     assert composite == "agent-A.inst-1"
 
 
+class TestAgentInprocessOwnerId:
+    """reading the owning agent back out of a tool routing pod-id.
+
+    the registry routes an agent's in-process tool only to that agent, so it has to know who owns
+    an endpoint from the one fact the endpoint carries: its pod-id.
+    """
+
+    def test_an_in_process_pod_id_names_the_agent_that_built_it(self) -> None:
+        agent_id = UUID("01948a00-aaaa-7000-8000-000000a9e777")
+        instance = UUID("01948a00-bbbb-7000-8000-000000000001")
+
+        pod_id = Subjects.agent_inprocess_pod_id(agent_id, instance)
+
+        assert Subjects.agent_inprocess_owner_id(pod_id) == agent_id
+
+    def test_a_string_instance_round_trips_too(self) -> None:
+        """the SDK threads the connect name, a string, as the instance."""
+        agent_id = UUID("01948a00-aaaa-7000-8000-000000a9e777")
+
+        assert Subjects.agent_inprocess_owner_id(Subjects.agent_inprocess_pod_id(agent_id, "pod-7")) == agent_id
+
+    def test_a_tool_pod_id_has_no_owning_agent(self) -> None:
+        """a tool pod's id is one token, and a tool pod serves every caller."""
+        assert Subjects.agent_inprocess_owner_id("01948a00-cccc-7000-8000-00000000c001") is None
+        assert Subjects.agent_inprocess_owner_id("tool-pod-xyz") is None
+
+    def test_a_deeper_id_is_owned_by_the_agent_its_first_token_names(self) -> None:
+        """the agent's grant is its whole ``{agent_id}.>`` subtree, whatever lies beneath it."""
+        agent_id = UUID("01948a00-aaaa-7000-8000-000000a9e777")
+
+        assert Subjects.agent_inprocess_owner_id(f"{agent_id}.inst.extra") == agent_id
+
+    @pytest.mark.parametrize(
+        "pod_id",
+        [
+            "agent-A.inst-1",  # names no agent: agent ids are uuids
+            "01948A00-AAAA-7000-8000-000000A9E777.inst",  # not the canonical spelling a grant is keyed on
+            "01948a00aaaa70008000000000a9e777.inst",  # hex without hyphens: same uuid, different token
+            ".inst",  # empty agent token
+            "01948a00-aaaa-7000-8000-000000a9e777.",  # empty instance token
+            "",  # nothing at all
+        ],
+    )
+    def test_an_id_that_names_no_agent_is_refused_loudly(self, pod_id: str) -> None:
+        """a dotted id is an agent's by construction, so one naming no agent is malformed, not a tool pod."""
+        with pytest.raises(ValueError):
+            Subjects.agent_inprocess_owner_id(pod_id)
+
+
 def test_tools_subjects_preserve_the_agent_composite_structural_dot() -> None:
     """a composite pod-id renders as a TWO-token subject under the agent subtree.
 
