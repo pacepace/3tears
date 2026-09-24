@@ -484,7 +484,9 @@ class WebSocketHandler:
 
         receives JSON messages, parses each into a typed :class:`Frame`,
         and dispatches by ``type`` (design T3-D2): ``message`` runs the
-        existing chat router path **unchanged**; ``join`` / ``leave`` /
+        chat router path, refusing with an ``error`` frame a message whose
+        ``content`` is empty or not a string, or whose ``metadata`` is not an
+        object, before any router sees it; ``join`` / ``leave`` /
         ``editor.op`` / the transient ``cursor`` / ``typing`` / ``presence``
         / ``resume`` types drive the cross-pod room seams (when wired);
         an **unknown** type yields an ``error`` frame (never a silent drop).
@@ -555,10 +557,10 @@ class WebSocketHandler:
                 )
                 continue
 
-            # the chat ``message`` path is preserved verbatim: it reads ``data``
-            # loosely (``.get(...)``) and never strict-validates ``room``/``seq``/
-            # ``payload``, so a legacy chat frame is handled byte-identically to
-            # before task-03. only the typed cross-pod frames are parsed into the
+            # the chat ``message`` path reads ``data`` loosely (``.get(...)``) and
+            # never strict-validates ``room``/``seq``/``payload``, so a legacy chat
+            # frame is handled as before task-03; it checks only that there is a
+            # string to route. only the typed cross-pod frames are parsed into the
             # strict ``Frame`` envelope.
             msg_type = data.get("type", "") if isinstance(data, dict) else ""
             if msg_type != "message":
@@ -593,6 +595,21 @@ class WebSocketHandler:
 
             content = data.get("content", "")
             metadata = data.get("metadata", {})
+            # a chat frame with nothing an agent can use is answered here, before the
+            # router: dispatching it would spend a model call on nothing (the REST chat
+            # door refuses an empty message too), and a non-object ``metadata`` would
+            # fail the ``.get`` reads below, outside the per-message safety net.
+            refusal: str | None = None
+            if not isinstance(content, str) or not isinstance(metadata, dict):
+                refusal = "invalid message"
+            elif not content:
+                refusal = "empty message"
+            if refusal is not None:
+                log.warning("refused websocket chat message from user %s: %s", user_id, refusal)
+                await _safe_send(
+                    websocket, json.dumps({"type": "error", "message": refusal}), context="chat-message-refused"
+                )
+                continue
 
             # browser-supplied per-message locale info -- mirrors the
             # devx chat client pattern: top-level fields on the WS
