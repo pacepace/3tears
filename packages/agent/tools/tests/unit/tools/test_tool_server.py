@@ -333,9 +333,7 @@ class TestToolServerServe:
             except asyncio.CancelledError:
                 pass
 
-        # getattr: the resolver is deliberately not public, and this asserts the wiring rather
-        # than a public API.
-        resolver = getattr(server, "_object_resolver")
+        resolver = server.object_resolver
         assert resolver is not None
         resolved = await resolver.resolve(handle.object_id, customer_id=customer, identity_token="t")
         assert resolved == handle

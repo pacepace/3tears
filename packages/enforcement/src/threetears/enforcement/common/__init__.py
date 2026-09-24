@@ -31,6 +31,7 @@ from threetears.enforcement.common.collection_registry import (
 from threetears.enforcement.common.repo_layout import (
     find_repo_root,
     find_local_src_roots,
+    find_local_test_roots,
 )
 from threetears.enforcement.common.pyproject_discovery import (
     discover_src_roots,
@@ -89,6 +90,7 @@ __all__ = [
     "emit_report",
     "extract_base_names",
     "find_local_src_roots",
+    "find_local_test_roots",
     "find_repo_root",
     "find_worktree_root",
     "is_logger_call",

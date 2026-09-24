@@ -91,6 +91,48 @@ code. Two signatures narrow: `ToolCatalog.list_available` now requires a caller,
 and `agent_inprocess_pod_id` takes only a `UUID`. Routing, discovery,
 registration and the audit owner axis change behavior as described above.
 
+### Namespace discovery parses a platform row with no customer
+
+`NamespaceDiscoverySummary.customer_id` is now `UUID | None`. A platform tool
+namespace has a NULL customer, and before this one such row failed the whole
+discovery reply. `workspace.list` now renders an absent owner or customer as
+JSON null rather than the string `"None"`.
+
+### The underscore walker sees a private name passed as a string
+
+A new shape F in `threetears.enforcement.underscore_access` flags `setattr`,
+`getattr`, `delattr` and `hasattr` when the name argument is a private string
+literal and the receiver is not `self`, `cls`, or an object the module defines
+with `def` or `class`. SLF001 and every other shape look at attribute nodes, so
+`setattr(server, "_nc", rec)` passed them all. A marker a module stamps onto its
+own function may still be read anywhere in that module, as the
+`@spans_partitions` decorator does.
+
+Shape F scans every `tests/` tree as well as `src`, because every instance that
+surfaced the gap was a test fixture. The other shapes stay `src`-only.
+`UnderscoreAccessConfig.test_roots` chooses the trees and defaults to the new
+`threetears.enforcement.common.find_local_test_roots`; `()` scans `src` alone.
+
+There is no reflective escape hatch. A private that genuinely has to be reached,
+such as a third-party object with no accessor, is spelled as an attribute under
+a reasoned SLF001 pragma or a per-file exemption with its ledger entry.
+
+In this repo, the gap's hits were resolved:
+- Two names were promoted: `BaseCollection.registry` and `ToolServer.object_resolver`.
+- Five `ToolServer` test fixtures now pass their recording client through
+  `nats_client=`.
+- Third-party reads are spelled as attributes: redshift_connector's socket, the
+  Claude SDK's CLI process, httpx's proxy url and asyncpg's cancel verbs.
+
+**For consumers:** `run_underscore_enforcement(..., walker="all")` now runs
+shape F over your `tests/` trees too. Resolve its findings the same way before
+this lands.
+
+Minor: new public `shape_f_violations`, `find_local_test_roots`,
+`UnderscoreAccessConfig.test_roots`, `BaseCollection.registry` and
+`ToolServer.object_resolver`, and `NamespaceDiscoverySummary.customer_id` widens
+to `UUID | None`.
+
 ## v0.50.0 -- 2026-09-23
 
 ### Material read back from storage reaches a model fenced, and the fence explains itself

@@ -346,6 +346,21 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
 
     @property
+    def registry(self) -> CollectionRegistry | None:
+        """the registry this collection was constructed with, or ``None`` for one built without one.
+
+        public so a subclass in another package can reach the registry's shared services -- the
+        pod's scan cache, above all -- without binding to this class's private slot. ``None`` for an
+        instance that never ran :meth:`__init__` (a bare one a test builds to drive SQL alone):
+        callers treat the registry's services as an optimisation and still serve without it.
+
+        :return: the registry, or ``None``
+        :rtype: CollectionRegistry | None
+        """
+        result: CollectionRegistry | None = getattr(self, "_registry", None)
+        return result
+
+    @property
     def required_l3_pool(self) -> L3Backend:
         """:attr:`l3_pool`, or a clear failure saying why it had to be there.
 

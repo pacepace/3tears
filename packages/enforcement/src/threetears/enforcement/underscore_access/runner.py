@@ -1,7 +1,7 @@
 """pytest-friendly orchestration for underscore-access enforcement.
 
 a single :func:`run_underscore_enforcement` entry point lets each
-consumer's thin shell invoke any one of the five shapes (or all of
+consumer's thin shell invoke any one of the six shapes (or all of
 them as a single combined pass). the runner is the policy point: it
 resolves both root sets (``scan_roots`` for *where to look for
 violations* and ``inheritance_roots`` for *where to build the
@@ -33,6 +33,7 @@ from threetears.enforcement.common import (
     discover_src_roots,
     emit_report,
     find_local_src_roots,
+    find_local_test_roots,
     parse_exemptions_with_rationale,
     resolve_mode,
 )
@@ -47,6 +48,7 @@ from threetears.enforcement.underscore_access.walkers import (
     shape_c_violations,
     shape_d_violations,
     shape_e_violations,
+    shape_f_violations,
 )
 
 __all__ = ["run_underscore_enforcement"]
@@ -69,6 +71,7 @@ _VALID_WALKERS: frozenset[str] = frozenset(
         "shape_c",
         "shape_d",
         "shape_e",
+        "shape_f",
         "all",
     }
 )
@@ -80,9 +83,15 @@ def run_underscore_enforcement(
 ) -> None:
     """run the named walker(s), apply exemptions, emit report, fail if strict.
 
-    accepted ``walker`` values: ``"shape_a"`` through ``"shape_e"``
+    accepted ``walker`` values: ``"shape_a"`` through ``"shape_f"``
     or ``"all"`` to run every shape with a single combined report.
     raises :class:`ValueError` for any other value.
+
+    shape F alone also scans the ``tests/`` trees --
+    :attr:`UnderscoreAccessConfig.test_roots`, discovered by
+    :func:`find_local_test_roots
+    <threetears.enforcement.common.repo_layout.find_local_test_roots>`
+    when unset -- and the report's root list says so.
 
     src-root responsibilities are split:
 
@@ -111,7 +120,7 @@ def run_underscore_enforcement(
 
     :param config: per-repo enforcement config
     :ptype config: UnderscoreAccessConfig
-    :param walker: which walker to invoke (``shape_a``..``shape_e``
+    :param walker: which walker to invoke (``shape_a``..``shape_f``
         or ``all``)
     :ptype walker: str
     :raises ValueError: ``walker`` is not in the accepted set
@@ -132,7 +141,8 @@ def run_underscore_enforcement(
 
     scan_roots = _resolve_scan_roots(config)
     inheritance_roots = _resolve_inheritance_roots(config)
-    violations = _run_walker(walker, config, scan_roots, inheritance_roots)
+    test_roots = _resolve_test_roots(config) if walker in {"shape_f", "all"} else ()
+    violations = _run_walker(walker, config, scan_roots, inheritance_roots, test_roots)
 
     exemptions = _load_exemptions(config.exemptions_path)
     filtered = apply_exemptions(violations, exemptions, config.repo_root, scope_of=_scope_of)
@@ -141,7 +151,7 @@ def run_underscore_enforcement(
 
     report = emit_report(
         filtered,
-        scan_roots,
+        (*scan_roots, *test_roots),
         exemptions,
         mode,
         config.repo_root,
@@ -174,6 +184,24 @@ def _resolve_scan_roots(config: UnderscoreAccessConfig) -> tuple[Path, ...]:
     if config.scan_roots is not None:
         return config.scan_roots
     return find_local_src_roots(config.repo_root)
+
+
+def _resolve_test_roots(config: UnderscoreAccessConfig) -> tuple[Path, ...]:
+    """pick the ``tests/`` trees shape F scans in addition to the src roots.
+
+    explicit :attr:`UnderscoreAccessConfig.test_roots` wins (``()`` scans src alone);
+    otherwise :func:`find_local_test_roots
+    <threetears.enforcement.common.repo_layout.find_local_test_roots>`, the consumer's own
+    tests only.
+
+    :param config: per-repo enforcement config
+    :ptype config: UnderscoreAccessConfig
+    :return: tests roots for shape F
+    :rtype: tuple[Path, ...]
+    """
+    if config.test_roots is not None:
+        return config.test_roots
+    return find_local_test_roots(config.repo_root)
 
 
 def _resolve_inheritance_roots(
@@ -254,6 +282,7 @@ def _run_walker(
     config: UnderscoreAccessConfig,
     scan_roots: tuple[Path, ...],
     inheritance_roots: tuple[Path, ...],
+    test_roots: tuple[Path, ...],
 ) -> list[Violation]:
     """dispatch to the named walker(s) and return raw violations.
 
@@ -266,6 +295,8 @@ def _run_walker(
     :param inheritance_roots: resolved roots from which to build the
         inheritance graph
     :ptype inheritance_roots: tuple[Path, ...]
+    :param test_roots: resolved ``tests/`` trees shape F scans beside the src roots
+    :ptype test_roots: tuple[Path, ...]
     :return: raw (un-filtered) violations
     :rtype: list[Violation]
     """
@@ -287,10 +318,11 @@ def _run_walker(
             inheritance_roots,
         ),
         "shape_e": lambda: shape_e_violations(scan_roots, config.repo_root),
+        "shape_f": lambda: shape_f_violations((*scan_roots, *test_roots), config.repo_root),
     }
     if walker == "all":
         out: list[Violation] = []
-        for name in ("shape_a", "shape_b", "shape_c", "shape_d", "shape_e"):
+        for name in ("shape_a", "shape_b", "shape_c", "shape_d", "shape_e", "shape_f"):
             out.extend(runners[name]())
         return out
     return runners[walker]()

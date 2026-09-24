@@ -1218,6 +1218,19 @@ class ToolServer:
             self._assertion_replay_anchor = anchor
 
     @property
+    def object_resolver(self) -> ObjectResolver | None:
+        """the object-id resolver this pod installs on every per-call scope, or ``None``.
+
+        the injected resolver when one was passed at construction, else the one :meth:`serve`
+        provisions from the NATS client -- ``None`` until then. read-only: the pod owns the one
+        instance, and a caller that wants a different one injects it at construction.
+
+        :return: the pod's object resolver, or ``None`` before it is provisioned
+        :rtype: ObjectResolver | None
+        """
+        return self._object_resolver
+
+    @property
     def owned_namespaces(self) -> tuple[str, ...] | None:
         """the namespaces this pod OWNS, as its registration reply named them.
 

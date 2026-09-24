@@ -322,7 +322,7 @@ class TestApiDriverEgress:
         driver = ApiDriver(egress=egress)
 
         pool = egress.httpx_transport()._pool
-        assert "9050" in str(getattr(pool, "_proxy_url", "")), "the driver's exit is not the configured one"
+        assert "9050" in str(pool._proxy_url), "the driver's exit is not the configured one"
         assert driver._egress is egress
 
     async def test_an_injected_client_is_not_rebound(self) -> None:

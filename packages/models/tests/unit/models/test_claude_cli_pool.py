@@ -793,3 +793,21 @@ class TestReturningASessionIsBounded:
             session_store: Any = None
 
         assert not poolable(WithStore(session_store=object()))
+
+
+class TestTheSdkPidRead:
+    """the CLI pid is read off the SDK's own process object while its internals still hold it."""
+
+    def test_the_pid_the_sdk_holds_is_returned(self) -> None:
+        from types import SimpleNamespace
+
+        client = SimpleNamespace(_transport=SimpleNamespace(_process=SimpleNamespace(pid=4321)))
+
+        assert claude_cli_pool._discover_pid(client, "marker") == 4321  # noqa: SLF001
+
+    def test_internals_that_moved_read_as_no_pid_rather_than_raising(self) -> None:
+        """the fallback to /proc depends on this answering None, not on it raising."""
+        from types import SimpleNamespace
+
+        for client in (SimpleNamespace(), SimpleNamespace(_transport=None), SimpleNamespace(_transport=object())):
+            assert claude_cli_pool._sdk_process_pid(client) is None  # noqa: SLF001

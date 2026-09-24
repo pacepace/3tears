@@ -116,15 +116,17 @@ class WorkspaceListTool(TearsTool):
                     user_identity_token=user_identity_token,
                     namespace_type="workspace",
                 )
+                # the ids stay UUIDs (or None) until the one border, json.dumps: an absent owner or
+                # customer becomes JSON null there, where a per-field str() rendered it "None".
                 payload = [
                     {
                         "name": item.name,
-                        "owner_agent_id": str(item.owner_agent_id),
-                        "customer_id": str(item.customer_id),
+                        "owner_agent_id": item.owner_agent_id,
+                        "customer_id": item.customer_id,
                     }
                     for item in items
                 ]
-                result = ToolResult(success=True, content=json.dumps(payload))
+                result = ToolResult(success=True, content=json.dumps(payload, default=str))
         except DiscoveryClientError as exc:
             result = ToolResult(
                 success=False,
