@@ -343,12 +343,14 @@ class RegistrationHandler:
         * a manifest carrying a token is a PLATFORM tool pod under per-key identity.
           The RAW token goes to :meth:`ToolPodAuthenticator.verify_pod`, which
           verifies it against the pod's stored key; failure REJECTS.
-        * a TOKENLESS manifest is the AGENT-OWNED in-process pod. It registers over
-          the agent's own NATS connection, which the auth-callout already
-          authenticated per-key as an AGENT, so its identity is enforced at the
-          transport; it holds no row in the host's tool-pod store and could never
-          present a token. It is still ADMITTED as a principal -- what changed is
-          that it is no longer admitted as an owner of everything.
+        * a TOKENLESS manifest carries no per-key identity. The missing token does
+          not say who owns the pod: the pod-id does
+          (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`). When that
+          names an agent, the pod is that agent's in-process server, registering
+          over the agent's own NATS connection, which the auth-callout already
+          authenticated per-key as that AGENT; it holds no row in the host's
+          tool-pod store and could never present a token. It is still ADMITTED as
+          a principal, but never as an owner of any provider node.
 
         **Two different tuples, deliberately not merged.** ``owned_nodes`` is what
         the filter compares against: the PROVIDER nodes this pod owns, empty for
