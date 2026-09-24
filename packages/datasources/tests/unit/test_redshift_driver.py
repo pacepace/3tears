@@ -81,6 +81,7 @@ def _build_mock_connection(
     description: list[tuple[str, Any]] | None = None,
     fetchone_row: tuple[Any, ...] | None = None,
     fetchmany_chunks: list[list[tuple[Any, ...]]] | None = None,
+    usock: MagicMock | None = None,
 ) -> MagicMock:
     """build a MagicMock that behaves like a ``redshift_connector.Connection``.
 
@@ -97,6 +98,9 @@ def _build_mock_connection(
     :param fetchmany_chunks: successive return values for fetchmany;
         the final element should be ``[]`` to terminate the loop
     :ptype fetchmany_chunks: list[list[tuple]] | None
+    :param usock: the socket the connection talks over, for a test asserting on what the driver
+        does to it; a fresh mock otherwise
+    :ptype usock: MagicMock | None
     :return: connection mock with cursor/close/commit wired
     :rtype: MagicMock
     """
@@ -116,6 +120,10 @@ def _build_mock_connection(
     conn.close = MagicMock(return_value=None)
     # surface the cursor on the conn mock for assertions.
     conn._cursor = cursor  # noqa: SLF001 - test surface only
+    if usock is not None:
+        # the stand-in reproduces redshift_connector's private socket slot, because that slot is
+        # what the driver reads; the test then asserts on its own socket object.
+        conn._usock = usock  # noqa: SLF001 - mirrors the third-party slot the driver reads
     return conn
 
 
@@ -332,7 +340,8 @@ class TestConnectionCaching:
         via setsockopt on the underlying socket -- passing them as connect kwargs raises
         TypeError (the regression that silently broke every datasource connection).
         """
-        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        usock = MagicMock(name="MockRedshiftSocket")
+        conn = _build_mock_connection(fetchall_rows=[], description=[], usock=usock)
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
@@ -347,7 +356,6 @@ class TestConnectionCaching:
             assert "tcp_keepalive_interval" not in kwargs
             assert "tcp_keepalive_count" not in kwargs
             # the granular tuning is applied via setsockopt on the underlying socket.
-            usock = getattr(conn, "_usock")
             opts = {(call.args[0], call.args[1]): call.args[2] for call in usock.setsockopt.call_args_list}
             # SO_KEEPALIVE is always enabled.
             assert opts[(socket.SOL_SOCKET, socket.SO_KEEPALIVE)] == 1

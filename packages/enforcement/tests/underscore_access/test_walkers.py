@@ -1,4 +1,4 @@
-"""tests for the five underscore-access shape walkers."""
+"""tests for the six underscore-access shape walkers."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from threetears.enforcement.underscore_access.walkers import (
     shape_c_violations,
     shape_d_violations,
     shape_e_violations,
+    shape_f_violations,
 )
 
 
@@ -459,3 +460,117 @@ class TestShapeE:
         )
         violations = shape_e_violations((src,), tmp_path)
         assert {v.symbol for v in violations} == {"_a", "_b"}
+
+
+# ------------------------------------------------------------------
+# shape F — a private name reached through setattr / getattr / delattr / hasattr
+# ------------------------------------------------------------------
+
+
+class TestShapeF:
+    """the private access an attribute-node check cannot see: the name travels as data."""
+
+    def test_it_reports_the_violating_snippet_it_exists_for(self, tmp_path: Path) -> None:
+        """the fallibility test: the exact fixture shape that surfaced the gap is reported."""
+        tests = tmp_path / "tests"
+        path = _write(
+            tests / "test_server.py",
+            "def test_x(server, rec):\n    setattr(server, '_nc', rec)\n",
+        )
+
+        violations = shape_f_violations((tests,), tmp_path)
+
+        assert [(v.category, v.file, v.line, v.symbol) for v in violations] == [("underscore_access.F", path, 2, "_nc")]
+
+    def test_every_reflective_builtin_is_covered(self, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "def f(obj, v):\n"
+            "    setattr(obj, '_a', v)\n"
+            "    getattr(obj, '_b')\n"
+            "    getattr(obj, '_c', None)\n"
+            "    delattr(obj, '_d')\n"
+            "    hasattr(obj, '_e')\n",
+        )
+
+        violations = shape_f_violations((src,), tmp_path)
+
+        assert [v.symbol for v in violations] == ["_a", "_b", "_c", "_d", "_e"]
+
+    def test_self_and_cls_are_the_owner_and_are_allowed(self, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "class C:\n"
+            "    def m(self):\n"
+            "        return getattr(self, '_x', None)\n"
+            "    @classmethod\n"
+            "    def k(cls):\n"
+            "        return hasattr(cls, '_y')\n",
+        )
+
+        assert shape_f_violations((src,), tmp_path) == []
+
+    def test_public_names_dunders_and_computed_names_are_not_its_business(self, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "def f(obj, name):\n"
+            "    getattr(obj, 'public')\n"
+            "    getattr(obj, '__dict__')\n"
+            "    getattr(obj, name)\n"
+            "    getattr(obj, '_')\n",
+        )
+
+        assert shape_f_violations((src,), tmp_path) == []
+
+    def test_a_module_may_stamp_and_read_a_marker_on_an_object_it_defines(self, tmp_path: Path) -> None:
+        """the decorator-marker shape: the module that writes the name onto its own function owns it.
+
+        a function defined by ``def`` in this module is this module's object, so stamping a private
+        marker on it is internal; reading that same marker back anywhere in the module -- off any
+        function handed in -- is reading the module's own protocol.
+        """
+        src = tmp_path / "src"
+        _write(
+            src / "pkg" / "deco.py",
+            "def mark(target):\n"
+            "    def wrapper(*a):\n"
+            "        return target(*a)\n"
+            "    setattr(wrapper, '_marked', True)\n"
+            "    return wrapper\n"
+            "\n"
+            "def is_marked(method):\n"
+            "    return getattr(method, '_marked', False) is True\n",
+        )
+
+        assert shape_f_violations((src,), tmp_path) == []
+
+    def test_another_module_reading_that_marker_is_still_a_violation(self, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        _write(src / "pkg" / "deco.py", "def mark(t):\n    def w():\n        pass\n    setattr(w, '_marked', True)\n")
+        reader = _write(src / "pkg" / "reader.py", "def check(fn):\n    return getattr(fn, '_marked', False)\n")
+
+        violations = shape_f_violations((src,), tmp_path)
+
+        assert [(v.file, v.symbol) for v in violations] == [(reader, "_marked")]
+
+    def test_an_instance_of_another_modules_class_is_not_the_modules_own_object(self, tmp_path: Path) -> None:
+        """constructing an object does not make its private slots yours: only a def or class does."""
+        tests = tmp_path / "tests"
+        _write(
+            tests / "test_x.py",
+            "from pkg import Server\n\ndef test_x(rec):\n    server = Server()\n    setattr(server, '_nc', rec)\n",
+        )
+
+        assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_nc"]
+
+    def test_a_name_rebound_by_assignment_is_not_treated_as_the_def_it_shadows(self, tmp_path: Path) -> None:
+        tests = tmp_path / "tests"
+        _write(
+            tests / "test_x.py",
+            "def helper():\n    pass\n\ndef test_x(make):\n    helper = make()\n    setattr(helper, '_slot', 1)\n",
+        )
+
+        assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_slot"]

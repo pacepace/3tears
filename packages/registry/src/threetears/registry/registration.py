@@ -343,12 +343,14 @@ class RegistrationHandler:
         * a manifest carrying a token is a PLATFORM tool pod under per-key identity.
           The RAW token goes to :meth:`ToolPodAuthenticator.verify_pod`, which
           verifies it against the pod's stored key; failure REJECTS.
-        * a TOKENLESS manifest is the AGENT-OWNED in-process pod. It registers over
-          the agent's own NATS connection, which the auth-callout already
-          authenticated per-key as an AGENT, so its identity is enforced at the
-          transport; it holds no row in the host's tool-pod store and could never
-          present a token. It is still ADMITTED as a principal -- what changed is
-          that it is no longer admitted as an owner of everything.
+        * a TOKENLESS manifest carries no per-key identity. The missing token does
+          not say who owns the pod: the pod-id does
+          (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`). When that
+          names an agent, the pod is that agent's in-process server, registering
+          over the agent's own NATS connection, which the auth-callout already
+          authenticated per-key as that AGENT; it holds no row in the host's
+          tool-pod store and could never present a token. It is still ADMITTED as
+          a principal, but never as an owner of any provider node.
 
         **Two different tuples, deliberately not merged.** ``owned_nodes`` is what
         the filter compares against: the PROVIDER nodes this pod owns, empty for
@@ -489,26 +491,29 @@ class RegistrationHandler:
     def _agent_owned_namespaces(manifest: RegistrationManifest) -> tuple[str, ...]:
         """the namespace an AGENT-OWNED in-process pod owns, or nothing.
 
-        A pod that presents no token is the agent's own in-process tool server: it is not a
-        row in ``tool_pods``, so it owns no provider node. What it owns is ``agents.<uuid>``
-        -- the same name :class:`~threetears.agent.tools.server.ToolServer` already stamps
-        as ``owner_namespace`` on every namespace row it emits.
+        A pod that presents no token and registers under an agent's composite pod-id is that
+        agent's own in-process tool server: it is not a row in ``tool_pods``, so it owns no
+        provider node. What it owns is ``agents.<uuid>``.
 
-        ``owner_agent_id`` is taken off the manifest here, which is a claim rather than a
-        verified fact -- and that is acceptable for exactly this value and no other. The
-        pod is on the agent's OWN authenticated NATS connection, so the identity was
-        settled at the transport, and the name composed from it is the one the pod is
-        about to write onto its own rows regardless. It confers no authority: nothing in
-        this reply is a credential.
+        The owner is read from the POD-ID, the one source every other reader of ownership uses
+        -- routing, discovery, the serving pod's own refusal. It is proof rather than a claim:
+        only the agent it names is granted the probe that makes the endpoint callable. The
+        manifest's ``owner_agent_id`` is not consulted; it chooses which namespace rows the
+        pod's tools are written to, and a pod whose id names no agent is told nothing here
+        whatever it claims. Nothing in this reply is a credential either way.
+
+        ``_validate_manifest`` has already refused a pod-id that names no agent, so the read
+        here cannot raise.
 
         :param manifest: the registering pod's manifest
         :ptype manifest: RegistrationManifest
-        :return: the agent's namespace name, or an empty tuple when the pod names no agent
+        :return: the agent's namespace name, or an empty tuple when the pod-id names no agent
         :rtype: tuple[str, ...]
         """
-        if manifest.owner_agent_id is None:
+        owner = Subjects.agent_inprocess_owner_id(manifest.pod_id)
+        if owner is None:
             return ()
-        return (build_agent_namespace_name(manifest.owner_agent_id),)
+        return (build_agent_namespace_name(owner),)
 
     def _validate_manifest(self, manifest: RegistrationManifest) -> str | None:
         """validate registration manifest fields.
@@ -520,6 +525,16 @@ class RegistrationHandler:
         """
         if not manifest.pod_id:
             return "pod_id is required"
+        try:
+            # routing reads an endpoint's owner from its pod-id, so an id that names no owner could
+            # never be routed. refused here, loudly, rather than admitted as an endpoint that sits
+            # in the catalog routable by no caller.
+            Subjects.agent_inprocess_owner_id(manifest.pod_id)
+        except ValueError as exc:
+            return (
+                f"pod_id cannot be routed: {exc}. a Tool Pod's id is one token; an agent's in-process "
+                "server's id is Subjects.agent_inprocess_pod_id(agent_id, instance)"
+            )
         if not manifest.tools:
             return "tools list is required and must not be empty"
         result = None

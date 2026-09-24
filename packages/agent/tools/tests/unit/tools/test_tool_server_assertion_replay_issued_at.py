@@ -16,10 +16,10 @@ import jwt
 import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.server import CallResponse, ToolServer
+from threetears.agent.tools.server import CallResponse
 from threetears.nats import IncomingMessage
 
-from unit.tools._pod_auth import StubReplayGuard, jwks_provider, signed_call_payload
+from unit.tools._pod_auth import StubReplayGuard, jwks_provider, recording_tool_server, signed_call_payload
 
 _POD_ID = "test-pod"
 
@@ -40,30 +40,16 @@ class _EchoTool(TearsTool):
         return "1.0"
 
 
-# parity-exempt: subset stand-in for NatsClient exposing only the publish_reply the pod's handler answers on
-class _RecordingNatsClient:
-    def __init__(self) -> None:
-        self.replies: list[tuple[str, Any]] = []
-
-    async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
-        self.replies.append((reply_subject, message))
-
-
 class TestTheGuardSeesTheSignedIssueTime:
     @pytest.mark.asyncio
     async def test_the_assertions_signed_iat_reaches_the_guard(self) -> None:
         guard = StubReplayGuard()
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
+        server, rec = recording_tool_server(
             pod_id=_POD_ID,
             jwks_provider=jwks_provider,
             assertion_replay_guard=guard,
         )
         server.register(_EchoTool())
-        rec = _RecordingNatsClient()
-        # the handler answers on ``self._nc``; installed directly rather than through ``serve``,
-        # which would dial a real connection.
-        setattr(server, "_nc", rec)
         payload = signed_call_payload(pod_id=_POD_ID, agent_id=uuid4(), customer_id=uuid4())
 
         await server.handle_call(

@@ -122,6 +122,7 @@ def make_authed_request(
     arguments: dict[str, Any] | None = None,
     correlation_id: UUID | None = None,
     customer_id: UUID | None = None,
+    customer_claim: str | None = None,
 ) -> ProxyCallRequest:
     """create an AUTHENTICATED :class:`ProxyCallRequest`.
 
@@ -130,6 +131,8 @@ def make_authed_request(
     and re-stamps it rather than rejecting it. the re-stamp is identity-preserving here (the token's
     ``sub`` == the request's ``agent_id``) so routing / forwarding assertions still see the same
     agent; ``customer_id`` rides on the token so the re-stamped customer is observable too.
+    ``customer_claim`` replaces the token's customer claim verbatim -- the platform sentinel makes
+    the caller a tool pod rather than an agent.
     """
     if arguments is None:
         arguments = {"expression": "2+2"}
@@ -140,7 +143,7 @@ def make_authed_request(
     token = sign_identity_token(
         IdentityClaims(
             sub=str(effective_agent_id),
-            customer_id=str(effective_customer_id),
+            customer_id=customer_claim if customer_claim is not None else str(effective_customer_id),
             user_id=None,
             sid="sid-1",
             pod_id="pod-1",

@@ -23,6 +23,10 @@ src-root responsibilities are split across two fields:
 
 splitting them prevents Option B path-dep walking from dragging
 upstream code into the violation scan.
+
+:attr:`test_roots` widens shape F alone to the consumer's ``tests/``
+trees (defaults to :func:`find_local_test_roots
+<threetears.enforcement.common.repo_layout.find_local_test_roots>`).
 """
 
 from __future__ import annotations
@@ -71,6 +75,13 @@ class UnderscoreAccessConfig:
     :ivar enable_shape_b_ruff: whether to run ruff for shape B. set
         ``False`` on hosts without ruff installed (in which case
         shape B yields zero violations). defaults to ``True``.
+    :ivar test_roots: the ``tests/`` trees shape F scans IN ADDITION to
+        :attr:`scan_roots`. shapes A, C, D and E stay src-only; shape F
+        exists for a spelling of private access that turned up in test
+        fixtures, so scanning src alone would miss every instance of it.
+        when ``None``, the runner uses :func:`find_local_test_roots
+        <threetears.enforcement.common.repo_layout.find_local_test_roots>`;
+        pass ``()`` to scan src alone.
     """
 
     repo_root: Path
@@ -80,3 +91,4 @@ class UnderscoreAccessConfig:
     mode_env_var: str = "UNDERSCORE_AUDIT_MODE"
     skip_basenames: frozenset[str] = field(default_factory=lambda: _DEFAULT_SKIP_BASENAMES)
     enable_shape_b_ruff: bool = True
+    test_roots: tuple[Path, ...] | None = None

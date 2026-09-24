@@ -212,16 +212,15 @@ async def _composed(*, with_signer: bool) -> tuple[ToolCallClient, _ScopeRecordi
     # the pod verifies BOTH the hub's token and the proxy's assertion off one JWKS carrying both keys
     combined = {"keys": [*build_jwks({"kid-1": hub_pub})["keys"], *proxy_signer.public_jwks()["keys"]]}
 
+    pod_nats = _PodNats()
     server = ToolServer(
-        nats_url="nats://localhost:9999",
+        nats_client=pod_nats,  # type: ignore[arg-type]
         pod_id=_SERVING_POD,
         jwks_provider=lambda: combined,
         assertion_replay_guard=_StubReplayGuard(),
     )
     tool = _ScopeRecordingTool()
     server.register(tool)
-    pod_nats = _PodNats()
-    setattr(server, "_nc", pod_nats)
 
     proxy = CallProxy(
         await _catalog(),

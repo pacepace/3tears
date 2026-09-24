@@ -861,8 +861,11 @@ class CallProxy:
         unauthorized-for-the-tool call still gets ``TOOL_NOT_AUTHORIZED``
         rather than a spend error. the limit gate is the ONE fail-OPEN
         gate (a guard that raises serves the call); every other gate is
-        fail-CLOSED. after a successful forward the post-call
-        usage-emit seam fires fire-and-forget.
+        fail-CLOSED. routing narrows the entry's endpoints to the ones the
+        verified caller may use (an agent's in-process endpoint only for
+        that agent, a Tool Pod's for everyone) before the strategy picks
+        one, and failover stays inside that set. after a successful
+        forward the post-call usage-emit seam fires fire-and-forget.
 
         :param request: parsed + identity-bound call request
         :ptype request: ProxyCallRequest
@@ -1093,14 +1096,51 @@ class CallProxy:
             )
             return
 
-        endpoint = self._routing_strategy.select(entry.endpoints)
+        # an agent's in-process tool answers from THAT agent's own state, so it is routed only to
+        # the agent that serves it; a Tool Pod's endpoint serves every caller. decided on the
+        # VERIFIED principal, before the strategy sees anything, and reused by the failover below --
+        # least-busy with a random tie-break otherwise hands one agent's call to another agent's
+        # process as the ordinary case. see ``CatalogEntry.endpoints_for``.
+        callable_endpoints = entry.endpoints_for(principal.principal_id)
+        endpoint = self._routing_strategy.select(callable_endpoints)
 
         if endpoint is None:
             # TOOL_NOT_READY takes priority over TOOL_UNAVAILABLE: if ANY
-            # endpoint is still pending its probe confirmation, the caller
-            # should retry shortly rather than give up. TOOL_UNAVAILABLE is
+            # endpoint this caller may use is still pending its probe
+            # confirmation, the caller should retry shortly rather than give
+            # up. a pending endpoint of ANOTHER agent's process does not count:
+            # no retry would ever route this caller to it. TOOL_UNAVAILABLE is
             # only reported when no pending endpoints exist either.
-            has_pending = any(ep.status == "pending" for ep in entry.endpoints)
+            has_pending = any(ep.status == "pending" for ep in callable_endpoints)
+            if entry.endpoints and not callable_endpoints:
+                # every endpoint belongs to another agent's process. the same answer as "nothing
+                # routable for this call" -- because that is what it is -- with the reason named,
+                # since "has no available endpoints" would be false here and would send an operator
+                # hunting for a dead pod that is in fact healthy and serving its own agent.
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=(
+                        f"tool {full_name} is served only in-process by other agents, and an agent's in-process "
+                        "tool answers from that agent's own state; the calling agent serves no endpoint of it"
+                    ),
+                    error_code="TOOL_UNAVAILABLE",
+                    context=request.context,
+                )
+                await self._answer(msg, response, delivery_subject)
+                log.warning(
+                    "tool call refused: every endpoint is another agent's in-process server",
+                    extra={
+                        "extra_data": {
+                            "full_name": full_name,
+                            "endpoint_count": len(entry.endpoints),
+                            "agent_id": agent_id_log,
+                            "principal_is_tool_pod": principal.is_tool_pod,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                return
             if has_pending:
                 response = ProxyCallResponse(
                     success=False,
@@ -1116,6 +1156,7 @@ class CallProxy:
                         "extra_data": {
                             "full_name": full_name,
                             "endpoint_count": len(entry.endpoints),
+                            "callable_endpoint_count": len(callable_endpoints),
                             "agent_id": agent_id_log,
                             "correlation_id": correlation_id_log,
                         }
@@ -1136,6 +1177,7 @@ class CallProxy:
                     "extra_data": {
                         "full_name": full_name,
                         "endpoint_count": len(entry.endpoints),
+                        "callable_endpoint_count": len(callable_endpoints),
                         "agent_id": agent_id_log,
                         "correlation_id": correlation_id_log,
                     }
@@ -1151,6 +1193,12 @@ class CallProxy:
         # pod dying and the heartbeat sweep evicting its catalog endpoints:
         # a single call to a not-yet-evicted dead pod no longer fails the
         # whole request when a healthy sibling pod serves the same tool.
+        #
+        # the sibling comes from ``callable_endpoints``, never the whole entry:
+        # when an agent's own replica is dead, the least-busy survivor is
+        # usually ANOTHER agent's process, and failing over to it would answer
+        # from the wrong agent's state -- the very misroute the owner rule
+        # above exists to prevent.
         #
         # only TOOL_UNAVAILABLE is retried. a TOOL_TIMEOUT may have reached
         # the pod and be executing, so retrying it would risk double-execution
@@ -1174,7 +1222,7 @@ class CallProxy:
                 endpoint.in_flight -= 1
             if response.error_code != "TOOL_UNAVAILABLE":
                 break
-            remaining = [ep for ep in entry.endpoints if ep.pod_id not in attempted_pod_ids]
+            remaining = [ep for ep in callable_endpoints if ep.pod_id not in attempted_pod_ids]
             next_endpoint = self._routing_strategy.select(remaining)
             if next_endpoint is None:
                 # NOSILENT: the failover warning below fires only when a SIBLING pod exists, so
@@ -1190,6 +1238,7 @@ class CallProxy:
                             "full_name": full_name,
                             "failed_pod_id": endpoint.pod_id,
                             "endpoint_count": len(entry.endpoints),
+                            "callable_endpoint_count": len(callable_endpoints),
                             "agent_id": agent_id_log,
                             "correlation_id": correlation_id_log,
                         }

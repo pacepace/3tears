@@ -9,6 +9,7 @@ import pytest
 
 from threetears.enforcement.common.repo_layout import (
     find_local_src_roots,
+    find_local_test_roots,
     find_repo_root,
 )
 
@@ -175,3 +176,41 @@ class TestFindLocalSrcRootsOverThisRepo:
         nested = {child / "src" for child in agent_dir.iterdir() if (child / "src").is_dir()}
         assert len(nested) >= 10
         assert nested <= found
+
+
+class TestFindLocalTestRoots:
+    """the tests trees a check reaches when it must cover where private access actually happens."""
+
+    def test_top_level_and_nested_package_tests_trees_are_all_found(self, tmp_path: Path) -> None:
+        _touch(tmp_path / "tests" / "test_root.py")
+        _touch(tmp_path / "packages" / "core" / "tests" / "test_a.py")
+        _touch(tmp_path / "packages" / "agent" / "tools" / "tests" / "test_b.py")
+
+        roots = find_local_test_roots(tmp_path)
+
+        assert roots == tuple(
+            sorted(
+                (
+                    (tmp_path / "tests").resolve(),
+                    (tmp_path / "packages" / "core" / "tests").resolve(),
+                    (tmp_path / "packages" / "agent" / "tools" / "tests").resolve(),
+                )
+            )
+        )
+
+    def test_a_src_tree_and_a_found_tests_tree_are_not_descended(self, tmp_path: Path) -> None:
+        _touch(tmp_path / "packages" / "core" / "src" / "core" / "tests" / "helper.py")
+        _touch(tmp_path / "packages" / "core" / "tests" / "unit" / "tests" / "test_c.py")
+        _touch(tmp_path / "packages" / "core" / ".venv" / "tests" / "x.py")
+
+        roots = find_local_test_roots(tmp_path)
+
+        assert roots == ((tmp_path / "packages" / "core" / "tests").resolve(),)
+
+    def test_this_repo_has_its_package_tests_trees(self) -> None:
+        """the floor: a discovery that silently returns nothing reads exactly like a clean pass."""
+        roots = find_local_test_roots(_THIS_REPO_ROOT)
+
+        assert (_THIS_REPO_ROOT / "tests").resolve() in roots
+        assert (_THIS_REPO_ROOT / "packages" / "agent" / "tools" / "tests").resolve() in roots
+        assert len(roots) >= _MINIMUM_PLAUSIBLE_SRC_ROOTS

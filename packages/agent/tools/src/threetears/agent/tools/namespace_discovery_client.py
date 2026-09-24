@@ -153,9 +153,10 @@ class NamespaceDiscoverySummary(BaseModel):
     :param owner_agent_id: agent whose schema physically holds the
         namespace's rows; cross-agent routing targets this agent
     :ptype owner_agent_id: UUID | None
-    :param customer_id: owning customer; always matches the caller's
-        customer because the broker filters in SQL
-    :ptype customer_id: UUID
+    :param customer_id: owning customer, which matches the caller's
+        customer because the broker filters in SQL; ``None`` for a
+        platform row -- a platform tool namespace belongs to no customer
+    :ptype customer_id: UUID | None
     """
 
     id: UUID
@@ -166,7 +167,9 @@ class NamespaceDiscoverySummary(BaseModel):
     # schema -- so a non-optional annotation here made discovery fail validation
     # for the whole answer whenever one was visible.
     owner_agent_id: UUID | None
-    customer_id: UUID
+    # ``None`` for a platform row, for the same reason: a platform tool namespace belongs to no
+    # customer, and a non-optional annotation made one such visible row fail the whole answer.
+    customer_id: UUID | None
     # Populated only for a ``datasource`` row, and only by a hub at v102 or
     # later; ``None`` everywhere else. The broker's summary is otherwise
     # deliberately minimal on the grounds that "downstream tools fetch full
