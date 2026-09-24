@@ -4,6 +4,25 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.51.1 -- 2026-09-24
+
+### A WebSocket chat message with nothing to route is refused, and cannot close the socket
+
+`threetears.channels.websocket` sent a chat `message` frame with empty `content`
+to the router, so an agent spent a model call on nothing, while a host's REST
+chat door refuses the same empty message. A chat frame whose `metadata` was not
+an object failed on a `.get` read before the per-message safety net and closed
+the whole connection with 1011.
+
+The chat path now answers, before any router sees the frame:
+
+- empty or missing `content`: `{"type": "error", "message": "empty message"}`;
+- `content` that is not a string, or `metadata` that is not an object:
+  `{"type": "error", "message": "invalid message"}`.
+
+Neither is dispatched, and the connection keeps serving: never a silent drop,
+never a dead connection. A well-formed chat message is handled as before.
+
 ## v0.51.0 -- 2026-09-24
 
 ### An agent's in-process tool is routed only to that agent
