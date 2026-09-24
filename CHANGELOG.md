@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.51.0 -- 2026-09-24
 
 ### An agent's in-process tool is routed only to that agent
 
