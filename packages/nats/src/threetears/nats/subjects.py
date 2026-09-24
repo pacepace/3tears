@@ -712,7 +712,7 @@ class Subjects:
         return Subject(path=f"{_ns()}.tools.probe.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
 
     @classmethod
-    def agent_inprocess_pod_id(cls, agent_id: str | UUID, instance_id: str | UUID) -> str:
+    def agent_inprocess_pod_id(cls, agent_id: UUID, instance_id: str | UUID) -> str:
         """compose the NATS routing pod-id for an agent's IN-PROCESS tool server.
 
         Returns a plain routing-key STRING (not a :class:`Subject`):
@@ -734,14 +734,24 @@ class Subjects:
         widening the grant. Tool Pods (separate ``TOOL_POD`` processes) keep
         their single-token UUID pod-id and are unaffected.
 
+        ``agent_id`` is a :class:`UUID` and nothing else, checked at runtime too.
+        The inverse, :meth:`agent_inprocess_owner_id`, accepts only a canonically
+        spelled agent UUID as the first token -- the spelling every agent grant is
+        keyed on -- so a composer that took a string would hand out ids the rest of
+        the system refuses one step later, with an error about the pod-id rather
+        than about the agent id that caused it.
+
         :param agent_id: the authenticated agent identity (leads the routing key)
-        :ptype agent_id: str | UUID
+        :ptype agent_id: UUID
         :param instance_id: this pod replica's unique instance id (the connect-name pod id)
         :ptype instance_id: str | UUID
         :return: routing pod-id string ``{agent_id}.{instance_id}``
         :rtype: str
+        :raises TypeError: when ``agent_id`` is not a :class:`UUID`
         """
-        return f"{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(instance_id)}"
+        if not isinstance(agent_id, UUID):
+            raise TypeError(f"agent_id must be a UUID, got {type(agent_id).__name__} {agent_id!r}")
+        return f"{agent_id}.{sanitize_subject_segment(instance_id)}"
 
     @classmethod
     def agent_inprocess_owner_id(cls, pod_id: str) -> UUID | None:

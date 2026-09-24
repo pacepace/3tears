@@ -11,8 +11,10 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from threetears.observe import get_logger
+from threetears.registry.routing import endpoints_callable_by
 
 __all__ = [
     "CatalogEntry",
@@ -172,12 +174,18 @@ class CatalogEntry:
 
     @property
     def status(self) -> str:
-        """aggregate availability status from endpoints.
+        """aggregate availability status from endpoints, for persistence and observability only.
 
         pending endpoints (awaiting probe confirmation) do not
         count toward availability -- only fully-confirmed endpoints
         do. an entry whose endpoints are all pending aggregates
-        to 'unavailable' so callers treat it as not-yet-routable.
+        to 'unavailable'.
+
+        **this ignores the caller, so it does not say a tool is routable for anyone.** an agent's
+        in-process endpoint serves only that agent, so an entry can be 'available' here while
+        every caller but one is refused. whether a tool is available TO A CALLER is
+        :meth:`available_to`; the catalog's listing of what a caller may use is
+        :meth:`ToolCatalog.list_available`.
 
         :return: 'available' if any endpoint is available, 'unavailable' otherwise
         :rtype: str
@@ -186,6 +194,31 @@ class CatalogEntry:
             if endpoint.status == "available":
                 return "available"
         return "unavailable"
+
+    def endpoints_for(self, caller_id: UUID | None) -> list[ToolEndpoint]:
+        """this entry's endpoints one caller may be routed to, whatever their status.
+
+        the catalog's single door onto :func:`~threetears.registry.routing.endpoints_callable_by`,
+        so routing, discovery and anything that lists tools ask the same question the same way.
+
+        :param caller_id: the calling agent's id, or ``None`` when the caller names no agent,
+            which leaves it only the Tool Pod endpoints
+        :ptype caller_id: UUID | None
+        :return: the caller's endpoints, in catalog order
+        :rtype: list[ToolEndpoint]
+        """
+        return endpoints_callable_by(self.endpoints, caller_id)
+
+    def available_to(self, caller_id: UUID | None) -> bool:
+        """whether one caller could be routed to this tool right now.
+
+        :param caller_id: the calling agent's id, or ``None`` when the caller names no agent
+        :ptype caller_id: UUID | None
+        :return: true when at least one of the caller's endpoints is available; a pending one is
+            not routable yet
+        :rtype: bool
+        """
+        return any(endpoint.status == "available" for endpoint in self.endpoints_for(caller_id))
 
     def get_endpoint(self, pod_id: str) -> ToolEndpoint | None:
         """look up endpoint by pod_id.
@@ -476,13 +509,20 @@ class ToolCatalog:
             results.append(entry)
         return results
 
-    def list_available(self) -> list[CatalogEntry]:
-        """list all tools with at least one available endpoint.
+    def list_available(self, caller_id: UUID | None) -> list[CatalogEntry]:
+        """list every tool one caller could be routed to right now.
 
-        :return: list of available catalog entries
+        the caller is required: availability depends on who asks, because an agent's
+        in-process endpoint serves only that agent. a listing that did not ask would offer one
+        agent's in-process tools to every other agent as if callable.
+
+        :param caller_id: the calling agent's id, or ``None`` when the caller names no agent,
+            which lists only tools a Tool Pod serves
+        :ptype caller_id: UUID | None
+        :return: the entries available to that caller
         :rtype: list[CatalogEntry]
         """
-        result = [entry for entry in self._entries.values() if entry.status == "available"]
+        result = [entry for entry in self._entries.values() if entry.available_to(caller_id)]
         return result
 
     def mark_available(self, full_name: str, pod_id: str) -> bool:

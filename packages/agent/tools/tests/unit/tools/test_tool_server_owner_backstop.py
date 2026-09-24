@@ -17,11 +17,17 @@ import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope
-from threetears.agent.tools.server import CallResponse, ToolServer
+from threetears.agent.tools.server import CallResponse, RegistrationManifest, ToolServer
 from threetears.core.security import PLATFORM_CUSTOMER_SENTINEL
 from threetears.nats import IncomingMessage, Subjects
 
-from unit.tools._pod_auth import StubReplayGuard, jwks_provider, signed_call_payload
+from unit.tools._pod_auth import (
+    RecordingNatsClient,
+    StubReplayGuard,
+    jwks_provider,
+    recording_tool_server,
+    signed_call_payload,
+)
 
 _OWNER = UUID("01948a00-aaaa-7000-8000-00000000000a")
 _PEER = UUID("01948a00-aaaa-7000-8000-00000000000b")
@@ -52,34 +58,19 @@ class _RecordingTool(TearsTool):
         return "1.0"
 
 
-# parity-exempt: subset stand-in for NatsClient exposing only the publish_reply the pod's handler answers on
-class _RecordingNatsClient:
-    def __init__(self) -> None:
-        self.replies: list[Any] = []
-
-    async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
-        self.replies.append(message)
-
-
-def _server(pod_id: str) -> tuple[ToolServer, _RecordingTool, _RecordingNatsClient]:
-    server = ToolServer(
-        nats_url="nats://localhost:9999",
+def _server(pod_id: str, **kwargs: Any) -> tuple[ToolServer, _RecordingTool, RecordingNatsClient]:
+    server, rec = recording_tool_server(
         pod_id=pod_id,
         jwks_provider=jwks_provider,
         assertion_replay_guard=StubReplayGuard(),
+        **kwargs,
     )
     tool = _RecordingTool()
     server.register(tool)
-    rec = _RecordingNatsClient()
-    # the handler answers on ``self._nc``; installed directly rather than through ``serve``, which
-    # would dial a real connection.
-    setattr(server, "_nc", rec)
     return server, tool, rec
 
 
-async def _call(
-    server: ToolServer, rec: _RecordingNatsClient, pod_id: str, caller: UUID, **kwargs: Any
-) -> CallResponse:
+async def _call(server: ToolServer, rec: RecordingNatsClient, pod_id: str, caller: UUID, **kwargs: Any) -> CallResponse:
     await server.handle_call(
         IncomingMessage(
             data=json.dumps(signed_call_payload(pod_id=pod_id, agent_id=caller, **kwargs)).encode("utf-8"),
@@ -87,8 +78,26 @@ async def _call(
             subject=f"3tears.tools.internal.{pod_id}",
         )
     )
-    reply: CallResponse = rec.replies[-1]
+    reply: CallResponse = rec.last_reply[1]
     return reply
+
+
+def _audit_owners(rec: RecordingNatsClient) -> list[UUID | None]:
+    """the owner axis of every baseline ``tool.call`` audit envelope the server published.
+
+    :param rec: the server's recording client
+    :ptype rec: RecordingNatsClient
+    :return: each envelope's ``owner_agent_id``, in publish order
+    :rtype: list[UUID | None]
+    """
+    owners: list[UUID | None] = []
+    for _subject, payload in rec.published:
+        if isinstance(payload, bytes):
+            envelope = json.loads(payload)
+            if envelope["event_type"] == "tool.call":
+                owner = envelope["owner_agent_id"]
+                owners.append(UUID(owner) if owner is not None else None)
+    return owners
 
 
 class TestAnInProcessServerServesOnlyItsAgent:
@@ -144,3 +153,51 @@ class TestAPodIdNamingNoAgentIsRefusedAtConstruction:
         """such a server could never be probed under any agent's grant, so it fails loudly now."""
         with pytest.raises(ValueError, match="agent-A.inst-1"):
             ToolServer(nats_url="nats://localhost:9999", pod_id="agent-A.inst-1")
+
+
+class TestThePodIdIsTheOneSourceOfOwnership:
+    """whose server this is has one answer, the pod-id's, and every record of it agrees."""
+
+    def test_an_agent_id_that_disagrees_with_the_pod_id_cannot_build_a_server(self) -> None:
+        with pytest.raises(ValueError, match="disagrees"):
+            ToolServer(nats_url="nats://localhost:9999", pod_id=_IN_PROCESS_POD, agent_id=_PEER)
+
+    def test_an_agent_id_that_agrees_is_accepted(self) -> None:
+        ToolServer(nats_url="nats://localhost:9999", pod_id=_IN_PROCESS_POD, agent_id=_OWNER)
+
+    @pytest.mark.asyncio
+    async def test_a_server_given_only_its_pod_id_records_its_owner_on_every_audit_row(self) -> None:
+        """the SDK's shape: a composite pod-id and no ``agent_id``. The refusal's row names the owner too."""
+        server, _tool, rec = _server(_IN_PROCESS_POD)
+
+        await _call(server, rec, _IN_PROCESS_POD, _OWNER)
+        refused = await _call(server, rec, _IN_PROCESS_POD, _PEER)
+
+        assert refused.error_code == "TOOL_CALLER_NOT_OWNER"
+        assert _audit_owners(rec) == [_OWNER, _OWNER]
+
+    @pytest.mark.asyncio
+    async def test_a_tool_pods_audit_rows_carry_its_supplied_owner_or_none(self) -> None:
+        """a single-token pod has no owner its id can name: only a supplied ``agent_id`` can say."""
+        platform_server, _t1, platform_rec = _server(_TOOL_POD)
+        spun_server, _t2, spun_rec = _server(_TOOL_POD, agent_id=_OWNER)
+
+        await _call(platform_server, platform_rec, _TOOL_POD, _PEER)
+        await _call(spun_server, spun_rec, _TOOL_POD, _PEER)
+
+        assert _audit_owners(platform_rec) == [None]
+        assert _audit_owners(spun_rec) == [_OWNER]
+
+    @pytest.mark.asyncio
+    async def test_the_manifest_carries_only_a_supplied_owner(self) -> None:
+        """on the manifest the owner picks the hub's namespace rows, so the pod-id never fills it.
+
+        an in-process server's tools live on the platform's one shared row per tool name; a
+        per-agent owner here would ask the hub for a second row under a name that row holds.
+        """
+        server, _tool, rec = _server(_IN_PROCESS_POD)
+
+        await server.publish_registration()
+
+        manifests = [message for _subject, message in rec.published if isinstance(message, RegistrationManifest)]
+        assert [(m.pod_id, m.owner_agent_id) for m in manifests] == [(_IN_PROCESS_POD, None)]

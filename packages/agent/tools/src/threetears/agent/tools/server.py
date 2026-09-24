@@ -398,7 +398,10 @@ class RegistrationManifest(BaseModel):
         ``None`` in open mode (no registry authenticator wired) or a static dev token.
     :ptype bootstrap_token: str | None
     :param owner_agent_id: owning-agent UUID for agent-spun pods;
-        ``None`` for platform-built-in pods
+        ``None`` for platform-built-in pods. it scopes the ``namespaces``
+        rows and is a CLAIM: it is not who serves the endpoint. that is read
+        from ``pod_id`` (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`),
+        which the registry routes on and a claim here cannot override
     :ptype owner_agent_id: UUID | None
     :param customer_id: owning-customer UUID for agent-spun pods;
         ``None`` for platform-built-in pods
@@ -924,15 +927,21 @@ class ToolServer:
             ignored and the server will not disconnect the client on
             shutdown
         :ptype nats_client: NatsClient | None
-        :param agent_id: owning-agent UUID for this pod. stamped on
-            the ``owner_agent_id`` axis of every baseline ``tool.call``
-            audit envelope emitted from :meth:`handle_call`, and carried
-            on the registration manifest so the HUB-side
-            ``ToolNamespaceEmitter`` can scope the ``namespaces`` rows
-            it writes. ``None`` in platform-spun ToolServers (platform
-            built-in tool pods have no owning agent); each namespace row
-            then lands with ``owner_agent_id=NULL`` matching the
-            ``shared``-type namespace shape.
+        :param agent_id: owning-agent UUID for a pod whose ``pod_id`` cannot say
+            who owns it -- a single-token pod an agent spun. an agent's
+            in-process server does not need it: its composite ``pod_id``
+            names the owner (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`),
+            which is the one source, and a supplied ``agent_id`` that
+            disagrees raises ``ValueError``. the resolved owner is stamped on
+            the ``owner_agent_id`` axis of every baseline ``tool.call`` audit
+            envelope. the registration manifest carries ONLY what was supplied
+            here, never the pod-id's owner, because on the manifest it means
+            something else: which of the hub's ``namespaces`` rows the pod's
+            tools are written to. ``None`` there keeps an in-process server's
+            tools on the platform's one shared row per tool name (``owner_agent_id``
+            NULL, the ``shared``-type shape), which is where they live; a
+            per-agent owner would ask the hub for a second row under a tool
+            name the platform row already holds.
         :ptype agent_id: UUID | None
         :param customer_id: owning-customer UUID carried on the
             registration manifest beside ``agent_id``: agent-spun pods
@@ -1007,8 +1016,9 @@ class ToolServer:
             ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
             ``max_call_seconds`` is set to a non-positive value, an injected
             ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
-            pod's assertion leeway, or ``pod_id`` is dotted -- an agent's shape -- but names no
-            agent (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`)
+            pod's assertion leeway, ``pod_id`` is dotted -- an agent's shape -- but names no
+            agent (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`), or ``agent_id``
+            names a different agent than the one ``pod_id`` names
         """
         if not nats_url and nats_client is None:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
@@ -1027,13 +1037,29 @@ class ToolServer:
         self._nats_user = nats_user
         self._nats_password = nats_password
         self._pod_id = pod_id or str(uuid7())
-        # the agent this server belongs to, read from its own pod-id the way the registry reads
-        # it, or None for a Tool Pod's server. an in-process tool answers from its agent's own
-        # state, so the pod refuses any other caller even though the registry already routes by
-        # owner: a registry predating that rule, or a fault in it, must not be able to hand this
-        # agent's state to another. a dotted id naming no agent raises here, at construction --
-        # no agent's grant could ever carry its probe, so it would sit pending forever.
-        self._owning_agent_id: UUID | None = Subjects.agent_inprocess_owner_id(self._pod_id)
+        # OWNERSHIP -- whose process this is -- has one source: the pod-id, read the way the
+        # registry reads it. A dotted id names the agent whose in-process server this is (and one
+        # naming no agent raises here: no agent's grant could ever carry its probe); a single token
+        # is a Tool Pod's, whose owner, if any, only ``agent_id`` can say. Not to be confused with
+        # the SELF-IDENTITY below, which is a different question answered by the registry.
+        inprocess_owner = Subjects.agent_inprocess_owner_id(self._pod_id)
+        if inprocess_owner is not None and agent_id is not None and agent_id != inprocess_owner:
+            raise ValueError(
+                f"agent_id {agent_id} disagrees with pod_id {self._pod_id!r}, which names agent "
+                f"{inprocess_owner}; an in-process server's owner is its pod-id's, so pass no agent_id "
+                "or the same one"
+            )
+        # an agent's in-process tool answers from that agent's own state, so its server refuses
+        # every other caller even though the registry already routes by owner: a registry predating
+        # that rule, or a fault in it, must not be able to hand this agent's state to another.
+        self._serves_only_its_owner: bool = inprocess_owner is not None
+        # the agent this server belongs to, as the audit owner axis and the owner refusal record it.
+        self._owning_agent_id: UUID | None = inprocess_owner if inprocess_owner is not None else agent_id
+        # the manifest's ``owner_agent_id``: what the caller supplied and nothing derived. On the
+        # manifest it chooses which hub ``namespaces`` row the tools are written to (see the
+        # ``agent_id`` parameter), so filling it from the pod-id would move an in-process server's
+        # tools off the platform's shared rows.
+        self._manifest_owner_agent_id: UUID | None = agent_id
         # SELF-IDENTITY, learned from the registration reply and never derived locally.
         # ``None`` is "not learned yet"; an empty tuple is a real answer, because a pod
         # with no ``tool_pods`` row and no owning agent genuinely owns nothing. Collapsing
@@ -1047,7 +1073,6 @@ class ToolServer:
         # manifest so the registry-layer verifier always sees a fresh JWT. None -> static fallback.
         self._auth_token = auth_token
         self._context_factory = context_factory
-        self._agent_id = agent_id
         self._customer_id = customer_id
         # defense-in-depth: the pod re-verifies the Hub identity token AND the proxy's body-bound
         # assertion on every inbound call (closes the direct-internal-subject bypass). enforce-only
@@ -2002,7 +2027,7 @@ class ToolServer:
             pod_id=self._pod_id,
             tools=tools_list,
             bootstrap_token=manifest_token,
-            owner_agent_id=self._agent_id,
+            owner_agent_id=self._manifest_owner_agent_id,
             customer_id=self._customer_id,
         )
 
@@ -2379,7 +2404,7 @@ class ToolServer:
         """
         result: str | None = None
         caller = request.context.agent_id if request.context is not None else None
-        if self._owning_agent_id is not None and caller != self._owning_agent_id:
+        if self._serves_only_its_owner and caller != self._owning_agent_id:
             result = (
                 f"caller {caller} is not agent {self._owning_agent_id}, whose in-process tool server this is; an "
                 "agent's in-process tool answers only its own agent"
@@ -3099,7 +3124,7 @@ class ToolServer:
             event_type="tool.call",
             actor_user_id=context.user_id if context is not None else None,
             calling_agent_id=context.agent_id if context is not None else None,
-            owner_agent_id=self._agent_id,
+            owner_agent_id=self._owning_agent_id,
             customer_id=context.customer_id if context is not None else None,
             resource_namespace_id=None,
             resource_namespace_type=None,

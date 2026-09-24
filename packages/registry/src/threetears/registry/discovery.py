@@ -7,8 +7,9 @@ many pod endpoints serve it.
 
 a tool is offered as available only when the requester could
 actually be routed to one of its endpoints: another agent's
-in-process endpoint does not count (see
-:func:`threetears.registry.routing.endpoints_callable_by`).
+in-process endpoint does not count. the catalog answers that per
+caller (:meth:`ToolCatalog.list_available`,
+:meth:`CatalogEntry.available_to`); discovery only asks.
 """
 
 from __future__ import annotations
@@ -20,8 +21,7 @@ from pydantic import BaseModel
 
 from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import get_logger
-from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.routing import endpoints_callable_by
+from threetears.registry.catalog import CatalogEntry, ToolCatalog
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient, Subscription
@@ -233,11 +233,17 @@ class DiscoveryHandler:
                 reply_subject=msg.reply_subject,
                 message=response,
             )
+        requester_log = str(requester_id) if requester_id is not None else None  # convert at border: log record
         _logger.info(
             "discovery completed",
             extra={
                 "extra_data": {
                     "agent_id": request.agent_id,
+                    # the agent the claim resolved to, or null when it named none -- then the
+                    # requester was shown Tool Pod tools only, and its own in-process tools are
+                    # missing from its view. without this a mis-spelled agent id reads the same as
+                    # a resolved one while that agent's readiness wait reports its own tools gone.
+                    "requester_agent_id": requester_log,
                     "requested_count": len(request.tool_manifest),
                     "available_count": sum(1 for t in tools if t.status == "available"),
                 }
@@ -255,11 +261,7 @@ class DiscoveryHandler:
         :return: list of all available tool results with schemas
         :rtype: list[DiscoverResultEntry]
         """
-        results: list[DiscoverResultEntry] = []
-        for entry in self._catalog.search():
-            callable_endpoints = endpoints_callable_by(entry.endpoints, requester_id)
-            if _any_available(callable_endpoints):
-                results.append(_available_result(entry, callable_endpoints))
+        results = [_available_result(entry, requester_id) for entry in self._catalog.list_available(requester_id)]
         return results
 
     def _resolve_manifest(
@@ -280,9 +282,8 @@ class DiscoveryHandler:
         for tool_ref in manifest:
             full_name = f"{tool_ref.name}@{tool_ref.version}"
             entry = self._catalog.get(full_name)
-            callable_endpoints = endpoints_callable_by(entry.endpoints, requester_id) if entry is not None else []
-            if entry is not None and _any_available(callable_endpoints):
-                result_entry = _available_result(entry, callable_endpoints)
+            if entry is not None and entry.available_to(requester_id):
+                result_entry = _available_result(entry, requester_id)
             else:
                 result_entry = DiscoverResultEntry(
                     name=tool_ref.name,
@@ -325,24 +326,13 @@ def _requester_agent_id(claimed: str) -> UUID | None:
     return result
 
 
-def _any_available(endpoints: list[ToolEndpoint]) -> bool:
-    """whether any of ``endpoints`` is confirmed routable.
-
-    :param endpoints: endpoints the requester may be routed to
-    :ptype endpoints: list[ToolEndpoint]
-    :return: true when at least one is available; pending ones are not yet routable
-    :rtype: bool
-    """
-    return any(endpoint.status == "available" for endpoint in endpoints)
-
-
-def _available_result(entry: CatalogEntry, callable_endpoints: list[ToolEndpoint]) -> DiscoverResultEntry:
+def _available_result(entry: CatalogEntry, requester_id: UUID | None) -> DiscoverResultEntry:
     """the discovery result for a tool the requester can reach.
 
-    :param entry: the tool's catalog entry
+    :param entry: the tool's catalog entry, already known to be available to the requester
     :ptype entry: CatalogEntry
-    :param callable_endpoints: the entry's endpoints the requester may be routed to
-    :ptype callable_endpoints: list[ToolEndpoint]
+    :param requester_id: the agent the requester names, or ``None`` when it names none
+    :ptype requester_id: UUID | None
     :return: the available result, counting only the requester's endpoints
     :rtype: DiscoverResultEntry
     """
@@ -355,5 +345,5 @@ def _available_result(entry: CatalogEntry, callable_endpoints: list[ToolEndpoint
         output_schema=entry.output_schema,
         timeout_seconds=entry.timeout_seconds,
         requires_confirmation=entry.requires_confirmation,
-        endpoint_count=len(callable_endpoints),
+        endpoint_count=len(entry.endpoints_for(requester_id)),
     )

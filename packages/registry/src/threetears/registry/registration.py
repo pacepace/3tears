@@ -489,26 +489,29 @@ class RegistrationHandler:
     def _agent_owned_namespaces(manifest: RegistrationManifest) -> tuple[str, ...]:
         """the namespace an AGENT-OWNED in-process pod owns, or nothing.
 
-        A pod that presents no token is the agent's own in-process tool server: it is not a
-        row in ``tool_pods``, so it owns no provider node. What it owns is ``agents.<uuid>``
-        -- the same name :class:`~threetears.agent.tools.server.ToolServer` already stamps
-        as ``owner_namespace`` on every namespace row it emits.
+        A pod that presents no token and registers under an agent's composite pod-id is that
+        agent's own in-process tool server: it is not a row in ``tool_pods``, so it owns no
+        provider node. What it owns is ``agents.<uuid>``.
 
-        ``owner_agent_id`` is taken off the manifest here, which is a claim rather than a
-        verified fact -- and that is acceptable for exactly this value and no other. The
-        pod is on the agent's OWN authenticated NATS connection, so the identity was
-        settled at the transport, and the name composed from it is the one the pod is
-        about to write onto its own rows regardless. It confers no authority: nothing in
-        this reply is a credential.
+        The owner is read from the POD-ID, the one source every other reader of ownership uses
+        -- routing, discovery, the serving pod's own refusal. It is proof rather than a claim:
+        only the agent it names is granted the probe that makes the endpoint callable. The
+        manifest's ``owner_agent_id`` is not consulted; it chooses which namespace rows the
+        pod's tools are written to, and a pod whose id names no agent is told nothing here
+        whatever it claims. Nothing in this reply is a credential either way.
+
+        ``_validate_manifest`` has already refused a pod-id that names no agent, so the read
+        here cannot raise.
 
         :param manifest: the registering pod's manifest
         :ptype manifest: RegistrationManifest
-        :return: the agent's namespace name, or an empty tuple when the pod names no agent
+        :return: the agent's namespace name, or an empty tuple when the pod-id names no agent
         :rtype: tuple[str, ...]
         """
-        if manifest.owner_agent_id is None:
+        owner = Subjects.agent_inprocess_owner_id(manifest.pod_id)
+        if owner is None:
             return ()
-        return (build_agent_namespace_name(manifest.owner_agent_id),)
+        return (build_agent_namespace_name(owner),)
 
     def _validate_manifest(self, manifest: RegistrationManifest) -> str | None:
         """validate registration manifest fields.

@@ -115,10 +115,27 @@ def test_tools_subjects() -> None:
     assert Subjects.tools_probe(pod_id).path == "3tears.tools.probe.tool-pod-xyz"
 
 
+_AGENT_A = UUID("01948a00-aaaa-7000-8000-00000000000a")
+_AGENT_B = UUID("01948a00-aaaa-7000-8000-00000000000b")
+
+
 def test_agent_inprocess_pod_id_composes_two_token_routing_key() -> None:
     """an agent in-process tool pod-id is the ``{agent_id}.{instance}`` composite."""
-    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
-    assert composite == "agent-A.inst-1"
+    composite = Subjects.agent_inprocess_pod_id(_AGENT_A, "inst-1")
+    assert composite == f"{_AGENT_A}.inst-1"
+
+
+@pytest.mark.parametrize(
+    "agent_id",
+    [
+        "agent-A",  # names no agent
+        "01948A00-AAAA-7000-8000-00000000000A",  # a real uuid, spelled the way no grant is keyed
+    ],
+)
+def test_agent_inprocess_pod_id_refuses_an_agent_id_that_is_not_a_uuid(agent_id: str) -> None:
+    """the composer cannot emit an id its own inverse, and so every registry and pod, refuses."""
+    with pytest.raises(TypeError):
+        Subjects.agent_inprocess_pod_id(agent_id, "inst-1")  # type: ignore[arg-type]
 
 
 class TestAgentInprocessOwnerId:
@@ -176,16 +193,20 @@ def test_tools_subjects_preserve_the_agent_composite_structural_dot() -> None:
     the structural dot between ``{agent_id}`` and ``{instance}`` must survive into the subject
     (unlike single-token tool-pod ids that :func:`sanitize_subject_segment` leaves intact) so the agent-id segment
     is its own NATS token and the ``tools.internal.{agent_id}.>`` grant can wildcard-match it. a
-    sanitize-collapsed ``agent-A-inst-1`` single token would make the subtree grant impossible.
+    sanitize-collapsed ``{agent_id}-inst-1`` single token would make the subtree grant impossible.
     """
-    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
-    assert Subjects.tools_internal(composite).path == "3tears.tools.internal.agent-A.inst-1"
-    assert Subjects.tools_probe(composite).path == "3tears.tools.probe.agent-A.inst-1"
-    assert Subjects.tools_heartbeat(composite).path == "3tears.tools.heartbeat.agent-A.inst-1"
+    composite = Subjects.agent_inprocess_pod_id(_AGENT_A, "inst-1")
+    assert Subjects.tools_internal(composite).path == f"3tears.tools.internal.{_AGENT_A}.inst-1"
+    assert Subjects.tools_probe(composite).path == f"3tears.tools.probe.{_AGENT_A}.inst-1"
+    assert Subjects.tools_heartbeat(composite).path == f"3tears.tools.heartbeat.{_AGENT_A}.inst-1"
     # the composite subject nests UNDER the authenticated-agent subtree grant ...
-    assert Subjects.tools_internal(composite).path.startswith("3tears.tools.internal.agent-A.")
+    assert Subjects.tools_internal(composite).path.startswith(
+        Subjects.tools_internal_agent_subtree(_AGENT_A).path.removesuffix(">")
+    )
     # ... but NOT under a peer agent's subtree (different leading token).
-    assert not Subjects.tools_internal(composite).path.startswith("3tears.tools.internal.agent-B.")
+    assert not Subjects.tools_internal(composite).path.startswith(
+        Subjects.tools_internal_agent_subtree(_AGENT_B).path.removesuffix(">")
+    )
 
 
 def test_tools_subtree_and_router_wildcards() -> None:
@@ -215,11 +236,11 @@ def test_tools_result_of_inprocess_pod_nests_under_the_agent_subtree() -> None:
     ``tools.internal``: the agent-id must be its own token or ``tools.result.{agent_id}.>`` cannot
     wildcard-match it, and the agent could not publish its own in-process tool's result at all.
     """
-    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
-    assert Subjects.tools_result(composite, "call-1").path == "3tears.tools.result.agent-A.inst-1.call-1"
-    grant = Subjects.tools_result_agent_subtree("agent-A").path.removesuffix(">")
+    composite = Subjects.agent_inprocess_pod_id(_AGENT_A, "inst-1")
+    assert Subjects.tools_result(composite, "call-1").path == f"3tears.tools.result.{_AGENT_A}.inst-1.call-1"
+    grant = Subjects.tools_result_agent_subtree(_AGENT_A).path.removesuffix(">")
     assert Subjects.tools_result(composite, "call-1").path.startswith(grant)
-    assert not Subjects.tools_result(composite, "call-1").path.startswith("3tears.tools.result.agent-B.")
+    assert not Subjects.tools_result(composite, "call-1").path.startswith(f"3tears.tools.result.{_AGENT_B}.")
 
 
 def test_tools_reply_subjects_are_keyed_on_the_calling_agent() -> None:

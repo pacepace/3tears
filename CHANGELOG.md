@@ -36,6 +36,28 @@ Ownership now decides where a call may go, before the routing strategy runs:
   pod-id a ToolServer polls under in `wait_until_ready`. A requester that names
   no agent is shown only Tool Pod tools. The field is self-asserted and only
   narrows the view. The call path enforces ownership on the verified identity.
+  The "discovery completed" log line now also records `requester_agent_id`,
+  null when the claim named no agent.
+- **Availability is asked per caller, on the catalog.**
+  `CatalogEntry.endpoints_for(caller_id)` and `CatalogEntry.available_to(caller_id)`
+  are the catalog's one door onto the rule, and routing and discovery both go
+  through it. **Breaking:** `ToolCatalog.list_available()` now requires the
+  caller, as `list_available(caller_id)`. A listing that did not ask who was
+  asking would offer one agent's in-process tools to every other agent. Pass
+  `None` for a caller that names no agent; it then lists Tool Pod tools only.
+  `CatalogEntry.status` still ignores the caller. It serves persistence and
+  observability, and nothing that lists tools reads it.
+- **Ownership has one source: the pod-id.** A ToolServer on an agent's
+  composite pod-id takes its owner from that id. A supplied `agent_id` that
+  disagrees raises `ValueError` at construction. Every baseline `tool.call`
+  audit row records the pod-id's owner, including the row of a
+  `TOOL_CALLER_NOT_OWNER` refusal. The SDK's in-process servers pass no
+  `agent_id`, and before this their rows recorded no owner. The registration
+  reply's `owned_namespaces` (`agents.<uuid>`) also comes from the pod-id, so a
+  manifest's `owner_agent_id` claim no longer earns a one-token pod an agent
+  namespace. The manifest's `owner_agent_id` is deliberately not filled from the
+  pod-id. It chooses which hub `namespaces` row a tool is written to, and an
+  in-process server's tools live on the platform's one shared row per tool name.
 - **Registration** refuses a dotted pod-id whose first token is not a
   canonically spelled agent UUID. No agent's grant could ever carry its probe,
   so such an endpoint would sit pending forever. An endpoint like that loaded
@@ -50,6 +72,10 @@ Ownership now decides where a call may go, before the routing strategy runs:
 - **New helper.** `Subjects.agent_inprocess_owner_id(pod_id)` is the inverse of
   `agent_inprocess_pod_id`. It returns the owning agent's UUID, `None` for a
   Tool Pod id, and raises `ValueError` for a dotted id that names no agent.
+  **Breaking:** `agent_inprocess_pod_id` now takes the agent id as a `UUID` only,
+  and raises `TypeError` for anything else. Given a string it would compose an id
+  that its inverse, and so every registry and pod, then refuses. Every SDK
+  caller already passes a `UUID`.
 
 **Rollout order:** registry first, then agents. An agent pod on this release
 behind an older registry refuses misrouted calls with `TOOL_CALLER_NOT_OWNER`
@@ -59,9 +85,11 @@ instead of answering them wrongly.
 turned into user-facing answers. Until then it takes the unmapped-code fallback.
 The Registry's own refusals reuse existing codes.
 
-Minor: a new public helper, a new public routing function, an optional
-`CallResponse` field, and a new pod refusal code. Routing, discovery and
-registration change behavior as described above.
+Minor: a new public helper, a new public routing function, two new
+`CatalogEntry` methods, an optional `CallResponse` field, and a new pod refusal
+code. Two signatures narrow: `ToolCatalog.list_available` now requires a caller,
+and `agent_inprocess_pod_id` takes only a `UUID`. Routing, discovery,
+registration and the audit owner axis change behavior as described above.
 
 ## v0.50.0 -- 2026-09-23
 

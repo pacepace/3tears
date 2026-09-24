@@ -42,7 +42,7 @@ from threetears.nats import (
 from threetears.observe import InflightRequestsGauge, clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog
-from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy, endpoints_callable_by
+from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
 # the issuer the Hub stamps on identity tokens, and the clock-skew tolerance the proxy allows
 # on exp/iat + the pop iat freshness window. constants for now; promote to config if operations
@@ -1100,8 +1100,8 @@ class CallProxy:
         # the agent that serves it; a Tool Pod's endpoint serves every caller. decided on the
         # VERIFIED principal, before the strategy sees anything, and reused by the failover below --
         # least-busy with a random tie-break otherwise hands one agent's call to another agent's
-        # process as the ordinary case. see ``endpoints_callable_by``.
-        callable_endpoints = endpoints_callable_by(entry.endpoints, principal.principal_id)
+        # process as the ordinary case. see ``CatalogEntry.endpoints_for``.
+        callable_endpoints = entry.endpoints_for(principal.principal_id)
         endpoint = self._routing_strategy.select(callable_endpoints)
 
         if endpoint is None:

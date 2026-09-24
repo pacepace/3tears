@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -495,3 +496,25 @@ class TestDiscoveryOffersOnlyWhatTheRequesterCanCall:
         tools = await self._discover(await self._catalog(), requester)
 
         assert set(tools) == {self._POD_TOOL}
+
+    @pytest.mark.parametrize(
+        ("requester", "resolved"),
+        [
+            (str(_AGENT_A), str(_AGENT_A)),
+            (_inproc(_AGENT_B, "inst-9"), str(_AGENT_B)),
+            (str(_AGENT_A).upper(), None),  # a real agent id, misspelled: shown tool pod tools only
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_completion_log_says_which_agent_the_requester_resolved_to(
+        self, requester: str, resolved: str | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a hidden own-tool is diagnosable from the registry's log, not only from the agent's."""
+        with caplog.at_level(logging.INFO, logger="threetears.registry.discovery"):
+            await self._discover(await self._catalog(), requester)
+
+        record = next(r for r in caplog.records if r.getMessage() == "discovery completed")
+        extra = getattr(record, "extra_data", None)
+        assert extra is not None
+        assert extra["agent_id"] == requester
+        assert extra["requester_agent_id"] == resolved
