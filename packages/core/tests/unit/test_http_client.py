@@ -395,7 +395,8 @@ class TestEgressWiring:
         # The scheme decides the pool class -- AsyncSOCKSProxy here, AsyncHTTPProxy for an
         # http:// exit -- so the url is asserted rather than the class name, which is the part
         # that says WHICH exit rather than merely that there is one.
-        assert "9050" in str(getattr(pool, "_proxy_url", "")), "proxied, but not through the configured exit"
+        proxy_url = pool._proxy_url  # noqa: SLF001 -- httpx exposes the exit on the pool alone
+        assert "9050" in str(proxy_url), "proxied, but not through the configured exit"
 
     def test_an_explicit_transport_wins_over_a_configured_egress(self) -> None:
         """``transport`` is the documented test seam.

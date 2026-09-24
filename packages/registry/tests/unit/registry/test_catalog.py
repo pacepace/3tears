@@ -5,13 +5,29 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 
+from threetears.nats import Subjects
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+
+_AGENT_A = UUID("01948a00-aaaa-7000-8000-00000000000a")
+_AGENT_B = UUID("01948a00-aaaa-7000-8000-00000000000b")
 
 
 # -- helpers --
+
+
+def _inproc(agent_id: UUID) -> str:
+    """the pod-id of ``agent_id``'s in-process tool server.
+
+    :param agent_id: the owning agent
+    :ptype agent_id: UUID
+    :return: the ``{agent_id}.{instance}`` composite
+    :rtype: str
+    """
+    return Subjects.agent_inprocess_pod_id(agent_id, "inst-1")
 
 
 def _make_entry(
@@ -572,7 +588,7 @@ class TestToolCatalogSearch:
         entry_b = _make_entry(tool_name="tool.beta", status="unavailable")
         await catalog.register(entry_a)
         await catalog.register(entry_b)
-        available = catalog.list_available()
+        available = catalog.list_available(_AGENT_A)
         assert len(available) == 1
         assert available[0].tool_name == "tool.alpha"
 
@@ -582,7 +598,46 @@ class TestToolCatalogSearch:
         catalog = ToolCatalog()
         entry = _make_entry(status="unavailable")
         await catalog.register(entry)
-        assert catalog.list_available() == []
+        assert catalog.list_available(_AGENT_A) == []
+
+    @pytest.mark.asyncio
+    async def test_list_available_is_answered_for_the_caller(self) -> None:
+        """an agent's in-process tool is available to that agent and to no one else.
+
+        its entry still aggregates to 'available' -- ``status`` ignores the caller, which is
+        exactly why no listing reads it.
+        """
+        catalog = ToolCatalog()
+        entry = _make_entry(tool_name="aibots.knowledge_drafts", pod_id=_inproc(_AGENT_A))
+        await catalog.register(entry)
+        await catalog.register(_make_entry(tool_name="tool.shared", pod_id="pod-001"))
+
+        assert entry.status == "available"
+        assert {e.tool_name for e in catalog.list_available(_AGENT_A)} == {"aibots.knowledge_drafts", "tool.shared"}
+        assert {e.tool_name for e in catalog.list_available(_AGENT_B)} == {"tool.shared"}
+        assert {e.tool_name for e in catalog.list_available(None)} == {"tool.shared"}
+
+    def test_an_entry_answers_endpoints_and_availability_per_caller(self) -> None:
+        own, peer = _inproc(_AGENT_A), _inproc(_AGENT_B)
+        entry = CatalogEntry(
+            tool_name="aibots.knowledge_drafts",
+            tool_version="1.0",
+            full_name="aibots.knowledge_drafts@1.0",
+            description="d",
+            input_schema={},
+            endpoints=[
+                ToolEndpoint(pod_id=own, status="pending"),
+                ToolEndpoint(pod_id=peer, status="available"),
+                ToolEndpoint(pod_id="pod-001", status="unavailable"),
+            ],
+        )
+
+        assert [ep.pod_id for ep in entry.endpoints_for(_AGENT_A)] == [own, "pod-001"]
+        # a's own endpoint is only pending and the tool pod's is down: not available to a,
+        # though b's available endpoint makes the caller-blind status say otherwise
+        assert entry.available_to(_AGENT_A) is False
+        assert entry.available_to(_AGENT_B) is True
+        assert entry.status == "available"
 
 
 # -- availability marking tests --

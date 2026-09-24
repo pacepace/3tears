@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import BaseModel
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import (
@@ -31,9 +30,11 @@ from threetears.core.security.identity_token import (
 from threetears.media.contracts import ObjectHandle
 from threetears.nats import IncomingMessage
 
+from unit.tools._pod_auth import RecordingNatsClient
 from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
 from unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
+from unit.tools._pod_auth import recording_tool_server as _recording_tool_server
 from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 
@@ -155,8 +156,9 @@ def _make_nats_msg(
     ``reply_subject``); the legacy ``msg.respond(...)`` shape was
     replaced by ``self._respond(msg, response)`` which routes through
     :meth:`NatsClient.publish_reply` against the inbound reply
-    subject. tests inject a stub ``NatsClient`` on ``server._nc`` so
-    they can assert which response landed on which reply subject.
+    subject. tests build the server over a recording client
+    (:func:`_recording_tool_server`) so they can assert which response
+    landed on which reply subject.
 
     :param data: payload dict to serialize as JSON
     :ptype data: dict[str, Any]
@@ -170,27 +172,6 @@ def _make_nats_msg(
         reply_subject=reply_subject,
         subject="3tears.tools.internal.test-pod",
     )
-
-
-class _RecordingNatsClient:
-    """tiny stand-in for :class:`threetears.nats.NatsClient`.
-
-    captures :meth:`publish_reply` invocations so handler tests can
-    assert which response landed on which reply subject. mirrors only
-    the surface ToolServer's handlers actually touch.
-    """
-
-    def __init__(self) -> None:
-        self.replies: list[tuple[str, BaseModel]] = []
-
-    async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
-        """record the reply publish call."""
-        self.replies.append((reply_subject, message))
-
-    @property
-    def last_reply(self) -> tuple[str, BaseModel]:
-        """return most recent ``(reply_subject, message)`` recorded."""
-        return self.replies[-1]
 
 
 class _RecordingResolutionCache:
@@ -209,27 +190,6 @@ class _RecordingResolutionCache:
     async def remember(self, customer_id: UUID, handle: ObjectHandle) -> None:
         """record a write that should never happen while lookup answers."""
         self.remembered.append((customer_id, handle))
-
-
-def _attach_recording_nc(server: ToolServer) -> _RecordingNatsClient:
-    """install a recording NATS stub on ``server._nc`` and return it.
-
-    handlers under test call ``self._respond(msg, response)`` which
-    requires ``self._nc.publish_reply`` to exist; tests that drive
-    handlers directly without going through :meth:`serve` use this
-    helper to satisfy that wiring without standing up a real connection.
-
-    :param server: tool server under test
-    :ptype server: ToolServer
-    :return: the recording stub bound on ``server._nc``
-    :rtype: _RecordingNatsClient
-    """
-    rec = _RecordingNatsClient()
-    # setattr bypasses ruff SLF001; the unit test legitimately needs to
-    # install a recording stub on the server's NATS slot without going
-    # through :meth:`serve` (which would dial a real connection).
-    setattr(server, "_nc", rec)
-    return rec
 
 
 # -- registration tests --
@@ -373,9 +333,7 @@ class TestToolServerServe:
             except asyncio.CancelledError:
                 pass
 
-        # getattr for the reason ``_attach_recording_nc`` uses setattr: the resolver is
-        # deliberately not public, and this asserts the wiring rather than a public API.
-        resolver = getattr(server, "_object_resolver")
+        resolver = server.object_resolver
         assert resolver is not None
         resolved = await resolver.resolve(handle.object_id, customer_id=customer, identity_token="t")
         assert resolved == handle
@@ -578,8 +536,7 @@ class TestToolServerHandleCall:
         :class:`CallContext` back on :class:`CallResponse.context` so
         the response shape matches the request.
         """
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
+        server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=_pod_jwks_provider,
             assertion_replay_guard=_PodReplayGuard(),
@@ -597,7 +554,6 @@ class TestToolServerHandleCall:
                 correlation_id=str(correlation_id),
             )
         )
-        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
@@ -614,8 +570,7 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_tool_result_on_success(self) -> None:
         """handle_call returns serialized ToolResult with success=True."""
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
+        server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=_pod_jwks_provider,
             assertion_replay_guard=_PodReplayGuard(),
@@ -624,7 +579,6 @@ class TestToolServerHandleCall:
         server.register(tool)
 
         msg = _make_nats_msg(_signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0"))
-        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
@@ -635,8 +589,7 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_unknown_tool(self) -> None:
         """handle_call returns error response for unregistered tool."""
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
+        server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=_pod_jwks_provider,
             assertion_replay_guard=_PodReplayGuard(),
@@ -651,7 +604,6 @@ class TestToolServerHandleCall:
                 correlation_id=str(correlation_id),
             )
         )
-        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
@@ -663,8 +615,7 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_execution_failure(self) -> None:
         """handle_call returns error response when tool raises exception."""
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
+        server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=_pod_jwks_provider,
             assertion_replay_guard=_PodReplayGuard(),
@@ -681,7 +632,6 @@ class TestToolServerHandleCall:
                 correlation_id=str(correlation_id),
             )
         )
-        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
@@ -693,16 +643,13 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_malformed_request(self) -> None:
         """handle_call returns error response for invalid JSON payload."""
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
-        )
+        server, rec = _recording_tool_server()
 
         msg = IncomingMessage(
             data=b"not valid json",
             reply_subject="_INBOX.test",
             subject="3tears.tools.internal.test-pod",
         )
-        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
@@ -1012,11 +959,7 @@ class TestToolServerProbe:
     @pytest.mark.asyncio
     async def test_handle_probe_responds_with_ack(self) -> None:
         """handle_probe replies with ProbeAck carrying pod_id and ready=True."""
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
-            pod_id="ack-pod",
-        )
-        rec = _attach_recording_nc(server)
+        server, rec = _recording_tool_server(pod_id="ack-pod")
 
         msg = IncomingMessage(
             data=b'{"pod_id": "ack-pod"}',
@@ -1036,11 +979,7 @@ class TestToolServerProbe:
     @pytest.mark.asyncio
     async def test_handle_probe_does_not_mutate_server_state(self) -> None:
         """handle_probe is a pure responder -- readiness is driven by discovery."""
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
-            pod_id="ready-pod",
-        )
-        rec = _attach_recording_nc(server)
+        server, rec = _recording_tool_server(pod_id="ready-pod")
 
         msg = IncomingMessage(
             data=b'{"pod_id": "ready-pod"}',
@@ -1515,14 +1454,13 @@ class TestToolServerIdentityVerification:
 
     @staticmethod
     def _server(*, jwks_provider: Any) -> tuple[ToolServer, Any]:
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
+        server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=jwks_provider,
             assertion_replay_guard=_PodReplayGuard(),
         )
         server.register(StubTool(name="test.stub", version="1.0"))
-        return server, _attach_recording_nc(server)
+        return server, rec
 
     @staticmethod
     def _assertion(signer: Any, *, body_hash: str) -> str:
@@ -1729,14 +1667,13 @@ class TestToolServerProxyAssertionVerification:
 
     @staticmethod
     def _server(jwks: dict[str, Any], *, assertion_replay_guard: Any = None) -> tuple[ToolServer, Any]:
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
+        server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=lambda: jwks,
             assertion_replay_guard=assertion_replay_guard if assertion_replay_guard is not None else _PodReplayGuard(),
         )
         server.register(StubTool(name="test.stub", version="1.0"))
-        return server, _attach_recording_nc(server)
+        return server, rec
 
     @staticmethod
     def _msg(*, token: str, assertion: str | None, correlation_id: str) -> IncomingMessage:
@@ -1817,14 +1754,12 @@ class TestToolServerProxyAssertionVerification:
         from threetears.core.security import canonical_call_hash
 
         priv, signer, jwks = self._hub_and_proxy()
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
+        server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=lambda: jwks,
             # NOTE: assertion_replay_guard omitted -> None -> the verify site must fail closed.
         )
         server.register(StubTool(name="test.stub", version="1.0"))
-        rec = _attach_recording_nc(server)
         corr = str(uuid4())
         body_hash = canonical_call_hash("test.stub", {"key": "value"}, corr)
         await server.handle_call(
@@ -1906,9 +1841,8 @@ class TestToolServerReactiveJwksRefresh:
     """B5: pod-side reactive self-heal mirrors the proxy -- a kid-not-in-cache miss triggers exactly
     ONE reactive refresh + re-verify; an expired token does NOT trigger a refresh."""
 
-    def _server(self, provider: Any) -> ToolServer:
-        return ToolServer(
-            nats_url="nats://localhost:9999",
+    def _server(self, provider: Any) -> tuple[ToolServer, RecordingNatsClient]:
+        return _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=provider,
             jwks_refresh=provider.refresh_now,
@@ -1920,9 +1854,8 @@ class TestToolServerReactiveJwksRefresh:
         # the cache lacks the Hub identity key after a re-key; the FIRST reactive refresh brings it,
         # so a valid call self-heals and dispatches rather than being rejected for a steady interval.
         provider = _PodRekeyingProvider(stale=_pod_jwks_without_hub_kid(), fresh=_pod_jwks_provider())
-        server = self._server(provider)
+        server, rec = self._server(provider)
         server.register(StubTool(name="test.stub", version="1.0"))
-        rec = _attach_recording_nc(server)
         msg = _make_nats_msg(_signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0"))
 
         await server.handle_call(msg)
@@ -1936,9 +1869,8 @@ class TestToolServerReactiveJwksRefresh:
         # an expired handshake token is signed under a key the cache HOLDS -> the failure is expiry,
         # not a kid-miss, so it must NOT provoke a Hub refresh (else every bad token hits the Hub).
         provider = _PodRekeyingProvider(stale=_pod_jwks_provider(), fresh=_pod_jwks_provider())
-        server = self._server(provider)
+        server, rec = self._server(provider)
         server.register(StubTool(name="test.stub", version="1.0"))
-        rec = _attach_recording_nc(server)
         # swap the payload's handshake token for an EXPIRED one signed by the same Hub key the cache
         # holds (mint_user_assertion signs with the pod's Hub key under kid-1, so its kid IS present).
         payload = _signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0")
@@ -1960,12 +1892,12 @@ class TestToolServerVerificationObservability:
     datasource failure). The message is the STRUCTURAL reason, never token or key material."""
 
     def _server(self, provider: Any) -> ToolServer:
-        return ToolServer(
-            nats_url="nats://localhost:9999",
+        server, _rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=provider,
             assertion_replay_guard=_PodReplayGuard(),
         )
+        return server
 
     @staticmethod
     def _detail(caplog: pytest.LogCaptureFixture) -> str:
@@ -1982,7 +1914,6 @@ class TestToolServerVerificationObservability:
         stale = _pod_jwks_without_hub_kid()
         server = self._server(lambda: stale)
         server.register(StubTool(name="test.stub", version="1.0"))
-        _attach_recording_nc(server)
         msg = _make_nats_msg(_signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0"))
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
@@ -1992,7 +1923,6 @@ class TestToolServerVerificationObservability:
         # (2) token ABSENT: a different, distinct reason.
         server2 = self._server(_pod_jwks_provider)
         server2.register(StubTool(name="test.stub", version="1.0"))
-        _attach_recording_nc(server2)
         bad = _signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0")
         bad["context"].pop("identity_token", None)
         caplog.clear()

@@ -244,12 +244,16 @@ class TestToolServerNatsIntegration:
         sanitize-collapsed single token would have broken the registry-grant match (a
         ToolReadinessTimeout); the two-token subject must survive intact for routing to work.
 
+        the composite is also what the server reads its owner from: the call is made as the agent
+        the composite names, the only caller an agent's in-process server serves, and the same
+        call made as any other agent is refused over the real bus before the tool runs.
+
         :param nats_container: NATS URL from the canonical testcontainer fixture
         :ptype nats_container: str
         :return: nothing
         :rtype: None
         """
-        agent_id = str(uuid4())
+        agent_id = uuid4()
         instance_id = str(uuid4())
         composite_pod_id = Subjects.agent_inprocess_pod_id(agent_id, instance_id)
         assert composite_pod_id == f"{agent_id}.{instance_id}"  # two tokens, structural dot intact
@@ -290,6 +294,7 @@ class TestToolServerNatsIntegration:
                     tool_version="1.0",
                     arguments={"message": "composite"},
                     correlation_id=correlation_id,
+                    agent_id=agent_id,
                 )
             ).encode("utf-8")
 
@@ -304,6 +309,24 @@ class TestToolServerNatsIntegration:
             assert response_data["context"]["correlation_id"] == correlation_id
             content = json.loads(response_data["content"])
             assert content == {"message": "composite"}
+
+            foreign_bytes = await nc.request_raw(
+                subject=call_subject,
+                payload=json.dumps(
+                    _signed_call_payload(
+                        pod_id=composite_pod_id,
+                        tool_name="integration.stub",
+                        tool_version="1.0",
+                        arguments={"message": "not yours"},
+                        agent_id=uuid4(),
+                    )
+                ).encode("utf-8"),
+                timeout=timedelta(seconds=5),
+            )
+            foreign = json.loads(foreign_bytes)
+
+            assert foreign["success"] is False
+            assert foreign["error_code"] == "TOOL_CALLER_NOT_OWNER"
 
             await nc.shutdown()
         finally:

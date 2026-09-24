@@ -3,20 +3,77 @@
 defines protocol for pluggable routing strategies and provides
 least-connections implementation as default. strategies select
 a single endpoint from a list of candidates for each tool call.
+
+which endpoints a caller may be routed to at all is decided before any
+strategy runs, by :func:`endpoints_callable_by`: an agent's in-process
+endpoint serves only that agent, a Tool Pod's serves everyone.
 """
 
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from uuid import UUID
+
+from threetears.nats import Subjects
+from threetears.observe import get_logger
 
 __all__ = [
     "LeastConnectionsStrategy",
     "RoutingStrategy",
+    "endpoints_callable_by",
 ]
 
 if TYPE_CHECKING:
     from threetears.registry.catalog import ToolEndpoint
+
+log = get_logger(__name__)
+
+
+def endpoints_callable_by(endpoints: Iterable[ToolEndpoint], caller_id: UUID | None) -> list[ToolEndpoint]:
+    """the endpoints one caller may be routed to, before any strategy chooses among them.
+
+    The catalog merges every pod serving ``name@version`` into one entry, and that is right for a
+    Tool Pod: it is a shared service, and any replica answers any caller the same way. It is wrong
+    for a tool an AGENT serves in-process -- a drafts tool, a conversation-recall tool -- because
+    that tool answers from its own agent's state. When several agents serve the same name, a call
+    from one agent that lands on another's process is answered from the wrong agent's scope, or
+    finds nothing in the wrong agent's per-conversation store. So ownership is a precondition of
+    routing, not a preference: an in-process endpoint is callable only by the agent that owns it,
+    and replicas of that agent still share its calls through the strategy.
+
+    The owner is read from the endpoint's pod-id by
+    :meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`, which is proof rather than a
+    claim: only the owning agent's connection is granted the probe subject that promotes a dotted
+    endpoint to available. ``caller_id`` must be VERIFIED wherever the answer is an authority (the
+    call path); discovery passes the requester's claimed id, which only decides what it is shown.
+
+    An endpoint whose pod-id names no agent is callable by no one. Registration refuses such an id,
+    so one here was loaded from shared state written before that check; reading it as a Tool Pod
+    would make it callable by everyone.
+
+    :param endpoints: every endpoint of one catalog entry
+    :ptype endpoints: Iterable[ToolEndpoint]
+    :param caller_id: the calling principal -- an agent's id, a tool pod's id -- or ``None`` when
+        the caller names no agent, which leaves it only the Tool Pod endpoints
+    :ptype caller_id: UUID | None
+    :return: the endpoints this caller may be routed to, in catalog order
+    :rtype: list[ToolEndpoint]
+    """
+    result: list[ToolEndpoint] = []
+    for endpoint in endpoints:
+        try:
+            owner = Subjects.agent_inprocess_owner_id(endpoint.pod_id)
+        except ValueError as exc:
+            log.warning(
+                "tool endpoint's pod-id names no agent; it is routable by no caller",
+                extra={"extra_data": {"pod_id": endpoint.pod_id, "detail": str(exc)}},
+            )
+            continue
+        if owner is None or owner == caller_id:
+            result.append(endpoint)
+    return result
 
 
 @runtime_checkable

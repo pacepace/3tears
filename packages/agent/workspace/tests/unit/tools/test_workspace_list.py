@@ -116,6 +116,34 @@ async def test_execute_returns_discovered_summaries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_absent_owner_or_customer_is_null_not_the_string_none() -> None:
+    """a row with no customer or no owning agent says so in JSON, rather than naming one ``"None"``."""
+    agent_id, customer_id = uuid4(), uuid4()
+    items = [
+        NamespaceDiscoverySummary(
+            id=uuid4(), name="workspace.orphan", namespace_type="workspace", owner_agent_id=None, customer_id=None
+        ),
+        NamespaceDiscoverySummary(
+            id=uuid4(),
+            name="workspace.alpha",
+            namespace_type="workspace",
+            owner_agent_id=agent_id,
+            customer_id=customer_id,
+        ),
+    ]
+    tool = WorkspaceListTool(discovery_client=_FakeDiscoveryClient(items=items), agent_id=agent_id)  # type: ignore[arg-type]
+
+    async with enter_call_scope(_make_scope(customer_id=customer_id)):
+        result = await tool.execute()
+
+    assert result.success is True
+    assert json.loads(result.content) == [
+        {"name": "workspace.orphan", "owner_agent_id": None, "customer_id": None},
+        {"name": "workspace.alpha", "owner_agent_id": str(agent_id), "customer_id": str(customer_id)},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_returns_empty_array_for_empty_discovery() -> None:
     """empty discovery set yields ``"[]"`` content with success True."""
     client = _FakeDiscoveryClient(items=[])

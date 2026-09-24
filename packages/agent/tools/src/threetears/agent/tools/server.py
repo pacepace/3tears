@@ -398,7 +398,10 @@ class RegistrationManifest(BaseModel):
         ``None`` in open mode (no registry authenticator wired) or a static dev token.
     :ptype bootstrap_token: str | None
     :param owner_agent_id: owning-agent UUID for agent-spun pods;
-        ``None`` for platform-built-in pods
+        ``None`` for platform-built-in pods. it scopes the ``namespaces``
+        rows and is a CLAIM: it is not who serves the endpoint. that is read
+        from ``pod_id`` (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`),
+        which the registry routes on and a claim here cannot override
     :ptype owner_agent_id: UUID | None
     :param customer_id: owning-customer UUID for agent-spun pods;
         ``None`` for platform-built-in pods
@@ -610,6 +613,11 @@ class CallResponse(BaseModel):
     :ptype metadata: dict[str, Any] | None
     :param error: error message if execution failed
     :ptype error: str | None
+    :param error_code: machine-readable code for a refusal the pod names, read by the registry
+        straight into :attr:`threetears.registry.proxy.ProxyCallResponse.error_code`. ``None`` for
+        a success and for every failure the pod does not name -- a tool that raised, a gate that
+        reports only a reason
+    :ptype error_code: str | None
     :param context: unified identity + trace envelope echoed from the
         inbound :class:`CallRequest`; ``None`` when the inbound request
         carried no context
@@ -620,6 +628,7 @@ class CallResponse(BaseModel):
     content: str
     metadata: dict[str, Any] | None = None
     error: str | None = None
+    error_code: str | None = None
     context: CallContext | None = None
 
 
@@ -873,7 +882,11 @@ class ToolServer:
         :ptype nats_user: str | None
         :param nats_password: NATS static password paired with ``nats_user``
         :ptype nats_password: str | None
-        :param pod_id: unique pod identifier (generated if not provided)
+        :param pod_id: unique pod identifier (generated if not provided). a single token makes
+            this a Tool Pod's server, which serves every caller; an agent's in-process server is
+            given :meth:`~threetears.nats.Subjects.agent_inprocess_pod_id`, and then serves ONLY
+            the agent that id names -- any other verified caller is refused
+            ``TOOL_CALLER_NOT_OWNER``
         :ptype pod_id: str | None
         :param heartbeat_interval: seconds between heartbeat publishes
         :ptype heartbeat_interval: float
@@ -914,15 +927,21 @@ class ToolServer:
             ignored and the server will not disconnect the client on
             shutdown
         :ptype nats_client: NatsClient | None
-        :param agent_id: owning-agent UUID for this pod. stamped on
-            the ``owner_agent_id`` axis of every baseline ``tool.call``
-            audit envelope emitted from :meth:`handle_call`, and carried
-            on the registration manifest so the HUB-side
-            ``ToolNamespaceEmitter`` can scope the ``namespaces`` rows
-            it writes. ``None`` in platform-spun ToolServers (platform
-            built-in tool pods have no owning agent); each namespace row
-            then lands with ``owner_agent_id=NULL`` matching the
-            ``shared``-type namespace shape.
+        :param agent_id: owning-agent UUID for a pod whose ``pod_id`` cannot say
+            who owns it -- a single-token pod an agent spun. an agent's
+            in-process server does not need it: its composite ``pod_id``
+            names the owner (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`),
+            which is the one source, and a supplied ``agent_id`` that
+            disagrees raises ``ValueError``. the resolved owner is stamped on
+            the ``owner_agent_id`` axis of every baseline ``tool.call`` audit
+            envelope. the registration manifest carries ONLY what was supplied
+            here, never the pod-id's owner, because on the manifest it means
+            something else: which of the hub's ``namespaces`` rows the pod's
+            tools are written to. ``None`` there keeps an in-process server's
+            tools on the platform's one shared row per tool name (``owner_agent_id``
+            NULL, the ``shared``-type shape), which is where they live; a
+            per-agent owner would ask the hub for a second row under a tool
+            name the platform row already holds.
         :ptype agent_id: UUID | None
         :param customer_id: owning-customer UUID carried on the
             registration manifest beside ``agent_id``: agent-spun pods
@@ -995,9 +1014,11 @@ class ToolServer:
         :ptype assertion_replay_guard: ReplayGuard | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
-            ``max_call_seconds`` is set to a non-positive value, or an injected
+            ``max_call_seconds`` is set to a non-positive value, an injected
             ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
-            pod's assertion leeway
+            pod's assertion leeway, ``pod_id`` is dotted -- an agent's shape -- but names no
+            agent (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`), or ``agent_id``
+            names a different agent than the one ``pod_id`` names
         """
         if not nats_url and nats_client is None:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
@@ -1016,6 +1037,29 @@ class ToolServer:
         self._nats_user = nats_user
         self._nats_password = nats_password
         self._pod_id = pod_id or str(uuid7())
+        # OWNERSHIP -- whose process this is -- has one source: the pod-id, read the way the
+        # registry reads it. A dotted id names the agent whose in-process server this is (and one
+        # naming no agent raises here: no agent's grant could ever carry its probe); a single token
+        # is a Tool Pod's, whose owner, if any, only ``agent_id`` can say. Not to be confused with
+        # the SELF-IDENTITY below, which is a different question answered by the registry.
+        inprocess_owner = Subjects.agent_inprocess_owner_id(self._pod_id)
+        if inprocess_owner is not None and agent_id is not None and agent_id != inprocess_owner:
+            raise ValueError(
+                f"agent_id {agent_id} disagrees with pod_id {self._pod_id!r}, which names agent "
+                f"{inprocess_owner}; an in-process server's owner is its pod-id's, so pass no agent_id "
+                "or the same one"
+            )
+        # an agent's in-process tool answers from that agent's own state, so its server refuses
+        # every other caller even though the registry already routes by owner: a registry predating
+        # that rule, or a fault in it, must not be able to hand this agent's state to another.
+        self._serves_only_its_owner: bool = inprocess_owner is not None
+        # the agent this server belongs to, as the audit owner axis and the owner refusal record it.
+        self._owning_agent_id: UUID | None = inprocess_owner if inprocess_owner is not None else agent_id
+        # the manifest's ``owner_agent_id``: what the caller supplied and nothing derived. On the
+        # manifest it chooses which hub ``namespaces`` row the tools are written to (see the
+        # ``agent_id`` parameter), so filling it from the pod-id would move an in-process server's
+        # tools off the platform's shared rows.
+        self._manifest_owner_agent_id: UUID | None = agent_id
         # SELF-IDENTITY, learned from the registration reply and never derived locally.
         # ``None`` is "not learned yet"; an empty tuple is a real answer, because a pod
         # with no ``tool_pods`` row and no owning agent genuinely owns nothing. Collapsing
@@ -1029,7 +1073,6 @@ class ToolServer:
         # manifest so the registry-layer verifier always sees a fresh JWT. None -> static fallback.
         self._auth_token = auth_token
         self._context_factory = context_factory
-        self._agent_id = agent_id
         self._customer_id = customer_id
         # defense-in-depth: the pod re-verifies the Hub identity token AND the proxy's body-bound
         # assertion on every inbound call (closes the direct-internal-subject bypass). enforce-only
@@ -1173,6 +1216,19 @@ class ToolServer:
         """
         if self._assertion_replay_anchor is None:
             self._assertion_replay_anchor = anchor
+
+    @property
+    def object_resolver(self) -> ObjectResolver | None:
+        """the object-id resolver this pod installs on every per-call scope, or ``None``.
+
+        the injected resolver when one was passed at construction, else the one :meth:`serve`
+        provisions from the NATS client -- ``None`` until then. read-only: the pod owns the one
+        instance, and a caller that wants a different one injects it at construction.
+
+        :return: the pod's object resolver, or ``None`` before it is provisioned
+        :rtype: ObjectResolver | None
+        """
+        return self._object_resolver
 
     @property
     def owned_namespaces(self) -> tuple[str, ...] | None:
@@ -1984,7 +2040,7 @@ class ToolServer:
             pod_id=self._pod_id,
             tools=tools_list,
             bootstrap_token=manifest_token,
-            owner_agent_id=self._agent_id,
+            owner_agent_id=self._manifest_owner_agent_id,
             customer_id=self._customer_id,
         )
 
@@ -2344,6 +2400,30 @@ class ToolServer:
             reason = f"proxy assertion verification failed ({kind})"
         return reason
 
+    def _foreign_caller_rejection(self, request: CallRequest) -> str | None:
+        """refuse a verified caller that is not the agent this in-process server belongs to.
+
+        An in-process tool answers from its own agent's state -- that agent's scope, its
+        per-conversation store -- so serving another agent's call hands that caller this agent's
+        state. The registry routes by owner and should never deliver such a call; this is the same
+        rule held at the pod, for a registry predating it or a fault in it. A Tool Pod's server has
+        no owner and serves everyone. Runs after identity verification, so the caller compared is
+        the one the Hub token names, never the envelope's claim.
+
+        :param request: the identity-verified call request
+        :ptype request: CallRequest
+        :return: the rejection reason, or ``None`` when the call may proceed
+        :rtype: str | None
+        """
+        result: str | None = None
+        caller = request.context.agent_id if request.context is not None else None
+        if self._serves_only_its_owner and caller != self._owning_agent_id:
+            result = (
+                f"caller {caller} is not agent {self._owning_agent_id}, whose in-process tool server this is; an "
+                "agent's in-process tool answers only its own agent"
+            )
+        return result
+
     async def handle_call(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler for incoming tool call request.
 
@@ -2361,6 +2441,12 @@ class ToolServer:
         ``agent``/``customer``) from the :class:`CallContext` for the
         duration of the dispatch so every log line in this handler and
         its callees renders with those tags.
+
+        an agent's in-process server (a dotted pod-id) answers only the
+        agent that owns it: once identity and the proxy assertion verify,
+        any other verified caller is refused ``TOOL_CALLER_NOT_OWNER``
+        before the tool is looked up. a Tool Pod's server serves every
+        caller.
 
         audit-task-01 (AUD-03): every dispatch -- including malformed
         requests, unknown-tool rejections, and raising tools -- emits a
@@ -2568,8 +2654,8 @@ class ToolServer:
         split out of :meth:`handle_call` so the public NATS callback can
         bracket the dispatch in the in-flight-requests gauge without
         re-indenting the whole body. the full handler contract (identity
-        verification, proxy-assertion check, baseline audit) is documented
-        on :meth:`handle_call`.
+        verification, proxy-assertion check, owner check, baseline audit) is
+        documented on :meth:`handle_call`.
 
         :param msg: incoming wrapper envelope carrying the call request
         :ptype msg: IncomingMessage
@@ -2746,6 +2832,31 @@ class ToolServer:
                 )
                 outcome = "failure"
                 failure_reason = assertion_rejection
+                return
+
+            owner_rejection = self._foreign_caller_rejection(request)
+            if owner_rejection is not None:
+                error_response = CallResponse(
+                    success=False,
+                    content="",
+                    error=owner_rejection,
+                    error_code="TOOL_CALLER_NOT_OWNER",
+                    context=request.context,
+                )
+                await self._answer(msg, error_response, delivery_subject)
+                log.warning(
+                    "pod refused call: the verified caller is not the agent this in-process server belongs to",
+                    extra={
+                        "extra_data": {
+                            "reason": owner_rejection,
+                            "pod_id": self._pod_id,
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                outcome = "failure"
+                failure_reason = owner_rejection
                 return
 
             tool = self._tools.get(tool_key)
@@ -3026,7 +3137,7 @@ class ToolServer:
             event_type="tool.call",
             actor_user_id=context.user_id if context is not None else None,
             calling_agent_id=context.agent_id if context is not None else None,
-            owner_agent_id=self._agent_id,
+            owner_agent_id=self._owning_agent_id,
             customer_id=context.customer_id if context is not None else None,
             resource_namespace_id=None,
             resource_namespace_type=None,

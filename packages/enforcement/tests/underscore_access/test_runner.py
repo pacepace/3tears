@@ -425,3 +425,47 @@ class TestTheScopeCacheDoesNotOutliveTheFile:
         # assertion this suite keeps finding elsewhere.
         with pytest.raises(pytest.fail.Exception, match="underscore"):
             run_underscore_enforcement(config, walker="shape_a")
+
+
+# ------------------------------------------------------------------
+# shape F reaches the tests trees
+# ------------------------------------------------------------------
+
+
+class TestShapeFScansTheTestsTrees:
+    """the reflective spelling lived in test fixtures, so a src-only shape F would find none of it."""
+
+    @staticmethod
+    def _repo(tmp_path: Path) -> Path:
+        repo = _make_repo_with_pyproject(tmp_path / "repo")
+        _write(repo / "packages" / "pkg" / "src" / "pkg" / "__init__.py", "__all__: list[str] = []\n")
+        _write(
+            repo / "packages" / "pkg" / "tests" / "test_server.py",
+            "def test_x(server, rec):\n    setattr(server, '_nc', rec)\n",
+        )
+        return repo
+
+    def test_a_fixture_under_a_package_tests_tree_fails_the_gate_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("UNDERSCORE_AUDIT_MODE", raising=False)
+        repo = self._repo(tmp_path)
+        config = UnderscoreAccessConfig(repo_root=repo, enable_shape_b_ruff=False)
+
+        with pytest.raises(pytest.fail.Exception, match="underscore_access.F"):
+            run_underscore_enforcement(config, walker="shape_f")
+
+    def test_all_includes_shape_f(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("UNDERSCORE_AUDIT_MODE", raising=False)
+        repo = self._repo(tmp_path)
+        config = UnderscoreAccessConfig(repo_root=repo, enable_shape_b_ruff=False)
+
+        with pytest.raises(pytest.fail.Exception, match="_nc"):
+            run_underscore_enforcement(config, walker="all")
+
+    def test_empty_test_roots_scans_src_alone(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("UNDERSCORE_AUDIT_MODE", raising=False)
+        repo = self._repo(tmp_path)
+        config = UnderscoreAccessConfig(repo_root=repo, enable_shape_b_ruff=False, test_roots=())
+
+        run_underscore_enforcement(config, walker="shape_f")

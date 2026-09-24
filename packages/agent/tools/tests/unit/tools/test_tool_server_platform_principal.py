@@ -23,7 +23,13 @@ from threetears.agent.tools.server import CallResponse, ToolServer
 from threetears.core.security import PLATFORM_CUSTOMER_SENTINEL
 from threetears.nats import IncomingMessage
 
-from unit.tools._pod_auth import StubReplayGuard, jwks_provider, signed_call_payload
+from unit.tools._pod_auth import (
+    RecordingNatsClient,
+    StubReplayGuard,
+    jwks_provider,
+    recording_tool_server,
+    signed_call_payload,
+)
 
 _POD_ID = "test-pod"
 
@@ -53,28 +59,14 @@ class _ScopeRecordingTool(TearsTool):
         return "1.0"
 
 
-# parity-exempt: subset stand-in for NatsClient exposing only the publish_reply the pod's handler answers on
-class _RecordingNatsClient:
-    def __init__(self) -> None:
-        self.replies: list[tuple[str, Any]] = []
-
-    async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
-        self.replies.append((reply_subject, message))
-
-
-def _server() -> tuple[ToolServer, _ScopeRecordingTool, _RecordingNatsClient]:
-    server = ToolServer(
-        nats_url="nats://localhost:9999",
+def _server() -> tuple[ToolServer, _ScopeRecordingTool, RecordingNatsClient]:
+    server, rec = recording_tool_server(
         pod_id=_POD_ID,
         jwks_provider=jwks_provider,
         assertion_replay_guard=StubReplayGuard(),
     )
     tool = _ScopeRecordingTool()
     server.register(tool)
-    rec = _RecordingNatsClient()
-    # the handler answers on ``self._nc``; installed directly rather than through ``serve``, which
-    # would dial a real connection. setattr keeps the test from binding to the private slot's name.
-    setattr(server, "_nc", rec)
     return server, tool, rec
 
 

@@ -540,6 +540,30 @@ def _advertises_clear(server_info: dict[str, Any] | None) -> bool:
     return False
 
 
+def _sdk_process_pid(client: Any) -> Any:
+    """the CLI subprocess's pid as the SDK holds it, or ``None`` when its internals have moved.
+
+    the SDK offers no public accessor: the process object sits on the private ``_transport`` and
+    its private ``_process``. read here as attributes under a reasoned SLF001 pragma -- the
+    spelling every check sees -- rather than through ``getattr`` with the names as strings, which
+    hid the dependency from all of them. :func:`_discover_pid` falls back to ``/proc`` when this is
+    ``None``.
+
+    :param client: the connected ``ClaudeSDKClient``
+    :ptype client: Any
+    :return: whatever the SDK's process object reports as its pid, or ``None``
+    :rtype: Any
+    """
+    result: Any = None
+    try:
+        result = client._transport._process.pid  # noqa: SLF001 -- the SDK exposes its CLI process nowhere else
+    except AttributeError:
+        # NOSILENT: the SDK's internals moved; the caller falls back to scanning /proc for this
+        # session's marker, and warns only if that finds nothing either.
+        result = None
+    return result
+
+
 def _discover_pid(client: Any, marker: str) -> int | None:
     """The CLI subprocess's pid, from the SDK if it will say, else from ``/proc``.
 
@@ -554,7 +578,7 @@ def _discover_pid(client: Any, marker: str) -> int | None:
     :return: the pid, or ``None`` when it cannot be determined
     :rtype: int | None
     """
-    pid = getattr(getattr(getattr(client, "_transport", None), "_process", None), "pid", None)
+    pid = _sdk_process_pid(client)
     if isinstance(pid, int):
         return pid
     for candidate in _live_pids():

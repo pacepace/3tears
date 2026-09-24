@@ -13,6 +13,7 @@ from threetears.enforcement.common.ast_helpers import SKIP_DIRS
 
 __all__ = [
     "find_local_src_roots",
+    "find_local_test_roots",
     "find_repo_root",
 ]
 
@@ -119,3 +120,61 @@ def _collect_src_roots(directory: Path, roots: set[Path]) -> None:
         if entry == candidate:
             continue
         _collect_src_roots(entry, roots)
+
+
+def find_local_test_roots(repo_root: Path) -> tuple[Path, ...]:
+    """discover this repo's own ``tests/`` trees, sorted for stable order.
+
+    the mirror of :func:`find_local_src_roots`: a top-level ``tests/`` directory under the repo
+    root, and every ``tests/`` directory at ANY depth under ``packages/``, for the same reason the
+    src walk is unbounded -- a grouping directory must not silently hide a package's tests.
+
+    exists because a check that means "no private access" has to reach the trees where private
+    access actually happens. the src-only walk every underscore shape used to share left every test
+    fixture unscanned, and every instance that surfaced the reflective-access gap was a test fixture.
+
+    the same exclusions as the src walk apply -- :data:`SKIP_DIRS` and dot-prefixed directories are
+    never entered -- and neither a discovered ``tests/`` tree nor a ``src/`` tree is descended into:
+    the first is already a root, the second holds sources rather than tests.
+
+    :param repo_root: absolute repo root path
+    :ptype repo_root: Path
+    :return: sorted tuple of absolute tests-root paths
+    :rtype: tuple[Path, ...]
+    """
+    roots: set[Path] = set()
+    repo_root = repo_root.resolve()
+
+    top_level = repo_root / "tests"
+    if top_level.is_dir():
+        roots.add(top_level)
+
+    packages_dir = repo_root / "packages"
+    if packages_dir.is_dir():
+        _collect_test_roots(packages_dir, roots)
+
+    return tuple(sorted(roots))
+
+
+def _collect_test_roots(directory: Path, roots: set[Path]) -> None:
+    """recurse through ``directory`` accumulating every package ``tests/`` tree.
+
+    :param directory: directory to inspect
+    :ptype directory: Path
+    :param roots: accumulator of discovered tests-root paths
+    :ptype roots: set[Path]
+    :return: nothing
+    :rtype: None
+    """
+    candidate = directory / "tests"
+    if candidate.is_dir():
+        roots.add(candidate.resolve())
+
+    for entry in sorted(directory.iterdir(), key=lambda p: p.name):
+        if not entry.is_dir():
+            continue
+        if entry.name in SKIP_DIRS or entry.name.startswith("."):
+            continue
+        if entry.name in {"tests", "src"}:
+            continue
+        _collect_test_roots(entry, roots)
