@@ -109,6 +109,12 @@ similarity, but only ORed with `ILIKE`, and YugabyteDB cannot use a GIN index fo
 all, so it scans the table and is not refused. A bare `%` would be. A consumer that squashes
 these migrations into its own schema file must stop creating the dropped indexes there.
 
+**Deploy and rollback:** no deploy order is needed; the migrations run at the next start of
+whatever applies them. To roll back to 0.52.x, leave the indexes dropped. The migration runner
+accepts a ledger row newer than the code (a staged rollout depends on it), and 0.52.x's
+unwrapped keyword search then scans the rows its scope columns select instead of failing.
+Recreating the indexes on a rollback brings the `unsupported ybgin index scan` error back.
+
 ## v0.52.1 -- unreleased
 
 ### A query's own error is no longer replaced by asyncpg's pool-release race
