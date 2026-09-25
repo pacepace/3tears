@@ -51,6 +51,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.backends.schema_sql import decode_vector
 from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.config import CoreConfig
+from threetears.core.data.gin import gin_filter
 from threetears.observe import get_logger
 
 from threetears.agent.memory.authorize import (
@@ -92,6 +93,14 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the keyword-match predicate every memory FTS query filters on. ``websearch_to_tsquery``
+#: turns an "or" or a leading "-" in the text into OR / NOT, which YugabyteDB's GIN index
+#: refuses outright, so the predicate filters the scoped rows instead of scanning the index
+#: (:func:`threetears.core.data.gin.gin_filter`). ranking still uses the same tsquery.
+_MEMORY_FTS_MATCH = gin_filter("search_vector @@ websearch_to_tsquery('english', $1)")
+#: the same predicate for the ``mc``-aliased chunk and media-content queries.
+_CHUNK_FTS_MATCH = gin_filter("mc.search_vector @@ websearch_to_tsquery('english', $1)")
 
 
 def _as_pk_uuid(value: object) -> UUID:
@@ -1363,7 +1372,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 FROM memories
                 {fts_where}
                   AND embedding IS NOT NULL
-                  AND search_vector @@ websearch_to_tsquery('english', $1){fts_date_clause}
+                  AND {_MEMORY_FTS_MATCH}{fts_date_clause}
                   AND (superseded_by IS NULL OR NOT EXISTS (
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
@@ -1637,7 +1646,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         conditions = [
             "agent_id = $2",
             "user_id = $3",
-            "search_vector @@ websearch_to_tsquery('english', $1)",
+            _MEMORY_FTS_MATCH,
         ]
         params: list[Any] = [fts_text, agent_id, user_id]
         idx = 4
@@ -2441,7 +2450,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                   ON mc.agent_id = med.agent_id
                  AND mc.media_id = med.media_id
                 WHERE {fts_scope_conditions} AND mc.embedding IS NOT NULL
-                  AND mc.search_vector @@ websearch_to_tsquery('english', $1)
+                  AND {_CHUNK_FTS_MATCH}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,
@@ -2667,7 +2676,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             return []
         # cache-bypass: FTS rank query joining media_content -> media.
         rows = await self.l3_pool.fetch(
-            """
+            f"""
             SELECT mc.content_id, mc.content, mc.content_type,
                    mc.media_id, med.media_category, med.metadata_json,
                    med.date_created,
@@ -2679,7 +2688,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
-              AND mc.search_vector @@ websearch_to_tsquery('english', $1)
+              AND {_CHUNK_FTS_MATCH}
             ORDER BY fts_rank DESC
             LIMIT $4
             """,
@@ -3025,7 +3034,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                  AND mc.memory_id = med.memory_id
                 WHERE {fts_scope_conditions}
                   AND mc.embedding IS NOT NULL
-                  AND mc.search_vector @@ websearch_to_tsquery('english', $1)
+                  AND {_CHUNK_FTS_MATCH}
                   {fts_cursor_clause}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
@@ -3578,7 +3587,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                  AND mc.memory_id = med.memory_id
                 WHERE {fts_scope_conditions}
                   AND mc.memory_id = {fts_memory_id_param}
-                  AND mc.search_vector @@ websearch_to_tsquery('english', $1)
+                  AND {_CHUNK_FTS_MATCH}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,

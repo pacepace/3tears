@@ -4,6 +4,36 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Keyword search no longer fails on YugabyteDB when the text says "or"
+
+YugabyteDB implements `USING gin` as `ybgin`, which serves a scan with exactly one required
+entry and refuses any other: `unsupported ybgin index scan ... cannot use more than one
+required scan entry`. The query fails; it does not degrade. `websearch_to_tsquery` turns an
+"or" or a leading "-" in ordinary text into OR / NOT, which need several entries, and the
+jsonb any-key (`?|`) and array-overlap (`&&`) filters need several too. Seen on cobalt-dev
+on 2026-09-25 as a hub ERROR on every ripple turn whose question contained "or": the agent
+answered without its keyword memory, and nothing else said so.
+
+- **New (minor):** `threetears.core.data.gin_filter(predicate)` renders such a predicate as
+  `(<predicate>) IS TRUE`, a row filter the planner cannot serve from the GIN index. The
+  query's scope columns narrow the rows as before, and the result is identical on
+  PostgreSQL.
+- `agent-memory`: every keyword predicate (memories, media content, chunks: `search_by_fts`,
+  `hybrid_search`, `hybrid_search_within_memory`) and the `tags_any` scope filter go through
+  it.
+- `conversations`: `ConversationsCollection.search` keeps the user's OR / NOT / phrase
+  syntax and filters with it.
+- `agent-skills`: `list_for_user` and `count_for_user` filter the typed query and the tag
+  overlap through it.
+- A repo enforcement test refuses any SQL literal in package source that uses `@@
+  websearch_to_tsquery`, `@@ to_tsquery`, `?|`, `?&` or `&&` outside `gin_filter`.
+
+Proven on YugabyteDB against the platform's real memory, media and conversation tables with
+the GIN index forced by plan hint: the old SQL fails with the production error, and the
+SQL the fixed methods generate passes. Semantics on PostgreSQL are unchanged.
+
 ## v0.52.1 -- unreleased
 
 ### A query's own error is no longer replaced by asyncpg's pool-release race

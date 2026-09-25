@@ -40,6 +40,7 @@ from threetears.agent.skills.types import (
 )
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.collections.base import BaseCollection
+from threetears.core.data.gin import gin_filter
 from threetears.core.serialization import (
     deserialize_from_json,
     serialize_to_json,
@@ -484,13 +485,13 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         if enabled_only:
             conditions.append("enabled = true")
         if tag_filter:
-            conditions.append(f"tags && ${param_idx}")
+            conditions.append(gin_filter(f"tags && ${param_idx}"))
             params.append(list(tag_filter))
             param_idx += 1
         order_clause: str
         select_extra = ""
         if query is not None and query.strip():
-            conditions.append(f"search_vector @@ websearch_to_tsquery('english', ${param_idx})")
+            conditions.append(gin_filter(f"search_vector @@ websearch_to_tsquery('english', ${param_idx})"))
             params.append(query)
             select_extra = f", ts_rank_cd(search_vector, websearch_to_tsquery('english', ${param_idx})) AS fts_rank"
             param_idx += 1
@@ -567,11 +568,11 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         if enabled_only:
             conditions.append("enabled = true")
         if tag_filter:
-            conditions.append(f"tags && ${param_idx}")
+            conditions.append(gin_filter(f"tags && ${param_idx}"))
             params.append(list(tag_filter))
             param_idx += 1
         if query is not None and query.strip():
-            conditions.append(f"search_vector @@ websearch_to_tsquery('english', ${param_idx})")
+            conditions.append(gin_filter(f"search_vector @@ websearch_to_tsquery('english', ${param_idx})"))
             params.append(query)
             param_idx += 1
         # cache-bypass: aggregate COUNT(*) is not primary-key

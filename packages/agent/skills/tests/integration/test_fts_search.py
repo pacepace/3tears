@@ -17,8 +17,11 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
+from threetears.agent.skills.collections import AgentSkillCollection
 from threetears.agent.skills.migrations import register as register_skills
 from threetears.conversations.migrations import register as register_conversations
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 
 from .conftest import AsyncpgStore
@@ -231,3 +234,84 @@ class TestRanking:
             assert UUID(str(rows[0]["skill_id"])) == name_match_id
         finally:
             await conn.close()
+
+
+class TestTypedSearchSyntaxThroughTheCollection:
+    """``list_for_user`` keeps the user's OR / NOT and the tag overlap, filtered rather than indexed.
+
+    Those predicates go through ``gin_filter`` because YugabyteDB's GIN index refuses them
+    outright; these pin that the wrapped predicates still answer what the operators mean.
+    """
+
+    async def _collection(self, url: str, schema: str) -> tuple[AgentSkillCollection, asyncpg.Pool]:
+        pool = await asyncpg.create_pool(url, min_size=1, max_size=2, server_settings={"search_path": schema})
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=pool)
+        cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+        return AgentSkillCollection(registry=registry, config=cfg), pool
+
+    async def test_or_and_not_in_the_query_mean_what_they_say(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            agent_id = _new_uuid()
+            user_id = _new_uuid()
+            ruff = await _insert_skill(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                name="format-helper",
+                summary="Format",
+                body="Use ruff format on changed files",
+            )
+            terraform = await _insert_skill(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                name="deploy-helper",
+                summary="Deploy",
+                body="Run terraform apply on staging",
+            )
+            prod = await _insert_skill(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                name="prod-helper",
+                summary="Prod",
+                body="Run terraform apply on prod",
+            )
+        finally:
+            await conn.close()
+        coll, pool = await self._collection(url, schema)
+        try:
+            either = {s.skill_id for s in await coll.list_for_user(agent_id, user_id, query="ruff or terraform")}
+            not_prod = {s.skill_id for s in await coll.list_for_user(agent_id, user_id, query="terraform -prod")}
+            counted = await coll.count_for_user(agent_id, user_id, query="ruff or terraform")
+        finally:
+            await pool.close()
+        assert either == {ruff, terraform, prod}
+        assert not_prod == {terraform}
+        assert counted == 3
+
+    async def test_tag_overlap_matches_any_tag(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            agent_id = _new_uuid()
+            user_id = _new_uuid()
+            infra = await _insert_skill(conn, agent_id=agent_id, user_id=user_id, name="infra", summary="i", body="b")
+            docs = await _insert_skill(conn, agent_id=agent_id, user_id=user_id, name="docs", summary="d", body="b")
+            other = await _insert_skill(conn, agent_id=agent_id, user_id=user_id, name="other", summary="o", body="b")
+            await conn.execute("UPDATE agent_skills SET tags = $2 WHERE skill_id = $1", infra, ["infra"])
+            await conn.execute("UPDATE agent_skills SET tags = $2 WHERE skill_id = $1", docs, ["docs"])
+            await conn.execute("UPDATE agent_skills SET tags = $2 WHERE skill_id = $1", other, ["misc"])
+        finally:
+            await conn.close()
+        coll, pool = await self._collection(url, schema)
+        try:
+            found = {s.skill_id for s in await coll.list_for_user(agent_id, user_id, tag_filter=["infra", "docs"])}
+        finally:
+            await pool.close()
+        assert found == {infra, docs}

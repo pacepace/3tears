@@ -57,7 +57,8 @@ class TestBuildScopeConditions:
         )
         conditions, params, next_param = build_scope_conditions(scope, next_param=7)
         assert conditions == [
-            "tags ?| $7::text[]",
+            # any-of is a filter, not a GIN index scan: YugabyteDB refuses a multi-entry scan
+            "(tags ?| $7::text[]) IS TRUE",
             "tags @> $8::jsonb",
             "memory_id = ANY($9::uuid[])",
             "NOT (memory_id = ANY($10::uuid[]))",

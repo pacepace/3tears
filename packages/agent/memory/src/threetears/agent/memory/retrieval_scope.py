@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from threetears.core.data.gin import gin_filter
+
 __all__ = ["RetrievalScope", "build_scope_conditions", "scope_matches_nothing"]
 
 
@@ -102,7 +104,7 @@ def build_scope_conditions(
     params: list[Any] = []
     if scope is not None:
         if scope.tags_any:
-            conditions.append(f"tags ?| ${next_param}::text[]")
+            conditions.append(gin_filter(f"tags ?| ${next_param}::text[]"))
             params.append(list(scope.tags_any))
             next_param += 1
         if scope.tags_all:

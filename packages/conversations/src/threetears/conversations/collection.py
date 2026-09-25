@@ -41,6 +41,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.config import CoreConfig
+from threetears.core.data.gin import gin_filter
 from threetears.observe import get_logger
 
 __all__ = [
@@ -378,7 +379,10 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         predicates = [
             "agent_id = $1",
             "user_id = $2",
-            "search_vector @@ websearch_to_tsquery($6::regconfig, $3)",
+            # a filter, not a GIN index scan: the user types OR / NOT here, and
+            # YugabyteDB's GIN index refuses any query needing more than one
+            # required entry (threetears.core.data.gin).
+            gin_filter("search_vector @@ websearch_to_tsquery($6::regconfig, $3)"),
         ]
         next_param = 7
         if not include_closed:
