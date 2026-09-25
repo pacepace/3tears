@@ -12,18 +12,28 @@ covers the five contracts the runner must hold:
 
 from __future__ import annotations
 
+import uuid
+from unittest.mock import AsyncMock
+
 import pytest
 
+from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.data.migrations import (
+    DDL_LOCK_NAMESPACE,
+    DdlLockPolicy,
+    DdlLockTimeoutError,
     MigrationRunner,
     MigrationScope,
     PackageMigrations,
+    SessionRequiredError,
+    ddl_lock_key,
 )
 from threetears.core.data.migrations.errors import (
     DuplicateVersionError,
     MissingDependencyError,
     MigrationFailedError,
 )
+from threetears.core.data.store import DataStore
 
 from ._fake_store import FakeDataStore
 
@@ -309,27 +319,40 @@ class TestPackageIsolation:
 
 def _lock_calls(store: FakeDataStore) -> list[tuple[str, tuple[object, ...]]]:
     """
-    return the advisory lock/unlock executes recorded by the fake store.
+    return the advisory lock/unlock statements the runner issued, in order.
 
-    :param store: fake store that recorded the runner's executes
+    :param store: fake session that recorded the runner's statements
     :ptype store: FakeDataStore
-    :return: ordered (sql, params) tuples for pg_advisory_(un)lock calls
+    :return: ordered (sql, params) tuples naming an advisory-lock function
     :rtype: list[tuple[str, tuple[object, ...]]]
     """
-    return [(sql, params) for sql, params in store.executed if "pg_advisory_" in sql]
+    return [(sql, params) for sql, params in store.queried + store.executed if "advisory" in sql]
 
 
-class TestAdvisoryLocking:
-    """apply runs are gated by a per-schema advisory lock.
+def _statement_log(store: FakeDataStore) -> list[str]:
+    """
+    return every statement the runner issued, queries and executes interleaved in order.
 
-    two pods starting concurrently must not both read an empty
-    applied-set and double-apply DDL. the runner takes
-    ``pg_advisory_lock`` around the whole apply sequence and releases it
-    afterwards -- even when a migration body raises.
+    :param store: fake session that recorded the runner's statements
+    :ptype store: FakeDataStore
+    :return: SQL text in issue order
+    :rtype: list[str]
+    """
+    return [sql for sql, _params in store.statements]
+
+
+class TestDatabaseWideDdlLock:
+    """every run holds the one DDL lock of its database.
+
+    two DDL jobs in one database -- in the same schema or in two different
+    ones -- must not run at once: on YugabyteDB two index builds in one
+    database both hang until the catalog-version wait times out. so the lock
+    is keyed on ``current_database()``, taken by polling, and held from before
+    the bookkeeping table is read until after the last row is written.
     """
 
-    async def test_apply_wraps_run_in_advisory_lock(self) -> None:
-        """apply_for_agent_schema locks before and unlocks after the DDL."""
+    async def test_run_is_bracketed_by_the_lock(self) -> None:
+        """the try-lock precedes every other statement and the unlock follows them all."""
         pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
         pkg.version(1)(_noop)
         runner = MigrationRunner()
@@ -338,20 +361,61 @@ class TestAdvisoryLocking:
         store = FakeDataStore(schema="agent_abc")
         await runner.apply_for_agent_schema(store)
 
-        # the very first execute is the lock acquire; the very last is
-        # the release. the migration INSERT lands strictly between them.
-        first_sql = store.executed[0][0]
-        last_sql = store.executed[-1][0]
-        assert "pg_advisory_lock" in first_sql
-        assert "pg_advisory_unlock" in last_sql
+        log = _statement_log(store)
+        first_lock = next(i for i, sql in enumerate(log) if "pg_try_advisory_lock" in sql)
+        unlock = next(i for i, sql in enumerate(log) if "pg_advisory_unlock" in sql)
+        work = [i for i, sql in enumerate(log) if "_schema_migrations" in sql]
+        assert work
+        assert all(first_lock < i < unlock for i in work)
+        assert unlock == len(log) - 1
+        assert store.lock_holds == 0
 
-        insert_index = next(
-            i for i, (sql, _params) in enumerate(store.executed) if "INSERT INTO _schema_migrations" in sql
-        )
-        assert 0 < insert_index < len(store.executed) - 1
+    async def test_lock_is_polled_never_blocking(self) -> None:
+        """the runner never issues the blocking pg_advisory_lock."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+
+        store = FakeDataStore()
+        await runner.apply_for_agent_schema(store)
+
+        assert [sql for sql, _ in _lock_calls(store) if "pg_advisory_lock(" in sql] == []
+
+    async def test_two_schemas_of_one_database_share_one_lock(self) -> None:
+        """the schema does not enter the key: two agent schemas serialise."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+
+        store_a = FakeDataStore(schema="agent_aaa", database="appdb")
+        store_b = FakeDataStore(schema="agent_bbb", database="appdb")
+        await runner.apply_for_agent_schema(store_a)
+        await runner.apply_for_agent_schema(store_b)
+
+        take_a = next(params for sql, params in _lock_calls(store_a) if "pg_try_advisory_lock" in sql)
+        take_b = next(params for sql, params in _lock_calls(store_b) if "pg_try_advisory_lock" in sql)
+        assert take_a == take_b == (DDL_LOCK_NAMESPACE, ddl_lock_key("appdb"))
+
+    async def test_two_databases_take_different_locks(self) -> None:
+        """different databases do not serialise against each other."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+
+        store_1 = FakeDataStore(database="db_one")
+        store_2 = FakeDataStore(database="db_two")
+        await runner.apply_for_agent_schema(store_1)
+        await runner.apply_for_agent_schema(store_2)
+
+        take_1 = next(params for sql, params in _lock_calls(store_1) if "pg_try_advisory_lock" in sql)
+        take_2 = next(params for sql, params in _lock_calls(store_2) if "pg_try_advisory_lock" in sql)
+        assert take_1 != take_2
 
     async def test_lock_released_when_migration_fails(self) -> None:
-        """a raising migration still releases the advisory lock."""
+        """a raising migration still releases the lock."""
         pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
 
         async def boom(store: object) -> None:
@@ -363,47 +427,78 @@ class TestAdvisoryLocking:
         runner = MigrationRunner()
         runner.register(pkg)
 
-        store = FakeDataStore(schema="agent_abc")
+        store = FakeDataStore()
         with pytest.raises(MigrationFailedError):
             await runner.apply_for_agent_schema(store)
 
-        calls = _lock_calls(store)
-        assert any("pg_advisory_lock" in sql for sql, _ in calls)
-        assert any("pg_advisory_unlock" in sql for sql, _ in calls)
+        assert any("pg_advisory_unlock" in sql for sql, _ in _lock_calls(store))
+        assert store.lock_holds == 0
 
-    async def test_lock_key_differs_per_schema(self) -> None:
-        """distinct schemas produce distinct lock keys so they do not serialise."""
+    @pytest.mark.parametrize("entry", ["platform", "agent", "package", "downgrade", "stamp"])
+    async def test_every_writing_entry_point_takes_the_lock(self, entry: str) -> None:
+        """apply (both scopes), apply_package, downgrade and stamp all run under the lock."""
+        agent_pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        agent_pkg.version(1)(_noop)
+        agent_pkg.downgrade(1)(_noop)
+        platform_pkg = PackageMigrations(name="core", scope=MigrationScope.PLATFORM)
+        platform_pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(agent_pkg)
+        runner.register(platform_pkg)
+        store = FakeDataStore()
+        if entry == "downgrade":
+            await runner.apply_for_agent_schema(store)
+            store.queried.clear()
+        entry_points = {
+            "platform": lambda: runner.apply_for_platform_schema(store),
+            "agent": lambda: runner.apply_for_agent_schema(store),
+            "package": lambda: runner.apply_package(store, "memory"),
+            "downgrade": lambda: runner.downgrade_for_scope(store, MigrationScope.AGENT),
+            "stamp": lambda: runner.stamp_version(store, "memory", 7),
+        }
+
+        await entry_points[entry]()
+
+        calls = [sql for sql, _ in _lock_calls(store)]
+        assert any("pg_try_advisory_lock" in sql for sql in calls)
+        assert any("pg_advisory_unlock" in sql for sql in calls)
+        assert store.lock_holds == 0
+
+    async def test_max_wait_from_the_runner_policy_applies(self) -> None:
+        """a runner built with max_wait gives up with the typed error and runs nothing."""
+        ran: list[int] = []
+
+        async def _record(store: object) -> None:
+            """record that the body ran."""
+            ran.append(1)
+
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_record)
+        runner = MigrationRunner(lock_policy=DdlLockPolicy(poll_interval=0.001, max_wait=0.02))
+        runner.register(pkg)
+
+        store = FakeDataStore(lock_held_elsewhere=True)
+
+        with pytest.raises(DdlLockTimeoutError):
+            await runner.apply_for_agent_schema(store)
+        assert ran == []
+        assert store.migrations_rows == []
+
+    async def test_a_pool_backed_data_store_is_refused_before_any_statement(self) -> None:
+        """a DataStore routes each statement through a pool, so it cannot hold a session lock."""
         pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
         pkg.version(1)(_noop)
         runner = MigrationRunner()
         runner.register(pkg)
 
-        store_a = FakeDataStore(schema="agent_aaa")
-        store_b = FakeDataStore(schema="agent_bbb")
-        await runner.apply_for_agent_schema(store_a)
-        await runner.apply_for_agent_schema(store_b)
+        pool = AsyncMock()
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=pool)
+        store = DataStore(uuid.uuid4(), registry)
 
-        acquire_a = next(params for sql, params in _lock_calls(store_a) if "pg_advisory_lock" in sql)
-        acquire_b = next(params for sql, params in _lock_calls(store_b) if "pg_advisory_lock" in sql)
-        # same namespace ($1), different schema key ($2)
-        assert acquire_a[0] == acquire_b[0]
-        assert acquire_a[1] != acquire_b[1]
-
-    async def test_lock_key_stable_for_same_schema(self) -> None:
-        """the same schema yields the same lock key across runs (cross-pod agreement)."""
-        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
-        pkg.version(1)(_noop)
-        runner = MigrationRunner()
-        runner.register(pkg)
-
-        store_1 = FakeDataStore(schema="platform")
-        store_2 = FakeDataStore(schema="platform")
-        await runner.apply_for_agent_schema(store_1)
-        await runner.apply_for_agent_schema(store_2)
-
-        key_1 = next(params for sql, params in _lock_calls(store_1) if "pg_advisory_lock" in sql)
-        key_2 = next(params for sql, params in _lock_calls(store_2) if "pg_advisory_lock" in sql)
-        assert key_1 == key_2
+        with pytest.raises(SessionRequiredError, match="DataStore"):
+            await runner.apply_for_agent_schema(store)
+        assert pool.method_calls == []
 
 
 class TestPackagesView:

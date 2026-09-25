@@ -51,6 +51,7 @@ collection[entity_id, "field"] = value  # set field
 from threetears.core.data import (
     DataStore, TableDef, ColumnDef, IndexDef, MigrationRunner,
 )
+from threetears.core.data.migrations import MigrationScope, PackageMigrations
 
 store = DataStore(agent_id=agent_id, registry=registry)
 
@@ -68,18 +69,22 @@ await store.create_table(TableDef(
 store["survey_responses"][response_id]            # full entity
 store["survey_responses"][response_id, "answer"]  # single field
 
-# Versioned schema migrations
-migrations = MigrationRunner(store)
+# Versioned schema migrations. A run holds the database-wide DDL lock -- one
+# migration per database at a time -- on ONE connection, so a body issues SQL
+# through the session it is given (execute / query), not through the store.
+pkg = PackageMigrations(name="surveys", scope=MigrationScope.AGENT)
 
-@migrations.version(1)
-async def v1(store):
-    await store.create_table(TableDef(...))
+@pkg.version(1)
+async def v1(session):
+    await session.execute("CREATE TABLE IF NOT EXISTS surveys (id UUID PRIMARY KEY)")
 
-@migrations.version(2)
-async def v2(store):
-    await store.execute("ALTER TABLE surveys ADD COLUMN email TEXT")
+@pkg.version(2)
+async def v2(session):
+    await session.execute("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS email TEXT")
 
-await store.run_migrations(migrations)
+runner = MigrationRunner()
+runner.register(pkg)
+await store.run_migrations(runner)  # pins one pooled connection for the whole run
 ```
 
 ### LangGraph agents with three-tier checkpointing

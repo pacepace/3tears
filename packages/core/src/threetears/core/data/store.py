@@ -11,6 +11,7 @@ from threetears.core.config import CoreConfig, DefaultCoreConfig
 from threetears.observe import get_logger, traced
 
 from threetears.core.data.collection_factory import create_dynamic_collection
+from threetears.core.data.migrations.session import ConnectionSession
 from threetears.core.data.schema import TableDef
 from threetears.core.data.sql_builder import build_create_index_sql, build_create_table_sql
 
@@ -139,20 +140,34 @@ class DataStore:
 
     @traced
     async def run_migrations(self, runner: MigrationRunner) -> int:
-        """run pending agent-scope migrations against this store's schema.
+        """run pending agent-scope migrations against this store's schema, on one connection.
 
-        convenience method that delegates to
-        :meth:`MigrationRunner.apply_for_agent_schema`. :class:`DataStore`
-        is constructed with an ``agent_id`` so its bound schema is the
-        per-agent schema; the runner's agent-scope entry point is the
-        only correct delegation target.
+        acquires ONE connection from the L3 backend and holds it for the whole
+        run, handing the runner a
+        :class:`~threetears.core.data.migrations.session.ConnectionSession`
+        over it. the run holds a session-level advisory lock -- the
+        database-wide DDL lock -- which lives on exactly one connection; this
+        store's own :meth:`execute` borrows a pooled connection per statement,
+        so the runner refuses the store itself. the acquired connection keeps
+        the pool's ``search_path``, which is how it is bound to the agent's
+        schema.
+
+        the L3 backend's ``acquire()`` must yield a real connection -- an
+        asyncpg pool's does. a backend whose acquired "connection" is not one
+        database session fails the run loudly when the lock's release finds
+        the lock not held.
 
         :param runner: migration runner with registered packages
         :ptype runner: MigrationRunner
         :return: number of migrations applied across all agent packages
         :rtype: int
+        :raises RuntimeError: when no L3 backend is configured
         """
-        result: int = await runner.apply_for_agent_schema(self)
+        l3_pool = self._registry.get_l3_pool("_raw")
+        if l3_pool is None:
+            raise RuntimeError("DataStore requires a configured L3 backend (CollectionRegistry.configure(l3_pool=...))")
+        async with l3_pool.acquire() as conn:
+            result: int = await runner.apply_for_agent_schema(ConnectionSession(conn))
         return result
 
     def __getitem__(self, table_name: str) -> BaseCollection[Any]:

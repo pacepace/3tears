@@ -1,9 +1,11 @@
 """
-fake DataStore stub for migration runner unit tests.
+fake migration session for migration runner unit tests.
 
 mirrors the execute/query surface used by MigrationRunner without
 requiring a real YugabyteDB connection. tracks applied rows in a
-simple in-memory list so idempotent-apply semantics can be asserted.
+simple in-memory list so idempotent-apply semantics can be asserted,
+and answers the database-wide DDL lock's statements the way one
+PostgreSQL session holding the lock alone would.
 """
 
 from __future__ import annotations
@@ -11,32 +13,52 @@ from __future__ import annotations
 from typing import Any
 
 
-# parity-exempt: subset shim for nats.js.KeyValue exposing only the get/put/create/update/delete surface KVLease + workspace tests exercise; full nats-py KeyValue carries history/watch/purge methods unrelated to KVLease
+# parity-with: threetears.core.data.migrations.session.MigrationSession
 class FakeDataStore:
     """
-    in-memory DataStore stub capturing executed SQL and emulating the
+    in-memory migration session capturing executed SQL and emulating the
     ``_schema_migrations`` bookkeeping contract used by MigrationRunner.
 
     :ivar executed: list of (sql, params) tuples for every execute call
+    :ivar queried: list of (sql, params) tuples for every query call
+    :ivar statements: list of (sql, params) tuples for every call of either
+        kind, in the order they were issued
     :ivar migrations_rows: list of applied migration row dicts
+    :ivar lock_holds: how many holds of the DDL lock this session has now
     :ivar fail_on: sql substring that, when present, triggers RuntimeError
     """
 
-    def __init__(self, fail_on: str | None = None, schema: str = "public") -> None:
+    def __init__(
+        self,
+        fail_on: str | None = None,
+        schema: str = "public",
+        database: str = "appdb",
+        lock_held_elsewhere: bool = False,
+    ) -> None:
         """
         initialize empty execution log and migration tracker.
 
         :param fail_on: SQL substring that triggers RuntimeError on match
         :ptype fail_on: str | None
-        :param schema: schema name returned by ``current_schema()`` so the
-            runner's advisory-lock keying can be exercised per-schema
+        :param schema: schema name returned by ``current_schema()``
         :ptype schema: str
+        :param database: database name returned by ``current_database()``,
+            which is what the DDL lock is keyed on
+        :ptype database: str
+        :param lock_held_elsewhere: answer every ``pg_try_advisory_lock`` with
+            false, as while another session holds the DDL lock
+        :ptype lock_held_elsewhere: bool
         """
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
+        self.queried: list[tuple[str, tuple[Any, ...]]] = []
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
         self.migrations_rows: list[dict[str, Any]] = []
         self.migrations_table_created = False
+        self.lock_holds = 0
         self._fail_on = fail_on
         self._schema = schema
+        self._database = database
+        self._lock_held_elsewhere = lock_held_elsewhere
         self._tables: set[str] = set()
         # monotonically increasing counter stamped as date_applied so
         # history ordering is deterministic in tests.
@@ -55,6 +77,7 @@ class FakeDataStore:
         :raises RuntimeError: if ``sql`` contains the fail_on substring
         """
         self.executed.append((sql, params))
+        self.statements.append((sql, params))
         if self._fail_on is not None and self._fail_on in sql:
             msg = f"fake store forced failure on sql matching '{self._fail_on}'"
             raise RuntimeError(msg)
@@ -100,8 +123,23 @@ class FakeDataStore:
         :return: list of row dictionaries
         :rtype: list[dict[str, Any]]
         """
+        self.queried.append((sql, params))
+        self.statements.append((sql, params))
         normalized = " ".join(sql.split()).upper()
         result: list[dict[str, Any]]
+        if "CURRENT_DATABASE()" in normalized:
+            result = [{"database_name": self._database}]
+            return result
+        if "PG_TRY_ADVISORY_LOCK" in normalized:
+            granted = not self._lock_held_elsewhere
+            self.lock_holds += int(granted)
+            result = [{"acquired": granted}]
+            return result
+        if "PG_ADVISORY_UNLOCK" in normalized:
+            released = self.lock_holds > 0
+            self.lock_holds -= int(released)
+            result = [{"released": released}]
+            return result
         if "CURRENT_SCHEMA()" in normalized:
             result = [{"schema_name": self._schema}]
             return result

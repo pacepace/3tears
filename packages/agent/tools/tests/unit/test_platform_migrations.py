@@ -14,6 +14,7 @@ import re
 from typing import Any
 
 import pytest
+from threetears.core.testing.migrations import uncontended_ddl_lock_rows
 
 from threetears.agent.tools.platform_migrations import (
     PACKAGE_NAME,
@@ -29,7 +30,7 @@ from threetears.core.data.migrations import (
 )
 
 
-# parity-exempt: in-memory DataStore for the agent-tools platform-scope migration runner unit test; identical execute+query subset shape as the agent-scope sibling fake
+# parity-with: threetears.core.data.migrations.session.MigrationSession
 class _FakeDataStore:
     """recording stand-in for :class:`DataStore`.
 
@@ -86,6 +87,9 @@ class _FakeDataStore:
         :return: list of row dicts
         :rtype: list[dict[str, Any]]
         """
+        lock_rows = uncontended_ddl_lock_rows(sql)
+        if lock_rows is not None:
+            return lock_rows
         normalized = " ".join(sql.split()).upper()
         # Matched on the STABLE part of the statement, not its column list. The
         # verbatim form stopped firing when MigrationRunner's query grew a
