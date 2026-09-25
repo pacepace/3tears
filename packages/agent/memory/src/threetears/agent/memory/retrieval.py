@@ -347,31 +347,30 @@ def _format_memory_context(
         # addressed the person by its own name and signed off with theirs, twice
         # in one conversation, until the person said so.
         #
-        # The header therefore says whose memory it might be AND how to read a
-        # name inside one, because the first without the second still leaves the
-        # agent guessing per memory.
+        # The header therefore says whose memory it might be AND what the
+        # agent's own name inside one means, because the first without the
+        # second still leaves the agent guessing per memory.
         lines.append(
-            "What you remember. Some of these are about the person you are talking with, "
-            "some are about you and your own work -- a name inside a memory means whoever "
-            "it names:"
+            "What you remember. Some memories are about the person you are talking with "
+            "and some are about you. Where a memory uses your name, it means you."
         )
         items = []
         for mem in memories:
             text, detailed = _get_display_text(mem, detail_threshold)
-            marker = " (detailed)" if detailed else ""
+            marker = " (in full)" if detailed else ""
             mem_id = str(mem["memory_id"])
-            items.append(f"- [mem:{mem_id}]{_written(mem, tz)} {text}{marker}")
+            items.append(f"- [memory:{mem_id}]{_written(mem, tz)} {text}{marker}")
         fenced.append((len(lines), items))
         lines.append("")
 
     if media_content:
         if lines:
             lines.append("")
-        lines.append("Relevant media context:")
+        lines.append("Files you have seen:")
         items = []
         for mc in media_content:
             text, detailed = _get_display_text(mc, detail_threshold)
-            marker = " (detailed)" if detailed else ""
+            marker = " (in full)" if detailed else ""
             content_id = str(mc["content_id"])
             items.append(f"- [media:{content_id}] {text}{marker}")
         fenced.append((len(lines), items))
@@ -380,7 +379,7 @@ def _format_memory_context(
     if deduped_chunks:
         if lines:
             lines.append("")
-        lines.append("Relevant document excerpts:")
+        lines.append("Passages from documents and past conversations:")
         # PULL-NOT-PUSH INVARIANT (Shard D D-02): chunk SUMMARIES are
         # pushed into the system prompt; chunk CONTENT is pulled via
         # the agent's chunk_recall(chunk_id) / memory_recall(memory_id,
@@ -444,26 +443,22 @@ def _format_memory_context(
                 if parent_summary:
                     if len(parent_summary) > _MAX_CHUNK_SUMMARY_CHARS:
                         parent_summary = parent_summary[: _MAX_CHUNK_SUMMARY_CHARS - 3] + "..."
-                    parent_anchor = f' (of memory {parent_id_str}: "{parent_summary}")'
+                    parent_anchor = f' (from [memory:{parent_id_str}]: "{parent_summary}")'
                 else:
-                    parent_anchor = f" (of memory {parent_id_str})"
-            # The recall-affordance parenthetical is intentional --
-            # without it the agent has no way to know it can pull the
-            # verbatim chunk content if needed.
-            items.append(
-                f"- [chunk:{chunk_id}{location}]{parent_anchor} {headline} "
-                f"(call chunk_recall('{chunk_id}') to read in full)"
-            )
+                    parent_anchor = f" (from [memory:{parent_id_str}])"
+            # How to read the whole passage is said once, in the footer: it
+            # is the block's own instruction, and a line inside the fence is
+            # material the agent is told not to take instructions from.
+            items.append(f"- [chunk:{chunk_id}{location}]{parent_anchor} {headline}")
         fenced.append((len(lines), items))
         lines.append("")
 
     if lines:
         lines.append("")
         lines.append(
-            "Items marked (detailed) contain full content above. For summary-only "
-            "memories or media, use memory_recall(<id>) / read the media URL. "
-            "Chunk headlines above are summary-only; call chunk_recall(<chunk_id>) "
-            "for the verbatim chunk content."
+            "A line marked (in full) is the whole of it. For any other line, "
+            "memory_recall(<id>) reads the whole memory, chunk_recall(<id>) the whole "
+            "passage, and memory_search(ids=[<id>]) opens a file."
         )
         tag = nonce_for("\n".join(item for _at, items in fenced for item in items))
         for at, items in fenced:

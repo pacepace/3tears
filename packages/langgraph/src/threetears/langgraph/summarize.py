@@ -35,16 +35,14 @@ __all__ = ["DEFAULT_SUMMARIZATION_PROMPT", "summarize_older_messages"]
 
 _logger = get_logger(__name__)
 
+#: No person is named for the voice: a caller summarizing an agent's own turns
+#: asks for the first person, and a default of third person would fight it.
 DEFAULT_SUMMARIZATION_PROMPT = (
-    "Summarize the conversation history below into a concise narrative that preserves:\n"
-    "- Key topics discussed and conclusions reached\n"
-    "- Important facts, names, numbers, and decisions\n"
-    "- The user's preferences and requests that are still relevant\n"
-    "- Any unresolved questions or ongoing tasks\n"
+    "Summarize the conversation below. The summary replaces these messages, so keep "
+    "everything needed to carry on: what was discussed and decided, names, numbers and "
+    "facts, what each person wants, and anything still open.\n"
     "\n"
-    "Write in third person past tense. Be concise but complete — the summary "
-    "replaces the original messages and the assistant will not have access to them. "
-    "Do not include greetings or filler."
+    "Write plain sentences in the past tense, not a list. Leave out greetings and small talk."
 )
 
 #: Hard cap on the returned summary length (characters). A summary that grows past
@@ -108,7 +106,7 @@ def _fallback_summary(messages: Sequence[BaseMessage]) -> str:
             if last:
                 parts.append(last + ".")
     if not parts:
-        return "Earlier conversation context was summarized but details are unavailable."
+        return "The earlier part of this conversation could not be summarized."
     return " ".join(parts[:20])  # Cap at 20 sentences.
 
 

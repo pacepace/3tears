@@ -86,19 +86,19 @@ _FETCH_PROVIDER_INSTANCE: Final[str] = "threetears.web_fetch"
 class WebFetchInput(WindowedInput):
     """Input for the web fetch tool."""
 
-    url: str = Field(description="URL to fetch and extract content from")
+    url: str = Field(description="The address of the page to read.")
     etag: str | None = Field(
         default=None,
         description=(
-            "ETag from a previous fetch of this URL. When given, the fetch is conditional: "
-            "if the page is unchanged the result says so instead of returning the body again."
+            "The ETag from an earlier fetch of this page. If the page has not changed, the "
+            "result says so instead of returning the page again."
         ),
     )
     last_modified: str | None = Field(
         default=None,
         description=(
-            "Last-Modified value from a previous fetch of this URL, echoed back verbatim. "
-            "Used with or instead of etag to make the fetch conditional."
+            "The Last-Modified value from an earlier fetch of this page, exactly as it was "
+            "given. Works like etag, with it or instead of it."
         ),
     )
 
@@ -296,7 +296,7 @@ class WebFetchTool(TearsTool):
         # the reason this reader was named in the task doc before it was written.
         readable = {EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED}
         if fetched.content is None or status not in readable:
-            message = f"no readable content extracted from {url} (extraction_status: {status})"
+            message = f"No readable text could be taken from {url}."
             return ToolResult(
                 success=False,
                 content=message,
@@ -311,7 +311,7 @@ class WebFetchTool(TearsTool):
             # and the caller reads the typed status off metadata either way.
             return ToolResult(
                 success=True,
-                content=f"{url} is unchanged since your copy; upstream confirmed it. Use the copy you hold.",
+                content=f"{url} is unchanged since your copy. Use the copy you have.",
                 metadata=_metadata(url, candidate_set),
                 error=None,
             )

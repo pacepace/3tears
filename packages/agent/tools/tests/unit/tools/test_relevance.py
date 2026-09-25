@@ -19,6 +19,7 @@ from threetears.agent.tools.relevance import (
     ToolRelevanceIndex,
     ToolSearchResult,
     create_tool_search_tool,
+    match_words,
 )
 
 
@@ -472,7 +473,7 @@ async def test_tool_search_hit_message_matches_next_round_description() -> None:
     result_text = await search_tool.ainvoke({"query": "send a message"})
 
     assert "now available to call" not in result_text
-    assert "NEXT reply" in result_text
+    assert "after this search returns" in result_text
     assert "session_send" in result_text
 
 
@@ -656,3 +657,52 @@ async def test_search_scored_on_empty_catalog_returns_empty() -> None:
     index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}), top_k=2)
 
     assert await index.search_scored([], "query") == []
+
+
+# ---------------------------------------------------------------------------
+# The word match: tool_search still finds a tool while the ranking is down
+# ---------------------------------------------------------------------------
+
+
+def _house_catalog() -> list[BaseTool]:
+    return [
+        _make_tool("web_search", "Search the web for current information."),
+        _make_tool("ha_call_service", "Turn a device in the house on or off, or set it."),
+        _make_tool("calculator", "Work out arithmetic."),
+    ]
+
+
+def test_match_words_ranks_by_how_many_words_match() -> None:
+    names = [t.name for t in match_words(_house_catalog(), "turn on the house fan")]
+    assert names == ["ha_call_service"]
+
+
+def test_match_words_reads_a_name_s_separators_as_spaces() -> None:
+    assert [t.name for t in match_words(_house_catalog(), "search")] == ["web_search"]
+
+
+def test_match_words_with_only_common_words_matches_nothing() -> None:
+    assert match_words(_house_catalog(), "what is the") == []
+
+
+async def test_a_failed_ranking_still_finds_tools_by_their_words() -> None:
+    """A consumer that binds only the pick and tool_search reaches nothing else while the embedder is down."""
+    tools = _house_catalog()
+    broken = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+
+    result = await broken.search_outcome(tools, "search the web")
+
+    assert [t.name for t in result.hits] == ["web_search"]
+    assert result.fallback_reason == "embedder_error"
+
+
+async def test_tool_search_hands_over_word_matches_when_the_ranking_fails() -> None:
+    tools = _house_catalog()
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(index=index, full_catalog_provider=lambda: tools, on_hit=hits.append)
+
+    result_text = await search_tool.ainvoke({"query": "search the web"})
+
+    assert [[t.name for t in h] for h in hits] == [["web_search"]]
+    assert "web_search" in result_text and "Tool search failed" not in result_text

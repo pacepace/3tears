@@ -206,35 +206,35 @@ class ScheduleCreateInput(BaseModel):
         description="One of: daily_at, every_n_hours, random_within_window, one_shot_at, cron, relative_delay, interval.",
     )
     schedule_config: dict[str, Any] = Field(
-        description="Type-specific config object; shape per schedule_type.",
+        description="When it fires. The keys for each schedule_type are in the tool description.",
     )
     skill_id: str | None = Field(
         default=None,
-        description="Optional [skill:<id>] or bare UUID to attach to this wake.",
+        description="Optional skill to use when it fires: a [skill:<id>] or its id.",
     )
     execution_mode: Literal["inline", "spawn"] = Field(
         default="inline",
-        description="'inline' fires in this conversation; 'spawn' creates a new conversation.",
+        description="'inline' wakes you in this conversation; 'spawn' starts a new conversation.",
     )
     missed_fire_policy: Literal["coalesce", "catch_up"] = Field(
         default="coalesce",
-        description="'coalesce' fires ONCE on backlog; 'catch_up' fires per missed tick.",
+        description="After missed times: 'coalesce' fires once, 'catch_up' fires once for each missed time.",
     )
     task_prompt: str | None = Field(
         default=None,
-        description="Optional per-fire prompt (max 4000 chars). Self-contained.",
+        description="Optional instructions for each wake, up to 4000 characters. Write them to stand on their own.",
     )
     name: str | None = Field(
         default=None,
-        description="Optional human-readable schedule name (max 256 chars).",
+        description="Optional name, up to 256 characters.",
     )
     context_from_schedule_id: str | None = Field(
         default=None,
-        description="Optional [schedule:<id>] whose last fire output is injected as context.",
+        description="Optional [schedule:<id>]. When this one fires, you are given that one's last output.",
     )
     include_conversation_history: bool = Field(
         default=True,
-        description="When true (default), the wake fires with this conversation's recent history so the agent continues the live thread. When false, the wake fires without conversation history (a self-directed run). Independent of the attached skill's persona setting.",
+        description="True (default): wake with this conversation's recent messages. False: wake without them.",
     )
 
 
@@ -252,16 +252,16 @@ class ScheduleUpdateInput(BaseModel):
     - ``clear_name=true`` clears the optional human-readable name.
     """
 
-    schedule_id: str = Field(description="[schedule:<id>] of the schedule to update.")
+    schedule_id: str = Field(description="The [schedule:<id>] to change.")
     schedule_type: _ScheduleTypeLiteral | None = None
     schedule_config: dict[str, Any] | None = None
     skill_id: str | None = Field(
         default=None,
-        description="New [skill:<uuid>] or bare UUID to attach. Omit to leave unchanged. To detach, pass detach_skill=true (do not pass both).",
+        description="A skill to attach: a [skill:<id>] or its id. To remove the skill, use detach_skill instead.",
     )
     detach_skill: bool = Field(
         default=False,
-        description="When true, clear the attached skill_id. Must not be combined with skill_id.",
+        description="True removes the attached skill. Do not also pass skill_id.",
     )
     execution_mode: Literal["inline", "spawn"] | None = None
     missed_fire_policy: Literal["coalesce", "catch_up"] | None = None
@@ -269,16 +269,16 @@ class ScheduleUpdateInput(BaseModel):
     name: str | None = None
     clear_name: bool = Field(
         default=False,
-        description="When true, clear the human-readable name. Must not be combined with name.",
+        description="True removes the name. Do not also pass name.",
     )
     context_from_schedule_id: str | None = None
     detach_context_from: bool = Field(
         default=False,
-        description="When true, clear context_from_schedule_id. Must not be combined with context_from_schedule_id.",
+        description="True removes context_from_schedule_id. Do not also pass context_from_schedule_id.",
     )
     include_conversation_history: bool | None = Field(
         default=None,
-        description="When set, change whether the wake fires with this conversation's recent history (true) or without it (false). Omit to leave unchanged.",
+        description="Change whether it wakes with this conversation's recent messages (true) or without them (false).",
     )
 
 
@@ -287,20 +287,20 @@ class ScheduleListInput(BaseModel):
 
     include_paused: bool = Field(
         default=True,
-        description="Include paused schedules (default true).",
+        description="Include paused schedules. Default true.",
     )
 
 
 class ScheduleIdInput(BaseModel):
     """Shared input for pause / resume actions."""
 
-    schedule_id: str = Field(description="[schedule:<id>] of the target schedule.")
+    schedule_id: str = Field(description="The [schedule:<id>].")
 
 
 class ScheduleDeleteInput(BaseModel):
     """Input schema for ``wake_schedule_delete``."""
 
-    schedule_id: str = Field(description="[schedule:<id>] of the schedule to delete.")
+    schedule_id: str = Field(description="The [schedule:<id>] to delete.")
 
 
 # ---------------------------------------------------------------------------
@@ -674,11 +674,12 @@ def load_wake_schedule_create_tool(
         return _format_schedule_line(entity, skill_name=skill_name)
 
     wake_schedule_create.description = (
-        "Schedule a wake in THIS conversation -- you'll be woken via the same loop as user messages.\n"
-        "- schedule_type + schedule_config: WHEN (cron, daily_at, interval, one_shot_at, ...)\n"
-        "- skill_id: optional attached skill loaded at fire time\n"
-        "- execution_mode 'inline' (this conv) vs 'spawn' (new conv)\n"
-        f"Returns [schedule:<id>]. Max {max_schedules_per_conversation} active schedules per conversation."
+        "Wake yourself in this conversation at a set time or on a repeat.\n"
+        "schedule_config keys for each schedule_type: daily_at {hour, minute, tz}; "
+        "every_n_hours {n}; random_within_window {start_hour, end_hour, tz, fires_per_day}; "
+        "one_shot_at {fire_at_iso}; cron {expr}; relative_delay {delay, e.g. '30m'}; "
+        "interval {seconds}.\n"
+        f"Returns [schedule:<id>]. At most {max_schedules_per_conversation} active schedules per conversation."
     )
 
     return [wake_schedule_create]
@@ -934,11 +935,9 @@ def load_wake_schedule_update_tool(
         return _format_schedule_line(entity, skill_name=skill_name)
 
     wake_schedule_update.description = (
-        "Edit a wake schedule in place. Pass only fields to change.\n"
-        "Attach a skill: pass skill_id=<uuid>. Detach: pass detach_skill=true.\n"
-        "Clear the name: pass clear_name=true. Clear context_from: pass detach_context_from=true.\n"
-        "Passing the attach value AND its detach flag together is rejected.\n"
-        "Returns the updated catalog line."
+        "Change a wake schedule. Pass only what changes. To remove a skill, name or "
+        "context_from, pass detach_skill, clear_name or detach_context_from, not the value "
+        "as well. Returns the schedule as it now stands."
     )
 
     return [wake_schedule_update]
@@ -1005,7 +1004,7 @@ def load_wake_schedule_list_tool(
         return "\n".join(lines)
 
     wake_schedule_list.description = (
-        "List wake schedules in THIS conversation. Returns [schedule:<id>] + name + type + next_fire + status."
+        "List the wake schedules in this conversation: id, name, type, next time and status."
     )
 
     return [wake_schedule_list]
@@ -1056,9 +1055,7 @@ def load_wake_schedule_pause_tool(
             return _tool_error("wake_schedule_pause", f"persist failed: {exc}")
         return f"Paused [schedule:{parsed}]."
 
-    wake_schedule_pause.description = (
-        "Pause a wake schedule. It stops firing until wake_schedule_resume. Status: active -> paused."
-    )
+    wake_schedule_pause.description = "Pause a wake schedule. It does not fire until wake_schedule_resume."
     return [wake_schedule_pause]
 
 
@@ -1168,11 +1165,9 @@ def load_wake_schedule_resume_tool(
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_resume", f"persist failed: {exc}")
-        return f"Resumed [schedule:{parsed}]; next_fire_at={next_fire_at.isoformat()}."
+        return f"Resumed [schedule:{parsed}]. Next fires at {next_fire_at.isoformat()}."
 
-    wake_schedule_resume.description = (
-        "Resume a paused wake schedule. Recomputes next_fire_at from now. Status: paused -> active."
-    )
+    wake_schedule_resume.description = "Resume a paused wake schedule. Its next time is counted from now."
     return [wake_schedule_resume]
 
 
@@ -1217,7 +1212,7 @@ def load_wake_schedule_delete_tool(
         return f"Deleted [schedule:{parsed}] ({entity.name or 'untitled'})."
 
     wake_schedule_delete.description = (
-        "Delete a wake schedule permanently. Fire history cascades. Use pause if you might want it back."
+        "Delete a wake schedule and its history for good. To keep it for later, use wake_schedule_pause."
     )
     return [wake_schedule_delete]
 
@@ -1282,13 +1277,10 @@ def load_wake_yield_tool(
             )
             return _tool_error("wake_yield", f"yield setter failed: {exc}")
         log.info("wake_yield fired")
-        return (
-            "yielded -- your most recent assistant message will be your final "
-            "output for this wake; the user's queued message processes next."
-        )
+        return "Wake yielded. Your last message ends it, and the person's waiting message is answered next."
 
     wake_yield.description = (
-        "Yield this wake so the user's queued message processes next.\n"
-        "Use ONLY when a user message is waiting and you can wrap up gracefully."
+        "End this wake now so the person's waiting message is answered next. "
+        "Use it only when a message from them is waiting."
     )
     return [wake_yield]

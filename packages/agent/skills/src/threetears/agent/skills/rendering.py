@@ -97,12 +97,12 @@ def render_skill_body_block(skill: AgentSkillEntity) -> str:
 
     Block shape (when ``skill.body`` is non-empty)::
 
-        ## Skill: <name>
-        <tags: [tag1, tag2]>
+        Follow the skill "<name>" for this task:
 
-        <body markdown>
+        <body>
 
-    The ``<tags: ...>`` line is omitted when ``skill.tags`` is empty.
+    Tags are for finding a skill in ``skill_list``; they are not rendered,
+    and a markdown heading in a prompt comes back out in what the model writes.
 
     Returns the empty string when ``skill.body`` is ``None`` (a pure
     tool-composition skill with no prose body). Callers decide what to
@@ -118,13 +118,7 @@ def render_skill_body_block(skill: AgentSkillEntity) -> str:
     if not body:
         return ""
 
-    header_lines = [f"## Skill: {skill.name}"]
-    tags = skill.tags
-    if tags:
-        tag_list = ", ".join(tags)
-        header_lines.append(f"<tags: [{tag_list}]>")
-    header = "\n".join(header_lines)
-    return f"{header}\n\n{body}"
+    return f'Follow the skill "{skill.name}" for this task:\n\n{body}'
 
 
 def compose_turn_context(
