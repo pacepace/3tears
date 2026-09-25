@@ -6,12 +6,12 @@ SQLAlchemy ``Table`` objects (the collections hand-roll their SQL and
 are not :class:`SchemaBackedCollection` subclasses, so there is no
 ``TableSchema`` single source of truth to delegate to -- see
 ``tables.py`` module docstring). A standalone factory risks drifting
-from the canonical v001/v002 migration DDL.
+from the schema the canonical migrations produce.
 
 This test pins the two against each other structurally. It:
 
-1. applies the v001 + v002 migrations to one fresh Postgres schema
-   (the migration-DDL truth);
+1. applies the full migration chain (v001-v003) to one fresh Postgres
+   schema (the migration-DDL truth);
 2. emits each factory's ``CREATE TABLE`` + ``CREATE INDEX`` DDL into a
    second fresh schema (the factory truth), via the SQLAlchemy
    PostgreSQL dialect compiler;
@@ -315,7 +315,7 @@ async def _apply_both_schemas(
 
     :param url: testcontainer Postgres URL
     :ptype url: str
-    :param migration_schema: schema receiving the v001/v002 migrations
+    :param migration_schema: schema receiving the full migration chain
     :ptype migration_schema: str
     :param factory_schema: schema receiving the factory-emitted DDL
     :ptype factory_schema: str

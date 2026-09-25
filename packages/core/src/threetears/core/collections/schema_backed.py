@@ -361,7 +361,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
             ops={"embedding": "vector_cosine_ops"},
             pg_with={"m": "16", "ef_construction": "64"},
         )
-        Index("idx_memories_search_vector", "search_vector", using="gin")
+        Index("idx_memories_tags", "tags", using="gin")
 
     The ``ops`` and ``pg_with`` arguments accept any
     :class:`collections.abc.Mapping` (typically ``dict``) and are

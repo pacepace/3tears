@@ -53,6 +53,68 @@ description holds the query's words, most words first, common words dropped,
 a name's separators read as spaces. The result still carries the
 `fallback_reason`, and `tool_search` hands the matches over as ordinary hits.
 
+### Keyword search no longer fails on YugabyteDB when the text says "or"
+
+YugabyteDB implements `USING gin` as `ybgin`, which serves a scan with exactly one required
+entry and refuses any other: `unsupported ybgin index scan ... cannot use more than one
+required scan entry`. The query fails; it does not degrade. `websearch_to_tsquery` turns an
+"or" or a leading "-" in ordinary text into OR / NOT, which need several entries, and the
+jsonb any-key (`?|`) and array-overlap (`&&`) filters need several too. Seen on cobalt-dev
+on 2026-09-25 as a hub ERROR on every ripple turn whose question contained "or": the agent
+answered without its keyword memory, and nothing else said so.
+
+- **New (minor):** `threetears.core.data.gin_filter(predicate)` renders such a predicate as
+  `(<predicate>) IS TRUE`, a row filter the planner cannot serve from the GIN index. The
+  result is identical on PostgreSQL. Precondition: the query's other conditions must narrow
+  the rows through indexed scope columns (`agent_id`, `user_id`); without them the filter
+  runs over a full table scan, which is correct and slow.
+- `agent-memory`: every keyword predicate (memories, media content, chunks: `search_by_fts`,
+  `hybrid_search`, `hybrid_search_within_memory`) and the `tags_any` scope filter go through
+  it.
+- `conversations`: `ConversationsCollection.search` keeps the user's OR / NOT / phrase
+  syntax and filters with it.
+- `agent-skills`: `list_for_user` and `count_for_user` filter the typed query and the tag
+  overlap through it, from one shared builder so the count cannot drift from the list.
+- **GIN indexes nothing reads any more are dropped** (`DROP INDEX IF EXISTS`, so a schema
+  missing one still migrates):
+  - `agent-memory` v027: the `search_vector` indexes on `memories`, `media_content` and
+    `memory_chunks`, both the v022 names and the v005-v007 duplicates of them.
+    `idx_memories_tags` stays; `@>` containment is served by it.
+  - `agent-skills` v003: `idx_skills_search_vector` and `idx_skills_tags`.
+  - `conversations` v010: `idx_conversations_search_vector`.
+- A repo enforcement test refuses any SQL literal in package source that uses a shape
+  YugabyteDB's GIN index refuses, outside `gin_filter`: `?|`, `&&`, and an `@@` whose query
+  side is not `plainto_tsquery` / `phraseto_tsquery`, in either operand order. `?&`, `?`
+  and `@>` are served by the index, and array `<@` never uses it, so all four are left
+  alone. `pg_trgm` similarity (`name %
+  $n`) is refused too, but its `%` cannot be told apart from other uses of `%` in a string,
+  so the guard does not look for it; no package uses it.
+- `core`: `add_index` now drops an invalid index of the same name before its `CREATE INDEX
+  IF NOT EXISTS`. Migrations run outside a transaction, where YugabyteDB builds an index on
+  a populated table online; a build that fails there leaves the index with `indisvalid =
+  false`, and `IF NOT EXISTS` used to accept that leftover as present. The rebuild logs a
+  WARNING naming the index, since on a large table it is a long online build and a UNIQUE
+  index starts enforcing only when it lands. A valid index is left alone, so replay is
+  still a no-op.
+
+The refused and served shapes were measured on YugabyteDB with the GIN index forced by plan
+hint, not taken from documentation; `scripts/probe-ybgin-shapes.py --dsn <yugabyte>`
+re-measures them and exits non-zero on any shape that moved. The old SQL of the memory,
+media and conversation methods fails with the production error under the same hint, and the
+SQL they now generate passes.
+
+**Consumers:** no consumer repo writes a full-text `@@`, `?|` or `&&` predicate of its own,
+so nothing changes at a call site. identity-core's principal search uses `pg_trgm`
+similarity, but only ORed with `ILIKE`, and YugabyteDB cannot use a GIN index for that OR at
+all, so it scans the table and is not refused. A bare `%` would be. A consumer that squashes
+these migrations into its own schema file must stop creating the dropped indexes there.
+
+**Deploy and rollback:** no deploy order is needed; the migrations run at the next start of
+whatever applies them. To roll back to 0.52.x, leave the indexes dropped. The migration runner
+accepts a ledger row newer than the code (a staged rollout depends on it), and 0.52.x's
+unwrapped keyword search then scans the rows its scope columns select instead of failing.
+Recreating the indexes on a rollback brings the `unsupported ybgin index scan` error back.
+
 ## v0.52.1 -- unreleased
 
 ### A query's own error is no longer replaced by asyncpg's pool-release race
