@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.53.0 -- unreleased
+## v0.53.0 -- 2026-09-25
 
 ### One migration per database at a time: the database-wide DDL lock
 
@@ -213,7 +213,7 @@ accepts a ledger row newer than the code (a staged rollout depends on it), and 0
 unwrapped keyword search then scans the rows its scope columns select instead of failing.
 Recreating the indexes on a rollback brings the `unsupported ybgin index scan` error back.
 
-## v0.52.1 -- unreleased
+## v0.52.1 -- 2026-09-25
 
 ### A query's own error is no longer replaced by asyncpg's pool-release race
 
