@@ -18,9 +18,10 @@ hint, these shapes are refused:
 - ``pg_trgm`` similarity, ``name % $n``, over a ``gin_trgm_ops`` index.
 
 These are served by the index as usual and need nothing: ``@@ plainto_tsquery(...)`` and
-``@@ phraseto_tsquery(...)``, jsonb all-keys ``?&``, ``?``, containment ``@>`` / ``<@``, and
-``ILIKE`` over a ``gin_trgm_ops`` index.
-``scripts/probe-ybgin-shapes.py`` re-measures both lists against a live YugabyteDB.
+``@@ phraseto_tsquery(...)``, jsonb all-keys ``?&``, ``?``, containment ``@>``, and ``ILIKE``
+over a ``gin_trgm_ops`` index. Array ``<@`` is neither: the planner never uses the GIN index
+for it, so it scans the table and needs nothing either.
+``scripts/probe-ybgin-shapes.py`` re-measures all three against a live YugabyteDB.
 
 :func:`gin_filter` wraps a refused shape in a boolean test. The planner cannot match
 ``(expr) IS TRUE`` to an index, so the predicate is evaluated against the rows the query's

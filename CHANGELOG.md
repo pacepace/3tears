@@ -84,15 +84,18 @@ answered without its keyword memory, and nothing else said so.
   - `conversations` v010: `idx_conversations_search_vector`.
 - A repo enforcement test refuses any SQL literal in package source that uses a shape
   YugabyteDB's GIN index refuses, outside `gin_filter`: `?|`, `&&`, and an `@@` whose query
-  side is not `plainto_tsquery` / `phraseto_tsquery`, in either operand order. `?&`, `?`,
-  `@>` and `<@` are served by the index and are left alone. `pg_trgm` similarity (`name %
+  side is not `plainto_tsquery` / `phraseto_tsquery`, in either operand order. `?&`, `?`
+  and `@>` are served by the index, and array `<@` never uses it, so all four are left
+  alone. `pg_trgm` similarity (`name %
   $n`) is refused too, but its `%` cannot be told apart from other uses of `%` in a string,
   so the guard does not look for it; no package uses it.
 - `core`: `add_index` now drops an invalid index of the same name before its `CREATE INDEX
   IF NOT EXISTS`. Migrations run outside a transaction, where YugabyteDB builds an index on
   a populated table online; a build that fails there leaves the index with `indisvalid =
-  false`, and `IF NOT EXISTS` used to accept that leftover as present. A valid index is
-  left alone, so replay is still a no-op.
+  false`, and `IF NOT EXISTS` used to accept that leftover as present. The rebuild logs a
+  WARNING naming the index, since on a large table it is a long online build and a UNIQUE
+  index starts enforcing only when it lands. A valid index is left alone, so replay is
+  still a no-op.
 
 The refused and served shapes were measured on YugabyteDB with the GIN index forced by plan
 hint, not taken from documentation; `scripts/probe-ybgin-shapes.py --dsn <yugabyte>`

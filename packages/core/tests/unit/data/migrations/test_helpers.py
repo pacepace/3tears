@@ -24,6 +24,9 @@ every test uses :class:`FakeDataStore` so the suite stays under the
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 import pytest
 
 from threetears.core.data.migrations.helpers import (
@@ -355,19 +358,49 @@ class TestAddPartitionColumn:
 # ---------------------------------------------------------------------------
 
 
+class _InvalidLeftoverStore(FakeDataStore):
+    """store whose invalid-index probe finds one row, as after a failed online build."""
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        """
+        answer the invalid-index probe with one row; defer everything else to the fake.
+
+        :param sql: SQL statement text
+        :ptype sql: str
+        :param params: positional statement parameters
+        :ptype params: Any
+        :return: status tag
+        :rtype: str
+        """
+        result = await super().execute(sql, *params)
+        if "NOT i.indisvalid" in sql:
+            result = "SELECT 1"
+        return result
+
+
 class TestAddIndex:
     """``add_index`` drops an invalid leftover of the same name, then ``CREATE INDEX IF NOT EXISTS``."""
 
-    async def test_drops_an_invalid_index_of_the_same_name_before_creating(self) -> None:
-        """the invalid-index drop is its own statement and runs first."""
+    async def test_a_valid_or_absent_index_is_probed_and_not_dropped(self) -> None:
+        """the probe reports no invalid row, so no DROP runs before the create."""
         store = FakeDataStore()
         await add_index(store, table="t", name="idx_t_c", columns=("c",), schema="s")
-        assert len(store.executed) == 2
-        drop, create = store.executed[0][0], store.executed[1][0]
-        assert "NOT i.indisvalid" in drop
-        assert "to_regclass('s.idx_t_c')" in drop
-        assert "DROP INDEX s.idx_t_c" in drop
-        assert "CREATE INDEX IF NOT EXISTS idx_t_c ON s.t" in create
+        statements = [sql for sql, _ in store.executed]
+        assert len(statements) == 2
+        assert "NOT i.indisvalid" in statements[0]
+        assert "to_regclass('s.idx_t_c')" in statements[0]
+        assert not any(sql.startswith("DROP INDEX") for sql in statements)
+        assert "CREATE INDEX IF NOT EXISTS idx_t_c ON s.t" in statements[1]
+
+    async def test_an_invalid_leftover_is_logged_dropped_then_created(self, caplog: pytest.LogCaptureFixture) -> None:
+        """a probe that finds an invalid index drops it, says so at WARNING, then creates."""
+        store = _InvalidLeftoverStore()
+        with caplog.at_level(logging.WARNING, logger="threetears.core.data.migrations.helpers"):
+            await add_index(store, table="t", name="idx_t_c", columns=("c",), schema="s")
+        statements = [sql for sql, _ in store.executed]
+        assert statements[1] == "DROP INDEX s.idx_t_c"
+        assert "CREATE INDEX IF NOT EXISTS idx_t_c ON s.t" in statements[2]
+        assert any("s.idx_t_c" in r.getMessage() and "invalid" in r.getMessage() for r in caplog.records)
 
     async def test_emits_create_index_if_not_exists(self) -> None:
         """idempotency clause present."""

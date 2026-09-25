@@ -9,8 +9,10 @@ with the next YugabyteDB release. This re-measures it.
 
 It builds a scratch schema with one table carrying a GIN index on a ``tsvector``, a ``jsonb``
 and a ``text[]`` column, and a ``pg_trgm`` trigram GIN index on its text, then runs each shape with a ``pg_hint_plan`` hint forcing that GIN
-index -- the plan a large table gets without being asked. Every shape is run as written and,
-for the refused ones, again through ``gin_filter``. The wrapped form must succeed and return
+index -- the plan a large table gets without being asked. The plan is read first: a shape whose
+plan does not name the index says nothing about ybgin (the hint was not applied, or the
+planner cannot use the index for that operator at all, which the shape declares). Every shape
+is then run as written and, for the refused ones, again through ``gin_filter``. The wrapped form must succeed and return
 the same rows as an unindexed scan. The schema is dropped at the end.
 
 Exit status is 0 when every shape behaves as the guard assumes, 1 otherwise; each mismatch
@@ -51,6 +53,9 @@ class _Shape:
     :ptype arg: object
     :param refused: whether ybgin is expected to refuse it
     :ptype refused: bool
+    :param indexable: whether the planner can read the GIN index for it at all; a shape
+        ybgin cannot serve and does not refuse is planned as a table scan, hint or no hint
+    :ptype indexable: bool
     """
 
     label: str
@@ -58,6 +63,7 @@ class _Shape:
     predicate: str
     arg: object
     refused: bool
+    indexable: bool = True
 
 
 _SHAPES = (
@@ -81,7 +87,7 @@ _SHAPES = (
     _Shape("jsonb ? one key", "probe_tags", "tags ? $1", "a", False),
     _Shape("jsonb @>", "probe_tags", "tags @> $1::jsonb", '["a"]', False),
     _Shape("array @> two elements", "probe_labels", "labels @> $1", ["a", "b"], False),
-    _Shape("array <@", "probe_labels", "labels <@ $1", ["a", "b", "c"], False),
+    _Shape("array <@", "probe_labels", "labels <@ $1", ["a", "b", "c"], False, indexable=False),
     _Shape("array && one element", "probe_labels", "labels && $1", ["a"], False),
     _Shape("trigram similarity %", "probe_trgm", "body % $1", "biuld and pubish the audiense", True),
     _Shape("trigram ILIKE", "probe_trgm", "body ILIKE $1", "%publish%", False),
@@ -105,6 +111,29 @@ async def _ids(conn: asyncpg.Connection, sql: str, arg: object) -> tuple[set[int
     except asyncpg.PostgresError as exc:
         return None, str(exc).splitlines()[0]
     return {row["id"] for row in rows}, ""
+
+
+async def _plan_names_index(conn: asyncpg.Connection, sql: str, arg: object, index: str) -> bool:
+    """say whether the plan for a hinted query reads the index the hint names.
+
+    a refused shape fails at execution, not at planning, so its plan is still readable. a
+    plan that does not name the index means the hint was not applied (``pg_hint_plan``
+    inactive, or the hint malformed), and then neither "refused" nor "served" says anything
+    about ybgin.
+
+    :param conn: connection with ``search_path`` on the scratch schema
+    :ptype conn: asyncpg.Connection
+    :param sql: hinted query selecting ``id``
+    :ptype sql: str
+    :param arg: value bound to ``$1``
+    :ptype arg: object
+    :param index: index the hint forces
+    :ptype index: str
+    :return: whether any plan line names the index
+    :rtype: bool
+    """
+    rows = await conn.fetch(f"EXPLAIN {sql}", arg)
+    return any(index in row[0] for row in rows)
 
 
 async def _probe(dsn: str) -> list[str]:
@@ -143,7 +172,20 @@ async def _probe(dsn: str) -> list[str]:
         )
         for shape in _SHAPES:
             hint = f"/*+ IndexScan(probe {shape.index}) */ "
-            raw, error = await _ids(conn, f"{hint}SELECT id FROM probe WHERE {shape.predicate}", shape.arg)
+            hinted = f"{hint}SELECT id FROM probe WHERE {shape.predicate}"
+            plan_reads_index = await _plan_names_index(conn, hinted, shape.arg, shape.index)
+            if plan_reads_index != shape.indexable:
+                expected_plan = "read" if shape.indexable else "never read"
+                mismatches.append(
+                    f"{shape.label}: expected the plan to {expected_plan} {shape.index}; "
+                    "if every shape says this, pg_hint_plan is not active on the target"
+                )
+                print(f"{'plan?':8} {shape.label}")
+                continue
+            if not shape.indexable:
+                print(f"{'scans':8} {shape.label}")
+                continue
+            raw, error = await _ids(conn, hinted, shape.arg)
             if (raw is None) != shape.refused:
                 expected = "refused" if shape.refused else "served"
                 mismatches.append(f"{shape.label}: expected {expected}, got {error or 'served'}")

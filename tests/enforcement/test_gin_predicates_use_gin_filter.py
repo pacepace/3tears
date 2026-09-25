@@ -17,7 +17,9 @@ GIN index forced by plan hint; ``scripts/probe-ybgin-shapes.py`` re-runs that me
   the reversed ``<tsquery> @@ <column>`` order alike; ``?|`` (jsonb any-key); ``&&`` (array
   overlap) with more than one element, which a literal cannot rule out.
 - SERVED: ``@@ plainto_tsquery(...)`` and ``@@ phraseto_tsquery(...)`` (AND / phrase),
-  ``?&`` (all-keys), ``?``, ``@>`` and ``<@``.
+  ``?&`` (all-keys), ``?`` and ``@>``.
+- NEVER INDEXED: array ``<@``. The planner will not read the GIN index for it, so it scans
+  and cannot be refused.
 
 So a string literal fails the guard when it contains ``?|`` or ``&&``, or an ``@@`` that is
 not against ``plainto_tsquery`` / ``phraseto_tsquery``, and it is not the argument of a
