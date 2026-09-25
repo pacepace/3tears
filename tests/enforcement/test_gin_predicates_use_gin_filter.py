@@ -25,7 +25,9 @@ not against ``plainto_tsquery`` / ``phraseto_tsquery``, and it is not the argume
 skipped (``results?|outputs?`` is a regex alternation, not an operator).
 
 What it cannot see: a predicate assembled from fragments that are each innocent on their
-own, and SQL outside ``packages/*/src``. Static parsing only -- no imports executed, no
+own, SQL outside ``packages/*/src``, and ``pg_trgm`` similarity (``name % $n``), which
+YugabyteDB also refuses but whose ``%`` cannot be told from a format specifier, a modulo or a
+LIKE wildcard in a string literal. No package here uses trigram similarity. Static parsing only -- no imports executed, no
 network -- consistent with the rest of ``tests/enforcement``.
 """
 

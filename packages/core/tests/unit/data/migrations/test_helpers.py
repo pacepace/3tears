@@ -356,7 +356,18 @@ class TestAddPartitionColumn:
 
 
 class TestAddIndex:
-    """``add_index`` is a thin ``CREATE INDEX IF NOT EXISTS`` wrapper."""
+    """``add_index`` drops an invalid leftover of the same name, then ``CREATE INDEX IF NOT EXISTS``."""
+
+    async def test_drops_an_invalid_index_of_the_same_name_before_creating(self) -> None:
+        """the invalid-index drop is its own statement and runs first."""
+        store = FakeDataStore()
+        await add_index(store, table="t", name="idx_t_c", columns=("c",), schema="s")
+        assert len(store.executed) == 2
+        drop, create = store.executed[0][0], store.executed[1][0]
+        assert "NOT i.indisvalid" in drop
+        assert "to_regclass('s.idx_t_c')" in drop
+        assert "DROP INDEX s.idx_t_c" in drop
+        assert "CREATE INDEX IF NOT EXISTS idx_t_c ON s.t" in create
 
     async def test_emits_create_index_if_not_exists(self) -> None:
         """idempotency clause present."""
@@ -367,7 +378,7 @@ class TestAddIndex:
             name="idx_t_c",
             columns=("c",),
         )
-        sql = store.executed[0][0]
+        sql = store.executed[-1][0]
         assert "CREATE INDEX IF NOT EXISTS" in sql
         assert "idx_t_c" in sql
         assert "(c)" in sql
@@ -382,7 +393,7 @@ class TestAddIndex:
             columns=("c",),
             unique=True,
         )
-        sql = store.executed[0][0]
+        sql = store.executed[-1][0]
         assert "CREATE UNIQUE INDEX IF NOT EXISTS" in sql
 
     async def test_partial_index_carries_where(self) -> None:
@@ -395,7 +406,7 @@ class TestAddIndex:
             columns=("c",),
             where="status = 'active'",
         )
-        sql = store.executed[0][0]
+        sql = store.executed[-1][0]
         assert "WHERE" in sql
         assert "status = 'active'" in sql
 

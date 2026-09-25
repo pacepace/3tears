@@ -8,7 +8,7 @@ measured, not read from documentation, and a claim about a database's planner ca
 with the next YugabyteDB release. This re-measures it.
 
 It builds a scratch schema with one table carrying a GIN index on a ``tsvector``, a ``jsonb``
-and a ``text[]`` column, then runs each shape with a ``pg_hint_plan`` hint forcing that GIN
+and a ``text[]`` column, and a ``pg_trgm`` trigram GIN index on its text, then runs each shape with a ``pg_hint_plan`` hint forcing that GIN
 index -- the plan a large table gets without being asked. Every shape is run as written and,
 for the refused ones, again through ``gin_filter``. The wrapped form must succeed and return
 the same rows as an unindexed scan. The schema is dropped at the end.
@@ -83,6 +83,8 @@ _SHAPES = (
     _Shape("array @> two elements", "probe_labels", "labels @> $1", ["a", "b"], False),
     _Shape("array <@", "probe_labels", "labels <@ $1", ["a", "b", "c"], False),
     _Shape("array && one element", "probe_labels", "labels && $1", ["a"], False),
+    _Shape("trigram similarity %", "probe_trgm", "body % $1", "biuld and pubish the audiense", True),
+    _Shape("trigram ILIKE", "probe_trgm", "body ILIKE $1", "%publish%", False),
 )
 
 
@@ -126,6 +128,13 @@ async def _probe(dsn: str) -> list[str]:
         await conn.execute("CREATE INDEX probe_sv ON probe USING gin (sv)")
         await conn.execute("CREATE INDEX probe_tags ON probe USING gin (tags)")
         await conn.execute("CREATE INDEX probe_labels ON probe USING gin (labels)")
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        trgm_schema = await conn.fetchval(
+            "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace "
+            "WHERE e.extname = 'pg_trgm'"
+        )
+        await conn.execute(f'SET search_path TO "{schema}", "{trgm_schema}"')
+        await conn.execute(f'CREATE INDEX probe_trgm ON probe USING gin (body "{trgm_schema}".gin_trgm_ops)')
         await conn.execute(
             "INSERT INTO probe VALUES "
             """(1, 'build and publish the audience now', '["a","b"]', '{a,b}'), """

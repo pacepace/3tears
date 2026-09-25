@@ -38,7 +38,14 @@ answered without its keyword memory, and nothing else said so.
 - A repo enforcement test refuses any SQL literal in package source that uses a shape
   YugabyteDB's GIN index refuses, outside `gin_filter`: `?|`, `&&`, and an `@@` whose query
   side is not `plainto_tsquery` / `phraseto_tsquery`, in either operand order. `?&`, `?`,
-  `@>` and `<@` are served by the index and are left alone.
+  `@>` and `<@` are served by the index and are left alone. `pg_trgm` similarity (`name %
+  $n`) is refused too, but its `%` cannot be told apart from other uses of `%` in a string,
+  so the guard does not look for it; no package uses it.
+- `core`: `add_index` now drops an invalid index of the same name before its `CREATE INDEX
+  IF NOT EXISTS`. Migrations run outside a transaction, where YugabyteDB builds an index on
+  a populated table online; a build that fails there leaves the index with `indisvalid =
+  false`, and `IF NOT EXISTS` used to accept that leftover as present. A valid index is
+  left alone, so replay is still a no-op.
 
 The refused and served shapes were measured on YugabyteDB with the GIN index forced by plan
 hint, not taken from documentation; `scripts/probe-ybgin-shapes.py --dsn <yugabyte>`
@@ -46,9 +53,11 @@ re-measures them and exits non-zero on any shape that moved. The old SQL of the 
 media and conversation methods fails with the production error under the same hint, and the
 SQL they now generate passes.
 
-**Consumers:** no consumer repo writes its own multi-entry GIN SQL, so nothing changes at a
-call site. A consumer that squashes these migrations into its own schema file must stop
-creating the dropped indexes there.
+**Consumers:** no consumer repo writes a full-text `@@`, `?|` or `&&` predicate of its own,
+so nothing changes at a call site. identity-core's principal search uses `pg_trgm`
+similarity, but only ORed with `ILIKE`, and YugabyteDB cannot use a GIN index for that OR at
+all, so it scans the table and is not refused. A bare `%` would be. A consumer that squashes
+these migrations into its own schema file must stop creating the dropped indexes there.
 
 ## v0.52.1 -- unreleased
 

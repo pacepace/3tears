@@ -853,7 +853,17 @@ async def add_index(
     schema: str | None = None,
 ) -> None:
     """
-    create an index using ``CREATE INDEX IF NOT EXISTS`` for idempotency.
+    create an index using ``CREATE INDEX IF NOT EXISTS``, rebuilding an invalid one of that name.
+
+    migrations run outside a transaction, where YugabyteDB builds an index on a
+    populated table online. a build that fails there (a UNIQUE index over
+    duplicate rows, a cancelled statement) leaves the index behind with
+    ``pg_index.indisvalid = false``: the planner never reads it and a UNIQUE one
+    enforces nothing. ``CREATE INDEX IF NOT EXISTS`` treats that leftover as
+    present and reports success, so a replay would record the migration applied
+    over it. an invalid index of this name is therefore dropped first, in its
+    own statement, and the create builds it again. a valid index is left alone,
+    so replay stays a no-op.
 
     :param store: migration-time store
     :ptype store: MigrationStore
@@ -874,9 +884,17 @@ async def add_index(
     :rtype: None
     """
     qualified = _qualify(table, schema)
+    qualified_index = _qualify(name, schema)
     unique_clause = "UNIQUE " if unique else ""
     columns_csv = ", ".join(columns)
     where_clause = f" WHERE {where}" if where else ""
+    drop_invalid_sql = (
+        "DO $$ BEGIN "
+        "IF EXISTS (SELECT 1 FROM pg_index i "
+        f"WHERE i.indexrelid = to_regclass('{qualified_index}') AND NOT i.indisvalid) THEN "
+        f"DROP INDEX {qualified_index}; "
+        "END IF; END $$"
+    )
     sql = f"CREATE {unique_clause}INDEX IF NOT EXISTS {name} ON {qualified} ({columns_csv}){where_clause}"
     log.info(
         "migration helper: add index %s on %s (%s)%s",
@@ -885,4 +903,5 @@ async def add_index(
         columns_csv,
         " (partial)" if where else "",
     )
+    await store.execute(drop_invalid_sql)
     await store.execute(sql)
