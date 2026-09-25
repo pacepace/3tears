@@ -19,10 +19,13 @@ structural here rather than left to call sites:
    empty allow-list into a full-corpus read. the same holds for empty tag
    tuples. :func:`scope_matches_nothing` is that decision, named.
 
-predicates ride columns and an index that already shipped: ``tags`` (v025,
-``idx_memories_tags`` GIN) and the primary key. ``metadata`` is deliberately
-not scoped in v1 -- it has no GIN index, so a containment predicate would
-seq-scan, and adding the index is a migration this change does not need.
+predicates ride columns that already shipped: ``tags`` (v025) and the primary
+key. the any-tag test ``tags ?| $n`` goes through
+:func:`threetears.core.data.gin.gin_filter`, because YugabyteDB's GIN index
+refuses a multi-key lookup outright; it filters the rows the identity columns
+already narrowed to, so it does not read ``idx_memories_tags``. ``metadata``
+is deliberately not scoped in v1 -- it has no GIN index, and a containment
+predicate over it adds nothing a caller needs yet.
 """
 
 from __future__ import annotations

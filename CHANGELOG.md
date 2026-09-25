@@ -18,21 +18,37 @@ answered without its keyword memory, and nothing else said so.
 
 - **New (minor):** `threetears.core.data.gin_filter(predicate)` renders such a predicate as
   `(<predicate>) IS TRUE`, a row filter the planner cannot serve from the GIN index. The
-  query's scope columns narrow the rows as before, and the result is identical on
-  PostgreSQL.
+  result is identical on PostgreSQL. Precondition: the query's other conditions must narrow
+  the rows through indexed scope columns (`agent_id`, `user_id`); without them the filter
+  runs over a full table scan, which is correct and slow.
 - `agent-memory`: every keyword predicate (memories, media content, chunks: `search_by_fts`,
   `hybrid_search`, `hybrid_search_within_memory`) and the `tags_any` scope filter go through
   it.
 - `conversations`: `ConversationsCollection.search` keeps the user's OR / NOT / phrase
   syntax and filters with it.
 - `agent-skills`: `list_for_user` and `count_for_user` filter the typed query and the tag
-  overlap through it.
-- A repo enforcement test refuses any SQL literal in package source that uses `@@
-  websearch_to_tsquery`, `@@ to_tsquery`, `?|`, `?&` or `&&` outside `gin_filter`.
+  overlap through it, from one shared builder so the count cannot drift from the list.
+- **GIN indexes nothing reads any more are dropped** (`DROP INDEX IF EXISTS`, so a schema
+  missing one still migrates):
+  - `agent-memory` v027: the `search_vector` indexes on `memories`, `media_content` and
+    `memory_chunks`, both the v022 names and the v005-v007 duplicates of them.
+    `idx_memories_tags` stays; `@>` containment is served by it.
+  - `agent-skills` v003: `idx_skills_search_vector` and `idx_skills_tags`.
+  - `conversations` v010: `idx_conversations_search_vector`.
+- A repo enforcement test refuses any SQL literal in package source that uses a shape
+  YugabyteDB's GIN index refuses, outside `gin_filter`: `?|`, `&&`, and an `@@` whose query
+  side is not `plainto_tsquery` / `phraseto_tsquery`, in either operand order. `?&`, `?`,
+  `@>` and `<@` are served by the index and are left alone.
 
-Proven on YugabyteDB against the platform's real memory, media and conversation tables with
-the GIN index forced by plan hint: the old SQL fails with the production error, and the
-SQL the fixed methods generate passes. Semantics on PostgreSQL are unchanged.
+The refused and served shapes were measured on YugabyteDB with the GIN index forced by plan
+hint, not taken from documentation; `scripts/probe-ybgin-shapes.py --dsn <yugabyte>`
+re-measures them and exits non-zero on any shape that moved. The old SQL of the memory,
+media and conversation methods fails with the production error under the same hint, and the
+SQL they now generate passes.
+
+**Consumers:** no consumer repo writes its own multi-entry GIN SQL, so nothing changes at a
+call site. A consumer that squashes these migrations into its own schema file must stop
+creating the dropped indexes there.
 
 ## v0.52.1 -- unreleased
 

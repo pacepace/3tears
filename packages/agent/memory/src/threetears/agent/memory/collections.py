@@ -730,13 +730,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 "customer_id",
                 "user_id",
             ),
-            # v0.8.1: GIN over the trigger-maintained ``search_vector``
-            # column drives FTS path on memories.
-            SchemaIndex(
-                "idx_memories_search_vector",
-                "search_vector",
-                using="gin",
-            ),
+            # no GIN over ``search_vector``: v027 dropped it. the keyword
+            # predicate goes through ``gin_filter`` (ybgin refuses a
+            # multi-entry scan), so the index had no reader.
             # v0.8.1: HNSW vector-similarity index with the
             # ``vector_cosine_ops`` opclass; ``m`` / ``ef_construction``
             # parameters mirror prod (upstream alembic). these are
@@ -2294,13 +2290,9 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                 "agent_id",
                 "user_id",
             ),
-            # v0.8.1: GIN over the trigger-maintained ``search_vector``
-            # column drives the FTS half of the hybrid-search path.
-            SchemaIndex(
-                "idx_media_content_search_vector",
-                "search_vector",
-                using="gin",
-            ),
+            # no GIN over ``search_vector``: v027 dropped it. the keyword
+            # predicate goes through ``gin_filter`` (ybgin refuses a
+            # multi-entry scan), so the index had no reader.
             # v0.8.1: HNSW vector-similarity index with the
             # ``vector_cosine_ops`` opclass. Prod does NOT carry a
             # ``WITH`` clause here (the index was built before the
@@ -2839,13 +2831,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 "agent_id",
                 "user_id",
             ),
-            # v0.8.1: GIN over the trigger-maintained ``search_vector``
-            # column drives the FTS half of chunks hybrid search.
-            SchemaIndex(
-                "idx_memory_chunks_search_vector",
-                "search_vector",
-                using="gin",
-            ),
+            # no GIN over ``search_vector``: v027 dropped it. the keyword
+            # predicate goes through ``gin_filter`` (ybgin refuses a
+            # multi-entry scan), so the index had no reader.
             # v0.8.1: HNSW vector-similarity index with
             # ``vector_cosine_ops``. Prod does NOT carry a ``WITH``
             # clause here (mirror of ``ix_media_content_embedding``).

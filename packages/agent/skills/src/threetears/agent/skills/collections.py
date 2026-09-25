@@ -26,6 +26,7 @@ not benefit from L1 row caching -- the row cache still serves
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar
 from uuid import UUID
@@ -479,26 +480,19 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         """
         if self.l3_pool is None:
             return []
-        conditions = ["agent_id = $1", "user_id = $2"]
-        params: list[Any] = [agent_id, user_id]
-        param_idx = 3
-        if enabled_only:
-            conditions.append("enabled = true")
-        if tag_filter:
-            conditions.append(gin_filter(f"tags && ${param_idx}"))
-            params.append(list(tag_filter))
-            param_idx += 1
-        order_clause: str
+        filters = _skill_filter_conditions(
+            agent_id, user_id, enabled_only=enabled_only, tag_filter=tag_filter, query=query
+        )
+        params = filters.params
+        param_idx = len(params) + 1
         select_extra = ""
-        if query is not None and query.strip():
-            conditions.append(gin_filter(f"search_vector @@ websearch_to_tsquery('english', ${param_idx})"))
-            params.append(query)
-            select_extra = f", ts_rank_cd(search_vector, websearch_to_tsquery('english', ${param_idx})) AS fts_rank"
-            param_idx += 1
-            order_clause = "fts_rank DESC, last_used_at DESC NULLS LAST, date_created DESC"
-        else:
-            order_clause = "last_used_at DESC NULLS LAST, date_created DESC"
-        where_clause = " AND ".join(conditions)
+        order_clause = "last_used_at DESC NULLS LAST, date_created DESC"
+        if filters.query_param is not None:
+            select_extra = (
+                f", ts_rank_cd(search_vector, websearch_to_tsquery('english', {filters.query_param})) AS fts_rank"
+            )
+            order_clause = f"fts_rank DESC, {order_clause}"
+        where_clause = " AND ".join(filters.conditions)
         limit_param = f"${param_idx}"
         offset_param = f"${param_idx + 1}"
         params.append(limit)
@@ -541,9 +535,9 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
            ``total_count`` overstates the filtered result set.
 
         The ``tag_filter`` (``tags && filter`` overlap) and ``query``
-        (``search_vector @@ websearch_to_tsquery``) predicates mirror
-        :meth:`list_for_user` byte-for-byte so the count never drifts
-        from what the list actually returns.
+        (``search_vector @@ websearch_to_tsquery``) predicates come from
+        the same :func:`_skill_filter_conditions` as :meth:`list_for_user`,
+        so the count never drifts from what the list actually returns.
 
         :param agent_id: partition column
         :ptype agent_id: UUID
@@ -562,24 +556,14 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         """
         if self.l3_pool is None:
             return 0
-        conditions = ["agent_id = $1", "user_id = $2"]
-        params: list[Any] = [agent_id, user_id]
-        param_idx = 3
-        if enabled_only:
-            conditions.append("enabled = true")
-        if tag_filter:
-            conditions.append(gin_filter(f"tags && ${param_idx}"))
-            params.append(list(tag_filter))
-            param_idx += 1
-        if query is not None and query.strip():
-            conditions.append(gin_filter(f"search_vector @@ websearch_to_tsquery('english', ${param_idx})"))
-            params.append(query)
-            param_idx += 1
+        filters = _skill_filter_conditions(
+            agent_id, user_id, enabled_only=enabled_only, tag_filter=tag_filter, query=query
+        )
         # cache-bypass: aggregate COUNT(*) is not primary-key
         # addressable; L1 row cache cannot serve.
-        where_clause = " AND ".join(conditions)
+        where_clause = " AND ".join(filters.conditions)
         sql = f"SELECT COUNT(*) FROM agent_skills WHERE {where_clause}"
-        value = await self.l3_pool.fetchval(sql, *params)
+        value = await self.l3_pool.fetchval(sql, *filters.params)
         return int(value or 0)
 
     async def bump_use_count(
@@ -1030,6 +1014,66 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
 
 
 # --- helpers -----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _SkillFilters:
+    """WHERE conditions and positional parameters shared by the skill list and count.
+
+    :param conditions: SQL conditions, joined with ``AND`` by the caller
+    :ptype conditions: list[str]
+    :param params: positional parameters, ``$1`` first
+    :ptype params: list[Any]
+    :param query_param: placeholder carrying the FTS query text, or ``None`` when no query
+    :ptype query_param: str | None
+    """
+
+    conditions: list[str]
+    params: list[Any]
+    query_param: str | None
+
+
+def _skill_filter_conditions(
+    agent_id: UUID,
+    user_id: UUID,
+    *,
+    enabled_only: bool,
+    tag_filter: Sequence[str] | None,
+    query: str | None,
+) -> _SkillFilters:
+    """Build the filter predicates :meth:`AgentSkillCollection.list_for_user` and
+    :meth:`AgentSkillCollection.count_for_user` share.
+
+    The tag overlap and the FTS match go through :func:`gin_filter`: a multi-tag
+    ``&&`` and a ``websearch_to_tsquery`` carrying OR or NOT are refused outright by
+    YugabyteDB's GIN index, so both filter the rows ``agent_id`` / ``user_id`` narrow to.
+
+    :param agent_id: partition column
+    :ptype agent_id: UUID
+    :param user_id: owning user
+    :ptype user_id: UUID
+    :param enabled_only: when ``True`` hide disabled skills
+    :ptype enabled_only: bool
+    :param tag_filter: optional tag-overlap filter; empty or ``None`` applies none
+    :ptype tag_filter: Sequence[str] | None
+    :param query: optional FTS query; blank or ``None`` applies none
+    :ptype query: str | None
+    :return: conditions, parameters, and the query's placeholder
+    :rtype: _SkillFilters
+    """
+    conditions = ["agent_id = $1", "user_id = $2"]
+    params: list[Any] = [agent_id, user_id]
+    query_param: str | None = None
+    if enabled_only:
+        conditions.append("enabled = true")
+    if tag_filter:
+        params.append(list(tag_filter))
+        conditions.append(gin_filter(f"tags && ${len(params)}"))
+    if query is not None and query.strip():
+        params.append(query)
+        query_param = f"${len(params)}"
+        conditions.append(gin_filter(f"search_vector @@ websearch_to_tsquery('english', {query_param})"))
+    return _SkillFilters(conditions=conditions, params=params, query_param=query_param)
 
 
 def _skill_insert_params(data: dict[str, Any]) -> list[Any]:

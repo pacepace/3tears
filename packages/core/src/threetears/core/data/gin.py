@@ -1,21 +1,29 @@
 """GIN predicates that YugabyteDB's index cannot serve, rendered so they filter rows instead.
 
 YugabyteDB implements ``USING gin`` as ``ybgin``, which can serve a scan with exactly one
-required entry. A predicate that needs several -- a full-text query with an OR or a NOT
-(``websearch_to_tsquery`` produces both from ordinary text: "build or publish", "-draft"),
-a jsonb any-key test (``tags ?| $n``), an array overlap (``labels && $n``) -- is refused
-outright when the planner picks the index::
+required entry. When the planner picks the index for a predicate that needs several, the
+query is refused outright::
 
     FeatureNotSupportedError: unsupported ybgin index scan
     DETAIL: ybgin index method cannot use more than one required scan entry: got 3.
 
-The query fails; it does not degrade. Plain AND full-text (``plainto_tsquery``) and jsonb
-containment (``@>``) have one required entry and are served by the index as usual.
+The query fails; it does not degrade. Measured on YugabyteDB with the index forced by plan
+hint, these shapes are refused:
 
-:func:`gin_filter` wraps such a predicate in a boolean test. The planner cannot match
+- full-text ``@@`` against a query that can carry OR or NOT: ``websearch_to_tsquery`` (which
+  produces both from ordinary text: "build or publish", "-draft"), ``to_tsquery``, and a
+  pre-built ``$n::tsquery``, in either operand order;
+- jsonb any-key, ``tags ?| $n``;
+- array overlap, ``labels && $n``, once it holds more than one element.
+
+These are served by the index as usual and need nothing: ``@@ plainto_tsquery(...)`` and
+``@@ phraseto_tsquery(...)``, jsonb all-keys ``?&``, ``?``, and containment ``@>`` / ``<@``.
+``scripts/probe-ybgin-shapes.py`` re-measures both lists against a live YugabyteDB.
+
+:func:`gin_filter` wraps a refused shape in a boolean test. The planner cannot match
 ``(expr) IS TRUE`` to an index, so the predicate is evaluated against the rows the query's
-other conditions (its scope columns, which carry btree indexes) have already narrowed to,
-with the same result it would have had on PostgreSQL.
+other conditions have already narrowed to, with the same result it would have had on
+PostgreSQL.
 """
 
 from __future__ import annotations
@@ -28,12 +36,16 @@ log = get_logger(__name__)
 
 
 def gin_filter(predicate: str) -> str:
-    """render a multi-entry GIN predicate so it filters rows instead of scanning the GIN index.
+    """render multi-entry GIN predicate so it filters rows instead of scanning GIN index.
 
-    use it for any predicate on a GIN-indexed column that can need more than one required
-    scan entry: ``websearch_to_tsquery`` or ``to_tsquery`` over text a person or an agent
-    typed, ``?|``, ``?&`` and ``&&``. the result is the same on PostgreSQL and YugabyteDB;
-    only the access path changes.
+    use it for a predicate on a GIN-indexed column that YugabyteDB's index refuses: an
+    ``@@`` against ``websearch_to_tsquery``, ``to_tsquery`` or a pre-built tsquery, ``?|``,
+    and ``&&``. result is same on PostgreSQL and YugabyteDB; only access path changes.
+
+    precondition: the query's other conditions must narrow the rows on their own, through
+    indexed scope columns (``agent_id``, ``user_id`` and similar). the wrapped predicate is
+    then a filter over that slice. with no such condition it becomes a filter over a full
+    table scan, which is correct and slow.
 
     :param predicate: SQL boolean expression on a GIN-indexed column, with its placeholders
     :ptype predicate: str

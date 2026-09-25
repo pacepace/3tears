@@ -97,11 +97,12 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     # v0.8.0 hygiene enrichment: ``search_vector`` (TSVECTOR,
     # immutable, trigger-maintained per v005 migration);
     # ``language`` server default ``'english'`` matches v006
-    # migration. Indexes mirror the v001 / v005 migrations:
+    # migration. Indexes mirror the v001 migration:
     # ``idx_conv_user`` / ``idx_conv_customer`` (composite by
-    # date_created) + ``idx_conv_status`` + ``idx_conversations_search_vector``
-    # (GIN -- can't be expressed in v0.8.0 IndexDef, kept Alembic-side
-    # for now). Standard btree indexes are declared here.
+    # date_created) + ``idx_conv_status``. There is no GIN over
+    # ``search_vector``: v010 dropped the one v005 created, because
+    # :meth:`search` filters through ``gin_filter`` (YugabyteDB's ybgin
+    # refuses a multi-entry scan), so the index had no reader.
     # v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
     # ``conversation_id`` to standardize on ``<entity>_id`` across all
     # entity tables (matches the JSON API contract).
