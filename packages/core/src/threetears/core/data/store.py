@@ -102,8 +102,10 @@ class DataStore:
 
         for a caller that already holds one connection -- wrapped in a
         :class:`~threetears.core.data.migrations.session.ConnectionSession`, or
-        any other one-session store -- and needs the DataStore surface over it:
-        the migration runner hands every migration body a DataStore this way.
+        any other one-session store -- and needs the DataStore surface over it.
+        the migration runner builds its bodies' store this way when it is given
+        a plain session; given a pool-backed DataStore, it binds that store to
+        one acquired connection with :meth:`ddl_session` instead.
         the store gets a registry of its own, with no L3 backend: collections
         it creates are registered there, and reach the database only through
         whoever wires that registry.

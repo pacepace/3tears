@@ -317,10 +317,11 @@ async def v012_target_health_robots_block(store: DataStore) -> None:
 async def apply_migrations(pool: Any) -> None:
     """Apply every pending 3tears-scrape migration against ``pool`` via MigrationRunner.
 
-    Acquires ONE connection from ``pool`` and holds it for the whole run: the runner holds
-    the database-wide DDL lock, a session lock that lives on exactly one connection, so it
-    refuses a store that borrows a pooled connection per statement. The acquired connection
-    keeps the pool's ``search_path``, which is what binds the run to scrape's schema.
+    Acquires ONE connection from ``pool`` and hands the runner a ``ConnectionSession`` over
+    it for the whole run: the runner holds the database-wide DDL lock, a session lock that
+    lives on exactly one connection, and asyncpg's pool releases every advisory lock when a
+    connection is returned to it. The acquired connection keeps the pool's ``search_path``,
+    which is what binds the run to scrape's schema.
 
     :param pool: asyncpg-compatible pool
     :ptype pool: Any

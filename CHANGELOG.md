@@ -63,8 +63,9 @@ holder waits for, a deadlock; on YugabyteDB it errors as soon as the lock is con
   `SELECT pg_advisory_unlock_all()` when a connection is handed back, so a lock taken through
   `DataStore.execute` (one pooled connection per statement) was dropped the moment it was
   taken, and the unlock at the end ran on some other connection. `DataStore.run_migrations`
-  and `threetears.scrape.migrations.apply_migrations(pool)` both ran that way; the runner now
-  pins the store to one connection for the run.
+  and `threetears.scrape.migrations.apply_migrations(pool)` both ran that way. The runner now
+  pins a pool-backed `DataStore` to one connection for the run, and scrape acquires one
+  connection itself and passes it as a `ConnectionSession`.
 - `LedgerMismatchError` is exported from `threetears.core.data.migrations`.
 - An in-memory session fake that answers unknown queries with no rows now fails with
   `DdlLockError` ("current_database() returned no row") instead of running unlocked: a real
