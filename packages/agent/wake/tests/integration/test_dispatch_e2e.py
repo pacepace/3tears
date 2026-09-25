@@ -268,7 +268,8 @@ class TestContextFromResolutionIntegration:
             block = blocks[0]
             assert "upstream-check" in block
             assert "3 anomalies observed at 09:00 UTC" in block
-            assert block.endswith("---")
+            # No trailing separator: a host joining several blocks adds its own.
+            assert block.endswith("3 anomalies observed at 09:00 UTC")
         finally:
             await pool.close()
 
@@ -590,8 +591,8 @@ class TestContextFromTruncationIntegration:
                 name="multibyte-upstream",
             )
             # The label prefix from _resolve_context_from is something
-            # like 'Context from upstream schedule "multibyte-upstream"
-            # (fired <iso>):\n' which is a variable-byte prefix; pad
+            # like 'What your schedule "multibyte-upstream" said when it
+            # last fired, at <iso>:\n' which is a variable-byte prefix; pad
             # the payload with enough ASCII filler that the 16384-byte
             # boundary falls deep into the emoji-run rather than just
             # past the prefix. 32 KB of ASCII + emojis is more than

@@ -246,10 +246,11 @@ class TestLoadTodoTools:
         await add.ainvoke({"title": "A", "list_name": "Work"})
         await add.ainvoke({"title": "B", "list_name": "Home"})
         result = await lst.ainvoke({})
-        assert "### Work" in result
-        assert "### Home" in result
-        assert "[ ] A" in result
-        assert "[ ] B" in result
+        assert "Work:" in result
+        assert "Home:" in result
+        assert "- open: A" in result
+        assert "- open: B" in result
+        assert "#" not in result, "a heading in a tool result invites headings in the reply"
 
     async def test_list_shows_completion(self, tools: list):
         add = _find_tool(tools, "add_todo")
@@ -258,7 +259,7 @@ class TestLoadTodoTools:
         await add.ainvoke({"title": "Done item"})
         await complete.ainvoke({"title": "Done item"})
         result = await lst.ainvoke({})
-        assert "[x] Done item" in result
+        assert "- done: Done item" in result
 
     async def test_custom_list_name(self, tools: list):
         add = _find_tool(tools, "add_todo")

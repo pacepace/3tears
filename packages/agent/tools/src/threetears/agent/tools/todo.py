@@ -182,9 +182,8 @@ def load_todo_tools(
             return f"[TOOL ERROR] add_todo: {exc}"
 
     add_todo.description = (
-        "Add a new item to a named todo list in the conversation. "
-        "Use list_name to organize items into separate lists (e.g. 'Deployment Checklist', 'Bug Fixes'). "
-        "The item will be visible as an interactive checklist in the chat."
+        "Add an item to a todo list in this conversation. Use list_name to keep separate "
+        "lists, e.g. 'Deployment Checklist' and 'Bug Fixes'. The person sees the list in the chat."
     )
     tools.append(add_todo)
 
@@ -206,10 +205,7 @@ def load_todo_tools(
             )
             return f"[TOOL ERROR] complete_todo: {exc}"
 
-    complete_todo.description = (
-        "Mark a todo item as completed. Matches by title (exact or partial) within the specified list. "
-        "The checklist in the chat will update to show the item checked off."
-    )
+    complete_todo.description = "Mark a todo item done. Matches the whole title or part of it, in the named list."
     tools.append(complete_todo)
 
     @tool("update_todo", args_schema=UpdateTodoInput)
@@ -237,8 +233,7 @@ def load_todo_tools(
             return f"[TOOL ERROR] update_todo: {exc}"
 
     update_todo.description = (
-        "Update an existing todo item — change its title and/or completion status. "
-        "Matches by current title (exact or partial)."
+        "Rename a todo item or mark it done or not done. Matches the whole current title or part of it."
     )
     tools.append(update_todo)
 
@@ -260,9 +255,7 @@ def load_todo_tools(
             )
             return f"[TOOL ERROR] remove_todo: {exc}"
 
-    remove_todo.description = (
-        "Remove a todo item from the conversation's persistent checklist. Matches by title (exact or partial)."
-    )
+    remove_todo.description = "Remove a todo item. Matches the whole title or part of it."
     tools.append(remove_todo)
 
     @tool("list_todos")
@@ -280,10 +273,10 @@ def load_todo_tools(
 
             lines: list[str] = []
             for ln in sorted(groups.keys()):
-                lines.append(f"### {ln}")
+                lines.append(f"{ln}:")
                 for t in groups[ln]:
-                    check = "[x]" if t["is_completed"] else "[ ]"
-                    lines.append(f"- {check} {t['title']}")
+                    state = "done" if t["is_completed"] else "open"
+                    lines.append(f"- {state}: {t['title']}")
                 lines.append("")
 
             return "\n".join(lines)
@@ -295,9 +288,7 @@ def load_todo_tools(
             )
             return f"[TOOL ERROR] list_todos: {exc}"
 
-    list_todos.description = (
-        "List all todo items in the conversation's persistent checklist, showing their completion status."
-    )
+    list_todos.description = "List every todo item in this conversation and whether each is done."
     tools.append(list_todos)
 
     return tools

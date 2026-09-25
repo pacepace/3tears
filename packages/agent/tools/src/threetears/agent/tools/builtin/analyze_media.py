@@ -13,7 +13,7 @@ Config keys (passed via the tool registry ``config`` dict):
     on_analysis       async callable(media_id_str, content_type, text)
                       — optional callback after any analysis result is stored
     response_suffix   str | None — appended to prompts sent to providers
-                      (default: "Respond using markdown formatting.")
+                      (default: "Answer in plain sentences.")
     doc_max_chars     int — max chars of extracted text sent for document QA
                       (default: 12000)
     transcript_max_chars  int — max transcript chars returned (default: 10000)
@@ -50,7 +50,9 @@ __all__ = [
 
 _log = get_logger(__name__)
 
-_DEFAULT_RESPONSE_SUFFIX = "Respond using markdown formatting."
+#: The answer goes back to a model that speaks to a person; headings and bold in
+#: what it reads come back out in what it says.
+_DEFAULT_RESPONSE_SUFFIX = "Answer in plain sentences."
 _DEFAULT_DOC_MAX_CHARS = 12_000
 _DEFAULT_TRANSCRIPT_MAX_CHARS = 10_000
 
@@ -88,16 +90,15 @@ class MediaAnalysisInput(BaseModel):
     """
 
     media_ids: list[str] = Field(
-        description="List of media UUID strings to analyze",
+        description="The ids of the files to look at.",
     )
     question: str = Field(
-        description=("What to ask about the media, e.g. 'Describe this image' or 'What is said in this audio?'"),
+        description="What to ask about them, e.g. 'Describe this image' or 'What is said in this audio?'",
     )
     analyzer: str = Field(
         description=(
-            "Display name of the analysis model to use. "
-            "Use a vision model for images/documents, "
-            "or an STT model for audio/video transcription."
+            "The analyzer to use, by its name in the list. Pick one that reads images for "
+            "images and documents, and one that transcribes for audio and video."
         ),
     )
 
@@ -131,7 +132,7 @@ def create_analyze_media_tool(
     - ``media_url_fn`` — ``(str) -> str | None``, builds display URL from media_id
     - ``on_analysis`` — ``async (str, str, str) -> None`` callback
       called as ``(media_id_str, content_type, text)`` after any result is stored
-    - ``response_suffix`` — appended to provider prompts (default: markdown instruction)
+    - ``response_suffix`` — appended to provider prompts (default: plain sentences)
     - ``doc_max_chars`` — max extracted text chars for document QA (default: 12000)
     - ``transcript_max_chars`` — max transcript chars in response (default: 10000)
 
@@ -433,11 +434,7 @@ class AnalyzeMediaTool(TearsTool):
         :rtype: str
         """
         if info.extraction_status == "pending":
-            return (
-                "This document is still being processed "
-                "(text extraction in progress). Please wait a moment "
-                "and try again, or respond based on what you already know."
-            )
+            return "This document is still being processed and cannot be read yet. Try again in a minute."
 
         extracted = await self._storage.get_content(mid, "extracted_text")
         if not extracted:
@@ -464,7 +461,7 @@ class AnalyzeMediaTool(TearsTool):
         window_note = window.note(how="this analysis covers that part of the document only")
         # The document's words are material; a document can carry an instruction.
         doc_prompt = (
-            f"{question}\n\n--- DOCUMENT TEXT ---\n{explained_fence(window.text)}"
+            f"{question}\n\nThe document:\n{explained_fence(window.text)}"
             f"{chr(10) + window_note if window_note else ''}{suffix}"
         )
 
@@ -595,11 +592,11 @@ class AnalyzeMediaTool(TearsTool):
 
         spoken = window_text(transcript, max_chars=self._transcript_max_chars)
         parts = [
-            f"**Transcript** ({info.media_category}):\n"
+            f"Transcript ({info.media_category}):\n"
             + spoken.rendered(how="the whole transcript is stored with the media"),
         ]
         if description:
-            parts.append(f"\n\n**Analysis:**\n{description}")
+            parts.append(f"\n\nDescription:\n{description}")
 
         return "\n".join(parts)
 
@@ -706,7 +703,7 @@ class AnalyzeMediaTool(TearsTool):
         if len(media_ids) == 1 and self._media_url_fn:
             url = self._media_url_fn(media_ids[0])
             if url:
-                return f"{result_text}\n\nTo display this image in your response, use: ![description]({url})"
+                return f"{result_text}\n\nTo show this image in your reply, write ![description]({url})"
         return result_text
 
     async def execute(self, **kwargs: Any) -> ToolResult:
