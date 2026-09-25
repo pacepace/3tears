@@ -307,6 +307,42 @@ class TestRelease:
                 pass
         assert info.value.__cause__ is cause
 
+    @pytest.mark.parametrize("unlock", ["raises", "finds nothing held"])
+    async def test_a_failed_body_keeps_its_own_error_when_the_unlock_also_fails(
+        self, unlock: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the body's exception propagates, noted and logged, never replaced by a lock error."""
+        session = (
+            _FakeLockSession(database="appdb", release_error=OSError("connection reset"))
+            if unlock == "raises"
+            else _FakeLockSession(database="appdb", release_answer=False)
+        )
+        with caplog.at_level(logging.ERROR, logger="threetears.core.data.migrations.ddl_lock"):
+            with pytest.raises(RuntimeError, match="migration body failed") as info:
+                async with database_ddl_lock(session, _FAST):
+                    msg = "migration body failed"
+                    raise RuntimeError(msg)
+        assert any("appdb" in note and "not released" in note for note in info.value.__notes__)
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any("failed with RuntimeError" in m and "database=appdb" in m and "terminate" in m for m in errors)
+
+    async def test_a_cancelled_body_stays_cancelled_when_the_unlock_fails(self) -> None:
+        """a timeout wrapper still sees its cancellation, not a lock error."""
+        session = _FakeLockSession(release_error=OSError("connection reset"))
+        entered = asyncio.Event()
+
+        async def _hold() -> None:
+            """hold the lock until cancelled."""
+            async with database_ddl_lock(session, _FAST):
+                entered.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(_hold())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
     async def test_cancelled_attempt_gives_back_what_it_may_have_taken(self) -> None:
         """a cancellation landing on the try-lock unlocks before propagating."""
 

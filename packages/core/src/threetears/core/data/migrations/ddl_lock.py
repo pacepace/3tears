@@ -36,10 +36,20 @@ does not stop such a build; ``pg_terminate_backend`` does, and ending the
 session releases the lock with it. code that abandons a long DDL statement
 must terminate its backend, not cancel it.
 
-every consumer that runs DDL in a database this platform migrates -- the
-migration runner, and any background index build or table creation outside it
--- takes this same lock through :func:`database_ddl_lock`, or it reintroduces
-the concurrency the lock exists to remove.
+every consumer that runs DDL in a database this platform migrates takes this
+same lock, or it reintroduces the concurrency the lock exists to remove. in
+3tears that is the migration runner (every writing entry point; the read
+paths issue no DDL), ``DataStore.create_table``,
+anything run inside ``DataStore.ddl_session``, and
+``threetears.agent.tools.migrate_context_items_schema``. DDL 3tears issues
+elsewhere is outside this database by construction: L1 SQLite / DuckDB caches
+and ``threetears.geo``'s R-Tree are process-local; ``threetears.backup``'s
+restore check creates and drops a scratch DATABASE of its own; the
+``datasources`` drivers issue no DDL themselves, and their callers' ``CREATE
+TABLE AS`` targets the customer warehouse a datasource names; and
+``threetears.iam`` only publishes DDL text for a consumer's own migration.
+consumers running DDL of their own call :func:`database_ddl_lock` or
+``DataStore.ddl_session``.
 """
 
 from __future__ import annotations
@@ -177,9 +187,13 @@ async def database_ddl_lock(
     :rtype: AsyncIterator[DdlLockLease]
     :raises DdlLockTimeoutError: when the lock stayed held past
         ``policy.max_wait``; the body never ran
-    :raises DdlLockReleaseError: when the unlock failed or found the lock not
-        held by this session; the lock may still be held, so the caller must
-        close or terminate the connection rather than reuse it
+    :raises DdlLockReleaseError: when the body completed but the unlock
+        failed or found the lock not held by this session; the lock may still
+        be held, so the caller must close or terminate the connection rather
+        than reuse it. when the BODY raised (a cancellation included), its own
+        exception propagates instead, with the release failure logged at ERROR
+        and attached as a note: the body's error is what the caller acts on,
+        and a timeout wrapper must still see its cancellation
     :raises DdlLockError: when the session answers the lock statements with no
         row, which no PostgreSQL session does
     """
@@ -189,8 +203,10 @@ async def database_ddl_lock(
     lease = await _acquire(session, database, key, effective)
     try:
         yield lease
-    finally:
-        await _release(session, database, key)
+    except BaseException as body_error:
+        await _release_after_failed_body(session, database, key, body_error)
+        raise
+    await _release(session, database, key)
 
 
 async def _current_database(session: MigrationSession) -> str:
@@ -307,6 +323,45 @@ async def _undo_interrupted_attempt(session: MigrationSession, database: str, ke
             type(exc).__name__,
             exc,
         )
+
+
+async def _release_after_failed_body(
+    session: MigrationSession,
+    database: str,
+    key: int,
+    body_error: BaseException,
+) -> None:
+    """
+    give the lock back after a body that raised, never replacing the body's exception.
+
+    the unlock is most likely to fail exactly when the body failed because
+    its connection died -- and a dead session has released the lock anyway.
+    either way the body's exception is what the caller must see: a caller
+    handling a failed migration, or a timeout wrapper waiting for its
+    cancellation, would otherwise get a lock error in its place. so a failed
+    release is logged at ERROR and attached to the body's exception as a note.
+
+    :param session: the session the lock was taken on
+    :ptype session: MigrationSession
+    :param database: the session's database, for logs
+    :ptype database: str
+    :param key: the lock's second key
+    :ptype key: int
+    :param body_error: the exception the body raised, which the caller re-raises
+    :ptype body_error: BaseException
+    :raises asyncio.CancelledError: when the release itself is cancelled
+    """
+    try:
+        await _release(session, database, key)
+    except DdlLockReleaseError as release_error:
+        log.error(
+            "the DDL lock was not released after a run that failed with %s database=%s; close or terminate "
+            "this connection, and see the run's own error for what went wrong: %s",
+            type(body_error).__name__,
+            database,
+            release_error,
+        )
+        body_error.add_note(f"while unwinding: {release_error}")
 
 
 async def _release(session: MigrationSession, database: str, key: int) -> None:

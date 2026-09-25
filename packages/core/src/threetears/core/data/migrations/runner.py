@@ -10,8 +10,8 @@ records applied (version, package) tuples in a ``_schema_migrations``
 table.
 
 one runner instance owns registrations for the platform schema and for
-every agent schema. :meth:`apply_for_platform_schema` and
-:meth:`apply_for_agent_schema` take a
+every agent schema. every entry point takes either a
+:class:`~threetears.core.data.store.DataStore` or any
 :class:`~threetears.core.data.migrations.session.MigrationSession` -- one
 database connection -- already bound to the intended schema via its
 search_path. the runner never hard-codes schema names; that stays the
@@ -23,24 +23,25 @@ before it reads ``_schema_migrations`` until after it writes the last row:
 one migration per DATABASE at a time, whichever schema it targets, because
 two concurrent index builds in one YugabyteDB database hang each other
 until the catalog-version wait times out. the lock is a session lock, so
-the store must be one connection; a pool-backed
-:class:`~threetears.core.data.store.DataStore` is refused before any
-statement runs.
+the whole run happens on one connection: a pool-backed DataStore is pinned
+to one connection it acquires (:meth:`DataStore.ddl_session`), a plain
+session is used as it is, and either way every migration body receives a
+DataStore bound to that connection, holding the lock -- its ``execute``,
+``query`` and ``create_table`` all reach that one session.
 """
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, AsyncIterator, Mapping, cast
+from typing import TYPE_CHECKING, Any, AsyncIterator, Mapping
 
-from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.data.migrations.ddl_lock import DdlLockPolicy
 from threetears.core.data.migrations.errors import (
     LedgerMismatchError,
     MigrationError,
     MigrationFailedError,
     MissingDependencyError,
-    SessionRequiredError,
 )
 from threetears.core.data.migrations.preview import PreviewStore
 from threetears.core.data.migrations.registry import MigrationFunc, PackageMigrations
@@ -57,6 +58,13 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+
+#: whether ``_schema_migrations`` exists in the session's current schema.
+#: a writing run checks before creating it, and a read-only path reads a
+#: missing ledger as empty instead of creating it.
+_MIGRATIONS_TABLE_PRESENT_SQL = (
+    "SELECT to_regclass(quote_ident(current_schema()) || '._schema_migrations') IS NOT NULL AS present"
+)
 
 _CREATE_MIGRATIONS_TABLE_SQL = (
     "CREATE TABLE IF NOT EXISTS _schema_migrations ("
@@ -153,7 +161,7 @@ class MigrationRunner:
         self._packages[package.name] = package
 
     @traced
-    async def apply_for_platform_schema(self, store: MigrationSession, target: int | None = None) -> int:
+    async def apply_for_platform_schema(self, store: DataStore | MigrationSession, target: int | None = None) -> int:
         """
         apply all pending PLATFORM-scope migrations against store's schema.
 
@@ -162,28 +170,29 @@ class MigrationRunner:
         qualify statements with a schema name. the whole run holds the
         database-wide DDL lock.
 
-        :param store: one database session bound to the platform schema via
-            search_path
-        :ptype store: MigrationSession
+        :param store: a DataStore (pinned to one connection for the run) or
+            one database session, bound to the platform schema via search_path
+        :ptype store: DataStore | MigrationSession
         :param target: optional cap (inclusive) on applied version per
             package; if ``None`` apply everything. ignored when the
             package has no versions at or below the target.
         :ptype target: int | None
         :return: number of migrations applied across all platform packages
         :rtype: int
-        :raises SessionRequiredError: when ``store`` is a pool-backed DataStore
         :raises DdlLockTimeoutError: when the lock stayed held past the
             runner's ``lock_policy.max_wait``
         :raises DdlLockReleaseError: when the lock could not be given back
         :raises MissingDependencyError: on unresolved/cyclic depends_on
         :raises MigrationFailedError: wrapping original migration exception
         """
-        async with self._ddl_lock(store):
-            result = await self._apply_scope(store, MigrationScope.PLATFORM, target)
+        async with self._locked(store) as session:
+            await self._ensure_migrations_table(session)
+            applied = await self._query_applied_versions(session)
+            result = await self._apply_scope(session, MigrationScope.PLATFORM, target, applied)
         return result
 
     @traced
-    async def apply_for_agent_schema(self, store: MigrationSession, target: int | None = None) -> int:
+    async def apply_for_agent_schema(self, store: DataStore | MigrationSession, target: int | None = None) -> int:
         """
         apply all pending AGENT-scope migrations against store's schema.
 
@@ -193,29 +202,30 @@ class MigrationRunner:
         provisioning. the whole run holds the database-wide DDL lock, so
         runs against two agent schemas of one database take turns.
 
-        :param store: one database session bound to the agent schema via
-            search_path
-        :ptype store: MigrationSession
+        :param store: a DataStore (pinned to one connection for the run) or
+            one database session, bound to the agent schema via search_path
+        :ptype store: DataStore | MigrationSession
         :param target: optional cap (inclusive) on applied version per
             package; if ``None`` apply everything.
         :ptype target: int | None
         :return: number of migrations applied across all agent packages
         :rtype: int
-        :raises SessionRequiredError: when ``store`` is a pool-backed DataStore
         :raises DdlLockTimeoutError: when the lock stayed held past the
             runner's ``lock_policy.max_wait``
         :raises DdlLockReleaseError: when the lock could not be given back
         :raises MissingDependencyError: on unresolved/cyclic depends_on
         :raises MigrationFailedError: wrapping original migration exception
         """
-        async with self._ddl_lock(store):
-            result = await self._apply_scope(store, MigrationScope.AGENT, target)
+        async with self._locked(store) as session:
+            await self._ensure_migrations_table(session)
+            applied = await self._query_applied_versions(session)
+            result = await self._apply_scope(session, MigrationScope.AGENT, target, applied)
         return result
 
     @traced
     async def preview_for_scope(
         self,
-        store: MigrationSession,
+        store: DataStore | MigrationSession,
         scope: MigrationScope,
         target: int | None = None,
     ) -> PreviewStore:
@@ -227,22 +237,22 @@ class MigrationRunner:
         store is only read from (for ``_schema_migrations`` bookkeeping
         SELECTs) and is never mutated by the preview sequence itself.
 
-        the one side effect the preview MUST have on the underlying
-        store is ``CREATE TABLE IF NOT EXISTS _schema_migrations``: the
-        runner queries that table to decide which versions are pending,
-        and the query cannot succeed against a fresh schema without it.
-        the bookkeeping table is harmless (empty on fresh schemas) and
-        its creation is idempotent. every other ``execute`` call the
-        runner would issue is captured, not run.
+        the preview has no side effect on the underlying store: it reads
+        ``_schema_migrations`` to decide which versions are pending -- a
+        schema without the table has nothing applied, so a missing ledger
+        is read as empty rather than created -- and captures every
+        ``execute`` the runner would issue. it takes no lock: nothing it
+        runs is DDL, and a captured body's ``create_table`` is captured
+        too. that is what lets a preview run against an in-memory shim
+        that is not a database at all.
 
         the returned PreviewStore exposes :meth:`captured_ddl` for a
         plain list of DDL strings and :meth:`captured_statements` for
         the full sequence including bookkeeping entries.
 
-        :param store: store bound to target schema (read-only use except
-            for the one-time ``_schema_migrations`` create); a preview takes
-            no lock, so a pool-backed store is fine here
-        :ptype store: MigrationSession
+        :param store: a DataStore or one database session, bound to the
+            target schema; only read from
+        :ptype store: DataStore | MigrationSession
         :param scope: platform or agent scope
         :ptype scope: MigrationScope
         :param target: optional cap (inclusive) on applied version per
@@ -252,19 +262,15 @@ class MigrationRunner:
         :rtype: PreviewStore
         :raises MissingDependencyError: on unresolved/cyclic depends_on
         """
-        # ensure the bookkeeping table exists on the underlying store so
-        # the preview's read-through query against it succeeds. this is
-        # a one-time idempotent CREATE; it neither writes any rows nor
-        # hides pending migrations from the capture.
-        await self._ensure_migrations_table(store)
+        applied = await self._read_applied_versions(_as_data_store(store))
         preview = PreviewStore(underlying=store)
-        await self._apply_scope(preview, scope, target)
+        await self._apply_scope(_preview_data_store(preview), scope, target, applied)
         return preview
 
     @traced
     async def downgrade_for_scope(
         self,
-        store: MigrationSession,
+        store: DataStore | MigrationSession,
         scope: MigrationScope,
         steps: int = 1,
     ) -> int:
@@ -282,15 +288,15 @@ class MigrationRunner:
         migration blocks the rollback. the rollback holds the
         database-wide DDL lock throughout.
 
-        :param store: one database session bound to the target schema
-        :ptype store: MigrationSession
+        :param store: a DataStore (pinned to one connection for the run) or
+            one database session, bound to the target schema
+        :ptype store: DataStore | MigrationSession
         :param scope: platform or agent scope
         :ptype scope: MigrationScope
         :param steps: number of most-recent migrations to roll back
         :ptype steps: int
         :return: number of migrations rolled back
         :rtype: int
-        :raises SessionRequiredError: when ``store`` is a pool-backed DataStore
         :raises DdlLockTimeoutError: when the lock stayed held past the
             runner's ``lock_policy.max_wait``
         :raises DdlLockReleaseError: when the lock could not be given back
@@ -300,9 +306,9 @@ class MigrationRunner:
         if steps <= 0:
             msg = f"downgrade steps must be >= 1, got {steps}"
             raise MigrationError(msg)
-        async with self._ddl_lock(store):
-            await self._ensure_migrations_table(store)
-            history = await self._get_history(store)
+        async with self._locked(store) as session:
+            await self._ensure_migrations_table(session)
+            history = await self._query_history(session)
             in_scope = {p.name for p in self._packages.values() if p.scope == scope}
             scope_history = [row for row in history if row["package"] in in_scope]
             if not scope_history:
@@ -329,31 +335,32 @@ class MigrationRunner:
                     version_num = row["version"]
                     pkg = self._packages[pkg_name]
                     down = pkg.downgrades[version_num]
-                    count += await self._run_downgrade(store, pkg_name, version_num, down)
+                    count += await self._run_downgrade(session, pkg_name, version_num, down)
         return count
 
     @traced
-    async def get_applied_history(self, store: MigrationSession) -> list[dict[str, Any]]:
+    async def get_applied_history(self, store: DataStore | MigrationSession) -> list[dict[str, Any]]:
         """
         return the applied-migration history as ordered dict rows.
 
         rows are ordered by date_applied ascending; each row carries
         keys ``version``, ``package``, ``description``, ``date_applied``.
-        a read: it takes no lock.
+        a read: it issues no DDL and takes no lock, and a schema without
+        ``_schema_migrations`` has an empty history.
 
-        :param store: store bound to target schema
-        :ptype store: MigrationSession
+        :param store: a DataStore or one database session, bound to the
+            target schema
+        :ptype store: DataStore | MigrationSession
         :return: chronological list of applied migrations
         :rtype: list[dict[str, Any]]
         """
-        await self._ensure_migrations_table(store)
-        result = await self._get_history(store)
+        result = await self._read_history(_as_data_store(store))
         return result
 
     @traced
     async def current_versions(
         self,
-        store: MigrationSession,
+        store: DataStore | MigrationSession,
         scope: MigrationScope,
     ) -> dict[str, int]:
         """
@@ -361,17 +368,17 @@ class MigrationRunner:
 
         packages in the requested scope that have no rows applied yet
         return ``0``. packages outside the scope are omitted. a read: it
-        takes no lock.
+        issues no DDL and takes no lock.
 
-        :param store: store bound to target schema
-        :ptype store: MigrationSession
+        :param store: a DataStore or one database session, bound to the
+            target schema
+        :ptype store: DataStore | MigrationSession
         :param scope: platform or agent scope
         :ptype scope: MigrationScope
         :return: mapping of package name to current version
         :rtype: dict[str, int]
         """
-        await self._ensure_migrations_table(store)
-        history = await self._get_history(store)
+        history = await self._read_history(_as_data_store(store))
         in_scope = {p.name for p in self._packages.values() if p.scope == scope}
         per_package: dict[str, int] = dict.fromkeys(in_scope, 0)
         for row in history:
@@ -384,7 +391,7 @@ class MigrationRunner:
     @traced
     async def stamp_version(
         self,
-        store: MigrationSession,
+        store: DataStore | MigrationSession,
         package_name: str,
         version_num: int,
         description: str = "stamped",
@@ -398,8 +405,9 @@ class MigrationRunner:
         will trust forever. the stamp holds the database-wide DDL lock,
         so it cannot land in the middle of a run reading the same ledger.
 
-        :param store: one database session bound to the target schema
-        :ptype store: MigrationSession
+        :param store: a DataStore (pinned to one connection for the run) or
+            one database session, bound to the target schema
+        :ptype store: DataStore | MigrationSession
         :param package_name: package to stamp
         :ptype package_name: str
         :param version_num: version number to record
@@ -407,17 +415,16 @@ class MigrationRunner:
         :param description: description text to record; defaults to
             ``"stamped"`` so the history reads as operator-intervened
         :ptype description: str
-        :raises SessionRequiredError: when ``store`` is a pool-backed DataStore
         :raises DdlLockTimeoutError: when the lock stayed held past the
             runner's ``lock_policy.max_wait``
         :raises DdlLockReleaseError: when the lock could not be given back
         """
-        async with self._ddl_lock(store):
-            await self._ensure_migrations_table(store)
-            await store.execute(_INSERT_VERSION_SQL, version_num, package_name, description)
+        async with self._locked(store) as session:
+            await self._ensure_migrations_table(session)
+            await session.execute(_INSERT_VERSION_SQL, version_num, package_name, description)
 
     @traced
-    async def apply_package(self, store: MigrationSession, package_name: str) -> int:
+    async def apply_package(self, store: DataStore | MigrationSession, package_name: str) -> int:
         """
         apply one named package's pending migrations against store's schema.
 
@@ -426,15 +433,14 @@ class MigrationRunner:
         dependencies; callers must apply any depended-on packages first.
         holds the database-wide DDL lock like every other apply.
 
-        :param store: one database session bound to the target schema via
-            search_path
-        :ptype store: MigrationSession
+        :param store: a DataStore (pinned to one connection for the run) or
+            one database session, bound to the target schema via search_path
+        :ptype store: DataStore | MigrationSession
         :param package_name: name of the registered package to apply
         :ptype package_name: str
         :return: number of migrations applied for the named package
         :rtype: int
         :raises KeyError: if package_name is not registered
-        :raises SessionRequiredError: when ``store`` is a pool-backed DataStore
         :raises DdlLockTimeoutError: when the lock stayed held past the
             runner's ``lock_policy.max_wait``
         :raises DdlLockReleaseError: when the lock could not be given back
@@ -444,10 +450,10 @@ class MigrationRunner:
             msg = f"package {package_name!r} not registered"
             raise KeyError(msg)
         package = self._packages[package_name]
-        async with self._ddl_lock(store):
-            await self._ensure_migrations_table(store)
-            applied = await self._get_applied_versions(store)
-            count = await self._apply_package_pending(store, package, applied)
+        async with self._locked(store) as session:
+            await self._ensure_migrations_table(session)
+            applied = await self._query_applied_versions(session)
+            count = await self._apply_package_pending(session, package, applied)
         return count
 
     def pending_sequence(self, scope: MigrationScope) -> list[tuple[str, int]]:
@@ -477,58 +483,58 @@ class MigrationRunner:
     # ------------------------------------------------------------------
 
     @asynccontextmanager
-    async def _ddl_lock(self, store: MigrationSession) -> AsyncIterator[None]:
+    async def _locked(self, store: DataStore | MigrationSession) -> AsyncIterator[DataStore]:
         """
         hold the database-wide DDL lock across a migration critical section.
 
-        refuses a :class:`~threetears.core.data.store.DataStore` first:
-        it sends every statement through its registry's L3 pool, so the
-        lock would be taken on one pooled connection -- and, on asyncpg,
-        dropped by the pool's reset the moment that connection is handed
-        back -- while the DDL ran on others. then takes
-        :func:`~threetears.core.data.migrations.ddl_lock.database_ddl_lock`
-        on the store with this runner's policy, and releases it in the
-        lock's own ``finally``, so a raising or cancelled run still frees
-        it.
+        yields a DataStore bound to one connection whose session holds the
+        lock: :meth:`DataStore.ddl_session` pins a pool-backed store to a
+        connection it acquires, and a plain session is wrapped with
+        :meth:`DataStore.over_session` and locked where it is. every
+        statement of the section -- bookkeeping and migration bodies alike --
+        goes through the yielded store, so all of them run on the session
+        that holds the lock, and a body's ``create_table`` does not take the
+        lock a second time. the lock is released when the section ends,
+        however it ends.
 
-        :param store: one database session bound to the target schema
-        :ptype store: MigrationSession
-        :return: async context manager holding the lock
-        :rtype: AsyncIterator[None]
-        :raises SessionRequiredError: when ``store`` is a DataStore
+        :param store: a DataStore or one database session
+        :ptype store: DataStore | MigrationSession
+        :return: async context manager yielding the locked store
+        :rtype: AsyncIterator[DataStore]
         """
-        _refuse_pool_backed_store(store)
-        async with database_ddl_lock(store, self._lock_policy):
-            yield
+        async with _as_data_store(store).ddl_session(self._lock_policy) as locked:
+            yield locked
 
     async def _apply_scope(
         self,
-        store: MigrationSession,
+        store: DataStore,
         scope: MigrationScope,
-        target: int | None = None,
+        target: int | None,
+        applied: dict[tuple[int, str], str | None],
     ) -> int:
         """
         apply every pending migration for the given scope.
 
-        topologically orders packages, reads the applied-version set
-        once, then walks packages applying any version not already
-        recorded. halts on first failure after reverting bookkeeping for
+        topologically orders packages, then walks them applying any
+        version not already recorded in ``applied``, which the caller
+        read once. halts on first failure after reverting bookkeeping for
         the failing migration.
 
-        :param store: session bound to target schema
-        :ptype store: MigrationSession
+        :param store: store bound to the target schema
+        :ptype store: DataStore
         :param scope: scope filter for registered packages
         :ptype scope: MigrationScope
         :param target: optional cap (inclusive) on version per package
         :ptype target: int | None
+        :param applied: mapping of already-recorded (version, package_name)
+            to description; updated as migrations apply
+        :ptype applied: dict[tuple[int, str], str | None]
         :return: count of successful migrations applied
         :rtype: int
         :raises MissingDependencyError: on unresolved/cyclic depends_on
         :raises MigrationFailedError: wrapping original migration exception
         """
         ordered = self._topological_sort(scope)
-        await self._ensure_migrations_table(store)
-        applied = await self._get_applied_versions(store)
         # before any body runs: a ledger that disagrees with this build is not
         # something to apply the pending tail on top of. doing so would write
         # new rows into bookkeeping already known to be describing a different
@@ -542,7 +548,7 @@ class MigrationRunner:
 
     async def _apply_package_pending(
         self,
-        store: MigrationSession,
+        store: DataStore,
         package: PackageMigrations,
         applied: dict[tuple[int, str], str | None],
         target: int | None = None,
@@ -550,8 +556,8 @@ class MigrationRunner:
         """
         apply pending migrations for one package in ascending version order.
 
-        :param store: session bound to target schema
-        :ptype store: MigrationSession
+        :param store: store bound to the target schema
+        :ptype store: DataStore
         :param package: package whose pending migrations run
         :ptype package: PackageMigrations
         :param applied: mapping of already-recorded (version, package_name) to
@@ -578,7 +584,7 @@ class MigrationRunner:
 
     async def _run_one(
         self,
-        store: MigrationSession,
+        store: DataStore,
         package_name: str,
         version_num: int,
         func: MigrationFunc,
@@ -591,13 +597,13 @@ class MigrationRunner:
         schema cleanly. previously-applied migrations keep their
         recorded version — only the failing migration is reverted.
 
-        :param store: session bound to target schema
-        :ptype store: MigrationSession
+        :param store: store bound to the target schema
+        :ptype store: DataStore
         :param package_name: name of package owning this migration
         :ptype package_name: str
         :param version_num: version number of this migration
         :ptype version_num: int
-        :param func: async migration body taking the run's session
+        :param func: async migration body taking the run's store
         :ptype func: MigrationFunc
         :return: 1 on success (return type matches caller's counter)
         :rtype: int
@@ -611,7 +617,7 @@ class MigrationRunner:
             description,
         )
         try:
-            await _invoke(func, store)
+            await func(store)
             await store.execute(_INSERT_VERSION_SQL, version_num, package_name, description)
         except Exception as exc:
             # best-effort revert of the version row in case the migration
@@ -638,7 +644,7 @@ class MigrationRunner:
 
     async def _run_downgrade(
         self,
-        store: MigrationSession,
+        store: DataStore,
         package_name: str,
         version_num: int,
         func: MigrationFunc,
@@ -653,13 +659,13 @@ class MigrationRunner:
         still provably at version N; the operator decides how to
         proceed.
 
-        :param store: session bound to target schema
-        :ptype store: MigrationSession
+        :param store: store bound to the target schema
+        :ptype store: DataStore
         :param package_name: name of package owning the downgrade
         :ptype package_name: str
         :param version_num: version number being rolled back
         :ptype version_num: int
-        :param func: async downgrade body taking the run's session
+        :param func: async downgrade body taking the run's store
         :ptype func: MigrationFunc
         :return: 1 on success
         :rtype: int
@@ -673,7 +679,7 @@ class MigrationRunner:
             description,
         )
         try:
-            await _invoke(func, store)
+            await func(store)
             await store.execute(_DELETE_VERSION_SQL, version_num, package_name)
         except Exception as exc:
             msg = (
@@ -689,12 +695,12 @@ class MigrationRunner:
         )
         return 1
 
-    async def _get_history(self, store: MigrationSession) -> list[dict[str, Any]]:
+    async def _query_history(self, store: DataStore) -> list[dict[str, Any]]:
         """
-        read the chronological apply-history from ``_schema_migrations``.
+        read the chronological apply-history from ``_schema_migrations``, which exists.
 
-        :param store: session bound to target schema
-        :ptype store: MigrationSession
+        :param store: store bound to the target schema
+        :ptype store: DataStore
         :return: list of rows ordered by date_applied
         :rtype: list[dict[str, Any]]
         """
@@ -702,31 +708,80 @@ class MigrationRunner:
         result = [dict(r) for r in rows]
         return result
 
-    async def _ensure_migrations_table(self, store: MigrationSession) -> None:
+    async def _read_history(self, store: DataStore) -> list[dict[str, Any]]:
         """
-        create ``_schema_migrations`` if it does not already exist.
+        read the apply-history for a read-only caller: empty when there is no ledger.
 
-        :param store: session bound to target schema
-        :ptype store: MigrationSession
+        :param store: store bound to the target schema
+        :ptype store: DataStore
+        :return: list of rows ordered by date_applied
+        :rtype: list[dict[str, Any]]
         """
-        await store.execute(_CREATE_MIGRATIONS_TABLE_SQL)
+        result: list[dict[str, Any]] = []
+        if await self._ledger_present(store):
+            result = await self._query_history(store)
+        return result
 
-    async def _get_applied_versions(self, store: MigrationSession) -> dict[tuple[int, str], str | None]:
+    async def _ledger_present(self, store: DataStore) -> bool:
         """
-        query ``_schema_migrations`` for applied versions and their descriptions.
+        report whether ``_schema_migrations`` exists in the store's current schema.
+
+        :param store: store bound to the target schema
+        :ptype store: DataStore
+        :return: True when the table exists
+        :rtype: bool
+        """
+        rows = await store.query(_MIGRATIONS_TABLE_PRESENT_SQL)
+        present = bool(rows and rows[0]["present"])
+        return present
+
+    async def _ensure_migrations_table(self, store: DataStore) -> None:
+        """
+        create ``_schema_migrations`` when it does not exist, on a store holding the DDL lock.
+
+        only the writing entry points call this, and only on the store
+        :meth:`_locked` yielded, whose session already holds the lock -- so
+        the create runs under it without taking it again. it looks for the
+        table first, so a schema that has its ledger costs one read and no
+        DDL; the read-only entry points never create the ledger at all, and
+        read a missing one as empty.
+
+        :param store: the locked store of a writing entry point
+        :ptype store: DataStore
+        """
+        if not await self._ledger_present(store):
+            await store.execute(_CREATE_MIGRATIONS_TABLE_SQL)
+
+    async def _query_applied_versions(self, store: DataStore) -> dict[tuple[int, str], str | None]:
+        """
+        query ``_schema_migrations``, which exists, for applied versions and their descriptions.
 
         a mapping rather than a set because the description is what
         :meth:`_verify_ledger_identity` compares; membership alone cannot
         distinguish a version that ran from a version whose NUMBER ran
         carrying somebody else's migration.
 
-        :param store: session bound to target schema
-        :ptype store: MigrationSession
+        :param store: store bound to the target schema
+        :ptype store: DataStore
         :return: mapping of (version, package_name) to recorded description
         :rtype: dict[tuple[int, str], str | None]
         """
         rows = await store.query(_SELECT_APPLIED_VERSIONS_SQL)
         result = {(row["version"], row["package"]): row.get("description") for row in rows}
+        return result
+
+    async def _read_applied_versions(self, store: DataStore) -> dict[tuple[int, str], str | None]:
+        """
+        read applied versions for a read-only caller: empty when there is no ledger.
+
+        :param store: store bound to the target schema
+        :ptype store: DataStore
+        :return: mapping of (version, package_name) to recorded description
+        :rtype: dict[tuple[int, str], str | None]
+        """
+        result: dict[tuple[int, str], str | None] = {}
+        if await self._ledger_present(store):
+            result = await self._query_applied_versions(store)
         return result
 
     def _verify_ledger_identity(
@@ -843,42 +898,44 @@ class MigrationRunner:
         return ordered
 
 
-def _refuse_pool_backed_store(store: MigrationSession) -> None:
+def _preview_data_store(preview: PreviewStore) -> DataStore:
     """
-    refuse a DataStore as the store of a locked migration run.
+    wrap a preview in the DataStore its captured migration bodies receive.
 
-    :param store: the store a run was handed
-    :ptype store: MigrationSession
-    :raises SessionRequiredError: when ``store`` is a DataStore
+    the store is marked as holding the DDL lock because nothing it runs is
+    DDL: every ``execute`` -- a body's ``create_table`` included -- is
+    captured, so there is nothing for a lock to guard, and taking one would
+    fail against a preview whose underlying store is an in-memory shim.
+
+    :param preview: the capturing wrapper
+    :ptype preview: PreviewStore
+    :return: a DataStore over the preview
+    :rtype: DataStore
     """
-    # imported here: store.py imports this package for its own annotations,
+    # imported here: store.py imports this package's modules at import time,
     # so a module-level import would be circular
     from threetears.core.data.store import DataStore  # noqa: PLC0415
 
-    if isinstance(store, DataStore):
-        msg = (
-            "MigrationRunner needs one database session and was given a DataStore, which sends each "
-            "statement to whichever pooled connection is free; the database-wide DDL lock taken that way "
-            "is not held across the run. acquire one connection and pass ConnectionSession(conn): "
-            "async with pool.acquire() as conn: await runner.apply_for_agent_schema(ConnectionSession(conn))"
-        )
-        raise SessionRequiredError(msg)
+    result = DataStore.over_session(preview, holds_ddl_lock=True)
+    return result
 
 
-async def _invoke(func: MigrationFunc, store: MigrationSession) -> None:
+def _as_data_store(store: DataStore | MigrationSession) -> DataStore:
     """
-    run one migration or downgrade body against the run's session.
+    return ``store`` as a DataStore, wrapping a plain session over itself.
 
-    bodies are annotated ``store: DataStore`` by convention (that is what
-    :data:`~threetears.core.data.migrations.registry.MigrationFunc` names),
-    yet every production run hands them a one-connection session -- the
-    runner refuses a DataStore. what a body may use is the session's
-    ``execute`` / ``query`` surface, which DataStore shares, so the cast
-    names the convention rather than changing what runs.
+    migration bodies are typed to receive a DataStore, and the runner keeps
+    that true: a DataStore is used as it is (and pinned when locked), any
+    other session gets :meth:`DataStore.over_session`.
 
-    :param func: migration or downgrade body
-    :ptype func: MigrationFunc
-    :param store: the run's session
-    :ptype store: MigrationSession
+    :param store: a DataStore or one database session
+    :ptype store: DataStore | MigrationSession
+    :return: the store, as a DataStore
+    :rtype: DataStore
     """
-    await func(cast("DataStore", store))
+    # imported here: store.py imports this package's modules at import time,
+    # so a module-level import would be circular
+    from threetears.core.data.store import DataStore  # noqa: PLC0415
+
+    result = store if isinstance(store, DataStore) else DataStore.over_session(store)
+    return result

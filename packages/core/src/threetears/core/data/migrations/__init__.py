@@ -10,11 +10,12 @@ rather than each package owning a standalone runner. see the task shard
 public API:
 
 - :class:`MigrationRunner` — composes registered packages and applies
-  pending migrations against one database session bound to a schema,
-  holding the database-wide DDL lock for the whole run.
+  pending migrations against a DataStore or one database session bound
+  to a schema, on one connection holding the database-wide DDL lock for
+  the whole run.
 - :class:`MigrationSession` / :class:`ConnectionSession` — the
-  one-connection store a run needs, and the wrapper that makes one from
-  a single connection.
+  one-connection surface a run consumes, and the wrapper that makes one
+  from a plain connection (a DataStore pins itself instead).
 - :func:`database_ddl_lock` — the lock every DDL job in a database
   takes, one job per database at a time (see
   :mod:`~threetears.core.data.migrations.ddl_lock`).
@@ -25,8 +26,9 @@ public API:
   authoring a new migration module.
 - error types: :class:`MigrationError`, :class:`DuplicateVersionError`,
   :class:`MissingDependencyError`, :class:`MigrationFailedError`,
-  :class:`SessionRequiredError`, :class:`DdlLockError`,
-  :class:`DdlLockTimeoutError`, :class:`DdlLockReleaseError`.
+  :class:`LedgerMismatchError`, :class:`SessionRequiredError`,
+  :class:`DdlLockError`, :class:`DdlLockTimeoutError`,
+  :class:`DdlLockReleaseError`.
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ from threetears.core.data.migrations.errors import (
     DdlLockReleaseError,
     DdlLockTimeoutError,
     DuplicateVersionError,
+    LedgerMismatchError,
     MigrationError,
     MigrationFailedError,
     MissingDependencyError,
@@ -93,6 +96,7 @@ __all__ = [
     "DriftReport",
     "DuplicateVersionError",
     "InboundFk",
+    "LedgerMismatchError",
     "MigrationError",
     "MigrationFailedError",
     "MigrationFunc",

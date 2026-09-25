@@ -70,17 +70,17 @@ store["survey_responses"][response_id]            # full entity
 store["survey_responses"][response_id, "answer"]  # single field
 
 # Versioned schema migrations. A run holds the database-wide DDL lock -- one
-# migration per database at a time -- on ONE connection, so a body issues SQL
-# through the session it is given (execute / query), not through the store.
+# migration per database at a time -- on ONE pooled connection, and each body gets
+# the store bound to that connection. create_table above takes the same lock itself.
 pkg = PackageMigrations(name="surveys", scope=MigrationScope.AGENT)
 
 @pkg.version(1)
-async def v1(session):
-    await session.execute("CREATE TABLE IF NOT EXISTS surveys (id UUID PRIMARY KEY)")
+async def v1(store):
+    await store.create_table(TableDef(...))
 
 @pkg.version(2)
-async def v2(session):
-    await session.execute("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS email TEXT")
+async def v2(store):
+    await store.execute("ALTER TABLE surveys ADD COLUMN IF NOT EXISTS email TEXT")
 
 runner = MigrationRunner()
 runner.register(pkg)

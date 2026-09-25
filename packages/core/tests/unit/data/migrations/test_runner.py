@@ -12,8 +12,8 @@ covers the five contracts the runner must hold:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -25,7 +25,6 @@ from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
     PackageMigrations,
-    SessionRequiredError,
     ddl_lock_key,
 )
 from threetears.core.data.migrations.errors import (
@@ -33,9 +32,10 @@ from threetears.core.data.migrations.errors import (
     MissingDependencyError,
     MigrationFailedError,
 )
+from threetears.core.data.schema import ColumnDef, IndexDef, TableDef
 from threetears.core.data.store import DataStore
 
-from ._fake_store import FakeDataStore
+from ._fake_store import FakeDataStore, FakeLockingPool
 
 
 async def _noop(store: object) -> None:
@@ -484,21 +484,304 @@ class TestDatabaseWideDdlLock:
         assert ran == []
         assert store.migrations_rows == []
 
-    async def test_a_pool_backed_data_store_is_refused_before_any_statement(self) -> None:
-        """a DataStore routes each statement through a pool, so it cannot hold a session lock."""
+
+def _pool_store(pool: FakeLockingPool) -> DataStore:
+    """
+    build a pool-backed DataStore over a fake locking pool.
+
+    :param pool: the fake pool
+    :ptype pool: FakeLockingPool
+    :return: the store
+    :rtype: DataStore
+    """
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    return DataStore(uuid.uuid4(), registry)
+
+
+def _widgets() -> TableDef:
+    """
+    a table with one secondary index.
+
+    :return: the table definition
+    :rtype: TableDef
+    """
+    return TableDef(
+        name="widgets",
+        columns=[
+            ColumnDef(name="id", column_type="uuid", primary_key=True),
+            ColumnDef(name="label", column_type="text", nullable=False),
+        ],
+        indexes=[IndexDef(name="ix_widgets_label", columns=["label"])],
+    )
+
+
+class TestPoolBackedDataStore:
+    """a pool-backed DataStore is pinned to one connection for the whole run.
+
+    the run's lock is a session lock, so every statement -- the lock, the
+    bookkeeping and every body statement, create_table included -- must run
+    on the connection that holds it. bodies receive a DataStore bound to it.
+    """
+
+    async def test_every_statement_runs_on_one_pinned_connection(self) -> None:
+        """nothing reaches the pool directly; one connection runs the lock, the ledger and the body."""
+        seen: list[DataStore] = []
+
+        async def _body(store: DataStore) -> None:
+            """run a statement and a query through the store the runner hands in."""
+            seen.append(store)
+            await store.execute("ALTER TABLE t ADD COLUMN IF NOT EXISTS c TEXT")
+            await store.query("SELECT 1")
+
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_body)
+        runner = MigrationRunner()
+        runner.register(pkg)
+        pool = FakeLockingPool()
+
+        assert await runner.apply_for_agent_schema(_pool_store(pool)) == 1
+
+        used = [c for c in pool.connections if c.statements]
+        assert pool.direct == []
+        assert len(used) == 1
+        statements = used[0].statements
+        assert "pg_try_advisory_lock" in statements[1]
+        assert "pg_advisory_unlock" in statements[-1]
+        assert any("ALTER TABLE t" in sql for sql in statements)
+        assert isinstance(seen[0], DataStore)
+        assert seen[0].holds_ddl_lock
+        assert pool.lock_holder is None
+
+    async def test_create_table_in_a_body_runs_on_the_pinned_connection_without_a_second_lock(self) -> None:
+        """a body's create_table uses the run's session and lock, and its collection outlives the run."""
+
+        async def _create(store: DataStore) -> None:
+            """create a table with an index, as dipp's v1 does."""
+            await store.create_table(_widgets())
+
+        pkg = PackageMigrations(name="dipp", scope=MigrationScope.PLATFORM)
+        pkg.version(1)(_create)
+        runner = MigrationRunner()
+        runner.register(pkg)
+        pool = FakeLockingPool()
+        store = _pool_store(pool)
+
+        await runner.apply_for_platform_schema(store)
+
+        used = [c for c in pool.connections if c.statements]
+        assert len(used) == 1
+        statements = used[0].statements
+        assert sum("pg_try_advisory_lock" in sql for sql in statements) == 1
+        create = next(i for i, sql in enumerate(statements) if "CREATE TABLE IF NOT EXISTS widgets" in sql)
+        index = next(i for i, sql in enumerate(statements) if "ix_widgets_label" in sql)
+        unlock = next(i for i, sql in enumerate(statements) if "pg_advisory_unlock" in sql)
+        assert create < index < unlock
+        assert pool.direct == []
+        # the collection is registered on the pool-backed store, not on the pinned session
+        assert store["widgets"].table_name == "widgets"
+
+    async def test_dipp_shape_apply_then_downgrade_with_a_data_store(self) -> None:
+        """apply_for_platform_schema then downgrade_for_scope, both handed the same pool-backed DataStore."""
+
+        async def _up(store: DataStore) -> None:
+            """create the table."""
+            await store.create_table(_widgets())
+
+        async def _down(store: DataStore) -> None:
+            """drop it again."""
+            await store.execute("DROP TABLE IF EXISTS widgets")
+
+        pkg = PackageMigrations(name="dipp", scope=MigrationScope.PLATFORM)
+        pkg.version(1)(_up)
+        pkg.downgrade(1)(_down)
+        runner = MigrationRunner()
+        runner.register(pkg)
+        pool = FakeLockingPool()
+        store = _pool_store(pool)
+
+        assert await runner.apply_for_platform_schema(store) == 1
+        assert await runner.downgrade_for_scope(store, MigrationScope.PLATFORM) == 1
+
+        assert pool.rows == []
+        assert pool.direct == []
+        assert pool.lock_holder is None
+        dropped_on = [c for c in pool.connections if any("DROP TABLE IF EXISTS widgets" in s for s in c.statements)]
+        assert len(dropped_on) == 1
+        assert any("pg_try_advisory_lock" in s for s in dropped_on[0].statements)
+
+    async def test_run_migrations_is_the_agent_apply_on_a_pinned_connection(self) -> None:
+        """DataStore.run_migrations delegates to the runner, which pins."""
         pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
         pkg.version(1)(_noop)
         runner = MigrationRunner()
         runner.register(pkg)
+        pool = FakeLockingPool()
 
-        pool = AsyncMock()
-        registry = CollectionRegistry()
-        registry.configure(l3_pool=pool)
-        store = DataStore(uuid.uuid4(), registry)
+        assert await _pool_store(pool).run_migrations(runner) == 1
+        assert pool.direct == []
+        assert len([c for c in pool.connections if c.statements]) == 1
 
-        with pytest.raises(SessionRequiredError, match="DataStore"):
-            await runner.apply_for_agent_schema(store)
-        assert pool.method_calls == []
+
+class TestCreateTableOutsideAMigration:
+    """create_table takes the DDL lock itself, on one connection."""
+
+    async def test_create_table_takes_the_lock_on_the_connection_that_runs_the_ddl(self) -> None:
+        """try-lock, CREATE TABLE, CREATE INDEX, unlock -- in that order, on one connection."""
+        pool = FakeLockingPool()
+        store = _pool_store(pool)
+
+        await store.create_table(_widgets())
+
+        used = [c for c in pool.connections if c.statements]
+        assert len(used) == 1
+        statements = used[0].statements
+        order = [
+            next(i for i, sql in enumerate(statements) if marker in sql)
+            for marker in ("pg_try_advisory_lock", "CREATE TABLE IF NOT EXISTS widgets", "ix_widgets_label")
+        ]
+        assert order == sorted(order)
+        assert "pg_advisory_unlock" in statements[-1]
+        assert pool.direct == []
+        assert pool.lock_holder is None
+
+    async def test_create_table_waits_while_another_session_holds_the_lock(self) -> None:
+        """no DDL runs until the holder lets go."""
+        pool = FakeLockingPool(size=3)
+        holder = pool.take()
+        pool.lock_holder = holder
+        pool.lock_holds = 1
+        store = _pool_store(pool)
+
+        task = asyncio.create_task(store.create_table(_widgets()))
+        await asyncio.sleep(0.05)
+        ran_ddl = any("CREATE TABLE" in sql for c in pool.connections for sql in c.statements)
+        pool.lock_holder = None
+        pool.lock_holds = 0
+        await asyncio.wait_for(task, 10)
+
+        assert not ran_ddl
+        assert any("CREATE TABLE IF NOT EXISTS widgets" in sql for c in pool.connections for sql in c.statements)
+
+
+class TestReadPathsIssueNoDdl:
+    """history, current versions and preview never issue DDL and never take the lock.
+
+    a read path only needs to know what is applied; a schema without
+    ``_schema_migrations`` has nothing applied, so a missing ledger is read as
+    empty rather than created. that keeps a preview runnable against an
+    in-memory shim, which is how the aibots hub's ``migrations check`` derives
+    its expected DDL.
+    """
+
+    @pytest.mark.parametrize("ledger", ["present", "missing"])
+    @pytest.mark.parametrize("entry", ["history", "current", "preview"])
+    async def test_no_ddl_and_no_lock(self, entry: str, ledger: str) -> None:
+        """whether or not the ledger exists, a read path creates nothing and locks nothing."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+        store = FakeDataStore()
+        store.migrations_table_created = ledger == "present"
+
+        await _read_entry(runner, store, entry)
+
+        assert [sql for sql, _ in store.executed if "CREATE" in sql.upper()] == []
+        assert _lock_calls(store) == []
+
+    async def test_a_missing_ledger_reads_as_nothing_applied(self) -> None:
+        """history is empty, every package is at 0, and the preview captures every version."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        pkg.version(2)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+        store = FakeDataStore()
+
+        assert await runner.get_applied_history(store) == []
+        assert await runner.current_versions(store, MigrationScope.AGENT) == {"memory": 0}
+        preview = await runner.preview_for_scope(store, MigrationScope.AGENT)
+        inserted = [s.params[0] for s in preview.captured_statements() if "INSERT INTO _schema_migrations" in s.sql]
+        assert inserted == [1, 2]
+
+    async def test_preview_runs_against_a_shim_that_is_not_a_database(self) -> None:
+        """a store answering every query with no rows previews without touching a lock."""
+        captured: list[str] = []
+
+        async def _create(store: DataStore) -> None:
+            """a body that creates a table, which the preview must capture."""
+            await store.create_table(_widgets())
+
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_create)
+        runner = MigrationRunner()
+        runner.register(pkg)
+
+        preview = await runner.preview_for_scope(_FakeEmptyShim(captured), MigrationScope.AGENT)
+
+        assert any("CREATE TABLE IF NOT EXISTS widgets" in sql for sql in preview.captured_ddl())
+        assert captured == []
+
+
+# parity-with: threetears.core.data.migrations.session.MigrationSession
+class _FakeEmptyShim:
+    """answers every query with no rows, as the hub's in-memory bookkeeping shim does."""
+
+    def __init__(self, executed: list[str]) -> None:
+        """
+        record executes into ``executed``.
+
+        :param executed: where executes are recorded
+        :ptype executed: list[str]
+        """
+        self._executed = executed
+
+    async def execute(self, sql: str, *params: object) -> str:
+        """
+        record an execute, which a preview must never reach.
+
+        :param sql: SQL text
+        :ptype sql: str
+        :param params: positional parameters
+        :ptype params: object
+        :return: status tag
+        :rtype: str
+        """
+        self._executed.append(sql)
+        return "NOOP"
+
+    async def query(self, sql: str, *params: object) -> list[dict[str, object]]:
+        """
+        answer nothing.
+
+        :param sql: SQL text
+        :ptype sql: str
+        :param params: positional parameters
+        :ptype params: object
+        :return: no rows
+        :rtype: list[dict[str, object]]
+        """
+        return []
+
+
+async def _read_entry(runner: MigrationRunner, store: FakeDataStore, entry: str) -> None:
+    """
+    call one of the runner's read-only entry points.
+
+    :param runner: the runner
+    :ptype runner: MigrationRunner
+    :param store: the fake session
+    :ptype store: FakeDataStore
+    :param entry: which entry point: history, current or preview
+    :ptype entry: str
+    """
+    if entry == "history":
+        await runner.get_applied_history(store)
+    elif entry == "current":
+        await runner.current_versions(store, MigrationScope.AGENT)
+    else:
+        await runner.preview_for_scope(store, MigrationScope.AGENT)
 
 
 class TestPackagesView:

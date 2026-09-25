@@ -15,8 +15,10 @@ connection the pool hands out next and releases nothing.
 
 :class:`MigrationSession` is the surface the runner and
 :func:`~threetears.core.data.migrations.ddl_lock.database_ddl_lock` consume,
-and :class:`ConnectionSession` is the concrete one: a thin wrapper over a
-single connection that refuses anything shaped like a pool.
+and :class:`ConnectionSession` is the concrete one for a caller holding a
+plain connection: a thin wrapper over it that refuses anything shaped like a
+pool. a :class:`~threetears.core.data.store.DataStore` is the other way in:
+it pins itself to one connection (``DataStore.ddl_session``).
 """
 
 from __future__ import annotations
@@ -40,10 +42,11 @@ class MigrationSession(Protocol):
     every statement the runner issues -- the lock, the bookkeeping, every
     migration body's DDL -- goes through one of these two methods, and all of
     them must reach the same connection. the protocol cannot express that, so
-    the runner refuses the one store known not to honour it
-    (:class:`~threetears.core.data.store.DataStore`, which routes through its
-    registry's pool) and :class:`ConnectionSession` refuses a pool at
-    construction.
+    the runner pins a pool-backed :class:`~threetears.core.data.store.DataStore`
+    to one connection it acquires, and :class:`ConnectionSession` refuses a
+    pool at construction. a caller that passes any other implementation
+    promises it is one session; the lock's release reports loudly when it
+    was not.
     """
 
     async def execute(self, sql: str, *params: Any) -> str:

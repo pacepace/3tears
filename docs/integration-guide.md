@@ -155,8 +155,9 @@ Unless noted, these are exported from `threetears.core` (see §15).
   second consumer, so the registry is reusable across a stop/start.
 - **`DataStore`** -- the ergonomic front door. Wraps a registry, creates tables from
   declarative definitions, hands you collections by name (`store["my_table"]`),
-  exposes raw `query` / `execute`, and `run_migrations(runner)` (which pins one pooled
-  connection for the run; the runner itself refuses a `DataStore`).
+  exposes raw `query` / `execute`, and `run_migrations(runner)`. `create_table` runs its
+  DDL under the database-wide DDL lock; `ddl_session()` yields the store pinned to one
+  connection holding that lock, for DDL of your own.
 - **`BaseEntity`** -- a change-tracking record (`entity.field = x` marks it dirty)
   with optimistic concurrency (`date_updated` mismatch → `ConcurrentModificationError`).
   `await entity.save()` / `reload()`; `.id`, `.is_new`.
@@ -483,18 +484,22 @@ version-tagged async callables on it, register the package with a single
 `_schema_migrations` table keyed by `(version, package)`.
 
 ```python
-from threetears.core import DataStore
+from threetears.core import DataStore, TableDef, ColumnDef
 from threetears.core.data.migrations import (
-    ConnectionSession, MigrationRunner, PackageMigrations, MigrationScope,
+    MigrationRunner, PackageMigrations, MigrationScope,
 )
 
 pkg = PackageMigrations(name="myapp", scope=MigrationScope.AGENT)  # or .PLATFORM
 
 @pkg.version(1)
 async def create_widgets(store: DataStore) -> None:
-    await store.execute(
-        "CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY, name TEXT NOT NULL)"
-    )
+    await store.create_table(TableDef(
+        name="widgets",
+        columns=[
+            ColumnDef(name="id", column_type="uuid", primary_key=True),
+            ColumnDef(name="name", column_type="text", nullable=False),
+        ],
+    ))
 
 @pkg.version(2)
 async def add_email(store: DataStore) -> None:
@@ -507,12 +512,12 @@ async def drop_email(store: DataStore) -> None:
 runner = MigrationRunner()
 runner.register(pkg)
 
-# Apply (idempotent) on ONE connection whose search_path is the target schema, so
-# migration bodies use unqualified table names.
-async with pool.acquire() as conn:
-    applied = await runner.apply_for_agent_schema(ConnectionSession(conn))
-# or, from a DataStore: await store.run_migrations(runner) -- it pins a connection
-# isolation for package-local tests: await runner.apply_package(ConnectionSession(conn), "myapp")
+# Apply (idempotent). The DataStore is bound to its schema; the L3 layer sets
+# search_path, so migration bodies use unqualified table names. The runner pins the
+# store to one pooled connection for the whole run.
+applied = await runner.apply_for_agent_schema(store)   # or: await store.run_migrations(runner)
+# holding one plain connection instead: runner.apply_for_agent_schema(ConnectionSession(conn))
+# isolation for package-local tests: await runner.apply_package(store, "myapp")
 ```
 
 **One DDL job per database at a time.** Every run that writes -- both apply scopes,
@@ -521,12 +526,16 @@ lock (`threetears.core.data.migrations.database_ddl_lock`) from before it reads
 `_schema_migrations` until after its last row. It is keyed on `current_database()`, not
 the schema: on YugabyteDB two index builds in one database hang each other until the
 catalog-version wait times out, whichever schemas they are in. The lock is polled
-(`pg_try_advisory_lock`), never blocked on, and it is a session lock, so a run needs one
-connection: the runner refuses a pool-backed `DataStore`, and `ConnectionSession` refuses a
-pool. `MigrationRunner(lock_policy=DdlLockPolicy(max_wait=...))` bounds the wait with
-`DdlLockTimeoutError`. Any other code that runs DDL in the same database -- a background
-index build, a table created outside a migration -- must take the same lock, and code that
-abandons a long DDL statement must end its backend with `pg_terminate_backend`, since
+(`pg_try_advisory_lock`), never blocked on, and it is a session lock, so a run happens on
+one connection: a pool-backed `DataStore` is pinned to a connection the runner acquires,
+and every body receives a `DataStore` bound to it -- `execute`, `query` and `create_table`
+all reach the session that holds the lock, and a body's `create_table` does not take it
+twice. A caller holding one plain connection passes `ConnectionSession(conn)`, which refuses
+a pool. `MigrationRunner(lock_policy=DdlLockPolicy(max_wait=...))` bounds the wait with
+`DdlLockTimeoutError`. Outside a migration, `DataStore.create_table` takes the lock itself;
+any other code that runs DDL in the same database -- a background index build, a table
+created by hand -- must take it too (`store.ddl_session()` or `database_ddl_lock`), and code
+that abandons a long DDL statement must end its backend with `pg_terminate_backend`, since
 `pg_cancel_backend` does not stop a YugabyteDB index build.
 
 Rules that matter (full list in the how-to): **idempotent DDL only**
@@ -638,9 +647,9 @@ id.
   one-shot task per schema (not from every pod) so concurrent pods don't race the same
   DDL. It is idempotent and `(version, package)`-keyed, so re-runs are safe.
 - App counterpart: `await store.run_migrations(runner)` (=
-  `runner.apply_for_agent_schema(ConnectionSession(conn))` on one connection the store
-  acquires from its pool). Runs against one database take turns on the database-wide DDL
-  lock, so pods starting together are safe; they are serialised, not parallel.
+  `runner.apply_for_agent_schema(store)`, which pins one pooled connection for the run).
+  Runs against one database take turns on the database-wide DDL lock, so pods starting
+  together are safe; they are serialised, not parallel.
 
 **Step 3 -- Provision NATS (L2). Only if you run more than one pod.**
 - Inputs: a NATS URL (`nats://host:4222`); **JetStream enabled**; **persistent (file)

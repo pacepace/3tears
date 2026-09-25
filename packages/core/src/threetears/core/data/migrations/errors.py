@@ -5,9 +5,9 @@ the concrete error classes cover the distinct failure modes the runner
 surfaces to callers: duplicate version registration inside one package,
 unresolved or cyclic package dependencies at apply time, failure of an
 individual migration body, a bookkeeping ledger that disagrees with the
-code about which migration a version is, a store that is not one database
-session, and the database-wide DDL lock not being taken or not being
-given back.
+code about which migration a version is, a pool offered where one
+database session is needed, and the database-wide DDL lock not being
+taken or not being given back.
 """
 
 from __future__ import annotations
@@ -102,15 +102,15 @@ class MigrationFailedError(MigrationError):
 
 class SessionRequiredError(MigrationError):
     """
-    raised when a migration run is handed something that is not one database session.
+    raised when something shaped like a pool is offered as one database session.
 
-    the run holds a session-level advisory lock, and a session lock belongs to
-    one connection. a store that routes statements through a pool takes the
-    lock on one connection, runs the DDL on others and releases on whichever
-    it gets last -- and asyncpg's pool drops every advisory lock a connection
-    holds when the connection is returned, so the lock guards nothing at all.
-    this is raised before any statement runs, naming what was passed and how
-    to get a single connection instead.
+    :class:`~threetears.core.data.migrations.session.ConnectionSession` raises
+    it for anything with ``acquire()``. the DDL lock is a session-level
+    advisory lock, and a session lock belongs to one connection: a pool takes
+    it on one connection, runs the DDL on others and releases on whichever it
+    gets last -- and asyncpg's pool drops every advisory lock a connection
+    holds when the connection is returned, so the lock would guard nothing.
+    the message names what was passed and how to acquire one connection.
     """
 
 

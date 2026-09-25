@@ -11,9 +11,12 @@ what only a real engine can show:
   for, while it waits for the holder's lock
 - ``max_wait`` gives up with the typed error and runs nothing
 - a run that fails, or is cancelled mid-statement, leaves the lock free
-- ``DataStore.run_migrations`` holds the lock on the same connection its
-  migration bodies run on, and the premise behind refusing a pool: asyncpg's
-  pool drops a session lock the moment the connection is handed back
+- a pool-backed ``DataStore`` is pinned to one connection for a run: the
+  bodies -- ``create_table`` included -- run on the session holding the lock,
+  and dipp's shape (apply then downgrade through one DataStore) works
+- ``create_table`` outside a migration waits for the lock
+- the premise behind pinning: asyncpg's pool drops a session lock the moment
+  the connection is handed back
 
 each test gets its own database, so the lock these tests contend on is not
 the one the rest of the suite's migrations take on the shared container.
@@ -42,6 +45,7 @@ from threetears.core.data.migrations import (
     database_ddl_lock,
     ddl_lock_key,
 )
+from threetears.core.data.schema import ColumnDef, IndexDef, TableDef
 from threetears.core.data.store import DataStore
 
 pytestmark = pytest.mark.integration
@@ -375,8 +379,134 @@ async def test_data_store_run_migrations_holds_the_lock_on_its_bodies_session(lo
     assert await _lock_is_free(lock_db)
 
 
+async def _pooled_store(url: str, schema: str) -> tuple[asyncpg.Pool, DataStore]:
+    """
+    open a pool bound to a fresh schema and a DataStore over it.
+
+    :param url: database URL
+    :ptype url: str
+    :param schema: schema to create and bind every pooled connection to
+    :ptype schema: str
+    :return: the pool (for the caller to close) and the store
+    :rtype: tuple[asyncpg.Pool, DataStore]
+    """
+    admin = await asyncpg.connect(url)
+    try:
+        await admin.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    finally:
+        await admin.close()
+    pool = await asyncpg.create_pool(url, min_size=2, max_size=4, server_settings={"search_path": schema})
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    return pool, DataStore(uuid.uuid4(), registry)
+
+
+def _widgets() -> TableDef:
+    """
+    a table with one secondary index, as a create_table body builds it.
+
+    :return: the table definition
+    :rtype: TableDef
+    """
+    return TableDef(
+        name="widgets",
+        columns=[
+            ColumnDef(name="id", column_type="uuid", primary_key=True),
+            ColumnDef(name="label", column_type="text", nullable=False),
+        ],
+        indexes=[IndexDef(name="ix_widgets_label", columns=["label"])],
+    )
+
+
+async def test_a_body_create_table_runs_on_the_pinned_session_that_holds_the_lock(lock_db: str) -> None:
+    """a migration body's create_table builds its table and index on the run's own locked session."""
+    observed: dict[str, Any] = {}
+
+    async def _create(store: Any) -> None:
+        """create a table with an index, as dipp's v1 does, and look at the session doing it."""
+        before = (await store.query("SELECT pg_backend_pid() AS pid"))[0]["pid"]
+        await store.create_table(_widgets())
+        after = (await store.query("SELECT pg_backend_pid() AS pid"))[0]["pid"]
+        holds = await store.query(_HOLDS_THE_DDL_LOCK_SQL, DDL_LOCK_NAMESPACE, ddl_lock_key(database))
+        observed.update(before=before, after=after, holds=int(holds[0]["count"]))
+
+    admin = await asyncpg.connect(lock_db)
+    database = await admin.fetchval("SELECT current_database()")
+    await admin.close()
+    pool, store = await _pooled_store(lock_db, "agent_created")
+    try:
+        applied = await _runner(_create).apply_for_agent_schema(store)
+        index_valid = await pool.fetchval(
+            "SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = 'agent_created.ix_widgets_label'::regclass"
+        )
+    finally:
+        await pool.close()
+
+    assert applied == 1
+    assert observed["before"] == observed["after"]
+    # one hold: create_table ran under the run's lock and did not take it again
+    assert observed["holds"] == 1
+    assert index_valid is True
+    assert store["widgets"].table_name == "widgets"
+    assert await _lock_is_free(lock_db)
+
+
+async def test_dipp_shape_apply_then_downgrade_through_a_data_store(lock_db: str) -> None:
+    """apply_for_platform_schema then downgrade_for_scope, each handed the same pool-backed DataStore."""
+
+    async def _up(store: Any) -> None:
+        """create the table."""
+        await store.create_table(_widgets())
+
+    async def _down(store: Any) -> None:
+        """drop it."""
+        await store.execute("DROP TABLE IF EXISTS widgets")
+
+    pkg = PackageMigrations(name="dipp_shape", scope=MigrationScope.PLATFORM)
+    pkg.version(1)(_up)
+    pkg.downgrade(1)(_down)
+    runner = MigrationRunner(lock_policy=_POLL)
+    runner.register(pkg)
+    pool, store = await _pooled_store(lock_db, "platform_dipp")
+    try:
+        applied = await runner.apply_for_platform_schema(store)
+        created = await pool.fetchval("SELECT to_regclass('platform_dipp.widgets')")
+        rolled = await runner.downgrade_for_scope(store, MigrationScope.PLATFORM)
+        dropped = await pool.fetchval("SELECT to_regclass('platform_dipp.widgets')")
+        ledger = await pool.fetchval("SELECT count(*) FROM platform_dipp._schema_migrations")
+    finally:
+        await pool.close()
+
+    assert (applied, rolled) == (1, 1)
+    assert created is not None
+    assert dropped is None
+    assert ledger == 0
+    assert await _lock_is_free(lock_db)
+
+
+async def test_create_table_outside_a_migration_waits_for_the_lock(lock_db: str) -> None:
+    """create_table builds nothing while another session holds the database's DDL lock."""
+    holder = await asyncpg.connect(lock_db)
+    pool, store = await _pooled_store(lock_db, "app_tables")
+    try:
+        async with database_ddl_lock(ConnectionSession(holder), _POLL):
+            creating = asyncio.create_task(store.create_table(_widgets()))
+            await asyncio.sleep(0.5)
+            built_while_held = await pool.fetchval("SELECT to_regclass('app_tables.widgets')")
+            assert not creating.done()
+        await asyncio.wait_for(creating, 30)
+        built_after = await pool.fetchval("SELECT to_regclass('app_tables.widgets')")
+    finally:
+        await holder.close()
+        await pool.close()
+
+    assert built_while_held is None
+    assert built_after is not None
+    assert await _lock_is_free(lock_db)
+
+
 async def test_premise_an_asyncpg_pool_drops_a_session_lock_on_release(lock_db: str) -> None:
-    """a lock taken through Pool.execute is gone once the statement returns -- why a pool is refused."""
+    """a lock taken through Pool.execute is gone once the statement returns -- why a DataStore is pinned."""
     pool = await asyncpg.create_pool(lock_db, min_size=1, max_size=2)
     try:
         database = await pool.fetchval("SELECT current_database()")
