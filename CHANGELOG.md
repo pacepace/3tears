@@ -4,6 +4,40 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.52.0 -- unreleased
+
+### A pool replaces its connections when YugabyteDB wedges the sessions behind them
+
+A single-node YugabyteDB can wedge the tserver session behind an open connection
+after a Docker Desktop VM time discontinuity or CPU throttling. Every query on that
+connection that reaches the tserver then fails in milliseconds with SQLSTATE XX000,
+`Timed out waiting kResponseSent, state: ...`, while a fresh connection works.
+asyncpg never retired such a connection: the pool's reset query and a `SELECT 1`
+do not reach the tserver, and the LIFO pool keeps a busy connection too hot for
+`max_inactive_connection_lifetime`. A hub that sat through one refused every NATS
+login until someone terminated its backends by hand.
+
+`threetears.core.utils.YugabyteRpcTimeoutRecycler` watches every query on every
+connection of one pool through an asyncpg query logger, so collections and raw
+`pool.fetch` calls alike are covered. On the RPC timeout it calls
+`Pool.expire_connections()`, and asyncpg replaces each connection opened before
+the call at its next release or acquire, which retires every pre-wedge connection
+at once. The failed query still raises its own `InternalServerError`: terminating
+the connection from the logger instead makes asyncpg answer the caller with
+`InternalClientError`, which the integration tests prove. A connection opened
+before the last expiry does not expire the pool again, and two expiries are at
+least `DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES` (10s) apart, so a cluster failing new
+connections too is not met with a reconnect storm. A recycler never bound to its
+pool logs an ERROR naming the missing `bind` rather than doing nothing silently.
+
+    recycler = YugabyteRpcTimeoutRecycler(pool_name="hub_l3")
+    pool = await asyncpg.create_pool(dsn, init=recycler.init, **get_pg_pool_kwargs())
+    recycler.bind(pool)
+
+`recycler.init` runs `init_connection` first; a consumer composing its own `init`
+calls `recycler.watch(conn)` after it. `is_yugabyte_rpc_timeout(error)` is the one
+predicate for the error.
+
 ## v0.51.1 -- 2026-09-24
 
 ### A WebSocket chat message with nothing to route is refused, and cannot close the socket
