@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 import pytest
+from threetears.core.testing.migrations import uncontended_ddl_lock_rows
 
 from threetears.conversations.migrations import (
     PACKAGE_NAME,
@@ -31,7 +32,7 @@ from threetears.core.data.migrations import (
 )
 
 
-# parity-exempt: narrow migration-capture stub — emulates only the execute/fetch subset the MigrationRunner calls, not a DataStore substitute.
+# parity-with: threetears.core.data.migrations.session.MigrationSession
 class _FakeDataStore:
     """
     in-memory DataStore stub capturing every executed statement.
@@ -95,6 +96,9 @@ class _FakeDataStore:
         :return: list of row dicts
         :rtype: list[dict[str, Any]]
         """
+        lock_rows = uncontended_ddl_lock_rows(sql)
+        if lock_rows is not None:
+            return lock_rows
         normalized = " ".join(sql.split()).upper()
         result: list[dict[str, Any]]
         # Matched on the STABLE part of the statement, not its column list. The

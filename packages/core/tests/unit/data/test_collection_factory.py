@@ -31,6 +31,8 @@ from threetears.core.data.collection_factory import create_dynamic_collection
 from threetears.core.data.schema import ColumnDef, TableDef
 from threetears.core.data.store import DataStore
 
+from .migrations._fake_store import FakeLockingPool
+
 
 # parity-with: asyncpg.Record
 class FakeRecord:
@@ -251,7 +253,8 @@ class TestL2RegistryFallback:
         """closes the §13/2 gap: DataStore collections get L2 via the registry."""
         l2_client = object()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=l2_client, kv_key_scope="hub")
+        # create_table runs its DDL on one acquired connection under the DDL lock
+        registry.configure(l3_pool=FakeLockingPool(), l2_client=l2_client, kv_key_scope="hub")
         store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))
 
         collection = await store.create_table(_widgets_table())

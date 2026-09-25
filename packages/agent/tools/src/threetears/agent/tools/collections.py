@@ -28,6 +28,7 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.data.migrations import ConnectionSession, database_ddl_lock
 from threetears.observe import get_logger
 
 from threetears.agent.tools.entities import ContextItemEntity
@@ -469,7 +470,8 @@ async def migrate_context_items_schema(pool: Any) -> bool:
 
     safe to call on every startup -- detects whether migration is needed
     by probing the column list, and is a no-op if already up to date.
-    idempotent: uses IF EXISTS / IF NOT EXISTS throughout.
+    idempotent: uses IF EXISTS / IF NOT EXISTS throughout. the DDL runs on
+    one acquired connection holding the database-wide DDL lock.
 
     :param pool: asyncpg connection pool
     :ptype pool: Any
@@ -494,7 +496,9 @@ async def migrate_context_items_schema(pool: Any) -> bool:
 
     log.info("Migrating context_items schema to v0.5.0")
 
-    async with pool.acquire() as conn:
+    # DDL in a database the platform migrates runs under the database-wide DDL lock, on the
+    # connection that runs it: one DDL job per database at a time (see ddl_lock).
+    async with pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn)):
         async with conn.transaction():
             # Rename summary → short_desc
             if "summary" in col_names and "short_desc" not in col_names:
