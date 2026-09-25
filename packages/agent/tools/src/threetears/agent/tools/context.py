@@ -183,7 +183,7 @@ class ToolContextManager:
         )
         if existing is None and var_count >= self._var_limit:
             raise ValueError(
-                f"Variable limit reached ({self._var_limit}). Delete unused variables before adding new ones."
+                f"Variable limit reached ({self._var_limit}). Save over one you no longer need by reusing its name."
             )
         if len(value) > self._var_max_chars:
             # SDS-04: the agent reads this back later mid-sentence with nothing
@@ -818,12 +818,13 @@ class ToolContextManager:
         for ref in self._memory_refs_projection:
             itype = ref["item_type"]
             tag = f"[{itype}:{ref['item_id']}]"
-            items.append(f"- {tag} type: {itype} — {ref['short_desc']}")
+            items.append(f"- {tag} {ref['short_desc']}")
         # A description is the stored item's own opening words: fenced as
         # material, with the rule, since this block goes into a prompt this
         # code does not assemble.
         return (
-            "Previously recalled in this conversation (use memory_recall with the ID and type shown):\n"
+            "Previously recalled in this conversation. To open one again, memory_recall(<id>) "
+            "reads a memory, chunk_recall(<id>) a passage and memory_search(ids=[<id>]) a file:\n"
             + explained_fence("\n".join(items))
         )
 

@@ -146,10 +146,10 @@ async def _emit_intention_event(event: FrameworkEvent) -> None:
 class IntentionLogInput(BaseModel):
     """Input schema for the ``intention_log`` tool."""
 
-    content: str = Field(description="The standing want, in your own words. One clear sentence.")
+    content: str = Field(description="What you want, in your own words, in one sentence.")
     source_memory_id: str | None = Field(
         default=None,
-        description="Optional [memory:<id>] this want was deliberated from.",
+        description="Optional [memory:<id>] that this want came from.",
     )
 
 
@@ -160,16 +160,16 @@ class IntentionListInput(BaseModel):
         default=_DEFAULT_MAX_RESULTS,
         ge=1,
         le=100,
-        description="Max wants to return. 1-100.",
+        description="Most wants to list, 1-100.",
     )
 
 
 class IntentionMarkSurfacedInput(BaseModel):
     """Input schema for the ``intention_mark_surfaced`` tool."""
 
-    intention_id: str = Field(description="[intention:<id>] UUID to update.")
+    intention_id: str = Field(description="The id from an [intention:<id>] line.")
     new_status: str = Field(
-        description="asked (raised to the user) / granted / dropped.",
+        description="asked (you asked the person), granted, or dropped.",
     )
 
 
@@ -313,7 +313,7 @@ async def load_intention_log_tool(
                 )
                 return (
                     f"Refreshed existing want [intention:{existing_id}] "
-                    f"(similar at {float(row['similarity']):.0%}): {text}"
+                    f"(it was {float(row['similarity']):.0%} the same): {text}"
                 )
 
         source_conversation_id: UUID | None = None
@@ -362,10 +362,9 @@ async def load_intention_log_tool(
         return f"Logged as [intention:{intention_id}]: {text}"
 
     intention_log.description = (
-        "Record a standing want you hold — something you'd like to do, ask, "
-        "or return to across conversations. Dedups against your open wants: "
-        "logging the same want again reinforces it, it doesn't duplicate. "
-        "Returns [intention:<id>]."
+        "Write down something you want to do, ask or come back to, in any later "
+        "conversation. Writing down a want you already have makes it stronger instead "
+        "of adding it twice. Returns [intention:<id>]."
     )
     return [intention_log]
 
@@ -430,18 +429,17 @@ async def load_intention_list_tool(
             return _tool_error("intention_list", "query", str(exc))
 
         if not wants:
-            return "No open wants outside the cooldown window."
+            return "No open wants to raise now. Any you asked about recently are held back for a while."
 
         wants = wants[: max(1, min(limit, max_results))]
-        lines = [f"{len(wants)} open want(s), most salient first:"]
+        lines = [f"{len(wants)} open want(s), strongest first:"]
         for w in wants:
-            lines.append(f"- [intention:{w.intention_id}] (salience {float(w.salience):.2f}) {w.content}")
+            lines.append(f"- [intention:{w.intention_id}] {w.content}")
         return "\n".join(lines)
 
     intention_list.description = (
-        "List your open standing wants that are worth acting on right now — "
-        "outside the recent-surfacing cooldown, most salient first. Use this "
-        "when deliberating what (if anything) to raise. Returns [intention:<id>] items."
+        "List your open wants, strongest first, leaving out any you asked about recently. "
+        "Use it when you decide whether to raise one. Returns [intention:<id>] lines."
     )
     return [intention_list]
 
@@ -550,8 +548,7 @@ async def load_intention_mark_surfaced_tool(
         return f"Marked [intention:{want_uuid}] as {status}."
 
     intention_mark_surfaced.description = (
-        "Move a want forward: 'asked' once you've raised it to the user, "
-        "'granted' or 'dropped' once resolved. Stamps the cooldown clock so "
-        "an asked want isn't re-raised immediately. Takes an [intention:<id>]."
+        "Mark a want 'asked' once you have asked the person, and 'granted' or 'dropped' once "
+        "it is settled. An asked want is held back from intention_list for a while."
     )
     return [intention_mark_surfaced]

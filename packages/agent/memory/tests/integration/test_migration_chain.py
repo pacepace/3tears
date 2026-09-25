@@ -18,6 +18,7 @@ import pytest
 
 from threetears.agent.memory.collections import _MEMORIES_SELECT_COLUMNS
 from threetears.agent.memory.entities import MemoryEntity
+from threetears.agent.memory.migrations import drop_search_vector_gin_indexes
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.data.migrations import MigrationRunner
@@ -26,6 +27,17 @@ from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
+
+#: every GIN index over a ``search_vector`` column the chain ever created; v027
+#: drops all of them. two copies per table: v005/v006/v007 and v022.
+_DROPPED_SEARCH_VECTOR_GIN_INDEXES: tuple[str, ...] = (
+    "idx_mem_search_vector",
+    "idx_memories_search_vector",
+    "idx_mc_search_vector",
+    "idx_media_content_search_vector",
+    "idx_chunks_search_vector",
+    "idx_memory_chunks_search_vector",
+)
 
 
 def _build_runner() -> MigrationRunner:
@@ -261,10 +273,10 @@ class TestFullChainApplies:
             assert "embedding" in chunk_cols
             assert "search_vector" in chunk_cols
 
-            # FTS indexes present
-            assert await _index_exists(conn, schema, "idx_mem_search_vector")
-            assert await _index_exists(conn, schema, "idx_mc_search_vector")
-            assert await _index_exists(conn, schema, "idx_chunks_search_vector")
+            # v027 dropped every GIN index over search_vector: keyword
+            # predicates go through gin_filter, so none of them had a reader.
+            for index_name in _DROPPED_SEARCH_VECTOR_GIN_INDEXES:
+                assert not await _index_exists(conn, schema, index_name), index_name
 
             # unified-memory parent FKs (v017) — chunks -> memories and
             # media -> memories, both CASCADE on memory delete.
@@ -702,6 +714,59 @@ class TestScopeRelaxationAndSalience:
             assert entity.salience == 0.9
             assert entity.evergreen is True
             assert entity.superseded_by == gist_id
+        finally:
+            await conn.close()
+
+
+class TestSearchVectorGinIndexesDropped:
+    """v027 drops every GIN index over ``search_vector`` and keeps ``idx_memories_tags``."""
+
+    async def test_v027_drops_both_copies_on_every_table_and_keeps_tags(self, pg_schema: tuple[str, str]) -> None:
+        """a schema migrated to v026 carries six search_vector GIN indexes; v027 removes all six.
+
+        the v026 checkpoint is the non-vacuity guard: it proves every name
+        asserted absent afterwards really existed on an upgraded schema, so
+        the absence is the drop and not a typo. the columns and the FTS
+        triggers survive, and the tags GIN index that ``tags @>`` reads stays.
+
+        :param pg_schema: (url, schema) tuple
+        :ptype pg_schema: tuple[str, str]
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store, target=26)  # type: ignore[arg-type]
+            for index_name in _DROPPED_SEARCH_VECTOR_GIN_INDEXES:
+                assert await _index_exists(conn, schema, index_name), f"{index_name} missing at v026"
+            assert await _index_exists(conn, schema, "idx_memories_tags")
+
+            applied = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            assert applied >= 1
+
+            for index_name in _DROPPED_SEARCH_VECTOR_GIN_INDEXES:
+                assert not await _index_exists(conn, schema, index_name), f"{index_name} survived v027"
+            assert await _index_exists(conn, schema, "idx_memories_tags")
+            for table in ("memories", "media_content", "memory_chunks"):
+                assert "search_vector" in await _columns(conn, schema, table), table
+            triggers = await conn.fetch(
+                "SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = $1",
+                schema,
+            )
+            trigger_names = {r["trigger_name"] for r in triggers}
+            assert {
+                "memories_search_vector_trigger",
+                "media_content_search_vector_trigger",
+                "memory_chunks_search_vector_trigger",
+            } <= trigger_names
+
+            # replay is a no-op: nothing pending, and the DROP ... IF EXISTS
+            # body itself tolerates indexes that are already gone.
+            assert await runner.apply_for_agent_schema(store) == 0  # type: ignore[arg-type]
+            await drop_search_vector_gin_indexes(store)  # type: ignore[arg-type]
+            assert await _index_exists(conn, schema, "idx_memories_tags")
         finally:
             await conn.close()
 

@@ -89,30 +89,30 @@ LedgerCallback = Callable[[str, str, str], Awaitable[None]]
 class MemorySearchInput(BaseModel):
     """Input schema for memory_search tool."""
 
-    query: str = Field(default="", description="Search text.")
+    query: str = Field(default="", description="What to look for.")
     type_filter: str | None = Field(
         default=None,
-        description="Filter by type: preference, fact, decision, topical_context.",
+        description="Only memories of this type: preference, fact, decision, topical_context or relational_context.",
     )
     ids: list[str] | None = Field(
         default=None,
-        description="Direct lookup by [memory:<id>]. Bypasses search.",
+        description="Ids to open without searching: the id from a [memory:<id>], [media:<id>] or [chunk:<id>] line.",
     )
     alias: str | None = Field(
         default=None,
-        description="Direct lookup by named alias set via memory_add.",
+        description="Open the memory given this name with memory_add.",
     )
     mode: str = Field(
         default="balanced",
-        description="precise (exact wording) / balanced (default) / fuzzy (concepts).",
+        description="precise matches exact words, fuzzy matches loosely, balanced (default) is between.",
     )
     date_after: str | None = Field(
         default=None,
-        description="ISO date or datetime. Only memories on/after.",
+        description="ISO date or datetime. Only items written on or after it.",
     )
     date_before: str | None = Field(
         default=None,
-        description="ISO date or datetime. Only memories on/before.",
+        description="ISO date or datetime. Only items written on or before it.",
     )
 
     @model_validator(mode="after")
@@ -158,23 +158,23 @@ class MemoryRecallInput(BaseModel):
 
     memory_id: str = Field(
         default="",
-        description="[memory:<id>] UUID. Required unless alias is set.",
+        description="The id from a [memory:<id>] line. Give this or alias.",
     )
     alias: str | None = Field(
         default=None,
-        description="Named alias set via memory_add. Alternative to memory_id.",
+        description="The name given to the memory with memory_add. Give this or memory_id.",
     )
     chunk_query: str | None = Field(
         default=None,
-        description="Search inside chunks. Mutually exclusive with chunk_indexes / chunk_id_after / chunk_id_before.",
+        description="Show only the parts that match this text.",
     )
     chunk_indexes: list[int] | None = Field(
         default=None,
-        description="Specific chunk positions (zero-based).",
+        description="Show only the parts at these positions, counting from 0.",
     )
-    chunk_id_after: str | None = Field(default=None, description="Forward cursor. [chunk:<id>] UUID.")
-    chunk_id_before: str | None = Field(default=None, description="Backward cursor. Same format.")
-    limit: int = Field(default=5, ge=1, le=50, description="Max chunks. 1-50.")
+    chunk_id_after: str | None = Field(default=None, description="Show the parts after this [chunk:<id>].")
+    chunk_id_before: str | None = Field(default=None, description="Show the parts before this [chunk:<id>].")
+    limit: int = Field(default=5, ge=1, le=50, description="Most parts to show, 1-50.")
 
     @model_validator(mode="after")
     def _validate(self) -> "MemoryRecallInput":
@@ -352,14 +352,14 @@ async def _search_by_ids(
         parts.append(f"Found {len(mem_rows)} memories:")
         for row in mem_rows:
             mid = str(row["memory_id"])
-            parts.append(f"- [mem:{mid}] [{row['type_memory']}] {row['content']}")
+            parts.append(f"- [memory:{mid}] [{row['type_memory']}] {row['content']}")
             if ledger_callback:
                 await ledger_callback(mid, "memory", row["content"])
 
     if mc_rows:
         if parts:
             parts.append("")
-        parts.append(f"Found {len(mc_rows)} media items:")
+        parts.append(f"Found {len(mc_rows)} files:")
         for row in mc_rows:
             cid = str(row["content_id"])
             title = _extract_title(row["metadata_json"])
@@ -374,7 +374,7 @@ async def _search_by_ids(
     if chunk_rows:
         if parts:
             parts.append("")
-        parts.append(f"Found {len(chunk_rows)} document chunks:")
+        parts.append(f"Found {len(chunk_rows)} passages:")
         for row in chunk_rows:
             ckid = str(row["chunk_id"])
             title = _extract_title(row["metadata_json"])
@@ -491,7 +491,7 @@ async def load_memory_search_tool(
                 return f"No memory found with alias '{alias}'."
             mid = str(row["memory_id"])
             ts = _fmt_dt(row.get("date_created"))
-            preview = f"[mem:{mid}] [{row['type_memory']}]"
+            preview = f"[memory:{mid}] [{row['type_memory']}]"
             if ts:
                 preview += f" [{ts}]"
             preview += f" {row['content']}"
@@ -712,7 +712,7 @@ async def load_memory_search_tool(
             parts.append(f"Found {len(memories)} relevant memories:")
             for m in memories:
                 ts = _fmt_dt(m.get("date_created"))
-                tag = f"[mem:{m['memory_id']}]"
+                tag = f"[memory:{m['memory_id']}]"
                 if ts:
                     parts.append(f"- {tag} [{m['type']}] [{ts}] {m['content']}")
                 else:
@@ -720,7 +720,7 @@ async def load_memory_search_tool(
 
         if media_results:
             parts.append("")
-            parts.append(f"Found {len(media_results)} relevant media items:")
+            parts.append(f"Found {len(media_results)} files:")
             for mr in media_results:
                 ts = _fmt_dt(mr.get("date_created"))
                 ts_suffix = f" (created: {ts})" if ts else ""
@@ -733,7 +733,7 @@ async def load_memory_search_tool(
 
         if doc_chunks:
             parts.append("")
-            parts.append(f"Found {len(doc_chunks)} relevant document excerpts:")
+            parts.append(f"Found {len(doc_chunks)} passages:")
             for c in doc_chunks:
                 loc_parts = []
                 if c.get("title"):
@@ -765,13 +765,10 @@ async def load_memory_search_tool(
         return "\n".join(parts)
 
     memory_search.description = (
-        "Search stored memories by meaning or keyword. Use first "
-        "when resuming a topic. Returns [memory:<id>] matches with "
-        "relevance scores.\n\n"
-        "- `ids` — direct fetch by [memory:<id>], bypasses search\n"
-        "- `alias` — direct fetch by named anchor (set via memory_add)\n"
-        "- `mode` — precise (exact wording) / balanced (default) / fuzzy (concepts)\n"
-        "- `date_after`, `date_before` — narrow by ISO date range"
+        "Search your memories, the files you have seen and your past conversations. "
+        "Use it first when a topic comes back. Returns [memory:<id>], [media:<id>] "
+        "and [chunk:<id>] lines. Pass ids to open items you already have, alias to "
+        "open a named memory, and date_after or date_before to limit by date."
     )
 
     return [memory_search]
@@ -895,7 +892,7 @@ async def load_memory_recall_tool(
             agent_id=agent_id,
         )
         if memory_content is None:
-            return "Memory not found or access denied."
+            return "No memory with that id that you can read."
 
         # ── chunks (mode dispatch) ──────────────────────────────
         chunks: list[dict[str, Any]] = []
@@ -998,32 +995,21 @@ async def load_memory_recall_tool(
         ]
         if chunks:
             lines.append("")
-            lines.append(f"Chunks ({len(chunks)} returned, mode={mode_name}):")
+            lines.append(f"Parts ({len(chunks)}):")
             for ch in chunks:
                 cid = ch.get("chunk_id", "?")
                 idx = ch.get("chunk_index", "?")
                 preview = (ch.get("content") or "")[:200]
-                lines.append(f"  [chunk:{cid}] (index={idx})\n  {preview}")
-            # v0.7.2 visibility hint: tell the agent how to drill INTO
-            # the chunks via search rather than re-paging the same
-            # window. Only shows when chunks were actually returned --
-            # the hint is noise on memories with no chunks.
-            lines.append("")
-            lines.append(
-                "To search inside this memory's chunks by topic, call "
-                f"``memory_recall('{mem_uuid}', chunk_query='<your text>')``. "
-                "For semantic search across ALL chunks the user owns, "
-                "use ``chunk_search``."
-            )
+                lines.append(f"  [chunk:{cid}] (position {idx})\n  {preview}")
         else:
             lines.append("")
-            lines.append("(no chunks)")
+            lines.append("(no parts)")
         return "\n".join(lines)
 
     memory_recall.description = (
-        "Pull full content + chunk previews for a known [memory:<id>] "
-        "(or a named alias). Pass chunk_query to narrow inside it, "
-        "or chunk_indexes / chunk_id_after / chunk_id_before to page."
+        "Read a whole memory by its [memory:<id>] or its alias, with the first parts of "
+        "what it came from. Pass chunk_query to show only the parts about something, "
+        "or chunk_indexes, chunk_id_after or chunk_id_before to show other parts."
     )
 
     return [memory_recall]
@@ -1044,7 +1030,7 @@ class MemoryAddInput(BaseModel):
     """
 
     content: str = Field(
-        description="What's worth preserving. About the user, yourself, or a moment.",
+        description="What to remember, in your own words.",
     )
     memory_type: str = Field(
         default="preference",
@@ -1053,8 +1039,8 @@ class MemoryAddInput(BaseModel):
     alias: str | None = Field(
         default=None,
         description=(
-            "Optional named anchor (e.g. 'cave-altar'). 1-64 chars, "
-            "letters/digits/hyphens/underscores. Unique per user."
+            "Optional name to open it by later, e.g. 'cave-altar'. 1-64 letters, "
+            "digits, hyphens or underscores. Each name is used once."
         ),
     )
 
@@ -1253,10 +1239,8 @@ async def load_memory_add_tool(
                     return (
                         f"Updated existing memory "
                         f"[memory:{existing_id}] "
-                        f"(was similar at {float(row['similarity']):.0%}): "
-                        f"{content}. "
-                        f"Use ``memory_recall('{existing_id}')`` to "
-                        f"read the full updated record."
+                        f"(it was {float(row['similarity']):.0%} the same): "
+                        f"{content}."
                     )
         except Exception as exc:
             log.warning(
@@ -1302,11 +1286,7 @@ async def load_memory_add_tool(
             # v0.7.2: surface ``[memory:<id>]`` so the agent can chain
             # to memory_recall without a follow-up memory_search.
             alias_clause = f" with alias '{normalised_alias}'" if normalised_alias is not None else ""
-            return (
-                f"Stored as [memory:{memory_id}]{alias_clause}: {content}. "
-                f"Use ``memory_recall('{memory_id}')`` to read it back "
-                f"in any future conversation."
-            )
+            return f"Stored as [memory:{memory_id}]{alias_clause}: {content}."
 
         except Exception as exc:
             # v0.7.5: surface alias-uniqueness collisions cleanly. The
@@ -1332,13 +1312,9 @@ async def load_memory_add_tool(
             return _tool_error("memory_add", "store", exc_msg)
 
     memory_add.description = (
-        "Store something worth preserving across conversations — "
-        "about the user, yourself, or anything you want to remember. "
-        "Preferences, facts, decisions, observations, moments — "
-        "use liberally. Deduplicates automatically at 90% similarity.\n\n"
-        "- `memory_type` — preference / fact / decision / topical_context / relational_context\n"
-        "- `alias` — optional named anchor for direct lookup later (e.g. 'cave-altar')\n\n"
-        "Returns [memory:<id>]."
+        "Remember something for every later conversation: about the person, about you, "
+        "or anything else. Use it often. A memory that is nearly the same as one you "
+        "have updates that one instead. Returns [memory:<id>]."
     )
 
     return [memory_add]
@@ -1359,7 +1335,7 @@ class ChunkRecallInput(BaseModel):
     plus parent-memory context.
     """
 
-    chunk_id: str = Field(description="[chunk:<id>] UUID.")
+    chunk_id: str = Field(description="The id from a [chunk:<id>] line.")
 
 
 class ChunkSearchInput(BaseModel):
@@ -1371,11 +1347,11 @@ class ChunkSearchInput(BaseModel):
     most relevant chunks regardless of which memory they belong to.
     """
 
-    query: str = Field(description="Search text.")
-    limit: int = Field(default=5, ge=1, le=20, description="Max chunks. 1-20.")
+    query: str = Field(description="What to look for.")
+    limit: int = Field(default=5, ge=1, le=20, description="Most passages to return, 1-20.")
     mode: str = Field(
         default="balanced",
-        description=("Search blend: precise (favor exact wording), balanced (default), fuzzy (favor concepts)."),
+        description="precise matches exact words, fuzzy matches loosely, balanced (default) is between.",
     )
 
     @model_validator(mode="after")
@@ -1452,22 +1428,12 @@ async def load_chunk_recall_tool(
             agent_id=agent_id,
         )
         if chunk_row is None:
-            return (
-                "Chunk not found or access denied. Verify the "
-                "``chunk_id`` came from a recent ``chunk_search`` "
-                "result in this user's namespace."
-            )
+            return "No passage with that id that you can read. Use an id from a [chunk:<id>] line you were shown."
         content, parent_memory_id = chunk_row
-        return (
-            f"{content}\n\n"
-            f"[parent memory: {parent_memory_id!s}]\n"
-            f"Next step: call ``memory_recall('{parent_memory_id!s}')`` "
-            f"to read the parent memory and its other chunks for "
-            f"surrounding context."
-        )
+        return f"{content}\n\nFrom [memory:{parent_memory_id!s}]."
 
     chunk_recall.description = (
-        "Read exact text of one chunk by [chunk:<id>]. Returns the slice verbatim plus its parent [memory:<id>]."
+        "Read the exact words of one passage by its [chunk:<id>]. Also names the [memory:<id>] it belongs to."
     )
 
     return [chunk_recall]
@@ -1535,7 +1501,7 @@ async def load_chunk_search_tool(
 
         embedding = await _safe_aembed_query(embedding_provider, query)
         if embedding is None:
-            return "Embedding unavailable; cannot search chunks."
+            return "Passage search is down; try memory_search."
 
         # v0.7.5: ``mode`` remaps the semantic/keyword blend so the
         # agent can self-correct between "I want similar concepts"
@@ -1562,7 +1528,7 @@ async def load_chunk_search_tool(
             return _tool_error("chunk_search", "search", str(exc))
 
         if not results:
-            return "No chunks matched."
+            return "No passages matched."
 
         results = results[:limit]
         lines: list[str] = []
@@ -1573,14 +1539,7 @@ async def load_chunk_search_tool(
             memory_id_str = str(memory_id) if memory_id is not None else "?"
             content = str(r.get("content", "") or "")
             preview = content[:200]
-            score = r.get("hybrid_score") or r.get("similarity") or 0.0
-            lines.append(
-                f"[chunk:{chunk_id}] (memory:{memory_id_str}, "
-                f"score={score:.3f})\n{preview}\n"
-                f"Next step: ``chunk_recall('{chunk_id}')`` for full "
-                f"text, or ``memory_recall('{memory_id_str}')`` for "
-                f"the parent memory."
-            )
+            lines.append(f"[chunk:{chunk_id}] (from [memory:{memory_id_str}])\n{preview}")
             if ledger_callback is not None:
                 try:
                     await ledger_callback(chunk_id, "chunk", preview[:80])
@@ -1594,11 +1553,9 @@ async def load_chunk_search_tool(
         return "\n\n".join(lines)
 
     chunk_search.description = (
-        "Hybrid vector + keyword search across every stored memory's "
-        "text. Use when you need a specific line or detail, not just "
-        "a topic. Pass mode='precise' to favor exact wording, "
-        "'fuzzy' for concepts (default 'balanced'). "
-        "Returns [chunk:<id>] (memory:<id>, score=X) previews."
+        "Search the exact words of your memories, files and past conversations. Use it "
+        "for a specific line or detail, not a topic. Returns [chunk:<id>] lines; "
+        "chunk_recall reads one in full."
     )
 
     return [chunk_search]

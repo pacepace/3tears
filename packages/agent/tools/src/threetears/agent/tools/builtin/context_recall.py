@@ -37,10 +37,7 @@ class ContextRecallInput(BaseModel):
     """Input for the context_recall tool."""
 
     context_id: str = Field(
-        description=(
-            "The context id to recall, as shown in a tool result's "
-            "'[ctx:<id>]' handle. Either '<id>' or 'ctx:<id>' is accepted."
-        ),
+        description="The id in a [ctx:<id>] mark, with or without the ctx: part.",
     )
 
 
@@ -82,10 +79,7 @@ class ContextRecallTool(TearsTool):
         "properties": {
             "context_id": {
                 "type": "string",
-                "description": (
-                    "The context id to recall, as shown in a tool result's "
-                    "'[ctx:<id>]' handle. Either '<id>' or 'ctx:<id>' is accepted."
-                ),
+                "description": "The id in a [ctx:<id>] mark, with or without the ctx: part.",
             },
         },
         "required": ["context_id"],
@@ -113,13 +107,13 @@ class ContextRecallTool(TearsTool):
         if not context_id:
             result = ToolResult(
                 success=False,
-                content="context_recall requires a non-empty context_id.",
+                content="Give context_recall the context_id from a [ctx:<id>] mark.",
                 error="missing context_id",
             )
         elif manager is None:
             result = ToolResult(
                 success=False,
-                content="context recall unavailable: no conversation context in this call scope.",
+                content="Saved results are unavailable here: this call is not part of a conversation.",
                 error="no context manager in scope",
             )
         else:
@@ -127,7 +121,7 @@ class ContextRecallTool(TearsTool):
             if item is None:
                 result = ToolResult(
                     success=False,
-                    content=f"context item not found for id: {context_id}",
+                    content=f"Saved result '{context_id}' not found in this conversation.",
                     error="not found",
                 )
             else:

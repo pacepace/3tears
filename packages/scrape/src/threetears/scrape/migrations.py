@@ -12,13 +12,9 @@ though several packages can apply against the same PLATFORM schema.
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
-import uuid_utils
-from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
+from threetears.core.data.migrations import ConnectionSession, MigrationRunner, MigrationScope, PackageMigrations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -321,21 +317,17 @@ async def v012_target_health_robots_block(store: DataStore) -> None:
 async def apply_migrations(pool: Any) -> None:
     """Apply every pending 3tears-scrape migration against ``pool`` via MigrationRunner.
 
-    A throwaway registry/config bound to ``pool`` and a ``DataStore`` wrapping
-    it. ``DataStore`` requires an ``agent_id`` (3tears' per-agent-schema
-    concept), inert here: scrape's tables are a single fixed PLATFORM-scope
-    schema shared by every caller, not per-agent state, so the value only has
-    to exist, not to mean anything.
+    Acquires ONE connection from ``pool`` and hands the runner a ``ConnectionSession`` over
+    it for the whole run: the runner holds the database-wide DDL lock, a session lock that
+    lives on exactly one connection, and asyncpg's pool releases every advisory lock when a
+    connection is returned to it. The acquired connection keeps the pool's ``search_path``,
+    which is what binds the run to scrape's schema.
 
     :param pool: asyncpg-compatible pool
     :ptype pool: Any
     """
-    registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
-    config = DefaultCoreConfig()
-    store = DataStore(agent_id=uuid.UUID(str(uuid_utils.uuid7())), registry=registry, config=config)
-
     runner = MigrationRunner()
     register(runner)
-    applied = await runner.apply_for_platform_schema(store)
+    async with pool.acquire() as conn:
+        applied = await runner.apply_for_platform_schema(ConnectionSession(conn))
     log.info("migrations: %d applied via MigrationRunner (package=%s)", applied, PACKAGE_NAME)

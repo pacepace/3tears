@@ -4,7 +4,216 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.52.1 -- unreleased
+## v0.53.0 -- 2026-09-25
+
+### One migration per database at a time: the database-wide DDL lock
+
+Measured on YugabyteDB 2026.1: two `CREATE INDEX` statements in one database, on the same
+table or on different ones, both hang until the catalog-version wait times out
+(`yb_wait_for_backends_catalog_version_timeout`, 900s) and leave both indexes invalid. A
+build waits for every running statement and open transaction in its database. Other
+databases are unaffected. `MigrationRunner` locked per SCHEMA, so two agent schemas of one
+database -- two hub replicas starting together -- migrated at once, which is exactly that
+case. It also took the lock with the blocking `pg_advisory_lock`: on PostgreSQL a session
+blocked there is a running statement that a `CREATE INDEX CONCURRENTLY` held by the lock
+holder waits for, a deadlock; on YugabyteDB it errors as soon as the lock is contended.
+
+- **New (minor):** `threetears.core.data.migrations.ddl_lock` --
+  `database_ddl_lock(session, policy)`, an async context manager holding the lock keyed on
+  `(DDL_LOCK_NAMESPACE, ddl_lock_key(current_database()))`. It polls `pg_try_advisory_lock`
+  every `DdlLockPolicy.poll_interval` (default 1s) and holds no statement open between
+  polls; logs at INFO while waiting, naming the database and the time waited (every
+  `log_interval`, default 30s); gives up after `max_wait` with `DdlLockTimeoutError` (default:
+  no deadline); and releases on the same session however the body ends. When the body
+  completed but the unlock fails or finds the lock not held, it raises `DdlLockReleaseError`
+  -- close or terminate the connection, do not return it to a pool. When the body itself
+  raised (a cancellation included), the body's exception propagates, with the release failure
+  logged at ERROR and attached as a note, so a failed migration still reads as one and a
+  timeout wrapper still sees its cancellation.
+- **New (minor):** `MigrationSession` (the `execute` / `query` protocol the runner consumes)
+  and `ConnectionSession(conn)`, which wraps exactly one plain connection and raises
+  `SessionRequiredError` for anything with `acquire()` (an asyncpg pool, an `L3Backend`).
+  `threetears.core.testing.uncontended_ddl_lock_rows(sql)` answers the lock's three statements
+  for an in-memory session fake.
+- **New (minor):** a `DataStore` can be bound to one session. `DataStore.ddl_session(policy)`
+  yields the store pinned to one connection (acquired from its pool, or its own session)
+  holding the DDL lock; `DataStore.over_session(session, holds_ddl_lock=False)` builds a
+  store over a caller's session. A bound store
+  sends `execute`, `query` and `create_table` to that session and shares its parent's
+  registry and collections, so a collection it creates outlives the session.
+  `holds_ddl_lock` and `is_bound_to_session` say which kind a store is.
+- **Changed:** every `MigrationRunner` entry point that writes -- `apply_for_platform_schema`,
+  `apply_for_agent_schema`, `apply_package`, `downgrade_for_scope` and now `stamp_version` --
+  runs on one connection holding the database-wide lock for the whole run. It takes a
+  `DataStore` (pinned to a connection it acquires) or any `MigrationSession` (wrapped with
+  `DataStore.over_session`), and every migration body receives a `DataStore` bound to that
+  connection -- so `MigrationFunc`'s `store: DataStore` is what a body actually gets, and a
+  body's `create_table` runs on the run's session without taking the lock again. The
+  per-schema key and its namespace are gone. `MigrationRunner(lock_policy=DdlLockPolicy(...))`
+  sets how a run waits.
+- **Changed:** `DataStore.create_table` takes the DDL lock itself, on the one connection that
+  runs its `CREATE TABLE` and `CREATE INDEX` statements (inside a migration run, the run's).
+  The writing entry points check for `_schema_migrations` (`to_regclass`) inside their locked
+  section and create it only when missing. The read paths -- `get_applied_history`,
+  `current_versions`, `preview_for_scope` -- never create it: a missing ledger reads as nothing
+  applied, so they issue no DDL and take no lock, and a preview still runs against an
+  in-memory shim (the aibots hub's `migrations check` does exactly that).
+  `threetears.agent.tools.migrate_context_items_schema` runs its `ALTER TABLE`s under the lock.
+- **Fixed -- a pool-backed store held no lock at all.** asyncpg's pool runs
+  `SELECT pg_advisory_unlock_all()` when a connection is handed back, so a lock taken through
+  `DataStore.execute` (one pooled connection per statement) was dropped the moment it was
+  taken, and the unlock at the end ran on some other connection. `DataStore.run_migrations`
+  and `threetears.scrape.migrations.apply_migrations(pool)` both ran that way. The runner now
+  pins a pool-backed `DataStore` to one connection for the run, and scrape acquires one
+  connection itself and passes it as a `ConnectionSession`.
+- `LedgerMismatchError` is exported from `threetears.core.data.migrations`.
+- An in-memory session fake that answers unknown queries with no rows now fails with
+  `DdlLockError` ("current_database() returned no row") instead of running unlocked: a real
+  PostgreSQL session always answers the lock.
+
+**Consumers:**
+
+- **aibots hub:** its data-sync background index builds and its template-table DDL must take
+  this same lock (`database_ddl_lock(ConnectionSession(conn), policy)`, or
+  `DataStore.ddl_session`) -- they run DDL in the database the runner migrates, and a build
+  outside the lock reintroduces the concurrency the lock removes. Reconcile across hub
+  replicas now serialises: platform and agent migrations on one database take turns, and time
+  spent waiting for the lock counts against any timeout the caller wraps around a run
+  (`AGENT_MIGRATION_TIMEOUT_SECONDS`), so either size that timeout for the queue or pass a
+  `max_wait` and handle `DdlLockTimeoutError`. Code that abandons a long DDL statement must end
+  its backend with `pg_terminate_backend`: `pg_cancel_backend` does not stop a YugabyteDB
+  index build, and a build whose client disconnected keeps running, and keeps its session's
+  DDL lock, until it finishes. The hub's three private one-connection store wrappers can
+  become `ConnectionSession`, and their `# type: ignore[arg-type]` on the runner calls are no
+  longer needed.
+- **dipp:** no call-site change. `DippMetadataStore.connect` (`apply_for_platform_schema` with
+  its pool-backed `DataStore`) and `scripts/ops/rollback_migration.py` (`downgrade_for_scope`
+  with the store from `open_migration_store`) now run on one pinned connection under the lock,
+  and the v1 body's `store.create_table` runs on it. The boot loop's `create_table` for
+  unregistered collections takes the lock per call. Its unit tests replace the runner with
+  doubles and its integration tests use a real database, so none needs a change; parallel
+  test workers migrating one database now take turns on the lock.
+- `DataStore.create_table` now needs the L3 backend's `acquire()`: a fake pool without one
+  fails there.
+- A test fake passed to a writing runner method must answer `current_database()`,
+  `pg_try_advisory_lock` and `pg_advisory_unlock` (`uncontended_ddl_lock_rows` does). One
+  that answers `to_regclass(...)` with no rows reads as "no ledger": a writing run then creates
+  it again (`IF NOT EXISTS`) and a read path reports nothing applied; answer
+  `[{"present": ...}]` to model the ledger.
+- Rolling deploy: a pod on 0.52 locks per schema under the old namespace and a pod on 0.53
+  locks per database under the new one, so the two do not exclude each other while both run.
+  Do not start migrations from both versions at once.
+
+### Every text an agent reads is written in plain words
+
+A consumer's replies drifted into the model's own register, and the text the
+platform hands a model was a large part of why: tool descriptions, tool results,
+the memory block and the default prompts were written in storage and pipeline
+words ("chunk", "slice", "cursor", "handle", "surface", "salient") and led with
+their preamble. A model copies the style of what it reads.
+
+Each is rewritten bottom line first, short, with no jargon and no storage words.
+Some named things that did not exist or said things that were not true, and now
+do not:
+
+- `memory_search` described `[memory:<id>]` hits with relevance scores; it
+  prints `[mem:<id>]` and no scores. Its description now says what it returns.
+- The recall ledger told the model to pass a `type` that `memory_recall` does
+  not take, and repeated each line's type after its tag. It names the right
+  tool for each kind instead.
+- `invoke_tool_llm`'s redirect named `recall_context`; the bound tool is
+  `context_recall`, whose description now says to pass the id after `ctx:`.
+- `current_date` said it defaults to the agent's timezone; a consumer passes the
+  person's. It now says so.
+- `list_todos` and `analyze_media` take a `markdown` setting. Markdown stays the
+  default (headings and checkboxes; the markdown ask and bold result labels);
+  `markdown=False` gives plain lines, for a host whose model should not read
+  markdown.
+- `DEFAULT_SUMMARIZATION_PROMPT` no longer forces the third person, and
+  `DEFAULT_RESOLUTION_PROMPT` keeps a memory's own voice and person on UPDATE.
+
+**Consumers:** a test that pinned the old wording of any of these needs
+repinning to the new text: the ledger's `type:` lines, and
+the memory extractor's and resolver's system lines, which now read "You write
+down what is worth remembering from a conversation." and "You decide what to do
+with new memories." A test fake that tells those calls apart by their old lines
+stops routing them; scriob's `test_chat_memory_write_leg.py` does exactly that
+(scriob pins 0.32.0, so it meets this when it upgrades).
+
+### `tool_search` still finds tools when the ranking cannot run
+
+When the embedding ranking failed or ran past its ceiling, `tool_search` found
+nothing and said so. A consumer that binds only a relevance pick plus
+`tool_search` then had no way to reach any other tool while its embedder was
+down. `ToolRelevanceIndex.search_outcome` now falls back to
+`threetears.agent.tools.relevance.match_words`: the tools whose name or
+description holds the query's words, most words first, common words dropped,
+a name's separators read as spaces. The result still carries the
+`fallback_reason`, and `tool_search` hands the matches over as ordinary hits.
+
+### Keyword search no longer fails on YugabyteDB when the text says "or"
+
+YugabyteDB implements `USING gin` as `ybgin`, which serves a scan with exactly one required
+entry and refuses any other: `unsupported ybgin index scan ... cannot use more than one
+required scan entry`. The query fails; it does not degrade. `websearch_to_tsquery` turns an
+"or" or a leading "-" in ordinary text into OR / NOT, which need several entries, and the
+jsonb any-key (`?|`) and array-overlap (`&&`) filters need several too. Seen on cobalt-dev
+on 2026-09-25 as a hub ERROR on every ripple turn whose question contained "or": the agent
+answered without its keyword memory, and nothing else said so.
+
+- **New (minor):** `threetears.core.data.gin_filter(predicate)` renders such a predicate as
+  `(<predicate>) IS TRUE`, a row filter the planner cannot serve from the GIN index. The
+  result is identical on PostgreSQL. Precondition: the query's other conditions must narrow
+  the rows through indexed scope columns (`agent_id`, `user_id`); without them the filter
+  runs over a full table scan, which is correct and slow.
+- `agent-memory`: every keyword predicate (memories, media content, chunks: `search_by_fts`,
+  `hybrid_search`, `hybrid_search_within_memory`) and the `tags_any` scope filter go through
+  it.
+- `conversations`: `ConversationsCollection.search` keeps the user's OR / NOT / phrase
+  syntax and filters with it.
+- `agent-skills`: `list_for_user` and `count_for_user` filter the typed query and the tag
+  overlap through it, from one shared builder so the count cannot drift from the list.
+- **GIN indexes nothing reads any more are dropped** (`DROP INDEX IF EXISTS`, so a schema
+  missing one still migrates):
+  - `agent-memory` v027: the `search_vector` indexes on `memories`, `media_content` and
+    `memory_chunks`, both the v022 names and the v005-v007 duplicates of them.
+    `idx_memories_tags` stays; `@>` containment is served by it.
+  - `agent-skills` v003: `idx_skills_search_vector` and `idx_skills_tags`.
+  - `conversations` v010: `idx_conversations_search_vector`.
+- A repo enforcement test refuses any SQL literal in package source that uses a shape
+  YugabyteDB's GIN index refuses, outside `gin_filter`: `?|`, `&&`, and an `@@` whose query
+  side is not `plainto_tsquery` / `phraseto_tsquery`, in either operand order. `?&`, `?`
+  and `@>` are served by the index, and array `<@` never uses it, so all four are left
+  alone. `pg_trgm` similarity (`name %
+  $n`) is refused too, but its `%` cannot be told apart from other uses of `%` in a string,
+  so the guard does not look for it; no package uses it.
+- `core`: `add_index` now drops an invalid index of the same name before its `CREATE INDEX
+  IF NOT EXISTS`. Migrations run outside a transaction, where YugabyteDB builds an index on
+  a populated table online; a build that fails there leaves the index with `indisvalid =
+  false`, and `IF NOT EXISTS` used to accept that leftover as present. The rebuild logs a
+  WARNING naming the index, since on a large table it is a long online build and a UNIQUE
+  index starts enforcing only when it lands. A valid index is left alone, so replay is
+  still a no-op.
+
+The refused and served shapes were measured on YugabyteDB with the GIN index forced by plan
+hint, not taken from documentation; `scripts/probe-ybgin-shapes.py --dsn <yugabyte>`
+re-measures them and exits non-zero on any shape that moved. The old SQL of the memory,
+media and conversation methods fails with the production error under the same hint, and the
+SQL they now generate passes.
+
+**Consumers:** no consumer repo writes a full-text `@@`, `?|` or `&&` predicate of its own,
+so nothing changes at a call site. identity-core's principal search uses `pg_trgm`
+similarity, but only ORed with `ILIKE`, and YugabyteDB cannot use a GIN index for that OR at
+all, so it scans the table and is not refused. A bare `%` would be. A consumer that squashes
+these migrations into its own schema file must stop creating the dropped indexes there.
+
+**Deploy and rollback:** no deploy order is needed; the migrations run at the next start of
+whatever applies them. To roll back to 0.52.x, leave the indexes dropped. The migration runner
+accepts a ledger row newer than the code (a staged rollout depends on it), and 0.52.x's
+unwrapped keyword search then scans the rows its scope columns select instead of failing.
+Recreating the indexes on a rollback brings the `unsupported ybgin index scan` error back.
+
+## v0.52.1 -- 2026-09-25
 
 ### A query's own error is no longer replaced by asyncpg's pool-release race
 

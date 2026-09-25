@@ -73,7 +73,7 @@ async def test_falls_back_when_model_raises() -> None:
 async def test_fallback_when_no_assistant_content() -> None:
     """With no usable assistant text, the fallback returns its sentinel string."""
     only_human: list[BaseMessage] = [HumanMessage(content="hello")]
-    assert _fallback_summary(only_human) == ("Earlier conversation context was summarized but details are unavailable.")
+    assert _fallback_summary(only_human) == "The earlier part of this conversation could not be summarized."
 
 
 async def test_long_summary_is_truncated() -> None:

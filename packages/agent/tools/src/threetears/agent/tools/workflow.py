@@ -26,28 +26,28 @@ __all__ = [
 class SetVariableInput(BaseModel):
     """Input for the set_variable tool."""
 
-    key: str = Field(description="Variable name")
-    value: str = Field(description="Variable value")
-    value_type: str = Field(default="string", description="Type hint (string, number, json, etc.)")
+    key: str = Field(description="The name to save it under.")
+    value: str = Field(description="The value.")
+    value_type: str = Field(default="string", description="What kind of value it is: string, number, json.")
 
 
 class GetVariableInput(BaseModel):
     """Input for the get_variable tool."""
 
-    key: str = Field(description="Variable name to retrieve")
+    key: str = Field(description="The name it was saved under.")
 
 
 class RecallContextInput(BaseModel):
     """Input for the recall_context tool."""
 
-    context_id: str = Field(description="The context ID to recall")
+    context_id: str = Field(description="The id in a [ctx:<id>] mark, with or without the ctx: part.")
 
 
 class DeclareWorkflowInput(BaseModel):
     """Input for the declare_workflow tool."""
 
-    plan: str = Field(description="Description of the workflow plan")
-    steps: list[str] = Field(description="Ordered list of workflow steps")
+    plan: str = Field(description="What the work is for.")
+    steps: list[str] = Field(description="The steps, in order.")
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ async def _get_variable(tool_context: ToolContextManager, key: str) -> str:
 async def _recall_context(tool_context: ToolContextManager, context_id: str) -> str:
     item = await tool_context.get_context_item(context_id)
     if item is None:
-        return f"Context item '{context_id}' not found"
+        return f"Saved result '{context_id}' not found in this conversation."
     return f"{item.get('key', 'unknown')}: {item.get('content', '')}"
 
 
@@ -99,8 +99,8 @@ def load_workflow_tools(tool_context: ToolContextManager) -> list[Any]:
             coroutine=lambda key, value, value_type="string": _set_variable(tool_context, key, value, value_type),
             name="variable_set",
             description=(
-                "Store a key-value variable in conversation context. "
-                "Use this to remember important values across turns."
+                "Save a value by name for the rest of this conversation, such as a number or an "
+                "id you will need again. To keep something for later conversations, use memory_add."
             ),
             args_schema=SetVariableInput,
         ),
@@ -108,23 +108,20 @@ def load_workflow_tools(tool_context: ToolContextManager) -> list[Any]:
             func=lambda key: None,
             coroutine=lambda key: _get_variable(tool_context, key),
             name="variable_get",
-            description="Retrieve a previously stored variable by key.",
+            description="Read a value saved with variable_set.",
             args_schema=GetVariableInput,
         ),
         StructuredTool.from_function(
             func=lambda context_id: None,
             coroutine=lambda context_id: _recall_context(tool_context, context_id),
             name="context_recall",
-            description="Recall a specific context item by its context_id.",
+            description="Read the whole of a saved tool result by the id in its [ctx:<id>] mark.",
             args_schema=RecallContextInput,
         ),
         StructuredTool.from_function(
             func=lambda plan, steps: _declare_workflow(tool_context, plan, steps),
             name="workflow_declare",
-            description=(
-                "Declare a structured workflow with a plan and ordered steps. "
-                "Use this when a task requires multiple sequential actions."
-            ),
+            description="Write down a plan and its steps before a task that takes several actions in order.",
             args_schema=DeclareWorkflowInput,
         ),
     ]

@@ -39,6 +39,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from threetears.core.backends.protocol import parse_rowcount
 from threetears.observe import get_logger, traced
 
 __all__ = [
@@ -853,7 +854,20 @@ async def add_index(
     schema: str | None = None,
 ) -> None:
     """
-    create an index using ``CREATE INDEX IF NOT EXISTS`` for idempotency.
+    create an index using ``CREATE INDEX IF NOT EXISTS``, rebuilding an invalid one of that name.
+
+    migrations run outside a transaction, where YugabyteDB builds an index on a
+    populated table online. a build that fails there (a UNIQUE index over
+    duplicate rows, a cancelled statement) leaves the index behind with
+    ``pg_index.indisvalid = false``: the planner never reads it and a UNIQUE one
+    enforces nothing. ``CREATE INDEX IF NOT EXISTS`` treats that leftover as
+    present and reports success, so a replay would record the migration applied
+    over it. an invalid index of this name is therefore found first, logged at
+    WARNING (a rebuild on a large table is a long online build, and a UNIQUE
+    index starts enforcing only once it lands), dropped in its own statement,
+    and built again by the create. the probe is a ``SELECT`` read through
+    ``execute``'s status tag, so :class:`MigrationStore` needs no read method. a
+    valid index is left alone, so replay stays a no-op.
 
     :param store: migration-time store
     :ptype store: MigrationStore
@@ -874,9 +888,13 @@ async def add_index(
     :rtype: None
     """
     qualified = _qualify(table, schema)
+    qualified_index = _qualify(name, schema)
     unique_clause = "UNIQUE " if unique else ""
     columns_csv = ", ".join(columns)
     where_clause = f" WHERE {where}" if where else ""
+    invalid_probe_sql = (
+        f"SELECT 1 FROM pg_index i WHERE i.indexrelid = to_regclass('{qualified_index}') AND NOT i.indisvalid"
+    )
     sql = f"CREATE {unique_clause}INDEX IF NOT EXISTS {name} ON {qualified} ({columns_csv}){where_clause}"
     log.info(
         "migration helper: add index %s on %s (%s)%s",
@@ -885,4 +903,11 @@ async def add_index(
         columns_csv,
         " (partial)" if where else "",
     )
+    if parse_rowcount(await store.execute(invalid_probe_sql)) > 0:
+        log.warning(
+            "migration helper: index %s on %s is invalid, left by a build that failed; dropping and rebuilding it",
+            qualified_index,
+            qualified,
+        )
+        await store.execute(f"DROP INDEX {qualified_index}")
     await store.execute(sql)
