@@ -4,6 +4,23 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.52.1 -- unreleased
+
+### A query's own error is no longer replaced by asyncpg's pool-release race
+
+When a query failed and the server closed its connection while asyncpg 0.31.0 was waiting
+out the in-flight cancellation, `PoolConnectionHolder.release` called `reset` on the
+connection it had just cleared. The resulting `AttributeError: 'NoneType' object has no
+attribute 'reset'` escaped `pool.acquire()`'s exit and replaced the query's real error,
+which survived only as `__context__`. Seen on 2026-09-24 as that message hiding a
+`TimeoutError` on a hub whose YugabyteDB was restarting.
+
+`SqlL3Backend`'s `fetch`, `fetchrow`, `fetchval`, `execute` and `execute_batch` now
+recognise exactly that error -- raised inside asyncpg's `pool.py`, on `None`, with an
+exception already in flight -- and raise the query's own error in its place, logging one
+WARNING that names the race. Every other `AttributeError` propagates unchanged. The fix
+belongs in asyncpg's release path; this holds until it lands there.
+
 ## v0.52.0 -- 2026-09-25
 
 ### A pool replaces its connections when YugabyteDB wedges the sessions behind them
