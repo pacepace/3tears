@@ -27,13 +27,15 @@ do not:
   `context_recall`, whose description now says to pass the id after `ctx:`.
 - `current_date` said it defaults to the agent's timezone; a consumer passes the
   person's. It now says so.
-- `list_todos` returned markdown headings and `analyze_media`'s default suffix
-  asked for markdown; both return plain text.
+- `list_todos` and `analyze_media` take a `markdown` setting. Markdown stays the
+  default (headings and checkboxes; the markdown ask and bold result labels);
+  `markdown=False` gives plain lines, for a host whose model should not read
+  markdown.
 - `DEFAULT_SUMMARIZATION_PROMPT` no longer forces the third person, and
   `DEFAULT_RESOLUTION_PROMPT` keeps a memory's own voice and person on UPDATE.
 
 **Consumers:** a test that pinned the old wording of any of these needs
-repinning to the new text: the todo headings, the ledger's `type:` lines, and
+repinning to the new text: the ledger's `type:` lines, and
 the memory extractor's and resolver's system lines, which now read "You write
 down what is worth remembering from a conversation." and "You decide what to do
 with new memories." A test fake that tells those calls apart by their old lines

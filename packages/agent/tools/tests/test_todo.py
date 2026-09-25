@@ -246,11 +246,10 @@ class TestLoadTodoTools:
         await add.ainvoke({"title": "A", "list_name": "Work"})
         await add.ainvoke({"title": "B", "list_name": "Home"})
         result = await lst.ainvoke({})
-        assert "Work:" in result
-        assert "Home:" in result
-        assert "- open: A" in result
-        assert "- open: B" in result
-        assert "#" not in result, "a heading in a tool result invites headings in the reply"
+        assert "### Work" in result
+        assert "### Home" in result
+        assert "[ ] A" in result
+        assert "[ ] B" in result
 
     async def test_list_shows_completion(self, tools: list):
         add = _find_tool(tools, "add_todo")
@@ -259,7 +258,20 @@ class TestLoadTodoTools:
         await add.ainvoke({"title": "Done item"})
         await complete.ainvoke({"title": "Done item"})
         result = await lst.ainvoke({})
-        assert "- done: Done item" in result
+        assert "[x] Done item" in result
+
+    async def test_a_host_can_turn_markdown_off(self, storage: InMemoryTodoStorage, conv_id: UUID, user_id: UUID):
+        """Plain lines for a host whose model should not read markdown; the default stays markdown."""
+        plain = load_todo_tools(storage=storage, conversation_id=conv_id, user_id=user_id, markdown=False)
+        add = _find_tool(plain, "add_todo")
+        complete = _find_tool(plain, "complete_todo")
+        lst = _find_tool(plain, "list_todos")
+        await add.ainvoke({"title": "A", "list_name": "Work"})
+        await add.ainvoke({"title": "B", "list_name": "Work"})
+        await complete.ainvoke({"title": "B", "list_name": "Work"})
+        result = await lst.ainvoke({})
+        assert "Work:" in result and "- open: A" in result and "- done: B" in result
+        assert "#" not in result and "[ ]" not in result and "[x]" not in result
 
     async def test_custom_list_name(self, tools: list):
         add = _find_tool(tools, "add_todo")

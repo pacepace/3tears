@@ -144,12 +144,18 @@ def load_todo_tools(
     user_id: UUID,
     message_id: UUID | None = None,
     snapshot_callback: SnapshotCallback | None = None,
+    *,
+    markdown: bool = True,
 ) -> list[BaseTool]:
     """Create persistent todo list tools.
 
     The ``snapshot_callback`` receives ``(todos, message_id_str)`` after
     each mutation so the host can emit real-time events (e.g., LangGraph's
     ``adispatch_custom_event``).
+
+    ``markdown`` shapes what ``list_todos`` returns: a heading per list and
+    checkboxes (the default), or plain lines -- ``Deployment:`` then
+    ``- open: Deploy`` -- for a host whose model should not read markdown.
     """
     tools: list[BaseTool] = []
 
@@ -273,10 +279,12 @@ def load_todo_tools(
 
             lines: list[str] = []
             for ln in sorted(groups.keys()):
-                lines.append(f"{ln}:")
+                lines.append(f"### {ln}" if markdown else f"{ln}:")
                 for t in groups[ln]:
-                    state = "done" if t["is_completed"] else "open"
-                    lines.append(f"- {state}: {t['title']}")
+                    if markdown:
+                        lines.append(f"- {'[x]' if t['is_completed'] else '[ ]'} {t['title']}")
+                    else:
+                        lines.append(f"- {'done' if t['is_completed'] else 'open'}: {t['title']}")
                 lines.append("")
 
             return "\n".join(lines)
