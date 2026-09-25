@@ -27,11 +27,14 @@ The wrapped pool is the previously-untyped ``l3_pool`` (a bare asyncpg ``Pool`` 
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+import os
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
+from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
 from threetears.core.backends.protocol import parse_rowcount
@@ -41,7 +44,58 @@ if TYPE_CHECKING:
 
 __all__ = ["SqlL3Backend", "bound_request_connection"]
 
+_logger = get_logger(__name__)
+
 _ON_CONFLICT_VALUES = frozenset({"update", "ignore", "raise"})
+
+#: the asyncpg module whose release path raises the masking AttributeError.
+_ASYNCPG_POOL_FILE = os.path.join("asyncpg", "pool.py")
+
+
+def _is_asyncpg_release_race(exc: AttributeError) -> bool:
+    """Whether ``exc`` is asyncpg's pool-release race masking the query's own error.
+
+    asyncpg 0.31.0's ``PoolConnectionHolder.release`` waits for an in-flight cancellation
+    after a query fails. If the server closes the connection during that wait, the holder's
+    connection is cleared, and release then calls ``reset`` on ``None``. The resulting
+    ``AttributeError`` escapes ``pool.acquire()``'s exit and replaces the error the query
+    actually raised, which survives only as ``__context__``. Recognised by all three: raised
+    inside asyncpg's ``pool.py``, on a ``None`` object, with an exception already in flight.
+
+    :param exc: the AttributeError a pool call raised
+    :ptype exc: AttributeError
+    :return: whether it is the release race rather than a real attribute error
+    :rtype: bool
+    """
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    raised_in_pool = tb is not None and tb.tb_frame.f_code.co_filename.endswith(_ASYNCPG_POOL_FILE)
+    return raised_in_pool and exc.obj is None and exc.__context__ is not None
+
+
+@contextmanager
+def _unmask_asyncpg_release_race() -> Iterator[None]:
+    """Re-raise the query's own error when asyncpg's release race has masked it.
+
+    Any other ``AttributeError`` propagates unchanged.
+
+    :return: context manager wrapping one pool call
+    :rtype: Iterator[None]
+    :raises BaseException: the exception the query raised, in place of the masking one
+    """
+    try:
+        yield
+    except AttributeError as exc:
+        original = exc.__context__
+        if not _is_asyncpg_release_race(exc) or original is None:
+            raise
+        _logger.warning(
+            "asyncpg pool release raced a server-side close and masked the query's own "
+            "error; raising the original %s instead of the release AttributeError",
+            type(original).__name__,
+        )
+        raise original from None
 
 
 # ── request-scoped L3 connection (per-request transaction; RLS session-GUC support) ─────────
@@ -201,10 +255,11 @@ class SqlL3Backend:
     ) -> list[dict[str, Any]]:
         """Run a SELECT and return all rows as dicts (bound request conn, else the pool)."""
         target, scope_aware = self._target()
-        if scope_aware:
-            rows = await target.fetch(query, *params, namespace=namespace, **kwargs)
-        else:
-            rows = await target.fetch(query, *params)
+        with _unmask_asyncpg_release_race():
+            if scope_aware:
+                rows = await target.fetch(query, *params, namespace=namespace, **kwargs)
+            else:
+                rows = await target.fetch(query, *params)
         return [dict(r) for r in rows]
 
     async def fetchrow(
@@ -212,26 +267,31 @@ class SqlL3Backend:
     ) -> dict[str, Any] | None:
         """Run a SELECT and return the first row dict, or ``None`` (bound request conn, else pool)."""
         target, scope_aware = self._target()
-        if scope_aware:
-            row = await target.fetchrow(query, *params, namespace=namespace, **kwargs)
-        else:
-            row = await target.fetchrow(query, *params)
+        with _unmask_asyncpg_release_race():
+            if scope_aware:
+                row = await target.fetchrow(query, *params, namespace=namespace, **kwargs)
+            else:
+                row = await target.fetchrow(query, *params)
         return dict(row) if row is not None else None
 
     async def fetchval(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> Any:
         """Run a SELECT and return the first column of the first row (bound request conn, else pool)."""
         target, scope_aware = self._target()
-        if scope_aware:
-            return await target.fetchval(query, *params, namespace=namespace, **kwargs)
-        return await target.fetchval(query, *params)
+        with _unmask_asyncpg_release_race():
+            if scope_aware:
+                value = await target.fetchval(query, *params, namespace=namespace, **kwargs)
+            else:
+                value = await target.fetchval(query, *params)
+        return value
 
     async def execute(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> str:
         """Run an INSERT/UPDATE/DELETE; return the command-tag (bound request conn, else pool)."""
         target, scope_aware = self._target()
-        if scope_aware:
-            result = await target.execute(query, *params, namespace=namespace, **kwargs)
-        else:
-            result = await target.execute(query, *params)
+        with _unmask_asyncpg_release_race():
+            if scope_aware:
+                result = await target.execute(query, *params, namespace=namespace, **kwargs)
+            else:
+                result = await target.execute(query, *params)
         return result if isinstance(result, str) else ""
 
     async def execute_batch(
@@ -246,17 +306,16 @@ class SqlL3Backend:
             for q in queries:
                 on_conn.append(await bound.execute(q["query"], *q.get("params", [])))
             return on_conn
-        if not transaction:
-            results: list[Any] = []
-            for q in queries:
-                results.append(await self._pool.execute(q["query"], *q.get("params", [])))
-            return results
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                out: list[Any] = []
+        out: list[Any] = []
+        with _unmask_asyncpg_release_race():
+            if not transaction:
                 for q in queries:
-                    out.append(await conn.execute(q["query"], *q.get("params", [])))
-                return out
+                    out.append(await self._pool.execute(q["query"], *q.get("params", [])))
+            else:
+                async with self._pool.acquire() as conn, conn.transaction():
+                    for q in queries:
+                        out.append(await conn.execute(q["query"], *q.get("params", [])))
+        return out
 
     def acquire(self) -> Any:
         """Return an ``acquire()`` async-CM: the bound request conn when set, else a pooled one."""
