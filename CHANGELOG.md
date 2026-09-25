@@ -4,6 +4,55 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.53.0 -- unreleased
+
+### Every text an agent reads is written in plain words
+
+A consumer's replies drifted into the model's own register, and the text the
+platform hands a model was a large part of why: tool descriptions, tool results,
+the memory block and the default prompts were written in storage and pipeline
+words ("chunk", "slice", "cursor", "handle", "surface", "salient") and led with
+their preamble. A model copies the style of what it reads.
+
+Each is rewritten bottom line first, short, with no jargon and no storage words.
+Some named things that did not exist or said things that were not true, and now
+do not:
+
+- `memory_search` described `[memory:<id>]` hits with relevance scores; it
+  prints `[mem:<id>]` and no scores. Its description now says what it returns.
+- The recall ledger told the model to pass a `type` that `memory_recall` does
+  not take, and repeated each line's type after its tag. It names the right
+  tool for each kind instead.
+- `invoke_tool_llm`'s redirect named `recall_context`; the bound tool is
+  `context_recall`, whose description now says to pass the id after `ctx:`.
+- `current_date` said it defaults to the agent's timezone; a consumer passes the
+  person's. It now says so.
+- `list_todos` and `analyze_media` take a `markdown` setting. Markdown stays the
+  default (headings and checkboxes; the markdown ask and bold result labels);
+  `markdown=False` gives plain lines, for a host whose model should not read
+  markdown.
+- `DEFAULT_SUMMARIZATION_PROMPT` no longer forces the third person, and
+  `DEFAULT_RESOLUTION_PROMPT` keeps a memory's own voice and person on UPDATE.
+
+**Consumers:** a test that pinned the old wording of any of these needs
+repinning to the new text: the ledger's `type:` lines, and
+the memory extractor's and resolver's system lines, which now read "You write
+down what is worth remembering from a conversation." and "You decide what to do
+with new memories." A test fake that tells those calls apart by their old lines
+stops routing them; scriob's `test_chat_memory_write_leg.py` does exactly that
+(scriob pins 0.32.0, so it meets this when it upgrades).
+
+### `tool_search` still finds tools when the ranking cannot run
+
+When the embedding ranking failed or ran past its ceiling, `tool_search` found
+nothing and said so. A consumer that binds only a relevance pick plus
+`tool_search` then had no way to reach any other tool while its embedder was
+down. `ToolRelevanceIndex.search_outcome` now falls back to
+`threetears.agent.tools.relevance.match_words`: the tools whose name or
+description holds the query's words, most words first, common words dropped,
+a name's separators read as spaces. The result still carries the
+`fallback_reason`, and `tool_search` hands the matches over as ordinary hits.
+
 ## v0.52.1 -- unreleased
 
 ### A query's own error is no longer replaced by asyncpg's pool-release race

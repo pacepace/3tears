@@ -480,7 +480,7 @@ class TestFormatMemoryContext:
 
         result = _format_memory_context(memories, detail_threshold=0.85)
 
-        assert "a name inside a memory means whoever it names" in result
+        assert "Where a memory uses your name, it means you." in result
 
     def test_media_section(self) -> None:
         media = [
@@ -493,7 +493,7 @@ class TestFormatMemoryContext:
             },
         ]
         result = _format_memory_context([], media_content=media, detail_threshold=0.85)
-        assert "Relevant media context:" in result
+        assert "Files you have seen:" in result
 
     def test_chunks_section(self) -> None:
         chunks = [
@@ -509,13 +509,12 @@ class TestFormatMemoryContext:
             },
         ]
         result = _format_memory_context([], memory_chunks=chunks, detail_threshold=0.85)
-        assert "Relevant document excerpts:" in result
+        assert "Passages from documents and past conversations:" in result
         assert '"My Doc"' in result
         assert "p.5" in result
         assert '"Chapter 1"' in result
-        # v0.7.0 Shard D: chunk headlines carry the recall affordance
-        # so the agent knows how to escalate from headline to full
-        # content.
+        # The block says, in its own words outside the fence, how to read
+        # a passage in full.
         assert "chunk_recall(" in result
 
     def test_ledger_dedup(self) -> None:
@@ -648,7 +647,7 @@ class TestFormatMemoryContext:
         memory's summary so the agent has the cognitive anchor + the
         source fragment. When the parent memory is present in the
         retrieval set with a summary, the chunk headline carries
-        ``(of memory <id>: "<summary>")`` in addition to the chunk_recall
+        ``(from [memory:<id>]: "<summary>")`` in addition to the chunk_recall
         affordance."""
         parent_id = uuid.uuid7()
         parent_summary = "user's policy on weekend deployments"
@@ -674,7 +673,7 @@ class TestFormatMemoryContext:
             },
         ]
         result = _format_memory_context(memories, memory_chunks=chunks, detail_threshold=0.85)
-        assert f"of memory {parent_id}" in result
+        assert f"from [memory:{parent_id}]" in result
         assert parent_summary in result
         assert "chunk headline" in result
         assert "chunk_recall(" in result
@@ -682,7 +681,7 @@ class TestFormatMemoryContext:
     def test_chunk_parent_memory_anchor_falls_back_to_id_only(self) -> None:
         """When a chunk references a parent memory not in the retrieval
         set (or the parent has no summary), the anchor falls back to
-        ``(of memory <id>)`` so the agent at least knows the link
+        ``(from [memory:<id>])`` so the agent at least knows the link
         exists and can memory_recall the parent if it needs more."""
         orphan_parent_id = uuid.uuid7()
         chunks = [
@@ -699,9 +698,9 @@ class TestFormatMemoryContext:
             },
         ]
         result = _format_memory_context([], memory_chunks=chunks, detail_threshold=0.85)
-        assert f"of memory {orphan_parent_id}" in result
+        assert f"from [memory:{orphan_parent_id}]" in result
         # No quoted summary present.
-        assert f'of memory {orphan_parent_id}: "' not in result
+        assert f'from [memory:{orphan_parent_id}]: "' not in result
 
     def test_chunk_parent_memory_anchor_truncates_long_summary(self) -> None:
         """A runaway parent-memory summary cannot blow the prompt budget
@@ -745,7 +744,7 @@ class TestFormatMemoryContext:
         assert "..." in chunk_line
         # The y-run inside the anchor is capped at the truncation
         # budget (MAX_CHUNK_SUMMARY_CHARS - 3 = 147 y's).
-        anchor_start = chunk_line.index("of memory")
+        anchor_start = chunk_line.index("from [memory:")
         anchor_segment = chunk_line[anchor_start:]
         assert "y" * 148 not in anchor_segment
 

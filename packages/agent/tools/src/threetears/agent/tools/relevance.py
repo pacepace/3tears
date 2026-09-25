@@ -139,8 +139,9 @@ class ToolSearchResult:
     tools" when the index was still warming up sends it back to the person
     saying the tool does not exist.
 
-    :ivar hits: up to ``limit`` tools, most relevant first; empty when the
-        catalog is empty or the search did not run to completion
+    :ivar hits: up to ``limit`` tools, most relevant first; when the ranking
+        did not run to completion, the tools whose name or description holds
+        the query's words (:func:`match_words`), which may be none
     :ivar fallback_reason: ``"embedder_error"``, ``"latency_ceiling"``, or
         ``None`` when the search ran to completion
     """
@@ -427,17 +428,56 @@ class ToolRelevanceIndex:
             return ToolSearchResult(hits=[])
         ranked, fallback_reason = await self._rank_for_search(tools, query, what="search")
         if fallback_reason is not None:
-            return ToolSearchResult(hits=[], fallback_reason=fallback_reason)
+            # The ranking failed, not the catalog: match on words so the search
+            # still finds a tool. A consumer that binds only the pick and
+            # tool_search has no other way to reach anything while the embedder
+            # is down.
+            return ToolSearchResult(hits=match_words(tools, query)[:limit], fallback_reason=fallback_reason)
         return ToolSearchResult(hits=[tool for tool, _ in ranked][:limit])
+
+
+#: Words too common to say anything about which tool is wanted.
+_STOP_WORDS = frozenset(
+    "the and for with that this from into what when where which about have has are was were can could "
+    "would should will you your our their them then than there here some any all not but how who why".split()
+)
+
+
+def match_words(tools: list[BaseTool], query: str) -> list[BaseTool]:
+    """The tools whose name or description holds the query's words, most words first.
+
+    For when the embedding ranking cannot run. Words of three letters or more,
+    common words dropped; a tool's name is read with its separators as spaces,
+    so ``web_search`` matches "search". Ties keep catalog order.
+
+    :param tools: the catalog
+    :ptype tools: list[BaseTool]
+    :param query: what the caller asked for
+    :ptype query: str
+    :return: the matching tools, best first; empty when nothing matches
+    :rtype: list[BaseTool]
+    """
+    words = {w for w in _words(query) if len(w) >= 3 and w not in _STOP_WORDS}
+    if not words:
+        return []
+    scored = []
+    for position, tool in enumerate(tools):
+        text = set(_words(f"{tool.name} {tool.description or ''}"))
+        score = sum(1 for w in words if w in text)
+        if score:
+            scored.append((-score, position, tool))
+    return [tool for _, _, tool in sorted(scored, key=lambda item: (item[0], item[1]))]
+
+
+def _words(text: str) -> list[str]:
+    return "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()
 
 
 class _ToolSearchInput(BaseModel):
     """Input schema for the ``tool_search`` meta-tool."""
 
     query: str = Field(
-        description=(
-            "Natural-language description of the tool you need, e.g. 'a tool to send a message to a dev agent session'"
-        ),
+        description="What you need the tool to do, in plain words.",
     )
 
 
@@ -479,7 +519,7 @@ def create_tool_search_tool(
         catalog = full_catalog_provider()
         outcome = await index.search_outcome(catalog, query, limit=limit)
         matches = outcome.hits
-        if outcome.fallback_reason is not None:
+        if outcome.fallback_reason is not None and not matches:
             # The search did not run, so nothing was found and nothing was
             # ruled out. Live (metallm, the first turn after a deploy): a
             # cold catalog ran past the ceiling, the model read "No matching
@@ -499,7 +539,7 @@ def create_tool_search_tool(
                     "Tool search did not finish in time. Nothing was found and nothing was ruled out. "
                     "Run the same search once more."
                 )
-            return "Tool search failed: the tool index could not be read. Nothing was found and nothing was ruled out."
+            return "Tool search failed. Nothing was found and nothing was ruled out."
         if not matches:
             _log.info(
                 "tool_search: no matches",
@@ -531,16 +571,15 @@ def create_tool_search_tool(
         # sooner -- no caller can make a tool available mid-round. Wording
         # here must match the description's honest framing, not promise
         # immediacy the caller cannot deliver.
-        return "Found the following tools, callable starting your NEXT reply (not this one):\n" + "\n".join(lines)
+        return "Found these tools. Call them after this search returns, not alongside it:\n" + "\n".join(lines)
 
     return StructuredTool.from_function(
         coroutine=_search,
         name="tool_search",
         description=(
-            "Search the full tool catalog for a capability not in your currently "
-            "bound tools. Matching tools become callable starting your NEXT reply. "
-            "Use a natural-language query describing what you need, e.g. 'a tool "
-            "to send a message to a dev agent session'."
+            "Find a tool you do not have yet. Describe what you need in plain words, e.g. "
+            "'send a message to a dev agent session'. Call what it finds after this search "
+            "returns, not alongside it."
         ),
         args_schema=_ToolSearchInput,
     )

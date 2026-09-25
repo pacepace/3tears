@@ -43,20 +43,14 @@ _log = get_logger(__name__)
 
 
 _DEFAULT_DESCRIPTION = (
-    "Invoke a specialised tool-LLM by name. Tool-LLMs are domain-specific "
-    "AI assistants for specialised tasks. Use the exact tool name from the "
-    "Available tools list in the system prompt. Use this ONLY when the user "
-    "wants NEW work done by a specialised model. NEVER use this to recall, "
-    "view, or retrieve previous tool output — use recall_context instead."
+    "Ask a specialist, by the exact name in your list, to do new work. "
+    "To read earlier output, use context_recall instead."
 )
 
 
 _RECALL_REDIRECT = (
-    "[REDIRECT] This input is asking to recall previous output, not "
-    "requesting new work. Do NOT invoke the tool-LLM for this. Instead, "
-    "use the recall_context tool with the appropriate [ctx:UUID] from "
-    "the Conversation Context to retrieve the stored output, or respond "
-    "directly from the conversation context summaries."
+    "[REDIRECT] To read earlier output, call context_recall with the id in its "
+    "[ctx:<id>] mark. invoke_tool_llm is for new work."
 )
 
 
@@ -72,17 +66,12 @@ class InvokeToolLlmInput(BaseModel):
     """
 
     tool_name: str = Field(
-        description=(
-            "Exact name of the tool-LLM to invoke (must match one of the "
-            "available tool names listed in the system prompt)"
-        ),
+        description="The exact name of a specialist from your list.",
     )
     input_text: str = Field(
         description=(
-            "Self-contained prompt for the tool-LLM. Tool-LLMs have NO "
-            "conversation history — include all necessary context, "
-            "requirements, and specifics in this text. Never use references "
-            "like 'the same thing' or 'as above'."
+            "The whole request. The specialist has not seen this conversation: give it "
+            "everything it needs. Do not write 'as above' or 'the same thing'."
         ),
     )
 
@@ -210,7 +199,7 @@ def load_tool_llm_dispatch(
             return f"[TOOL ERROR] invoke_tool_llm: {exc}"
 
         if result is None:
-            return f"[TOOL ERROR] invoke_tool_llm: Tool-LLM {tool_name!r} not found or not enabled."
+            return f"[TOOL ERROR] invoke_tool_llm: specialist {tool_name!r} not found on your list."
 
         _log.info(
             "invoke_tool_llm completed",

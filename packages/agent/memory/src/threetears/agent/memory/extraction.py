@@ -405,8 +405,8 @@ class MemoryExtractor:
             response = await model.ainvoke(
                 [
                     SystemMessage(
-                        content="You evaluate whether conversation turns contain "
-                        "memorable user information. Return only valid JSON.",
+                        content="You decide whether a conversation turn holds something worth "
+                        "remembering. Return only valid JSON.",
                     ),
                     HumanMessage(content=prompt),
                 ],
@@ -460,7 +460,7 @@ class MemoryExtractor:
             response = await model.ainvoke(
                 [
                     SystemMessage(
-                        content="You extract structured memories from conversations. Return only valid JSON.",
+                        content="You write down what is worth remembering from a conversation. Return only valid JSON.",
                     ),
                     HumanMessage(content=prompt),
                 ],
@@ -564,8 +564,7 @@ class MemoryExtractor:
                 with_fence_rules(
                     [
                         SystemMessage(
-                            content="You are a memory manager that decides how to handle "
-                            "new memories. Return only valid JSON.",
+                            content="You decide what to do with new memories. Return only valid JSON.",
                         ),
                         HumanMessage(content=prompt),
                     ]

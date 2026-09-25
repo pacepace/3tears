@@ -146,11 +146,11 @@ def _footnotes(candidate_set: CandidateSet) -> str:
     notes: list[str] = []
     for disposition in unmet:
         detail = f": {disposition.detail}" if disposition.detail else ""
-        notes.append(f"- {disposition.criterion_key} was not applied ({disposition.disposition}){detail}")
+        notes.append(f"- the {disposition.criterion_key} filter was not applied{detail}")
     notes.extend(f"- {notice}" for notice in candidate_set.notices)
     if not notes:
         return ""
-    return "Note on this result set:\n" + "\n".join(notes)
+    return "What this search could not do:\n" + "\n".join(notes)
 
 
 def project_metadata(query: str, candidate_set: CandidateSet) -> dict[str, Any]:

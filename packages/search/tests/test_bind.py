@@ -107,7 +107,7 @@ async def test_an_unsatisfied_criterion_is_named_in_the_prose() -> None:
     prose = render_prose(result)
 
     assert prose.startswith(EXPECTED_PROSE)
-    assert "rights-class was not applied (unsatisfied)" in prose
+    assert "the rights-class filter was not applied" in prose
 
 
 async def test_a_provider_degradation_is_named_in_the_prose() -> None:
