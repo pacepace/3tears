@@ -54,6 +54,21 @@ saver = ThreeTierCheckpointSaver(
 
 Adopting a real customer *later* is a data change rather than a code change: existing rows live under a bare thread id and a scoped saver will not find them, so they must be re-keyed (`UPDATE checkpoints SET thread_id = $customer || '/' || thread_id`, likewise `checkpoint_writes`, plus L2 invalidation). No re-key script ships here and none can — which customer owns which thread lives in the host's own tables, which this library has never seen.
 
+### Person erasure: anonymize, never delete
+
+```python
+result = await saver.aanonymize_threads(conversation_ids)
+```
+
+Rewrites every stored checkpoint and pending write of those threads in place: a human
+message's `name` (the sender's display name) and every value under
+`IDENTIFYING_METADATA_KEYS` (`external_user_name`, `external_user_id`) become
+`ANONYMIZED_MARKER`. Message text, every id, and the blob format are unchanged, so the
+graph still loads and resumes. Idempotent, paged by `batch_size`, and it evicts the
+threads' L1 and shared L2 bundles, raising if an eviction fails. An unknown metadata key
+is kept: the `metadata` channel is working state the graph reads on resume. Run it on
+threads that are not in a live turn.
+
 ## Middleware
 
 The package ships platform-level [`AgentMiddleware`](https://docs.langchain.com/oss/python/langchain/middleware) for `langchain.agents.create_agent` — the framework-aligned successor to the old hand-rolled `AgentNodeHook` / `ToolNodeHook` protocols. Consumer-specific policy lives in each consumer as its own middleware; only the reusable platform seams live here:

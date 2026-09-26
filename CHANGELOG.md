@@ -88,6 +88,30 @@ should route an audit record's content through it** rather than writing its own.
 
   3tears runs it as `tests/enforcement/test_audit_details_keys_are_classified.py`.
 
+### Checkpoints are anonymized in place for person erasure
+
+A LangGraph checkpoint names the person who sent each turn: the human message's `name`
+is their chat display name, and the turn metadata the graph keeps carries
+`external_user_name` / `external_user_id`. Erasure could not reach them, because they
+live inside serialized checkpoint and pending-write blobs.
+
+- **New (minor):** `ThreeTierCheckpointSaver.aanonymize_threads(thread_ids, *, customer=None,
+  batch_size=200) -> CheckpointAnonymization`. Rewrites every stored checkpoint, checkpoint
+  metadata and pending write of the named threads in place: a human message's `name` and
+  every value under `IDENTIFYING_METADATA_KEYS`, at any depth, become `ANONYMIZED_MARKER`.
+  Nothing is deleted: row keys, message ids and content, and the serialization format are
+  kept, so the graph still loads and resumes (an interrupted run included). Reads a page
+  of `batch_size` rows at a time and writes only rows that change, so a second run writes
+  nothing. Then evicts the threads' cached bundles: this pod's L1, and the shared L2 (root
+  key, plus a prefix sweep when the cache can), RAISING if an eviction fails. The
+  customer is reconciled against the saver's scope as `adelete_thread` does.
+- **New (minor):** `threetears.langgraph.IDENTIFYING_METADATA_KEYS`, `anonymize_checkpoint_value`
+  (the pure rule), and `CheckpointAnonymization` (what a run rewrote). The rule names what
+  identifies the person; an unknown metadata key is KEPT, the inverse of the audit rule,
+  because the `metadata` channel is working state (the injectors' ledgers) that the graph
+  reads on resume.
+- `3tears-langgraph` now depends on `3tears-agent-audit`, for the platform's one marker.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,
