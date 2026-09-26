@@ -87,12 +87,23 @@ compounding root causes, both from how ``_wrap_langchain_tool`` used to hand ``@
    a value for every optional filter on every call -- hence the empty-string placeholders.
 
 ``_wrap_langchain_tool`` now builds the full ``{"type": "object", "properties": ..., "required":
-...}`` schema itself: each property keeps (or gains, resolved from ``anyOf``/``oneOf``) a definite
-top-level ``type``, and ``required`` is copied verbatim from the original tool schema's own
-``required`` list -- not synthesized from "every key present". Handing the SDK an
-already-full-shaped schema also makes it skip its own required-everything path entirely (verified
-by reading ``create_sdk_mcp_server``'s ``_build_schema``: it returns a dict verbatim, unmodified,
-whenever ``"type"`` and ``"properties"`` are already top-level keys).
+...}`` schema itself: an optional union collapses to its member at every depth, and ``required`` is
+copied verbatim from the original tool schema's own ``required`` list -- not synthesized from
+"every key present". Handing the SDK an already-full-shaped schema also makes it skip its own
+required-everything path entirely (verified by reading ``create_sdk_mcp_server``'s
+``_build_schema``: it returns a dict verbatim, unmodified, whenever ``"type"`` and ``"properties"``
+are already top-level keys).
+
+Nested models (found: every tool whose args model nests another -- ``shots: list[Shot]``, a
+sub-object -- reached the model as a plain string field under a subscription, while the API-key
+route was fine). Pydantic renders a nested model as ``{"$ref": "#/$defs/Shot"}`` with the definition
+under the schema's ``$defs``; the wrapper kept only the top-level properties, turned every
+``$ref`` property into ``{"type": "string"}`` and left an array's ``items`` ref pointing at nothing.
+Every reference is now inlined from the schema's own definitions (see :func:`_inline_refs` for a
+recursive model), so the CLI lists a self-contained schema, as the API route's LangChain
+conversion does. The schema itself is read from ``tool_call_schema`` (see
+``_SubscriptionChatModel._get_tool_schema``), so a tool that carries a JSON Schema dict is read
+rather than advertised with no parameters.
 
 """
 
@@ -113,7 +124,7 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from threetears.models.claude_cli_isolation import claude_cli_isolation
 from threetears.models.claude_cli_pool import (
@@ -190,6 +201,185 @@ def _output_format(output_config: Any) -> dict[str, Any]:
     if not isinstance(fmt, dict) or fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
         raise ValueError(f"a subscription model can only honour a json_schema output_config, not {output_config!r}")
     return {"type": "json_schema", "schema": fmt["schema"]}
+
+
+#: JSON Schema keywords whose value is one subschema.
+_SUBSCHEMA_KEYWORDS = frozenset(
+    {"items", "additionalProperties", "not", "contains", "if", "then", "else", "propertyNames", "unevaluatedItems"}
+)
+
+#: JSON Schema keywords whose value is a list of subschemas.
+_SUBSCHEMA_LIST_KEYWORDS = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
+
+#: JSON Schema keywords whose value maps names to subschemas. The names are data, not keywords.
+_SUBSCHEMA_MAP_KEYWORDS = frozenset({"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"})
+
+#: Where a local definition lives, for each spelling of it.
+_DEFINITION_PREFIXES = ("#/$defs/", "#/definitions/")
+
+
+def _walk_subschemas(node: dict[str, Any], transform: Callable[[Any], Any]) -> dict[str, Any]:
+    """``node`` with ``transform`` applied to every subschema it holds, and everything else copied.
+
+    Only schema-bearing keywords are walked: a ``default``, ``enum``, ``const`` or ``examples`` value
+    is data, and a dict inside one must not be read as a schema.
+
+    :param node: one schema object
+    :ptype node: dict[str, Any]
+    :param transform: applied to each immediate subschema
+    :ptype transform: Callable[[Any], Any]
+    :return: a new schema object; ``node`` is not mutated
+    :rtype: dict[str, Any]
+    """
+    walked: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _SUBSCHEMA_KEYWORDS and isinstance(value, dict):
+            walked[key] = transform(value)
+        elif key in _SUBSCHEMA_LIST_KEYWORDS and isinstance(value, list):
+            walked[key] = [transform(item) for item in value]
+        elif key in _SUBSCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            walked[key] = {name: transform(item) for name, item in value.items()}
+        else:
+            walked[key] = value
+    return walked
+
+
+def _collapse_optional(node: Any) -> Any:
+    """``node`` with every ``X | None`` union collapsed to ``X``, at every depth.
+
+    Pydantic renders an optional field as ``anyOf: [X, {"type": "null"}]`` with no top-level
+    ``type`` (see the "Optional-parameter schema mistyping" note in this module's docstring). A
+    union with exactly one non-null member becomes that member, carrying the field's own keywords
+    over it -- the field's description is the more specific one -- minus the ``default: null``
+    that would contradict the member's type. A union of two or more real members is left whole:
+    choosing one would drop the others.
+
+    :param node: a schema, or any value inside one
+    :ptype node: Any
+    :return: the schema with optional unions collapsed; ``node`` is not mutated
+    :rtype: Any
+    """
+    if not isinstance(node, dict):
+        return node
+    result = _walk_subschemas(node, _collapse_optional)
+    union_key = "anyOf" if "anyOf" in result else "oneOf" if "oneOf" in result else None
+    if union_key is not None and "type" not in result:
+        members = result[union_key]
+        real = [m for m in members if not (isinstance(m, dict) and m.get("type") == "null")]
+        if len(real) == 1 and len(real) < len(members) and isinstance(real[0], dict):
+            field = {k: v for k, v in result.items() if k != union_key and not (k == "default" and v is None)}
+            result = {**real[0], **field}
+    return result
+
+
+def _definition_name(ref: str, tool_name: str) -> str:
+    """The name of the local definition ``ref`` points at.
+
+    :param ref: a ``$ref`` value
+    :ptype ref: str
+    :param tool_name: the tool whose schema carries it, for the error
+    :ptype tool_name: str
+    :return: the definition's name, JSON-pointer escapes decoded
+    :rtype: str
+    :raises ValueError: when ``ref`` points anywhere but the schema's own definitions -- nothing
+        else can be inlined, and a reference left in place points at nothing the model can read
+    """
+    prefix = next((p for p in _DEFINITION_PREFIXES if ref.startswith(p)), None)
+    if prefix is None or "/" in ref[len(prefix) :]:
+        raise ValueError(
+            f"tool {tool_name!r}: cannot show the model its schema: $ref {ref!r} does not name a "
+            "definition in the schema's own $defs, so it cannot be inlined"
+        )
+    return ref[len(prefix) :].replace("~1", "/").replace("~0", "~")
+
+
+def _inline_refs(
+    node: Any,
+    definitions: dict[str, Any],
+    tool_name: str,
+    expanding: tuple[str, ...] = (),
+) -> Any:
+    """``node`` with every ``$ref`` replaced by the definition it names, and titles removed.
+
+    A reference's sibling keywords override the definition's -- pydantic writes a field's own
+    description beside the ``$ref``, and it is the more specific one. Titles go because the API
+    route removes them too, and they are noise to the model.
+
+    A recursive model cannot be inlined completely: its schema is infinite. It is expanded until a
+    definition recurs inside its own expansion, and at that point the schema says in words what
+    the value is -- the same shape as the enclosing one -- keeping the definition's ``type``. A
+    bounded expansion rather than a refusal, so a tool with a tree-shaped argument stays usable on
+    this route; described rather than cut to ``{}``, so the model is not shown "anything" where
+    the tool requires a particular shape.
+
+    :param node: a schema, or any value inside one
+    :ptype node: Any
+    :param definitions: the root schema's ``$defs`` and ``definitions``, merged
+    :ptype definitions: dict[str, Any]
+    :param tool_name: the tool whose schema this is, for errors
+    :ptype tool_name: str
+    :param expanding: the definitions being expanded on the path to ``node``, outermost first
+    :ptype expanding: tuple[str, ...]
+    :return: the inlined schema; ``node`` is not mutated
+    :rtype: Any
+    :raises ValueError: when a ``$ref`` names no local definition
+    """
+    if not isinstance(node, dict):
+        return node
+    siblings = _walk_subschemas(
+        {k: v for k, v in node.items() if k not in ("$ref", "title", "$defs", "definitions")},
+        lambda child: _inline_refs(child, definitions, tool_name, expanding),
+    )
+    ref = node.get("$ref")
+    result: Any = siblings
+    if isinstance(ref, str):
+        name = _definition_name(ref, tool_name)
+        if name not in definitions:
+            raise ValueError(
+                f"tool {tool_name!r}: cannot show the model its schema: $ref {ref!r} names a definition "
+                "the schema does not carry"
+            )
+        definition = definitions[name]
+        if name in expanding:
+            note = f"A {name}: the same shape as the {name} that contains it."
+            field_description = siblings.pop("description", None)
+            recursion: dict[str, Any] = {"description": f"{field_description} {note}" if field_description else note}
+            if isinstance(definition, dict) and "type" in definition:
+                recursion = {"type": definition["type"], **recursion}
+            result = {**recursion, **siblings}
+        else:
+            expanded = _inline_refs(definition, definitions, tool_name, (*expanding, name))
+            result = {**expanded, **siblings} if isinstance(expanded, dict) else expanded
+    return result
+
+
+def _cli_input_schema(schema: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    """The self-contained input schema the CLI is shown for a tool whose schema is ``schema``.
+
+    The CLI's tool listing carries one schema per tool and no shared definitions, so every
+    ``$ref`` is inlined (recursive models: see :func:`_inline_refs`), and every optional union is
+    collapsed to its member (see :func:`_collapse_optional`). The result is a full
+    ``{"type": "object", "properties": ..., "required": ...}`` object, which the SDK's own schema
+    builder passes through verbatim instead of marking every key required.
+
+    :param schema: the tool's JSON Schema, as LangChain renders it
+    :ptype schema: dict[str, Any]
+    :param tool_name: the tool's wire name, for errors
+    :ptype tool_name: str
+    :return: the schema the CLI advertises to the model
+    :rtype: dict[str, Any]
+    :raises ValueError: when a ``$ref`` names no local definition
+    """
+    collapsed = _collapse_optional(schema)
+    definitions = {**(collapsed.get("definitions") or {}), **(collapsed.get("$defs") or {})}
+    root = _inline_refs(collapsed, definitions, tool_name)
+    root.pop("description", None)
+    return {
+        **root,
+        "type": "object",
+        "properties": root.get("properties") or {},
+        "required": list(root.get("required") or []),
+    }
 
 
 def is_subscription_token(credential: str) -> bool:
@@ -376,33 +566,43 @@ def _subscription_model_cls() -> type:
             wire_tools, _reverse_map = build_name_translation(list(tools))
             return super().bind_tools(wire_tools, tool_choice=tool_choice, **kwargs)
 
+        def _get_tool_schema(self, tool: BaseTool) -> dict[str, Any]:
+            """The JSON Schema of the arguments the model fills in for ``tool``.
+
+            Read from ``tool_call_schema``, which is what the API route shows the model: it leaves
+            out arguments the caller injects (a tool-call id, a runnable config) and it is the
+            schema itself when a tool carries one as a JSON Schema dict. The base class called
+            ``args_schema.model_json_schema()``, which a dict does not have, and answered every
+            failure with an empty schema -- a tool advertised with no parameters, and nothing said.
+            A schema that cannot be rendered now fails the bind, as it does on the API route.
+
+            :param tool: a bound tool
+            :ptype tool: BaseTool
+            :return: the tool's argument schema
+            :rtype: dict[str, Any]
+            """
+            call_schema = tool.tool_call_schema
+            rendered: dict[str, Any]
+            if isinstance(call_schema, dict):
+                rendered = dict(call_schema)
+            elif issubclass(call_schema, BaseModel):
+                rendered = call_schema.model_json_schema()
+            else:
+                rendered = call_schema.schema()  # a pydantic v1 model
+            return rendered
+
         def _wrap_langchain_tool(self, tool: BaseTool, schema: dict[str, Any]) -> Callable[..., Any]:
-            props = schema.get("properties", {})
+            """The SDK tool the CLI lists for ``tool``: its schema made self-contained, its handler inert.
 
-            def _resolve_property(prop: dict[str, Any]) -> dict[str, Any]:
-                """Resolve ``prop`` to a JSON Schema property with a definite top-level ``type``,
-                unwrapping the ``anyOf``/``oneOf`` shape pydantic emits for an ``X | None`` field
-                (no top-level ``type`` key there -- see the "Optional-parameter schema mistyping"
-                note in this module's docstring)."""
-                if "type" in prop:
-                    return prop
-                for branch in prop.get("anyOf") or prop.get("oneOf") or ():
-                    branch_type = branch.get("type")
-                    if branch_type and branch_type != "null":
-                        resolved = dict(branch)
-                        if "description" in prop:
-                            resolved.setdefault("description", prop["description"])
-                        return resolved
-                return {"type": "string"}
-
-            # A full JSON Schema (not a bare {name: python_type} map) so the SDK's own schema
-            # builder uses it verbatim, INCLUDING our `required` list -- rather than its fallback
-            # path, which marks every key required regardless of the source tool's actual schema.
-            input_schema: dict[str, Any] = {
-                "type": "object",
-                "properties": {n: _resolve_property(p) for n, p in props.items()},
-                "required": schema.get("required", []),
-            }
+            :param tool: a bound tool
+            :ptype tool: BaseTool
+            :param schema: the tool's argument schema, from :meth:`_get_tool_schema`
+            :ptype schema: dict[str, Any]
+            :return: the SDK tool
+            :rtype: Callable[..., Any]
+            :raises ValueError: when the schema holds a reference that cannot be inlined
+            """
+            input_schema = _cli_input_schema(schema, tool.name)
 
             @sdk_tool(tool.name, tool.description or "", input_schema)
             async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
