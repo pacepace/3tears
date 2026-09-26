@@ -21,7 +21,6 @@
 #   docker buildx bake base              # both bases
 #   docker buildx bake hub               # hub consumer image
 #   docker buildx bake admin             # admin agent consumer image
-#   docker buildx bake schema            # schema agent consumer image
 #   docker buildx bake identity          # identity-core/identity-edge consumer image
 #   docker buildx bake all               # everything
 #
@@ -84,7 +83,7 @@ group "default" {
   # the separate 14-eng-ai-bot-identity sibling repo, also not one of the
   # documented prerequisites -- opt in via the explicit `identity` target
   # or the `all` group.
-  targets = ["threetears-base", "aibots-base", "hub", "schema", "agent"]
+  targets = ["threetears-base", "aibots-base", "hub", "agent"]
 }
 
 group "base" {
@@ -93,14 +92,14 @@ group "base" {
 
 group "consumers" {
   # every consumer image; requires the admin and identity repos as siblings
-  targets = ["hub", "admin", "schema", "agent", "identity"]
+  targets = ["hub", "admin", "agent", "identity"]
 }
 
 group "all" {
   # everything (bases + every consumer); requires the admin and identity
   # repos as siblings. invoke explicitly when you want admin/identity built
   # locally
-  targets = ["threetears-base", "aibots-base", "hub", "admin", "schema", "agent", "identity"]
+  targets = ["threetears-base", "aibots-base", "hub", "admin", "agent", "identity"]
 }
 
 # ---------------------------------------------------------------------------
@@ -179,22 +178,6 @@ target "admin" {
   tags = [
     "${REGISTRY}/aibots-admin:${VERSION}",
     "${REGISTRY}/aibots-admin:latest",
-  ]
-}
-
-target "schema" {
-  inherits   = ["common"]
-  context    = "../14-eng-ai-bot-agents"
-  dockerfile = "docker/schema-agent/Dockerfile"
-  contexts = {
-    "${REGISTRY}/aibots-base:${VERSION}" = "target:aibots-base"
-  }
-  args = {
-    AIBOTS_BASE = "${REGISTRY}/aibots-base:${VERSION}"
-  }
-  tags = [
-    "${REGISTRY}/aibots-schema:${VERSION}",
-    "${REGISTRY}/aibots-schema:latest",
   ]
 }
 
