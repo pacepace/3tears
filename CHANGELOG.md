@@ -4,7 +4,20 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.54.0 -- 2026-09-26
+
+Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`, and
+`RetrievalResult` gains `material_context`.
+
+### A provider failure is named as one
+
+- **New (minor):** `threetears.models.ModelCallTimeout(TimeoutError)`, raised when a
+  model call runs past its whole-call deadline (below), so a caller can tell the
+  provider running long from any other `TimeoutError`, its own deadlines included.
+- **New (minor):** `threetears.models.is_provider_error(exc)`: a provider SDK's or its
+  HTTP client's exception, a `ModelCallTimeout`, or the OpenRouter error the chat model
+  raises as a `ValueError` -- the same classes `friendly_api_error` words. metallm had
+  copied this test into its own code.
 
 ### The document analyzer mints its fence nonce
 
@@ -18,9 +31,10 @@ stay in the prompt cache.
 
 The OpenRouter SDK hands the timeout to httpx, which applies it to each read, and
 OpenRouter answers 200 at once and holds the call open with keep-alive comments while
-the upstream works: one call ran 218 s against a 120 s timeout. `_agenerate` is now held
-to the timeout whole, and `_astream` ends when no chunk arrives within it, so a long
-reply still streams.
+the upstream works: one call ran 218 s against a 120 s timeout. `NameTranslatingChatMixin`
+holds `_agenerate` to `call_deadline_s()` whole and ends `_astream` when no chunk arrives
+within it, so a long reply still streams; both raise `ModelCallTimeout`. OpenRouter sets
+the deadline from its timeout; the OpenAI and Anthropic wrappers keep `None`.
 
 ### Retrieval: the files and passages alone, fenced
 
