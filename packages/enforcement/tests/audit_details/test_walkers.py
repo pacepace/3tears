@@ -175,7 +175,7 @@ class TestFamilies:
         """when the walker cannot read the event type it cannot credit a declaration."""
         site = _read("AuditEvent(event_type=kind, details={'gate_declared_count': 1})")
 
-        assert site.event_type is None
+        assert site.event_types == frozenset()
         assert _unclassified(site) == ["gate_declared_count"]
 
 
@@ -235,7 +235,7 @@ class TestForwarders:
         hand_off, call_site = sites
         assert hand_off.unreadable == ()
         assert call_site.unreadable == ()
-        assert call_site.event_type == "x.y"
+        assert call_site.event_types == frozenset({"x.y"})
         assert _unclassified(call_site) == ["mystery_key"]
 
     @pytest.mark.parametrize(
@@ -356,3 +356,258 @@ class TestTheTreeWalk:
         violations = find_audit_details_violations(self._config(tmp_path))
 
         assert [v.category for v in violations] == ["audit_details.no_src_roots"]
+
+
+def _tree(tmp_path: Path, files: dict[str, str]) -> AuditDetailsConfig:
+    """
+    write a synthetic source tree under ``src/`` and configure the walker over it.
+
+    :param tmp_path: the repo root
+    :ptype tmp_path: Path
+    :param files: path under ``src/`` -> module source
+    :ptype files: dict[str, str]
+    :return: a config scanning that tree
+    :rtype: AuditDetailsConfig
+    """
+    src = tmp_path / "src"
+    for relative, source in files.items():
+        path = src / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    return AuditDetailsConfig(
+        repo_root=tmp_path, src_roots=(src,), safe_keys_for=_safe_keys_for, personal_keys=_PERSONAL
+    )
+
+
+def _findings(config: AuditDetailsConfig) -> list[tuple[str, str]]:
+    """
+    the violations over a synthetic tree, as ``(category, symbol)``.
+
+    :param config: the config
+    :ptype config: AuditDetailsConfig
+    :return: the findings, in walker order
+    :rtype: list[tuple[str, str]]
+    """
+    return [(violation.category, violation.symbol) for violation in find_audit_details_violations(config)]
+
+
+_FAMILY_KEY_SITE = "AuditEvent(event_type={event_type}, details={{'gate_declared_count': 1}})"
+_UNCLASSIFIED = [("audit_details.unclassified", "gate_declared_count")]
+
+
+class TestEventTypeConstants:
+    """an ``event_type`` named by a constant resolves to the constant's value."""
+
+    def test_a_module_level_constant_in_the_same_module(self) -> None:
+        """``EVENT = "..."`` at module level, then ``event_type=EVENT``."""
+        site = _read(f"EVENT = '{_FAMILY}.x'\n" + _FAMILY_KEY_SITE.format(event_type="EVENT"))
+
+        assert site.event_types == frozenset({f"{_FAMILY}.x"})
+        assert _unclassified(site) == []
+
+    def test_an_annotated_module_constant(self) -> None:
+        """``EVENT: Final = "..."`` is the same binding."""
+        site = _read(f"EVENT: Final = '{_FAMILY}.x'\n" + _FAMILY_KEY_SITE.format(event_type="EVENT"))
+
+        assert _unclassified(site) == []
+
+    def test_a_module_name_bound_twice_is_not_trusted(self) -> None:
+        """two bindings means the value at the call is not knowable statically."""
+        site = _read(f"EVENT = '{_FAMILY}.x'\nEVENT = 'other.y'\n" + _FAMILY_KEY_SITE.format(event_type="EVENT"))
+
+        assert site.event_types == frozenset()
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_a_local_that_shadows_the_constant_is_not_the_constant(self) -> None:
+        """a function-local assignment of the same name is a runtime value."""
+        site = _read(
+            f"EVENT = '{_FAMILY}.x'\n"
+            "def f(kind):\n"
+            "    EVENT = kind\n"
+            "    " + _FAMILY_KEY_SITE.format(event_type="EVENT") + "\n"
+        )
+
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_a_constant_imported_from_another_module(self, tmp_path: Path) -> None:
+        """``from pkg.events import EVENT`` resolves through the import to its definition."""
+        config = _tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/events.py": f"EVENT = '{_FAMILY}.x'\n",
+                "pkg/producer.py": "from pkg.events import EVENT\n" + _FAMILY_KEY_SITE.format(event_type="EVENT"),
+            },
+        )
+
+        assert _findings(config) == []
+
+    def test_a_constant_imported_relatively_and_under_an_alias(self, tmp_path: Path) -> None:
+        """``from .events import EVENT as KIND`` is the same resolution."""
+        config = _tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/events.py": f"EVENT = '{_FAMILY}.x'\n",
+                "pkg/producer.py": "from .events import EVENT as KIND\n" + _FAMILY_KEY_SITE.format(event_type="KIND"),
+            },
+        )
+
+        assert _findings(config) == []
+
+    def test_a_constant_re_exported_by_a_package(self, tmp_path: Path) -> None:
+        """a package ``__init__`` importing the constant is followed to where it is defined."""
+        config = _tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "from pkg.events import EVENT\n",
+                "pkg/events.py": f"EVENT = '{_FAMILY}.x'\n",
+                "other/producer.py": "from pkg import EVENT\n" + _FAMILY_KEY_SITE.format(event_type="EVENT"),
+            },
+        )
+
+        assert _findings(config) == []
+
+    def test_an_attribute_on_an_imported_module(self, tmp_path: Path) -> None:
+        """``events.EVENT`` with ``from pkg import events``, and ``pkg.events.EVENT`` with ``import pkg.events``."""
+        config = _tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/events.py": f"EVENT = '{_FAMILY}.x'\n",
+                "pkg/a.py": "from pkg import events\n" + _FAMILY_KEY_SITE.format(event_type="events.EVENT"),
+                "pkg/b.py": "import pkg.events\n" + _FAMILY_KEY_SITE.format(event_type="pkg.events.EVENT"),
+            },
+        )
+
+        assert _findings(config) == []
+
+    def test_an_import_from_outside_the_scanned_roots_is_not_resolved(self, tmp_path: Path) -> None:
+        """a module the walker cannot read proves nothing about the value."""
+        config = _tree(
+            tmp_path,
+            {"pkg/producer.py": "from elsewhere import EVENT\n" + _FAMILY_KEY_SITE.format(event_type="EVENT")},
+        )
+
+        assert _findings(config) == _UNCLASSIFIED
+
+    def test_a_non_string_constant_is_not_an_event_type(self) -> None:
+        """only a ``str`` literal binding resolves."""
+        site = _read("EVENT = 3\n" + _FAMILY_KEY_SITE.format(event_type="EVENT"))
+
+        assert site.event_types == frozenset()
+
+
+_HELPER = "def emit(request, *, event_type):\n    " + _FAMILY_KEY_SITE.format(event_type="event_type") + "\n"
+
+
+class TestHelperParameters:
+    """``event_type=<parameter>`` resolves to what the helper's callers pass; every value must credit the key."""
+
+    def test_callers_passing_literals_of_one_family_credit_the_key(self) -> None:
+        """two callers, two event types of the same family: the key is safe for both."""
+        site = _read(
+            _HELPER + f"emit(r, event_type='{_FAMILY}.a')\n" + f"emit(r, event_type='{_FAMILY}.b')\n",
+        )
+
+        assert site.event_types == frozenset({f"{_FAMILY}.a", f"{_FAMILY}.b"})
+        assert _unclassified(site) == []
+
+    def test_a_key_safe_for_only_one_callers_family_is_reported(self) -> None:
+        """the credit is the intersection: a value safe for one caller's family and not the other's is not safe."""
+        site = _read(_HELPER + f"emit(r, event_type='{_FAMILY}.a')\n" + "emit(r, event_type='unrelated.b')\n")
+
+        assert site.event_types == frozenset({f"{_FAMILY}.a", "unrelated.b"})
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_a_caller_passing_an_unresolvable_value_is_reported(self) -> None:
+        """one caller the walker cannot read makes the whole parameter unknown."""
+        site = _read(_HELPER + f"emit(r, event_type='{_FAMILY}.a')\n" + "emit(r, event_type=pick())\n")
+
+        assert site.event_types == frozenset()
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_a_helper_with_no_caller_is_reported(self) -> None:
+        """nothing sets the parameter, so nothing is known about it."""
+        site = _read(_HELPER)
+
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_a_caller_passing_the_parameter_positionally_is_reported(self) -> None:
+        """the walker does not map positions to parameters, so a positional caller is unresolved."""
+        source = (
+            "def emit(request, event_type):\n    "
+            + _FAMILY_KEY_SITE.format(event_type="event_type")
+            + f"\nemit(r, '{_FAMILY}.a')\n"
+        )
+
+        assert _unclassified(_read(source)) == ["gate_declared_count"]
+
+    def test_a_caller_omitting_a_defaulted_parameter_takes_the_default(self) -> None:
+        """a keyword-only default is what an omitting caller passes."""
+        source = (
+            f"def emit(request, *, event_type='{_FAMILY}.a'):\n    "
+            + _FAMILY_KEY_SITE.format(event_type="event_type")
+            + "\nemit(r)\n"
+        )
+
+        assert _unclassified(_read(source)) == []
+
+    def test_a_parameter_the_helper_reassigns_is_reported(self) -> None:
+        """a rebound parameter no longer holds what the callers passed."""
+        source = (
+            "def emit(request, *, event_type):\n"
+            "    event_type = derive(event_type)\n    "
+            + _FAMILY_KEY_SITE.format(event_type="event_type")
+            + f"\nemit(r, event_type='{_FAMILY}.a')\n"
+        )
+
+        assert _unclassified(_read(source)) == ["gate_declared_count"]
+
+    def test_a_caller_passing_its_own_parameter_is_followed_to_its_callers(self) -> None:
+        """two helpers deep, the literals at the outer callers decide."""
+        source = _HELPER + "def route(r, *, kind):\n    emit(r, event_type=kind)\n" + f"route(r, kind='{_FAMILY}.a')\n"
+
+        assert _unclassified(_read(source)) == []
+
+    def test_mutual_recursion_is_not_a_hang(self) -> None:
+        """a cycle of helpers passing the parameter round resolves to nothing, and terminates."""
+        source = (
+            _HELPER
+            + "def ping(r, *, kind):\n    emit(r, event_type=kind)\n    pong(r, kind=kind)\n"
+            + "def pong(r, *, kind):\n    ping(r, kind=kind)\n"
+        )
+
+        assert _unclassified(_read(source)) == ["gate_declared_count"]
+
+    def test_a_method_called_through_an_attribute_with_imported_constants(self, tmp_path: Path) -> None:
+        """the hub's knowledge shape: ``self._sink.publish(event_type=EVENT_X)``, constant imported."""
+        config = _tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/events.py": f"EVENT_A = '{_FAMILY}.a'\nEVENT_B = '{_FAMILY}.b'\n",
+                "pkg/sink.py": (
+                    "class Sink:\n"
+                    "    async def publish(self, *, event_type):\n        "
+                    + _FAMILY_KEY_SITE.format(event_type="event_type")
+                    + "\n"
+                ),
+                "pkg/a.py": "from pkg.events import EVENT_A\nasync def f(s):\n    await s._sink.publish(event_type=EVENT_A)\n",
+                "pkg/b.py": "from pkg import events\nasync def g(s):\n    await s.sink.publish(event_type=events.EVENT_B)\n",
+            },
+        )
+
+        assert _findings(config) == []
+
+    def test_a_same_named_function_elsewhere_only_narrows_the_credit(self, tmp_path: Path) -> None:
+        """callers are matched by name; an unrelated ``emit`` passing another family can only withhold credit."""
+        config = _tree(
+            tmp_path,
+            {
+                "pkg/helper.py": _HELPER + f"emit(r, event_type='{_FAMILY}.a')\n",
+                "pkg/unrelated.py": "emit(r, event_type='unrelated.b')\n",
+            },
+        )
+
+        assert _findings(config) == _UNCLASSIFIED

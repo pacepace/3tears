@@ -55,6 +55,14 @@ should route an audit record's content through it** rather than writing its own.
   computed key, a `**spread`, a dict returned by a call or passed in as a parameter)
   rather than passing it. A wrapper helper is refused until it is named in
   `AuditDetailsConfig.forwarders`; its call sites are then read like the constructor's.
+  A family's safe keys are credited only for the event types a site can be shown to
+  publish, resolved the way a reader would: a literal; a module constant, local or
+  imported from the scanned roots (absolute, relative, aliased, re-exported); an
+  attribute on an imported module; or a helper's `event_type` parameter, resolved through
+  every caller of the helper in the scanned roots. A key counts only if it is safe for
+  EVERY resolved value, and a site that cannot be resolved (a caller passing a computed
+  value or the parameter positionally, a helper nobody calls, a constant bound twice, an
+  import from outside the roots) gets the platform set alone, as before.
   No exemptions file. Consumer shell:
 
   ```python

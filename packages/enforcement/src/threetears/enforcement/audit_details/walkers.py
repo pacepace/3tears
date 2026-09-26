@@ -31,6 +31,14 @@ is a value, not keys, and is not read.
 **which nested keys must be classified.** Only those whose every ancestor key is
 safe for the event type: under an unsafe key the whole value is anonymized, keys
 included, so nothing beneath it is ever consulted.
+
+**which event types a site is credited for.** A family's safe keys count only for the
+event types a site can be shown to publish, resolved statically by
+:mod:`threetears.enforcement.audit_details.event_types`: a literal, a module constant
+(local or imported from the scanned roots), an attribute on an imported module, or a
+helper parameter resolved through every caller. A key is credited only when it is safe
+for EVERY resolved value; a site whose event type cannot be resolved gets the platform
+set alone, and anything that needs a family is reported.
 """
 
 from __future__ import annotations
@@ -43,6 +51,14 @@ from pathlib import Path
 from threetears.enforcement.common import Violation, callee_names, iter_python_files, parse_python_file
 
 from threetears.enforcement.audit_details.config import DEFAULT_AUDIT_CONSTRUCTORS, AuditDetailsConfig
+from threetears.enforcement.audit_details.event_types import (
+    EventTypeResolver,
+    FunctionNode,
+    SourceModule,
+    module_name,
+    parameter_names,
+    source_module,
+)
 
 __all__ = [
     "AuditDetailsSite",
@@ -55,15 +71,14 @@ __all__ = [
 #: dict methods that add a key when called with a literal.
 _ADDING_METHODS: frozenset[str] = frozenset({"update", "setdefault"})
 
-_FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
-
 
 @dataclass(frozen=True)
 class AuditDetailsSite:
     """one audit construction or forwarder call, and what the walker could read of its details.
 
     :ivar lineno: line of the call
-    :ivar event_type: the literal ``event_type`` keyword, or ``None`` when absent or computed
+    :ivar event_types: every event type the ``event_type`` argument resolves to; empty when
+        it is absent or cannot be resolved
     :ivar keys: every details key read, as its path from the top of ``details``
         (``("platform_repointed", "member_count")`` for a nested literal key)
     :ivar unreadable: ``(line, reason)`` for each part of the details argument the walker
@@ -71,7 +86,7 @@ class AuditDetailsSite:
     """
 
     lineno: int
-    event_type: str | None
+    event_types: frozenset[str]
     keys: frozenset[tuple[str, ...]]
     unreadable: tuple[tuple[int, str], ...]
 
@@ -96,7 +111,7 @@ def read_audit_details_sites(
     constructors: frozenset[str] = DEFAULT_AUDIT_CONSTRUCTORS,
     forwarders: frozenset[str] = frozenset(),
 ) -> list[AuditDetailsSite]:
-    """read every audit construction and forwarder call in one module.
+    """read every audit construction and forwarder call in one module, resolving within it alone.
 
     :param tree: a parsed module
     :ptype tree: ast.Module
@@ -107,12 +122,36 @@ def read_audit_details_sites(
     :return: one site per call, in line order
     :rtype: list[AuditDetailsSite]
     """
-    chains = _enclosing_functions(tree)
+    module = source_module(tree, name="")
+    resolver = EventTypeResolver({module.name: module})
+    return _read_module(module, resolver, constructors, forwarders)
+
+
+def _read_module(
+    module: SourceModule,
+    resolver: EventTypeResolver,
+    constructors: frozenset[str],
+    forwarders: frozenset[str],
+) -> list[AuditDetailsSite]:
+    """read every audit construction and forwarder call in one indexed module.
+
+    :param module: the module
+    :ptype module: SourceModule
+    :param resolver: the event-type resolver over every scanned module
+    :ptype resolver: EventTypeResolver
+    :param constructors: callee names that build an audit event
+    :ptype constructors: frozenset[str]
+    :param forwarders: callee names of wrapper helpers that pass ``details=`` through
+    :ptype forwarders: frozenset[str]
+    :return: one site per call, in line order
+    :rtype: list[AuditDetailsSite]
+    """
     targets = constructors | forwarders
-    sites: list[AuditDetailsSite] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and callee_names(node) & targets:
-            sites.append(_read_call(node, chains.get(id(node), ()), tree, forwarders))
+    sites = [
+        _read_call(node, module, resolver, forwarders)
+        for node in ast.walk(module.tree)
+        if isinstance(node, ast.Call) and callee_names(node) & targets
+    ]
     return sorted(sites, key=lambda site: site.lineno)
 
 
@@ -125,7 +164,9 @@ def unclassified_detail_paths(
     """the key paths at one site that no classification names, where the rule consults them.
 
     a nested key is consulted only when every key above it is safe for the event type;
-    beneath an unsafe key the whole value is anonymized.
+    beneath an unsafe key the whole value is anonymized. a site resolving to several event
+    types is credited with the keys safe for every one of them; one resolving to none, with
+    the platform set alone.
 
     :param site: a read site
     :ptype site: AuditDetailsSite
@@ -136,7 +177,11 @@ def unclassified_detail_paths(
     :return: the unclassified paths, sorted
     :rtype: list[tuple[str, ...]]
     """
-    safe = safe_keys_for(site.event_type or "")
+    safe = (
+        frozenset.intersection(*(safe_keys_for(event_type) for event_type in site.event_types))
+        if site.event_types
+        else safe_keys_for("")
+    )
     return sorted(
         path
         for path in site.keys
@@ -145,22 +190,30 @@ def unclassified_detail_paths(
 
 
 def collect_audit_details_sites(config: AuditDetailsConfig) -> dict[Path, list[AuditDetailsSite]]:
-    """every site under the configured source roots.
+    """every site under the configured source roots, event types resolved across all of them.
 
     :param config: per-repo enforcement config
     :ptype config: AuditDetailsConfig
     :return: file -> its sites, files with none omitted
     :rtype: dict[Path, list[AuditDetailsSite]]
     """
-    by_file: dict[Path, list[AuditDetailsSite]] = {}
+    modules: dict[str, SourceModule] = {}
+    paths: dict[str, Path] = {}
     for root in config.src_roots:
         for path in iter_python_files(root):
             tree = parse_python_file(path)
             if tree is None:
                 continue
-            sites = read_audit_details_sites(tree, constructors=config.constructors, forwarders=config.forwarders)
-            if sites:
-                by_file[path] = sites
+            name, is_package = module_name(path, root)
+            if name not in modules:
+                modules[name] = source_module(tree, name=name, is_package=is_package)
+                paths[name] = path
+    resolver = EventTypeResolver(modules)
+    by_file: dict[Path, list[AuditDetailsSite]] = {}
+    for name, module in modules.items():
+        sites = _read_module(module, resolver, config.constructors, config.forwarders)
+        if sites:
+            by_file[paths[name]] = sites
     return by_file
 
 
@@ -201,7 +254,7 @@ def _site_violations(path: Path, site: AuditDetailsSite, config: AuditDetailsCon
     :return: its unclassified-key and unreadable violations
     :rtype: list[Violation]
     """
-    event_type = site.event_type or "<computed event_type>"
+    event_type = ", ".join(sorted(site.event_types)) or "<unresolved event_type>"
     found = [
         Violation(
             category="audit_details.unclassified",
@@ -237,82 +290,45 @@ def _site_violations(path: Path, site: AuditDetailsSite, config: AuditDetailsCon
     return found
 
 
-def _enclosing_functions(tree: ast.Module) -> dict[int, tuple[_FunctionNode, ...]]:
-    """map every node to the functions enclosing it, outermost first.
-
-    :param tree: a parsed module
-    :ptype tree: ast.Module
-    :return: ``id(node)`` -> its enclosing function chain
-    :rtype: dict[int, tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]]
-    """
-    chains: dict[int, tuple[_FunctionNode, ...]] = {}
-
-    def visit(node: ast.AST, chain: tuple[_FunctionNode, ...]) -> None:
-        for child in ast.iter_child_nodes(node):
-            chains[id(child)] = chain
-            visit(child, (*chain, child) if isinstance(child, _FunctionNode) else chain)
-
-    visit(tree, ())
-    return chains
-
-
-def _parameters(function: _FunctionNode) -> set[str]:
-    """every parameter name a function declares.
-
-    :param function: a function definition
-    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
-    :return: its parameter names
-    :rtype: set[str]
-    """
-    arguments = function.args
-    names = {arg.arg for arg in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}
-    for variadic in (arguments.vararg, arguments.kwarg):
-        if variadic is not None:
-            names.add(variadic.arg)
-    return names
-
-
 def _read_call(
     call: ast.Call,
-    chain: tuple[_FunctionNode, ...],
-    tree: ast.Module,
+    module: SourceModule,
+    resolver: EventTypeResolver,
     forwarders: frozenset[str],
 ) -> AuditDetailsSite:
     """read one constructor or forwarder call.
 
     :param call: the call
     :ptype call: ast.Call
-    :param chain: the functions enclosing it, outermost first
-    :ptype chain: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
-    :param tree: the module, the scope of a call outside any function
-    :ptype tree: ast.Module
+    :param module: the module holding it
+    :ptype module: SourceModule
+    :param resolver: the event-type resolver over every scanned module
+    :ptype resolver: EventTypeResolver
     :param forwarders: callee names of declared wrapper helpers
     :ptype forwarders: frozenset[str]
     :return: the site
     :rtype: AuditDetailsSite
     """
+    chain: tuple[FunctionNode, ...] = module.chains.get(id(call), ())
     forwarded: set[str] = set()
     for function in chain:
         if function.name in forwarders:
-            forwarded |= _parameters(function)
+            forwarded |= parameter_names(function)
     reading = _Reading(forwarded=frozenset(forwarded))
     arguments: dict[str | None, ast.expr] = {}
     for keyword in call.keywords:
         if keyword.arg is None and not _is_forwarded(keyword.value, reading):
             reading.unreadable.append((call.lineno, "a **spread into the call may carry details"))
         arguments.setdefault(keyword.arg, keyword.value)
-    event_type = arguments.get("event_type")
     details = arguments.get("details")
-    scope: ast.AST = chain[-1] if chain else tree
+    scope: ast.AST = chain[-1] if chain else module.tree
     if isinstance(details, ast.Name):
         _read_local(details.id, scope, call.lineno, reading)
     elif details is not None:
         _read_literal(details, (), reading)
     return AuditDetailsSite(
         lineno=call.lineno,
-        event_type=(
-            event_type.value if isinstance(event_type, ast.Constant) and isinstance(event_type.value, str) else None
-        ),
+        event_types=resolver.resolve_site(arguments.get("event_type"), module, chain),
         keys=frozenset(reading.keys),
         unreadable=tuple(reading.unreadable),
     )
