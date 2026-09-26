@@ -29,6 +29,28 @@ database: 19 of 20 concurrent members served from cache, 2 stored.
 - Consumers that worked around this by reading L3 on every attempt and evicting after
   every write (the survey engine's `IndexesData`) can drop the workaround.
 
+### Through the broker, a constraint violation is the asyncpg error, not an outage
+
+`NatsProxyL3Backend` is a drop-in for an asyncpg pool, but it raised
+`DataLayerUnavailableError` for every failed broker reply. A unique violation therefore
+never reached `except asyncpg.UniqueViolationError` in a broker-backed pod, and a duplicate
+read as infrastructure. 3tears' own `workspace_create` duplicate-name branch was dead over
+the broker for the same reason.
+
+- **New (minor):** `threetears.core.backends.nats_proxy.CONSTRAINT_VIOLATION_ERROR_CODE`
+  (`"CONSTRAINT_VIOLATION"`), the broker `error_code` for a statement refused with a
+  SQLSTATE in class 23.
+- **Fixed:** a failed reply carrying that code and a class-23 `sqlstate` raises the asyncpg
+  exception a direct pool raises for it (`UniqueViolationError`, `ForeignKeyViolationError`,
+  `NotNullViolationError`, `CheckViolationError`, `ExclusionViolationError`, or
+  `IntegrityConstraintViolationError`), with `sqlstate`, `constraint_name`, `table_name`,
+  `schema_name`, `column_name` and `detail` set from the reply. This holds on every reply
+  path: single queries, batches, and `tx.execute` / `tx.fetchrow` / `tx.fetch` /
+  `tx.commit` (a deferred constraint fires at commit). Every other failed reply is still
+  `DataLayerUnavailableError`, including a violation code without a class-23 SQLSTATE.
+- **Requires the hub** to send the code and fields. Until it does, replies are unchanged
+  and so is the behaviour.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,
