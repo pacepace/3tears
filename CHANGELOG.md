@@ -4,6 +4,56 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.55.0 -- unreleased
+
+Minor: `threetears.agent.audit` gains the erasure rule for audit records:
+`anonymize_details`, `anonymize_ip`, `ANONYMIZED_MARKER`, `SAFE_DETAIL_KEYS`,
+`PERSONAL_DETAIL_KEYS`, `declare_safe_detail_keys`, `safe_detail_keys_for` and
+`is_classified_detail_key`.
+
+### Audit records are anonymized on erasure, never deleted
+
+Erasure must keep every audit record and every id on it, and scrub only the
+content. Until now each consumer wrote its own scrub: the hub's GDPR cascade
+replaced `details` wholesale, and the survey engine wrote its own marker.
+`threetears.agent.audit.anonymize` is now the one rule, and **every erasure path
+should route an audit record's content through it** rather than writing its own.
+
+- **New (minor):** `anonymize_details(details, *, event_type) -> dict`. Keeps
+  every key at every depth and the whole structure (dicts, lists, tuples), keeps
+  the value under a safe key, and replaces every other leaf with
+  `ANONYMIZED_MARKER` (`"[anonymized]"`). `None` stays `None`. Pure (no I/O, input
+  untouched) and idempotent. Beneath an unsafe key every leaf is masked, whatever
+  the nested keys are spelled; a dict beneath a safe key is judged key by key, so a
+  field added inside a structural map later is masked until someone classifies it.
+  Keys themselves are never rewritten, including field names inside a user's
+  document.
+- **New (minor):** `anonymize_ip(value) -> None`. An `ip_address` column becomes
+  `NULL`: the marker cannot be stored in an address-typed column, and a truncated
+  address is still personal data. The row and its other columns stay.
+- **New (minor):** `SAFE_DETAIL_KEYS`, the explicit safe list. A key not on it is
+  masked, so a field nobody classified fails safe instead of leaking. Derived from
+  the `details` keys the platform actually publishes -- 3tears (`tool.call`,
+  `workspace.*`), the hub, identity-core and the survey engine -- with a one-line
+  reason per key in the module. `PERSONAL_DETAIL_KEYS` records the keys found able
+  to carry personal data (names, emails, free text, paths, exception text,
+  credential fragments, content digests); it changes nothing at runtime.
+- **New (minor):** `declare_safe_detail_keys(event_type_prefix, keys)` and
+  `safe_detail_keys_for(event_type)`: one registry, one lookup, for keys that are
+  structural only inside one event family (`reason` is an enum on
+  `identity.impersonation.stop` and exception text on
+  `identity.email.send_failure`). A prefix matches whole dotted segments. A
+  declaration is visible only in the process that makes it, so the families whose
+  events the hub erases from the platform audit table ship declared in the module
+  itself; a runtime declaration is for a service anonymizing its own local store.
+- **New (minor):** `is_classified_detail_key(key, *, event_type)`: whether a key is
+  safe for that event type or recorded as personal.
+- **New gate:** `tests/enforcement/test_audit_details_keys_are_classified.py` fails
+  when a 3tears package publishes an audit `details` key that is neither safe nor
+  personal. It reads `AuditEvent(...)` constructions statically, and refuses a
+  `details` argument it cannot read (a computed key, a `**spread`, a dict returned
+  by a call or passed in as a parameter) rather than passing it.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,
