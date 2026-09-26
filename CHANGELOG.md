@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.54.0 -- unreleased
+## v0.54.0 -- 2026-09-26
 
 ### A replay guard is bound when its service starts, not at first use
 
