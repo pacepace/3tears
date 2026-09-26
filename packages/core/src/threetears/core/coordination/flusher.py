@@ -19,12 +19,11 @@ last flush, which is the trade counters accept and revocations do not.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Final
 
 from threetears.core.collections.flush import WriteBuffer, flush_pending
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.observe import get_logger
+from threetears.observe import PeriodicTask, get_logger
 
 __all__ = ["PeriodicFlusher"]
 
@@ -66,7 +65,8 @@ class PeriodicFlusher:
         self._buffer = buffer
         self._registry = registry
         self._interval = interval_seconds
-        self._task: asyncio.Task[None] | None = None
+        # flush on the interval, sleeping first; _flush_once reports its own failure at ERROR.
+        self._loop = PeriodicTask(self._flush_once, interval=interval_seconds, name="coordination-flush", logger=log)
 
     @property
     def running(self) -> bool:
@@ -75,7 +75,7 @@ class PeriodicFlusher:
         :return: ``True`` while the task exists and has not finished
         :rtype: bool
         """
-        return self._task is not None and not self._task.done()
+        return self._loop.running
 
     def ensure_running(self) -> None:
         """start the flush loop if it is not already running.
@@ -85,9 +85,7 @@ class PeriodicFlusher:
         :return: nothing
         :rtype: None
         """
-        if self.running:
-            return
-        self._task = asyncio.get_running_loop().create_task(self._run(), name="coordination-flush")
+        self._loop.start()
 
     async def aclose(self) -> None:
         """stop the loop and flush what is still buffered.
@@ -98,28 +96,8 @@ class PeriodicFlusher:
         :return: nothing
         :rtype: None
         """
-        task = self._task
-        self._task = None
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation we just requested, awaited only to join the
-                # task before the final flush. Logging it would report a shutdown step as an
-                # event, and re-raising would abandon the flush this method exists to run.
-                pass
+        await self._loop.stop()
         await self._flush_once()
-
-    async def _run(self) -> None:
-        """flush on the interval until cancelled.
-
-        :return: nothing
-        :rtype: None
-        """
-        while True:
-            await asyncio.sleep(self._interval)
-            await self._flush_once()
 
     async def _flush_once(self) -> None:
         """flush the buffer, reporting a failure without killing the loop.

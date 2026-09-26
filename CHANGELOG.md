@@ -4,6 +4,24 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased (feat/consumer-gaps)
+
+### One periodic loop instead of eight
+
+- **New (minor):** `threetears.observe.PeriodicTask(tick, *, interval, name, logger, first_delay=None)`.
+  It is the start/stop/interval shell every background sweeper needs:
+  - `start()` is idempotent while the loop runs;
+  - `await stop()` cancels a tick in flight and returns once the loop has ended;
+  - a failing tick is logged at WARNING with its traceback and the loop carries on;
+  - a tick may return the seconds to wait before the NEXT tick (fast retry, backoff);
+  - `first_delay` sets the first sleep alone (`0` ticks at once);
+  - `run_once()` runs one isolated tick without the loop.
+- The presence sweeper, the registry health check, the MCP rbac catch-up and the
+  write-behind `PeriodicFlusher` run on it, with their public APIs unchanged. The presence
+  sweeper's `start()` is now idempotent; calling it twice used to spawn a second loop.
+- `CachedHubJwksProvider` runs on it as well. A refresh pass that raises now retries after
+  the short initial interval rather than waiting a full steady interval.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

@@ -31,7 +31,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from threetears.nats import Subjects
-from threetears.observe import get_logger
+from threetears.observe import PeriodicTask, get_logger
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
@@ -80,7 +80,7 @@ class CachedHubJwksProvider:
         self._initial_retry_interval = initial_retry_interval_seconds
         self._request_timeout = request_timeout_seconds
         self._jwks: dict[str, Any] = dict(_EMPTY_JWKS)
-        self._task: asyncio.Task[None] | None = None
+        self._loop: PeriodicTask | None = None
         #: True after the first SUCCESSFUL fetch; gates the fast cold-start retry vs the steady loop
         self._warmed = False
         #: collapses concurrent reactive triggers onto a single in-flight refresh (no Hub stampede)
@@ -120,7 +120,22 @@ class CachedHubJwksProvider:
         :rtype: None
         """
         await self.refresh()
-        self._task = asyncio.create_task(self._refresh_loop())
+        # Until the first SUCCESSFUL fetch the loop retries on the short ``initial_retry_interval`` so
+        # a verifier whose initial fetch raced the Hub's responder at boot warms within seconds (under
+        # enforce an empty cache rejects every call); after the first success it settles to the steady
+        # ``refresh_interval``. The loop is a supervisor: it must be unkillable, because a Hub re-key
+        # only self-heals while it keeps running -- PeriodicTask logs a failed pass and carries on,
+        # and only cancellation (``stop``) ends it.
+        self._loop = PeriodicTask(
+            self._refresh_pass,
+            # the configured interval is the SHORT retry: a pass that raises retries soon; a pass that
+            # completes returns the delay it wants (the steady interval once warmed).
+            interval=self._initial_retry_interval,
+            first_delay=self._next_delay(),
+            name="hub-jwks-refresh",
+            logger=log,
+        )
+        self._loop.start()
 
     async def stop(self) -> None:
         """cancel the background refresh loop.
@@ -128,14 +143,9 @@ class CachedHubJwksProvider:
         :return: nothing
         :rtype: None
         """
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            # NOSILENT: CancelledError here IS the cancellation we just requested
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        loop, self._loop = self._loop, None
+        if loop is not None:
+            await loop.stop()
 
     async def refresh(self) -> None:
         """fetch the JWKS once; on failure keep the last good cache (never clear to empty).
@@ -214,27 +224,22 @@ class CachedHubJwksProvider:
             self._last_reactive_refresh = time.monotonic()
             return True
 
-    async def _refresh_loop(self) -> None:
-        """refresh the JWKS until cancelled.
+    def _next_delay(self) -> float:
+        """the sleep before the next refresh: short until the first success, then the steady interval.
 
-        Until the first SUCCESSFUL fetch the loop retries on the short ``initial_retry_interval`` so
-        a verifier whose initial fetch raced the Hub's responder at boot warms within seconds (under
-        enforce an empty cache rejects every call). After the first success it settles to the steady
-        ``refresh_interval``.
-
-        This is a supervisor loop: it must be UNKILLABLE, because a Hub re-key only self-heals while
-        it keeps running. :meth:`refresh` already keeps-last-good + logs on the failures it models;
-        this belt-and-braces guard wraps the loop body so NO exception type (including a future
-        programming error in the body) can end the loop. Only ``asyncio.CancelledError`` (a
-        BaseException, not caught here) ends it, so :meth:`stop` still cancels cleanly.
+        :return: seconds
+        :rtype: float
         """
-        while True:
-            interval = self._refresh_interval if self._warmed else self._initial_retry_interval
-            await asyncio.sleep(interval)
-            try:
-                await self.refresh()
-            except Exception as exc:
-                log.warning(
-                    "hub jwks refresh loop iteration failed; loop continues",
-                    extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc)}},
-                )
+        return self._refresh_interval if self._warmed else self._initial_retry_interval
+
+    async def _refresh_pass(self) -> float:
+        """one refresh; returns the delay before the next.
+
+        :meth:`refresh` already keeps-last-good and logs the failures it models; anything else is
+        logged by ``PeriodicTask`` and retried after the short interval.
+
+        :return: seconds until the next pass
+        :rtype: float
+        """
+        await self.refresh()
+        return self._next_delay()

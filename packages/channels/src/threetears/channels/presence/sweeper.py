@@ -18,11 +18,10 @@ invalidation make the removal visible fleet-wide.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
-from threetears.observe import get_logger
+from threetears.observe import PeriodicTask, get_logger
 
 from threetears.channels.presence.collection import PresenceCollection
 
@@ -57,8 +56,9 @@ class PresenceSweeper:
         self._collection = collection
         self._check_interval = check_interval
         self._timeout = timeout
-        self._running = False
-        self._check_task: asyncio.Task[None] | None = None
+        # One sweep a period, sleeping first; a failed sweep is logged and the loop carries on -- a
+        # single mis-timed sweep must not stop self-heal.
+        self._loop = PeriodicTask(self.run_sweep, interval=check_interval, name="presence-sweeper", logger=log)
         self._known_connection_ids: set[str] = set()
 
     @property
@@ -77,7 +77,7 @@ class PresenceSweeper:
         :return: ``True`` between :meth:`start` and :meth:`stop`
         :rtype: bool
         """
-        return self._check_task is not None
+        return self._loop.running
 
     def track(self, connection_id: str) -> None:
         """start tracking a connection for the staleness sweep.
@@ -115,8 +115,7 @@ class PresenceSweeper:
         :return: nothing
         :rtype: None
         """
-        self._running = True
-        self._check_task = asyncio.create_task(self._sweep_loop())
+        self._loop.start()
         log.info(
             "presence sweeper started",
             extra={"extra_data": {"check_interval": self._check_interval, "timeout": self._timeout}},
@@ -128,41 +127,8 @@ class PresenceSweeper:
         :return: nothing
         :rtype: None
         """
-        self._running = False
-        if self._check_task is not None:
-            self._check_task.cancel()
-            try:
-                await self._check_task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
-            self._check_task = None
+        await self._loop.stop()
         log.info("presence sweeper stopped")
-
-    async def _sweep_loop(self) -> None:
-        """run the staleness sweep on the configured interval until stopped.
-
-        a single sweep failure is logged and does not brick the loop —
-        one mis-timed sweep must not stop self-heal.
-
-        :return: nothing
-        :rtype: None
-        """
-        while self._running:
-            await asyncio.sleep(self._check_interval)
-            if not self._running:
-                break
-            try:
-                await self.run_sweep()
-            except Exception as exc:
-                # supervisor loop: surface any sweep failure to the log
-                # without stopping self-heal -- a single mis-timed sweep
-                # must not brick presence eviction (mirrors
-                # HeartbeatSubscriber._health_check_loop).
-                log.warning(
-                    "presence sweep failed",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
 
     async def run_sweep(self) -> list[str]:
         """execute one staleness sweep across tracked connections.
