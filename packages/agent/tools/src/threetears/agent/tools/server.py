@@ -21,6 +21,7 @@ from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import TearsTool, ToolResult
 from threetears.agent.tools.call_scope import (
     ToolCallScope,
+    build_call_scope,
     enter_call_scope,
 )
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
@@ -3533,7 +3534,10 @@ class ToolServer:
         ``user_id`` are present. callers that do not need the context
         (stateless tools) can safely omit ``context`` entirely: the
         resulting scope carries ``context_manager=None`` and any tool
-        that requires it raises at first use.
+        that requires it raises at first use. the construction itself is
+        :func:`~threetears.agent.tools.call_scope.build_call_scope`, shared
+        with a tool wrapped for LangGraph, so a tool sees one scope shape on
+        either path.
 
         factory exceptions propagate to :meth:`handle_call`'s except
         block so the call is surfaced as a failed tool result rather
@@ -3549,30 +3553,23 @@ class ToolServer:
         :return: populated :class:`ToolCallScope`
         :rtype: ToolCallScope
         """
-        context = request.context if request.context is not None else CallContext()
-        context_manager: ToolContextManager | None = None
         log.debug(
             "building call scope",
             extra={
                 "extra_data": {
                     "factory_present": self._context_factory is not None,
-                    "conv_present": context.conversation_id is not None,
-                    "user_present": context.user_id is not None,
+                    "conv_present": request.context is not None and request.context.conversation_id is not None,
+                    "user_present": request.context is not None and request.context.user_id is not None,
                 }
             },
         )
-        if self._context_factory is not None and context.conversation_id is not None and context.user_id is not None:
-            context_manager = await self._context_factory(
-                context.conversation_id,
-                context.user_id,
-            )
-        return ToolCallScope(
-            context=context,
-            context_manager=context_manager,
+        return await build_call_scope(
+            request.context,
+            principal_is_tool_pod=principal_is_tool_pod,
+            context_factory=self._context_factory,
             object_store=self._object_store,
             object_resolver=self._object_resolver,
             engagement_resolver=self._engagement_resolver,
-            principal_is_tool_pod=principal_is_tool_pod,
         )
 
     async def _heartbeat_loop(self) -> None:

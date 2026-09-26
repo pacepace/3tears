@@ -22,10 +22,16 @@ tools inside a LangGraph graph rather than across NATS via
   ``ToolMessage`` with ``status="error"`` whose content names the
   error), never as a success, and keeps its metadata as the artifact.
 
-What this path does NOT do that the ToolServer does: it installs no
-:class:`~threetears.agent.tools.call_scope.ToolCallScope`, and it
-applies no ``requires_confirmation`` gate -- the wrapped tool carries the
-flag for the graph's own gate to read. See :func:`to_langchain_tool`.
+* the tool runs inside the same
+  :class:`~threetears.agent.tools.call_scope.ToolCallScope` the
+  ToolServer installs around a dispatch, built by the same function
+  (:func:`~threetears.agent.tools.call_scope.build_call_scope`) from the
+  graph config's ``call_context``, so a tool reading the call's
+  conversation, user, timezone or tokens reads them on either path.
+
+What this path does NOT do that the ToolServer does: it applies no
+``requires_confirmation`` gate -- the wrapped tool carries the flag for
+the graph's own gate to read. See :func:`to_langchain_tool`.
 
 Lives in its own module rather than on :class:`TearsTool` itself
 because :mod:`threetears.agent.tools.base_tool` is enforced
@@ -39,13 +45,21 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, ToolException
 
+from threetears.media.contracts import ObjectStore
+
 from threetears.agent.tools.base_tool import TearsTool, ToolResult
+from threetears.agent.tools.call_scope import ContextFactory, build_call_scope, enter_call_scope
+from threetears.agent.tools.context_envelope import CallContext
+
+if TYPE_CHECKING:
+    from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
+    from threetears.agent.tools.object_resolver import ObjectResolver
 
 __all__ = ["to_langchain_tool"]
 
@@ -152,9 +166,37 @@ def _failure_text(tool_name: str, outcome: ToolResult) -> str:
     return "\n\n".join(parts) if parts else f"{tool_name} failed and gave no reason."
 
 
+def _call_context(config: RunnableConfig) -> CallContext | None:
+    """the call's identity, as the graph config carries it, or ``None`` when it carries none.
+
+    Read from ``config["configurable"]["call_context"]``, where the aibots SDK's transport puts the
+    :class:`CallContext` of every turn -- the key its own tool wrapper reads.
+
+    :param config: the graph config LangChain hands the tool
+    :ptype config: RunnableConfig
+    :return: the call context, or ``None``
+    :rtype: CallContext | None
+    :raises TypeError: when the key holds anything but a :class:`CallContext` -- a host bug, said so
+        rather than run as if the call had no identity
+    """
+    configurable = config.get("configurable") or {}
+    call_context = configurable.get("call_context")
+    if call_context is not None and not isinstance(call_context, CallContext):
+        raise TypeError(
+            "config['configurable']['call_context'] must be a threetears CallContext, "
+            f"not {type(call_context).__name__}"
+        )
+    return call_context
+
+
 def to_langchain_tool(
     tool: TearsTool,
     description: str | None = None,
+    *,
+    context_factory: ContextFactory | None = None,
+    object_store: ObjectStore | None = None,
+    object_resolver: ObjectResolver | None = None,
+    engagement_resolver: EngagementScopeResolver | None = None,
 ) -> StructuredTool:
     """wrap a :class:`TearsTool` instance as a LangChain ``StructuredTool``.
 
@@ -185,13 +227,23 @@ def to_langchain_tool(
     arguments, a failure answers with its text, through a handled
     ``ToolException``.
 
-    this path runs the tool in the caller's process with no
-    :class:`~threetears.agent.tools.call_scope.ToolCallScope`: a tool
-    that reads per-call identity from the scope sees none, and a tool
-    that requires it refuses. it applies no ``requires_confirmation``
-    gate either: the returned tool CARRIES the flag, for the graph's
-    own gate to read (the aibots SDK's confirmation middleware does),
-    but nothing here pauses a call.
+    each call runs inside a
+    :class:`~threetears.agent.tools.call_scope.ToolCallScope`, the one
+    the ToolServer installs around a dispatch, built by the same
+    :func:`~threetears.agent.tools.call_scope.build_call_scope`: its
+    identity is the graph config's ``config["configurable"]["call_context"]``
+    (where the aibots SDK puts each turn's :class:`CallContext`), and
+    its pod-level resources are the ones passed here, as a ToolServer
+    takes them at construction. the caller is the agent running the
+    graph, never a tool pod. when the config carries no call context
+    no scope is installed: a tool that needs none -- a calculator --
+    runs as before, and one that needs the call's identity fails with
+    an error naming that config key
+    (:func:`~threetears.agent.tools.call_scope.no_call_scope_message`).
+
+    it applies no ``requires_confirmation`` gate: the returned tool
+    CARRIES the flag, for the graph's own gate to read (the aibots
+    SDK's confirmation middleware does), but nothing here pauses a call.
 
     sync-path event-loop safety:
 
@@ -217,6 +269,20 @@ def to_langchain_tool(
         relevant for factories that pass a configurable description
         string from per-tool config
     :ptype description: str | None
+    :param context_factory: resolves a call's conversation to its
+        :class:`~threetears.agent.tools.context.ToolContextManager`,
+        as the ToolServer's does; without one a scope carries no
+        context manager
+    :ptype context_factory: ContextFactory | None
+    :param object_store: the host's streaming object store, for tools
+        that produce objects
+    :ptype object_store: ObjectStore | None
+    :param object_resolver: the host's object-id resolver, for tools
+        that consume objects
+    :ptype object_resolver: ObjectResolver | None
+    :param engagement_resolver: the host's engagement-scope resolver,
+        for engagement-bound tools
+    :ptype engagement_resolver: EngagementScopeResolver | None
     :return: a LangChain ``StructuredTool`` ready to bind to an LLM,
         callable via both ``.invoke()`` and ``.ainvoke()``
     :rtype: StructuredTool
@@ -224,14 +290,19 @@ def to_langchain_tool(
     schema = tool.mcp_schema()
     tool_name = tool.mcp_name()
 
-    async def _answer(kwargs: dict[str, Any], tool_call_id: str | None) -> tuple[str | ToolMessage, Any]:
-        """invoke ``tool.run`` and project its ``ToolResult`` to (content, artifact).
+    async def _answer(
+        kwargs: dict[str, Any], tool_call_id: str | None, call_context: CallContext | None
+    ) -> tuple[str | ToolMessage, Any]:
+        """run ``tool.run`` in the call's scope and project its ``ToolResult`` to (content, artifact).
 
         :param kwargs: the arguments the model sent
         :ptype kwargs: dict[str, Any]
         :param tool_call_id: the id of the tool call being answered, or
             ``None`` when the tool was invoked with bare arguments
         :ptype tool_call_id: str | None
+        :param call_context: the call's identity from the graph config,
+            or ``None`` when it carried none -- then no scope is installed
+        :ptype call_context: CallContext | None
         :return: on success, the content and the metadata as the
             artifact; on a failure answering a tool call, the failed
             ``ToolMessage`` itself, which LangChain passes through
@@ -240,7 +311,19 @@ def to_langchain_tool(
             no tool call to answer; the tool handles it
             (``handle_tool_error=True``) into the failure's text
         """
-        outcome = await tool.run(**kwargs)
+        if call_context is None:
+            outcome = await tool.run(**kwargs)
+        else:
+            scope = await build_call_scope(
+                call_context,
+                principal_is_tool_pod=False,
+                context_factory=context_factory,
+                object_store=object_store,
+                object_resolver=object_resolver,
+                engagement_resolver=engagement_resolver,
+            )
+            async with enter_call_scope(scope):
+                outcome = await tool.run(**kwargs)
         metadata = outcome.metadata if isinstance(outcome.metadata, dict) else None
         answer: tuple[str | ToolMessage, Any] = (outcome.content, metadata)
         if not outcome.success:
@@ -253,18 +336,24 @@ def to_langchain_tool(
             answer = (failed, None)
         return answer
 
-    async def _async_wrapper(**kwargs: Any) -> tuple[str | ToolMessage, Any]:
+    async def _async_wrapper(runnable_config: RunnableConfig, **kwargs: Any) -> tuple[str | ToolMessage, Any]:
         """async entry to ``tool.run``.
 
+        ``runnable_config`` is annotated as exactly ``RunnableConfig`` because that is how LangChain
+        recognises the parameter to hand the graph config to; it never reaches the tool.
+
+        :param runnable_config: the graph config, supplied by LangChain
+        :ptype runnable_config: RunnableConfig
         :param kwargs: the arguments the model sent
         :ptype kwargs: Any
         :return: see :func:`_answer`
         :rtype: tuple[str | ToolMessage, Any]
         :raises ToolException: see :func:`_answer`
+        :raises TypeError: see :func:`_call_context`
         """
-        return await _answer(kwargs, _answering_tool_call.get())
+        return await _answer(kwargs, _answering_tool_call.get(), _call_context(runnable_config))
 
-    def _sync_wrapper(**kwargs: Any) -> tuple[str | ToolMessage, Any]:
+    def _sync_wrapper(runnable_config: RunnableConfig, **kwargs: Any) -> tuple[str | ToolMessage, Any]:
         """sync entry to ``tool.run`` -- safe regardless of caller event loop.
 
         path A: no running loop on this thread -> ``asyncio.run`` directly.
@@ -275,20 +364,24 @@ def to_langchain_tool(
         tool call's id is read here, on the caller's thread: a worker
         thread does not inherit the caller's context.
 
+        :param runnable_config: the graph config, supplied by LangChain
+        :ptype runnable_config: RunnableConfig
         :param kwargs: the arguments the model sent
         :ptype kwargs: Any
         :return: see :func:`_answer`
         :rtype: tuple[str | ToolMessage, Any]
         :raises ToolException: see :func:`_answer`
+        :raises TypeError: see :func:`_call_context`
         """
         tool_call_id = _answering_tool_call.get()
+        call_context = _call_context(runnable_config)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(_answer(kwargs, tool_call_id))
+            return asyncio.run(_answer(kwargs, tool_call_id, call_context))
         # running loop detected -- isolate the new run on a worker thread.
         with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _answer(kwargs, tool_call_id))
+            future = pool.submit(asyncio.run, _answer(kwargs, tool_call_id, call_context))
             return future.result()
 
     return _TearsStructuredTool.from_function(

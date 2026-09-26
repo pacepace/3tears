@@ -31,7 +31,7 @@ from uuid import UUID
 
 from threetears.observe import get_logger
 
-from threetears.agent.tools.call_scope import current_scope
+from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 from threetears.agent.tools.engagement_resolver import (
     EngagementScope,
     ScopeTarget,
@@ -87,10 +87,7 @@ async def resolve_engagement_scope() -> EngagementScope:
     """
     scope = current_scope()
     if scope is None:
-        raise EngagementScopeUnavailableError(
-            "engagement scope helper called outside a ToolServer call scope; an "
-            "engagement-bound tool runs inside enter_call_scope"
-        )
+        raise EngagementScopeUnavailableError(no_call_scope_message("engagement scope helper"))
     # engagement_id MAY be None: the caller's conversation has not explicitly selected
     # an engagement. Rather than refuse here, ask the hub to resolve the customer's
     # DEFAULT scope (its single active engagement) -- the hub returns those targets or

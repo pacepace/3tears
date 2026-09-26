@@ -236,3 +236,27 @@ class TestAProxiedTearsToolKeepsWhatItCarries:
         [ungated], _ = build_name_translation([to_langchain_tool(_Refusing())])
         assert getattr(gated, "requires_confirmation", False) is True
         assert getattr(ungated, "requires_confirmation", None) is False
+
+
+class TestAProxiedTearsToolRunsInTheCallsScope:
+    """through the proxy, the graph config's call context still reaches the tool."""
+
+    async def test_the_callers_timezone_reaches_a_proxied_tool(self) -> None:
+        """a proxied current_date reads the timezone the call context carries.
+
+        :return: none
+        :rtype: None
+        """
+        from threetears.agent.tools.builtin.current_date import CurrentDateTool
+        from threetears.agent.tools.context_envelope import CallContext
+
+        [wire_tool], _reverse_map = build_name_translation([to_langchain_tool(CurrentDateTool())])
+        config = {"configurable": {"call_context": CallContext(user_timezone="Asia/Tokyo")}}
+
+        via_invoke = await wire_tool.ainvoke(
+            {"type": "tool_call", "id": "t1", "name": "threetears_current_date", "args": {}}, config
+        )
+        via_arun = await wire_tool.arun({}, config=config)
+
+        assert "Asia/Tokyo" in via_invoke.content
+        assert "Asia/Tokyo" in via_arun

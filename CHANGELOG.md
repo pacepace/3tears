@@ -423,10 +423,25 @@ every argument dropped.
   `NameMangledToolProxy` of any tool, carry the tool's `requires_confirmation`. Neither declared
   the field, so a gate reading it off the bound tools -- the aibots SDK's confirmation
   middleware reads it with `getattr` -- saw every wrapped tool as ungated.
-- **Unchanged, and now documented on `to_langchain_tool`:** the in-graph path installs no
-  `ToolCallScope` and applies no `requires_confirmation` gate of its own. A tool that reads
-  per-call identity from the scope sees none, and a graph running a tool that declares
-  confirmation gates the call with its own gate, which reads the flag the wrapped tool carries.
+- **Fixed (`3tears-agent-tools`):** a TearsTool run in a graph runs inside the same
+  `ToolCallScope` the ToolServer installs around a dispatch. It ran in none, so `context_recall`
+  answered "unavailable", `current_date` ignored the user's timezone and the workspace tools
+  could not run at all. The scope's identity is the graph config's
+  `config["configurable"]["call_context"]` -- where the aibots SDK puts every turn's
+  `CallContext` -- and its pod-level resources are new keyword arguments on
+  `to_langchain_tool` (`context_factory`, `object_store`, `object_resolver`,
+  `engagement_resolver`), as a `ToolServer` takes them. The same holds through a
+  `NameMangledToolProxy`. With no call context no scope is installed: a tool that needs none
+  runs as before, and one that needs it fails with an error naming that config key. A
+  `call_context` that is not a `CallContext` raises `TypeError`.
+- **New (minor, `3tears-agent-tools`):** `threetears.agent.tools.call_scope.build_call_scope` --
+  the one construction of a call's scope, shared by the ToolServer (whose `_build_call_scope`
+  now delegates to it) and the adapter -- `ContextFactory`, and `no_call_scope_message(caller)`,
+  the one wording every scope-needing helper raises with when no scope is installed. It keeps
+  "outside a ToolServer call scope" and names the in-graph route too.
+- **Unchanged, and documented on `to_langchain_tool`:** the in-graph path applies no
+  `requires_confirmation` gate of its own; a graph running a tool that declares confirmation
+  gates the call with its own gate, which reads the flag the wrapped tool carries.
 
 ## v0.54.0 -- 2026-09-26
 
