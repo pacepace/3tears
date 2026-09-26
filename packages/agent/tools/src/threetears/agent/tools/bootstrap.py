@@ -1,12 +1,12 @@
 """``ToolServerBootstrap`` -- shared lifecycle for tool-pod entrypoints.
 
-every tool-pod ``main`` function used to repeat the same scaffolding:
+every tool-pod ``main`` function -- ``threetears.agent.tools.serve``, the
+admin tool pod's ``serve.py``, the agent SDK's
+``runtime/tool_server_bootstrap.py`` -- needs the same scaffolding:
 configure logging, instantiate ``ToolServer``, register tools, install
 SIGTERM/SIGINT handlers that schedule ``server.shutdown()`` via
-``spawn_background``, await ``server.serve()``, log start/stop. three
-copies (admin's ``serve.py``, agent SDK's
-``devx/schema/tool_server_entry.py``, and ``threetears.agent.tools.serve``)
-drifted on small details: signal-handler implementation, log message
+``spawn_background``, await ``server.serve()``, log start/stop. copies of
+it drift on small details: signal-handler implementation, log message
 format, exception handling around ``serve()``.
 
 this module owns the canonical lifecycle. host applications subclass
