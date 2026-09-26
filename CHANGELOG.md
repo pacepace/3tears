@@ -4,6 +4,37 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### The document analyzer mints its fence nonce
+
+`analyze_media` read a document's text in one call fenced with a nonce derived from
+the text. Nothing about a single call is cached, so it now mints one
+(`explained_fence(text, nonce=mint_nonce())`), as the rule for fences asks. The
+memory block, the ledger and the tool-result previews keep a derived nonce so they
+stay in the prompt cache.
+
+### OpenRouter: the configured timeout holds for the whole call
+
+The OpenRouter SDK hands the timeout to httpx, which applies it to each read, and
+OpenRouter answers 200 at once and holds the call open with keep-alive comments while
+the upstream works: one call ran 218 s against a 120 s timeout. `_agenerate` is now held
+to the timeout whole, and `_astream` ends when no chunk arrives within it, so a long
+reply still streams.
+
+### Retrieval: the files and passages alone, fenced
+
+- **New:** `RetrievalResult.material_context` -- the "Files you have seen" and "Passages"
+  sections alone, fenced, with each chunk's parent-memory anchor, for a consumer that
+  renders the agent's own memories itself. `context` is unchanged.
+
+### Flush: an FK deferral warns once
+
+A row whose parent was deleted re-deferred once per drain at WARNING, up to
+`_FK_RETRY_LIMIT` lines for one row. The first deferral warns; its repeats are DEBUG; the
+drop stays an ERROR. The retry budget is unchanged: a parent written by another worker can
+land after its child.
+
 ## v0.53.0 -- 2026-09-25
 
 ### One migration per database at a time: the database-wide DDL lock

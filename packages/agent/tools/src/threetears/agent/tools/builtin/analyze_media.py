@@ -39,7 +39,7 @@ from threetears.agent.tools.protocols import (
     VisionProvider,
 )
 from threetears.agent.tools.text_window import window_text
-from threetears.langgraph.fence import explained_fence
+from threetears.langgraph.fence import explained_fence, mint_nonce
 from threetears.observe import get_logger
 
 __all__ = [
@@ -474,8 +474,9 @@ class AnalyzeMediaTool(TearsTool):
         suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
         window_note = window.note(how="this analysis covers that part of the document only")
         # The document's words are material; a document can carry an instruction.
+        # One call reads it, so nothing is cached and the nonce is minted for it.
         doc_prompt = (
-            f"{question}\n\nThe document:\n{explained_fence(window.text)}"
+            f"{question}\n\nThe document:\n{explained_fence(window.text, nonce=mint_nonce())}"
             f"{chr(10) + window_note if window_note else ''}{suffix}"
         )
 
