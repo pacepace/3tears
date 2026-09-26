@@ -29,8 +29,6 @@ json matching this schema". Dispatch across providers lives in
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr
@@ -143,42 +141,17 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
 
         _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
 
-        def _deadline_s(self) -> float | None:
-            """The configured timeout in seconds, or ``None`` when none is set."""
-            timeout_ms = getattr(self, "request_timeout", None)
-            return timeout_ms / 1000 if timeout_ms else None
-
-        async def _agenerate(self, *args: Any, **kwargs: Any) -> Any:
-            """One whole call, held to the configured timeout.
+        def call_deadline_s(self) -> float | None:
+            """The configured timeout, as the whole call's deadline.
 
             The OpenRouter SDK hands the timeout to httpx, which applies it to
             each read, and OpenRouter answers 200 at once and keeps the call
             open with keep-alive comments while the upstream works. So no read
             ever waited 120 s and the call ran as long as the upstream did: one
-            summary call held a turn for 218 s. The configured timeout is the
-            whole call here.
+            summary call held a turn for 218 s. The mixin holds each call to this.
             """
-            async with asyncio.timeout(self._deadline_s()):
-                return await super()._agenerate(*args, **kwargs)
-
-        async def _astream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
-            """Stream, ending the call when no chunk arrives within the configured timeout.
-
-            A long reply may stream for longer than the timeout; what cannot
-            happen is a wait that long with nothing arriving. Keep-alive
-            comments never reach here as chunks, so they do not reset it.
-            """
-            stream = super()._astream(*args, **kwargs)
-            try:
-                while True:
-                    try:
-                        async with asyncio.timeout(self._deadline_s()):
-                            chunk = await anext(stream)
-                    except StopAsyncIteration:
-                        return
-                    yield chunk
-            finally:
-                await stream.aclose()
+            timeout_ms = getattr(self, "request_timeout", None)
+            return timeout_ms / 1000 if timeout_ms else None
 
     return _NameTranslatingChatOpenRouter
 

@@ -1183,7 +1183,9 @@ class TestOpenRouterForwardTranslation:
 
 
 class TestTheTimeoutIsTheWholeCall:
-    """The SDK applies the timeout to each read, and OpenRouter keeps a call open with
+    """The deadline lives on the shared mixin; OpenRouter sets it from its timeout.
+
+    The SDK applies the timeout to each read, and OpenRouter keeps a call open with
     keep-alives, so a stalled upstream ran as long as it liked: one call took 218 s
     against a 120 s timeout (metallm, 2026-09-26). Here the timeout holds."""
 
@@ -1204,7 +1206,7 @@ class TestTheTimeoutIsTheWholeCall:
 
         monkeypatch.setattr(ChatOpenRouter, "_agenerate", _stalls)
         with pytest.raises(TimeoutError):
-            await self._model(50)._agenerate([HumanMessage(content="hi")])
+            await self._model(50).ainvoke([HumanMessage(content="hi")])
 
     @pytest.mark.asyncio
     async def test_a_stream_that_goes_quiet_ends_at_the_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1254,5 +1256,12 @@ class TestTheTimeoutIsTheWholeCall:
             return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
 
         monkeypatch.setattr(ChatOpenRouter, "_agenerate", _slowish)
-        result = await self._model(None)._agenerate([HumanMessage(content="hi")])
-        assert result.generations[0].message.content == "ok"
+        result = await self._model(None).ainvoke([HumanMessage(content="hi")])
+        assert result.content == "ok"
+
+
+def test_the_other_wrappers_keep_no_extra_deadline() -> None:
+    """OpenAI's and Anthropic's SDKs were not reported to stall; only OpenRouter sets one."""
+    from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
+
+    assert NameTranslatingChatMixin.call_deadline_s(object()) is None  # type: ignore[arg-type]
