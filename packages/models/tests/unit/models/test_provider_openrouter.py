@@ -1182,6 +1182,9 @@ class TestOpenRouterForwardTranslation:
         assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
 
 
+from threetears.models.errors import ModelCallTimeout, is_provider_error  # noqa: E402
+
+
 class TestTheTimeoutIsTheWholeCall:
     """The deadline lives on the shared mixin; OpenRouter sets it from its timeout.
 
@@ -1205,7 +1208,7 @@ class TestTheTimeoutIsTheWholeCall:
             await asyncio.sleep(5)
 
         monkeypatch.setattr(ChatOpenRouter, "_agenerate", _stalls)
-        with pytest.raises(TimeoutError):
+        with pytest.raises(ModelCallTimeout):
             await self._model(50).ainvoke([HumanMessage(content="hi")])
 
     @pytest.mark.asyncio
@@ -1222,7 +1225,7 @@ class TestTheTimeoutIsTheWholeCall:
 
         monkeypatch.setattr(ChatOpenRouter, "_astream", _one_then_nothing)
         seen: list[str] = []
-        with pytest.raises(TimeoutError):
+        with pytest.raises(ModelCallTimeout):
             async for chunk in self._model(50).astream([HumanMessage(content="hi")]):
                 seen.append(str(chunk.content))
         assert seen == ["Hel"]
@@ -1265,3 +1268,23 @@ def test_the_other_wrappers_keep_no_extra_deadline() -> None:
     from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 
     assert NameTranslatingChatMixin.call_deadline_s(object()) is None  # type: ignore[arg-type]
+
+
+class TestAProviderFailureIsNamedAsOne:
+    """A caller that catches everything a model call raised can tell the provider's failure
+    from its own bug, and the deadline above from any other timeout."""
+
+    def test_the_whole_call_deadline_is_a_provider_failure(self) -> None:
+        assert is_provider_error(ModelCallTimeout("no answer"))
+
+    def test_an_sdk_error_and_the_openrouter_value_error_are(self) -> None:
+        class _SdkError(Exception):
+            pass
+
+        _SdkError.__module__ = "openai._exceptions"
+        assert is_provider_error(_SdkError("429"))
+        assert is_provider_error(ValueError("OpenRouter API error: rate limited"))
+
+    @pytest.mark.parametrize("exc", [KeyError("reply"), ValueError("bad field"), TimeoutError()])
+    def test_a_bug_or_the_callers_own_timeout_is_not(self, exc: Exception) -> None:
+        assert not is_provider_error(exc)

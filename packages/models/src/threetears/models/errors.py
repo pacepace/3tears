@@ -10,9 +10,23 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
+    "ModelCallTimeout",
     "friendly_api_error",
     "identify_provider",
+    "is_provider_error",
 ]
+
+
+class ModelCallTimeout(TimeoutError):
+    """A model call ran past its whole-call deadline.
+
+    Its own class, so a caller can tell the provider running long from any other
+    ``TimeoutError`` -- its own deadlines included.
+    """
+
+
+#: The packages a model call's own errors come from.
+_PROVIDER_PACKAGES = frozenset({"anthropic", "openai", "openrouter", "httpx", "httpcore"})
 
 try:
     from anthropic import (
@@ -138,3 +152,23 @@ def friendly_api_error(exc: Exception) -> str:
         message = "OpenRouter returned an error. Please retry in 1-2 minutes."
 
     return message
+
+
+def is_provider_error(exc: BaseException) -> bool:
+    """Whether a model call's provider failed, rather than the caller's code.
+
+    A provider SDK's or its HTTP client's exception, a :class:`ModelCallTimeout`,
+    or the OpenRouter error the chat model raises as a ``ValueError`` -- the same
+    classes :func:`friendly_api_error` words.
+
+    :param exc: what the call raised
+    :ptype exc: BaseException
+    :return: ``True`` for a provider failure
+    :rtype: bool
+    """
+    package = (type(exc).__module__ or "").split(".", 1)[0]
+    return (
+        package in _PROVIDER_PACKAGES
+        or isinstance(exc, ModelCallTimeout)
+        or (isinstance(exc, ValueError) and "OpenRouter API" in str(exc))
+    )

@@ -58,6 +58,7 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 
+from threetears.models.errors import ModelCallTimeout
 from threetears.models.tool_name_translation import (
     build_name_translation,
     forward_translate_input,
@@ -237,6 +238,8 @@ class NameTranslatingChatMixin:
                 except StopAsyncIteration:
                     # NOSILENT: the parent's stream ended; that is the end of this one.
                     return
+                except TimeoutError as exc:
+                    raise ModelCallTimeout(f"no chunk within {self.call_deadline_s()} s") from exc
                 yield chunk
         finally:
             await stream.aclose()
@@ -261,13 +264,16 @@ class NameTranslatingChatMixin:
         :return: chat result with translated tool-call names
         :rtype: ChatResult
         """
-        async with asyncio.timeout(self.call_deadline_s()):
-            result = await super()._agenerate(  # type: ignore[misc]
-                forward_translate_input(messages),
-                stop=stop,
-                run_manager=run_manager,
-                **kwargs,
-            )
+        try:
+            async with asyncio.timeout(self.call_deadline_s()):
+                result = await super()._agenerate(  # type: ignore[misc]
+                    forward_translate_input(messages),
+                    stop=stop,
+                    run_manager=run_manager,
+                    **kwargs,
+                )
+        except TimeoutError as exc:
+            raise ModelCallTimeout(f"no answer within {self.call_deadline_s()} s") from exc
         for generation in result.generations:
             reverse_translate_message(generation.message, self._name_reverse_map)
             drop_junk_invalid_tool_calls(generation.message)
