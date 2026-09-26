@@ -67,6 +67,53 @@ def coerce_value(value: Any, declared_type: str | None) -> Any:
     return result
 
 
+#: where a local definition lives, for each spelling of it.
+_DEFINITION_PREFIXES = ("#/$defs/", "#/definitions/")
+
+
+def _declared_type(prop: Any, input_schema: dict[str, Any], seen: frozenset[str] = frozenset()) -> str | None:
+    """the one JSON schema type ``prop`` declares, read through the shapes pydantic writes.
+
+    a property's own ``type`` answers when it is a string, or a list
+    naming one type besides ``null``. an optional field has no
+    ``type`` -- pydantic writes ``anyOf: [X, {"type": "null"}]`` --
+    and answers with ``X``'s. a nested model is a ``$ref`` into the
+    schema's own ``$defs`` and answers with the definition's. a union
+    of two or more real types answers ``None``: the value may be any
+    of them, and decoding a string would choose for the caller. so
+    does a reference that names nothing, or one already being followed.
+
+    :param prop: one property's schema
+    :ptype prop: Any
+    :param input_schema: the whole input schema, whose ``$defs`` a reference names
+    :ptype input_schema: dict[str, Any]
+    :param seen: references already followed on this path
+    :ptype seen: frozenset[str]
+    :return: the declared type, or ``None`` when there is no single one
+    :rtype: str | None
+    """
+    result: str | None = None
+    if not isinstance(prop, dict):
+        return result
+    declared = prop.get("type")
+    ref = prop.get("$ref")
+    members = prop.get("anyOf") or prop.get("oneOf")
+    if isinstance(declared, str):
+        result = declared
+    elif isinstance(declared, list):
+        real_types = [t for t in declared if t != "null"]
+        result = real_types[0] if len(real_types) == 1 and isinstance(real_types[0], str) else None
+    elif isinstance(ref, str) and ref not in seen:
+        prefix = next((p for p in _DEFINITION_PREFIXES if ref.startswith(p)), None)
+        definitions = {**(input_schema.get("definitions") or {}), **(input_schema.get("$defs") or {})}
+        if prefix is not None:
+            result = _declared_type(definitions.get(ref[len(prefix) :]), input_schema, seen | {ref})
+    elif isinstance(members, list):
+        real = [m for m in members if not (isinstance(m, dict) and m.get("type") == "null")]
+        result = _declared_type(real[0], input_schema, seen) if len(real) == 1 else None
+    return result
+
+
 def normalize_kwargs(
     kwargs: dict[str, Any],
     input_schema: dict[str, Any],
@@ -76,7 +123,9 @@ def normalize_kwargs(
     inspects ``input_schema['properties']`` and rewrites entries in
     kwargs whose declared type is ``object`` or ``array`` when the
     supplied value is a wrong-shape loose container (empty string
-    or JSON-encoded string). values matching their declared type
+    or JSON-encoded string). the declared type is read through an
+    optional union and a ``$ref`` into the schema's ``$defs`` (see
+    :func:`_declared_type`). values matching their declared type
     are passed through untouched. keys not present in the schema
     are passed through untouched. explicit ``None`` is preserved
     so per-action required-field checks still function.
@@ -97,6 +146,5 @@ def normalize_kwargs(
         if prop is None or value is None:
             normalized[key] = value
             continue
-        declared_type = prop.get("type")
-        normalized[key] = coerce_value(value, declared_type)
+        normalized[key] = coerce_value(value, _declared_type(prop, input_schema))
     return normalized
