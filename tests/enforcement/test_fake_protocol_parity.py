@@ -37,6 +37,15 @@ _CONFIG = FakeParityConfig(
     exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_fake_parity_exemptions.txt",
 )
 
+#: the doubles 3tears PUBLISHES for consumers. They live under ``src/``, which the default scan
+#: (every ``tests`` directory) never reaches -- and they are the ones every consumer's tests
+#: stand on, so a drift here is copied into every repo at once.
+_SHIPPED_DOUBLES = FakeParityConfig(
+    repo_root=_REPO_ROOT,
+    exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_fake_parity_exemptions.txt",
+    scan_roots=(_REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core" / "testing",),
+)
+
 
 class TestFakeProtocolParity:
     """every fake declares parity (subclass / marker / exemption with rationale)."""
@@ -44,3 +53,7 @@ class TestFakeProtocolParity:
     def test_no_undeclared_fakes(self) -> None:
         """surface fakes whose method surface drifts from the production protocol."""
         run_fake_parity_enforcement(_CONFIG)
+
+    def test_the_shipped_doubles_keep_parity(self) -> None:
+        """the doubles in ``threetears.core.testing`` are held to the classes they stand in for."""
+        run_fake_parity_enforcement(_SHIPPED_DOUBLES)

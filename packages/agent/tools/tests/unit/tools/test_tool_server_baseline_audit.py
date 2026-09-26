@@ -28,7 +28,7 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.agent.tools.server import ToolServer
 from threetears.nats import IncomingMessage, Subject, set_default_namespace
 
-from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
+from threetears.core.testing.replay_guard import FakeReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
 from unit.tools._pod_auth import mint_user_assertion as _mint_user_assertion
 from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
@@ -172,7 +172,7 @@ async def test_baseline_audit_emitted_on_success_path() -> None:
         pod_id="audit-pod",
         agent_id=owner_agent_id,
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(_StubTool())
 
@@ -259,7 +259,7 @@ async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
         nats_client=nats,
         pod_id="audit-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(
         _StubTool(result=ToolResult(success=False, content="", error="nope")),
@@ -285,7 +285,7 @@ async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
         nats_client=nats,
         pod_id="audit-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(_StubTool(raise_exc=RuntimeError("boom")))
     msg = _make_msg(_signed_call_payload(pod_id="audit-pod", tool_name="test.stub", tool_version="1.0"))
@@ -309,7 +309,7 @@ async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
         nats_client=nats,
         pod_id="audit-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     # no tool registered
     msg = _make_msg(_signed_call_payload(pod_id="audit-pod", tool_name="missing.tool", tool_version="2.0"))
@@ -395,7 +395,7 @@ async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
         nats_client=nats,
         pod_id="audit-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(_StubTool())
     msg = _make_msg(_signed_call_payload(pod_id="audit-pod", tool_name="test.stub", tool_version="1.0"))
@@ -509,7 +509,7 @@ async def test_bound_user_assertion_restamps_actor_user_id() -> None:
         nats_client=nats,
         pod_id="ua-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(_StubTool())
     msg = _make_msg(
@@ -545,7 +545,7 @@ async def test_bound_user_assertion_builds_per_user_context_manager() -> None:
         nats_client=nats,
         pod_id="ua-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
         context_factory=_recording_factory(factory_calls),
     )
     server.register(_StubTool())
@@ -580,7 +580,7 @@ async def test_absent_user_assertion_leaves_actor_none_and_no_context_manager() 
         nats_client=nats,
         pod_id="ua-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
         context_factory=_recording_factory(factory_calls),
     )
     server.register(_StubTool())
@@ -631,7 +631,7 @@ async def test_user_assertion_failclosed_denies(flavor: str) -> None:
         nats_client=nats,
         pod_id="ua-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(_StubTool())
     msg = _make_msg(
@@ -679,7 +679,7 @@ async def test_user_assertion_for_same_conversation_is_accepted() -> None:
         nats_client=nats,
         pod_id="ua-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(_StubTool())
     # the bound assertion is minted for conv_id (the helper binds the call's conversation), and the
@@ -724,7 +724,7 @@ async def test_user_assertion_replayed_into_different_conversation_denies() -> N
         nats_client=nats,
         pod_id="ua-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(_StubTool())
     # ...and replay it on a call for conversation D.
@@ -769,7 +769,7 @@ async def test_user_assertion_with_no_conversation_id_denies() -> None:
         nats_client=nats,
         pod_id="ua-pod",
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(_StubTool())
     msg = _make_msg(

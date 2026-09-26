@@ -7,6 +7,8 @@ time the registry SIGNED. Handing it the pod's own clock would make every replay
 
 from __future__ import annotations
 
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -19,7 +21,7 @@ from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolR
 from threetears.agent.tools.server import CallResponse
 from threetears.nats import IncomingMessage
 
-from unit.tools._pod_auth import StubReplayGuard, jwks_provider, recording_tool_server, signed_call_payload
+from unit.tools._pod_auth import jwks_provider, recording_tool_server, signed_call_payload
 
 _POD_ID = "test-pod"
 
@@ -43,7 +45,7 @@ class _EchoTool(TearsTool):
 class TestTheGuardSeesTheSignedIssueTime:
     @pytest.mark.asyncio
     async def test_the_assertions_signed_iat_reaches_the_guard(self) -> None:
-        guard = StubReplayGuard()
+        guard = FakeReplayGuard()
         server, rec = recording_tool_server(
             pod_id=_POD_ID,
             jwks_provider=jwks_provider,

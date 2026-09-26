@@ -13,7 +13,8 @@ not a ``test_*`` module, so pytest does not collect it; the registry test packag
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
 
 import time
 from typing import Any
@@ -40,7 +41,6 @@ __all__ = [
     "DEFAULT_CORRELATION_ID",
     "DEFAULT_CUSTOMER_ID",
     "HUB_JWKS",
-    "StubReplayGuard",
     "hub_jwks_provider",
     "make_authed_request",
     "make_proxy",
@@ -65,27 +65,6 @@ def hub_jwks_provider() -> dict[str, Any]:
     return HUB_JWKS
 
 
-class StubReplayGuard:
-    """records each pop nonce + returns a fixed freshness verdict so the proxy's replay wiring runs
-    without a live NATS-KV (the real guard's compare-and-set is covered by its own coordination
-    tests). default ``fresh=True`` -> every first-seen pop is accepted."""
-
-    def __init__(self, *, fresh: bool = True) -> None:
-        self._fresh = fresh
-        self.seen: list[str] = []
-        self.issued_at: list[datetime] = []
-
-    def require_covers(self, future_tolerance: timedelta) -> None:
-        """a stub guard is sized for any verifier; the real check has its own tests."""
-
-    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
-        if issued_at.tzinfo is None:
-            raise ValueError("record_unique requires a timezone-aware issued_at")
-        self.seen.append(nonce)
-        self.issued_at.append(issued_at)
-        return self._fresh
-
-
 def make_proxy(
     catalog: ToolCatalog,
     authorizer: Any = None,
@@ -107,7 +86,7 @@ def make_proxy(
     return CallProxy(
         catalog,
         authorizer if authorizer is not None else AllowAllAuthorizer(),
-        pop_replay_guard if pop_replay_guard is not None else StubReplayGuard(),
+        pop_replay_guard if pop_replay_guard is not None else FakeReplayGuard(),
         limit_guard if limit_guard is not None else AllowAllLimitGuard(),
         jwks_provider=jwks_provider,
         **kwargs,

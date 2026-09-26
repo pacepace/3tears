@@ -78,6 +78,19 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/utils/yugabyte_pool_recycler.py",
+        class_name="YugabytePoolRecycler",
+        attr_name="_expired_at_by_trigger",
+        rationale=(
+            "each trigger's last expiry of ONE process's asyncpg pool, as time.monotonic() "
+            "readings: the pool exists only in this process and a monotonic reading means "
+            "nothing in any other, so a shared or durable copy would describe a pool and a "
+            "clock no other pod has. keyed by the recycler's fixed trigger set, so it never "
+            "grows past the triggers it was built with, and a restart correctly starts with "
+            "no expiry on record for a pool that is itself new"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/derived.py",
         class_name="DerivedCollection",
         attr_name="_inflight",
