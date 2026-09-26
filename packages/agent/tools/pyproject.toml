@@ -35,6 +35,7 @@ dependencies = [
     # candidate-derived URLs under a byte cap, which the traced client cannot
     # do -- see threetears.agent.tools.search_transport for the split.
     "3tears-search[standalone]>=0.54.0,<0.55.0",
+    "3tears-tool-schema>=0.54.0,<0.55.0",
     "langchain-core",
     "httpx",
     "prometheus-client>=0.20",
@@ -69,3 +70,4 @@ packages = ["src/threetears"]
 3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
 3tears-search = { workspace = true }
+3tears-tool-schema = { workspace = true }

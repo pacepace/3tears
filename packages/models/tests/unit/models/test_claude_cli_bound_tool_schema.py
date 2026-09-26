@@ -288,6 +288,10 @@ _SHOT = {
 class TestNestedModelSchemas:
     """A tool whose args model nests another model reached the model as a plain string field.
 
+    What the route shows the model is :func:`threetears.tool_schema.self_contained_input_schema`
+    of the tool's ``tool_call_schema``; the shape rules themselves are tested in that package.
+    These pin that the route uses it, end to end through the SDK's tool listing.
+
     Pydantic renders a nested model as ``{"$ref": "#/$defs/Shot"}`` with the definition under the
     schema's ``$defs``. The wrapper dropped ``$defs`` and turned every ``$ref`` property into
     ``{"type": "string"}``, and an array whose ``items`` was a ``$ref`` kept a ref to nothing -- so
@@ -306,34 +310,6 @@ class TestNestedModelSchemas:
             "items": _SHOT,
         }
 
-    def test_a_nested_sub_object_keeps_its_properties_required_list_and_field_description(self) -> None:
-        scene = _advertised(self._tool())["properties"]["scene"]
-        assert scene["type"] == "object"
-        assert scene["description"] == "the scene they belong to"
-        assert scene["required"] == ["location"]
-        assert scene["properties"]["location"] == {"type": "string", "description": "the place"}
-
-    def test_an_optional_nested_model_is_unwrapped_to_the_object(self) -> None:
-        lighting = _advertised(self._tool())["properties"]["scene"]["properties"]["lighting"]
-        assert lighting == {
-            "type": "object",
-            "description": "the lighting, when it matters",
-            "properties": {"key": {"type": "string", "description": "the key light"}},
-            "required": ["key"],
-        }
-
-    def test_a_union_of_models_keeps_every_member(self) -> None:
-        framing = _advertised(self._tool())["properties"]["framing"]
-        assert framing["description"] == "the framing"
-        members = framing["anyOf"]
-        assert [sorted(member["properties"]) for member in members] == [["subject"], ["landscape"]]
-
-    def test_an_untyped_field_is_not_forced_to_a_string(self) -> None:
-        assert _advertised(self._tool())["properties"]["anything"] == {
-            "default": None,
-            "description": "any value at all",
-        }
-
     def test_no_reference_is_left_dangling(self) -> None:
         advertised = _advertised(self._tool())
         assert "$ref" not in repr(advertised)
@@ -341,20 +317,6 @@ class TestNestedModelSchemas:
 
     def test_the_top_level_required_list_is_the_models(self) -> None:
         assert _advertised(self._tool())["required"] == ["shots", "scene", "framing"]
-
-    def test_a_recursive_model_is_expanded_once_and_its_recursion_named(self) -> None:
-        """A recursive model cannot be inlined completely. It is expanded until it recurs, and
-        the point of recursion is described in words rather than cut to an empty schema."""
-        outline = _advertised(self._tool())["properties"]["outline"]
-        assert outline["type"] == "object"
-        assert outline["description"] == "the outline, if there is one"
-        children = outline["properties"]["children"]
-        assert children["type"] == "array"
-        assert children["description"] == "the nodes under this one"
-        assert children["items"] == {
-            "type": "object",
-            "description": "A Node: the same shape as the Node that contains it.",
-        }
 
     def test_a_json_schema_args_schema_is_read_not_replaced_by_an_empty_one(self) -> None:
         """A tool may carry its schema as a JSON Schema dict rather than a pydantic model -- every

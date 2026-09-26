@@ -340,6 +340,35 @@ the broker for the same reason.
 - **Requires the hub** to send the code and fields. Until it does, replies are unchanged
   and so is the behaviour.
 
+### New package: `3tears-tool-schema`, a tool's argument schema made self-contained
+
+Every tool host reads a tool's arguments as a JSON Schema: pydantic's `model_json_schema()`, an
+MCP `inputSchema`, a LangChain `args_schema`. Pydantic writes nested models as `$ref`s into
+`$defs` and optional fields as `anyOf` with `null`, and a reader that looks only at a
+property's own `type` gets both wrong. 3tears had two private copies of the fix, one in the
+subscription route of `3tears-models` and one in `3tears-agent-tools`' input coercion, and the
+aibots SDK needed a third. This package is the one copy. It has no dependencies, so any
+consumer can take it -- a LangGraph app, an MCP server, a model adapter or a validator.
+
+- **New package (minor):** `3tears-tool-schema`, import `threetears.tool_schema`,
+  `dependencies = []`, in the lockstep family.
+  - `self_contained_input_schema(schema, *, tool_name) -> dict` returns one `type: object`
+    schema with no references:
+    - every `$ref` into the schema's own `$defs` / `definitions` is inlined, through `items`,
+      unions and nested properties, keeping each level's `required` and descriptions;
+    - an optional union collapses at every depth, a union of real members is kept whole, and an
+      untyped field stays untyped;
+    - a recursive model is expanded until it recurs, and the recursion is described in words;
+    - a `$ref` outside the schema is refused with a `ValueError` naming the tool.
+  - `declared_type(prop, schema) -> str | None` returns the one type a property declares, read
+    through nullable type lists, optional unions and local `$ref`s, and never raises.
+- **Changed (`3tears-models`, `3tears-agent-tools`):** the subscription route and
+  `TearsTool.run`'s input coercion use it; their private copies are gone. Both now depend on
+  `3tears-tool-schema` within the family's bounded range.
+- **Release note:** a new project on PyPI needs a trusted publisher before its first upload. The
+  release workflow publishes every workspace member and `verify-dist-complete.sh` fails the
+  build without it.
+
 ### A temporary registration refusal is waited out, not fatal
 
 `ToolServer.wait_until_ready`, `ToolServer.register_tool` and `DynamicToolPod.register_spec` raised

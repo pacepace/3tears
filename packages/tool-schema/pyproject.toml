@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-tool-schema"
+version = "0.54.0"
+description = "Dependency-free helpers that make a tool's JSON Schema self-contained for models and validators"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# dependency-free by design, enforced by the contract-purity check in
+# tests/enforcement/: every tool host needs this -- a model adapter, a tool
+# framework, an agent SDK, an MCP server -- and none of them should inherit
+# another's dependency closure to read a JSON Schema.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
