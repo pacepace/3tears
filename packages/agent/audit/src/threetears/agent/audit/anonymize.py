@@ -20,7 +20,8 @@ name, an email, an address, an IP, free or user-typed text, a path, exception
 text, a credential or a fragment of one); it changes nothing at runtime -- an
 unclassified key is masked exactly like a personal one -- and exists so the
 classification is a record a gate can hold producers to
-(``tests/enforcement/test_audit_details_keys_are_classified.py``).
+(:mod:`threetears.enforcement.audit_details`, which every producing repo runs
+over its own sources).
 
 **how nesting is judged.** the key a value sits under decides it:
 

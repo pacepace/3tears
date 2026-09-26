@@ -48,11 +48,32 @@ should route an audit record's content through it** rather than writing its own.
   itself; a runtime declaration is for a service anonymizing its own local store.
 - **New (minor):** `is_classified_detail_key(key, *, event_type)`: whether a key is
   safe for that event type or recorded as personal.
-- **New gate:** `tests/enforcement/test_audit_details_keys_are_classified.py` fails
-  when a 3tears package publishes an audit `details` key that is neither safe nor
-  personal. It reads `AuditEvent(...)` constructions statically, and refuses a
-  `details` argument it cannot read (a computed key, a `**spread`, a dict returned
-  by a call or passed in as a parameter) rather than passing it.
+- **New (minor):** enforcement domain `threetears.enforcement.audit_details`, so every
+  producing repo runs the same gate over its own `src/`. It fails when a `details` key
+  is neither safe nor personal, judging nested literal keys only where every key above
+  them is safe (as the rule does), and refuses a `details` argument it cannot read (a
+  computed key, a `**spread`, a dict returned by a call or passed in as a parameter)
+  rather than passing it. A wrapper helper is refused until it is named in
+  `AuditDetailsConfig.forwarders`; its call sites are then read like the constructor's.
+  No exemptions file. Consumer shell:
+
+  ```python
+  from threetears.agent.audit import PERSONAL_DETAIL_KEYS, safe_detail_keys_for
+  from threetears.enforcement.audit_details import AuditDetailsConfig, run_audit_details_enforcement
+  from threetears.enforcement.common import find_local_src_roots
+
+  run_audit_details_enforcement(
+      AuditDetailsConfig(
+          repo_root=REPO_ROOT,
+          src_roots=find_local_src_roots(REPO_ROOT),
+          safe_keys_for=safe_detail_keys_for,
+          personal_keys=PERSONAL_DETAIL_KEYS,
+          forwarders=frozenset({...}),  # the repo's own wrapper helpers
+      )
+  )
+  ```
+
+  3tears runs it as `tests/enforcement/test_audit_details_keys_are_classified.py`.
 
 ## v0.54.0 -- 2026-09-26
 

@@ -59,9 +59,12 @@ writing its own:
   lookup. A declaration is visible only in the process that makes it, so a
   family whose events the hub erases from the platform audit table is declared
   in `threetears/agent/audit/anonymize.py` itself.
-- `is_classified_detail_key(key, *, event_type)` is the question a gate asks;
-  `tests/enforcement/test_audit_details_keys_are_classified.py` asks it of
-  every `details` key a 3tears package publishes.
+- `is_classified_detail_key(key, *, event_type)` answers whether a key was
+  classified. The gate that holds producers to the classification is the
+  `threetears.enforcement.audit_details` domain: every producing repo runs it
+  over its own `src/` with `safe_keys_for=safe_detail_keys_for,
+  personal_keys=PERSONAL_DETAIL_KEYS`, and 3tears runs it as
+  `tests/enforcement/test_audit_details_keys_are_classified.py`.
 
 ## Design commitments
 
