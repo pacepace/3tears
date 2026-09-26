@@ -7,9 +7,10 @@ two YugabyteDB failures leave a pooled connection answering an error a fresh con
 - a connection opened before another session altered a table can hold the table's old shape and
   answer ``Invalid column number <n>``.
 
-nothing in asyncpg retires either. one mechanism watches every query on every connection of its pool
-and, on its trigger's error, expires the pool so asyncpg replaces each connection at its next release
-or acquire. the mechanism is tested once per trigger, so the two named recyclers cannot drift apart.
+nothing in asyncpg retires either. one recycler watches every query on every connection of its pool
+and, on any of its triggers' errors, expires the pool so asyncpg replaces each connection at its next
+release or acquire. the mechanism is tested once per trigger alone, and again with the YugabyteDB
+set every platform pool carries.
 """
 
 from __future__ import annotations
@@ -26,12 +27,11 @@ from asyncpg.connection import LoggedQuery
 
 from threetears.core.utils import (
     DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES,
+    YUGABYTE_POOL_TRIGGERS,
     YUGABYTE_RPC_TIMEOUT,
     YUGABYTE_STALE_TABLE_SHAPE,
     PoolExpiryTrigger,
     YugabytePoolRecycler,
-    YugabyteRpcTimeoutRecycler,
-    YugabyteStaleTableShapeRecycler,
     is_yugabyte_rpc_timeout,
     is_yugabyte_stale_table_shape,
 )
@@ -124,23 +124,33 @@ async def _watched(recycler: YugabytePoolRecycler, conn: Any) -> Callable[[Logge
     return conn.loggers[0]
 
 
-class _Case:
-    """one named recycler, and an error its trigger matches."""
+_WEDGE = asyncpg.exceptions.InternalServerError(_WEDGE_MESSAGES[0])
+_STALE_SHAPE = asyncpg.exceptions.InternalServerError(_STALE_SHAPE_MESSAGE)
 
-    def __init__(self, build: Callable[..., YugabytePoolRecycler], matching: BaseException) -> None:
-        self.build = build
+
+class _Case:
+    """a recycler watching some triggers, and an error one of them matches."""
+
+    def __init__(self, triggers: tuple[PoolExpiryTrigger, ...], matching: BaseException) -> None:
+        self.triggers = triggers
         self.matching = matching
+
+    def build(self, **kwargs: Any) -> YugabytePoolRecycler:
+        """a recycler over this case's triggers.
+
+        :param kwargs: the rest of the constructor's arguments
+        :ptype kwargs: Any
+        :return: the recycler
+        :rtype: YugabytePoolRecycler
+        """
+        return YugabytePoolRecycler(triggers=self.triggers, **kwargs)
 
 
 _CASES = [
-    pytest.param(
-        _Case(YugabyteRpcTimeoutRecycler, asyncpg.exceptions.InternalServerError(_WEDGE_MESSAGES[0])),
-        id="rpc-timeout",
-    ),
-    pytest.param(
-        _Case(YugabyteStaleTableShapeRecycler, asyncpg.exceptions.InternalServerError(_STALE_SHAPE_MESSAGE)),
-        id="stale-table-shape",
-    ),
+    pytest.param(_Case((YUGABYTE_RPC_TIMEOUT,), _WEDGE), id="rpc-timeout"),
+    pytest.param(_Case((YUGABYTE_STALE_TABLE_SHAPE,), _STALE_SHAPE), id="stale-table-shape"),
+    pytest.param(_Case(YUGABYTE_POOL_TRIGGERS, _WEDGE), id="default-set-rpc-timeout"),
+    pytest.param(_Case(YUGABYTE_POOL_TRIGGERS, _STALE_SHAPE), id="default-set-stale-table-shape"),
 ]
 
 
@@ -207,29 +217,38 @@ class TestIsYugabyteStaleTableShape:
 
 
 class TestTriggers:
-    """each named recycler is the one mechanism with its own trigger, and each ignores the other's error."""
+    """one recycler keys on a sequence of triggers; each trigger alone ignores the others' errors."""
 
-    def test_the_named_recyclers_carry_their_triggers(self) -> None:
-        assert YugabyteRpcTimeoutRecycler(pool_name="p").trigger is YUGABYTE_RPC_TIMEOUT
-        assert YugabyteStaleTableShapeRecycler(pool_name="p").trigger is YUGABYTE_STALE_TABLE_SHAPE
+    def test_the_default_is_the_yugabyte_set(self) -> None:
+        assert YugabytePoolRecycler(pool_name="p").triggers == YUGABYTE_POOL_TRIGGERS
+        assert YUGABYTE_POOL_TRIGGERS == (YUGABYTE_RPC_TIMEOUT, YUGABYTE_STALE_TABLE_SHAPE)
 
-    async def test_the_rpc_timeout_recycler_ignores_the_stale_shape_error(self) -> None:
-        recycler = YugabyteRpcTimeoutRecycler(pool_name="hub_l3")
+    def test_no_triggers_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="at least one trigger"):
+            YugabytePoolRecycler(pool_name="p", triggers=())
+
+    async def test_one_logger_per_connection_for_every_trigger(self) -> None:
+        conn = _connection()
+        YugabytePoolRecycler(pool_name="hub_l3").watch(conn)
+        assert len(conn.loggers) == 1
+
+    async def test_the_rpc_timeout_alone_ignores_the_stale_shape_error(self) -> None:
+        recycler = YugabytePoolRecycler(pool_name="hub_l3", triggers=(YUGABYTE_RPC_TIMEOUT,))
         pool = _pool()
         recycler.bind(pool)
         logger = await _watched(recycler, _connection())
 
-        await logger(_record(asyncpg.exceptions.InternalServerError(_STALE_SHAPE_MESSAGE)))
+        await logger(_record(_STALE_SHAPE))
 
         pool.expire_connections.assert_not_awaited()
 
-    async def test_the_stale_shape_recycler_ignores_the_rpc_timeout(self) -> None:
-        recycler = YugabyteStaleTableShapeRecycler(pool_name="hub_l3")
+    async def test_the_stale_shape_alone_ignores_the_rpc_timeout(self) -> None:
+        recycler = YugabytePoolRecycler(pool_name="hub_l3", triggers=(YUGABYTE_STALE_TABLE_SHAPE,))
         pool = _pool()
         recycler.bind(pool)
         logger = await _watched(recycler, _connection())
 
-        await logger(_record(asyncpg.exceptions.InternalServerError(_WEDGE_MESSAGES[0])))
+        await logger(_record(_WEDGE))
 
         pool.expire_connections.assert_not_awaited()
 
@@ -241,12 +260,12 @@ class TestTriggers:
             diagnosis="the test says so",
             persistent_cause="the test",
         )
-        recycler = YugabytePoolRecycler(pool_name="custom_pool", trigger=trigger)
+        recycler = YugabytePoolRecycler(pool_name="custom_pool", triggers=(trigger,))
         pool = _pool()
         recycler.bind(pool)
         logger = await _watched(recycler, _connection())
 
-        await logger(_record(asyncpg.exceptions.InternalServerError(_WEDGE_MESSAGES[0])))
+        await logger(_record(_WEDGE))
         pool.expire_connections.assert_not_awaited()
 
         with caplog.at_level(logging.WARNING, logger=_LOGGER):
@@ -254,6 +273,62 @@ class TestTriggers:
         pool.expire_connections.assert_awaited_once_with()
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("custom_pool" in m and "test failure" in m and "the test says so" in m for m in warnings), warnings
+
+
+class TestTheDefaultSetSharesOnePoolRecord:
+    """the pool's last expiry is one fact whatever caused it; each trigger keeps its own floor."""
+
+    async def test_an_old_connection_answering_the_other_error_is_already_being_replaced(self) -> None:
+        # an expiry retires every connection opened before it, whatever the cause, so a pre-expiry
+        # connection answering the OTHER trigger changes nothing.
+        clock = _Clock()
+        recycler = YugabytePoolRecycler(pool_name="hub_l3", clock=clock)
+        pool = _pool()
+        recycler.bind(pool)
+        first = await _watched(recycler, _connection(pid=1))
+        second = await _watched(recycler, _connection(pid=2))
+
+        clock.now += 1.0
+        await first(_record(_WEDGE))
+        clock.now += DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES + 1.0
+        await second(_record(_STALE_SHAPE))
+
+        pool.expire_connections.assert_awaited_once_with()
+
+    async def test_a_new_cause_inside_the_other_triggers_floor_still_expires(self) -> None:
+        # the floor says "this error on new connections means the cause is not the connections".
+        # a stale shape seconds after a wedge was cleared is a different cause, not the wedge
+        # persisting, so the wedge's floor does not hold it off.
+        clock = _Clock()
+        recycler = YugabytePoolRecycler(pool_name="hub_l3", clock=clock)
+        pool = _pool()
+        recycler.bind(pool)
+        old = await _watched(recycler, _connection(pid=1))
+        clock.now += 1.0
+        await old(_record(_WEDGE))
+
+        clock.now += 1.0
+        fresh = await _watched(recycler, _connection(pid=2))
+        clock.now += 1.0
+        await fresh(_record(_STALE_SHAPE))
+
+        assert pool.expire_connections.await_count == 2
+
+    async def test_the_same_cause_inside_its_own_floor_is_held_off(self) -> None:
+        clock = _Clock()
+        recycler = YugabytePoolRecycler(pool_name="hub_l3", clock=clock)
+        pool = _pool()
+        recycler.bind(pool)
+        old = await _watched(recycler, _connection(pid=1))
+        clock.now += 1.0
+        await old(_record(_STALE_SHAPE))
+
+        clock.now += 1.0
+        fresh = await _watched(recycler, _connection(pid=2))
+        clock.now += 1.0
+        await fresh(_record(_STALE_SHAPE))
+
+        pool.expire_connections.assert_awaited_once_with()
 
 
 class TestRecyclerWatchesEveryConnection:
@@ -289,7 +364,8 @@ class TestRecyclerExpiresThePool:
         pool.expire_connections.assert_awaited_once_with()
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any(
-            "hub_l3" in m and "4242" in m and "3600" in m and recycler.trigger.error_name in m for m in warnings
+            "hub_l3" in m and "4242" in m and "3600" in m and any(t.error_name in m for t in recycler.triggers)
+            for m in warnings
         ), warnings
 
     @pytest.mark.parametrize(

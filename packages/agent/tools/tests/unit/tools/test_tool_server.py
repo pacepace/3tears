@@ -31,7 +31,7 @@ from threetears.media.contracts import ObjectHandle
 from threetears.nats import IncomingMessage
 
 from unit.tools._pod_auth import RecordingNatsClient
-from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
+from threetears.core.testing.replay_guard import FakeReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
 from unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
 from unit.tools._pod_auth import recording_tool_server as _recording_tool_server
@@ -438,7 +438,7 @@ class TestToolServerServe:
     @pytest.mark.asyncio
     async def test_an_injected_assertion_guard_is_bound_before_the_pod_is_reachable(self) -> None:
         """a guard the owner supplies is bound by the pod too, before anything is subscribed."""
-        guard = _PodReplayGuard()
+        guard = FakeReplayGuard()
         server = ToolServer(
             nats_url="nats://localhost:9999",
             pod_id="test-pod-injected-guard-bind",
@@ -469,6 +469,44 @@ class TestToolServerServe:
 
         assert binds_at_subscribe, "serve() never subscribed"
         assert binds_at_subscribe[0] == 1, binds_at_subscribe
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_that_cannot_be_opened_fails_serve_with_nothing_subscribed_or_registered(
+        self,
+    ) -> None:
+        """the pod does not come up without its nonce bucket; it fails where a restart can answer it.
+
+        Catching the failure to keep the pod up would reopen the first-use window and leave every
+        proxied call refused, with the registry still routing to a pod that cannot verify one.
+        """
+        from threetears.nats import KvError
+
+        guard = FakeReplayGuard(bind_error=KvError("proxy_assertion_nonces bucket unavailable"))
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod-bind-fails",
+            assertion_replay_guard=guard,  # type: ignore[arg-type]
+        )
+        server.register(StubTool())
+
+        mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock()
+        mock_nc.publish = AsyncMock()
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        with (
+            patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc),
+            pytest.raises(KvError, match="proxy_assertion_nonces"),
+        ):
+            await asyncio.wait_for(server.serve(), timeout=5.0)
+
+        assert guard.binds == 1
+        mock_nc.subscribe.assert_not_awaited()
+        mock_nc.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_serve_sends_registration_manifest(self) -> None:
@@ -621,7 +659,7 @@ class TestToolServerHandleCall:
         server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=_pod_jwks_provider,
-            assertion_replay_guard=_PodReplayGuard(),
+            assertion_replay_guard=FakeReplayGuard(),
         )
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
@@ -655,7 +693,7 @@ class TestToolServerHandleCall:
         server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=_pod_jwks_provider,
-            assertion_replay_guard=_PodReplayGuard(),
+            assertion_replay_guard=FakeReplayGuard(),
         )
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
@@ -674,7 +712,7 @@ class TestToolServerHandleCall:
         server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=_pod_jwks_provider,
-            assertion_replay_guard=_PodReplayGuard(),
+            assertion_replay_guard=FakeReplayGuard(),
         )
 
         correlation_id = uuid4()
@@ -700,7 +738,7 @@ class TestToolServerHandleCall:
         server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=_pod_jwks_provider,
-            assertion_replay_guard=_PodReplayGuard(),
+            assertion_replay_guard=FakeReplayGuard(),
         )
         tool = FailingTool()
         server.register(tool)
@@ -1539,7 +1577,7 @@ class TestToolServerIdentityVerification:
         server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=jwks_provider,
-            assertion_replay_guard=_PodReplayGuard(),
+            assertion_replay_guard=FakeReplayGuard(),
         )
         server.register(StubTool(name="test.stub", version="1.0"))
         return server, rec
@@ -1752,7 +1790,7 @@ class TestToolServerProxyAssertionVerification:
         server, rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=lambda: jwks,
-            assertion_replay_guard=assertion_replay_guard if assertion_replay_guard is not None else _PodReplayGuard(),
+            assertion_replay_guard=assertion_replay_guard if assertion_replay_guard is not None else FakeReplayGuard(),
         )
         server.register(StubTool(name="test.stub", version="1.0"))
         return server, rec
@@ -1928,7 +1966,7 @@ class TestToolServerReactiveJwksRefresh:
             pod_id="test-pod",
             jwks_provider=provider,
             jwks_refresh=provider.refresh_now,
-            assertion_replay_guard=_PodReplayGuard(),
+            assertion_replay_guard=FakeReplayGuard(),
         )
 
     @pytest.mark.asyncio
@@ -1977,7 +2015,7 @@ class TestToolServerVerificationObservability:
         server, _rec = _recording_tool_server(
             pod_id="test-pod",
             jwks_provider=provider,
-            assertion_replay_guard=_PodReplayGuard(),
+            assertion_replay_guard=FakeReplayGuard(),
         )
         return server
 

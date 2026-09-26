@@ -20,7 +20,8 @@ requires docker; marked integration. run with::
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
 
 import asyncio
 import time
@@ -95,21 +96,6 @@ class _Signer:
             nonce=str(uuid7()),
             iat=int(time.time()),
         )
-
-
-class _StubReplayGuard:
-    """accepts every first-seen nonce; the real guard's compare-and-set has its own tests."""
-
-    def require_covers(self, future_tolerance: timedelta) -> None:
-        """a stub guard is sized for any verifier; the real check has its own tests."""
-
-    async def bind(self) -> None:
-        """nothing to open; the real guard's bind has its own tests."""
-
-    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
-        if issued_at.tzinfo is None:
-            raise ValueError("record_unique requires a timezone-aware issued_at")
-        return True
 
 
 class _StubToolNamespace:
@@ -282,7 +268,7 @@ async def test_a_tool_pod_calls_a_tool_through_the_real_proxy_with_no_user(nats_
         proxy = CallProxy(
             await _catalog(),
             _authorizer_granting(pod_id, namespace_id),
-            _StubReplayGuard(),
+            FakeReplayGuard(),
             limit_guard=AllowAllLimitGuard(),
             namespace=_NS,
             jwks_provider=lambda: jwks,

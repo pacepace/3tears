@@ -101,8 +101,11 @@ async def test_a_guard_bound_at_start_admits_what_an_unbound_one_refuses(nats_co
             nc, bucket_name=f"unbound_{suffix}", ttl_seconds=120, verifier_future_tolerance=_TOLERANCE
         )
 
-        handle = await bound.bind()
-        assert await bound.bind() is handle  # idempotent against the real client too
+        await bound.bind()
+        await bound.bind()  # idempotent against the real client too
+        # the client caches bucket handles by name, so this reads the stream bind created without
+        # creating one: a bind-only open raises on an absent bucket.
+        handle = await nc.kv_bucket(name=f"bound_{suffix}", ttl=timedelta(seconds=120), create_if_missing=False)
         started = await handle.date_created()
 
         await asyncio.sleep((_REACH + timedelta(milliseconds=500)).total_seconds())
@@ -123,10 +126,10 @@ async def test_a_reconnect_recreates_a_bucket_lost_under_a_running_guard(nats_co
     async with await NatsClient.connect(
         nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="rebind-on-reconnect"
     ) as nc:
-        guard = ReplayGuard(
-            nc, bucket_name=f"rebind_{uuid4().hex}", ttl_seconds=120, verifier_future_tolerance=_TOLERANCE
-        )
-        handle = await guard.bind()
+        bucket_name = f"rebind_{uuid4().hex}"
+        guard = ReplayGuard(nc, bucket_name=bucket_name, ttl_seconds=120, verifier_future_tolerance=_TOLERANCE)
+        await guard.bind()
+        handle = await nc.kv_bucket(name=bucket_name, ttl=timedelta(seconds=120), create_if_missing=False)
         stream = f"KV_{handle.name}"
         js = nc.jetstream_context()
         await js.delete_stream(stream)

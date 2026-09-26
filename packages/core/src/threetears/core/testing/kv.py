@@ -73,6 +73,7 @@ class _Entry:
     expires_at: timedelta | None = None
 
 
+# parity-with: threetears.nats.kv.KvBucketLike
 class FakeKvBucket:
     """in-memory fake mirroring :class:`threetears.nats.NatsKvBucket`.
 
@@ -363,6 +364,7 @@ class FakeKvBucket:
         return self._revision
 
 
+# parity-with: threetears.nats.kv.KvCapable
 class FakeNatsClient:
     """fake NATS wrapper exposing :meth:`kv_bucket` returning :class:`FakeKvBucket`.
 

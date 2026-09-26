@@ -15,7 +15,9 @@ The contract this pins (exercised end-to-end through the public dispatch surface
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
+from datetime import UTC, datetime
 
 import jwt
 
@@ -67,29 +69,6 @@ def hub() -> tuple[Any, dict[str, Any]]:
     """a Hub signing key + the matching JWKS the proxy verifies against."""
     priv, pub = generate_signing_keypair()
     return priv, build_jwks({_KID: pub})
-
-
-class _StubReplayGuard:
-    """returns a fixed freshness verdict so the proxy's replay wiring can be tested without a live
-    NATS-KV (the real guard's compare-and-set is covered by its own coordination tests)."""
-
-    def __init__(self, *, fresh: bool = True) -> None:
-        self._fresh = fresh
-        self.seen: list[str] = []
-        self.issued_at: list[datetime] = []
-
-    def require_covers(self, future_tolerance: timedelta) -> None:
-        """a stub guard is sized for any verifier; the real check has its own tests."""
-
-    async def bind(self) -> None:
-        """nothing to open; the real guard's bind has its own tests."""
-
-    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
-        if issued_at.tzinfo is None:
-            raise ValueError("record_unique requires a timezone-aware issued_at")
-        self.seen.append(nonce)
-        self.issued_at.append(issued_at)
-        return self._fresh
 
 
 def _token(
@@ -272,7 +251,7 @@ class TestDispatchIdentityEnforcement:
         proxy = CallProxy(
             await _catalog(),
             authorizer if authorizer is not None else AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
@@ -475,7 +454,7 @@ class TestDispatchToolPodPrincipal:
         proxy = CallProxy(
             await _catalog(),
             authorizer if authorizer is not None else AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
@@ -645,7 +624,7 @@ class TestDispatchUserAssertion:
         proxy = CallProxy(
             await _catalog(),
             authorizer if authorizer is not None else AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
@@ -952,7 +931,7 @@ class TestDispatchUserAssertion:
         # passes the pop gate and forwards.
         priv, jwks = hub
         agent, cust, real_user, conv = uuid7(), uuid7(), uuid7(), uuid7()
-        guard = _StubReplayGuard(fresh=True)
+        guard = FakeReplayGuard(fresh=True)
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
@@ -1074,7 +1053,7 @@ class TestDispatchReactiveJwksRefresh:
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=provider,
@@ -1171,7 +1150,7 @@ class TestVerificationObservability:
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=provider,
@@ -1255,7 +1234,7 @@ class TestDispatchPopEnforcement:
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
-            pop_replay_guard if pop_replay_guard is not None else _StubReplayGuard(fresh=True),
+            pop_replay_guard if pop_replay_guard is not None else FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
@@ -1281,7 +1260,7 @@ class TestDispatchPopEnforcement:
     async def test_forwards_a_valid_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        nc = await self._drive(lambda: jwks, req, pop_replay_guard=_StubReplayGuard(fresh=True))
+        nc = await self._drive(lambda: jwks, req, pop_replay_guard=FakeReplayGuard(fresh=True))
         nc.request_raw.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1316,7 +1295,7 @@ class TestDispatchPopEnforcement:
     async def test_rejects_a_replayed_nonce(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        guard = _StubReplayGuard(fresh=False)  # the nonce was already consumed
+        guard = FakeReplayGuard(fresh=False)  # the nonce was already consumed
         nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_not_called()
         assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
@@ -1326,7 +1305,7 @@ class TestDispatchPopEnforcement:
     async def test_forwards_when_the_nonce_is_fresh(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        guard = _StubReplayGuard(fresh=True)
+        guard = FakeReplayGuard(fresh=True)
         nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_called_once()
         assert len(guard.seen) == 1
@@ -1337,7 +1316,7 @@ class TestDispatchPopEnforcement:
         # proof's own signed iat -- not the proxy's clock, which would make every replay look new.
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        guard = _StubReplayGuard(fresh=True)
+        guard = FakeReplayGuard(fresh=True)
         await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         assert req.pop is not None
         signed_iat = jwt.decode(req.pop, options={"verify_signature": False})["iat"]

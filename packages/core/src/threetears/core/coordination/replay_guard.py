@@ -234,7 +234,11 @@ class ReplayGuard:
         """
         if issued_at.tzinfo is None:
             raise ValueError("ReplayGuard.record_unique requires a timezone-aware issued_at")
-        bucket = await self.bind()
+        bucket = await self._bound_bucket()
+        # the anchor BEFORE the create, so the ledger's first-existence moment is never stamped
+        # after a nonce it has to predate. A no-op once read; this is where a bind-time read that
+        # failed is retried, because a retry after the create would reopen the race bind closes.
+        await self._read_anchor()
         revision = await bucket.create(key=self._key(nonce), value=b"1")
         fresh = revision is not None  # None == key already existed == replay
         if fresh:
@@ -278,7 +282,6 @@ class ReplayGuard:
         """
         replaced = True
         if self._anchor is not None:
-            await self._read_anchor()
             if self._ledger_first_existed is not None:
                 # The anchor is stamped on this fleet's clock and the creation time on the
                 # broker's, so the same drift the watermark allows for applies to the
@@ -290,7 +293,9 @@ class ReplayGuard:
         """read this ledger's first-existence moment, stamping it now if nothing has, once per process.
 
         **A failure logs and leaves the moment unknown**, which :meth:`_bucket_replaced_a_lost_one`
-        answers conservatively, and the read is tried again at the next record. It never raises:
+        answers conservatively, and the read is tried again at the next record, before its create.
+        It is only ever called before a nonce is created, never after, because a first stamp that
+        lands after a nonce's create can post-date a wipe that erased that nonce. It never raises:
         an anchor that cannot be read leaves the guard exactly as blind as having none, which is a
         reason to keep the watermark, not to refuse to run.
 
@@ -317,7 +322,7 @@ class ReplayGuard:
                     },
                 )
 
-    async def bind(self) -> "KvBucketLike":
+    async def bind(self) -> None:
         """open this guard's KV bucket, creating it when absent. Idempotent and async-safe.
 
         **A service calls this at startup, before it serves any artifact.** After a wipe the
@@ -331,16 +336,22 @@ class ReplayGuard:
         although it was issued after the service came up. After a restart that surfaces as a
         failed login or a refused tool call with nothing wrong but the order of two events.
 
+        **It returns nothing.** The bucket is the ledger's storage, and a caller that held it
+        could write or delete nonce keys around the hashing and create-if-absent that make a
+        sighting single-use -- deleting one reopens a replay.
+
         **It reads, and if nothing has yet stamped it, stamps the anchor**, so this ledger's
         first-existence moment is fixed before this process records its first nonce. Left to the
         first record, the anchor is read after that nonce's create: a wipe landing between the
         two, with another replica's record stamping the anchor first, would put the ledger's
         birth AFTER the wipe, read as a first run, and admit a replay of that nonce. An anchor
         read or write failure never fails the bind -- it is logged, the guard keeps the
-        conservative watermark, and the read is tried again at the next record. Only a bucket that
-        cannot be opened fails it, because without the bucket nothing can be recorded at all.
+        conservative watermark, and the read is tried again before the next record's create.
+        Only a bucket that cannot be opened fails it, because without the bucket nothing can be
+        recorded at all; a service that binds at startup therefore fails to start, and is
+        restarted, rather than coming up and refusing every artifact.
 
-        **It hooks the client's reconnect**, once per guard, when the client offers
+        **It hooks the client's reconnect**, once per guard, when the client's type offers
         ``add_reconnect_callback`` (:class:`threetears.nats.NatsClient` does). After each NATS
         reconnect the hook touches the bucket, so a bucket a broker restart wiped under this
         running process is recreated as the connection comes back, rather than by the next
@@ -349,12 +360,27 @@ class ReplayGuard:
         :meth:`record_unique` reads the creation time fresh after every fresh create, so a wipe
         at any moment, hooked or not, can only make the check stricter. The hook never raises
         into the reconnect path; a failed touch is logged, and the next record recreates the
-        bucket as it always has. The client offers no way to remove a hook and none is needed:
-        the hook lives as long as the client, and a guard lives as long as the service using it.
+        bucket as it always has. Whether the hook was registered is logged once, here.
+
+        **Precondition: one guard per bucket per client, kept for the client's life.** The client
+        offers no way to remove a hook, so the hook lives as long as the client and pins this
+        guard. A guard built again and again over one long-lived client -- a ``ToolServer``
+        rebuilt over an injected connection, say -- leaves one hook per build, each holding its
+        guard and costing one stream-info round trip per reconnect. Build the guard once and
+        reuse it.
 
         :meth:`record_unique` calls this too, so a guard nobody bound still works; it only pays
         that window. Every caller shares one open: concurrent calls wait on the first rather than
-        opening the bucket again, and later calls return the handle without a round trip.
+        opening the bucket again, and later calls return without a round trip.
+
+        :return: None
+        :rtype: None
+        :raises threetears.nats.KvError: when the bucket cannot be opened or created
+        """
+        await self._bound_bucket()
+
+    async def _bound_bucket(self) -> "KvBucketLike":
+        """the bucket handle, binding it first when nothing has.
 
         :return: the bound bucket handle
         :rtype: KvBucketLike
@@ -371,32 +397,44 @@ class ReplayGuard:
                         create_if_missing=True,
                         history=1,
                     )
-                    log.info("ReplayGuard bound bucket %s", self._bucket_name)
                     # after the bucket exists, so a first run stamps a moment no earlier than its
                     # creation; before the handle is published, so no record runs ahead of it.
                     await self._read_anchor()
-                    self._hook_reconnect()
+                    reconnect_hooked = self._hook_reconnect()
                     self._bucket = bucket
+                    log.info(
+                        "ReplayGuard bound its bucket",
+                        extra={
+                            "extra_data": {
+                                "bucket": self._bucket_name,
+                                "anchor_read": self._ledger_first_existed is not None,
+                                "reconnect_hooked": reconnect_hooked,
+                            }
+                        },
+                    )
         return self._bucket
 
-    def _hook_reconnect(self) -> None:
+    def _hook_reconnect(self) -> bool:
         """register :meth:`_rebind_after_reconnect` with the client, when the client offers hooks.
 
         Checked on the client's TYPE: the capability is a method the class defines, and a test
         double that answers every attribute must not be mistaken for a client that has one.
 
-        :return: None
-        :rtype: None
+        :return: whether a hook was registered
+        :rtype: bool
         """
-        if callable(getattr(type(self._client), "add_reconnect_callback", None)):
+        hooked = callable(getattr(type(self._client), "add_reconnect_callback", None))
+        if hooked:
             hooking = cast("_ReconnectHooking", self._client)
             hooking.add_reconnect_callback(self._rebind_after_reconnect)
+        return hooked
 
     async def _rebind_after_reconnect(self) -> None:
         """touch the bucket after a reconnect, so a wiped one is recreated now; never raises.
 
         Reading the creation time goes through the wrapper's self-heal, which recreates a
-        vanished stream with the bucket's original configuration.
+        vanished stream with the bucket's original configuration. The creation time it logs says
+        which happened: unchanged, the bucket survived; a new moment, it was recreated.
 
         :return: None
         :rtype: None
@@ -404,16 +442,21 @@ class ReplayGuard:
         bucket = self._bucket
         if bucket is not None:
             try:
-                await bucket.date_created()
+                date_created = await bucket.date_created()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- runs inside the client's reconnect path
                 # a hook must not be what fails a reconnect, and nothing is lost by missing
                 # this touch: the next record recreates the bucket, as it did before the hook.
                 log.warning(
-                    "ReplayGuard could not touch bucket %s after a NATS reconnect; the next record "
-                    "will recreate it if it was wiped: %s: %s",
-                    self._bucket_name,
-                    type(exc).__name__,
-                    exc,
+                    "ReplayGuard could not touch its bucket after a NATS reconnect; the next record "
+                    "recreates it if it was wiped",
+                    extra={"extra_data": {"bucket": self._bucket_name, "error": f"{type(exc).__name__}: {exc}"}},
+                )
+            else:
+                log.info(
+                    "ReplayGuard touched its bucket after a NATS reconnect",
+                    extra={
+                        "extra_data": {"bucket": self._bucket_name, "bucket_date_created": date_created.isoformat()}
+                    },
                 )
 
     @staticmethod

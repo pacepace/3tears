@@ -13,18 +13,19 @@ back, which is the defect.
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import asyncpg
 import pytest
 
-from threetears.core.collections import init_connection
 from threetears.core.utils import (
+    YUGABYTE_POOL_TRIGGERS,
+    YUGABYTE_RPC_TIMEOUT,
     YUGABYTE_RPC_TIMEOUT_MESSAGE_PREFIX,
+    YUGABYTE_STALE_TABLE_SHAPE,
+    PoolExpiryTrigger,
     YugabytePoolRecycler,
-    YugabyteRpcTimeoutRecycler,
-    YugabyteStaleTableShapeRecycler,
 )
 
 pytestmark = pytest.mark.integration
@@ -32,9 +33,9 @@ pytestmark = pytest.mark.integration
 
 @dataclass(frozen=True)
 class _Trigger:
-    """one recycler, and a statement that makes Postgres answer the error it keys on."""
+    """the triggers a recycler watches, and a statement that makes Postgres answer one of their errors."""
 
-    build: Callable[..., YugabytePoolRecycler]
+    triggers: tuple[PoolExpiryTrigger, ...]
     sqlstate: str
     message: str
 
@@ -55,14 +56,14 @@ END $$
 
 
 _RPC_TIMEOUT = _Trigger(
-    build=YugabyteRpcTimeoutRecycler,
+    triggers=(YUGABYTE_RPC_TIMEOUT,),
     sqlstate="XX000",
     message=f"{YUGABYTE_RPC_TIMEOUT_MESSAGE_PREFIX}, state: kRequestSent",
 )
 # the stale-shape error's SQLSTATE has never been observed; XX000 is YugabyteDB's usual one for an
 # internal consistency error, and the recycler matches the message whatever the class.
 _STALE_TABLE_SHAPE = _Trigger(
-    build=YugabyteStaleTableShapeRecycler,
+    triggers=(YUGABYTE_STALE_TABLE_SHAPE,),
     sqlstate="XX000",
     message="Invalid column number 19 (table=eval_runs, schema_version=8, num_columns=18)",
 )
@@ -87,7 +88,7 @@ async def _recycling_pool(dsn: str, trigger: _Trigger, *, size: int) -> asyncpg.
     :return: the pool
     :rtype: asyncpg.Pool
     """
-    recycler = trigger.build(pool_name="it_pool")
+    recycler = YugabytePoolRecycler(pool_name="it_pool", triggers=trigger.triggers)
     pool = await asyncpg.create_pool(dsn, min_size=size, max_size=size, init=recycler.init)
     recycler.bind(pool)
     return pool
@@ -195,7 +196,7 @@ class TestTheStaleShapeRecyclerLeavesTheRetryableFenceAlone:
     async def test_a_schema_version_mismatch_keeps_the_connection(self, db_container: str) -> None:
         pool = await _recycling_pool(db_container, _STALE_TABLE_SHAPE, size=1)
         fence = _Trigger(
-            build=YugabyteStaleTableShapeRecycler,
+            triggers=(YUGABYTE_STALE_TABLE_SHAPE,),
             sqlstate="40001",
             message="schema version mismatch for table 000034e10000300080000000000040d9: expected 1, got 0",
         )
@@ -210,21 +211,14 @@ class TestTheStaleShapeRecyclerLeavesTheRetryableFenceAlone:
         assert after == before
 
 
-class TestAPoolCarryingBothRecyclers:
-    """one pool watched by both recyclers, as a platform pool is: either error replaces its connections."""
+class TestTheDefaultYugabyteSet:
+    """one recycler with the YugabyteDB default set, as a platform pool is: either error replaces its connections."""
 
     async def test_either_error_replaces_the_connection(self, db_container: str) -> None:
-        rpc_timeout = YugabyteRpcTimeoutRecycler(pool_name="it_pool")
-        stale_shape = YugabyteStaleTableShapeRecycler(pool_name="it_pool")
-
-        async def _init(conn: asyncpg.Connection) -> None:
-            await init_connection(conn)
-            rpc_timeout.watch(conn)
-            stale_shape.watch(conn)
-
-        pool = await asyncpg.create_pool(db_container, min_size=1, max_size=1, init=_init)
-        rpc_timeout.bind(pool)
-        stale_shape.bind(pool)
+        recycler = YugabytePoolRecycler(pool_name="it_pool")
+        assert recycler.triggers == YUGABYTE_POOL_TRIGGERS
+        pool = await asyncpg.create_pool(db_container, min_size=1, max_size=1, init=recycler.init)
+        recycler.bind(pool)
         try:
             first = await _backend_pid(pool)
             with pytest.raises(asyncpg.exceptions.InternalServerError):

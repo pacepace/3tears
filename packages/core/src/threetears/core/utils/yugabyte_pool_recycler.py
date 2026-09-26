@@ -28,40 +28,31 @@ the recovery
 
 :class:`YugabytePoolRecycler` registers an asyncpg query logger on every connection its pool opens,
 so it sees every query, whether it came through a collection or a raw ``pool.fetch``. When a query
-answers its trigger's error it calls ``Pool.expire_connections()``, asyncpg's own way to retire a
-pool's connections: each connection opened before the call is closed at its next release or acquire
-and replaced with a fresh one. Terminating the failed connection directly instead is not safe --
-the logger runs while the pool is still releasing that connection, and asyncpg would answer the
-caller with ``InternalClientError`` in place of the error its query raised.
+answers one of its triggers' errors it calls ``Pool.expire_connections()``, asyncpg's own way to
+retire a pool's connections: each connection opened before the call is closed at its next release
+or acquire and replaced with a fresh one. Terminating the failed connection directly instead is not
+safe -- the logger runs while the pool is still releasing that connection, and asyncpg would answer
+the caller with ``InternalClientError`` in place of the error its query raised.
 
-The mechanism is one class; what it keys on is a :class:`PoolExpiryTrigger`. The two YugabyteDB
-triggers ship as :data:`YUGABYTE_RPC_TIMEOUT` and :data:`YUGABYTE_STALE_TABLE_SHAPE`, and
-:class:`YugabyteRpcTimeoutRecycler` / :class:`YugabyteStaleTableShapeRecycler` are the recycler
-with each one fixed. A pool carries one recycler per trigger, each with its own expiry floor.
+What it keys on is a sequence of :class:`PoolExpiryTrigger`. The YugabyteDB set,
+:data:`YUGABYTE_POOL_TRIGGERS`, is the default, so a platform pool is one recycler, one logger per
+connection, one ``bind`` and one ``init``, and a trigger added to the set reaches every such pool.
 
 usage::
 
-    rpc_timeout = YugabyteRpcTimeoutRecycler(pool_name="hub_l3")
-    stale_shape = YugabyteStaleTableShapeRecycler(pool_name="hub_l3")
+    recycler = YugabytePoolRecycler(pool_name="hub_l3")
+    pool = await asyncpg.create_pool(dsn, init=recycler.init, **get_pg_pool_kwargs())
+    recycler.bind(pool)
 
-    async def init(conn: asyncpg.Connection) -> None:
-        await init_connection(conn)
-        rpc_timeout.watch(conn)
-        stale_shape.watch(conn)
-
-    pool = await asyncpg.create_pool(dsn, init=init, **get_pg_pool_kwargs())
-    rpc_timeout.bind(pool)
-    stale_shape.bind(pool)
-
-a pool watched by ONE recycler can pass ``init=recycler.init``, which is
-:func:`~threetears.core.collections.init_connection` followed by :meth:`YugabytePoolRecycler.watch`.
+a consumer composing its own ``init`` calls :func:`~threetears.core.collections.init_connection` and
+then :meth:`YugabytePoolRecycler.watch`.
 """
 
 from __future__ import annotations
 
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -75,13 +66,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES",
+    "YUGABYTE_POOL_TRIGGERS",
     "YUGABYTE_RPC_TIMEOUT",
     "YUGABYTE_RPC_TIMEOUT_MESSAGE_PREFIX",
     "YUGABYTE_STALE_TABLE_SHAPE",
     "PoolExpiryTrigger",
     "YugabytePoolRecycler",
-    "YugabyteRpcTimeoutRecycler",
-    "YugabyteStaleTableShapeRecycler",
     "is_yugabyte_rpc_timeout",
     "is_yugabyte_stale_table_shape",
 ]
@@ -183,65 +173,85 @@ YUGABYTE_STALE_TABLE_SHAPE = PoolExpiryTrigger(
 )
 
 
-class YugabytePoolRecycler:
-    """expire one pool's connections when a query on any of them answers the trigger's error.
+#: the YugabyteDB errors a platform pool is watched for: every one a fresh connection escapes.
+#: A pool built with the default recycler carries all of them, so a trigger added here reaches every
+#: pool at once rather than every consumer's hand-written composition.
+YUGABYTE_POOL_TRIGGERS: tuple[PoolExpiryTrigger, ...] = (YUGABYTE_RPC_TIMEOUT, YUGABYTE_STALE_TABLE_SHAPE)
 
-    one expiry retires every connection opened before it, so a connection opened before the last
-    expiry answering the error changes nothing and is skipped. one opened after it is a new cause,
-    and expires the pool again once ``min_seconds_between_expiries`` has passed.
+
+class YugabytePoolRecycler:
+    """expire one pool's connections when a query on any of them answers one of its triggers' errors.
+
+    **One pool, one record of when it was last expired.** An expiry retires every connection opened
+    before it, whatever error caused it, so a connection opened before the last expiry answering
+    any trigger changes nothing and is skipped.
+
+    **One floor per trigger.** The floor says "new connections answering this error too means the
+    cause is not the connections", which is a claim about one cause: a stale table shape answered
+    seconds after a wedge was cleared is a new cause, not the wedge persisting, and expires the pool
+    again. So each trigger has its own last expiry, and a connection opened after the pool's last
+    expiry answering a trigger inside that trigger's floor is logged and left, not expired again.
+    Two triggers alternating can therefore expire a pool at most once per floor each.
 
     :param pool_name: the pool's name in logs, as given to ``log_pool_created``
     :ptype pool_name: str
-    :param trigger: the error this recycler keys on
-    :ptype trigger: PoolExpiryTrigger
-    :param min_seconds_between_expiries: the least time between two expiries of the pool
+    :param triggers: the errors this recycler keys on, checked in order; the first that matches a
+        query's error decides. Defaults to :data:`YUGABYTE_POOL_TRIGGERS`
+    :ptype triggers: Sequence[PoolExpiryTrigger]
+    :param min_seconds_between_expiries: the least time between two expiries of the pool for one
+        trigger
     :ptype min_seconds_between_expiries: float
     :param clock: monotonic clock in seconds; tests pass their own
     :ptype clock: Callable[[], float]
-    :raises ValueError: if ``min_seconds_between_expiries`` is not positive
+    :raises ValueError: if ``triggers`` is empty or ``min_seconds_between_expiries`` is not positive
     """
 
     def __init__(
         self,
         *,
         pool_name: str,
-        trigger: PoolExpiryTrigger,
+        triggers: Sequence[PoolExpiryTrigger] = YUGABYTE_POOL_TRIGGERS,
         min_seconds_between_expiries: float = DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """hold the pool's name, the trigger, the expiry floor and the clock.
+        """hold the pool's name, the triggers, the expiry floor and the clock.
 
         :param pool_name: the pool's name in logs
         :ptype pool_name: str
-        :param trigger: the error this recycler keys on
-        :ptype trigger: PoolExpiryTrigger
-        :param min_seconds_between_expiries: the least time between two expiries of the pool
+        :param triggers: the errors this recycler keys on, in order
+        :ptype triggers: Sequence[PoolExpiryTrigger]
+        :param min_seconds_between_expiries: the least time between two expiries for one trigger
         :ptype min_seconds_between_expiries: float
         :param clock: monotonic clock in seconds
         :ptype clock: Callable[[], float]
         :return: nothing
         :rtype: None
-        :raises ValueError: if ``min_seconds_between_expiries`` is not positive
+        :raises ValueError: if ``triggers`` is empty or ``min_seconds_between_expiries`` is not positive
         """
+        if not triggers:
+            raise ValueError("a pool recycler needs at least one trigger; it would otherwise watch for nothing")
         if min_seconds_between_expiries <= 0:
             raise ValueError(
                 f"min_seconds_between_expiries must be positive, got {min_seconds_between_expiries!r}",
             )
         self._pool_name = pool_name
-        self._trigger = trigger
+        self._triggers = tuple(triggers)
         self._min_seconds_between_expiries = min_seconds_between_expiries
         self._clock = clock
         self._pool: asyncpg.Pool | None = None
+        # the pool's last expiry, whatever caused it: every connection opened before it is retired.
         self._expired_at: float | None = None
+        # each trigger's last expiry, for its floor.
+        self._expired_at_by_trigger: dict[PoolExpiryTrigger, float] = {}
 
     @property
-    def trigger(self) -> PoolExpiryTrigger:
-        """the error this recycler keys on.
+    def triggers(self) -> tuple[PoolExpiryTrigger, ...]:
+        """the errors this recycler keys on, in the order they are checked.
 
-        :return: the trigger
-        :rtype: PoolExpiryTrigger
+        :return: the triggers
+        :rtype: tuple[PoolExpiryTrigger, ...]
         """
-        return self._trigger
+        return self._triggers
 
     def bind(self, pool: asyncpg.Pool) -> None:
         """name the pool this recycler expires; call once, right after the pool is created.
@@ -254,8 +264,7 @@ class YugabytePoolRecycler:
         """
         if self._pool is not None and self._pool is not pool:
             raise RuntimeError(
-                f"{self._trigger.error_name} recycler for pool {self._pool_name} is already bound; "
-                "one recycler watches one pool",
+                f"recycler for pool {self._pool_name} is already bound; one recycler watches one pool",
             )
         self._pool = pool
 
@@ -271,7 +280,7 @@ class YugabytePoolRecycler:
         self.watch(conn)
 
     def watch(self, conn: asyncpg.Connection) -> None:
-        """register the query logger that reports this connection's trigger errors to the recycler.
+        """register the one query logger that reports this connection's trigger errors to the recycler.
 
         asyncpg keeps a query logger for the connection's life; it is dropped only when the
         connection closes.
@@ -298,21 +307,26 @@ class YugabytePoolRecycler:
         """
 
         async def _on_query(record: LoggedQuery) -> None:
-            """expire the pool when this query answered the trigger's error.
+            """expire the pool when this query answered one of the triggers' errors.
 
             :param record: what asyncpg ran, and what it raised
             :ptype record: LoggedQuery
             :return: nothing
             :rtype: None
             """
-            if self._trigger.matches(record.exception):
-                await self._on_match(opened_at=opened_at, backend_pid=backend_pid, error=record.exception)
+            trigger = next((t for t in self._triggers if t.matches(record.exception)), None)
+            if trigger is not None:
+                await self._on_match(trigger, opened_at=opened_at, backend_pid=backend_pid, error=record.exception)
 
         return _on_query
 
-    async def _on_match(self, *, opened_at: float, backend_pid: int, error: BaseException | None) -> None:
+    async def _on_match(
+        self, trigger: PoolExpiryTrigger, *, opened_at: float, backend_pid: int, error: BaseException | None
+    ) -> None:
         """expire the pool, unless an earlier expiry already covers this connection or the floor holds it off.
 
+        :param trigger: the trigger whose error the query answered
+        :ptype trigger: PoolExpiryTrigger
         :param opened_at: clock reading when the failing connection was opened
         :ptype opened_at: float
         :param backend_pid: the failing connection's server process id
@@ -323,7 +337,8 @@ class YugabytePoolRecycler:
         :rtype: None
         """
         now = self._clock()
-        error_name = self._trigger.error_name
+        error_name = trigger.error_name
+        trigger_expired_at = self._expired_at_by_trigger.get(trigger)
         if self._pool is None:
             log.error(
                 "a query on pool %s answered the %s, but its recycler was never bound to the pool, so no "
@@ -341,16 +356,16 @@ class YugabytePoolRecycler:
                 error_name,
                 backend_pid,
             )
-        elif self._expired_at is not None and now - self._expired_at < self._min_seconds_between_expiries:
+        elif trigger_expired_at is not None and now - trigger_expired_at < self._min_seconds_between_expiries:
             log.warning(
-                "pool %s: a connection opened after the last expiry answered the %s %.1fs later; not expiring "
-                "again within %.0fs, since new connections failing too means %s, not the connections: "
-                "backend_pid=%s error=%s",
+                "pool %s: a connection opened after the last expiry answered the %s %.1fs after the last "
+                "expiry for it; not expiring again within %.0fs, since new connections failing too means %s, "
+                "not the connections: backend_pid=%s error=%s",
                 self._pool_name,
                 error_name,
-                now - self._expired_at,
+                now - trigger_expired_at,
                 self._min_seconds_between_expiries,
-                self._trigger.persistent_cause,
+                trigger.persistent_cause,
                 backend_pid,
                 error,
             )
@@ -360,91 +375,11 @@ class YugabytePoolRecycler:
                 "replaced at its next release or acquire: backend_pid=%s connection_age_seconds=%.0f error=%s",
                 self._pool_name,
                 error_name,
-                self._trigger.diagnosis,
+                trigger.diagnosis,
                 backend_pid,
                 now - opened_at,
                 error,
             )
             self._expired_at = now
+            self._expired_at_by_trigger[trigger] = now
             await self._pool.expire_connections()
-
-
-class YugabyteRpcTimeoutRecycler(YugabytePoolRecycler):
-    """a :class:`YugabytePoolRecycler` keyed on :data:`YUGABYTE_RPC_TIMEOUT`, a wedged tserver session.
-
-    :param pool_name: the pool's name in logs, as given to ``log_pool_created``
-    :ptype pool_name: str
-    :param min_seconds_between_expiries: the least time between two expiries of the pool
-    :ptype min_seconds_between_expiries: float
-    :param clock: monotonic clock in seconds; tests pass their own
-    :ptype clock: Callable[[], float]
-    :raises ValueError: if ``min_seconds_between_expiries`` is not positive
-    """
-
-    def __init__(
-        self,
-        *,
-        pool_name: str,
-        min_seconds_between_expiries: float = DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        """build the recycler with the RPC-timeout trigger.
-
-        :param pool_name: the pool's name in logs
-        :ptype pool_name: str
-        :param min_seconds_between_expiries: the least time between two expiries of the pool
-        :ptype min_seconds_between_expiries: float
-        :param clock: monotonic clock in seconds
-        :ptype clock: Callable[[], float]
-        :return: nothing
-        :rtype: None
-        :raises ValueError: if ``min_seconds_between_expiries`` is not positive
-        """
-        super().__init__(
-            pool_name=pool_name,
-            trigger=YUGABYTE_RPC_TIMEOUT,
-            min_seconds_between_expiries=min_seconds_between_expiries,
-            clock=clock,
-        )
-
-
-class YugabyteStaleTableShapeRecycler(YugabytePoolRecycler):
-    """a :class:`YugabytePoolRecycler` keyed on :data:`YUGABYTE_STALE_TABLE_SHAPE`, a connection's stale table shape.
-
-    what it guarantees is narrow and true: IF a pooled connection answers the stale-shape error, that
-    connection and every other opened before it is replaced, rather than answering it again.
-
-    :param pool_name: the pool's name in logs, as given to ``log_pool_created``
-    :ptype pool_name: str
-    :param min_seconds_between_expiries: the least time between two expiries of the pool
-    :ptype min_seconds_between_expiries: float
-    :param clock: monotonic clock in seconds; tests pass their own
-    :ptype clock: Callable[[], float]
-    :raises ValueError: if ``min_seconds_between_expiries`` is not positive
-    """
-
-    def __init__(
-        self,
-        *,
-        pool_name: str,
-        min_seconds_between_expiries: float = DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        """build the recycler with the stale-table-shape trigger.
-
-        :param pool_name: the pool's name in logs
-        :ptype pool_name: str
-        :param min_seconds_between_expiries: the least time between two expiries of the pool
-        :ptype min_seconds_between_expiries: float
-        :param clock: monotonic clock in seconds
-        :ptype clock: Callable[[], float]
-        :return: nothing
-        :rtype: None
-        :raises ValueError: if ``min_seconds_between_expiries`` is not positive
-        """
-        super().__init__(
-            pool_name=pool_name,
-            trigger=YUGABYTE_STALE_TABLE_SHAPE,
-            min_seconds_between_expiries=min_seconds_between_expiries,
-            clock=clock,
-        )

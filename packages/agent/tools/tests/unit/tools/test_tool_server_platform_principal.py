@@ -11,6 +11,8 @@ disagree about the same token.
 
 from __future__ import annotations
 
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
 import json
 from typing import Any
 from uuid import UUID, uuid4
@@ -25,7 +27,6 @@ from threetears.nats import IncomingMessage
 
 from unit.tools._pod_auth import (
     RecordingNatsClient,
-    StubReplayGuard,
     jwks_provider,
     recording_tool_server,
     signed_call_payload,
@@ -63,7 +64,7 @@ def _server() -> tuple[ToolServer, _ScopeRecordingTool, RecordingNatsClient]:
     server, rec = recording_tool_server(
         pod_id=_POD_ID,
         jwks_provider=jwks_provider,
-        assertion_replay_guard=StubReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     tool = _ScopeRecordingTool()
     server.register(tool)

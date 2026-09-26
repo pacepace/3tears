@@ -93,8 +93,12 @@ read after that nonce's create. A wipe landing between the two, with another rep
 stamping the anchor first, would put the ledger's birth after the wipe: the guard would read a
 first run and admit a replay of that nonce. Stamped at bind, the ledger's birth predates every
 nonce this process records. An anchor that cannot be read or written never fails the bind -- it
-is logged, the guard keeps the conservative watermark, and the next record tries again. Only a
-bucket that cannot be opened fails it.
+is logged and the guard keeps the conservative watermark -- and the read is retried before each
+record's create until it succeeds, never after one, so a late first stamp still predates the
+nonce it must cover. Only a bucket that cannot be opened fails the bind, and with it
+`ToolServer.serve` and `CallProxy.start`: a service that cannot open its nonce bucket fails to
+start and is restarted, rather than coming up and refusing every call. `bind()` returns nothing;
+the bucket is the ledger's storage and not a caller's to write around.
 
 **A wipe under a running process is recreated at reconnect.** The bound handle is kept for the
 process's life, and the wrapper's self-heal recreates a vanished stream on the next operation
@@ -106,9 +110,16 @@ only: correctness still rests on `record_unique` reading the creation time fresh
 fresh create, so a wipe at any moment, hooked or not, can only make the check stricter -- which
 matters because reconnect callbacks run after new requests can already be served. The hook
 never raises into the reconnect path; a failed touch is logged and the next record recreates the
-bucket as before. The client has no way to remove a hook, and a guard does not need one: both
-live as long as the service. A client without `add_reconnect_callback` (any other `KvCapable`)
-binds as before without the hook. A wipe while NATS stays up -- a stream deleted by hand, with no
+bucket as before. Bind logs, structured, whether the hook was registered; each successful touch
+logs the bucket and its creation time, so an operator reading a post-restart refusal can tell
+whether the hook ran, was absent or failed. The client has no way to remove a hook, which makes
+a precondition: one guard per bucket per client, kept for the client's life. A guard rebuilt
+over one long-lived client -- a `ToolServer` rebuilt over an injected connection -- leaves one
+hook per build, each pinning its guard and costing a stream-info round trip per reconnect.
+Every construction today builds one per process: `ToolServer.serve` (once per server, reused
+across `serve()` calls), `RegistryServer`, the hub's DPoP guard, identity-core's, and the survey
+engine's entry-challenge guard. A client without `add_reconnect_callback` (any other
+`KvCapable`) binds as before without the hook. A wipe while NATS stays up -- a stream deleted by hand, with no
 reconnect -- is still recreated by the next use. In production the bucket outlives every pod
 restart (it lives with the broker), so what remains is paid once per broker restart, not once
 per pod. A test standing up a fresh namespace pays it every run unless it binds first, which is

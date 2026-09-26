@@ -9,8 +9,9 @@ this module lives beside its validator.
 
 from __future__ import annotations
 
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
 import time
-from datetime import datetime, timedelta
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, EllipticCurvePrivateKey
@@ -22,30 +23,13 @@ _HTU = "https://edge.example/v1/token"
 _HTM = "POST"
 
 
-class _AcceptingReplayGuard:
-    """Records every `jti` it is asked about and accepts each one once."""
-
-    def __init__(self) -> None:
-        self.seen: list[str] = []
-
-    def require_covers(self, future_tolerance: timedelta) -> None:
-        """a stub guard is sized for any verifier; the real check has its own tests."""
-
-    async def record_unique(self, jti: str, *, issued_at: datetime) -> bool:
-        if issued_at.tzinfo is None:
-            raise ValueError("record_unique requires a timezone-aware issued_at")
-        first = jti not in self.seen
-        self.seen.append(jti)
-        return first
-
-
 class TestTheProofItSignsIsOneItsValidatorAccepts:
     async def test_a_freshly_signed_proof_validates(self) -> None:
         key = new_holder_key()
         proof = sign_dpop_proof(key, htm=_HTM, htu=_HTU)
 
         validated = await validate_dpop_proof(
-            proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=_AcceptingReplayGuard()
+            proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=FakeReplayGuard()
         )
 
         assert validated.jkt == jwk_thumbprint(key.public_key())
@@ -61,7 +45,7 @@ class TestTheProofItSignsIsOneItsValidatorAccepts:
         """Proofs are single-use across the whole service, so a signer that repeated a
         `jti` would make its own second request unreplayable."""
         key = new_holder_key()
-        guard = _AcceptingReplayGuard()
+        guard = FakeReplayGuard()
 
         await validate_dpop_proof(
             sign_dpop_proof(key, htm=_HTM, htu=_HTU), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard
@@ -76,7 +60,7 @@ class TestTheProofItSignsIsOneItsValidatorAccepts:
         """A client that keeps its key keeps its session: the `cnf` binding is the
         thumbprint, so two proofs from one key must present the same one."""
         key = new_holder_key()
-        guard = _AcceptingReplayGuard()
+        guard = FakeReplayGuard()
 
         first = await validate_dpop_proof(
             sign_dpop_proof(key, htm=_HTM, htu=_HTU), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard
@@ -98,25 +82,25 @@ class TestTheOverridesExistSoARejectableProofCanBeBuilt:
         proof = sign_dpop_proof(key, htm=_HTM, htu="https://edge.example/v1/token/refresh")
 
         with pytest.raises(DpopError):
-            await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=_AcceptingReplayGuard())
+            await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=FakeReplayGuard())
 
     async def test_a_proof_bound_to_another_method_is_refused(self) -> None:
         key = new_holder_key()
         proof = sign_dpop_proof(key, htm="GET", htu=_HTU)
 
         with pytest.raises(DpopError):
-            await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=_AcceptingReplayGuard())
+            await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=FakeReplayGuard())
 
     async def test_a_stale_proof_is_refused(self) -> None:
         key = new_holder_key()
         proof = sign_dpop_proof(key, htm=_HTM, htu=_HTU, iat=int(time.time()) - 3600)
 
         with pytest.raises(DpopError):
-            await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=_AcceptingReplayGuard())
+            await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=FakeReplayGuard())
 
     async def test_a_replayed_jti_is_refused(self) -> None:
         key = new_holder_key()
-        guard = _AcceptingReplayGuard()
+        guard = FakeReplayGuard()
         fixed = "11111111-1111-7111-8111-111111111111"
 
         await validate_dpop_proof(

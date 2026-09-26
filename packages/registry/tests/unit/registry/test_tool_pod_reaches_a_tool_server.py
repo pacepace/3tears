@@ -16,11 +16,13 @@ for the missing assertion, which is the shipped failure named by its cause.
 
 from __future__ import annotations
 
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
 import asyncio
 import base64
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid7
 
@@ -74,19 +76,6 @@ class _Signer:
             nonce=str(uuid7()),
             iat=int(time.time()),
         )
-
-
-class _StubReplayGuard:
-    def require_covers(self, future_tolerance: timedelta) -> None:
-        """a stub guard is sized for any verifier; the real check has its own tests."""
-
-    async def bind(self) -> None:
-        """nothing to open; the real guard's bind has its own tests."""
-
-    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
-        if issued_at.tzinfo is None:
-            raise ValueError("record_unique requires a timezone-aware issued_at")
-        return True
 
 
 class _ScopeRecordingTool(TearsTool):
@@ -220,7 +209,7 @@ async def _composed(*, with_signer: bool) -> tuple[ToolCallClient, _ScopeRecordi
         nats_client=pod_nats,  # type: ignore[arg-type]
         pod_id=_SERVING_POD,
         jwks_provider=lambda: combined,
-        assertion_replay_guard=_StubReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     tool = _ScopeRecordingTool()
     server.register(tool)
@@ -228,7 +217,7 @@ async def _composed(*, with_signer: bool) -> tuple[ToolCallClient, _ScopeRecordi
     proxy = CallProxy(
         await _catalog(),
         AllowAllAuthorizer(),
-        _StubReplayGuard(),
+        FakeReplayGuard(),
         limit_guard=AllowAllLimitGuard(),
         namespace=_NS,
         jwks_provider=lambda: {"keys": build_jwks({"kid-1": hub_pub})["keys"]},
