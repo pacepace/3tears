@@ -1180,3 +1180,79 @@ class TestOpenRouterForwardTranslation:
         sent = captured["messages"]
         assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
         assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+
+
+class TestTheTimeoutIsTheWholeCall:
+    """The SDK applies the timeout to each read, and OpenRouter keeps a call open with
+    keep-alives, so a stalled upstream ran as long as it liked: one call took 218 s
+    against a 120 s timeout (metallm, 2026-09-26). Here the timeout holds."""
+
+    @staticmethod
+    def _model(timeout_ms: int | None) -> Any:
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        model.request_timeout = timeout_ms
+        return model
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_never_answers_ends_at_the_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _stalls(self: Any, *args: Any, **kwargs: Any) -> Any:
+            await asyncio.sleep(5)
+
+        monkeypatch.setattr(ChatOpenRouter, "_agenerate", _stalls)
+        with pytest.raises(TimeoutError):
+            await self._model(50)._agenerate([HumanMessage(content="hi")])
+
+    @pytest.mark.asyncio
+    async def test_a_stream_that_goes_quiet_ends_at_the_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _one_then_nothing(self: Any, *args: Any, **kwargs: Any):
+            yield ChatGenerationChunk(message=AIMessageChunk(content="Hel"))
+            await asyncio.sleep(5)
+            yield ChatGenerationChunk(message=AIMessageChunk(content="lo"))
+
+        monkeypatch.setattr(ChatOpenRouter, "_astream", _one_then_nothing)
+        seen: list[str] = []
+        with pytest.raises(TimeoutError):
+            async for chunk in self._model(50).astream([HumanMessage(content="hi")]):
+                seen.append(str(chunk.content))
+        assert seen == ["Hel"]
+
+    @pytest.mark.asyncio
+    async def test_a_long_stream_that_keeps_arriving_finishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The limit is on silence, not length: six chunks 30 ms apart outlast a 50 ms timeout."""
+        import asyncio
+
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _steady(self: Any, *args: Any, **kwargs: Any):
+            for i in range(6):
+                await asyncio.sleep(0.03)
+                yield ChatGenerationChunk(message=AIMessageChunk(content=str(i)))
+
+        monkeypatch.setattr(ChatOpenRouter, "_astream", _steady)
+        seen = [str(c.content) async for c in self._model(50).astream([HumanMessage(content="hi")])]
+        assert "".join(seen) == "012345"
+
+    @pytest.mark.asyncio
+    async def test_no_timeout_set_means_no_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _slowish(self: Any, *args: Any, **kwargs: Any) -> ChatResult:
+            await asyncio.sleep(0.1)
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+        monkeypatch.setattr(ChatOpenRouter, "_agenerate", _slowish)
+        result = await self._model(None)._agenerate([HumanMessage(content="hi")])
+        assert result.generations[0].message.content == "ok"
