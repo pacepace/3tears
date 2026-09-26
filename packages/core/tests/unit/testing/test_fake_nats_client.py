@@ -139,3 +139,39 @@ def test_a_negative_bucket_age_is_refused() -> None:
     # a guard defect rather than as a mis-built double.
     with pytest.raises(ValueError, match="bucket_age"):
         FakeNatsClient(bucket_age=timedelta(seconds=-1))
+
+
+@pytest.mark.asyncio
+async def test_a_vanished_bucket_is_recreated_by_its_next_operation() -> None:
+    # the real wrapper's self-heal: a bucket a broker restart lost is recreated by whatever
+    # operation next reaches it, empty, with that operation's moment as its creation time.
+    client = FakeNatsClient(bucket_age=timedelta(hours=1))
+    bucket = await client.kv_bucket(name="nonces")
+    await bucket.put(key="k", value=b"v")
+    bucket.vanish()
+    assert bucket.keys() == ()
+
+    assert await bucket.get(key="k") is None
+    age = datetime.now(UTC) - await bucket.date_created()
+    assert age < timedelta(seconds=5), "the next operation should have recreated the bucket now"
+
+
+@pytest.mark.asyncio
+async def test_reconnect_runs_every_hook_in_order_past_a_failing_one() -> None:
+    client = FakeNatsClient()
+    ran: list[str] = []
+
+    async def _first() -> None:
+        ran.append("first")
+
+    async def _failing() -> None:
+        ran.append("failing")
+        raise RuntimeError("hook failed")
+
+    async def _last() -> None:
+        ran.append("last")
+
+    for hook in (_first, _failing, _last):
+        client.add_reconnect_callback(hook)
+    await client.reconnect()
+    assert ran == ["first", "failing", "last"]

@@ -402,12 +402,20 @@ class CallProxy:
         replica's local routing strategy then selects an endpoint
         from the shared catalog.
 
+        the pop replay guard is bound first, before the call subject is subscribed. after a
+        broker restart the guard refuses every proof issued before its bucket's creation time
+        plus its reach, and the bucket is created by whoever opens it first; left to the first
+        call, that call creates it and is refused as a replay it is not. binding here puts the
+        creation time before any proof this replica can receive.
+
         :param nc: connected canonical NATS wrapper client
         :ptype nc: NatsClient
         :return: nothing
         :rtype: None
+        :raises threetears.nats.KvError: when the pop nonce bucket cannot be opened
         """
         self._nc = nc
+        await self._pop_replay_guard.bind()
         subject = Subjects.tools_call()
         self._sub = await nc.subscribe(
             subject=subject,

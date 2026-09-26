@@ -132,7 +132,10 @@ async def validate_dpop_proof(
         EXACTLY -- never as a prefix or a wildcard -- so a list is not a relaxation, just a
         longer allow-list.
     :ptype expected_htu: str | Sequence[str]
-    :param replay_guard: the fail-closed single-use guard for the proof's ``jti``.
+    :param replay_guard: the fail-closed single-use guard for the proof's ``jti``. This is a
+        function with no startup step, so the service that owns the guard calls its
+        :meth:`~threetears.core.coordination.ReplayGuard.bind` at startup; an unbound guard still
+        works, but after a broker wipe it refuses every proof issued before its first use.
     :ptype replay_guard: ReplayGuard
     :param iat_window: freshness tolerance for ``iat``.
     :ptype iat_window: timedelta

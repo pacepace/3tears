@@ -38,7 +38,7 @@ from threetears.search.contracts import (
     TransportResponse,
 )
 
-from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
+from threetears.core.testing.replay_guard import FakeReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
 from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
@@ -116,7 +116,7 @@ def _server(nats: _FakeNats, *, status_code: int = 200) -> ToolServer:
         nats_client=nats,  # type: ignore[arg-type]
         pod_id=_POD,
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(WebSearchTool(base_url=_BASE_URL, transport=_StubSearchTransport(status_code=status_code)))
     return server
