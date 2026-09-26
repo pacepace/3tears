@@ -6,7 +6,6 @@ from typing import Any
 
 import httpx
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.text_window import window_text
 
@@ -14,18 +13,11 @@ from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolR
 from threetears.agent.tools.utils import tool_error
 
 __all__ = [
-    "DictionaryInput",
     "DictionaryTool",
     "create_dictionary_tool",
 ]
 
 _MAX_CHARS = 3000
-
-
-class DictionaryInput(BaseModel):
-    """Input for the dictionary tool."""
-
-    word: str = Field(description="Word to look up")
 
 
 def _format_entry(data: list[dict[str, Any]]) -> str:
@@ -104,7 +96,6 @@ def create_dictionary_tool(config: dict[str, Any], description: str) -> Structur
     return to_langchain_tool(
         DictionaryTool(language=language),
         description=description,
-        args_schema=DictionaryInput,
     )
 
 

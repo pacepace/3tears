@@ -5,13 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 __all__ = [
-    "UnitConverterInput",
     "UnitConverterTool",
     "create_unit_converter_tool",
 ]
@@ -24,14 +22,6 @@ try:
     _HAS_PINT = True
 except ImportError:
     _HAS_PINT = False
-
-
-class UnitConverterInput(BaseModel):
-    """Input for the unit converter tool."""
-
-    value: float = Field(description="Numeric value to convert")
-    from_unit: str = Field(description="Source unit (e.g. 'miles', 'kg', 'celsius')")
-    to_unit: str = Field(description="Target unit (e.g. 'kilometers', 'pounds', 'fahrenheit')")
 
 
 def _convert(value: float, from_unit: str, to_unit: str) -> str:
@@ -62,7 +52,6 @@ def create_unit_converter_tool(config: dict[str, Any], description: str) -> Stru
     return to_langchain_tool(
         UnitConverterTool(),
         description=description,
-        args_schema=UnitConverterInput,
     )
 
 
@@ -77,7 +66,7 @@ class UnitConverterTool(TearsTool):
     _INPUT_SCHEMA: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "value": {"type": "number"},
+            "value": {"type": "number", "description": "the numeric value to convert."},
             "from_unit": {
                 "type": "string",
                 "description": "e.g. miles, kg, celsius.",

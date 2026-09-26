@@ -19,7 +19,9 @@ L3 no longer answers from L1. The tool registry keeps each pod's copy of a tool 
 definition and admits a copy only from a verified publisher (`ToolDefinition`,
 `CopySelection`, `CopyStatus`, `RefusalCode`, `admit_copy`, `ToolPodAuth.platform_shared`,
 `ToolPodAuthenticator.verify_agent`, `RefusedTool`, `ToolRegistrationRefused`); this changes
-which registrations are accepted -- read that section before deploying.
+which registrations are accepted -- read that section before deploying. Removed:
+`threetears.agent.tools.bridge`, `to_langchain_tool`'s `args_schema` parameter and the builtin
+tools' pydantic input models -- see "A tool's nested models reach the model".
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -337,6 +339,61 @@ the broker for the same reason.
   `DataLayerUnavailableError`, including a violation code without a class-23 SQLSTATE.
 - **Requires the hub** to send the code and fields. Until it does, replies are unchanged
   and so is the behaviour.
+
+### A tool's nested models reach the model, and a TearsTool in a graph behaves as it does over NATS
+
+A tool whose argument model nests another (`shots: list[Shot]`, a sub-object) was shown to a
+Claude subscription model as plain string fields. And a TearsTool run inside a LangGraph graph
+through `to_langchain_tool` did not behave as the ToolServer runs it: a failed result came back
+as a successful tool message (an empty `content` lost the error entirely), LangChain validated
+the input against a second, hand-written pydantic model before `TearsTool.run`'s coercion ran,
+and a tool that brought no such model (`current_date`) was shown one `kwargs` field and had
+every argument dropped.
+
+- **Fixed (`3tears-models`):** the subscription route (`sk-ant-oat` / claude-cli) inlines every
+  `$ref` in a bound tool's schema from its own `$defs`, through `items`, unions and nested
+  properties, keeping descriptions and `required` at every level. It had dropped `$defs`,
+  turned each `$ref` property into `{"type": "string"}` and left an array's `$ref` items
+  dangling. An optional union collapses to its member at every depth; a union of two or more
+  real members is kept whole (it used to collapse to the first); an untyped field is no longer
+  forced to a string. A recursive model is expanded until it recurs, and the point of
+  recursion is described in words ("A Node: the same shape as the Node that contains it.")
+  with the definition's type, rather than refused or cut to `{}`. A `$ref` outside the
+  schema's own definitions refuses the bind by name. The schema is read from
+  `tool_call_schema`, as the API route reads it, so a tool carrying a JSON Schema dict is read
+  instead of advertised with no parameters, and a schema that cannot be rendered fails the
+  bind instead of advertising an empty one.
+- **Fixed (`3tears-models`):** `NameMangledToolProxy` takes a JSON Schema `args_schema`, and
+  carries the delegate's `response_format`, `handle_tool_error` and `handle_validation_error`.
+  A `(content, artifact)` tool answered through the proxy as a bare tuple.
+- **Fixed (`3tears-agent-tools`):** `TearsTool.run`'s input coercion reads the type an
+  optional field (`anyOf` with `null`), a nullable type list or a nested model (`$ref`)
+  declares. It read only a property's own `type`, so exactly those fields were never coerced.
+- **Changed (`3tears-agent-tools`):** `to_langchain_tool` shows the model the tool's own
+  `mcp_schema().input_schema` -- the schema the ToolServer registers -- as a JSON Schema
+  `args_schema`. LangChain does not validate a JSON Schema, so the arguments the model sent
+  reach `TearsTool.run` as sent and its coercion runs, as over NATS: nested values arrive as
+  dicts, not model instances, and an omitted field stays omitted instead of arriving as its
+  default.
+- **Fixed (`3tears-agent-tools`):** a failed `ToolResult` answering a tool call is a
+  `ToolMessage` with `status="error"`, content naming the error (and the result's content when
+  it says more; a failure that says nothing is named as one), and the result's metadata still
+  as the artifact -- the typed failure record a caller reads. Invoked with bare arguments, a
+  failure answers with the same text.
+- **Removed (`3tears-agent-tools`):** `threetears.agent.tools.bridge` and
+  `tears_tool_to_langchain`, a second adapter that flattened every nested or array input to a
+  string; `to_langchain_tool` is the one adapter. `to_langchain_tool`'s `args_schema`
+  parameter, and the builtin input models that only fed it: `CalculatorInput`,
+  `ContextRecallInput`, `DictionaryInput`, `MediaAnalysisInput`, `TimezoneConverterInput`,
+  `UnitConverterInput`, `WebFetchInput`, `WebSearchInput`. Their properties and required
+  lists matched each tool's `mcp_schema()`; the three descriptions that said more
+  (`unit_converter.value`, `timezone_converter.time_str`, `analyze_media.analyzer`) moved into
+  the tool's schema. **Migration:** call `to_langchain_tool(tool)`, with `description=` if you
+  passed one; the tool's `mcp_schema()` is its schema.
+- **Unchanged, and now documented on `to_langchain_tool`:** the in-graph path installs no
+  `ToolCallScope` and applies no `requires_confirmation` gate. A tool that reads per-call
+  identity from the scope sees none, and a graph running a tool that declares confirmation
+  must gate the call itself.
 
 ## v0.54.0 -- 2026-09-26
 

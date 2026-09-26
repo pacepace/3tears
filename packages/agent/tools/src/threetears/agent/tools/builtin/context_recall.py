@@ -21,24 +21,14 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope
 
 __all__ = [
-    "ContextRecallInput",
     "ContextRecallTool",
     "create_context_recall_tool",
 ]
-
-
-class ContextRecallInput(BaseModel):
-    """Input for the context_recall tool."""
-
-    context_id: str = Field(
-        description="The id in a [ctx:<id>] mark, with or without the ctx: part.",
-    )
 
 
 def create_context_recall_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -63,7 +53,6 @@ def create_context_recall_tool(config: dict[str, Any], description: str) -> Stru
     return to_langchain_tool(
         ContextRecallTool(),
         description=description,
-        args_schema=ContextRecallInput,
     )
 
 
