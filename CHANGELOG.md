@@ -15,7 +15,135 @@ Minor: `threetears.agent.audit` gains the erasure rule for audit records:
 checkpoint anonymization (`ThreeTierCheckpointSaver.aanonymize_threads`);
 `threetears.core.backends.nats_proxy` gains `CONSTRAINT_VIOLATION_ERROR_CODE`; and
 `threetears.search.search` takes an injectable `clock`. Fixed: a write that did not reach
-L3 no longer answers from L1.
+L3 no longer answers from L1. The tool registry keeps each pod's copy of a tool with its own
+definition and admits a copy only from a verified publisher (`ToolDefinition`,
+`CopySelection`, `CopyStatus`, `RefusalCode`, `admit_copy`, `ToolPodAuth.platform_shared`,
+`ToolPodAuthenticator.verify_agent`, `RefusedTool`, `ToolRegistrationRefused`); this changes
+which registrations are accepted -- read that section before deploying.
+
+### Each pod's copy of a tool keeps its own definition, and only verified publishers register
+
+The registry held ONE description, schema, timeout and confirmation flag per `name@version`,
+and every registration overwrote them. Whichever pod announced last defined the tool for
+every caller -- including a pod that had no business defining it, and including switching a
+human-approval gate off for everybody. Registration also trusted the pod id on the manifest:
+a verified pod could register under a peer's id, and a manifest with no credential could
+register under anyone's, the shared built-in pod's included. Refused tools were logged on the
+registry and never told to the pod.
+
+**What changes for callers**
+
+- **New (minor):** `threetears.registry.catalog.ToolDefinition` (description, input schema,
+  output schema, timeout, confirmation flag; `schema_digest` and `digest`) and
+  `AnnouncedDefinition`. Every `ToolEndpoint` -- one pod's copy -- now carries
+  `definitions` (the definitions its pod announced, keyed by digest) and
+  `verified_publisher`. A definition stays live while its pod keeps announcing it, for
+  `THREETEARS_REGISTRY_DEFINITION_TTL` seconds (default 45, three heartbeats); one pod id may
+  carry two while replicas roll.
+- **Changed (breaking):** `CatalogEntry` no longer has `description`, `input_schema`,
+  `output_schema`, `timeout_seconds` or `requires_confirmation`. `ToolCatalog.register`
+  merges per copy: a registration changes only the registering pod's copy.
+- **New (minor):** `CatalogEntry.select_copies(caller_id, schema_digest=None)`, the one
+  selection discovery and the call proxy both use. It keeps the caller's available copies
+  that hold a live definition; ORs `requires_confirmation` across every one of them; prefers
+  the caller's own in-process copies over the shared ones; shows the definition announced
+  most recently (smaller digest breaks a tie); and routes only to copies serving the shown
+  input schema. `CatalogEntry.copy_status(pod_id)` reports one pod's own copy
+  (`CopyStatus`: available, pending, unavailable, absent).
+- **Changed:** an agent is now routed to its own in-process copy whenever one is available,
+  and to the shared copies only when it has none. Before, it was balanced across both.
+- **New (minor):** `DiscoverResultEntry.input_schema_digest` and
+  `requester_copy_status`, and `DiscoverRequest.pod_id` (omitted from the wire when unset).
+  `endpoint_count` now counts the copies a call could be routed to.
+- **New (minor):** `ProxyCallRequest.input_schema_digest`. A caller that sends the digest it
+  was shown is routed only to copies still serving that schema, and is refused
+  `TOOL_DEFINITION_CHANGED` when copies exist but none serves it -- re-discover and retry.
+  The model omits the field, and `deadline_seconds`, from every serialized form when unset,
+  so an older registry never sees them. The digest is never forwarded to a pod: the call a
+  pod receives has the same keys as before. **Do not send it until every registry is on
+  0.55.0**: an older registry refuses the whole call on the unknown field.
+- **Changed:** a call runs under the timeout its ROUTED copy declares.
+
+**Who may register a copy**
+
+- **New (minor):** `threetears.registry.ownership.admit_copy(tool_name, audience, standing,
+  provider_nodes)`, with `CopyAudience`, `PublisherStanding` and `RefusalCode`. A copy that
+  serves every caller (a Tool Pod's) needs a verified publisher; under a provider node it
+  needs that node's owner (`OWNED_ELSEWHERE`), and under no node it needs the platform
+  (`NOT_PLATFORM_SHARED`). An agent's in-process copy serves only that agent: it is refused
+  only inside somebody else's provider node.
+- **New (minor):** `ToolPodAuth.platform_shared` (default `False`). The host sets it from
+  verified identity, for the shared built-in pod and for pods it runs itself. 3tears only
+  honours it.
+- **Changed (breaking):** `ToolPodAuthenticator` gains `verify_agent(token) -> UUID | None`.
+  The pod id decides which verifier is asked: a single-token id is a Tool Pod's
+  (`verify_pod`), a dotted `{agent}.{instance}` id is an agent's in-process server
+  (`verify_agent`). A `RegistrationHandler` given an authenticator missing any of the three
+  methods raises `TypeError` at construction.
+- **Changed:** a verified Tool Pod must register under its own pod id, and an agent under a
+  pod id naming itself; otherwise the whole manifest is refused `POD_ID_MISMATCH`. A token
+  that fails verification is refused `UNVERIFIED_PUBLISHER`, never treated as no token.
+- **Changed:** a manifest with no token and a single-token pod id is refused
+  `UNVERIFIED_PUBLISHER`. **A token-bearing pod that owns no provider node and is not the
+  shared pod is now refused** `NOT_PLATFORM_SHARED` for every name outside a provider node.
+  Check each environment's `tool_pods` rows and the pods that register tokenless before
+  deploying.
+- **Rollout concession, this release only:** an agent's in-process manifest with NO token
+  is still admitted, for that agent's own copies only, and logged once per pod id at
+  WARNING ("registered unsigned"). A pod id that has registered with a verified token is
+  refused unsigned afterwards. A later release refuses unsigned agent manifests outright.
+- **Changed:** re-registration goes through admission every time. A verified pod refused a
+  tool it held a copy of loses that copy; other pods' copies are untouched. An unverified
+  manifest withdraws nothing.
+- **Changed:** with no authenticator (open mode) nothing is enforced, as before, and the
+  registration handler now says so once at startup.
+- The registry's log lines `registration completed`, `registration rejected: ...` and
+  `tool pod registration authorized` (with `tools_accepted` / `tools_rejected`) keep their
+  wording and keys. New detail rides under new keys (`error_code`, `refused_tools`,
+  `tools_refused`, `refusal_codes`, `publisher_verified`, `platform_shared`).
+
+**What a pod is told**
+
+- **New (minor):** `RefusedTool(name, version, code, reason)` and
+  `RegistrationResponse.refused_tools` (filled whether or not the registration succeeded) and
+  `RegistrationResponse.error_code`.
+- **New (minor):** `ToolServer.refused_tools` and `ToolRegistrationRefused`. A reply naming a
+  refusal is logged at ERROR, one line per tool.
+- **Changed (breaking):** `ToolServer.publish_registration(learn_identity=...)` is now
+  `publish_registration(await_reply=...)` and returns the reply it read.
+- **Changed:** `ToolServer.wait_until_ready` names its pod on the discovery poll and waits
+  for its OWN copy of each tool (`requester_copy_status == "available"`); another pod's copy
+  being available no longer counts. A refusal raises `ToolRegistrationRefused` at once
+  instead of waiting out the timeout.
+- **Changed:** `ToolServer.register_tool` on a serving pod awaits the reply and raises
+  `ToolRegistrationRefused` if the tool it added was refused. Before serving, it publishes
+  without waiting, as before.
+- **New (minor):** `DynamicToolPod(identity_token=...)`, presented on every manifest.
+  `DynamicToolPod.register_spec` on a serving pod raises `ToolRegistrationRefused` naming
+  the spec's refused tools.
+- Known: no manifest carries an `output_schema`, so every copy's is `None`.
+
+**Persisted catalog**
+
+- New KV writes carry `"shape": 2`. An entry written before this release is translated
+  once, when the registry loads its KV: its old entry-level definition is dropped (it may
+  have been a stray's overwrite), and each copy is shown to nobody until its pod announces
+  again, within one heartbeat. `CatalogEntry.from_dict` accepts only shape 2.
+
+**Deploy order: 3tears, then the hub (its registry image carries the hub's authenticator
+plugin), then the agent SDK.** The hub must, in the same release:
+
+- implement `verify_agent` on its authenticator (the agent's self-minted connect token,
+  or its runtime's delegated one, verified as at NATS connect, returning the agent id);
+- set `platform_shared=True` in `verify_pod` for the row named `builtin-tool-server`;
+- give each pod it runs in its own process (datasource, dataset, API and delegation pods) an
+  identity its `verify_pod` accepts as the platform (`platform_shared=True`,
+  `pod_entity_id` equal to the pod's id), and pass it to that pod's `ToolServer` or
+  `DynamicToolPod(identity_token=...)`. Without it those pods' tools are refused
+  `UNVERIFIED_PUBLISHER`.
+
+The SDK then passes the agent's own identity token to its in-process `ToolServer` as
+`auth_token`, and may send `input_schema_digest` on calls once every registry is on 0.55.0.
 
 ### Audit records are anonymized on erasure, never deleted
 

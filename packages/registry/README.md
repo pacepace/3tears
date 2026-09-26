@@ -6,12 +6,24 @@ Part of the [3tears](https://github.com/pacepace/3tears) framework.
 
 ## Components
 
-- **`ToolCatalog`** -- in-memory index of registered tool pods, backed by a NATS KV bucket for recovery across restarts.
-- **`RegistrationHandler`** -- subscribes to `{ns}.tools.register` and mutates the catalog.
+- **`ToolCatalog`** -- in-memory index of registered tool pods, backed by a NATS KV bucket for recovery across restarts. Each pod's copy of a tool keeps the definition that pod announced.
+- **`RegistrationHandler`** -- subscribes to `{ns}.tools.register`, verifies who published each manifest, admits each tool copy by copy, and replies naming every refused tool.
 - **`HeartbeatMonitor`** -- sweeps pods whose heartbeats fell behind the timeout and evicts their endpoints.
 - **`DiscoveryHandler`** -- serves `{ns}.tools.discover` for pod-readiness polling.
 - **`CallProxy`** -- the hot path. Subscribes to `{ns}.tools.call`, authorizes via `AgentToolAuthorizer`, selects an endpoint via the configured `RoutingStrategy`, and forwards the call to the tool pod via NATS request/reply with identity + correlation carried through the `CallContext` envelope.
 - **`RegistryRbacStack`** -- self-contained rbac surface the standalone server constructs against the connected NATS client: NATS-proxy `NamespaceCollection` + four rbac metadata Collections + `AclCache` + invalidation subscribers. The `_run_server()` entry point uses this to wire `RbacEvaluatorAuthorizer` without any host-application loaders, so a standalone server no longer defaults to deny-all.
+
+## Registration: copies and publishers
+
+One `name@version` may be served by many pods. Each pod's endpoint is a COPY carrying the definition that pod announced (`ToolDefinition`: description, schemas, timeout, confirmation gate). `CatalogEntry.select_copies(caller_id, schema_digest=None)` is the one function discovery and the call proxy use to decide what a caller sees and where its call goes: the caller's available copies with a live definition, the confirmation gate OR'd across all of them, the caller's own in-process copies ahead of shared ones, the most recently announced definition shown, and only copies serving that input schema routed to.
+
+Who may register a copy is decided from verified identity (`ToolPodAuthenticator`), never from the manifest:
+
+- a single-token pod id is a Tool Pod's; its token must pass `verify_pod` and name that same pod. Its copies serve every caller, so under a provider node it must own the node, and under none it must be the platform (`ToolPodAuth.platform_shared`, set by the host);
+- a dotted `{agent}.{instance}` pod id is an agent's in-process server; its token must pass `verify_agent` and name that agent. Its copies serve only that agent. In 0.55.0 an unsigned one is still admitted, for its own agent only;
+- a refusal is named in `RegistrationResponse.refused_tools` with a `RefusalCode`, and a pod's `ToolServer` raises `ToolRegistrationRefused` from `wait_until_ready`.
+
+With no authenticator the registry runs in open mode: nothing is enforced, and it says so once at startup.
 
 ## Authorization
 
