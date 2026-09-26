@@ -9,7 +9,13 @@ packages (bumped in lock-step).
 Minor: `threetears.agent.audit` gains the erasure rule for audit records:
 `anonymize_details`, `anonymize_ip`, `ANONYMIZED_MARKER`, `SAFE_DETAIL_KEYS`,
 `PERSONAL_DETAIL_KEYS`, `declare_safe_detail_keys`, `safe_detail_keys_for` and
-`is_classified_detail_key`.
+`is_classified_detail_key`, and the agent-to-hub erasure contract
+(`request_audit_anonymization` and its models, on `Subjects.hub_audit_anonymize`).
+`threetears.enforcement` gains the `audit_details` domain; `threetears.langgraph` gains
+checkpoint anonymization (`ThreeTierCheckpointSaver.aanonymize_threads`);
+`threetears.core.backends.nats_proxy` gains `CONSTRAINT_VIOLATION_ERROR_CODE`; and
+`threetears.search.search` takes an injectable `clock`. Fixed: a write that did not reach
+L3 no longer answers from L1.
 
 ### Audit records are anonymized on erasure, never deleted
 
@@ -148,6 +154,51 @@ live inside serialized checkpoint and pending-write blobs.
   because the `metadata` channel is working state (the injectors' ledgers) that the graph
   reads on resume.
 - `3tears-langgraph` now depends on `3tears-agent-audit`, for the platform's one marker.
+
+### A write that did not reach L3 no longer answers from L1
+
+An entity is a proxy onto its L1 row: construction writes the row and every attribute set
+writes through, so an entity's unsaved working copy is already the pod's cached answer for
+its key before `save_entity` runs the L3 compare-and-set. When that write did not land -- a
+lost CAS race, an insert that found the row taken, a store that raised -- the working copy
+stayed in L1 and was served as stored. A writer that lost retried through `ensure()`, found
+its own never-stored change "present", and stopped. The survey engine measured it on a real
+database: 19 of 20 concurrent members served from cache, 2 stored.
+
+- **Fixed:** `save_entity` evicts the entity's L1 row whenever its L3 write is refused (0
+  rows, raising `ConcurrentModificationError` or the insert `RuntimeError`) or raises,
+  cancellation included. The next read pulls through to the stored row. L2 and peer pods
+  never held the working copy (only a landed write publishes), so nothing else is touched.
+  The caller's handle keeps its working copy, so it still reads what it tried to save and a
+  retry through it writes that.
+- **Fixed:** the fire-and-forget subscript write (`collection[id] = row`), which writes L1
+  and L2 and broadcasts before it tries L3, withdraws the row from every tier
+  (`invalidate_cache`) when the L3 write raises or affects no row. Before, L1 and L2 kept
+  a value L3 never took, and peers were sent to L2 for it.
+- Consumers that worked around this by reading L3 on every attempt and evicting after
+  every write (the survey engine's `IndexesData`) can drop the workaround.
+
+### Through the broker, a constraint violation is the asyncpg error, not an outage
+
+`NatsProxyL3Backend` is a drop-in for an asyncpg pool, but it raised
+`DataLayerUnavailableError` for every failed broker reply. A unique violation therefore
+never reached `except asyncpg.UniqueViolationError` in a broker-backed pod, and a duplicate
+read as infrastructure. 3tears' own `workspace_create` duplicate-name branch was dead over
+the broker for the same reason.
+
+- **New (minor):** `threetears.core.backends.nats_proxy.CONSTRAINT_VIOLATION_ERROR_CODE`
+  (`"CONSTRAINT_VIOLATION"`), the broker `error_code` for a statement refused with a
+  SQLSTATE in class 23.
+- **Fixed:** a failed reply carrying that code and a class-23 `sqlstate` raises the asyncpg
+  exception a direct pool raises for it (`UniqueViolationError`, `ForeignKeyViolationError`,
+  `NotNullViolationError`, `CheckViolationError`, `ExclusionViolationError`, or
+  `IntegrityConstraintViolationError`), with `sqlstate`, `constraint_name`, `table_name`,
+  `schema_name`, `column_name` and `detail` set from the reply. This holds on every reply
+  path: single queries, batches, and `tx.execute` / `tx.fetchrow` / `tx.fetch` /
+  `tx.commit` (a deferred constraint fires at commit). Every other failed reply is still
+  `DataLayerUnavailableError`, including a violation code without a class-23 SQLSTATE.
+- **Requires the hub** to send the code and fields. Until it does, replies are unchanged
+  and so is the behaviour.
 
 ## v0.54.0 -- 2026-09-26
 

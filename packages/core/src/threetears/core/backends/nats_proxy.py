@@ -3,6 +3,12 @@
 drop-in replacement for direct asyncpg pool. routes all L3 queries
 through Hub's L3 Broker via NATS request-reply. collections use
 this transparently without knowing queries are proxied.
+
+errors keep the drop-in contract where the database itself refused the statement: a
+constraint violation (SQLSTATE class 23) raises the asyncpg exception a direct pool raises
+(``asyncpg.UniqueViolationError`` and its siblings), rebuilt from the fields the broker
+forwards. every other failed reply -- a broker refusal, a timeout, an exhausted pool, an
+unreachable broker -- raises :class:`DataLayerUnavailableError`.
 """
 
 from __future__ import annotations
@@ -11,8 +17,10 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from uuid import UUID, uuid7
+
+import asyncpg
 
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
@@ -30,9 +38,75 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
-__all__ = ["NatsProxyL3Backend"]
+__all__ = ["CONSTRAINT_VIOLATION_ERROR_CODE", "NatsProxyL3Backend"]
 
 _logger = get_logger(__name__)
+
+#: the broker's ``error_code`` for a statement the database refused with an SQLSTATE in class
+#: 23 (integrity constraint violation). a reply carrying it also carries the server's fields
+#: -- ``sqlstate``, ``constraint_name``, ``table_name``, ``schema_name``, ``column_name`` and,
+#: optionally, ``detail`` -- from which the proxy rebuilds the asyncpg exception a direct pool
+#: raises. the hub imports this name, so the two halves of the contract spell it once.
+CONSTRAINT_VIOLATION_ERROR_CODE = "CONSTRAINT_VIOLATION"
+
+#: SQLSTATE class 23, integrity constraint violation: a deterministic refusal of this statement,
+#: never an infrastructure fault, so it is the one class rebuilt as its asyncpg error rather than
+#: reported as unavailability.
+_INTEGRITY_CONSTRAINT_CLASS = "23"
+
+#: each violation field the broker sends, and the server-message field letter asyncpg reads it from.
+_VIOLATION_FIELDS: tuple[tuple[str, str], ...] = (
+    ("sqlstate", "C"),
+    ("error_message", "M"),
+    ("detail", "D"),
+    ("constraint_name", "n"),
+    ("table_name", "t"),
+    ("schema_name", "s"),
+    ("column_name", "c"),
+)
+
+
+def _raise_for_failed_reply(response: dict[str, Any], what: str) -> NoReturn:
+    """raise the error a failed broker reply stands for.
+
+    a constraint violation -- :data:`CONSTRAINT_VIOLATION_ERROR_CODE` with a class-23
+    ``sqlstate`` -- is rebuilt as the asyncpg exception a direct pool raises for that SQLSTATE
+    (``UniqueViolationError`` for 23505, and so on), carrying the server's fields. this proxy is
+    a drop-in for an asyncpg pool, so code that detects a duplicate with ``except
+    asyncpg.UniqueViolationError`` must see the same type through the broker; reporting it as
+    :class:`DataLayerUnavailableError` made every such branch dead in a broker-backed pod and
+    told the caller a conflict was an outage.
+
+    every other failure -- including a violation code without a class-23 SQLSTATE, which is a
+    broker fault rather than a statement the database refused -- stays
+    :class:`DataLayerUnavailableError`.
+
+    :param response: the parsed failed reply
+    :ptype response: dict[str, Any]
+    :param what: the operation that failed, for the unavailability message
+    :ptype what: str
+    :return: never returns
+    :rtype: NoReturn
+    :raises asyncpg.IntegrityConstraintViolationError: for a well-formed constraint violation
+    :raises DataLayerUnavailableError: for every other failed reply
+    """
+    sqlstate = response.get("sqlstate")
+    if (
+        response.get("error_code") == CONSTRAINT_VIOLATION_ERROR_CODE
+        and isinstance(sqlstate, str)
+        and sqlstate.startswith(_INTEGRITY_CONSTRAINT_CLASS)
+    ):
+        fields = {letter: response[name] for name, letter in _VIOLATION_FIELDS if isinstance(response.get(name), str)}
+        _logger.debug(
+            "broker reported a constraint violation",
+            extra={
+                "extra_data": {"operation": what, "sqlstate": sqlstate, "constraint": response.get("constraint_name")}
+            },
+        )
+        raise asyncpg.PostgresError.new(fields)
+    raise DataLayerUnavailableError(
+        f"{what} failed: {response.get('error_code', 'UNKNOWN')}: {response.get('error_message', 'no details')}"
+    )
 
 
 def _serialize_param(value: Any) -> Any:
@@ -509,10 +583,7 @@ class NatsProxyL3Backend:
         response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
-            raise DataLayerUnavailableError(
-                f"batch query failed: {response.get('error_code', 'UNKNOWN')}: "
-                f"{response.get('error_message', 'no details')}"
-            )
+            _raise_for_failed_reply(response, "batch query")
 
         results: list[Any] = response.get("results", [])
         return results
@@ -562,10 +633,7 @@ class NatsProxyL3Backend:
         response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
-            raise DataLayerUnavailableError(
-                f"L3 query failed: {response.get('error_code', 'UNKNOWN')}: "
-                f"{response.get('error_message', 'no details')}"
-            )
+            _raise_for_failed_reply(response, "L3 query")
 
         return response
 
@@ -863,10 +931,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.execute"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            raise DataLayerUnavailableError(
-                f"tx.execute failed: {response.get('error_code', 'UNKNOWN')}: "
-                f"{response.get('error_message', 'no details')}",
-            )
+            _raise_for_failed_reply(response, "tx.execute")
         return _format_execute_tag(
             _detect_operation(query),
             response.get("row_count"),
@@ -917,10 +982,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.fetchrow"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            raise DataLayerUnavailableError(
-                f"tx.fetchrow failed: {response.get('error_code', 'UNKNOWN')}: "
-                f"{response.get('error_message', 'no details')}",
-            )
+            _raise_for_failed_reply(response, "tx.fetchrow")
         row = response.get("row")
         if row is None:
             return None
@@ -1015,10 +1077,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.fetch"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            raise DataLayerUnavailableError(
-                f"tx.fetch failed: {response.get('error_code', 'UNKNOWN')}: "
-                f"{response.get('error_message', 'no details')}",
-            )
+            _raise_for_failed_reply(response, "tx.fetch")
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
         return [_deserialize_row(r) for r in raw_rows]
 
@@ -1128,10 +1187,7 @@ class _ProxyTransaction:
         subject = f"{self._backend.ns}.l3.tx.begin"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            raise DataLayerUnavailableError(
-                f"tx.begin failed: {response.get('error_code', 'UNKNOWN')}: "
-                f"{response.get('error_message', 'no details')}",
-            )
+            _raise_for_failed_reply(response, "tx.begin")
         raw_tx_id = response.get("tx_id")
         if not isinstance(raw_tx_id, str):
             raise DataLayerUnavailableError(
@@ -1179,11 +1235,7 @@ class _ProxyTransaction:
                 # commit path so the caller learns the DB did not
                 # persist their work.
                 if action == "commit":
-                    raise DataLayerUnavailableError(
-                        f"tx.commit failed: "
-                        f"{response.get('error_code', 'UNKNOWN')}: "
-                        f"{response.get('error_message', 'no details')}",
-                    )
+                    _raise_for_failed_reply(response, "tx.commit")
                 _logger.warning(
                     "proxy tx.rollback reported failure: %s",
                     response.get("error_message"),
