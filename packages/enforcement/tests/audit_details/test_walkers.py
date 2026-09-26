@@ -611,3 +611,132 @@ class TestHelperParameters:
         )
 
         assert _findings(config) == _UNCLASSIFIED
+
+
+class TestConditionalEventTypes:
+    """``event_type=A if cond else B`` resolves to both branches; a key must be safe for each."""
+
+    def test_both_branches_in_the_family_credit_the_key(self) -> None:
+        """the approvals shape: two module constants of one family."""
+        site = _read(
+            f"_APPROVED = '{_FAMILY}.approved'\n_DENIED = '{_FAMILY}.denied'\n"
+            + _FAMILY_KEY_SITE.format(event_type="_APPROVED if verdict == 'approve' else _DENIED")
+        )
+
+        assert site.event_types == frozenset({f"{_FAMILY}.approved", f"{_FAMILY}.denied"})
+        assert _unclassified(site) == []
+
+    def test_a_branch_in_a_family_where_the_key_is_not_safe_is_reported(self) -> None:
+        """the credit is the intersection over the branches, never the union."""
+        site = _read(_FAMILY_KEY_SITE.format(event_type=f"'{_FAMILY}.a' if ok else 'unrelated.b'"))
+
+        assert site.event_types == frozenset({f"{_FAMILY}.a", "unrelated.b"})
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_an_unresolvable_branch_leaves_the_whole_expression_unresolved(self) -> None:
+        """one branch the walker cannot read makes the value unknown."""
+        site = _read(_FAMILY_KEY_SITE.format(event_type=f"'{_FAMILY}.a' if ok else pick()"))
+
+        assert site.event_types == frozenset()
+        assert _unclassified(site) == ["gate_declared_count"]
+
+
+_WRAPPED_CALLER = "def caller(r):\n    wrapped(r, details={'gate_declared_count': 1})\n"
+
+
+def _forwarded(inner_body: str, *, signature: str = "request, *, details=None") -> AuditDetailsSite:
+    """
+    the call site of a declared forwarder ``wrapped`` whose body is ``inner_body``.
+
+    :param inner_body: the forwarder's body, one statement per line, unindented
+    :ptype inner_body: str
+    :param signature: the forwarder's parameter list
+    :ptype signature: str
+    :return: the site of the call to ``wrapped`` in ``caller``
+    :rtype: AuditDetailsSite
+    """
+    body = "".join(f"    {line}\n" for line in inner_body.splitlines())
+    source = f"def wrapped({signature}):\n{body}" + _WRAPPED_CALLER
+    sites = read_audit_details_sites(ast.parse(source), forwarders=frozenset({"wrapped", "emit"}))
+    (call_site,) = [site for site in sites if ("gate_declared_count",) in site.keys]
+    return call_site
+
+
+class TestAForwarderThatFixesItsEventType:
+    """a call site that passes no ``event_type`` is credited with what the forwarder's own construction resolves."""
+
+    def test_an_inner_construction_with_a_literal(self) -> None:
+        """the forwarder builds the event itself, with a fixed type."""
+        site = _forwarded(f"AuditEvent(event_type='{_FAMILY}.x', details=details)")
+
+        assert site.event_types == frozenset({f"{_FAMILY}.x"})
+        assert _unclassified(site) == []
+
+    def test_an_inner_call_to_another_forwarder(self) -> None:
+        """the hub's ``_audited_failure`` shape: the forwarder hands on to a declared forwarder."""
+        site = _forwarded(
+            f"emit(request, event_type='{_FAMILY}.x', details={{**(details or {{}}), 'interrupted_by': 'E'}})"
+        )
+
+        assert site.event_types == frozenset({f"{_FAMILY}.x"})
+        assert _unclassified(site) == []
+
+    def test_an_inner_construction_that_resolves_to_nothing_is_reported(self) -> None:
+        """if the forwarder's own type cannot be shown, the call site gets no family credit."""
+        site = _forwarded("emit(request, event_type=pick(), details=details)")
+
+        assert site.event_types == frozenset()
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_one_unresolvable_inner_construction_among_resolvable_ones_is_reported(self) -> None:
+        """a partial answer is not an answer: the unreadable construction may publish any type."""
+        site = _forwarded(
+            f"AuditEvent(event_type='{_FAMILY}.x', details=details)\nemit(request, event_type=pick(), details=details)"
+        )
+
+        assert site.event_types == frozenset()
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_two_inner_constructions_in_different_families_are_intersected(self) -> None:
+        """a forwarder that may publish either type credits only what is safe for both."""
+        site = _forwarded(
+            f"AuditEvent(event_type='{_FAMILY}.x', details=details)\nAuditEvent(event_type='unrelated.y', details=details)"
+        )
+
+        assert site.event_types == frozenset({f"{_FAMILY}.x", "unrelated.y"})
+        assert _unclassified(site) == ["gate_declared_count"]
+
+    def test_the_forwarders_own_defaulted_parameter(self) -> None:
+        """an inner ``event_type=event_type`` with a default the call site leaves in place."""
+        site = _forwarded(
+            "AuditEvent(event_type=event_type, details=details)",
+            signature=f"request, *, details=None, event_type='{_FAMILY}.x'",
+        )
+
+        assert _unclassified(site) == []
+
+    def test_a_call_site_that_passes_its_own_event_type_wins(self) -> None:
+        """an explicit ``event_type`` at the call site is what is published, whatever the forwarder's default."""
+        source = (
+            f"def wrapped(request, *, details=None, event_type='{_FAMILY}.x'):\n"
+            "    AuditEvent(event_type=event_type, details=details)\n"
+            "def caller(r):\n"
+            "    wrapped(r, event_type='unrelated.y', details={'gate_declared_count': 1})\n"
+        )
+        sites = read_audit_details_sites(ast.parse(source), forwarders=frozenset({"wrapped"}))
+        (call_site,) = [site for site in sites if ("gate_declared_count",) in site.keys]
+
+        assert call_site.event_types == frozenset({"unrelated.y"})
+        assert _unclassified(call_site) == ["gate_declared_count"]
+
+    def test_a_forwarder_the_walker_cannot_find_is_reported(self) -> None:
+        """a declared forwarder defined outside the scanned roots fixes nothing it can see."""
+        sites = read_audit_details_sites(ast.parse(_WRAPPED_CALLER), forwarders=frozenset({"wrapped"}))
+
+        assert [_unclassified(site) for site in sites] == [["gate_declared_count"]]
+
+    def test_a_forwarder_calling_itself_terminates(self) -> None:
+        """a recursive forwarder resolves to nothing rather than looping."""
+        site = _forwarded("wrapped(request, details=details)")
+
+        assert _unclassified(site) == ["gate_declared_count"]

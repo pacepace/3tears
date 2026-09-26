@@ -58,11 +58,14 @@ should route an audit record's content through it** rather than writing its own.
   A family's safe keys are credited only for the event types a site can be shown to
   publish, resolved the way a reader would: a literal; a module constant, local or
   imported from the scanned roots (absolute, relative, aliased, re-exported); an
-  attribute on an imported module; or a helper's `event_type` parameter, resolved through
-  every caller of the helper in the scanned roots. A key counts only if it is safe for
+  attribute on an imported module; a conditional (`A if cond else B`) over both branches;
+  a helper's `event_type` parameter, resolved through every caller of the helper in the
+  scanned roots; and, for a forwarder call that passes no `event_type`, what the
+  forwarder's own inner construction publishes. A key counts only if it is safe for
   EVERY resolved value, and a site that cannot be resolved (a caller passing a computed
   value or the parameter positionally, a helper nobody calls, a constant bound twice, an
-  import from outside the roots) gets the platform set alone, as before.
+  import from outside the roots, an unreadable branch or inner construction) gets the
+  platform set alone, as before.
   No exemptions file. Consumer shell:
 
   ```python

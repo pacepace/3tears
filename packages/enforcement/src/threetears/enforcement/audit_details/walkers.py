@@ -35,9 +35,10 @@ included, so nothing beneath it is ever consulted.
 **which event types a site is credited for.** A family's safe keys count only for the
 event types a site can be shown to publish, resolved statically by
 :mod:`threetears.enforcement.audit_details.event_types`: a literal, a module constant
-(local or imported from the scanned roots), an attribute on an imported module, or a
-helper parameter resolved through every caller. A key is credited only when it is safe
-for EVERY resolved value; a site whose event type cannot be resolved gets the platform
+(local or imported from the scanned roots), an attribute on an imported module, a
+conditional over those, a helper parameter resolved through every caller, or -- for a
+forwarder call that names no event type -- the type the forwarder's own construction
+publishes. A key is credited only when it is safe for EVERY resolved value; a site whose event type cannot be resolved gets the platform
 set alone, and anything that needs a family is reported.
 """
 
@@ -123,7 +124,7 @@ def read_audit_details_sites(
     :rtype: list[AuditDetailsSite]
     """
     module = source_module(tree, name="")
-    resolver = EventTypeResolver({module.name: module})
+    resolver = EventTypeResolver({module.name: module}, constructors=constructors, forwarders=forwarders)
     return _read_module(module, resolver, constructors, forwarders)
 
 
@@ -208,7 +209,7 @@ def collect_audit_details_sites(config: AuditDetailsConfig) -> dict[Path, list[A
             if name not in modules:
                 modules[name] = source_module(tree, name=name, is_package=is_package)
                 paths[name] = path
-    resolver = EventTypeResolver(modules)
+    resolver = EventTypeResolver(modules, constructors=config.constructors, forwarders=config.forwarders)
     by_file: dict[Path, list[AuditDetailsSite]] = {}
     for name, module in modules.items():
         sites = _read_module(module, resolver, config.constructors, config.forwarders)
@@ -328,7 +329,7 @@ def _read_call(
         _read_literal(details, (), reading)
     return AuditDetailsSite(
         lineno=call.lineno,
-        event_types=resolver.resolve_site(arguments.get("event_type"), module, chain),
+        event_types=resolver.resolve_call(call, module),
         keys=frozenset(reading.keys),
         unreadable=tuple(reading.unreadable),
     )

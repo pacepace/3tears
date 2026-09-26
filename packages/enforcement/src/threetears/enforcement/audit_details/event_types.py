@@ -17,7 +17,14 @@ reader resolves those without running anything; so does this module.
 - a parameter of an enclosing function, as the set of values every call of that function
   in the scanned roots passes for it -- each resolved by these same rules, so a caller
   passing its own parameter is followed to its callers -- or the parameter's default for a
-  caller that omits it.
+  caller that omits it;
+- a conditional expression (``A if cond else B``), as the values of both branches;
+- for a call to a declared forwarder that passes no ``event_type`` at all, what every
+  construction (or forwarder call) inside the forwarder resolves to: a forwarder that
+  fixes its own event type publishes it for every call site that does not name one.
+
+every multi-valued answer (callers, branches, inner constructions) is a set, and a site is
+credited only with the keys safe for every value in it.
 
 **what it refuses.** Anything else resolves to nothing, and a site with nothing resolved
 gets no family credit -- today's behaviour, reported as before. In particular: a name
@@ -25,8 +32,10 @@ bound more than once at module level, or rebound by ``global``; a local variable
 including a parameter the helper reassigns; an import from outside the scanned roots; a
 value computed by a call or an expression; a helper nothing calls; a caller that passes the
 parameter positionally (positions are not mapped to parameters) or splats ``**kwargs``; a
-cycle of helpers passing the value round. **One unresolvable caller makes the whole
-parameter unresolved**, never a partial answer.
+cycle of helpers passing the value round; a conditional with an unreadable branch; a
+forwarder defined outside the scanned roots, constructing nothing, calling itself, or with
+an inner construction that is itself unresolvable. **One unresolvable caller, branch or
+inner construction makes the whole answer unresolved**, never a partial answer.
 
 **how callers are found.** By name: every call whose callee is spelled with the helper's
 name, bare or as an attribute. A same-named unrelated function is therefore treated as a
@@ -130,46 +139,115 @@ def module_name(path: Path, root: Path) -> tuple[str, bool]:
 class EventTypeResolver:
     """resolves ``event_type`` arguments across the scanned modules, with its caller index built once."""
 
-    def __init__(self, modules: Mapping[str, SourceModule]) -> None:
-        """index every call in every module by callee name.
+    def __init__(
+        self,
+        modules: Mapping[str, SourceModule],
+        *,
+        constructors: frozenset[str] = frozenset(),
+        forwarders: frozenset[str] = frozenset(),
+    ) -> None:
+        """index every call and every function definition in every module by name.
 
         :param modules: every scanned module, by dotted name
         :ptype modules: Mapping[str, SourceModule]
+        :param constructors: callee names that build an audit event
+        :ptype constructors: frozenset[str]
+        :param forwarders: callee names of declared wrapper helpers, whose own inner
+            construction fixes the event type for a call site that passes none
+        :ptype forwarders: frozenset[str]
         """
         self._modules = modules
+        self._targets = constructors | forwarders
+        self._forwarders = forwarders
         self._calls: dict[str, list[tuple[SourceModule, ast.Call]]] = {}
+        self._definitions: dict[str, list[tuple[SourceModule, FunctionNode]]] = {}
         for module in modules.values():
             for node in ast.walk(module.tree):
                 if isinstance(node, ast.Call):
                     for name in callee_names(node):
                         self._calls.setdefault(name, []).append((module, node))
+                elif isinstance(node, FunctionNode):
+                    self._definitions.setdefault(node.name, []).append((module, node))
 
-    def resolve_site(
-        self,
-        expr: ast.expr | None,
-        module: SourceModule,
-        chain: tuple[FunctionNode, ...],
-    ) -> frozenset[str]:
-        """every event type an audit call's ``event_type`` argument can be shown to carry.
+    def resolve_call(self, call: ast.Call, module: SourceModule) -> frozenset[str]:
+        """every event type one audit construction or forwarder call can be shown to publish.
 
-        :param expr: the ``event_type=`` argument, or ``None`` when the call passes none
-        :ptype expr: ast.expr | None
-        :param module: the module holding the call
+        the call's own ``event_type=`` argument when it passes one. otherwise, for a call to a
+        declared forwarder, what the forwarder's own inner constructions resolve to -- a
+        forwarder that fixes its event type (``_audited_failure`` building ``admin.action``)
+        publishes that type for every call site that does not name one.
+
+        :param call: the constructor or forwarder call
+        :ptype call: ast.Call
+        :param module: the module holding it
         :ptype module: SourceModule
-        :param chain: the functions enclosing the call, outermost first
-        :ptype chain: tuple[FunctionNode, ...]
         :return: the resolved values; empty when any part could not be resolved
         :rtype: frozenset[str]
         """
-        resolved = None if expr is None else self._resolve(expr, module, chain, frozenset())
+        resolved = self._resolve_call(call, module, frozenset())
         return resolved if resolved is not None else frozenset()
+
+    def _resolve_call(
+        self, call: ast.Call, module: SourceModule, visiting: frozenset[tuple[str, int]]
+    ) -> frozenset[str] | None:
+        """resolve one call's published event types.
+
+        :param call: the constructor or forwarder call
+        :ptype call: ast.Call
+        :param module: the module holding it
+        :ptype module: SourceModule
+        :param visiting: ``(kind, id)`` of every function already being resolved as a forwarder
+            or through a parameter, to stop a cycle; the two kinds are separate because a
+            forwarder's inner construction may legitimately resolve that same forwarder's
+            parameter
+        :ptype visiting: frozenset[tuple[str, int]]
+        :return: the values, or ``None`` when unresolvable
+        :rtype: frozenset[str] | None
+        """
+        expr = next((keyword.value for keyword in call.keywords if keyword.arg == "event_type"), None)
+        result: frozenset[str] | None = _UNRESOLVED
+        if expr is not None:
+            result = self._resolve(expr, module, module.chains.get(id(call), ()), visiting)
+        else:
+            forwarders = callee_names(call) & self._forwarders
+            if len(forwarders) == 1:
+                result = self._resolve_forwarder(next(iter(forwarders)), visiting)
+        return result
+
+    def _resolve_forwarder(self, name: str, visiting: frozenset[tuple[str, int]]) -> frozenset[str] | None:
+        """the union of what every inner construction of every forwarder named ``name`` publishes.
+
+        :param name: the forwarder's name
+        :ptype name: str
+        :param visiting: functions already being resolved
+        :ptype visiting: frozenset[tuple[str, int]]
+        :return: the values, or ``None`` when the forwarder is unknown, constructs nothing, or
+            any inner construction is unresolvable
+        :rtype: frozenset[str] | None
+        """
+        definitions = self._definitions.get(name, [])
+        if not definitions:
+            return _UNRESOLVED
+        values: set[str] = set()
+        for module, function in definitions:
+            inner_calls = [
+                node for node in ast.walk(function) if isinstance(node, ast.Call) and callee_names(node) & self._targets
+            ]
+            if ("forwarder", id(function)) in visiting or not inner_calls:
+                return _UNRESOLVED
+            for inner in inner_calls:
+                resolved = self._resolve_call(inner, module, visiting | {("forwarder", id(function))})
+                if resolved is None:
+                    return _UNRESOLVED
+                values |= resolved
+        return frozenset(values)
 
     def _resolve(
         self,
         expr: ast.expr,
         module: SourceModule,
         chain: tuple[FunctionNode, ...],
-        visiting: frozenset[int],
+        visiting: frozenset[tuple[str, int]],
     ) -> frozenset[str] | None:
         """resolve one expression in its module and enclosing functions.
 
@@ -179,8 +257,8 @@ class EventTypeResolver:
         :ptype module: SourceModule
         :param chain: the functions enclosing it, outermost first
         :ptype chain: tuple[FunctionNode, ...]
-        :param visiting: ``id`` of every helper already being resolved, to stop a cycle
-        :ptype visiting: frozenset[int]
+        :param visiting: ``(kind, id)`` of every function already being resolved, to stop a cycle
+        :ptype visiting: frozenset[tuple[str, int]]
         :return: the values, or ``None`` when unresolvable
         :rtype: frozenset[str] | None
         """
@@ -194,6 +272,13 @@ class EventTypeResolver:
             target = self._module_for(head, module) if head is not None else None
             if target is not None:
                 result = self._resolve_global(expr.attr, target, frozenset())
+        elif isinstance(expr, ast.IfExp):
+            # either branch may be the one published, so the value is both; one branch the
+            # walker cannot read makes the whole expression unknown.
+            body = self._resolve(expr.body, module, chain, visiting)
+            orelse = self._resolve(expr.orelse, module, chain, visiting)
+            if body is not None and orelse is not None:
+                result = body | orelse
         return result
 
     def _resolve_name(
@@ -201,7 +286,7 @@ class EventTypeResolver:
         name: str,
         module: SourceModule,
         chain: tuple[FunctionNode, ...],
-        visiting: frozenset[int],
+        visiting: frozenset[tuple[str, int]],
     ) -> frozenset[str] | None:
         """resolve a bare name: the nearest enclosing parameter, else a module-level binding.
 
@@ -212,7 +297,7 @@ class EventTypeResolver:
         :param chain: the functions enclosing it, outermost first
         :ptype chain: tuple[FunctionNode, ...]
         :param visiting: helpers already being resolved
-        :ptype visiting: frozenset[int]
+        :ptype visiting: frozenset[tuple[str, int]]
         :return: the values, or ``None`` when unresolvable
         :rtype: frozenset[str] | None
         """
@@ -274,7 +359,7 @@ class EventTypeResolver:
         function: FunctionNode,
         parameter: str,
         module: SourceModule,
-        visiting: frozenset[int],
+        visiting: frozenset[tuple[str, int]],
     ) -> frozenset[str] | None:
         """resolve a helper's parameter to the union of what every caller passes.
 
@@ -285,14 +370,14 @@ class EventTypeResolver:
         :param module: the module defining the helper
         :ptype module: SourceModule
         :param visiting: helpers already being resolved
-        :ptype visiting: frozenset[int]
+        :ptype visiting: frozenset[tuple[str, int]]
         :return: the values, or ``None`` when any caller is unresolvable or none exists
         :rtype: frozenset[str] | None
         """
         callers = self._calls.get(function.name, [])
-        if id(function) in visiting or _stores(function, parameter) or not callers:
+        if ("parameter", id(function)) in visiting or _stores(function, parameter) or not callers:
             return _UNRESOLVED
-        inner = visiting | {id(function)}
+        inner = visiting | {("parameter", id(function))}
         values: set[str] = set()
         for caller_module, call in callers:
             passed = self._passed(call, function, parameter, module, caller_module, inner)
@@ -308,7 +393,7 @@ class EventTypeResolver:
         parameter: str,
         module: SourceModule,
         caller_module: SourceModule,
-        visiting: frozenset[int],
+        visiting: frozenset[tuple[str, int]],
     ) -> frozenset[str] | None:
         """what one call passes for the helper's parameter.
 
@@ -323,7 +408,7 @@ class EventTypeResolver:
         :param caller_module: the module holding the call
         :ptype caller_module: SourceModule
         :param visiting: helpers already being resolved
-        :ptype visiting: frozenset[int]
+        :ptype visiting: frozenset[tuple[str, int]]
         :return: the values, or ``None`` when unresolvable
         :rtype: frozenset[str] | None
         """
