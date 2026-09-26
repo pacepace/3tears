@@ -40,6 +40,33 @@ at startup, before they serve anything -- the hub's DPoP guard, and each of iden
 A test double passed as `ToolServer(assertion_replay_guard=...)` or as `CallProxy`'s
 `pop_replay_guard` needs an `async def bind(self)`.
 
+### The pool recycler keys on any error, and ships the stale-table-shape one
+
+A pooled YugabyteDB connection can hold a table's old shape after another session altered it,
+and answer `Invalid column number <n>` where a fresh connection would not. The aibots hub
+carried its own `YugabyteStaleTableShapeRecycler` for it: `YugabyteRpcTimeoutRecycler`'s
+bind / watch / expiry-floor logic copied, keyed on a different error.
+
+- **New (minor):** `YugabytePoolRecycler(pool_name=..., trigger=...)` is the one mechanism --
+  the query logger on every connection, `Pool.expire_connections()` on a match, one expiry
+  per cause, the `min_seconds_between_expiries` floor, the unbound-recycler error. What it keys
+  on is a `PoolExpiryTrigger(error_name, matches, diagnosis, persistent_cause)`; the log lines
+  are built from the trigger's words.
+- **New (minor):** `YUGABYTE_STALE_TABLE_SHAPE`, `is_yugabyte_stale_table_shape(error)` and
+  `YugabyteStaleTableShapeRecycler(pool_name=...)`. The predicate matches `Invalid column
+  number <n>` in any server error's message, whatever the SQLSTATE (it has been seen once and
+  its SQLSTATE is unknown). It deliberately does not match `schema version mismatch for table
+  ...` (SQLSTATE 40001), which is retryable on the same connection and routine during an online
+  index build.
+- **Changed:** `YugabyteRpcTimeoutRecycler` is the same mechanism with `YUGABYTE_RPC_TIMEOUT`
+  fixed; its constructor, `init`, `watch` and `bind` are unchanged. The module is
+  `threetears.core.utils.yugabyte_pool_recycler` (was `yugabyte_rpc_timeout`, no alias); every
+  name is exported from `threetears.core.utils`, which is where consumers import it from.
+
+**Consumers:** the hub replaces its local `YugabyteStaleTableShapeRecycler` and
+`is_yugabyte_stale_table_shape` in `aibots/common/pool_recyclers.py` with these at the next
+release; `PlatformPoolRecyclers` keeps composing the two recyclers.
+
 ## v0.53.0 -- 2026-09-25
 
 ### One migration per database at a time: the database-wide DDL lock
