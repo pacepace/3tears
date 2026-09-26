@@ -32,7 +32,7 @@ import os
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
+from threetears.core.testing.containers import check_docker_available, stagger_container_start
 
 __all__ = [
     "db_container",
@@ -151,6 +151,7 @@ def db_container(db_image: str) -> Iterator[str]:
 
     if not check_docker_available():
         pytest.skip("Docker not available")
+    stagger_container_start()
 
     from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
@@ -192,6 +193,7 @@ def nats_container(nats_jetstream: bool) -> Iterator[str]:
 
     if not check_docker_available():
         pytest.skip("Docker not available")
+    stagger_container_start()
 
     from testcontainers.nats import NatsContainer  # noqa: PLC0415
 
@@ -241,6 +243,7 @@ def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
     """
     if not check_docker_available():
         pytest.skip("Docker not available")
+    stagger_container_start()
 
     import time  # noqa: PLC0415
     import urllib.error  # noqa: PLC0415
@@ -384,6 +387,7 @@ def searxng_container() -> Iterator[str]:
     """
     if not check_docker_available():
         pytest.skip("Docker not available")
+    stagger_container_start()
 
     import tempfile  # noqa: PLC0415
     import time  # noqa: PLC0415

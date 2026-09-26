@@ -37,6 +37,18 @@ packages (bumped in lock-step).
   shorter than the TTL.
 - Scrape's `claim_session` now runs on it, with its public names unchanged.
 
+### Container fixtures stagger their starts under xdist
+
+- **New (minor):** `threetears.core.testing.stagger_container_start()`. It delays each xdist
+  worker's FIRST container start by `N x THREETEARS_TEST_CONTAINER_STAGGER_SECONDS` (default
+  2.0; `0` disables it), once per process. `gw0` never waits, and without xdist nothing
+  changes.
+- `db_container`, `nats_container`, `s3_container` and `searxng_container` all call it. It
+  guards against a burst of simultaneous container creation that ZFS-backed Docker does not
+  survive (half-created containers, `dataset does not exist`); consumers carried a
+  `pytest_fixture_setup` hook for this and can drop it. A fixture that starts its own
+  container should call it too.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

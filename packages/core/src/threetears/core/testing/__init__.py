@@ -35,6 +35,7 @@ from threetears.core.testing.containers import (
     nats_reachable,
     skip_without_docker_marker,
     skip_without_nats_marker,
+    stagger_container_start,
 )
 from threetears.core.testing.entities import entity_collection_stub
 from threetears.core.testing.migrations import FAKE_DATABASE_NAME, uncontended_ddl_lock_rows
@@ -58,5 +59,6 @@ __all__ = [
     "nats_reachable",
     "skip_without_docker_marker",
     "skip_without_nats_marker",
+    "stagger_container_start",
     "uncontended_ddl_lock_rows",
 ]
