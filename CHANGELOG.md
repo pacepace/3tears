@@ -49,6 +49,26 @@ packages (bumped in lock-step).
   `pytest_fixture_setup` hook for this and can drop it. A fixture that starts its own
   container should call it too.
 
+### A rolling summary that keeps the history
+
+- **New (minor):** `threetears.langgraph.RollingSummaryMiddleware(model, *, store, token_budget,
+  count_tokens=..., prompt=None, summary_prefix=..., on_summarized=None)`, with `SummaryState`,
+  the `SummaryStore` Protocol and `USAGE_PURPOSE_METADATA_KEY`. It is non-destructive:
+  - it overrides the model request only, so the checkpointer keeps every message;
+  - it folds older messages into a rolling summary once the messages since the last fold pass
+    a token budget;
+  - it folds at most once per turn;
+  - it never leaves an orphaned tool result at the head of the kept tail;
+  - its cursor is a message id, with a count fallback;
+  - the store's save is a compare-and-swap, and a losing writer uses the winner's summary;
+  - the summary call is `NOSTREAM_TAG`-ged and carries `metadata["threetears.usage.purpose"]`.
+  `SummarizationMiddleware` is unchanged.
+- **New (minor):** `threetears.conversations.ConversationSummaryStore(collection, *, agent_id,
+  conversation_id)`. It is the store over a conversations row: the summary goes in the existing
+  `summary` column and the cursor in `metadata["summary_through"]`, so no migration is needed.
+  `dispatch_conversation_summarized` fires the existing `ConversationSummarizedEvent`. Scriob and
+  metallm each hand-rolled this, with incompatible cursors.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

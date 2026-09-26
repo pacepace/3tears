@@ -58,6 +58,13 @@ from threetears.langgraph.middleware_context import (
 )
 from threetears.langgraph.middleware_offload import ToolResultOffloadMiddleware
 from threetears.langgraph.middleware_schema import SchemaPrimingMiddleware
+from threetears.langgraph.middleware_rolling_summary import (
+    DEFAULT_ROLLING_SUMMARY_PREFIX,
+    USAGE_PURPOSE_METADATA_KEY,
+    RollingSummaryMiddleware,
+    SummaryState,
+    SummaryStore,
+)
 from threetears.langgraph.middleware_summarize import SummarizationMiddleware
 from threetears.langgraph.offload import (
     DEFAULT_OFFLOAD_THRESHOLD_CHARS,
@@ -159,6 +166,11 @@ __all__ = [
     "StreamingResponseError",
     "StructuredToolResultFields",
     "SummarizationMiddleware",
+    "RollingSummaryMiddleware",
+    "SummaryState",
+    "SummaryStore",
+    "DEFAULT_ROLLING_SUMMARY_PREFIX",
+    "USAGE_PURPOSE_METADATA_KEY",
     "ThreeTierCheckpointSaver",
     "ToolCallEndEvent",
     "ToolCallProgressEvent",
