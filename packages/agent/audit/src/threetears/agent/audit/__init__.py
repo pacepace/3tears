@@ -8,7 +8,10 @@ custom tools). the hub-side ``unified_audit_consumer`` subscribes to
 
 erasure of an audit record goes through :func:`anonymize_details` and
 :func:`anonymize_ip` (:mod:`threetears.agent.audit.anonymize`): records
-are anonymized, never deleted, and no id on them changes.
+are anonymized, never deleted, and no id on them changes. an agent erasing
+a person asks the hub to apply that rule to the audit rows it published,
+through :func:`request_audit_anonymization`
+(:mod:`threetears.agent.audit.erasure`, which also states the hub's side).
 
 produced by ``audit-task-01``; supersedes
 :class:`threetears.agent.workspace.audit.WorkspaceAuditEnvelope` and
@@ -29,6 +32,18 @@ from threetears.agent.audit.anonymize import (
     safe_detail_keys_for,
 )
 from threetears.agent.audit.envelope import AuditEvent
+from threetears.agent.audit.erasure import (
+    AUDIT_ANONYMIZE_ERROR_CODES,
+    DEFAULT_ANONYMIZE_TIMEOUT_SECONDS,
+    MAX_ANONYMIZE_ACTORS,
+    AuditAnonymization,
+    AuditAnonymizeError,
+    AuditAnonymizeRefusedError,
+    AuditAnonymizeReply,
+    AuditAnonymizeRequest,
+    AuditAnonymizeUnavailableError,
+    request_audit_anonymization,
+)
 from threetears.agent.audit.publish import publish_audit
 
 # Version derived from pyproject.toml so the metadata is the single
@@ -48,13 +63,23 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 
 __all__ = [
     "ANONYMIZED_MARKER",
+    "AUDIT_ANONYMIZE_ERROR_CODES",
+    "DEFAULT_ANONYMIZE_TIMEOUT_SECONDS",
+    "MAX_ANONYMIZE_ACTORS",
     "PERSONAL_DETAIL_KEYS",
     "SAFE_DETAIL_KEYS",
+    "AuditAnonymization",
+    "AuditAnonymizeError",
+    "AuditAnonymizeRefusedError",
+    "AuditAnonymizeReply",
+    "AuditAnonymizeRequest",
+    "AuditAnonymizeUnavailableError",
     "AuditEvent",
     "anonymize_details",
     "anonymize_ip",
     "declare_safe_detail_keys",
     "is_classified_detail_key",
     "publish_audit",
+    "request_audit_anonymization",
     "safe_detail_keys_for",
 ]

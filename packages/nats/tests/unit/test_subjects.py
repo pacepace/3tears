@@ -289,6 +289,7 @@ def test_hub_subjects() -> None:
     assert Subjects.hub_object_commit().path == "3tears.hub.object.commit"
     assert Subjects.hub_object_resolve().path == "3tears.hub.object.resolve"
     assert Subjects.hub_engagement_scope().path == "3tears.hub.engagement.scope"
+    assert Subjects.hub_audit_anonymize().path == "3tears.hub.audit.anonymize"
     assert Subjects.hub_usage_track().path == "3tears.hub.usage.track"
     assert Subjects.hub_stream(agent_id, correlation_id).path == "3tears.hub.stream.agent-3.corr-9"
 

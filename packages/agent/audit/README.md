@@ -67,6 +67,30 @@ writing its own:
   personal_keys=PERSONAL_DETAIL_KEYS`, and 3tears runs it as
   `tests/enforcement/test_audit_details_keys_are_classified.py`.
 
+## An agent erasing a person: the hub's copy of its audit rows
+
+```python
+from threetears.agent.audit import request_audit_anonymization
+
+result = await request_audit_anonymization(
+    nats_client,
+    identity_token=current_identity_token(),
+    agent_id=my_agent_id,
+    actor_user_ids=[respondent_admission_user_id],
+)
+# result.rows_matched, result.rows_changed
+```
+
+The hub holds the audit rows an agent's events became. This asks it to anonymize the
+ones that agent published about those actors, on `{ns}.hub.audit.anonymize`
+(`Subjects.hub_audit_anonymize()`), with the same rule as above: rows kept, ids kept,
+`details` and `ip_address` anonymized. The hub takes the agent from the verified identity
+token and touches only rows whose agent is the caller. A refusal raises
+`AuditAnonymizeRefusedError` (with the hub's `error_code`); no token, a timeout, or a
+reply that does not decode raises `AuditAnonymizeUnavailableError`, which is safe to
+retry. The contract, including every obligation of the hub's responder, is the
+docstring of `threetears/agent/audit/erasure.py`.
+
 ## Design commitments
 
 - **Fire-and-forget.** Audit publish failures must never break the producing

@@ -88,6 +88,33 @@ should route an audit record's content through it** rather than writing its own.
 
   3tears runs it as `tests/enforcement/test_audit_details_keys_are_classified.py`.
 
+### An agent's erasure reaches the hub's copy of the audit rows it published
+
+The survey engine erases a respondent; the audit rows its agent published about them
+live in the hub's platform audit table, which the survey cannot write. The contract for
+asking the hub lives here, so neither side owns it.
+
+- **New (minor):** `threetears.agent.audit.request_audit_anonymization(nats_client, *,
+  identity_token, agent_id, actor_user_ids, timeout_seconds=30.0) -> AuditAnonymization`,
+  on the new subject `Subjects.hub_audit_anonymize()` (`{ns}.hub.audit.anonymize`, under
+  `hub.` because the durable audit stream captures `{ns}.audit.>`). Duplicates are
+  dropped, a list longer than `MAX_ANONYMIZE_ACTORS` (500) goes in batches with counts
+  summed, and an empty list sends nothing. A refusal raises `AuditAnonymizeRefusedError`
+  (carrying the hub's `error_code`); no token, a timeout, an undecodable reply, a success
+  without counts, or a success naming another agent raises
+  `AuditAnonymizeUnavailableError`, which is safe to retry.
+- **New (minor):** the wire models `AuditAnonymizeRequest` (identity token, correlation
+  id, the caller's own `agent_id` for comparison, 1..500 `actor_user_ids`; extra fields
+  refused) and `AuditAnonymizeReply` (counts or `error_code` / `error_message`), the error
+  vocabulary `AUDIT_ANONYMIZE_ERROR_CODES` (`INVALID_REQUEST`, `IDENTITY_UNVERIFIED`,
+  `AGENT_MISMATCH`, `ANONYMIZE_FAILED`), and `AuditAnonymization`.
+- **Grants:** an agent pod may publish the subject; the hub subscribes. A tool pod may not.
+- **Hub responder obligations** are written in `threetears/agent/audit/erasure.py`: verify
+  the token and derive the agent from it, refuse a body naming another agent, match only
+  rows whose agent is the verified caller and whose `actor_user_id` is listed, apply
+  `anonymize_details` / `anonymize_ip`, change nothing else, evict caches, and reply with
+  the verified agent and the rows matched and changed.
+
 ### Checkpoints are anonymized in place for person erasure
 
 A LangGraph checkpoint names the person who sent each turn: the human message's `name`
