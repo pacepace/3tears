@@ -8,6 +8,8 @@ fires the breaker's success/failure transitions in response to the
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import threading
 import time
 from enum import StrEnum
@@ -413,11 +415,30 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         self._breaker.record_failure()
 
 
-class CircuitBreakerRegistry:
-    """registry of per-provider circuit breakers.
+# how bad each state is, for reporting one state per provider: a provider with
+# any credential's circuit open reports open.
+_STATE_SEVERITY = {CircuitState.CLOSED: 0, CircuitState.HALF_OPEN: 1, CircuitState.OPEN: 2}
 
-    creates circuit breakers on demand for each provider. thread-safe
-    access to shared breaker instances.
+
+class CircuitBreakerRegistry:
+    """registry of circuit breakers, one per provider -- or per provider and credential.
+
+    creates circuit breakers on demand. thread-safe access to shared breaker
+    instances.
+
+    a breaker is keyed by provider, never by model: a provider's failures are
+    shared across its models, and that granularity is deliberate. what a
+    multi-tenant caller also needs is to keep CREDENTIALS apart -- one
+    customer's revoked, rate-limited or out-of-credit key failing repeatedly
+    must not fast-fail every other customer on the same provider. passing
+    ``credential=`` gives each credential its own breaker on that provider.
+
+    the credential is never held. the registry keys it by a short keyed
+    blake2b fingerprint whose key is random per registry, so the fingerprint
+    identifies the credential only inside this registry: it is not a digest
+    anyone could recompute from the key, and it is not stable across
+    processes. it never reaches a log line, an error, or :meth:`status` --
+    each breaker still reports and logs under the provider name alone.
 
     :param failure_threshold: consecutive failures before circuit opens
     :ptype failure_threshold: int
@@ -432,44 +453,87 @@ class CircuitBreakerRegistry:
     ) -> None:
         self._failure_threshold = failure_threshold
         self._recovery_timeout_seconds = recovery_timeout_seconds
-        self._breakers: dict[str, CircuitBreaker] = {}
+        # (provider_name, credential fingerprint or None) -> breaker
+        self._breakers: dict[tuple[str, str | None], CircuitBreaker] = {}
+        self._fingerprint_key = secrets.token_bytes(32)
         self._lock = threading.Lock()
 
-    def get(self, provider_name: str) -> CircuitBreaker:
-        """returns circuit breaker for provider, creating one if needed.
+    def _fingerprint(self, credential: str | None) -> str | None:
+        """return the registry-local fingerprint of ``credential``, or ``None`` for none.
+
+        :param credential: the api key or token, or ``None``
+        :ptype credential: str | None
+        :return: 16 hex characters of a keyed blake2b, or ``None``
+        :rtype: str | None
+        """
+        if credential is None:
+            return None
+        return hashlib.blake2b(credential.encode(), key=self._fingerprint_key, digest_size=8).hexdigest()
+
+    def get(self, provider_name: str, *, credential: str | None = None) -> CircuitBreaker:
+        """returns the circuit breaker for a provider (and credential), creating one if needed.
+
+        without ``credential`` there is one breaker per provider, as there always
+        was. with it, each distinct credential on the provider has its own.
 
         :param provider_name: identifier for provider
         :ptype provider_name: str
-        :return: circuit breaker instance for provider
+        :param credential: the api key or token the calls are made with, when
+            calls on this provider are made with more than one; ``None`` for one
+            breaker per provider
+        :ptype credential: str | None
+        :return: circuit breaker instance for the provider and credential
         :rtype: CircuitBreaker
         """
+        key = (provider_name, self._fingerprint(credential))
         with self._lock:
-            if provider_name not in self._breakers:
-                self._breakers[provider_name] = CircuitBreaker(
+            if key not in self._breakers:
+                self._breakers[key] = CircuitBreaker(
                     provider_name=provider_name,
                     failure_threshold=self._failure_threshold,
                     recovery_timeout_seconds=self._recovery_timeout_seconds,
                 )
-            return self._breakers[provider_name]
+            return self._breakers[key]
 
-    def reset(self, provider_name: str) -> None:
-        """forces circuit breaker for provider back to CLOSED state.
+    def reset(self, provider_name: str, *, credential: str | None = None) -> None:
+        """forces circuit breakers for a provider back to CLOSED state.
 
-        no-op if no breaker exists for provider.
+        without ``credential`` every breaker on the provider is reset, whatever
+        credential it was created for; with it, only that credential's. no-op
+        when no such breaker exists.
 
         :param provider_name: identifier for provider to reset
         :ptype provider_name: str
+        :param credential: the one credential to reset, or ``None`` for all
+        :ptype credential: str | None
         """
+        fingerprint = self._fingerprint(credential)
         with self._lock:
-            breaker = self._breakers.get(provider_name)
-        if breaker is not None:
+            breakers = [
+                breaker
+                for (name, key_fingerprint), breaker in self._breakers.items()
+                if name == provider_name and (credential is None or key_fingerprint == fingerprint)
+            ]
+        for breaker in breakers:
             breaker.reset()
 
     def status(self) -> dict[str, CircuitState]:
-        """returns snapshot of all provider circuit states.
+        """returns snapshot of each provider's circuit state.
+
+        keyed by provider name only, so it stays one entry per provider however
+        many credentials are in use -- safe to export as metric labels. a
+        provider with several credential-scoped breakers reports the worst of
+        them (open, then half-open, then closed): "some caller of this provider
+        is being fast-failed".
 
         :return: mapping of provider name to current circuit state
         :rtype: dict[str, CircuitState]
         """
         with self._lock:
-            return {name: breaker.state for name, breaker in self._breakers.items()}
+            snapshot = [(name, breaker.state) for (name, _fingerprint), breaker in self._breakers.items()]
+        result: dict[str, CircuitState] = {}
+        for name, state in snapshot:
+            current = result.get(name)
+            if current is None or _STATE_SEVERITY[state] > _STATE_SEVERITY[current]:
+                result[name] = state
+        return result

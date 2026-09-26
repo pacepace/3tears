@@ -24,6 +24,8 @@ which registrations are accepted -- read that section before deploying.
 ensures now evict what they write, so a new owner grant is honoured on the next request.
 `threetears.channels` gains `RoomPolicy`, `RoomAccessRequest`, `WebSocketHandler(room_policy=)`,
 `WebSocketHandler.revoke` and `WebSocketHandler.reevaluate_room`; `resume` is now gated.
+`create_chat_model`'s default circuit breaker is scoped per provider and credential
+(`CircuitBreakerRegistry.get(..., credential=)`).
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -407,6 +409,34 @@ lost access after joining kept receiving until they disconnected.
 - Consumers that subclass `WebSocketHandler` to override the private `_handle_join` must replace
   that override with `room_policy=`; `_handle_join` and the other private handlers changed
   signature and the override will no longer be called with the arguments it expects.
+
+### One credential's failures no longer open the circuit for every credential on the provider
+
+`create_chat_model`'s default circuit breaker came from a process-wide registry keyed by provider
+alone. In a multi-tenant process, one customer's revoked, rate-limited or out-of-credit key
+failing five times opened the breaker for every customer on that provider for the recovery
+window.
+
+- **Fixed:** the default breaker is keyed by provider AND `api_key`. A process with one key has
+  one breaker per provider, exactly as before. Breaking stays at provider granularity -- a
+  breaker is never per model, which is a recorded design choice this does not revisit; only
+  credentials are separated.
+- **New:** `CircuitBreakerRegistry.get(provider_name, *, credential=None)` and
+  `reset(provider_name, *, credential=None)`. The registry never holds the credential: it keys
+  it by a 16-hex-character blake2b fingerprint keyed with a random per-registry secret, so the
+  fingerprint is not a digest anyone can recompute from the key and is meaningless outside the
+  registry. Neither the key nor the fingerprint reaches a log line, a `CircuitOpenError`, or
+  `status()`; breakers still log and raise under the provider name. `reset` without a
+  credential resets every breaker on the provider.
+- **Changed:** `CircuitBreakerRegistry.status()` stays keyed by provider name only -- one entry
+  per provider however many credentials are in use, so it is safe to export as metric labels --
+  and reports the worst state among that provider's breakers (open, then half-open, then
+  closed). A registry used without credentials reports exactly what it did.
+- `breaker=` on `create_chat_model` is still the explicit override. `create_embedding_model`
+  attaches no breaker and shares no registry, so it needed no change; no other factory holds a
+  default registry.
+- Consumers that built a per-credential `CircuitBreakerRegistry` (or a breaker per key) and
+  passed it as `breaker=` to keep tenants apart can drop it and rely on the default.
 
 ## v0.54.0 -- 2026-09-26
 
