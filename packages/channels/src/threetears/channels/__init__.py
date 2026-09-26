@@ -33,6 +33,8 @@ from threetears.channels.frames import (
     OpRejected,
     OpResult,
     ReplaySource,
+    RoomAccessRequest,
+    RoomPolicy,
 )
 from threetears.channels.delivery import (
     ChannelDeliveryMessage,
@@ -118,11 +120,13 @@ __all__ = [
     "RecipientFailure",
     "ReplaySource",
     "ResolvedEmailSettings",
+    "RoomAccessRequest",
     "RoomFanout",
     "RoomFrame",
     "RoomIndexCollection",
     "RoomIndexEntity",
     "RoomMember",
+    "RoomPolicy",
     "RoomState",
     "SendPacer",
     "SmtpEmailTransport",
