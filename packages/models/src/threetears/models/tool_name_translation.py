@@ -161,15 +161,23 @@ class NameMangledToolProxy(BaseTool):
     un-translation layer (:func:`reverse_translate_message`) rewrites
     tool-call names back to the dotted form before any consumer code
     sees them.
+
+    Everything that shapes what a call returns is the delegate's too:
+    its ``args_schema`` in either form LangChain takes (a pydantic model
+    or a JSON Schema dict -- every TearsTool wrapped for LangChain
+    carries the dict), its ``response_format`` (a ``(content,
+    artifact)`` tool answered through the proxy as a bare tuple), and
+    its ``handle_tool_error`` / ``handle_validation_error`` (a tool
+    that turns its own ``ToolException`` into an error message raised
+    through the proxy instead).
     """
 
     name: str
     description: str
-    args_schema: type[Any] | None = None
     _delegate: BaseTool = PrivateAttr()
 
     def __init__(self, *, delegate: BaseTool, mangled_name: str) -> None:
-        """proxy initializer that copies description/args from the delegate.
+        """proxy initializer that copies everything but the name from the delegate.
 
         :param delegate: original tool whose execution to forward to
         :ptype delegate: BaseTool
@@ -180,6 +188,9 @@ class NameMangledToolProxy(BaseTool):
             name=mangled_name,
             description=delegate.description,
             args_schema=delegate.args_schema,
+            response_format=delegate.response_format,
+            handle_tool_error=delegate.handle_tool_error,
+            handle_validation_error=delegate.handle_validation_error,
         )
         self._delegate = delegate
 
