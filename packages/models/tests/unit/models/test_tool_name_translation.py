@@ -196,6 +196,36 @@ class TestAProxiedTearsToolKeepsWhatItCarries:
     """the proxy is the tool under another name: its confirmation gate and a failure's artifact
     must come through it as they come from the tool."""
 
+    async def test_a_failure_through_the_proxy_keeps_its_artifact(self) -> None:
+        """the proxy called the tool's ``_arun`` directly, below the point the tool answers a call
+        with its own failed ToolMessage, so the typed failure record was lost on the proxied path.
+
+        :return: none
+        :rtype: None
+        """
+        tool = to_langchain_tool(_Refusing())
+        [wire_tool], _reverse_map = build_name_translation([tool])
+        call = {"type": "tool_call", "id": "c3", "name": "studio_refusing", "args": {}}
+
+        direct = await tool.ainvoke(call)
+        proxied = await wire_tool.ainvoke(call)
+
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.status == direct.status == "error"
+        assert proxied.content == direct.content == "the upstream refused"
+        assert proxied.artifact == direct.artifact == {"failure": "upstream"}
+
+    def test_a_sync_failure_through_the_proxy_keeps_its_artifact(self) -> None:
+        """the same on the sync path.
+
+        :return: none
+        :rtype: None
+        """
+        [wire_tool], _reverse_map = build_name_translation([to_langchain_tool(_Refusing())])
+        proxied = wire_tool.invoke({"type": "tool_call", "id": "c4", "name": "studio_refusing", "args": {}})
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.artifact == {"failure": "upstream"}
+
     def test_the_confirmation_gate_survives_the_proxy(self) -> None:
         """a gate reading the bound tool list sees the flag on the proxy.
 

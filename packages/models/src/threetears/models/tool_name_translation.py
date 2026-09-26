@@ -211,6 +211,41 @@ class NameMangledToolProxy(BaseTool):
         """
         return self._delegate.name
 
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002
+        """invoke the delegate itself, so the answer is exactly the tool's.
+
+        The proxy exists to change the name a provider sees; a call answers as the tool answers
+        it. Invoking the delegate's own ``invoke`` -- not running the proxy's wrapper around the
+        delegate's ``_arun`` -- is what keeps that true for a tool whose answer is decided above
+        ``_arun``: a TearsTool answers a failed call with its own ``ToolMessage``, artifact
+        included, and through ``_arun`` the typed failure record was lost. Only the delegate's
+        callbacks fire, once.
+
+        :param input: a tool call, or the tool's bare arguments
+        :ptype input: Any
+        :param config: the runnable config
+        :ptype config: RunnableConfig | None
+        :param kwargs: forwarded to the delegate's ``invoke``
+        :ptype kwargs: Any
+        :return: what the delegate returns
+        :rtype: Any
+        """
+        return self._delegate.invoke(input, config, **kwargs)
+
+    async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002
+        """invoke the delegate itself asynchronously; see :meth:`invoke`.
+
+        :param input: a tool call, or the tool's bare arguments
+        :ptype input: Any
+        :param config: the runnable config
+        :ptype config: RunnableConfig | None
+        :param kwargs: forwarded to the delegate's ``ainvoke``
+        :ptype kwargs: Any
+        :return: what the delegate returns
+        :rtype: Any
+        """
+        return await self._delegate.ainvoke(input, config, **kwargs)
+
     async def _arun(
         self,
         *args: Any,

@@ -392,7 +392,9 @@ every argument dropped.
   bind instead of advertising an empty one.
 - **Fixed (`3tears-models`):** `NameMangledToolProxy` takes a JSON Schema `args_schema`, and
   carries the delegate's `response_format`, `handle_tool_error` and `handle_validation_error`.
-  A `(content, artifact)` tool answered through the proxy as a bare tuple.
+  A `(content, artifact)` tool answered through the proxy as a bare tuple. Its `invoke` and
+  `ainvoke` now hand the call to the delegate's own, so a proxied call answers exactly as the
+  tool does: through the delegate's `_arun`, a TearsTool's failed call lost its artifact.
 - **Fixed (`3tears-agent-tools`):** `TearsTool.run`'s input coercion reads the type an
   optional field (`anyOf` with `null`), a nullable type list or a nested model (`$ref`)
   declares. It read only a property's own `type`, so exactly those fields were never coerced.
