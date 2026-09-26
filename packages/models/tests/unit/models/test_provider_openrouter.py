@@ -1277,6 +1277,12 @@ class TestAProviderFailureIsNamedAsOne:
     def test_the_whole_call_deadline_is_a_provider_failure(self) -> None:
         assert is_provider_error(ModelCallTimeout("no answer"))
 
+    def test_an_open_circuit_is_a_provider_failure(self) -> None:
+        """The breaker refuses a provider that keeps failing: an outage, raised from threetears' own package."""
+        from threetears.models.circuit_breaker import CircuitOpenError
+
+        assert is_provider_error(CircuitOpenError("openrouter", 30.0))
+
     def test_an_sdk_error_and_the_openrouter_value_error_are(self) -> None:
         class _SdkError(Exception):
             pass

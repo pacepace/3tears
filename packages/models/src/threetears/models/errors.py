@@ -158,17 +158,20 @@ def is_provider_error(exc: BaseException) -> bool:
     """Whether a model call's provider failed, rather than the caller's code.
 
     A provider SDK's or its HTTP client's exception, a :class:`ModelCallTimeout`,
-    or the OpenRouter error the chat model raises as a ``ValueError`` -- the same
-    classes :func:`friendly_api_error` words.
+    the circuit breaker refusing a provider that keeps failing
+    (:class:`~threetears.models.circuit_breaker.CircuitOpenError`), or the
+    OpenRouter error the chat model raises as a ``ValueError``.
 
     :param exc: what the call raised
     :ptype exc: BaseException
     :return: ``True`` for a provider failure
     :rtype: bool
     """
+    from threetears.models.circuit_breaker import CircuitOpenError
+
     package = (type(exc).__module__ or "").split(".", 1)[0]
     return (
         package in _PROVIDER_PACKAGES
-        or isinstance(exc, ModelCallTimeout)
+        or isinstance(exc, (ModelCallTimeout, CircuitOpenError))
         or (isinstance(exc, ValueError) and "OpenRouter API" in str(exc))
     )
