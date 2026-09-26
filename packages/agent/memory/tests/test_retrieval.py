@@ -678,6 +678,47 @@ class TestFormatMemoryContext:
         assert "chunk headline" in result
         assert "chunk_recall(" in result
 
+    def test_without_memories_the_files_and_passages_stay_fenced_and_anchored(self) -> None:
+        """``include_memories=False``: a consumer that renders its own memories still fences
+        what came from documents and other conversations, with the chunk's parent anchor."""
+        parent_id = uuid.uuid7()
+        memories = [
+            {"memory_id": parent_id, "content": "my own note", "summary": "the anchor", "hybrid_score": 0.7},
+        ]
+        media = [
+            {
+                "content_id": uuid.uuid7(),
+                "media_id": uuid.uuid7(),
+                "content": "shared doc text",
+                "summary": "a shared doc",
+                "hybrid_score": 0.6,
+            }
+        ]
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "verbatim",
+                "summary": "chunk headline",
+                "memory_id": parent_id,
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.6,
+            },
+        ]
+        result = _format_memory_context(
+            memories, media_content=media, memory_chunks=chunks, detail_threshold=0.85, include_memories=False
+        )
+        assert "What you remember" not in result and "my own note" not in result
+        assert "Files you have seen" in result and "a shared doc" in result
+        assert "chunk headline" in result and '"the anchor"' in result
+        assert "<untrusted" in result, "the files and passages are fenced"
+
+    def test_without_memories_and_nothing_else_there_is_no_block(self) -> None:
+        memories = [{"memory_id": uuid.uuid7(), "content": "note", "summary": None, "hybrid_score": 0.7}]
+        assert _format_memory_context(memories, detail_threshold=0.85, include_memories=False) == ""
+
     def test_chunk_parent_memory_anchor_falls_back_to_id_only(self) -> None:
         """When a chunk references a parent memory not in the retrieval
         set (or the parent has no summary), the anchor falls back to
@@ -886,6 +927,31 @@ class TestMemoryRetrieverE2E:
         assert result is not None
         assert "User likes Python" in result
         assert "What you remember" in result
+
+    async def test_the_material_block_leaves_the_memories_out(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        pool = _make_mock_pool(
+            memory_rows=[
+                {
+                    "memory_id": uuid.uuid7(),
+                    "content": "User likes Python",
+                    "summary": None,
+                    "type_memory": "preference",
+                    "date_created": datetime.now(timezone.utc),
+                    "embedding": [1.0, 0.0, 0.0],
+                    "similarity": 0.9,
+                }
+            ],
+        )
+        retriever = _make_retriever(pool, permissive_memory_authorizer)
+
+        result = await retriever.retrieve_with_candidates(
+            uuid.uuid7(), "Tell me about Python", agent_id=uuid.uuid7(), customer_id=uuid.uuid7()
+        )
+        assert result.context and "User likes Python" in result.context
+        assert result.material_context is None, "a memory alone leaves no files or passages to fence"
 
     async def test_empty_text_returns_none(
         self,

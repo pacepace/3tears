@@ -141,6 +141,18 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
 
         _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
 
+        def call_deadline_s(self) -> float | None:
+            """The configured timeout, as the whole call's deadline.
+
+            The OpenRouter SDK hands the timeout to httpx, which applies it to
+            each read, and OpenRouter answers 200 at once and keeps the call
+            open with keep-alive comments while the upstream works. So no read
+            ever waited 120 s and the call ran as long as the upstream did: one
+            summary call held a turn for 218 s. The mixin holds each call to this.
+            """
+            timeout_ms = getattr(self, "request_timeout", None)
+            return timeout_ms / 1000 if timeout_ms else None
+
     return _NameTranslatingChatOpenRouter
 
 

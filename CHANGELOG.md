@@ -6,6 +6,52 @@ packages (bumped in lock-step).
 
 ## v0.54.0 -- 2026-09-26
 
+Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,
+`RetrievalResult` gains `material_context`, `ReplayGuard` gains `bind()`, and
+`threetears.core.utils` gains `YugabytePoolRecycler` and its trigger set. BREAKING:
+`YugabyteRpcTimeoutRecycler` is removed (module `yugabyte_rpc_timeout` renamed
+`yugabyte_pool_recycler`, no alias).
+
+### A provider failure is named as one
+
+- **New (minor):** `threetears.models.ModelCallTimeout(TimeoutError)`, raised when a
+  model call runs past its whole-call deadline (below), so a caller can tell the
+  provider running long from any other `TimeoutError`, its own deadlines included.
+- **New (minor):** `threetears.models.is_provider_error(exc)`: a provider SDK's or its
+  HTTP client's exception, a `ModelCallTimeout`, or the OpenRouter error the chat model
+  raises as a `ValueError` -- the same classes `friendly_api_error` words. metallm had
+  copied this test into its own code.
+
+### The document analyzer mints its fence nonce
+
+`analyze_media` read a document's text in one call fenced with a nonce derived from
+the text. Nothing about a single call is cached, so it now mints one
+(`explained_fence(text, nonce=mint_nonce())`), as the rule for fences asks. The
+memory block, the ledger and the tool-result previews keep a derived nonce so they
+stay in the prompt cache.
+
+### OpenRouter: the configured timeout holds for the whole call
+
+The OpenRouter SDK hands the timeout to httpx, which applies it to each read, and
+OpenRouter answers 200 at once and holds the call open with keep-alive comments while
+the upstream works: one call ran 218 s against a 120 s timeout. `NameTranslatingChatMixin`
+holds `_agenerate` to `call_deadline_s()` whole and ends `_astream` when no chunk arrives
+within it, so a long reply still streams; both raise `ModelCallTimeout`. OpenRouter sets
+the deadline from its timeout; the OpenAI and Anthropic wrappers keep `None`.
+
+### Retrieval: the files and passages alone, fenced
+
+- **New:** `RetrievalResult.material_context` -- the "Files you have seen" and "Passages"
+  sections alone, fenced, with each chunk's parent-memory anchor, for a consumer that
+  renders the agent's own memories itself. `context` is unchanged.
+
+### Flush: an FK deferral warns once
+
+A row whose parent was deleted re-deferred once per drain at WARNING, up to
+`_FK_RETRY_LIMIT` lines for one row. The first deferral warns; its repeats are DEBUG; the
+drop stays an ERROR. The retry budget is unchanged: a parent written by another worker can
+land after its child.
+
 ### A replay guard is bound when its service starts, not at first use
 
 `ReplayGuard`'s bucket is memory-backed, so a NATS restart wipes it. The anchor then correctly

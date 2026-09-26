@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from enum import StrEnum
 from typing import Any, NamedTuple, TYPE_CHECKING
 
@@ -589,7 +590,14 @@ async def _flush_per_entity(
                 # durable row (version-guarded — a newer coalesced write is kept).
                 await write_buffer.ack(pw.table_name, pw.entity_id)
             else:
-                log.warning(
+                # An FK deferral repeats once per drain until the parent lands or
+                # the budget runs out, and a parent that was deleted never lands:
+                # one row wrote this line up to _FK_RETRY_LIMIT times. The first
+                # deferral is the event; the repeats are DEBUG, and the drop above
+                # is the ERROR that says it never landed.
+                level = logging.WARNING if (not fk_violation or next_retry == 1) else logging.DEBUG
+                log.log(
+                    level,
                     "Flush write deferred (FK parent pending), re-adding to buffer"
                     if fk_violation
                     else "Flush write failed, re-adding to buffer for retry",

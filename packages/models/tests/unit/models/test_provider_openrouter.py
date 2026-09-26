@@ -1180,3 +1180,117 @@ class TestOpenRouterForwardTranslation:
         sent = captured["messages"]
         assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
         assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+
+
+from threetears.models.errors import ModelCallTimeout, is_provider_error  # noqa: E402
+
+
+class TestTheTimeoutIsTheWholeCall:
+    """The deadline lives on the shared mixin; OpenRouter sets it from its timeout.
+
+    The SDK applies the timeout to each read, and OpenRouter keeps a call open with
+    keep-alives, so a stalled upstream ran as long as it liked: one call took 218 s
+    against a 120 s timeout (metallm, 2026-09-26). Here the timeout holds."""
+
+    @staticmethod
+    def _model(timeout_ms: int | None) -> Any:
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        model.request_timeout = timeout_ms
+        return model
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_never_answers_ends_at_the_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _stalls(self: Any, *args: Any, **kwargs: Any) -> Any:
+            await asyncio.sleep(5)
+
+        monkeypatch.setattr(ChatOpenRouter, "_agenerate", _stalls)
+        with pytest.raises(ModelCallTimeout):
+            await self._model(50).ainvoke([HumanMessage(content="hi")])
+
+    @pytest.mark.asyncio
+    async def test_a_stream_that_goes_quiet_ends_at_the_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _one_then_nothing(self: Any, *args: Any, **kwargs: Any):
+            yield ChatGenerationChunk(message=AIMessageChunk(content="Hel"))
+            await asyncio.sleep(5)
+            yield ChatGenerationChunk(message=AIMessageChunk(content="lo"))
+
+        monkeypatch.setattr(ChatOpenRouter, "_astream", _one_then_nothing)
+        seen: list[str] = []
+        with pytest.raises(ModelCallTimeout):
+            async for chunk in self._model(50).astream([HumanMessage(content="hi")]):
+                seen.append(str(chunk.content))
+        assert seen == ["Hel"]
+
+    @pytest.mark.asyncio
+    async def test_a_long_stream_that_keeps_arriving_finishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The limit is on silence, not length: six chunks 30 ms apart outlast a 50 ms timeout."""
+        import asyncio
+
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _steady(self: Any, *args: Any, **kwargs: Any):
+            for i in range(6):
+                await asyncio.sleep(0.03)
+                yield ChatGenerationChunk(message=AIMessageChunk(content=str(i)))
+
+        monkeypatch.setattr(ChatOpenRouter, "_astream", _steady)
+        seen = [str(c.content) async for c in self._model(50).astream([HumanMessage(content="hi")])]
+        assert "".join(seen) == "012345"
+
+    @pytest.mark.asyncio
+    async def test_no_timeout_set_means_no_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _slowish(self: Any, *args: Any, **kwargs: Any) -> ChatResult:
+            await asyncio.sleep(0.1)
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+        monkeypatch.setattr(ChatOpenRouter, "_agenerate", _slowish)
+        result = await self._model(None).ainvoke([HumanMessage(content="hi")])
+        assert result.content == "ok"
+
+
+def test_the_other_wrappers_keep_no_extra_deadline() -> None:
+    """OpenAI's and Anthropic's SDKs were not reported to stall; only OpenRouter sets one."""
+    from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
+
+    assert NameTranslatingChatMixin.call_deadline_s(object()) is None  # type: ignore[arg-type]
+
+
+class TestAProviderFailureIsNamedAsOne:
+    """A caller that catches everything a model call raised can tell the provider's failure
+    from its own bug, and the deadline above from any other timeout."""
+
+    def test_the_whole_call_deadline_is_a_provider_failure(self) -> None:
+        assert is_provider_error(ModelCallTimeout("no answer"))
+
+    def test_an_open_circuit_is_a_provider_failure(self) -> None:
+        """The breaker refuses a provider that keeps failing: an outage, raised from threetears' own package."""
+        from threetears.models.circuit_breaker import CircuitOpenError
+
+        assert is_provider_error(CircuitOpenError("openrouter", 30.0))
+
+    def test_an_sdk_error_and_the_openrouter_value_error_are(self) -> None:
+        class _SdkError(Exception):
+            pass
+
+        _SdkError.__module__ = "openai._exceptions"
+        assert is_provider_error(_SdkError("429"))
+        assert is_provider_error(ValueError("OpenRouter API error: rate limited"))
+
+    @pytest.mark.parametrize("exc", [KeyError("reply"), ValueError("bad field"), TimeoutError()])
+    def test_a_bug_or_the_callers_own_timeout_is_not(self, exc: Exception) -> None:
+        assert not is_provider_error(exc)
