@@ -22,6 +22,21 @@ packages (bumped in lock-step).
 - `CachedHubJwksProvider` runs on it as well. A refresh pass that raises now retries after
   the short initial interval rather than waiting a full steady interval.
 
+### A held lease that says when it is lost
+
+- **New (minor):** `KVLease.hold(key, *, ttl, renew_every, max_wait_seconds=0)` returns a
+  `HeldLease` (exported from `threetears.core.coordination` and `threetears.core`) renewed on a
+  background task. The renewal is the compare-and-swap `LeaseHandle.refresh`, so a takeover
+  surfaces as loss instead of being overwritten.
+- Loss is reported, not raised, through `held.lost` / `await held.until_lost()`:
+  - `LeaseLost` marks it lost at once;
+  - a transport failure is retried until the entry could have expired.
+- `release()` is idempotent, never raises, and is fenced on the holder. `async with held:`
+  releases on exit.
+- Timing that cannot hold is refused: a fractional or sub-second TTL, or a renewal not
+  shorter than the TTL.
+- Scrape's `claim_session` now runs on it, with its public names unchanged.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

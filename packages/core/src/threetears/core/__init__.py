@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from threetears.core.collections.base import BaseCollection
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import CoreConfig, DefaultCoreConfig
-    from threetears.core.coordination import KVLease, LeaseHandle, LeaseLost, LeaseTimeout, LeaseUnavailable
+    from threetears.core.coordination import HeldLease, KVLease, LeaseHandle, LeaseLost, LeaseTimeout, LeaseUnavailable
     from threetears.core.data.collection_factory import create_dynamic_collection
     from threetears.core.data.migrations import MigrationRunner
     from threetears.core.data.schema import ColumnDef, ForeignKeyDef, IndexDef, TableDef
@@ -83,6 +83,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ForeignKeyDef": ("threetears.core.data.schema", "ForeignKeyDef"),
     "FormatHandler": ("threetears.core.serialization", "FormatHandler"),
     "IndexDef": ("threetears.core.data.schema", "IndexDef"),
+    "HeldLease": ("threetears.core.coordination", "HeldLease"),
     "KVLease": ("threetears.core.coordination", "KVLease"),
     "KeyedTaskRegistry": ("threetears.core.task_registry", "KeyedTaskRegistry"),
     "Keyset": ("threetears.core.pagination", "Keyset"),
@@ -147,6 +148,7 @@ __all__ = [
     "ForeignKeyDef",
     "FormatHandler",
     "IndexDef",
+    "HeldLease",
     "KVLease",
     "KeyedTaskRegistry",
     "Keyset",

@@ -19,7 +19,7 @@ key, the first pod's next heartbeat overwrites the winner's entry and neither on
 Two holders, no error, and for a display that is exactly the divergence being prevented.
 :meth:`LeaseHandle.refresh` is a compare-and-swap against the recorded holder and raises
 :class:`LeaseLost` instead, which is the property this module is built on. What KVLease does not
-carry is the renewal loop, and that loop is short precisely because its entire job is to react
+carried was the renewal loop; it now does, as :meth:`KVLease.hold`, whose entire job is to react
 to the exception the lock cannot raise.
 
 **A claim can be lost without anything failing.** Losing it is not an error condition to
@@ -37,7 +37,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from threetears.core.coordination import KVLease, LeaseHandle, LeaseLost
+from threetears.core.coordination import KVLease
 from threetears.observe import get_logger
 
 __all__ = [
@@ -121,51 +121,6 @@ class SessionClaim:
         await self.lost.wait()
 
 
-async def _renew(handle: LeaseHandle, claim: SessionClaim, *, refresh: float, ttl: float) -> None:
-    """Renew *claim* until it is lost or this task is cancelled.
-
-    Two ways to stop being the owner, and they are told apart deliberately.
-
-    :class:`LeaseLost` is authoritative: somebody else's holder id is on the entry, so this pod
-    is demonstrably not the owner and says so immediately.
-
-    Anything else -- an unreachable bucket, a transport fault -- is not evidence of anything,
-    and treating one failed renewal as lost would end an operator's session over a blip. But it
-    cannot be ignored either, because a claim that has gone un-renewed for longer than its TTL
-    has expired whether or not this pod noticed, and another pod may already have taken it. So
-    the deadline is what decides: keep trying while the claim could still be alive, and give it
-    up once it could not.
-    """
-    loop = asyncio.get_running_loop()
-    expires_at = loop.time() + ttl
-    while True:
-        await asyncio.sleep(refresh)
-        try:
-            await handle.refresh()
-        except LeaseLost:
-            log.warning(
-                "operator: another pod now owns this session's display",
-                extra={"extra_data": {"session_id": claim.session_id}},
-            )
-            claim.lost.set()
-            return
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a renewal can fail for any transport reason; the claim's own deadline decides whether that has cost us ownership, and swallowing it silently is what the deadline below prevents
-            if loop.time() >= expires_at:
-                log.warning(
-                    "operator: this session's claim went un-renewed past its TTL and is assumed lost",
-                    exc_info=True,
-                    extra={"extra_data": {"session_id": claim.session_id, "ttl_seconds": ttl}},
-                )
-                claim.lost.set()
-                return
-            log.info(
-                "operator: could not renew this session's claim, still inside its TTL",
-                extra={"extra_data": {"session_id": claim.session_id, "error_type": type(exc).__name__}},
-            )
-        else:
-            expires_at = loop.time() + ttl
-
-
 @asynccontextmanager
 async def claim_session(
     lease: KVLease | None,
@@ -221,40 +176,17 @@ async def claim_session(
         yield claim
         return
 
-    handle = await lease.acquire(
-        session_claim_key(session_id),
-        ttl_seconds=int(ttl_seconds),
-        # Fail fast. `acquire` reads 0 as "do not block", and every other value would hold this
-        # caller open while a human works.
-        max_wait_seconds=0,
-    )
-    renewal = asyncio.create_task(
-        _renew(handle, claim, refresh=refresh.total_seconds(), ttl=ttl_seconds),
-        name=f"operator-session-claim:{session_id}",
-    )
+    # KVLease.hold renews the claim by compare-and-swap in the background and reports loss on its
+    # own event, which this claim shares -- the loop that used to live here moved into core so
+    # every consumer holding a lease across real work gets the same one. Fail fast: every other
+    # wait would hold this caller open while a human works.
+    held = await lease.hold(session_claim_key(session_id), ttl=ttl, renew_every=refresh, max_wait_seconds=0)
+    claim.lost = held.lost
     try:
         yield claim
     finally:
-        renewal.cancel()
-        # Awaited rather than left to be collected: an un-awaited cancellation can still be
-        # mid-refresh, and a refresh landing after the release below would put the entry back
-        # for a session that has ended.
-        await asyncio.gather(renewal, return_exceptions=True)
-        # Released even when the claim was lost. `release` verifies the holder before deleting,
-        # so releasing a claim somebody else now owns is a no-op rather than a theft.
-        #
-        # Best-effort, and that is the point rather than a shrug. The single most likely reason
-        # a release fails is that the coordination layer is unreachable -- which is the same
-        # reason the claim was given up moments earlier, so it is the EXPECTED path out of a
-        # lost claim, not an exotic one. Raising here would replace whatever ended the session
-        # with a cleanup error, and it would do it most often when the session ended badly and
-        # the original exception was the informative one. The TTL is the backstop: an entry
-        # nobody deleted expires on its own, which is what it is for.
-        try:
-            await handle.release()
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see above; the TTL frees the entry regardless and a cleanup failure must not replace the body's own outcome. Logged with its traceback
-            log.warning(
-                "operator: could not release this session's claim; it will expire with its TTL",
-                exc_info=True,
-                extra={"extra_data": {"session_id": session_id, "ttl_seconds": ttl_seconds}},
-            )
+        # Released even when the claim was lost -- the delete is fenced on the holder, so releasing
+        # a claim somebody else now owns is a no-op rather than a theft -- and best-effort: the
+        # likeliest reason a release fails is the unreachable coordination layer that ended the
+        # claim, and a cleanup error must not replace the body's own outcome. The TTL is the backstop.
+        await held.release()

@@ -12,6 +12,7 @@ Two backings, chosen by what a broker restart must cost:
 public surface:
 
 - :class:`KVLease` — distributed mutex factory with TTL and ownership tokens
+- :class:`HeldLease` — a lease renewed in the background that reports when it is lost
 - :class:`LeaseHandle` — per-acquire handle with refresh/release/async-with
 - :class:`LeaseUnavailable` — raised by fail-fast acquire when key is held
 - :class:`LeaseTimeout` — raised when acquire deadline elapses
@@ -54,6 +55,7 @@ from threetears.core.coordination.idempotency import (
     IdempotencyRecord,
 )
 from threetears.core.coordination.lease import (
+    HeldLease,
     KVLease,
     LeaseHandle,
     LeaseLost,
@@ -78,6 +80,7 @@ __all__ = [
     "IdempotencyKeyNotFound",
     "IdempotencyKeyStore",
     "IdempotencyRecord",
+    "HeldLease",
     "KVLease",
     "LeaseHandle",
     "LeaseLost",
