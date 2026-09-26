@@ -72,6 +72,12 @@ public surface — persistence:
   :class:`AssignmentInvalidatePayload`,
   :class:`RoleInvalidatePayload` — typed NATS payloads for
   cross-process cache invalidation.
+- :func:`evict_after_rbac_write` -- the rule every helper that WRITES
+  a ``group_members`` / ``role_assignments`` / ``groups`` row while
+  holding an :class:`AclCache` follows: evict what it wrote locally,
+  then broadcast on the invalidation bus when it has a publisher.
+  without it the writer's own cache answers the next question from
+  the entry the write just made wrong, for up to the ttl.
 - :func:`register_rbac_l1_tables` -- the L1 SQLite mirror of the five
   rbac tables, GENERATED from the Collection schemas above. every
   process that evaluates locally needs it, and the hand-written
@@ -255,6 +261,7 @@ from threetears.agent.acl.types import (
     Trail,
     WILDCARD_RESOURCE_TYPE,
 )
+from threetears.agent.acl.write_eviction import evict_after_rbac_write
 
 __all__ = [
     "INTERNAL_AUDIENCE",
@@ -350,6 +357,7 @@ __all__ = [
     "evaluate_decision",
     "evaluate_file_access",
     "evaluate_with_trail",
+    "evict_after_rbac_write",
     "held_actions_on",
     "register_rbac_l1_tables",
     "resolve_held_permissions",

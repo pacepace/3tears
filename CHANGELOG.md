@@ -20,6 +20,8 @@ definition and admits a copy only from a verified publisher (`ToolDefinition`,
 `CopySelection`, `CopyStatus`, `RefusalCode`, `admit_copy`, `ToolPodAuth.platform_shared`,
 `ToolPodAuthenticator.verify_agent`, `RefusedTool`, `ToolRegistrationRefused`); this changes
 which registrations are accepted -- read that section before deploying.
+`threetears.agent.acl` gains `evict_after_rbac_write`, and the memory and conversation owner
+ensures now evict what they write, so a new owner grant is honoured on the next request.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -337,6 +339,38 @@ the broker for the same reason.
   `DataLayerUnavailableError`, including a violation code without a class-23 SQLSTATE.
 - **Requires the hub** to send the code and fields. Until it does, replies are unchanged
   and so is the behaviour.
+
+### An owner grant is honoured on the next request, not a cache ttl later
+
+`ensure_memory_owner_assignment` and `ensure_conversation_owner_assignment` wrote the per-user
+owner group, its membership and the owner assignment, and never told the `AclCache` they were
+handed. The authorization that preceded every ensure had already cached the user's memberships
+and the owner group's contribution on the namespace, both saying "no grant", so the user's next
+request on the same pod was denied from cache for up to the ttl (60 s by default) -- a
+`MemoryAccessDenied` straight after a user's first chat turn. A cache ttl of zero in the tests
+hid it.
+
+- **New (minor):** `threetears.agent.acl.evict_after_rbac_write(cache, publisher=None, *,
+  member_actors=(), group_ids=())`, the rule for any helper that writes a `group_members`,
+  `role_assignments` or `groups` row while holding an `AclCache`: evict the entries the write
+  made stale locally (the same `invalidate_membership_for_actor` / `invalidate_group` calls the
+  bus subscriber makes), then broadcast them on the invalidation bus when a publisher is given.
+  A broadcast failure is logged, not raised: the write has committed and the local cache is
+  already right. It imports the bus only when a publisher is passed, so a consumer without the
+  `[bus]` extra can still evict locally.
+- **Fixed:** both ensures evict what they actually wrote -- a new membership evicts the user's
+  membership entry, a new assignment or group evicts the group's assignment entries -- and an
+  ensure that found every row present evicts and publishes nothing, so running it on every
+  user write stays free.
+- **New:** `MemoryAuthorizerDependencies` and `ConversationAuthorizerDependencies` take an
+  optional `invalidation_publisher` (an `AclInvalidationPublisher`, e.g. the `NatsClient`).
+  With it, other pods evict too; without it they fall back to ttl expiry.
+- **Swept:** no other helper in `agent/acl`, `agent/memory`, `conversations`, `iam` or elsewhere
+  in 3tears writes those tables while holding an `AclCache`. `ensure_platform_builtin_tool_user_role`
+  inserts a `roles` row with no assignments, which no cached entry can reference.
+- Consumers that call `acl_cache.invalidate_membership_for_actor(...)` (or `invalidate_all()`)
+  after `ensure_memory_owner_assignment` can drop that call, and should pass their NATS client
+  as `invalidation_publisher` instead of broadcasting by hand.
 
 ## v0.54.0 -- 2026-09-26
 
