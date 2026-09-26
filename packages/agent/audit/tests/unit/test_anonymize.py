@@ -16,7 +16,7 @@ fresh uuid, so no declaration can reach another test's event types.
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, get_type_hints
 from uuid import uuid4, uuid7
 
 import pytest
@@ -416,6 +416,14 @@ class TestAnonymizeIp:
     def test_an_address_becomes_none(self, address: str | None) -> None:
         """every address, and the absence of one, anonymizes to None."""
         assert anonymize_ip(address) is None
+
+    def test_the_result_is_typed_as_the_column_so_a_caller_can_bind_it(self) -> None:
+        """``row.ip_address = anonymize_ip(row.ip_address)`` must type-check without an ignore.
+
+        a function annotated ``-> None`` makes binding its result a mypy
+        ``func-returns-value`` error; the rule's result is a column value, so it is typed as one.
+        """
+        assert get_type_hints(anonymize_ip)["return"] == str | None
 
 
 #: keys the property test draws from: the platform's own safe and personal

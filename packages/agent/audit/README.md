@@ -50,7 +50,8 @@ writing its own:
   and replaces the WHOLE value under any other key with `ANONYMIZED_MARKER`
   (`"[anonymized]"`) -- a subtree and the keys a user chose inside it alike.
   `None` stays `None`. Pure and idempotent.
-- `anonymize_ip(value)` returns `None`: an address is removed, not truncated.
+- `anonymize_ip(value) -> str | None` returns `None`: an address is removed, not
+  truncated. It is typed as the column, so its result assigns back without an ignore.
 - `SAFE_DETAIL_KEYS` is the explicit safe list. A key not on it is masked, so
   a field nobody classified fails safe. `PERSONAL_DETAIL_KEYS` records the keys
   classified as able to carry personal data.

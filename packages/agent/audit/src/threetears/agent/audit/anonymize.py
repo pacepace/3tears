@@ -557,21 +557,26 @@ def _mask(value: Any) -> str | None:
     return None if value is None else ANONYMIZED_MARKER
 
 
-def anonymize_ip(value: str | None) -> None:
+def anonymize_ip(value: str | None) -> str | None:
     """
-    the rule for an audit record's ``ip_address`` column: it becomes ``None``.
+    the rule for an audit record's ``ip_address`` column: the value it holds once erased.
 
-    an address is removed rather than masked or truncated. the marker cannot be
-    stored in an address-typed column, and a truncated address (the hub already
-    stores a /24 or /48 prefix at write time) is still personal data: with a
-    timestamp it narrows to a household or an office. ``None`` is what the column
-    holds for every event that never had an address, so an erased row reads as
-    one with no address rather than as a special case. only the column's value
-    changes; the row and its other columns stay.
+    an address is removed rather than masked or truncated, so the result is always
+    ``None``. the marker cannot be stored in an address-typed column, and a truncated
+    address (the hub already stores a /24 or /48 prefix at write time) is still personal
+    data: with a timestamp it narrows to a household or an office. ``None`` is what the
+    column holds for every event that never had an address, so an erased row reads as one
+    with no address rather than as a special case. only the column's value changes; the
+    row and its other columns stay.
+
+    typed as the column (``str | None``), not as ``None``: the result is a value a caller
+    assigns back to the column (``row.ip_address = anonymize_ip(row.ip_address)``), and
+    binding the result of a function annotated ``-> None`` is a type error.
 
     :param value: the stored address, or ``None``
     :ptype value: str | None
-    :return: ``None``, whatever the input
-    :rtype: None
+    :return: the column's erased value, which is ``None`` for every input
+    :rtype: str | None
     """
     del value
+    return None

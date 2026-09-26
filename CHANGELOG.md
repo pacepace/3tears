@@ -28,9 +28,11 @@ should route an audit record's content through it** rather than writing its own.
   inside a structural map later is masked until someone classifies it; lists and
   tuples beneath a safe key keep their elements and their type. `None` stays
   `None`. Pure (no I/O, input untouched) and idempotent.
-- **New (minor):** `anonymize_ip(value) -> None`. An `ip_address` column becomes
-  `NULL`: the marker cannot be stored in an address-typed column, and a truncated
-  address is still personal data. The row and its other columns stay.
+- **New (minor):** `anonymize_ip(value) -> str | None`, typed as the column it is assigned
+  back to (it always returns `None`, so the result binds without a type error). An
+  `ip_address` column becomes `NULL`: the marker cannot be stored in an address-typed
+  column, and a truncated address is still personal data. The row and its other
+  columns stay.
 - **New (minor):** `SAFE_DETAIL_KEYS`, the explicit safe list. A key not on it is
   masked, so a field nobody classified fails safe instead of leaking. Derived from
   the `details` keys the platform actually publishes -- 3tears (`tool.call`,
