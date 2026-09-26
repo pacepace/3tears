@@ -340,6 +340,33 @@ the broker for the same reason.
 - **Requires the hub** to send the code and fields. Until it does, replies are unchanged
   and so is the behaviour.
 
+### A temporary registration refusal is waited out, not fatal
+
+`ToolServer.wait_until_ready`, `ToolServer.register_tool` and `DynamicToolPod.register_spec` raised
+`ToolRegistrationRefused` on every refusal. Two are not verdicts: `OWNERSHIP_GRAPH_UNAVAILABLE`
+(the registry could not read its graph and retries on the next heartbeat), and a failed reply
+with no code -- what a registry older than the pod sends mid-roll ("invalid bootstrap token").
+A pod raised on them and was failed by a registry about to admit it.
+
+- **New (minor):** `threetears.agent.tools.server.FINAL_REFUSAL_CODES` -- `OWNED_ELSEWHERE`,
+  `NOT_PLATFORM_SHARED`, `POD_ID_MISMATCH`, `INVALID_TOOL_NAME`, `INVALID_MANIFEST`,
+  `NO_TOOLS_ADMITTED` -- `refusal_is_final(code)`, and `refusals_in_reply(reply, offered)`, the one
+  classification every pod-side reader uses. Everything else is temporary, including an absent or
+  unknown code. `UNVERIFIED_PUBLISHER` is temporary: the registry's authenticator answers every
+  verification failure with it, including a signing key rotated before the registry's key cache
+  refreshed, and the pod mints a fresh token for every manifest.
+- **Fixed:** the three raise only on a final code. A temporary refusal is logged at WARNING once
+  per cause, the heartbeat re-publishes the manifest and now re-reads the verdict while any
+  refusal stands (it re-asked only while the pod's identity was unknown, so a refusal on a reply
+  that admitted other tools was never re-read), and the pod is ready once admitted -- no restart.
+  A reply refusing the whole manifest with a code and no tool named (`INVALID_MANIFEST`) refuses
+  every tool offered under that code.
+- **Fixed:** a registry older than the pod reports no `requester_copy_status` on discovery, and
+  readiness never came true; the SDK's boot wait then failed the agent. Readiness now reads
+  `status` for such a result -- that registry's own rule -- and logs once that it is doing so.
+  `wait_until_ready` still answers `False` at its timeout; no 3tears source calls it, and every
+  aibots SDK caller treats `False` as not-ready-yet except the agent boot wait, which fails boot.
+
 ### A tool's nested models reach the model, and a TearsTool in a graph behaves as it does over NATS
 
 A tool whose argument model nests another (`shots: list[Shot]`, a sub-object) was shown to a

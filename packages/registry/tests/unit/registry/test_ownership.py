@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from threetears.agent.tools.server import FINAL_REFUSAL_CODES
 from threetears.registry.ownership import (
     CopyAudience,
     PublisherStanding,
@@ -394,3 +395,27 @@ class TestAudienceOf:
     def test_a_tool_pod_serves_everyone(self) -> None:
         """a single-token id is a Tool Pod's."""
         assert audience_of("builtin-tool-server") is CopyAudience.EVERYONE
+
+
+class TestThePodsFinalRefusalsAreRegistryCodes:
+    """the pod decides which refusals end readiness from ``FINAL_REFUSAL_CODES``; each must be a
+    code this registry actually sends, and the transient one must not be among them."""
+
+    def test_every_final_code_is_a_refusal_code(self) -> None:
+        """a misspelled final code would never match, and its refusal would be waited out forever.
+
+        :return: none
+        :rtype: None
+        """
+        codes = {code.value for code in RefusalCode}
+        assert FINAL_REFUSAL_CODES
+        assert codes
+        assert FINAL_REFUSAL_CODES <= codes
+
+    def test_the_graph_being_unreadable_is_not_final(self) -> None:
+        """the registry's own reason says the next heartbeat retries.
+
+        :return: none
+        :rtype: None
+        """
+        assert RefusalCode.OWNERSHIP_GRAPH_UNAVAILABLE.value not in FINAL_REFUSAL_CODES

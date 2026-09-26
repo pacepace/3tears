@@ -8,13 +8,19 @@ refused came up "ready", serving nothing, and nobody reading its log could tell.
   the server logs each at ERROR and keeps them on :attr:`ToolServer.refused_tools`;
 * :meth:`ToolServer.wait_until_ready` names this pod in its discovery poll and waits for THIS pod's
   copy of every tool (``requester_copy_status == "available"``), and raises
-  :class:`ToolRegistrationRefused` the moment a refusal is known rather than timing out;
+  :class:`ToolRegistrationRefused` the moment a FINAL refusal is known rather than timing out;
 * :meth:`ToolServer.register_tool` on a serving pod awaits the reply and raises for the tool it
-  just added when that tool is refused.
+  just added when that tool is refused finally.
+
+A temporary refusal -- the registry could not read its ownership graph, or an older registry's
+failed reply carrying no code -- is waited out while the heartbeat re-offers the manifest
+(:data:`FINAL_REFUSAL_CODES` is the one classification).
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import Any
 from unittest.mock import AsyncMock
@@ -24,6 +30,7 @@ import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import (
+    FINAL_REFUSAL_CODES,
     DiscoveryProbeRequest,
     DiscoveryProbeResponse,
     DiscoveryProbeResultEntry,
@@ -32,6 +39,7 @@ from threetears.agent.tools.server import (
     RegistrationResponse,
     ToolRegistrationRefused,
     ToolServer,
+    refusal_is_final,
 )
 
 _POD = "01947100-0000-7000-8000-00000000ab02"
@@ -311,3 +319,342 @@ class TestTheProbeRequestNeverSendsANullPodId:
         :rtype: None
         """
         assert "pod_id" not in DiscoveryProbeRequest(agent_id="a", tool_manifest=[]).model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# a temporary refusal is waited out; only a final one ends readiness
+# ---------------------------------------------------------------------------
+#
+# every refusal used to be fatal to readiness. two are not verdicts at all:
+# OWNERSHIP_GRAPH_UNAVAILABLE (the registry could not read its graph and says
+# the next heartbeat retries), and a failed reply carrying no code -- what an
+# OLDER registry sends, e.g. "invalid bootstrap token", while a deploy is
+# mid-roll. raising on those failed a pod the next heartbeat would have admitted.
+
+_REGISTRY_FINAL = {
+    "OWNED_ELSEWHERE",
+    "NOT_PLATFORM_SHARED",
+    "POD_ID_MISMATCH",
+    "INVALID_TOOL_NAME",
+    "INVALID_MANIFEST",
+    "NO_TOOLS_ADMITTED",
+}
+
+
+class _ScriptedRegistry:
+    """a registry double: answers manifests from a script, and discovery from what it last admitted.
+
+    a manifest counts as registered whether it was requested or plainly published, as on the real
+    registry. discovery reports this pod's copy available only once a manifest was admitted.
+    """
+
+    def __init__(self, *replies: RegistrationResponse, copy_status_field: bool = True) -> None:
+        """script the registration replies; the last one repeats.
+
+        :param replies: the registration replies, in order
+        :ptype replies: RegistrationResponse
+        :param copy_status_field: whether discovery reports ``requester_copy_status`` -- an older
+            registry does not
+        :ptype copy_status_field: bool
+        :return: nothing
+        :rtype: None
+        """
+        self._replies = list(replies)
+        self._copy_status_field = copy_status_field
+        self.admitted = False
+        self.manifests: list[RegistrationManifest] = []
+        self.awaited: list[bool] = []
+        self.nc = AsyncMock()
+        self.nc.is_closed = False
+        self.nc.is_healthy = True
+        self.nc.request = AsyncMock(side_effect=self._request)
+        self.nc.publish = AsyncMock(side_effect=self._publish)
+
+    def _register(self, manifest: RegistrationManifest, *, awaited: bool) -> RegistrationResponse:
+        """register one manifest and return the scripted verdict.
+
+        :param manifest: the manifest
+        :ptype manifest: RegistrationManifest
+        :param awaited: whether the pod asked for the reply
+        :ptype awaited: bool
+        :return: the verdict
+        :rtype: RegistrationResponse
+        """
+        self.manifests.append(manifest)
+        self.awaited.append(awaited)
+        reply = self._replies.pop(0) if len(self._replies) > 1 else self._replies[0]
+        self.admitted = reply.success and not reply.refused_tools
+        return reply
+
+    async def _publish(self, *, subject: Any, message: Any) -> None:
+        """a plain publish: a manifest still registers, a heartbeat is ignored.
+
+        :param subject: the subject
+        :ptype subject: Any
+        :param message: the message
+        :ptype message: Any
+        :return: nothing
+        :rtype: None
+        """
+        if isinstance(message, RegistrationManifest):
+            self._register(message, awaited=False)
+
+    async def _request(self, *, subject: Any, message: Any, response_type: Any, timeout: Any) -> Any:
+        """answer a registration or a discovery poll.
+
+        :param subject: the subject
+        :ptype subject: Any
+        :param message: the request
+        :ptype message: Any
+        :param response_type: the expected reply type
+        :ptype response_type: Any
+        :param timeout: the request timeout
+        :ptype timeout: Any
+        :return: the reply
+        :rtype: Any
+        """
+        if isinstance(message, RegistrationManifest):
+            return self._register(message, awaited=True)
+        status = "available" if self.admitted else "pending"
+        entry = DiscoveryProbeResultEntry(
+            name="threetears.calculator",
+            version="1.0",
+            status=status if self._copy_status_field or self.admitted else "unavailable",
+            requester_copy_status=status if self._copy_status_field else None,
+        )
+        return DiscoveryProbeResponse(agent_id=_POD, tools=[entry])
+
+
+def _heartbeating_server(registry: _ScriptedRegistry) -> ToolServer:
+    """a server wired to ``registry`` with a fast heartbeat, not yet heartbeating.
+
+    :param registry: the registry double
+    :ptype registry: _ScriptedRegistry
+    :return: the server
+    :rtype: ToolServer
+    """
+    server = ToolServer(agent_id=uuid7(), nats_url="nats://test:4222", pod_id=_POD, heartbeat_interval=0.05)
+    server.register(_Tool())
+    server._nc = registry.nc  # noqa: SLF001
+    return server
+
+
+def _graph_unavailable(*, success: bool) -> RegistrationResponse:
+    """the registry could not read its ownership graph.
+
+    :param success: whether the reply as a whole succeeded (another tool admitted)
+    :ptype success: bool
+    :return: the reply
+    :rtype: RegistrationResponse
+    """
+    return RegistrationResponse(
+        success=success,
+        pod_id=_POD,
+        owned_namespaces=["tools.calc"] if success else [],
+        refused_tools=[_refusal(code="OWNERSHIP_GRAPH_UNAVAILABLE")],
+        error=None if success else "ownership graph unavailable; retried on the pod's next heartbeat",
+        error_code=None if success else "OWNERSHIP_GRAPH_UNAVAILABLE",
+    )
+
+
+_ADMITTED = RegistrationResponse(
+    success=True, pod_id=_POD, owned_namespaces=["tools.calc"], registered_tools=["threetears.calculator@1.0"]
+)
+
+
+class TestTheClassificationIsOneSet:
+    def test_the_final_codes_are_the_registrys_permanent_verdicts(self) -> None:
+        """the six codes that no retry changes; nothing else ends readiness.
+
+        :return: none
+        :rtype: None
+        """
+        assert FINAL_REFUSAL_CODES == _REGISTRY_FINAL
+
+    @pytest.mark.parametrize("code", ["OWNERSHIP_GRAPH_UNAVAILABLE", "UNVERIFIED_PUBLISHER", None, "A_NEWER_CODE"])
+    def test_everything_else_including_no_code_is_temporary(self, code: str | None) -> None:
+        """an absent or unknown code is not a verdict this pod can act on by stopping.
+
+        :param code: the refusal code
+        :ptype code: str | None
+        :return: none
+        :rtype: None
+        """
+        assert refusal_is_final(code) is False
+
+    @pytest.mark.parametrize("code", sorted(_REGISTRY_FINAL))
+    def test_each_final_code_is_final(self, code: str) -> None:
+        """a code no retry changes.
+
+        :param code: the refusal code
+        :ptype code: str
+        :return: none
+        :rtype: None
+        """
+        assert refusal_is_final(code) is True
+
+
+class TestATemporaryRefusalIsWaitedOut:
+    async def test_a_temporary_refusal_is_admitted_on_a_later_heartbeat_with_no_restart(self) -> None:
+        """the registry refuses for want of its graph, the heartbeat re-offers, the pod is ready.
+
+        :return: none
+        :rtype: None
+        """
+        registry = _ScriptedRegistry(_graph_unavailable(success=False), _ADMITTED)
+        server = _heartbeating_server(registry)
+        await server.publish_registration(await_reply=True)
+        server._running = True  # noqa: SLF001
+        heartbeat = asyncio.create_task(server._heartbeat_loop())  # noqa: SLF001
+        try:
+            assert await server.wait_until_ready(timeout=3.0) is True
+        finally:
+            server._running = False  # noqa: SLF001
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
+        assert len(registry.manifests) >= 2
+        assert server.refused_tools == ()
+
+    async def test_the_heartbeat_keeps_asking_while_a_refusal_stands(self) -> None:
+        """a reply that admitted other tools set the pod's identity; the refusal still gets re-read.
+
+        :return: none
+        :rtype: None
+        """
+        registry = _ScriptedRegistry(_graph_unavailable(success=True), _ADMITTED)
+        server = _heartbeating_server(registry)
+        await server.publish_registration(await_reply=True)
+        assert server.owned_namespaces == ("tools.calc",)
+        server._running = True  # noqa: SLF001
+        heartbeat = asyncio.create_task(server._heartbeat_loop())  # noqa: SLF001
+        try:
+            for _ in range(100):
+                if len(registry.manifests) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            server._running = False  # noqa: SLF001
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
+        assert registry.awaited[1] is True
+        assert server.refused_tools == ()
+
+    async def test_a_temporary_refusal_is_warned_once_naming_its_cause(self, caplog: pytest.LogCaptureFixture) -> None:
+        """many polls, one WARNING naming the code; no raise.
+
+        :return: none
+        :rtype: None
+        """
+        registry = _ScriptedRegistry(_graph_unavailable(success=False))
+        server = _heartbeating_server(registry)
+        await server.publish_registration(await_reply=True)
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
+            assert await server.wait_until_ready(timeout=0.3) is False
+        named = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "OWNERSHIP_GRAPH_UNAVAILABLE" in r.getMessage()
+        ]
+        assert len(named) == 1
+
+    async def test_a_failed_reply_with_no_code_is_temporary(self, caplog: pytest.LogCaptureFixture) -> None:
+        """what an older registry sends mid-roll: no code, no tools named. waited, never raised.
+
+        :return: none
+        :rtype: None
+        """
+        older = RegistrationResponse(success=False, pod_id=_POD, error="invalid bootstrap token")
+        registry = _ScriptedRegistry(older)
+        server = _heartbeating_server(registry)
+        await server.publish_registration(await_reply=True)
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
+            assert await server.wait_until_ready(timeout=0.3) is False
+        named = [
+            r for r in caplog.records if r.levelno == logging.WARNING and "invalid bootstrap token" in r.getMessage()
+        ]
+        assert len(named) == 1
+
+    @pytest.mark.parametrize("code", sorted(_REGISTRY_FINAL))
+    async def test_each_final_code_still_raises_at_once(self, code: str) -> None:
+        """a final verdict is not waited out.
+
+        :param code: the refusal code
+        :ptype code: str
+        :return: none
+        :rtype: None
+        """
+        registry = _ScriptedRegistry(
+            RegistrationResponse(success=False, pod_id=_POD, refused_tools=[_refusal(code=code)], error_code=code)
+        )
+        server = _heartbeating_server(registry)
+        await server.publish_registration(await_reply=True)
+        with pytest.raises(ToolRegistrationRefused, match=code):
+            await server.wait_until_ready(timeout=5.0)
+
+    async def test_a_manifest_refused_whole_with_a_final_code_raises(self) -> None:
+        """a reply-level code with no tools named still names every tool the manifest offered.
+
+        :return: none
+        :rtype: None
+        """
+        registry = _ScriptedRegistry(
+            RegistrationResponse(
+                success=False, pod_id=_POD, error="tools[0].name is empty", error_code="INVALID_MANIFEST"
+            )
+        )
+        server = _heartbeating_server(registry)
+        await server.publish_registration(await_reply=True)
+        with pytest.raises(ToolRegistrationRefused, match="INVALID_MANIFEST") as excinfo:
+            await server.wait_until_ready(timeout=5.0)
+        assert [r.name for r in excinfo.value.refused] == ["threetears.calculator"]
+
+    async def test_a_temporary_refusal_of_a_new_tool_does_not_raise(self) -> None:
+        """register_tool on a serving pod raises only on a final refusal.
+
+        :return: none
+        :rtype: None
+        """
+        server = _server()
+        server._nc = _replying(  # noqa: SLF001
+            RegistrationResponse(
+                success=True,
+                pod_id=_POD,
+                refused_tools=[_refusal("threetears.dictionary", "OWNERSHIP_GRAPH_UNAVAILABLE")],
+            )
+        )
+        server._ready_event.set()  # noqa: SLF001
+        await server.register_tool(_Tool("threetears.dictionary"))
+        assert [r.code for r in server.refused_tools] == ["OWNERSHIP_GRAPH_UNAVAILABLE"]
+
+
+class TestAnOlderRegistrysDiscovery:
+    """an older registry answers discovery with no ``requester_copy_status`` at all."""
+
+    async def test_readiness_falls_back_to_the_tools_status(self, caplog: pytest.LogCaptureFixture) -> None:
+        """the older registry's own answer decides, and the pod says it is reading one.
+
+        :return: none
+        :rtype: None
+        """
+        registry = _ScriptedRegistry(_ADMITTED, copy_status_field=False)
+        server = _heartbeating_server(registry)
+        await server.publish_registration(await_reply=True)
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
+            assert await server.wait_until_ready(timeout=2.0) is True
+        assert any("older" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+
+    async def test_an_unavailable_tool_on_an_older_registry_is_not_ready_and_does_not_raise(self) -> None:
+        """not ready is False at the timeout, for the caller to retry; nothing crashes.
+
+        :return: none
+        :rtype: None
+        """
+        registry = _ScriptedRegistry(
+            RegistrationResponse(success=False, pod_id=_POD, error="invalid bootstrap token"),
+            copy_status_field=False,
+        )
+        server = _heartbeating_server(registry)
+        await server.publish_registration(await_reply=True)
+        assert await server.wait_until_ready(timeout=0.3) is False

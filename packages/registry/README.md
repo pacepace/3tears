@@ -21,7 +21,7 @@ Who may register a copy is decided from verified identity (`ToolPodAuthenticator
 
 - a single-token pod id is a Tool Pod's; its token must pass `verify_pod` and name that same pod. Its copies serve every caller, so under a provider node it must own the node, and under none it must be the platform (`ToolPodAuth.platform_shared`, set by the host);
 - a dotted `{agent}.{instance}` pod id is an agent's in-process server; its token must pass `verify_agent` and name that agent. Its copies serve only that agent. In 0.55.0 an unsigned one is still admitted, for its own agent only;
-- a refusal is named in `RegistrationResponse.refused_tools` with a `RefusalCode`, and a pod's `ToolServer` raises `ToolRegistrationRefused` from `wait_until_ready`.
+- a refusal is named in `RegistrationResponse.refused_tools` with a `RefusalCode`. A pod's `ToolServer` raises `ToolRegistrationRefused` from `wait_until_ready` for a final code (`threetears.agent.tools.server.FINAL_REFUSAL_CODES`); any other refusal, including `OWNERSHIP_GRAPH_UNAVAILABLE`, `UNVERIFIED_PUBLISHER` and a failed reply with no code, is waited out while the pod's heartbeat re-offers its manifest.
 
 With no authenticator the registry runs in open mode: nothing is enforced, and it says so once at startup.
 

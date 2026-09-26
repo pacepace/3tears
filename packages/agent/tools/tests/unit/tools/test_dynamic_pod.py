@@ -800,6 +800,28 @@ async def test_a_live_registration_awaits_the_registry_and_raises_on_refusal() -
 
 
 @pytest.mark.asyncio
+async def test_a_temporary_refusal_does_not_fail_the_registration() -> None:
+    """a registry that could not read its ownership graph retries on the next heartbeat.
+
+    the spec's tools stay registered on the server and the heartbeat re-offers them, so failing
+    the registration would fail a spec the registry is about to admit.
+    """
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_first", tool_count=1)], fake)
+    await pod.start()
+    await asyncio.sleep(0)
+    fake.set_connected(True)
+    fake.next_refusals = [
+        RefusedTool(name="ds_live.tool0", version="1.0", code="OWNERSHIP_GRAPH_UNAVAILABLE", reason="graph unreadable")
+    ]
+
+    await pod.register_spec(_StubSpec("ds_live", tool_count=1))
+
+    assert fake.awaited_replies[-1] is True
+    await pod.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_refusal_of_another_specs_tool_does_not_fail_this_spec() -> None:
     """only this spec's tools are this registration's business."""
     fake = _FakeToolServer()

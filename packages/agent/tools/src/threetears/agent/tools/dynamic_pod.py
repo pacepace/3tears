@@ -29,7 +29,12 @@ from typing import Any, Generic, TypeVar
 from uuid import uuid7
 
 from threetears.agent.tools.base_tool import TearsTool
-from threetears.agent.tools.server import ToolRegistrationRefused, ToolServer
+from threetears.agent.tools.server import (
+    ToolRegistrationRefused,
+    ToolServer,
+    refusal_is_final,
+    refusals_in_reply,
+)
 from threetears.nats import TokenCallback
 from threetears.observe import get_logger, spawn_background, traced
 
@@ -405,7 +410,9 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         safe to call before :meth:`start` has built the server: the guard makes it a no-op.
 
         a manifest published here is sent as a request and its reply READ: when the registry
-        refused any of this spec's tools, :class:`ToolRegistrationRefused` names them. the tools
+        refused any of this spec's tools FINALLY (:func:`~threetears.agent.tools.server.refusal_is_final`),
+        :class:`ToolRegistrationRefused` names them; a temporary refusal is logged by the server and
+        waited out on the heartbeat, never raised. the tools
         stay registered on the server and are re-offered on every heartbeat, so a refusal whose
         cause is fixed upstream heals without another call.
 
@@ -414,7 +421,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :return: nothing
         :rtype: None
         :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
-        :raises ToolRegistrationRefused: when the registry refused any of this spec's tools
+        :raises ToolRegistrationRefused: when the registry refused any of this spec's tools finally
         :raises Exception: whatever :meth:`build_tools` raised; when the spec held tools and
             the server is serving, the reduced manifest is published first
         """
@@ -476,7 +483,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :ptype manifest_changed: bool
         :return: nothing
         :rtype: None
-        :raises ToolRegistrationRefused: when the registry's reply refused any of ``built``'s tools
+        :raises ToolRegistrationRefused: when the registry's reply refused any of ``built``'s tools finally
         """
         serving = self._ensure_serving()
         if not manifest_changed:
@@ -487,14 +494,11 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             )
         elif server.is_ready and server.is_connected:
             reply = await server.publish_registration(await_reply=True)
-            spec_tools = {f"{tool.mcp_name()}@{tool.mcp_version()}" for tool in built.tools}
-            refused = (
-                tuple(r for r in reply.refused_tools if f"{r.name}@{r.version}" in spec_tools)
-                if reply is not None
-                else ()
-            )
-            if refused:
-                raise ToolRegistrationRefused(refused, pod_id=self._pod_id)
+            spec_tools = [(tool.mcp_name(), tool.mcp_version()) for tool in built.tools]
+            refused = refusals_in_reply(reply, spec_tools) if reply is not None else ()
+            final = tuple(refusal for refusal in refused if refusal_is_final(refusal.code))
+            if final:
+                raise ToolRegistrationRefused(final, pod_id=self._pod_id)
             log.info(
                 "dynamic tool pod spec registered: key=%s pod_id=%s",
                 built.key,
