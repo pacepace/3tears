@@ -25,7 +25,9 @@ ensures now evict what they write, so a new owner grant is honoured on the next 
 `threetears.channels` gains `RoomPolicy`, `RoomAccessRequest`, `WebSocketHandler(room_policy=)`,
 `WebSocketHandler.revoke` and `WebSocketHandler.reevaluate_room`; `resume` is now gated.
 `create_chat_model`'s default circuit breaker is scoped per provider and credential
-(`CircuitBreakerRegistry.get(..., credential=)`).
+(`CircuitBreakerRegistry.get(..., credential=)`). `nats_distributed_lock` renews by
+compare-and-swap and yields a `LockHold` (`LockLossReason`, `LockLost`); by default a lost lock
+interrupts its body -- read that section before upgrading a caller.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -437,6 +439,38 @@ window.
   default registry.
 - Consumers that built a per-credential `CircuitBreakerRegistry` (or a breaker per key) and
   passed it as `breaker=` to keep tenants apart can drop it and rely on the default.
+
+### A lock holder that stalled past its TTL no longer overwrites its successor, and is told it lost
+
+`nats_distributed_lock` renewed with an unconditional `put`. A holder that stalled past the TTL
+(a blocked loop, a GC pause, a partition) woke after another pod had acquired the expired key and
+overwrote it: two holders. And when renewal failed or stopped at the maximum hold, the body kept
+running unlocked and was never told -- the context manager yielded `None`.
+
+- **Fixed:** renewal is a compare-and-swap. It reads the entry and swaps it at the revision just
+  read, only while the entry carries this holder's token, the same identity the release already
+  fences on. A missing entry, another holder's token, or a write landing between the read and the
+  swap is a loss, and the entry is left alone.
+- **New (minor):** the context manager yields a `threetears.nats.LockHold` (`key`, `lost` -- an
+  `asyncio.Event` -- `lost_reason`, `raise_if_lost()`). `LockLossReason` says why: `EXPIRED`,
+  `TAKEN`, `RENEWAL_FAILED`, `MAX_HOLD`. `async with nats_distributed_lock(...):` without `as`
+  keeps working, and `client=None` yields a hold that is never lost.
+- **Changed:** by default a loss cancels the body at its next `await`, and the `async with`
+  raises `threetears.nats.LockLost` (neither a `KvError` nor a `LockHeld`: the body has already
+  partly run). A cancellation from anywhere else still propagates as `CancelledError`. Cancelling
+  is the default because a body that keeps writing after its lock is gone is the damage a lock
+  exists to prevent, and a flag nobody reads prevents none of it. `cancel_on_loss=False` keeps the
+  body running and only sets `hold.lost`, for a body whose correctness does not rest on the lock.
+- **Changed:** a failed renewal is retried while the entry cannot yet have expired, rather than
+  stopping the heartbeat for good. It becomes `RENEWAL_FAILED` when the next attempt would land
+  past the TTL. One broker blip no longer lets a healthy holder's lock lapse.
+- The in-workspace callers whose correctness rests elsewhere -- the scheduled-jobs tick (the
+  per-schedule claim CAS) and in-flight lock, and the derived-collection build lock -- pass
+  `cancel_on_loss=False`: losing the lock costs them duplicate work, not a wrong result.
+- Consumers that catch `LockHeld` and `KvError` around the lock should also catch `LockLost` if
+  they keep the default: a hub sweep that treats `KvError` as "run without the lock" must not
+  re-run a body that `LockLost` interrupted. This is only CAS renewal and a loss signal on the
+  existing lock; it is not a held lease.
 
 ## v0.54.0 -- 2026-09-26
 
