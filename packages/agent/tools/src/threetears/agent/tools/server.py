@@ -1699,6 +1699,13 @@ class ToolServer:
                 verifier_future_tolerance=timedelta(seconds=_ASSERTION_LEEWAY_SECONDS),
                 anchor=self._assertion_replay_anchor,
             )
+        # BOUND HERE, before the call subject is subscribed, whether this server built the guard
+        # or was handed one. After a broker restart the guard refuses every assertion issued
+        # before its bucket's creation time plus its reach, and the bucket is created by whoever
+        # opens it first. Left to the first call, that call creates it and is refused as a replay
+        # it is not. Binding now puts the creation time before anything this pod can answer. The
+        # hub builds its tool pods without injecting a guard, so no owner can do this for them.
+        await self._assertion_replay_guard.bind()
 
         # QUEUE-GROUPED, because a pod identity is not a process. The DQ-B7 sweep
         # left these ungrouped on the premise that "only this pod's connection

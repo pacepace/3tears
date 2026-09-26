@@ -74,16 +74,31 @@ named drift allowance between those hosts, added by the guard. Each verifier cal
 silently reopening the hole: at construction for the registry proxy and the tool server, and
 on every request for `validate_dpop_proof`, which is a function with no construction step.
 
-**The first call after a bucket is created is itself refused**, and that is worth stating on its
-own because it surprised this repo's own integration tests. The bucket is opened lazily by the
-first `record_unique`, so that call creates it and then compares its artifact against a creation
-time of a moment ago -- inside the window by construction. In production the bucket outlives every
-pod restart (it lives with the broker), so this is paid once per broker lifetime, not once per
-pod: a fresh cluster or a broker restart refuses tool-pod calls for about five seconds, and a
-caller that retries gets through. A test standing up a fresh namespace pays it every run, which
-is why `test_tool_server_nats.py` warms the bucket and waits the window out rather than
-pretending the first call should succeed. The cost is bounded and visible: for that long after a wipe,
-fresh artifacts are refused. A missing `created` raises rather than admits.
+**Bind at start, or the first call after a bucket is created is itself refused.** The bucket is
+created by whichever call opens it first. A guard left to open it in its first `record_unique`
+creates it there and then compares that call's artifact against a creation time of a moment ago
+-- inside the window by construction, however long after the service started the artifact was
+issued. On 2026-09-25, after a Docker restart, that refused a login with a 65s reach (surfacing as
+"invalid username or password") and a tool call with a 5s reach (surfacing as "proxy assertion
+nonce replay"). So a service calls `ReplayGuard.bind()` at startup, before it serves anything:
+the bucket is then created before any artifact the process could issue or accept, and after a
+wipe the watermark refuses only what was issued before the service started, or within the reach
+of its start. `ToolServer.serve` and `CallProxy.start` bind their guards before subscribing;
+a guard a consumer builds itself, like the hub's DPoP guard and identity-core's, is that
+consumer's to bind at its own startup. `record_unique`
+still binds an unbound guard, so forgetting costs only the window.
+
+**A wipe under a running process is re-created at the next use.** The bound handle is kept for
+the process's life, and the wrapper's self-heal recreates a vanished stream on the next
+operation through it. That is sound -- `record_unique` reads the creation time fresh after every
+fresh create, so a wipe at any moment can only make the check stricter -- but the recreated
+bucket is younger than the restart by however long the service sat idle, so the first artifact
+after an idle wipe is refused the same way. In production the bucket outlives every pod restart
+(it lives with the broker), so this is paid once per broker restart, not once per pod. A test
+standing up a fresh namespace pays it every run unless it binds first, which is why
+`test_tool_server_nats.py` warms the bucket and waits the window out rather than pretending the
+first call should succeed. The cost is bounded and visible: for that long after a wipe, fresh
+artifacts are refused. A missing `created` raises rather than admits.
 
 **Some guards are removed rather than watermarked.** Where the guarded artifact is itself a
 server-side record read before the nonce is recorded -- OAuth authorization codes, OIDC and

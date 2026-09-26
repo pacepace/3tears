@@ -4,6 +4,42 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### A replay guard is bound when its service starts, not at first use
+
+`ReplayGuard`'s bucket is memory-backed, so a NATS restart wipes it. The anchor then correctly
+treats the recreated bucket as a wipe, and the watermark refuses any artifact issued within
+`verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE` before the bucket's creation time. The guard
+opened its bucket in the first `record_unique`, so the bucket was created at first USE, and every
+artifact issued between the service starting and that first use was refused -- including the one
+that triggered the open, although it was issued after the service came up. Observed on
+2026-09-25 after a Docker restart: identity-core refused a login with a 65s reach ("invalid
+username or password"), and a hub tool server refused a proxy assertion with a 5s reach ("proxy
+assertion nonce replay").
+
+- **New (minor):** `ReplayGuard.bind()`, public, idempotent and async-safe (one open however many
+  callers race it; later calls return the handle without a round trip). It returns the bound
+  bucket handle and raises `KvError` when the bucket cannot be opened. A service calls it at
+  startup, before serving anything: the bucket is then created before any artifact the process
+  could issue or accept, so after a wipe the watermark refuses only what was issued before the
+  service started, or within the reach of its start. `record_unique` still calls it, so an
+  unbound guard keeps working and only pays the window. The private `_ensure_bucket` is gone
+  (renamed, no alias).
+- **Fixed:** `ToolServer.serve` binds its proxy-assertion guard -- self-provisioned or injected
+  -- before it subscribes the call subject, and `CallProxy.start` binds its pop guard before it
+  subscribes `tools.call`. A guard injected into either now needs an async `bind()`.
+- **Not changed:** a wipe while a process keeps running. The bound handle is kept for the
+  process's life and the NATS wrapper's self-heal recreates the vanished stream on the next
+  operation through it; `record_unique` reads the creation time fresh after every fresh create,
+  so this is sound. The recreated bucket is younger than the restart by however long the service
+  sat idle, so the first artifact after an idle wipe is still refused the same way.
+
+**Consumers:** the hub and identity-core call `bind()` on every `ReplayGuard` they construct,
+at startup, before they serve anything -- the hub's DPoP guard, and each of identity-core's.
+A test double passed as `ToolServer(assertion_replay_guard=...)` or as `CallProxy`'s
+`pop_replay_guard` needs an `async def bind(self)`.
+
 ## v0.53.0 -- 2026-09-25
 
 ### One migration per database at a time: the database-wide DDL lock

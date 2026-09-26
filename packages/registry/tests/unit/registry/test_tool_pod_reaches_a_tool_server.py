@@ -80,6 +80,9 @@ class _StubReplayGuard:
     def require_covers(self, future_tolerance: timedelta) -> None:
         """a stub guard is sized for any verifier; the real check has its own tests."""
 
+    async def bind(self) -> None:
+        """nothing to open; the real guard's bind has its own tests."""
+
     async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
         if issued_at.tzinfo is None:
             raise ValueError("record_unique requires a timezone-aware issued_at")

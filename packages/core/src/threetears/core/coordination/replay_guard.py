@@ -37,6 +37,13 @@ with its own tolerance, so a leeway widened later fails loudly instead of reopen
 The cost is that for that long after a wipe, fresh artifacts are refused too -- the price of never
 admitting a replay.
 
+**Bind at start, or the window is measured from the wrong moment.** The watermark is measured from
+the bucket's creation time, and the bucket is created by whichever call opens it first. A service
+that calls :meth:`ReplayGuard.bind` at startup creates it before it serves anything, so after a
+wipe it refuses only what was issued before it started, or within the reach of its start. One
+that leaves the open to its first :meth:`ReplayGuard.record_unique` creates the bucket at first
+USE, and refuses the artifact that arrived first however long after startup it was issued.
+
 **A first run is not a wipe, and an anchor is what tells them apart.** Without one the guard
 cannot distinguish a bucket it has never had from one it lost, so it assumes the worse and pays
 that cost on a fresh deployment too -- where nothing was ever recorded and no replay is possible.
@@ -49,6 +56,7 @@ that holds only a NATS client keeps today's conservative behaviour by leaving it
         verifier_future_tolerance=timedelta(seconds=60),
     )
     guard.require_covers(timedelta(seconds=leeway_seconds))  # at the verifier's construction
+    await guard.bind()  # at service start, before serving anything
     if not await guard.record_unique(nonce, issued_at=proof_issued_at):
         raise <replay rejected>
 """
@@ -93,7 +101,7 @@ class ReplayGuard:
         verifier_future_tolerance: timedelta,
         anchor: "ReplayAnchor | None" = None,
     ) -> None:
-        """configure the guard; defer bucket binding until the first record.
+        """configure the guard; the bucket is opened by :meth:`bind`, which a service calls at start.
 
         :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`; the guard
             opens its KV bucket through :meth:`KvCapable.kv_bucket`
@@ -207,7 +215,7 @@ class ReplayGuard:
         """
         if issued_at.tzinfo is None:
             raise ValueError("ReplayGuard.record_unique requires a timezone-aware issued_at")
-        bucket = await self._ensure_bucket()
+        bucket = await self.bind()
         revision = await bucket.create(key=self._key(nonce), value=b"1")
         fresh = revision is not None  # None == key already existed == replay
         if fresh:
@@ -279,21 +287,48 @@ class ReplayGuard:
                 replaced = self._ledger_first_existed < date_created - CLOCK_DRIFT_ALLOWANCE
         return replaced
 
-    async def _ensure_bucket(self) -> "KvBucketLike":
-        """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""
-        if self._bucket is not None:
-            return self._bucket
-        async with self._bucket_lock:
-            if self._bucket is None:
-                # memory storage: a wipe is detected by record_unique's creation-time check, not
-                # survived. see the module docstring.
-                self._bucket = await self._client.kv_bucket(
-                    name=self._bucket_name,
-                    ttl=self._ttl,
-                    create_if_missing=True,
-                    history=1,
-                )
-                log.info("ReplayGuard bound bucket %s", self._bucket_name)
+    async def bind(self) -> "KvBucketLike":
+        """open this guard's KV bucket, creating it when absent. Idempotent and async-safe.
+
+        **A service calls this at startup, before it serves any artifact.** After a wipe the
+        guard refuses every artifact issued before its bucket's creation time plus the refusal
+        reach, and the bucket is created by whichever call opens it first. Binding at start moves
+        that creation time before any artifact this process could issue or accept, so after a
+        NATS wipe the watermark refuses only artifacts issued before the service started, or
+        within the reach of its start. Left to the first :meth:`record_unique`, the bucket is
+        created at first USE instead, and every artifact issued between the service starting and
+        that first use -- including the one that triggered it -- is refused as a possible replay
+        although it was issued after the service came up. After a restart that surfaces as a
+        failed login or a refused tool call with nothing wrong but the order of two events.
+
+        :meth:`record_unique` calls this too, so a guard nobody bound still works; it only pays
+        that window. Every caller shares one open: concurrent calls wait on the first rather than
+        opening the bucket again, and later calls return the handle without a round trip.
+
+        **A wipe while the process keeps running is not re-bound here, and does not need to be
+        for correctness.** The handle is kept for the process's life; the wrapper's self-heal
+        recreates a vanished stream on the next operation through it, and :meth:`record_unique`
+        reads the creation time fresh from the server after every fresh create, so a wipe at any
+        moment can only make the check stricter. What it costs is availability: a bucket wiped
+        under a running process is recreated at its next use, so that first artifact after the
+        wipe is refused the same way.
+
+        :return: the bound bucket handle
+        :rtype: KvBucketLike
+        :raises threetears.nats.KvError: when the bucket cannot be opened or created
+        """
+        if self._bucket is None:
+            async with self._bucket_lock:
+                if self._bucket is None:
+                    # memory storage: a wipe is detected by record_unique's creation-time check,
+                    # not survived. see the module docstring.
+                    self._bucket = await self._client.kv_bucket(
+                        name=self._bucket_name,
+                        ttl=self._ttl,
+                        create_if_missing=True,
+                        history=1,
+                    )
+                    log.info("ReplayGuard bound bucket %s", self._bucket_name)
         return self._bucket
 
     @staticmethod

@@ -11,6 +11,8 @@ The contract this pins:
   nonce is not recorded;
 - a guard refuses to serve a verifier whose future tolerance it was not sized for;
 - the bucket is memory-backed and opened with the accept-window TTL so nonces self-expire;
+- ``bind`` opens the bucket once, however many callers race it, and a service that binds at start
+  moves the bucket's creation time -- and so the watermark -- to before anything it serves;
 - construction rejects a non-positive TTL and a negative tolerance; a naive issue time raises.
 """
 
@@ -18,12 +20,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from threetears.core.coordination import ReplayGuard
 from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
+from threetears.core.testing import kv as fake_kv_module
 from threetears.nats import KvError
 
 from threetears.core.testing.kv import FakeNatsClient
@@ -386,3 +390,156 @@ class TestReplayGuardWithAnAnchor:
         for nonce in ("a", "b", "c"):
             await guard.record_unique(nonce, issued_at=created + timedelta(seconds=1))
         assert anchor.calls == 1
+
+
+class _BrokerClock:
+    """the clock the fake broker stamps every bucket's creation time with, under the test's control.
+
+    The property under test is WHEN a bucket is created relative to the artifacts a service
+    handles, and on a real clock a test cannot let minutes pass between a service starting and its
+    first request. Only the fake's clock moves: the guard's own reads are the anchor's ``now``, which
+    ``_StubAnchor`` ignores whenever it is given a moment.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, start: datetime) -> None:
+        self.moment = start
+        clock = self
+
+        class _Stamped(datetime):
+            @classmethod
+            def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+                del tz
+                return clock.moment
+
+        monkeypatch.setattr(fake_kv_module, "datetime", _Stamped)
+
+    def advance(self, delta: timedelta) -> None:
+        """let time pass on the broker.
+
+        :param delta: how long
+        :ptype delta: timedelta
+        :return: None
+        :rtype: None
+        """
+        self.moment += delta
+
+
+def _anchored_after_a_wipe(client: FakeNatsClient, service_started: datetime) -> ReplayGuard:
+    """a guard whose anchor says the ledger existed long before this bucket: a wipe, not a first run.
+
+    :param client: the fake broker
+    :ptype client: FakeNatsClient
+    :param service_started: when the service came up; the ledger predates it by hours
+    :ptype service_started: datetime
+    :return: the guard
+    :rtype: ReplayGuard
+    """
+    return ReplayGuard(
+        client,  # type: ignore[arg-type]
+        bucket_name="login_nonces",
+        ttl_seconds=120,
+        verifier_future_tolerance=_SKEW,
+        anchor=_StubAnchor(service_started - timedelta(hours=3)),
+    )
+
+
+class TestBind:
+    """a service binds its guard at start, so the bucket is never younger than what it serves."""
+
+    @pytest.mark.asyncio
+    async def test_bind_creates_the_bucket_before_any_record(self, client: FakeNatsClient) -> None:
+        await _guard(client, bucket_name="pop_nonces").bind()
+        # a bind-only open raises on an absent bucket, so this proves bind created it.
+        bucket = await client.kv_bucket(name="pop_nonces", create_if_missing=False)
+        assert bucket.keys() == ()
+
+    @pytest.mark.asyncio
+    async def test_bind_opens_the_bucket_once_however_often_it_is_called(self) -> None:
+        bucket = AsyncMock()
+        spy_client = AsyncMock()
+        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        guard = _guard(spy_client, bucket_name="b", ttl_seconds=90)
+        await guard.bind()
+        await guard.bind()
+        spy_client.kv_bucket.assert_awaited_once()
+        kwargs = spy_client.kv_bucket.call_args.kwargs
+        assert kwargs["name"] == "b"
+        assert kwargs["ttl"] == timedelta(seconds=90)
+        assert kwargs["create_if_missing"] is True
+
+    @pytest.mark.asyncio
+    async def test_concurrent_binds_open_the_bucket_once(self) -> None:
+        # startup wiring and a first request can race the bind; every caller must share ONE open.
+        # The open suspends until every bind has started, which is the interleaving a lock-free
+        # check-then-open would lose.
+        bucket = AsyncMock()
+        gate = asyncio.Event()
+
+        async def _open(**_: object) -> object:
+            await gate.wait()
+            return bucket
+
+        spy_client = AsyncMock()
+        spy_client.kv_bucket = AsyncMock(side_effect=_open)
+        guard = _guard(spy_client, bucket_name="b")
+        binds = [asyncio.create_task(guard.bind()) for _ in range(8)]
+        await asyncio.sleep(0)
+        gate.set()
+        handles = await asyncio.gather(*binds)
+        spy_client.kv_bucket.assert_awaited_once()
+        assert all(handle is bucket for handle in handles)
+
+    @pytest.mark.asyncio
+    async def test_record_unique_binds_an_unbound_guard(self) -> None:
+        bucket = AsyncMock()
+        bucket.create = AsyncMock(return_value=1)
+        bucket.date_created = AsyncMock(return_value=datetime.now(UTC))
+        spy_client = AsyncMock()
+        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        guard = _guard(spy_client, bucket_name="b")
+        assert await guard.record_unique("x", issued_at=_later()) is True
+        bucket.create.assert_awaited_once()
+        # the record bound it, so a later bind is the same handle and no second open.
+        assert await guard.bind() is bucket
+        spy_client.kv_bucket.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_after_a_wipe_an_artifact_issued_after_a_bind_at_start_is_accepted(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the broker restarted and lost the bucket; the service came up and bound at once. Its
+        # first login arrives ten minutes later, and the artifact was issued after the service
+        # was up, so nothing about it can predate the wipe.
+        started = datetime.now(UTC)
+        broker = _BrokerClock(monkeypatch, started)
+        guard = _anchored_after_a_wipe(client, started)
+        await guard.bind()
+        broker.advance(timedelta(minutes=10))
+        assert await guard.record_unique("login", issued_at=started + timedelta(minutes=10)) is True
+
+    @pytest.mark.asyncio
+    async def test_after_a_wipe_an_artifact_issued_before_the_bind_is_still_refused(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # binding early narrows the watermark; it does not retire it. An artifact issued before
+        # the service started could have been accepted and recorded before the wipe.
+        started = datetime.now(UTC)
+        broker = _BrokerClock(monkeypatch, started)
+        guard = _anchored_after_a_wipe(client, started)
+        await guard.bind()
+        broker.advance(timedelta(minutes=10))
+        assert await guard.record_unique("stale", issued_at=started - timedelta(seconds=1)) is False
+
+    @pytest.mark.asyncio
+    async def test_after_a_wipe_an_unbound_guard_refuses_the_artifact_that_first_uses_it(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the defect bind exists to avoid, pinned so the cost stays visible: left to the first
+        # record, the bucket is created at first USE, and the very artifact that triggered it --
+        # issued long after the service came up -- lands inside the watermark.
+        started = datetime.now(UTC)
+        broker = _BrokerClock(monkeypatch, started)
+        guard = _anchored_after_a_wipe(client, started)
+        broker.advance(timedelta(minutes=10))
+        issued_at = started + timedelta(minutes=10) - timedelta(seconds=1)
+        assert await guard.record_unique("login", issued_at=issued_at) is False

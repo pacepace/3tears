@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 
@@ -83,3 +84,32 @@ async def test_a_replay_through_a_handle_that_never_saw_the_wipe_is_refused(nats
         # a proof issued after the new stream exists, beyond the reach, is admitted on either replica.
         after = (await bucket_b.date_created()) + _REACH + timedelta(seconds=1)
         assert await guard_a.record_unique("proof-2", issued_at=after) is True
+
+
+async def test_a_guard_bound_at_start_admits_what_an_unbound_one_refuses(nats_container: str) -> None:
+    # two services come up on a broker whose buckets are gone. One binds its guard at start; the
+    # other leaves the open to its first request. The first request reaches both once the reach has
+    # passed, carrying an artifact issued after both were up. With no anchor both apply the
+    # watermark, so the only difference between them is when each bucket was created.
+    set_default_namespace(_NAMESPACE)
+    suffix = uuid4().hex
+    async with await NatsClient.connect(
+        nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="bind-at-start"
+    ) as nc:
+        bound = ReplayGuard(nc, bucket_name=f"bound_{suffix}", ttl_seconds=120, verifier_future_tolerance=_TOLERANCE)
+        unbound = ReplayGuard(
+            nc, bucket_name=f"unbound_{suffix}", ttl_seconds=120, verifier_future_tolerance=_TOLERANCE
+        )
+
+        handle = await bound.bind()
+        assert await bound.bind() is handle  # idempotent against the real client too
+        started = await handle.date_created()
+
+        await asyncio.sleep((_REACH + timedelta(milliseconds=500)).total_seconds())
+        issued_at = datetime.now(UTC)
+        assert issued_at >= started + _REACH
+
+        assert await bound.record_unique("first-request", issued_at=issued_at) is True
+        # the unbound guard creates its bucket now, at first use, so the same fresh artifact is
+        # inside its watermark -- the refusal a service pays when nothing bound it at start.
+        assert await unbound.record_unique("first-request", issued_at=issued_at) is False
