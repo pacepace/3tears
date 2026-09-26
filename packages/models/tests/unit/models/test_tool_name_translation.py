@@ -18,7 +18,9 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, ToolException
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.builtin.calculator import create_calculator_tool
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation, mangle_tool_name
 
 
@@ -139,3 +141,68 @@ class TestTheProxyIsTheSameToolUnderAnotherName:
         assert isinstance(message, ToolMessage)
         assert message.status == "error"
         assert message.content == "the plan was refused"
+
+
+class _Refusing(TearsTool):
+    """a TearsTool that fails with a typed record in its metadata."""
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """fail, naming why in prose and in structure.
+
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: the failure
+        :rtype: ToolResult
+        """
+        return ToolResult(success=False, content="", error="the upstream refused", metadata={"failure": "upstream"})
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """the tool's definition.
+
+        :return: an empty-object schema
+        :rtype: MCPToolDefinition
+        """
+        return MCPToolDefinition(
+            name="studio.refusing",
+            version="1.0",
+            description="refuses",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+    def mcp_name(self) -> str:
+        """the canonical dotted name.
+
+        :return: the name
+        :rtype: str
+        """
+        return "studio.refusing"
+
+    def mcp_version(self) -> str:
+        """the version.
+
+        :return: the version
+        :rtype: str
+        """
+        return "1.0"
+
+
+class _GatedRefusing(_Refusing):
+    """the same tool, gated behind a person's approval."""
+
+    requires_confirmation = True
+
+
+class TestAProxiedTearsToolKeepsWhatItCarries:
+    """the proxy is the tool under another name: its confirmation gate and a failure's artifact
+    must come through it as they come from the tool."""
+
+    def test_the_confirmation_gate_survives_the_proxy(self) -> None:
+        """a gate reading the bound tool list sees the flag on the proxy.
+
+        :return: none
+        :rtype: None
+        """
+        [gated], _ = build_name_translation([to_langchain_tool(_GatedRefusing())])
+        [ungated], _ = build_name_translation([to_langchain_tool(_Refusing())])
+        assert getattr(gated, "requires_confirmation", False) is True
+        assert getattr(ungated, "requires_confirmation", None) is False

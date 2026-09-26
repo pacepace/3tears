@@ -24,7 +24,8 @@ tools inside a LangGraph graph rather than across NATS via
 
 What this path does NOT do that the ToolServer does: it installs no
 :class:`~threetears.agent.tools.call_scope.ToolCallScope`, and it
-applies no ``requires_confirmation`` gate. See :func:`to_langchain_tool`.
+applies no ``requires_confirmation`` gate -- the wrapped tool carries the
+flag for the graph's own gate to read. See :func:`to_langchain_tool`.
 
 Lives in its own module rather than on :class:`TearsTool` itself
 because :mod:`threetears.agent.tools.base_tool` is enforced
@@ -81,7 +82,15 @@ class _TearsStructuredTool(StructuredTool):
     ``ainvoke`` -- where LangGraph's ``ToolNode`` and
     :class:`~threetears.agent.tools.executor.ToolExecutor` hand it over --
     and reaches nothing below them.
+
+    it also carries the wrapped tool's ``requires_confirmation``: a gate
+    reads the flag off the tool it is handed -- the aibots SDK's
+    confirmation middleware with ``getattr`` -- and a ``StructuredTool``
+    declares no such field, so without this every wrapped tool read as
+    ungated.
     """
+
+    requires_confirmation: bool = False
 
     def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002
         """invoke the tool with the call's id visible to the wrapper.
@@ -180,8 +189,9 @@ def to_langchain_tool(
     :class:`~threetears.agent.tools.call_scope.ToolCallScope`: a tool
     that reads per-call identity from the scope sees none, and a tool
     that requires it refuses. it applies no ``requires_confirmation``
-    gate either -- a graph running a tool that declares one must gate
-    the call itself.
+    gate either: the returned tool CARRIES the flag, for the graph's
+    own gate to read (the aibots SDK's confirmation middleware does),
+    but nothing here pauses a call.
 
     sync-path event-loop safety:
 
@@ -289,4 +299,5 @@ def to_langchain_tool(
         args_schema=schema.input_schema,
         response_format="content_and_artifact",
         handle_tool_error=True,
+        requires_confirmation=bool(tool.requires_confirmation),
     )

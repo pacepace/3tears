@@ -169,11 +169,14 @@ class NameMangledToolProxy(BaseTool):
     artifact)`` tool answered through the proxy as a bare tuple), and
     its ``handle_tool_error`` / ``handle_validation_error`` (a tool
     that turns its own ``ToolException`` into an error message raised
-    through the proxy instead).
+    through the proxy instead). So is its ``requires_confirmation``,
+    read with ``getattr`` because it is not a ``BaseTool`` field: a gate
+    reading the bound tool list must see the flag the tool declared.
     """
 
     name: str
     description: str
+    requires_confirmation: bool = False
     _delegate: BaseTool = PrivateAttr()
 
     def __init__(self, *, delegate: BaseTool, mangled_name: str) -> None:
@@ -191,6 +194,7 @@ class NameMangledToolProxy(BaseTool):
             response_format=delegate.response_format,
             handle_tool_error=delegate.handle_tool_error,
             handle_validation_error=delegate.handle_validation_error,
+            requires_confirmation=bool(getattr(delegate, "requires_confirmation", False)),
         )
         self._delegate = delegate
 

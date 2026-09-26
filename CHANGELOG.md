@@ -417,10 +417,14 @@ every argument dropped.
   (`unit_converter.value`, `timezone_converter.time_str`, `analyze_media.analyzer`) moved into
   the tool's schema. **Migration:** call `to_langchain_tool(tool)`, with `description=` if you
   passed one; the tool's `mcp_schema()` is its schema.
+- **Fixed (`3tears-agent-tools`, `3tears-models`):** the tool `to_langchain_tool` builds, and a
+  `NameMangledToolProxy` of any tool, carry the tool's `requires_confirmation`. Neither declared
+  the field, so a gate reading it off the bound tools -- the aibots SDK's confirmation
+  middleware reads it with `getattr` -- saw every wrapped tool as ungated.
 - **Unchanged, and now documented on `to_langchain_tool`:** the in-graph path installs no
-  `ToolCallScope` and applies no `requires_confirmation` gate. A tool that reads per-call
-  identity from the scope sees none, and a graph running a tool that declares confirmation
-  must gate the call itself.
+  `ToolCallScope` and applies no `requires_confirmation` gate of its own. A tool that reads
+  per-call identity from the scope sees none, and a graph running a tool that declares
+  confirmation gates the call with its own gate, which reads the flag the wrapped tool carries.
 
 ## v0.54.0 -- 2026-09-26
 

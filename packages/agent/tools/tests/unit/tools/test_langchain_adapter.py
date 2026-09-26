@@ -208,3 +208,30 @@ class TestWhatComesBack:
 
     async def test_a_sync_invoke_from_inside_a_running_loop_completes(self) -> None:
         assert to_langchain_tool(CalculatorTool()).invoke({"expression": "6 * 7"}) == "42"
+
+
+class _GatedStoryboard(_Storyboard):
+    """a storyboard whose calls a person must approve first."""
+
+    requires_confirmation = True
+
+
+class TestTheConfirmationFlagTravels:
+    """a gate reads ``requires_confirmation`` off the tool it is handed -- the aibots SDK's
+    confirmation middleware by ``getattr`` -- so the wrapped tool must carry it."""
+
+    def test_a_tool_that_requires_confirmation_still_does_once_wrapped(self) -> None:
+        """wrapping must not drop the gate.
+
+        :return: none
+        :rtype: None
+        """
+        assert getattr(to_langchain_tool(_GatedStoryboard()), "requires_confirmation", False) is True
+
+    def test_a_tool_that_does_not_stays_ungated(self) -> None:
+        """the default carries too.
+
+        :return: none
+        :rtype: None
+        """
+        assert getattr(to_langchain_tool(_Storyboard()), "requires_confirmation", None) is False
