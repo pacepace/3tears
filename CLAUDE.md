@@ -189,10 +189,12 @@ Extra args pass through: `./scripts/test.sh core -v -x`
 
 ```bash
 docker buildx bake --file docker-bake.hcl nodriver-sidecar \
-  --set nodriver-sidecar.platform=linux/amd64 --load
+  --set nodriver-sidecar.platform=linux/$(docker version --format '{{.Server.Arch}}') --load
 ```
 
 The bake target is multi-platform and the local `docker` driver refuses that ("Multi-platform build is not supported for the docker driver"), hence `--set ... platform` and `--load`. A bare `docker buildx bake nodriver-sidecar` exits non-zero having built nothing — and piping it through `tee` masks that exit code, which is how it looked like it had worked.
+
+**Build for the Docker host's own architecture**, which is what the `docker version` substitution picks (`arm64` on Apple silicon, `amd64` on an Intel box). A `linux/amd64` image on an arm64 host builds and loads, then runs under emulation and never becomes healthy, so its integration tests fail rather than skip. A native build passes.
 
 **Legitimate skips on a dev box** (they need credentials or tools this repo does not ship): the Redshift live tests (`OTS_REDSHIFT_PASSWORD`), the backup suites (`pg_dump`/`pg_restore`/`psql` on PATH), and one deliberate manual microbenchmark. Anything else is a test you have turned off by accident. When reporting results, state the pass count AND the remaining skips with their reasons — "integration green" on its own is not a report.
 
