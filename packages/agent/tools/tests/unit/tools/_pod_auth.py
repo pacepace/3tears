@@ -17,7 +17,6 @@ not a ``test_*`` module, so pytest does not collect it; the tools test package
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 
 import base64
 import time
@@ -38,7 +37,6 @@ from threetears.core.security.identity_token import (
 
 __all__ = [
     "RecordingNatsClient",
-    "StubReplayGuard",
     "jwks_provider",
     "mint_user_assertion",
     "recording_tool_server",
@@ -93,27 +91,6 @@ def recording_tool_server(**kwargs: Any) -> tuple[ToolServer, RecordingNatsClien
     rec = RecordingNatsClient()
     server = ToolServer(nats_client=rec, **kwargs)  # type: ignore[arg-type]
     return server, rec
-
-
-class StubReplayGuard:
-    """records each proxy-assertion nonce + returns a fixed freshness verdict so the pod's MANDATORY
-    replay-guard wiring runs without a live NATS-KV (the real guard's compare-and-set is covered by
-    its own coordination tests). default ``fresh=True`` -> every first-seen assertion is accepted."""
-
-    def __init__(self, *, fresh: bool = True) -> None:
-        self._fresh = fresh
-        self.seen: list[str] = []
-        self.issued_at: list[datetime] = []
-
-    def require_covers(self, future_tolerance: timedelta) -> None:
-        """a stub guard is sized for any verifier; the real check has its own tests."""
-
-    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
-        if issued_at.tzinfo is None:
-            raise ValueError("record_unique requires a timezone-aware issued_at")
-        self.seen.append(nonce)
-        self.issued_at.append(issued_at)
-        return self._fresh
 
 
 # one Hub identity keypair + one proxy-assertion signer, merged into a single JWKS under distinct

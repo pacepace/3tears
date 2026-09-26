@@ -74,16 +74,58 @@ named drift allowance between those hosts, added by the guard. Each verifier cal
 silently reopening the hole: at construction for the registry proxy and the tool server, and
 on every request for `validate_dpop_proof`, which is a function with no construction step.
 
-**The first call after a bucket is created is itself refused**, and that is worth stating on its
-own because it surprised this repo's own integration tests. The bucket is opened lazily by the
-first `record_unique`, so that call creates it and then compares its artifact against a creation
-time of a moment ago -- inside the window by construction. In production the bucket outlives every
-pod restart (it lives with the broker), so this is paid once per broker lifetime, not once per
-pod: a fresh cluster or a broker restart refuses tool-pod calls for about five seconds, and a
-caller that retries gets through. A test standing up a fresh namespace pays it every run, which
-is why `test_tool_server_nats.py` warms the bucket and waits the window out rather than
-pretending the first call should succeed. The cost is bounded and visible: for that long after a wipe,
-fresh artifacts are refused. A missing `created` raises rather than admits.
+**Bind at start, or the first call after a bucket is created is itself refused.** The bucket is
+created by whichever call opens it first. A guard left to open it in its first `record_unique`
+creates it there and then compares that call's artifact against a creation time of a moment ago
+-- inside the window by construction, however long after the service started the artifact was
+issued. On 2026-09-25, after a Docker restart, that refused a login with a 65s reach (surfacing as
+"invalid username or password") and a tool call with a 5s reach (surfacing as "proxy assertion
+nonce replay"). So a service calls `ReplayGuard.bind()` at startup, before it serves anything:
+the bucket is then created before any artifact the process could issue or accept, and after a
+wipe the watermark refuses only what was issued before the service started, or within the reach
+of its start. `ToolServer.serve` and `CallProxy.start` bind their guards before subscribing;
+a guard a consumer builds itself, like the hub's DPoP guard and identity-core's, is that
+consumer's to bind at its own startup. `record_unique` still binds an unbound guard, so
+forgetting costs only the window.
+
+**`bind()` stamps the anchor before the first nonce.** Left to the first record, the anchor is
+read after that nonce's create. A wipe landing between the two, with another replica's record
+stamping the anchor first, would put the ledger's birth after the wipe: the guard would read a
+first run and admit a replay of that nonce. Stamped at bind, the ledger's birth predates every
+nonce this process records. An anchor that cannot be read or written never fails the bind -- it
+is logged and the guard keeps the conservative watermark -- and the read is retried before each
+record's create until it succeeds, never after one, so a late first stamp still predates the
+nonce it must cover. Only a bucket that cannot be opened fails the bind, and with it
+`ToolServer.serve` and `CallProxy.start`: a service that cannot open its nonce bucket fails to
+start and is restarted, rather than coming up and refusing every call. `bind()` returns nothing;
+the bucket is the ledger's storage and not a caller's to write around.
+
+**A wipe under a running process is recreated at reconnect.** The bound handle is kept for the
+process's life, and the wrapper's self-heal recreates a vanished stream on the next operation
+through it. Left there, the recreated bucket is younger than the restart by however long the
+service sat idle, so the first artifact after an idle wipe is refused the same way. So `bind()`
+also registers, once per guard, a hook on `NatsClient.add_reconnect_callback` that touches the
+bucket after each reconnect, recreating it as the connection comes back. That is availability
+only: correctness still rests on `record_unique` reading the creation time fresh after every
+fresh create, so a wipe at any moment, hooked or not, can only make the check stricter -- which
+matters because reconnect callbacks run after new requests can already be served. The hook
+never raises into the reconnect path; a failed touch is logged and the next record recreates the
+bucket as before. Bind logs, structured, whether the hook was registered; each successful touch
+logs the bucket and its creation time, so an operator reading a post-restart refusal can tell
+whether the hook ran, was absent or failed. The client has no way to remove a hook, which makes
+a precondition: one guard per bucket per client, kept for the client's life. A guard rebuilt
+over one long-lived client -- a `ToolServer` rebuilt over an injected connection -- leaves one
+hook per build, each pinning its guard and costing a stream-info round trip per reconnect.
+Every construction today builds one per process: `ToolServer.serve` (once per server, reused
+across `serve()` calls), `RegistryServer`, the hub's DPoP guard, identity-core's, and the survey
+engine's entry-challenge guard. A client without `add_reconnect_callback` (any other
+`KvCapable`) binds as before without the hook. A wipe while NATS stays up -- a stream deleted by hand, with no
+reconnect -- is still recreated by the next use. In production the bucket outlives every pod
+restart (it lives with the broker), so what remains is paid once per broker restart, not once
+per pod. A test standing up a fresh namespace pays it every run unless it binds first, which is
+why `test_tool_server_nats.py` warms the bucket and waits the window out rather than pretending
+the first call should succeed. The cost is bounded and visible: for that long after a wipe, fresh
+artifacts are refused. A missing `created` raises rather than admits.
 
 **Some guards are removed rather than watermarked.** Where the guarded artifact is itself a
 server-side record read before the nonce is recorded -- OAuth authorization codes, OIDC and

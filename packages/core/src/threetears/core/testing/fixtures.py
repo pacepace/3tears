@@ -25,6 +25,7 @@ exactly once and we want to keep it that way.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterator
 
 import os
@@ -251,7 +252,10 @@ def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
     access_key, secret_key = s3_credentials
     bucket = "threetears-test-objects"
 
-    with DockerContainer("motoserver/moto:latest").with_exposed_ports(5000) as container:
+    with (
+        DockerContainer("motoserver/moto:latest").with_exposed_ports(5000) as container,
+        _direct_to(container.get_container_host_ip()),
+    ):
         host = container.get_container_host_ip()
         port = container.get_exposed_port(5000)
         endpoint = f"http://{host}:{port}"
@@ -289,6 +293,34 @@ def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
         ).create_bucket(Bucket=bucket)
 
         yield endpoint, bucket
+
+
+@contextlib.contextmanager
+def _direct_to(host: str) -> Iterator[None]:
+    """Reach ``host`` without the environment's HTTP proxy while the block runs.
+
+    A test talks to its own container, never through an egress proxy: behind one
+    (a dev container with ``HTTP_PROXY`` set), urllib, boto3 and aiobotocore all
+    sent the request for the S3 container's bridge address to the proxy, which
+    cannot reach it, and the fixture failed with "never answered". Adding the
+    host to ``NO_PROXY`` is what every one of those clients honours.
+
+    :param host: the container's host address
+    :ptype host: str
+    :yield: nothing
+    :rtype: Iterator[None]
+    """
+    saved = {name: os.environ.get(name) for name in ("NO_PROXY", "no_proxy")}
+    for name, value in saved.items():
+        os.environ[name] = f"{value},{host}" if value else host
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _outbound_proxy_by_ip() -> str | None:

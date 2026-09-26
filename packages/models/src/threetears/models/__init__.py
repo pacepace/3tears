@@ -63,7 +63,7 @@ from threetears.models.circuit_breaker import (
     CircuitState,
 )
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
-from threetears.models.errors import friendly_api_error, identify_provider
+from threetears.models.errors import ModelCallTimeout, friendly_api_error, identify_provider, is_provider_error
 from threetears.models.factory import create_chat_model, create_embedding_model
 from threetears.models.preprocessing import (
     enforce_alternating_roles,
@@ -161,6 +161,8 @@ __all__ = [
     "filter_invalid_tool_calls",
     "format_vision_content",
     "friendly_api_error",
+    "is_provider_error",
+    "ModelCallTimeout",
     "get_capabilities",
     "get_capability_override",
     "identify_provider",

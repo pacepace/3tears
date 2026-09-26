@@ -265,6 +265,7 @@ def _format_memory_context(
     detail_threshold: float = 0.85,
     ledgered_ids: set[str] | None = None,
     tz: tzinfo | None = None,
+    include_memories: bool = True,
 ) -> str:
     """Format retrieved memories, media content, and chunks as structured context.
 
@@ -289,6 +290,9 @@ def _format_memory_context(
     :param tz: the person's timezone; when given, each memory line says when it
         was written, in that timezone. ``None`` leaves the lines as they were
     :ptype tz: tzinfo | None
+    :param include_memories: ``False`` leaves the memories section out and keeps
+        the files and passages, still anchored to their parent memories' summaries
+    :ptype include_memories: bool
     :return: formatted context string
     :rtype: str
     """
@@ -335,7 +339,7 @@ def _format_memory_context(
                 continue
             parent_summary_by_id[str(mid_raw)] = mem_summary
 
-    if memories:
+    if memories and include_memories:
         # NOT "things you remember about this user". Memories are extracted from
         # conversations, so a large share of them are about the AGENT's own work
         # rather than about the person: on one deployment, 609 memories of which
@@ -484,6 +488,10 @@ class RetrievalResult:
     """
 
     context: str | None = None
+    #: the files and passages alone, fenced, without the memories section: for a
+    #: consumer that renders the agent's own memories itself and must still fence
+    #: what came from documents and other conversations
+    material_context: str | None = None
     memories: list[dict[str, Any]] = field(default_factory=list)
     media_content: list[dict[str, Any]] = field(default_factory=list)
     memory_chunks: list[dict[str, Any]] = field(default_factory=list)
@@ -748,17 +756,28 @@ class MemoryRetriever:
         if not memories and not media_content and not memory_chunks:
             return RetrievalResult(embed_tokens=embed_tokens)
 
+        tz = resolve_timezone(user_timezone)
         context = _format_memory_context(
             memories,
             media_content,
             memory_chunks,
             detail_threshold=cfg.detail_threshold,
             ledgered_ids=ledgered_ids,
-            tz=resolve_timezone(user_timezone),
+            tz=tz,
+        )
+        material = _format_memory_context(
+            memories,
+            media_content,
+            memory_chunks,
+            detail_threshold=cfg.detail_threshold,
+            ledgered_ids=ledgered_ids,
+            tz=tz,
+            include_memories=False,
         )
 
         return RetrievalResult(
             context=context or None,
+            material_context=material or None,
             memories=memories,
             media_content=media_content,
             memory_chunks=memory_chunks,

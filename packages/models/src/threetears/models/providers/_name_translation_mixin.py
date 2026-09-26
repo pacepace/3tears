@@ -54,9 +54,11 @@ Mix in BEFORE the concrete base (``(NameTranslatingChatMixin, ChatX)``) so
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 
+from threetears.models.errors import ModelCallTimeout
 from threetears.models.tool_name_translation import (
     build_name_translation,
     forward_translate_input,
@@ -200,6 +202,48 @@ class NameTranslatingChatMixin:
             drop_junk_invalid_tool_calls(chunk)
             yield chunk
 
+    def call_deadline_s(self) -> float | None:
+        """How long one call may run, or ``None`` for no limit beyond the SDK's own.
+
+        ``None`` here: a provider whose SDK already holds its timeout to the whole
+        call needs nothing more. A wrapper whose SDK does not says so by
+        overriding this (OpenRouter).
+
+        :return: seconds, or ``None``
+        :rtype: float | None
+        """
+        return None
+
+    async def _astream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        """The parent's stream, ended when no chunk arrives within :meth:`call_deadline_s`.
+
+        A long reply may stream for longer than the deadline; what cannot happen
+        is a wait that long with nothing arriving. Chunks pass through unchanged,
+        with the run manager the caller gave, so ``astream_events`` still sees
+        each one (translation stays on the public ``astream``).
+
+        :param args: positional passthrough to the parent's ``_astream``
+        :ptype args: Any
+        :param kwargs: keyword passthrough to the parent's ``_astream``
+        :ptype kwargs: Any
+        :return: the parent's chunks
+        :rtype: AsyncIterator[Any]
+        """
+        stream = super()._astream(*args, **kwargs)  # type: ignore[misc]
+        try:
+            while True:
+                try:
+                    async with asyncio.timeout(self.call_deadline_s()):
+                        chunk = await anext(stream)
+                except StopAsyncIteration:
+                    # NOSILENT: the parent's stream ended; that is the end of this one.
+                    return
+                except TimeoutError as exc:
+                    raise ModelCallTimeout(f"no chunk within {self.call_deadline_s()} s") from exc
+                yield chunk
+        finally:
+            await stream.aclose()
+
     async def _agenerate(
         self,
         messages: list[BaseMessage],
@@ -220,12 +264,16 @@ class NameTranslatingChatMixin:
         :return: chat result with translated tool-call names
         :rtype: ChatResult
         """
-        result = await super()._agenerate(  # type: ignore[misc]
-            forward_translate_input(messages),
-            stop=stop,
-            run_manager=run_manager,
-            **kwargs,
-        )
+        try:
+            async with asyncio.timeout(self.call_deadline_s()):
+                result = await super()._agenerate(  # type: ignore[misc]
+                    forward_translate_input(messages),
+                    stop=stop,
+                    run_manager=run_manager,
+                    **kwargs,
+                )
+        except TimeoutError as exc:
+            raise ModelCallTimeout(f"no answer within {self.call_deadline_s()} s") from exc
         for generation in result.generations:
             reverse_translate_message(generation.message, self._name_reverse_map)
             drop_junk_invalid_tool_calls(generation.message)

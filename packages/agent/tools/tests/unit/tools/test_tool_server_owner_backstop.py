@@ -9,6 +9,8 @@ before.
 
 from __future__ import annotations
 
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
 import json
 from typing import Any
 from uuid import UUID, uuid4
@@ -23,7 +25,6 @@ from threetears.nats import IncomingMessage, Subjects
 
 from unit.tools._pod_auth import (
     RecordingNatsClient,
-    StubReplayGuard,
     jwks_provider,
     recording_tool_server,
     signed_call_payload,
@@ -62,7 +63,7 @@ def _server(pod_id: str, **kwargs: Any) -> tuple[ToolServer, _RecordingTool, Rec
     server, rec = recording_tool_server(
         pod_id=pod_id,
         jwks_provider=jwks_provider,
-        assertion_replay_guard=StubReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
         **kwargs,
     )
     tool = _RecordingTool()

@@ -4,6 +4,159 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.54.0 -- 2026-09-26
+
+Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,
+`RetrievalResult` gains `material_context`, `ReplayGuard` gains `bind()`, and
+`threetears.core.utils` gains `YugabytePoolRecycler` and its trigger set. BREAKING:
+`YugabyteRpcTimeoutRecycler` is removed (module `yugabyte_rpc_timeout` renamed
+`yugabyte_pool_recycler`, no alias).
+
+### A provider failure is named as one
+
+- **New (minor):** `threetears.models.ModelCallTimeout(TimeoutError)`, raised when a
+  model call runs past its whole-call deadline (below), so a caller can tell the
+  provider running long from any other `TimeoutError`, its own deadlines included.
+- **New (minor):** `threetears.models.is_provider_error(exc)`: a provider SDK's or its
+  HTTP client's exception, a `ModelCallTimeout`, or the OpenRouter error the chat model
+  raises as a `ValueError` -- the same classes `friendly_api_error` words. metallm had
+  copied this test into its own code.
+
+### The document analyzer mints its fence nonce
+
+`analyze_media` read a document's text in one call fenced with a nonce derived from
+the text. Nothing about a single call is cached, so it now mints one
+(`explained_fence(text, nonce=mint_nonce())`), as the rule for fences asks. The
+memory block, the ledger and the tool-result previews keep a derived nonce so they
+stay in the prompt cache.
+
+### OpenRouter: the configured timeout holds for the whole call
+
+The OpenRouter SDK hands the timeout to httpx, which applies it to each read, and
+OpenRouter answers 200 at once and holds the call open with keep-alive comments while
+the upstream works: one call ran 218 s against a 120 s timeout. `NameTranslatingChatMixin`
+holds `_agenerate` to `call_deadline_s()` whole and ends `_astream` when no chunk arrives
+within it, so a long reply still streams; both raise `ModelCallTimeout`. OpenRouter sets
+the deadline from its timeout; the OpenAI and Anthropic wrappers keep `None`.
+
+### Retrieval: the files and passages alone, fenced
+
+- **New:** `RetrievalResult.material_context` -- the "Files you have seen" and "Passages"
+  sections alone, fenced, with each chunk's parent-memory anchor, for a consumer that
+  renders the agent's own memories itself. `context` is unchanged.
+
+### Flush: an FK deferral warns once
+
+A row whose parent was deleted re-deferred once per drain at WARNING, up to
+`_FK_RETRY_LIMIT` lines for one row. The first deferral warns; its repeats are DEBUG; the
+drop stays an ERROR. The retry budget is unchanged: a parent written by another worker can
+land after its child.
+
+### A replay guard is bound when its service starts, not at first use
+
+`ReplayGuard`'s bucket is memory-backed, so a NATS restart wipes it. The anchor then correctly
+treats the recreated bucket as a wipe, and the watermark refuses any artifact issued within
+`verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE` before the bucket's creation time. The guard
+opened its bucket in the first `record_unique`, so the bucket was created at first USE, and every
+artifact issued between the service starting and that first use was refused -- including the one
+that triggered the open, although it was issued after the service came up. Observed on
+2026-09-25 after a Docker restart: identity-core refused a login with a 65s reach ("invalid
+username or password"), and a hub tool server refused a proxy assertion with a 5s reach ("proxy
+assertion nonce replay").
+
+- **New (minor):** `ReplayGuard.bind()`, public, idempotent and async-safe (one open however many
+  callers race it; later calls make no round trip). It returns nothing -- the bucket is the
+  ledger's storage, and a caller holding it could delete a nonce key around the create-if-absent
+  that makes a sighting single-use -- and raises `KvError` when the bucket cannot be opened. A
+  service calls it at startup, before serving anything: the bucket is then created before any
+  artifact the process could issue or accept, so after a wipe the watermark refuses only what was
+  issued before the service started, or within the reach of its start. `record_unique` still
+  binds an unbound guard, which only pays the window. The private `_ensure_bucket` is gone
+  (renamed, no alias).
+- **Fixed:** `ToolServer.serve` binds its proxy-assertion guard -- self-provisioned or injected
+  -- before it subscribes the call subject, and `CallProxy.start` binds its pop guard before it
+  subscribes `tools.call`. **Both now fail at startup when the nonce bucket cannot be opened**
+  (a KV or JetStream outage, or NATS back before JetStream after a restart): `KvError` propagates
+  out of `serve()` / `start()` with nothing subscribed and nothing registered. Before, the service
+  came up and refused every call fail-closed; now expect a failed start and a restart instead.
+- **Fixed:** the durable anchor is read, and stamped when nothing has, before the guard records
+  its first nonce: at `bind()`, and -- when that read failed -- again before each record's create
+  until it succeeds, never after one. Read after a nonce's create, a wipe landing between the two
+  with another replica stamping the anchor first put the ledger's birth after the wipe, read as a
+  first run, and admitted a replay of that nonce. An anchor read or write failure never fails
+  `bind()`: it is logged and the guard keeps the conservative watermark. Only a bucket that
+  cannot be opened fails it.
+- **New (minor):** `bind()` registers, once per guard, a hook on the client's
+  `add_reconnect_callback` (when the client's type has one, as `NatsClient` does) that touches
+  the bucket after each NATS reconnect. A bucket a broker restart wiped under a running process
+  is recreated as the connection comes back, instead of by the next artifact, which that
+  artifact's refusal used to pay for. Availability only: correctness still rests on
+  `record_unique` reading the creation time fresh after every fresh create. The hook never raises
+  into the reconnect path. Logged, structured (`extra_data`): once at bind, with `bucket`,
+  `anchor_read` and `reconnect_hooked`; at INFO after each successful touch, with `bucket` and
+  `bucket_date_created`; and a WARNING with `bucket` and `error` when a touch fails. A client
+  without the hook binds as before, and the bind line says so.
+- **Precondition:** hooks are never removed -- the client offers no way to. Build one guard per
+  bucket per client and keep it for the client's life. A guard built again and again over one
+  long-lived client (a `ToolServer` rebuilt over an injected connection, say) leaves one hook per
+  build, each pinning its guard and costing one stream-info round trip per reconnect. Every
+  construction found today -- `ToolServer.serve` (once per server, reused across `serve()`
+  calls), `RegistryServer`, the hub's DPoP guard, identity-core's, the survey engine's entry
+  challenge guard -- builds one per process.
+- **New (minor):** `threetears.core.testing.replay_guard.FakeReplayGuard`, the one shipped double
+  of a verifier's guard, declared `# parity-with: threetears.core.coordination.replay_guard.ReplayGuard`
+  and held to it by the fake-parity gate, which now also scans the doubles in
+  `threetears.core.testing` (`FakeKvBucket` declares `KvBucketLike`, `FakeNatsClient`
+  `KvCapable`). It records `seen`, `issued_at` and `binds`, appends `"bind"` / `"record"` to an
+  optional shared `events` log, answers a chosen verdict or remembers nonces, and can raise from
+  `bind()`. The seven hand-rolled stand-ins across agent-tools, registry and iam are replaced.
+- **New (minor):** the shipped KV doubles model the rest. `FakeKvBucket.vanish()` loses the
+  bucket until its next operation recreates it, taking that moment as its creation time (the
+  real wrapper's self-heal); `FakeNatsClient.add_reconnect_callback` and
+  `FakeNatsClient.reconnect()` run hooks in order, a raising one logged and skipped, as the real
+  dispatcher does.
+
+**Consumers:** the hub and identity-core call `bind()` on every `ReplayGuard` they construct, at
+startup, before they serve anything -- the hub's DPoP guard, and identity-core's DPoP guard. The
+survey engine builds its entry-challenge guard lazily on first request and should build and bind it
+at startup too. Replace any hand-rolled guard double passed as `ToolServer(assertion_replay_guard=...)`
+or as `CallProxy`'s `pop_replay_guard` with `FakeReplayGuard`.
+
+### One pool recycler watches for every YugabyteDB error a fresh connection escapes
+
+A pooled YugabyteDB connection can hold a table's old shape after another session altered it,
+and answer `Invalid column number <n>` where a fresh connection would not. The aibots hub
+carried its own `YugabyteStaleTableShapeRecycler` for it -- `YugabyteRpcTimeoutRecycler`'s bind,
+watch and expiry-floor logic copied, keyed on a different error -- and composed the two in its
+`PlatformPoolRecyclers`.
+
+- **New (minor):** `YugabytePoolRecycler(pool_name=..., triggers=YUGABYTE_POOL_TRIGGERS)`: one
+  query logger per connection, one `bind`, one `init`, over a sequence of
+  `PoolExpiryTrigger(error_name, matches, diagnosis, persistent_cause)` checked in order. The
+  pool's last expiry is one record whatever caused it, so a connection opened before any expiry
+  is already being replaced. The `min_seconds_between_expiries` floor is kept **per trigger**,
+  because it diagnoses one persistent cause: a stale table shape seconds after a wedge was
+  cleared is a new cause and expires the pool again, while the same error on new connections
+  inside its floor is logged and left. Log lines are built from the matching trigger's words.
+- **New (minor):** `YUGABYTE_POOL_TRIGGERS = (YUGABYTE_RPC_TIMEOUT, YUGABYTE_STALE_TABLE_SHAPE)`,
+  the default, so the composition lives in 3tears and a trigger added to it reaches every pool.
+- **New (minor):** `YUGABYTE_STALE_TABLE_SHAPE` and `is_yugabyte_stale_table_shape(error)`. The
+  predicate matches `Invalid column number <n>` in any server error's message, whatever the
+  SQLSTATE (it has been seen once and its SQLSTATE is unknown). It deliberately does not match
+  `schema version mismatch for table ...` (SQLSTATE 40001), which is retryable on the same
+  connection and routine during an online index build.
+- **Breaking:** `YugabyteRpcTimeoutRecycler` is removed, with no alias. Build
+  `YugabytePoolRecycler(pool_name=...)` for the default set, or pass
+  `triggers=(YUGABYTE_RPC_TIMEOUT,)` for the RPC timeout alone. The module is
+  `threetears.core.utils.yugabyte_pool_recycler` (was `yugabyte_rpc_timeout`, no alias); every
+  name is exported from `threetears.core.utils`, where consumers import it from.
+
+**Consumers:** at the next release the hub replaces its `PlatformPoolRecyclers` composition, its
+local `YugabyteStaleTableShapeRecycler` and `is_yugabyte_stale_table_shape`, and its
+`YugabyteRpcTimeoutRecycler` use with one `YugabytePoolRecycler(pool_name=...)` per pool:
+`init=recycler.init`, then `recycler.bind(pool)`. Its enforcement test holding every
+`asyncpg.create_pool` to `PlatformPoolRecyclers` moves to that recycler.
+
 ## v0.53.0 -- 2026-09-25
 
 ### One migration per database at a time: the database-wide DDL lock

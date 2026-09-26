@@ -42,7 +42,7 @@ from threetears.nats import (
     unsafe_reauth_delay_reason,
 )
 
-from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
+from threetears.core.testing.replay_guard import FakeReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
 from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
@@ -109,7 +109,7 @@ def _idle_server() -> tuple[ToolServer, _BlockingTool]:
         nats_client=_SilentNats(),  # type: ignore[arg-type]
         pod_id=_POD,
         jwks_provider=_pod_jwks_provider,
-        assertion_replay_guard=_PodReplayGuard(),
+        assertion_replay_guard=FakeReplayGuard(),
     )
     server.register(tool)
     return server, tool
