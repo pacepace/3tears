@@ -20,14 +20,14 @@ replaced `details` wholesale, and the survey engine wrote its own marker.
 should route an audit record's content through it** rather than writing its own.
 
 - **New (minor):** `anonymize_details(details, *, event_type) -> dict`. Keeps
-  every key at every depth and the whole structure (dicts, lists, tuples), keeps
-  the value under a safe key, and replaces every other leaf with
-  `ANONYMIZED_MARKER` (`"[anonymized]"`). `None` stays `None`. Pure (no I/O, input
-  untouched) and idempotent. Beneath an unsafe key every leaf is masked, whatever
-  the nested keys are spelled; a dict beneath a safe key is judged key by key, so a
-  field added inside a structural map later is masked until someone classifies it.
-  Keys themselves are never rewritten, including field names inside a user's
-  document.
+  every key of `details` and the value under a safe key, and replaces the WHOLE
+  value under any other key with `ANONYMIZED_MARKER` (`"[anonymized]"`): a leaf, a
+  list, or a dict together with the keys a user chose inside it (the field names of
+  a document `doc_set` wrote can be an email address). The unsafe key itself stays.
+  A dict beneath a safe key is judged key by key by the same rule, so a field added
+  inside a structural map later is masked until someone classifies it; lists and
+  tuples beneath a safe key keep their elements and their type. `None` stays
+  `None`. Pure (no I/O, input untouched) and idempotent.
 - **New (minor):** `anonymize_ip(value) -> None`. An `ip_address` column becomes
   `NULL`: the marker cannot be stored in an address-typed column, and a truncated
   address is still personal data. The row and its other columns stay.

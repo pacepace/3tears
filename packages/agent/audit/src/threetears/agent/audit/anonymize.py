@@ -6,9 +6,9 @@ audit row and never changes an id on it -- not the row id, not the actor id,
 not an entity id in its details. what erasure does is anonymize the row's
 content:
 
-- :func:`anonymize_details` keeps every key and the whole nested structure of
-  ``details``, keeps the value under a SAFE key, and replaces every other leaf
-  with :data:`ANONYMIZED_MARKER`.
+- :func:`anonymize_details` keeps every key of ``details`` and the structure
+  beneath safe keys, keeps the value under a SAFE key, and replaces the whole
+  value under every other key with :data:`ANONYMIZED_MARKER`.
 - :func:`anonymize_ip` is the rule for an ``ip_address`` column.
 
 **the safe list is explicit.** a key is kept only because someone decided its
@@ -22,22 +22,24 @@ unclassified key is masked exactly like a personal one -- and exists so the
 classification is a record a gate can hold producers to
 (``tests/enforcement/test_audit_details_keys_are_classified.py``).
 
-**how nesting is judged.** a leaf is kept only when the key directly above it is
-safe and no key further up is unsafe:
+**how nesting is judged.** the key a value sits under decides it:
 
-- beneath an unsafe key every leaf is masked, whatever the nested keys are
-  spelled. those keys belong to whoever wrote the value (``doc_set`` publishes
-  the user's document under ``value``), so a nested ``status`` earns nothing.
-- a dict beneath a safe key is judged key by key. safety does not flow into a
-  dict, so a key added inside a structural map later is masked until someone
-  classifies it. the cost is that a map keyed by data rather than by schema
-  (``permissions_before``: group uuid -> actions) keeps its keys but loses its
-  leaves on erasure.
-- a list or tuple takes the judgement of the key above it, element by element;
-  a dict inside it is judged by its own keys under the same two rules.
+- under an unsafe key the WHOLE value becomes the marker -- a leaf, a list, a
+  dict and its keys alike. the key itself stays; what it held is the person's
+  content, and that includes keys a user chose (``doc_set`` publishes the
+  user's document under ``value``, whose field names can be an email address or
+  a name). a nested ``status`` in such a subtree earns nothing.
+- a dict under a safe key is judged key by key, by the same rule. safety does
+  not flow into a dict, so a key added inside a structural map later is masked
+  until someone classifies it. the cost is that a map keyed by data rather than
+  by schema (``permissions_before``: group uuid -> actions) keeps its keys but
+  loses each entry's value on erasure.
+- a list or tuple under a safe key keeps its elements, and a dict inside it is
+  judged by its own keys.
+- ``None`` stays ``None`` under any key: there is nothing in it to anonymize.
 
-keys are never removed or rewritten, including keys that are themselves data
-(a user document's field names under ``value``); the rule changes values only.
+no key at or above a safe level is removed or rewritten, and no key is ever
+deleted: an unsafe key survives with the marker as its value.
 
 **families.** some keys are structural only inside one event family --
 ``reason`` is a closed enum on ``identity.impersonation.stop`` and exception
@@ -486,57 +488,72 @@ def is_classified_detail_key(key: str, *, event_type: str) -> bool:
 
 def anonymize_details(details: Mapping[str, Any], *, event_type: str) -> dict[str, Any]:
     """
-    anonymize an audit record's details: same keys, same shape, safe values only.
+    anonymize an audit record's details: same keys, safe skeleton, safe values only.
 
-    keeps every key at every depth and every container's type and length. a
-    leaf is kept when the key directly above it is safe for ``event_type`` and
-    no key above that is unsafe; every other leaf becomes
-    :data:`ANONYMIZED_MARKER`. ``None`` stays ``None``. pure: no I/O, the input
-    is not mutated and the result shares no container with it. idempotent: the
-    marker is a leaf like any other, so a second pass changes nothing.
+    keeps every key of ``details``. the value under a key safe for
+    ``event_type`` is kept, with any dict inside it judged key by key; the
+    whole value under any other key becomes :data:`ANONYMIZED_MARKER`, keys a
+    user chose included. ``None`` stays ``None``. pure: no I/O, the input is not
+    mutated and the result shares no container with it. idempotent: the marker
+    under an unsafe key is replaced by itself, so a second pass changes nothing.
 
     :param details: the record's ``details`` mapping
     :ptype details: Mapping[str, Any]
     :param event_type: the record's dotted ``event_type``, which selects its families
     :ptype event_type: str
-    :return: a new details dict with every unsafe leaf anonymized
+    :return: a new details dict with every unsafe value anonymized
     :rtype: dict[str, Any]
     """
-    safe = safe_detail_keys_for(event_type)
-    return {key: _anonymize_value(value, safe=safe, keep=key in safe) for key, value in details.items()}
+    return _anonymize_mapping(details, safe=safe_detail_keys_for(event_type))
 
 
-def _anonymize_value(value: Any, *, safe: frozenset[str], keep: bool) -> Any:
+def _anonymize_mapping(mapping: Mapping[str, Any], *, safe: frozenset[str]) -> dict[str, Any]:
     """
-    anonymize one value beneath a key already judged.
+    judge each key of one mapping: keep what a safe key holds, mask what any other holds.
 
-    :param value: the value under a details key, at any depth
+    :param mapping: ``details`` itself, or a dict found under a safe key
+    :ptype mapping: Mapping[str, Any]
+    :param safe: the safe keys for the record's event type
+    :ptype safe: frozenset[str]
+    :return: a new dict with the same keys
+    :rtype: dict[str, Any]
+    """
+    return {key: _keep(value, safe=safe) if key in safe else _mask(value) for key, value in mapping.items()}
+
+
+def _keep(value: Any, *, safe: frozenset[str]) -> Any:
+    """
+    copy a value held by a safe key, judging any dict inside it afresh.
+
+    :param value: the value under a safe key, or an element of a list or tuple there
     :ptype value: Any
     :param safe: the safe keys for the record's event type
     :ptype safe: frozenset[str]
-    :param keep: whether the key above ``value`` is safe with no unsafe key above it
-    :ptype keep: bool
-    :return: the anonymized value, same shape as ``value``
+    :return: an equal value, except where a nested dict holds unsafe keys
     :rtype: Any
     """
     result: Any
-    if value is None:
-        result = None
-    elif isinstance(value, Mapping):
-        # a dict under a kept key is judged key by key; under a masked key, masked whole.
-        result = {
-            child_key: _anonymize_value(child, safe=safe, keep=keep and child_key in safe)
-            for child_key, child in value.items()
-        }
+    if isinstance(value, Mapping):
+        result = _anonymize_mapping(value, safe=safe)
     elif isinstance(value, list):
-        result = [_anonymize_value(child, safe=safe, keep=keep) for child in value]
+        result = [_keep(child, safe=safe) for child in value]
     elif isinstance(value, tuple):
-        result = tuple(_anonymize_value(child, safe=safe, keep=keep) for child in value)
-    elif keep:
-        result = value
+        result = tuple(_keep(child, safe=safe) for child in value)
     else:
-        result = ANONYMIZED_MARKER
+        result = value
     return result
+
+
+def _mask(value: Any) -> str | None:
+    """
+    anonymize everything an unsafe key holds, subtree and keys alike.
+
+    :param value: the value under an unsafe key
+    :ptype value: Any
+    :return: ``None`` when the value is ``None``, else :data:`ANONYMIZED_MARKER`
+    :rtype: str | None
+    """
+    return None if value is None else ANONYMIZED_MARKER
 
 
 def anonymize_ip(value: str | None) -> None:

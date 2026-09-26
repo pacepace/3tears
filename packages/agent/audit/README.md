@@ -45,10 +45,11 @@ erasure path (a GDPR request, a principal anonymization, a customer
 offboarding) routes the record's content through this one rule instead of
 writing its own:
 
-- `anonymize_details(details, *, event_type)` keeps every key and the whole
-  nested structure, keeps the value under a safe key, and replaces every other
-  leaf with `ANONYMIZED_MARKER` (`"[anonymized]"`). `None` stays `None`. Pure
-  and idempotent.
+- `anonymize_details(details, *, event_type)` keeps every key of `details`,
+  keeps the value under a safe key (a dict inside it is judged key by key),
+  and replaces the WHOLE value under any other key with `ANONYMIZED_MARKER`
+  (`"[anonymized]"`) -- a subtree and the keys a user chose inside it alike.
+  `None` stays `None`. Pure and idempotent.
 - `anonymize_ip(value)` returns `None`: an address is removed, not truncated.
 - `SAFE_DETAIL_KEYS` is the explicit safe list. A key not on it is masked, so
   a field nobody classified fails safe. `PERSONAL_DETAIL_KEYS` records the keys

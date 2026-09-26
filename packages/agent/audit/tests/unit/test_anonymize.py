@@ -2,8 +2,9 @@
 
 the erasure rule for audit records: an audit row is never deleted and no id
 on it changes. what erasure does is anonymize the row's ``details``: every
-key stays, the whole nested structure stays, values under a SAFE key stay,
-and every other leaf becomes :data:`ANONYMIZED_MARKER`. the safe list is
+top-level key stays, the structure stays wherever the keys are safe, values
+under a SAFE key stay, and the whole value under any other key -- keys a user
+chose included -- becomes :data:`ANONYMIZED_MARKER`. the safe list is
 explicit, so a key nobody classified is masked -- the fail-safe property the
 tests below pin by name.
 
@@ -52,27 +53,6 @@ def _fresh_prefix() -> str:
     return f"anonymizetest{uuid4().hex}"
 
 
-def _leaves(value: Any) -> list[Any]:
-    """
-    collect every leaf under a details value, depth first.
-
-    :param value: a details value (leaf, dict, list, or tuple)
-    :ptype value: Any
-    :return: every non-container value found beneath ``value``
-    :rtype: list[Any]
-    """
-    found: list[Any] = []
-    if isinstance(value, dict):
-        for child in value.values():
-            found.extend(_leaves(child))
-    elif isinstance(value, list | tuple):
-        for child in value:
-            found.extend(_leaves(child))
-    else:
-        found.append(value)
-    return found
-
-
 def _shape(value: Any) -> Any:
     """
     reduce a details value to its shape: keys, container types, None-ness.
@@ -93,6 +73,30 @@ def _shape(value: Any) -> Any:
         result = None
     else:
         result = "leaf"
+    return result
+
+
+def _mask_to_leaf(value: Any) -> Any:
+    """
+    collapse every subtree under a non-safe key to one leaf, so shapes compare at safe levels.
+
+    :param value: a value under a safe key
+    :ptype value: Any
+    :return: the same skeleton with each non-safe key's value replaced by ``"leaf"`` (or None)
+    :rtype: Any
+    """
+    result: Any
+    if isinstance(value, dict):
+        result = {
+            key: (_mask_to_leaf(child) if key in SAFE_DETAIL_KEYS else (None if child is None else "leaf"))
+            for key, child in value.items()
+        }
+    elif isinstance(value, list):
+        result = [_mask_to_leaf(child) for child in value]
+    elif isinstance(value, tuple):
+        result = tuple(_mask_to_leaf(child) for child in value)
+    else:
+        result = value
     return result
 
 
@@ -122,21 +126,29 @@ class TestMarkerAndClassification:
 
 
 class TestAnonymizeDetails:
-    """the rule itself: keep keys and structure, keep safe values, mask the rest."""
+    """the rule itself: keep keys and the safe skeleton, keep safe values, mask the rest whole."""
 
-    def test_every_key_is_kept_and_nested_structure_is_preserved(self) -> None:
-        """no key disappears at any depth, and every container keeps its type and length."""
+    def test_every_top_level_key_and_the_safe_skeleton_are_kept(self) -> None:
+        """no top-level key disappears, and structure beneath safe keys keeps its keys and types."""
         details = {
             "tool_name": "fs_write",
             "failure_reason": "could not write /home/alice/notes.md",
-            "nested": {"email": "alice@example.com", "count": 3, "deeper": {"name": "Alice"}},
-            "items": [{"name": "Bob", "user_id": "0190..."}, "free text", 7],
-            "pair": ("a", "b"),
+            "nested": {"email": "alice@example.com", "count": 3},
+            "platform_repointed": {"member_count": 3, "email": "alice@example.com"},
+            "tool_names": [{"version": 2, "name": "Bob"}, "fs_edit"],
+            "retired_connection_ids": ("a", "b"),
         }
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
-        assert _shape(anonymized) == _shape(details)
+        assert anonymized == {
+            "tool_name": "fs_write",
+            "failure_reason": ANONYMIZED_MARKER,
+            "nested": ANONYMIZED_MARKER,
+            "platform_repointed": {"member_count": 3, "email": ANONYMIZED_MARKER},
+            "tool_names": [{"version": 2, "name": ANONYMIZED_MARKER}, "fs_edit"],
+            "retired_connection_ids": ("a", "b"),
+        }
 
     def test_values_under_safe_keys_are_untouched(self) -> None:
         """a safe key's value comes back identical, whatever its type."""
@@ -156,17 +168,38 @@ class TestAnonymizeDetails:
         assert anonymized == details
         assert anonymized["agent_id"] is agent_id
 
-    def test_every_unsafe_leaf_is_replaced_by_the_marker(self) -> None:
-        """every leaf under a non-safe key becomes the marker, whatever its type."""
-        details = {
-            "failure_reason": "boom: alice@example.com",
-            "value": {"street": "1 Main St", "zip": 12345, "active": True, "score": 0.5},
-            "partial_keys": ["name", "email"],
-        }
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("boom: alice@example.com", id="text"),
+            pytest.param(5551234567, id="integer"),
+            pytest.param(True, id="bool"),
+            pytest.param(0.5, id="float"),
+            pytest.param({"street": "1 Main St", "zip": 12345}, id="dict"),
+            pytest.param(["name", "email"], id="list"),
+            pytest.param(("name", "email"), id="tuple"),
+            pytest.param({}, id="empty-dict"),
+            pytest.param([], id="empty-list"),
+        ],
+    )
+    def test_the_whole_value_under_an_unsafe_key_becomes_the_marker(self, value: Any) -> None:
+        """whatever sits under an unsafe key -- a leaf or a whole subtree -- is replaced by the marker.
+
+        :param value: the value published under an unsafe key
+        :ptype value: Any
+        """
+        anonymized = anonymize_details({"failure_reason": value}, event_type=_PLAIN_EVENT)
+
+        assert anonymized == {"failure_reason": ANONYMIZED_MARKER}
+
+    def test_keys_a_user_chose_under_an_unsafe_key_do_not_survive(self) -> None:
+        """``doc_set`` publishes the user's document under ``value``; its field names are the user's content."""
+        details = {"value": {"alice@example.com": {"diagnosis": "flu"}, "Alice Liddell": [1, 2]}}
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
-        assert all(leaf == ANONYMIZED_MARKER for leaf in _leaves(anonymized))
+        assert anonymized == {"value": ANONYMIZED_MARKER}
+        assert "alice" not in repr(anonymized).lower()
 
     def test_an_unclassified_key_fails_safe_to_the_marker(self) -> None:
         """a key on neither list is masked: nobody classified it, so it cannot leak."""
@@ -178,23 +211,19 @@ class TestAnonymizeDetails:
 
     def test_an_unclassified_key_nested_under_a_safe_key_fails_safe(self) -> None:
         """a dict under a safe key is judged key by key; its unknown keys are masked."""
-        details = {"platform_repointed": {"member_count": 3, _UNCLASSIFIED_KEY: "Alice"}}
+        details = {"platform_repointed": {"member_count": 3, _UNCLASSIFIED_KEY: {"name": "Alice"}}}
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
         assert anonymized == {"platform_repointed": {"member_count": 3, _UNCLASSIFIED_KEY: ANONYMIZED_MARKER}}
 
-    def test_a_safe_key_inside_an_unsafe_subtree_is_still_masked(self) -> None:
-        """beneath an unsafe key the keys are the user's, not the platform's; a safe spelling earns nothing.
-
-        ``doc_set`` publishes the value it wrote under ``value``. a user document
-        whose own field happens to be spelled ``status`` must not be kept.
-        """
+    def test_a_safe_spelling_inside_an_unsafe_subtree_earns_nothing(self) -> None:
+        """a user document whose own field happens to be spelled ``status`` is not kept."""
         details = {"value": {"status": "Alice's diagnosis", "version": 2}}
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
-        assert anonymized == {"value": {"status": ANONYMIZED_MARKER, "version": ANONYMIZED_MARKER}}
+        assert anonymized == {"value": ANONYMIZED_MARKER}
 
     def test_a_list_under_a_safe_key_keeps_its_leaves(self) -> None:
         """a list of structural values under a safe key survives whole."""
@@ -213,30 +242,31 @@ class TestAnonymizeDetails:
 
         assert anonymized == {"tool_names": [{"version": 2, _UNCLASSIFIED_KEY: ANONYMIZED_MARKER}]}
 
-    def test_a_tuple_comes_back_a_tuple(self) -> None:
-        """same shape includes the container type, not just the nesting."""
-        details = {"partial_keys": ("name", "email")}
+    def test_a_tuple_under_a_safe_key_comes_back_a_tuple(self) -> None:
+        """the kept skeleton includes the container type, not just the nesting."""
+        details = {"tool_names": ("fs_write", "fs_edit")}
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
-        assert anonymized == {"partial_keys": (ANONYMIZED_MARKER, ANONYMIZED_MARKER)}
+        assert anonymized == {"tool_names": ("fs_write", "fs_edit")}
+        assert isinstance(anonymized["tool_names"], tuple)
 
     @pytest.mark.parametrize("key", ["failure_reason", _UNCLASSIFIED_KEY, "duration_ms"])
     def test_none_stays_none(self, key: str) -> None:
-        """None carries nothing to anonymize and stays None under any key."""
-        details = {key: None, "nested": {key: None}, "items": [None]}
+        """None carries nothing to anonymize and stays None under any key, at any safe depth."""
+        details = {key: None, "platform_repointed": {key: None}, "tool_names": [None]}
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
-        assert anonymized == {key: None, "nested": {key: None}, "items": [None]}
+        assert anonymized == {key: None, "platform_repointed": {key: None}, "tool_names": [None]}
 
-    def test_empty_containers_stay_empty(self) -> None:
-        """an empty dict or list has no leaf to mask and keeps its type."""
-        details: dict[str, Any] = {"value": {}, "partial_keys": [], "empty": ()}
+    def test_empty_containers_under_safe_keys_stay_empty(self) -> None:
+        """an empty dict or list under a safe key keeps its type."""
+        details: dict[str, Any] = {"platform_repointed": {}, "tool_names": [], "retired_connection_ids": ()}
 
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
-        assert anonymized == {"value": {}, "partial_keys": [], "empty": ()}
+        assert anonymized == {"platform_repointed": {}, "tool_names": [], "retired_connection_ids": ()}
 
     def test_empty_details_are_empty(self) -> None:
         """nothing in, nothing out."""
@@ -418,9 +448,17 @@ class TestProperties:
     """the rule's promises, over arbitrary JSON-shaped details."""
 
     @given(details=_DETAILS)
-    def test_shape_is_preserved(self, details: dict[str, Any]) -> None:
-        """every key at every depth, every container, and every None survive."""
-        assert _shape(anonymize_details(details, event_type=_PLAIN_EVENT)) == _shape(details)
+    def test_every_top_level_key_survives(self, details: dict[str, Any]) -> None:
+        """erasure never deletes a key."""
+        assert anonymize_details(details, event_type=_PLAIN_EVENT).keys() == details.keys()
+
+    @given(details=_DETAILS)
+    def test_the_skeleton_under_safe_keys_is_preserved(self, details: dict[str, Any]) -> None:
+        """beneath a safe key the containers, their keys and every None survive."""
+        anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
+
+        for key in details.keys() & SAFE_DETAIL_KEYS:
+            assert _shape(_mask_to_leaf(anonymized[key])) == _shape(_mask_to_leaf(details[key]))
 
     @given(details=_DETAILS)
     def test_anonymization_is_idempotent(self, details: dict[str, Any]) -> None:
@@ -431,13 +469,13 @@ class TestProperties:
 
     @given(details=_DETAILS)
     def test_nothing_under_a_non_safe_key_survives(self, details: dict[str, Any]) -> None:
-        """beneath any top-level key that is not safe, every leaf is the marker or None."""
+        """the whole value under any top-level key that is not safe is the marker, or None if it was None."""
         anonymized = anonymize_details(details, event_type=_PLAIN_EVENT)
 
         for key, value in anonymized.items():
             if key in SAFE_DETAIL_KEYS:
                 continue
-            assert all(leaf is None or leaf == ANONYMIZED_MARKER for leaf in _leaves(value))
+            assert value == (None if details[key] is None else ANONYMIZED_MARKER)
 
     @given(details=_DETAILS)
     def test_the_input_is_never_mutated(self, details: dict[str, Any]) -> None:
