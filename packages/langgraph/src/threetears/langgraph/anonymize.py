@@ -3,7 +3,7 @@
 person erasure keeps the conversation. every checkpoint and pending write stays, every id
 stays (thread, checkpoint, message, task), and the text of every message stays for
 analysis. what changes is each stored field that IDENTIFIES the person, in place, to
-:data:`threetears.agent.audit.ANONYMIZED_MARKER` -- the platform's one erasure marker.
+:data:`threetears.observe.erasure.ANONYMIZED_MARKER` -- the platform's one erasure marker.
 
 **the rule, in one place.**
 
@@ -36,7 +36,7 @@ from typing import Any, Final
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from threetears.agent.audit import ANONYMIZED_MARKER
+from threetears.observe.erasure import ANONYMIZED_MARKER
 
 __all__ = [
     "IDENTIFYING_METADATA_KEYS",

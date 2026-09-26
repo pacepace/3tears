@@ -65,6 +65,11 @@ from typing import Any, Final
 
 from threetears.observe import get_logger
 
+# the platform's one erasure marker, homed in 3tears-observe so the checkpoint saver shares
+# its spelling without depending on this package; re-exported here as part of this module's
+# erasure API.
+from threetears.observe.erasure import ANONYMIZED_MARKER
+
 __all__ = [
     "ANONYMIZED_MARKER",
     "PERSONAL_DETAIL_KEYS",
@@ -78,11 +83,6 @@ __all__ = [
 
 
 log = get_logger(__name__)
-
-
-#: the value every anonymized leaf becomes. fixed text rather than ``None`` so an
-#: erased value reads as erased, distinct from a value that was never there.
-ANONYMIZED_MARKER: Final[str] = "[anonymized]"
 
 
 #: keys whose value is structural wherever the platform publishes them. one line

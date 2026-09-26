@@ -431,8 +431,8 @@ class TestAFailedStoreWrite:
 class TestTheSubscriptWritePath:
     """``collection[id] = row`` writes L1 and L2 before L3; a refused L3 write must withdraw both."""
 
-    async def test_a_refused_background_write_is_withdrawn_from_every_tier(self, registry: CollectionRegistry) -> None:
-        """after the fire-and-forget write loses, neither L1 nor L2 still holds its row."""
+    async def test_a_raising_background_write_is_withdrawn_from_every_tier(self, registry: CollectionRegistry) -> None:
+        """after the fire-and-forget write RAISES, neither L1 nor L2 still holds its row."""
         nats = _nats()
         coll = RacingStoreCollection(registry, nats)
         coll.rows[_KEY] = {**_stored(["a"]), "date_updated": datetime(2026, 2, 1, tzinfo=UTC)}
@@ -444,6 +444,23 @@ class TestTheSubscriptWritePath:
         await asyncio.gather(*pending)
 
         coll.fail_with = None
+        assert coll.get_row_sync(_KEY) is None
+        assert f"{_SCOPE}.{_TABLE}.{_KEY}" not in nats.store
+        assert _members(await coll.ensure(_KEY)) == ["a"]
+
+    async def test_a_background_write_that_affects_no_row_is_withdrawn_from_every_tier(
+        self, registry: CollectionRegistry
+    ) -> None:
+        """the store answers 0 rows (the stored row's fence differs): L1 and L2 must not keep the value L3 refused."""
+        nats = _nats()
+        coll = RacingStoreCollection(registry, nats)
+        coll.rows[_KEY] = {**_stored(["a"]), "date_updated": datetime(2026, 2, 1, tzinfo=UTC)}
+
+        coll[_KEY] = _stored(["b"])
+        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        await asyncio.gather(*pending)
+
+        assert _members(coll.rows[_KEY]) == ["a"], "the store refused the write"
         assert coll.get_row_sync(_KEY) is None
         assert f"{_SCOPE}.{_TABLE}.{_KEY}" not in nats.store
         assert _members(await coll.ensure(_KEY)) == ["a"]

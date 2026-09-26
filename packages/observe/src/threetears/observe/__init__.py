@@ -29,6 +29,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
 from threetears.observe.background import spawn_background
+from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.observe.health import HealthCheck, HealthServer, HealthTier
 from threetears.observe.inflight import InflightRequestsGauge
 from threetears.observe.logging import (
@@ -48,6 +49,7 @@ from threetears.observe.resilience import retry_with_backoff
 from threetears.observe.tracing import set_span_attribute, traced
 
 __all__ = [
+    "ANONYMIZED_MARKER",
     "ContextFormatter",
     "HealthCheck",
     "HealthServer",

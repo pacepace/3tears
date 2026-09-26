@@ -1715,12 +1715,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype batch_size: int
         :return: what was rewritten
         :rtype: CheckpointAnonymization
-        :raises TypeError: when customer is neither None nor a UUID
+        :raises TypeError: when thread_ids is a bare string, or customer is neither None nor a UUID
         :raises ValueError: when the customer cannot be reconciled with the scope, when
             ``batch_size`` is below 1, or when a rewritten blob would change its
             serialization type
         :raises Exception: whatever the executor or a cache eviction raises
         """
+        if isinstance(thread_ids, str):
+            raise TypeError(f"thread_ids must be a collection of thread ids, not the bare string {thread_ids!r}")
         if batch_size < 1:
             raise ValueError(f"batch_size must be at least 1; received {batch_size}")
         resolved = self._scope.customer_for_operation(customer, operation="aanonymize_threads")

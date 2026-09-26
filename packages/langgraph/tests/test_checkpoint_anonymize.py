@@ -23,7 +23,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 
-from threetears.agent.audit import ANONYMIZED_MARKER
+from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.langgraph import (
     IDENTIFYING_METADATA_KEYS,
     AsyncQueryExecutor,
@@ -235,6 +235,49 @@ class SweepingL2Cache(CheckpointL2Cache, CheckpointL2PrefixCache):
             del self.store[key]
 
 
+class ExactKeyL2Cache(CheckpointL2Cache):
+    """a shared L2 with only exact-key deletes, the shape most adapters have."""
+
+    def __init__(self) -> None:
+        """start empty.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.store: dict[tuple[str, str], bytes] = {}
+
+    async def get(self, bucket: str, key: str) -> bytes | None:
+        """
+        :param bucket: bucket
+        :ptype bucket: str
+        :param key: key
+        :ptype key: str
+        :return: value, or None
+        :rtype: bytes | None
+        """
+        return self.store.get((bucket, key))
+
+    async def put(self, bucket: str, key: str, value: bytes) -> None:
+        """
+        :param bucket: bucket
+        :ptype bucket: str
+        :param key: key
+        :ptype key: str
+        :param value: value
+        :ptype value: bytes
+        """
+        self.store[(bucket, key)] = value
+
+    async def delete(self, bucket: str, key: str) -> None:
+        """
+        :param bucket: bucket
+        :ptype bucket: str
+        :param key: key
+        :ptype key: str
+        """
+        self.store.pop((bucket, key), None)
+
+
 class ChatState(TypedDict):
     """the shape an agent graph's state has: messages plus the merged metadata channel."""
 
@@ -414,6 +457,7 @@ class TestAnonymizingAThread:
         assert result.threads == 1
         assert result.checkpoints_rewritten > 0
         assert result.writes_rewritten > 0
+        assert result.l2_prefix_swept is None, "no L2, so there was nothing to sweep"
 
     async def test_the_graph_loads_with_content_and_ids_intact(self, executor: SqliteQueryExecutor) -> None:
         """the state reloads through the real serializer: text and ids unchanged, identity masked."""
@@ -516,6 +560,15 @@ class TestAnonymizingAThread:
 
         assert not _leaks(executor)
 
+    async def test_a_bare_string_is_refused_before_any_statement(self, executor: SqliteQueryExecutor) -> None:
+        """``aanonymize_threads("t-1")`` would iterate characters and rewrite nothing the caller meant."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+
+        with pytest.raises(TypeError, match="bare string"):
+            await saver.aanonymize_threads(_THREAD)
+
+        assert executor.statements == []
+
     @pytest.mark.parametrize("batch_size", [0, -1])
     async def test_a_nonsensical_batch_is_refused(self, executor: SqliteQueryExecutor, batch_size: int) -> None:
         """a batch of nothing would page forever.
@@ -550,6 +603,20 @@ class TestTheCachesAreEvicted:
         assert result.l2_prefix_swept is True
         reread = await graph.aget_state(_config())
         assert reread.values["messages"][0].name == ANONYMIZED_MARKER
+
+    async def test_an_l2_that_cannot_sweep_evicts_the_root_key_and_says_so(self, executor: SqliteQueryExecutor) -> None:
+        """exact-key only: the root bundle goes, and the result reports the sweep did not happen."""
+        l2 = ExactKeyL2Cache()
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED, l2_cache=l2)
+        graph = _graph(saver)
+        await graph.ainvoke(_turn(), _config())
+        await graph.aget_state(_config())
+        assert any(key[1] == _THREAD for key in l2.store)
+
+        result = await saver.aanonymize_threads([_THREAD])
+
+        assert not any(key[1] == _THREAD for key in l2.store)
+        assert result.l2_prefix_swept is False
 
     async def test_a_failed_l2_eviction_fails_the_erasure(self, executor: SqliteQueryExecutor) -> None:
         """a shared cache still serving the name is the failure erasure exists to prevent, so it raises."""

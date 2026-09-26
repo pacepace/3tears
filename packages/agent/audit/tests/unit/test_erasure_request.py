@@ -72,8 +72,8 @@ class _ScriptedRequests:
         reply = self._replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        # the hub echoes the correlation id it was sent.
-        reply = {**reply, "correlation_id": self.sent[-1][1]["correlation_id"]}
+        # the hub echoes the correlation id it was sent, unless the script says otherwise.
+        reply = {"correlation_id": self.sent[-1][1]["correlation_id"], **reply}
         return json.dumps(reply).encode()
 
 
@@ -189,6 +189,47 @@ class TestTheClient:
 
         assert refused.value.error_code == "AGENT_MISMATCH"
         assert isinstance(refused.value, AuditAnonymizeError)
+
+    async def test_a_failed_anonymization_is_retryable_not_a_refusal(self) -> None:
+        """``ANONYMIZE_FAILED`` means the hub verified the caller and then failed: retry is safe."""
+        nats = _ScriptedRequests({"success": False, "error_code": "ANONYMIZE_FAILED", "error_message": "db down"})
+
+        with pytest.raises(AuditAnonymizeUnavailableError) as raised:
+            await _call(nats, [uuid7()])
+
+        assert not isinstance(raised.value, AuditAnonymizeRefusedError)
+        assert "ANONYMIZE_FAILED" in str(raised.value)
+
+    @pytest.mark.parametrize("code", ["INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH"])
+    async def test_every_other_code_is_a_refusal(self, code: str) -> None:
+        """the codes a retry would meet again are refusals.
+
+        :param code: a non-retryable refusal code
+        :ptype code: str
+        """
+        nats = _ScriptedRequests({"success": False, "error_code": code, "error_message": "no"})
+
+        with pytest.raises(AuditAnonymizeRefusedError):
+            await _call(nats, [uuid7()])
+
+    async def test_a_reply_to_a_different_request_is_not_an_answer(self) -> None:
+        """a stray reply carrying another request's correlation id is unavailable, never counted."""
+        nats = _ScriptedRequests({**_success(1, 1), "correlation_id": str(uuid7())})
+
+        with pytest.raises(AuditAnonymizeUnavailableError, match="correlation"):
+            await _call(nats, [uuid7()])
+
+    async def test_errors_name_the_batch_they_came_from(self) -> None:
+        """a refusal and an unavailability both carry the batch's correlation id, for the operator."""
+        refused = _ScriptedRequests({"success": False, "error_code": "AGENT_MISMATCH", "error_message": "no"})
+        with pytest.raises(AuditAnonymizeRefusedError) as refusal:
+            await _call(refused, [uuid7()])
+        unavailable = _ScriptedRequests(RequestTimeoutError("request timed out"))
+        with pytest.raises(AuditAnonymizeUnavailableError) as timeout:
+            await _call(unavailable, [uuid7()])
+
+        assert refused.sent[0][1]["correlation_id"] in str(refusal.value)
+        assert unavailable.sent[0][1]["correlation_id"] in str(timeout.value)
 
     async def test_a_timeout_raises_unavailable(self) -> None:
         """a hub that does not answer is retryable, and distinct from a refusal."""

@@ -1729,10 +1729,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # This path is fire-and-forget: there is no caller left to
                 # hand a rowcount back to, and no exception is raised when a
                 # CAS fence rejects the write. On an unconditionally fenced
-                # collection that makes a 0 here a LOST WRITE -- L1 and L2
-                # already hold the new value while L3 kept the old one. Say
-                # so. (Left silent for unfenced collections, where 0 is the
-                # ordinary "DO NOTHING matched" outcome, not a loss.)
+                # collection a 0 here is a LOST WRITE -- the caller's value
+                # never reached L3 -- so say so. Left silent for unfenced
+                # collections, where 0 is the ordinary "DO NOTHING matched"
+                # outcome.
                 if rows_affected == 0 and self.emits_cas_fence:
                     log.error(
                         "Background L3 write lost its CAS race and was dropped; "

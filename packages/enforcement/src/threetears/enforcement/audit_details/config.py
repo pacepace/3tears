@@ -38,7 +38,7 @@ class AuditDetailsConfig:
         clean repo reports.
     :ivar safe_keys_for: the safe-key lookup for an event type; pass
         :func:`threetears.agent.audit.safe_detail_keys_for`. Called with ``""`` for a
-        construction whose ``event_type`` is not a literal, which yields the platform
+        construction whose ``event_type`` cannot be resolved, which yields the platform
         set with no family credit.
     :ivar personal_keys: keys classified as personal; pass
         :data:`threetears.agent.audit.PERSONAL_DETAIL_KEYS`.

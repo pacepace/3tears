@@ -107,6 +107,12 @@ class TestMarkerAndClassification:
         """the marker is fixed text a reader recognises as an erasure."""
         assert ANONYMIZED_MARKER == "[anonymized]"
 
+    def test_marker_has_one_source(self) -> None:
+        """the audit package re-exports the platform marker; it does not define a second one."""
+        from threetears.observe.erasure import ANONYMIZED_MARKER as platform_marker
+
+        assert ANONYMIZED_MARKER is platform_marker
+
     def test_safe_and_personal_sets_are_disjoint(self) -> None:
         """a key cannot be both kept and masked; the two records must not overlap."""
         assert SAFE_DETAIL_KEYS

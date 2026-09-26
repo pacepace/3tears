@@ -94,6 +94,11 @@ AUDIT_ANONYMIZE_ERROR_CODES: Final[frozenset[str]] = frozenset(
     {"INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH", "ANONYMIZE_FAILED"}
 )
 
+#: the codes a retry can get past. the client raises :class:`AuditAnonymizeUnavailableError`
+#: for these and :class:`AuditAnonymizeRefusedError` for every other code, a code a newer hub
+#: added included, because an unknown refusal is not known to be transient.
+_RETRYABLE_ERROR_CODES: Final[frozenset[str]] = frozenset({"ANONYMIZE_FAILED"})
+
 
 class AuditAnonymizeError(Exception):
     """base of every way an audit anonymization request does not complete."""
@@ -102,28 +107,41 @@ class AuditAnonymizeError(Exception):
 class AuditAnonymizeRefusedError(AuditAnonymizeError):
     """the hub answered and refused; retrying the same request will be refused again.
 
-    :ivar error_code: the hub's code, one of :data:`AUDIT_ANONYMIZE_ERROR_CODES` (or an
-        unknown one a newer hub sent)
+    raised for ``INVALID_REQUEST``, ``IDENTITY_UNVERIFIED``, ``AGENT_MISMATCH``, and any code
+    a newer hub sends that this client does not know. ``ANONYMIZE_FAILED`` is not a refusal:
+    the hub verified the caller and then failed, and that is
+    :class:`AuditAnonymizeUnavailableError`.
+
+    :ivar error_code: the hub's code
     :ivar error_message: the hub's description, for an operator
+    :ivar correlation_id: the refused batch's correlation id
     """
 
-    def __init__(self, error_code: str, error_message: str) -> None:
+    def __init__(self, error_code: str, error_message: str, *, correlation_id: UUID) -> None:
         """
         :param error_code: the hub's refusal code
         :ptype error_code: str
         :param error_message: the hub's description
         :ptype error_message: str
+        :param correlation_id: the refused batch's correlation id
+        :ptype correlation_id: UUID
         """
         self.error_code = error_code
         self.error_message = error_message
-        super().__init__(f"audit anonymization refused: {error_code}: {error_message}")
+        self.correlation_id = correlation_id
+        super().__init__(
+            f"audit anonymization refused: {error_code}: {error_message} (correlation_id={correlation_id})"
+        )
 
 
 class AuditAnonymizeUnavailableError(AuditAnonymizeError):
-    """no usable answer: no identity token, a timeout or transport failure, or a malformed reply.
+    """no usable answer, or a hub failure after it verified the caller.
 
-    safe to retry: the hub's rule is idempotent, so a request that did land and whose
-    answer was lost changes nothing the second time.
+    covers no identity token, a timeout or transport failure, a reply that does not
+    decode, a success without counts or for another agent, a reply to a different
+    request, and the hub's ``ANONYMIZE_FAILED``. safe to retry: the hub's rule is
+    idempotent, so a batch that did land and whose answer was lost, or that failed part
+    way, changes nothing it already changed the second time.
     """
 
 
@@ -221,9 +239,11 @@ async def request_audit_anonymization(
     :ptype timeout_seconds: float
     :return: the rows matched and changed, summed over the batches
     :rtype: AuditAnonymization
-    :raises AuditAnonymizeRefusedError: when the hub refuses a batch
-    :raises AuditAnonymizeUnavailableError: on no token, a transport failure or timeout,
-        a reply that does not decode, a success without counts, or one for another agent
+    :raises AuditAnonymizeRefusedError: when the hub refuses a batch with ``INVALID_REQUEST``,
+        ``IDENTITY_UNVERIFIED``, ``AGENT_MISMATCH`` or a code this client does not know
+    :raises AuditAnonymizeUnavailableError: on no token, a transport failure or timeout, a
+        reply that does not decode, a reply to a different request, a success without counts
+        or for another agent, or the hub's ``ANONYMIZE_FAILED``
     """
     actors = list(dict.fromkeys(actor_user_ids))
     if not actors:
@@ -281,9 +301,20 @@ async def _send(nats_client: NatsClient, request: AuditAnonymizeRequest, *, time
     :ptype timeout_seconds: float
     :return: the batch's counts
     :rtype: _Counted
-    :raises AuditAnonymizeRefusedError: when the hub refuses
-    :raises AuditAnonymizeUnavailableError: when there is no usable answer
+    :raises AuditAnonymizeRefusedError: when the hub refuses with a non-retryable code
+    :raises AuditAnonymizeUnavailableError: when there is no usable answer, or the hub
+        reports ``ANONYMIZE_FAILED``
     """
+    correlation_id = request.correlation_id
+    log.debug(
+        "audit anonymization batch sent",
+        extra={
+            "extra_data": {
+                "correlation_id": str(correlation_id),  # convert at border: log extra_data
+                "actors": len(request.actor_user_ids),
+            }
+        },
+    )
     try:
         raw = await nats_client.request_raw(
             subject=Subjects.hub_audit_anonymize(),
@@ -291,17 +322,48 @@ async def _send(nats_client: NatsClient, request: AuditAnonymizeRequest, *, time
             timeout=timedelta(seconds=timeout_seconds),
         )
     except RequestError as exc:
-        raise AuditAnonymizeUnavailableError(f"audit anonymization request failed: {exc}") from exc
+        raise AuditAnonymizeUnavailableError(
+            f"audit anonymization request failed (correlation_id={correlation_id}): {exc}"
+        ) from exc
     try:
         reply = AuditAnonymizeReply.model_validate_json(raw)
     except ValidationError as exc:
-        raise AuditAnonymizeUnavailableError(f"audit anonymization reply did not decode: {exc}") from exc
+        raise AuditAnonymizeUnavailableError(
+            f"audit anonymization reply did not decode (correlation_id={correlation_id}): {exc}"
+        ) from exc
+    if reply.correlation_id != correlation_id:
+        # a stray reply -- a late answer to an earlier request, or a hub bug -- is not an answer
+        # to this batch, and its counts are not this batch's.
+        raise AuditAnonymizeUnavailableError(
+            f"audit anonymization reply carried correlation_id={reply.correlation_id}, not this batch's "
+            f"{correlation_id}"
+        )
+    if not reply.success and reply.error_code in _RETRYABLE_ERROR_CODES:
+        raise AuditAnonymizeUnavailableError(
+            f"audit anonymization failed hub-side (correlation_id={correlation_id}): "
+            f"{reply.error_code}: {reply.error_message or 'no details'}"
+        )
     if not reply.success:
-        raise AuditAnonymizeRefusedError(reply.error_code or "UNKNOWN", reply.error_message or "no details")
+        raise AuditAnonymizeRefusedError(
+            reply.error_code or "UNKNOWN", reply.error_message or "no details", correlation_id=correlation_id
+        )
     if reply.rows_matched is None or reply.rows_changed is None:
-        raise AuditAnonymizeUnavailableError("audit anonymization reported success but carried no counts")
+        raise AuditAnonymizeUnavailableError(
+            f"audit anonymization reported success but carried no counts (correlation_id={correlation_id})"
+        )
     if reply.agent_id != request.agent_id:
         raise AuditAnonymizeUnavailableError(
-            "audit anonymization reply names a different agent than this pod; its counts are not this pod's"
+            "audit anonymization reply names a different agent than this pod; its counts are not this pod's "
+            f"(correlation_id={correlation_id})"
         )
+    log.debug(
+        "audit anonymization batch answered",
+        extra={
+            "extra_data": {
+                "correlation_id": str(correlation_id),  # convert at border: log extra_data
+                "rows_matched": reply.rows_matched,
+                "rows_changed": reply.rows_changed,
+            }
+        },
+    )
     return _Counted(rows_matched=reply.rows_matched, rows_changed=reply.rows_changed)

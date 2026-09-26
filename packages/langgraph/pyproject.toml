@@ -23,8 +23,6 @@ classifiers = [
 ]
 dependencies = [
     "3tears>=0.54.0,<0.55.0",
-    # the platform's one erasure marker (ANONYMIZED_MARKER), which checkpoint anonymization writes.
-    "3tears-agent-audit>=0.54.0,<0.55.0",
     "3tears-media-contracts>=0.54.0,<0.55.0",
     "3tears-observe>=0.54.0,<0.55.0",
     "langchain>=1.0",
@@ -43,7 +41,6 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears = { workspace = true }
-3tears-agent-audit = { workspace = true }
 3tears-media-contracts = { workspace = true }
 3tears-observe = { workspace = true }
 

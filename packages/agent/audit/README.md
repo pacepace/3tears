@@ -1,6 +1,7 @@
 # 3tears-agent-audit
 
-Unified audit envelope + fire-and-forget publish helper for the 3tears platform.
+Unified audit envelope, fire-and-forget publish helper, and the erasure rule and
+hub request for anonymizing audit records, for the 3tears platform.
 
 ## Purpose
 
@@ -12,8 +13,10 @@ domain-specific envelopes (`WorkspaceAuditEnvelope`,
 and made cross-domain audit queries require a UNION.
 
 The package is pure Python with no NATS consumer code and no Postgres code.
-Publish is the only direction: a consumer-side audit consumer owns
-persistence to the audit events table.
+It publishes events, and it asks the hub to anonymize the audit rows an agent
+published (`request_audit_anonymization`); it never persists or rewrites a row
+itself. Persistence to the audit events table, and applying the erasure rule to
+it, are the hub's.
 
 ## Public API
 
@@ -85,11 +88,12 @@ The hub holds the audit rows an agent's events became. This asks it to anonymize
 ones that agent published about those actors, on `{ns}.hub.audit.anonymize`
 (`Subjects.hub_audit_anonymize()`), with the same rule as above: rows kept, ids kept,
 `details` and `ip_address` anonymized. The hub takes the agent from the verified identity
-token and touches only rows whose agent is the caller. A refusal raises
-`AuditAnonymizeRefusedError` (with the hub's `error_code`); no token, a timeout, or a
-reply that does not decode raises `AuditAnonymizeUnavailableError`, which is safe to
-retry. The contract, including every obligation of the hub's responder, is the
-docstring of `threetears/agent/audit/erasure.py`.
+token and touches only rows whose agent is the caller. A refusal (`INVALID_REQUEST`,
+`IDENTITY_UNVERIFIED`, `AGENT_MISMATCH`) raises `AuditAnonymizeRefusedError` with the
+hub's `error_code`, and retrying meets it again. No token, a timeout, a reply that does
+not decode or answers a different request, and the hub's `ANONYMIZE_FAILED` raise
+`AuditAnonymizeUnavailableError`, which is safe to retry. The contract, including every
+obligation of the hub's responder, is the docstring of `threetears/agent/audit/erasure.py`.
 
 ## Design commitments
 

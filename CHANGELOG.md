@@ -105,10 +105,13 @@ asking the hub lives here, so neither side owns it.
   on the new subject `Subjects.hub_audit_anonymize()` (`{ns}.hub.audit.anonymize`, under
   `hub.` because the durable audit stream captures `{ns}.audit.>`). Duplicates are
   dropped, a list longer than `MAX_ANONYMIZE_ACTORS` (500) goes in batches with counts
-  summed, and an empty list sends nothing. A refusal raises `AuditAnonymizeRefusedError`
-  (carrying the hub's `error_code`); no token, a timeout, an undecodable reply, a success
-  without counts, or a success naming another agent raises
-  `AuditAnonymizeUnavailableError`, which is safe to retry.
+  summed, and an empty list sends nothing. A refusal (`INVALID_REQUEST`,
+  `IDENTITY_UNVERIFIED`, `AGENT_MISMATCH`, or a code this client does not know) raises
+  `AuditAnonymizeRefusedError`, carrying the hub's `error_code`; retrying meets it again.
+  No token, a timeout, an undecodable reply, a reply to a different request (its
+  `correlation_id` is checked), a success without counts or naming another agent, and the
+  hub's `ANONYMIZE_FAILED` raise `AuditAnonymizeUnavailableError`, which is safe to retry.
+  Both errors name the batch's `correlation_id`.
 - **New (minor):** the wire models `AuditAnonymizeRequest` (identity token, correlation
   id, the caller's own `agent_id` for comparison, 1..500 `actor_user_ids`; extra fields
   refused) and `AuditAnonymizeReply` (counts or `error_code` / `error_message`), the error
@@ -120,6 +123,9 @@ asking the hub lives here, so neither side owns it.
   rows whose agent is the verified caller and whose `actor_user_id` is listed, apply
   `anonymize_details` / `anonymize_ip`, change nothing else, evict caches, and reply with
   the verified agent and the rows matched and changed.
+- **Requires the hub** to subscribe `{ns}.hub.audit.anonymize` and answer as above. Until
+  it does, every call raises `AuditAnonymizeUnavailableError` (no responders, or a
+  timeout) -- never a partial result.
 
 ### Search pacing is measured on an injectable clock
 
@@ -153,7 +159,11 @@ live inside serialized checkpoint and pending-write blobs.
   identifies the person; an unknown metadata key is KEPT, the inverse of the audit rule,
   because the `metadata` channel is working state (the injectors' ledgers) that the graph
   reads on resume.
-- `3tears-langgraph` now depends on `3tears-agent-audit`, for the platform's one marker.
+- **New (minor):** `threetears.observe.ANONYMIZED_MARKER` (`threetears.observe.erasure`),
+  the platform's one erasure marker, homed in the layer every package already depends on
+  so the checkpoint saver shares its spelling without depending on the audit package.
+  `threetears.agent.audit.ANONYMIZED_MARKER` is that same value, re-exported as part of the
+  audit erasure API.
 
 ### A write that did not reach L3 no longer answers from L1
 
