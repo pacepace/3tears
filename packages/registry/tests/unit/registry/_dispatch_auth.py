@@ -102,6 +102,7 @@ def make_authed_request(
     correlation_id: UUID | None = None,
     customer_id: UUID | None = None,
     customer_claim: str | None = None,
+    input_schema_digest: str | None = None,
 ) -> ProxyCallRequest:
     """create an AUTHENTICATED :class:`ProxyCallRequest`.
 
@@ -111,7 +112,8 @@ def make_authed_request(
     ``sub`` == the request's ``agent_id``) so routing / forwarding assertions still see the same
     agent; ``customer_id`` rides on the token so the re-stamped customer is observable too.
     ``customer_claim`` replaces the token's customer claim verbatim -- the platform sentinel makes
-    the caller a tool pod rather than an agent.
+    the caller a tool pod rather than an agent. ``input_schema_digest`` is the schema digest the
+    caller was shown in discovery, asking to be routed only to copies still serving it.
     """
     if arguments is None:
         arguments = {"expression": "2+2"}
@@ -152,4 +154,5 @@ def make_authed_request(
             identity_token=token,
         ),
         pop=pop,
+        input_schema_digest=input_schema_digest,
     )

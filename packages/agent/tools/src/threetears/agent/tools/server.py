@@ -15,7 +15,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import TearsTool, ToolResult
@@ -89,10 +89,12 @@ __all__ = [
     "DiscoveryProbeToolEntry",
     "HeartbeatMessage",
     "ProbeAck",
+    "RefusedTool",
     "RegistrationManifest",
     "RegistrationResponse",
     "ToolCallFailure",
     "ToolManifestEntry",
+    "ToolRegistrationRefused",
     "ToolServer",
     "nats_connect",
     "tool_namespace_id",
@@ -415,6 +417,28 @@ class RegistrationManifest(BaseModel):
     customer_id: UUID | None = None
 
 
+class RefusedTool(BaseModel):
+    """one tool the registry refused to admit from a manifest, and why.
+
+    :param name: the tool's mcp name as the manifest offered it
+    :ptype name: str
+    :param version: the tool's version as the manifest offered it
+    :ptype version: str
+    :param code: the machine-readable refusal code a pod branches on --
+        ``OWNED_ELSEWHERE``, ``NOT_PLATFORM_SHARED``, ``UNVERIFIED_PUBLISHER``,
+        ``POD_ID_MISMATCH``, ``INVALID_TOOL_NAME`` or ``OWNERSHIP_GRAPH_UNAVAILABLE``
+        (see ``threetears.registry.ownership.RefusalCode``)
+    :ptype code: str
+    :param reason: prose for the operator reading the pod's log; never parsed
+    :ptype reason: str
+    """
+
+    name: str
+    version: str
+    code: str
+    reason: str
+
+
 class RegistrationResponse(BaseModel):
     """the registry's reply to one registration manifest.
 
@@ -425,7 +449,7 @@ class RegistrationResponse(BaseModel):
     ``threetears.registry.registration`` re-exports it, so
     ``from threetears.registry import RegistrationResponse`` is unchanged.
 
-    :param success: whether registration succeeded
+    :param success: whether registration succeeded -- at least one tool was admitted
     :ptype success: bool
     :param pod_id: identifier of pod that attempted registration
     :ptype pod_id: str
@@ -440,15 +464,52 @@ class RegistrationResponse(BaseModel):
         verified auth context, never read off the manifest, so a pod cannot claim a
         namespace it does not own. Empty when there is nothing to name.
     :ptype owned_namespaces: list[str]
+    :param refused_tools: every tool the registry refused, with its code and reason. Filled
+        whether or not the registration as a whole succeeded: a pod that registered nine tools
+        and had the tenth refused is told about the tenth
+    :ptype refused_tools: list[RefusedTool]
     :param error: error message if registration failed
     :ptype error: str | None
+    :param error_code: machine-readable code for a failed registration, ``None`` on success
+    :ptype error_code: str | None
     """
 
     success: bool
     pod_id: str
     registered_tools: list[str] = []
     owned_namespaces: list[str] = []
+    refused_tools: list[RefusedTool] = []
     error: str | None = None
+    error_code: str | None = None
+
+
+class ToolRegistrationRefused(Exception):
+    """the registry refused one or more of this pod's own tools.
+
+    Raised by :meth:`ToolServer.wait_until_ready` the moment a refusal is known, rather than
+    after its timeout, and by :meth:`ToolServer.register_tool` for the tool it just added. The
+    message names every refused tool with its code and reason; :attr:`refused` carries them typed.
+
+    :param refused: the refused tools
+    :ptype refused: tuple[RefusedTool, ...]
+    :param pod_id: the pod whose tools were refused
+    :ptype pod_id: str
+    """
+
+    def __init__(self, refused: tuple[RefusedTool, ...], *, pod_id: str) -> None:
+        """record the refusals and build a message naming each one.
+
+        :param refused: the refused tools
+        :ptype refused: tuple[RefusedTool, ...]
+        :param pod_id: the pod whose tools were refused
+        :ptype pod_id: str
+        :return: nothing
+        :rtype: None
+        """
+        self.refused = refused
+        self.pod_id = pod_id
+        named = "; ".join(f"{tool.name}@{tool.version} {tool.code}: {tool.reason}" for tool in refused)
+        super().__init__(f"the registry refused {len(refused)} tool(s) of pod {pod_id}: {named}")
 
 
 #: how long a pod waits for the registration reply that names what it owns.
@@ -710,14 +771,35 @@ class DiscoveryProbeRequest(BaseModel):
     the pod can poll the registry without importing from the registry
     package (which would create a circular dependency).
 
+    ``pod_id`` is OMITTED from the serialized form when ``None``, so it never crosses the wire as
+    an explicit ``null``.
+
     :param agent_id: pod identifier standing in for agent_id in the wire
     :ptype agent_id: str
     :param tool_manifest: list of pinned tools to resolve
     :ptype tool_manifest: list[DiscoveryProbeToolEntry]
+    :param pod_id: the polling pod's own id, so the registry reports the state of THIS pod's copy
+        of each tool as ``requester_copy_status``
+    :ptype pod_id: str | None
     """
 
     agent_id: str
     tool_manifest: list[DiscoveryProbeToolEntry]
+    pod_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_pod_id(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """drop ``pod_id`` from the serialized form when it is ``None``.
+
+        :param handler: pydantic's default serializer
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized fields
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        if data.get("pod_id") is None:
+            data.pop("pod_id", None)
+        return data
 
 
 class DiscoveryProbeResultEntry(BaseModel):
@@ -732,11 +814,17 @@ class DiscoveryProbeResultEntry(BaseModel):
     :ptype version: str
     :param status: availability status reported by registry
     :ptype status: str
+    :param requester_copy_status: the state of the POLLING pod's own copy -- ``available``,
+        ``pending``, ``unavailable`` or ``absent`` -- or ``None`` when the request named no pod.
+        Readiness waits on this, not on ``status``: another pod's copy being available says
+        nothing about whether this pod's was admitted
+    :ptype requester_copy_status: str | None
     """
 
     name: str
     version: str
     status: str
+    requester_copy_status: str | None = None
 
 
 class DiscoveryProbeResponse(BaseModel):
@@ -1066,6 +1154,10 @@ class ToolServer:
         # the two would make "never asked" indistinguishable from "asked and told nothing",
         # and only one of those is worth retrying.
         self._owned_namespaces: tuple[str, ...] | None = None
+        # the tools the registry refused on the LAST reply this server heard. replaced whole on
+        # every reply -- the latest answer is the truth, so a refusal fixed upstream stops being
+        # reported the next time the pod asks -- which is why it is an immutable tuple.
+        self._refused_tools: tuple[RefusedTool, ...] = ()
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
         # per-key-identity connect credential provider (self-minted identity JWT). when set it is
@@ -1240,13 +1332,25 @@ class ToolServer:
         CONNECT from that same row, and the tool names it holds locally are LEAVES, which
         no rule can reduce back to their node.
 
-        ``None`` until a registration has been published with ``learn_identity=True`` AND
+        ``None`` until a registration has been published with ``await_reply=True`` AND
         answered. An empty tuple is a different thing: an answer that named nothing.
 
         :return: the owned namespace names, or ``None`` when not learned yet
         :rtype: tuple[str, ...] | None
         """
         return self._owned_namespaces
+
+    @property
+    def refused_tools(self) -> tuple[RefusedTool, ...]:
+        """the tools the registry refused on the last registration reply this server heard.
+
+        Empty until a reply names a refusal, and cleared by a later reply that names none. A
+        plain publish (the heartbeat's) hears no reply and changes nothing here.
+
+        :return: the refusals, in reply order
+        :rtype: tuple[RefusedTool, ...]
+        """
+        return self._refused_tools
 
     @property
     def pod_id(self) -> str:
@@ -1740,9 +1844,9 @@ class ToolServer:
             extra={"extra_data": {"subject": probe_subject.path}},
         )
 
-        # the ONE place the pod asks who it is. a re-publish does not need to re-ask, so the
-        # round trip is paid once rather than on every heartbeat.
-        await self.publish_registration(learn_identity=True)
+        # the ONE place the pod asks who it is and which of its tools were refused. a re-publish
+        # does not need to re-ask, so the round trip is paid once rather than on every heartbeat.
+        await self.publish_registration(await_reply=True)
 
         self._ready_event.set()
 
@@ -1790,18 +1894,29 @@ class ToolServer:
         ack = ProbeAck(pod_id=self._pod_id, ready=True)
         await self._nc.publish_reply(reply_subject=msg.reply_subject, message=ack)
 
-    async def wait_until_ready(self, timeout: float | None = None) -> bool:
-        """block until registry catalog reports every tool as available.
+    def _own_refusals(self) -> tuple[RefusedTool, ...]:
+        """the refusals that name a tool this server currently holds.
 
-        polls the registry's discovery subject with this pod's tool
-        manifest until the catalog reports every entry as 'available',
-        then returns True. unlike an event-driven probe-arrival signal,
-        this waits for the full probe -> mark_ready -> discovery round-
-        trip so routable state is guaranteed when the function returns
-        (no residual race where ``TOOL_NOT_READY`` could still fire for
-        a fresh caller). returns False on timeout. intended as the
-        developer-friendly substitute for ``asyncio.sleep(1.0)`` after
-        ``serve``.
+        :return: those refusals
+        :rtype: tuple[RefusedTool, ...]
+        """
+        return tuple(refusal for refusal in self._refused_tools if f"{refusal.name}@{refusal.version}" in self._tools)
+
+    async def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """block until the registry reports THIS pod's own copy of every tool available.
+
+        polls the registry's discovery subject with this pod's tool manifest AND its pod id, and
+        waits for each result's ``requester_copy_status`` -- the state of this pod's own copy --
+        to read ``available``. another pod's copy of the same name being available does not
+        count: a pod whose own copy was refused would otherwise come up "ready" serving nothing.
+
+        this waits for the full probe -> mark_ready -> discovery round-trip, so routable state is
+        guaranteed when the function returns (no residual race where ``TOOL_NOT_READY`` could
+        still fire for a fresh caller). returns False on timeout. intended as the
+        developer-friendly substitute for ``asyncio.sleep(1.0)`` after ``serve``.
+
+        a refusal is not waited out: when the last registration reply refused any of this pod's
+        own tools, :class:`ToolRegistrationRefused` is raised at once, naming each.
 
         :param timeout: seconds to wait before giving up. sourced
             from THREETEARS_TOOLSERVER_READY_TIMEOUT env var if not
@@ -1810,19 +1925,14 @@ class ToolServer:
         :return: True if ready within timeout, False on timeout
         :rtype: bool
         :raises RuntimeError: if called before ``serve`` connects NATS
+        :raises ToolRegistrationRefused: when the registry refused any of this pod's own tools
         """
         if self._nc is None:
             raise RuntimeError("wait_until_ready called before serve() connected NATS")
         effective_timeout = timeout if timeout is not None else _get_ready_timeout()
         deadline = asyncio.get_event_loop().time() + effective_timeout
         manifest_names = [
-            ToolManifestEntry(
-                name=t.mcp_schema().name,
-                version=t.mcp_schema().version,
-                description=t.mcp_schema().description,
-                input_schema=t.mcp_schema().input_schema,
-                timeout_seconds=t.mcp_schema().timeout_seconds,
-            )
+            DiscoveryProbeToolEntry(name=t.mcp_schema().name, version=t.mcp_schema().version)
             for t in self._tools.values()
         ]
         # a tool-less server has nothing to become ready for -- return True
@@ -1834,10 +1944,14 @@ class ToolServer:
         poll_interval = _get_ready_poll_interval()
         expected_count = len(manifest_names)
         while asyncio.get_event_loop().time() < deadline:
+            refused = self._own_refusals()
+            if refused:
+                raise ToolRegistrationRefused(refused, pod_id=self._pod_id)
             try:
                 request = DiscoveryProbeRequest(
                     agent_id=self._pod_id,
-                    tool_manifest=[DiscoveryProbeToolEntry(name=m.name, version=m.version) for m in manifest_names],
+                    pod_id=self._pod_id,
+                    tool_manifest=manifest_names,
                 )
                 request_timeout = timedelta(
                     seconds=min(
@@ -1851,8 +1965,8 @@ class ToolServer:
                     response_type=DiscoveryProbeResponse,
                     timeout=request_timeout,
                 )
-                available_count = sum(1 for tool in response.tools if tool.status == "available")
-                if available_count == expected_count:
+                own_available = sum(1 for tool in response.tools if tool.requester_copy_status == "available")
+                if own_available == expected_count:
                     ready = True
                     break
             except Exception as exc:
@@ -1901,12 +2015,34 @@ class ToolServer:
         The agent now performs no direct namespace write; the manifest
         publish is the only path.
 
+        **On a serving pod the reply is awaited**, and a refusal of the tool
+        just added raises :class:`ToolRegistrationRefused` -- the tool stays
+        registered locally and is re-offered on every heartbeat, so a refusal
+        whose cause is fixed upstream (an ownership edge added) heals without
+        the caller. Before :meth:`serve` has bound the pod's probe subject the
+        manifest is published without waiting: the registry answers only after
+        probing the pod, and a probe nobody can answer yet would only be waited
+        out. A reply that never arrives is a warning, as it is for
+        :meth:`serve`; the manifest was published either way.
+
         :param tool: TearsTool instance to register
         :ptype tool: TearsTool
+        :raises ToolRegistrationRefused: when the registry refused this tool
         """
         self.register(tool)
         if self._nc is not None:
-            await self.publish_registration()
+            reply = await self.publish_registration(await_reply=self._ready_event.is_set())
+            refused = (
+                tuple(
+                    refusal
+                    for refusal in self._refused_tools
+                    if refusal.name == tool.mcp_name() and refusal.version == tool.mcp_version()
+                )
+                if reply is not None
+                else ()
+            )
+            if refused:
+                raise ToolRegistrationRefused(refused, pod_id=self._pod_id)
 
     @traced()
     async def deregister_tool(self, tool_name: str) -> bool:
@@ -1948,8 +2084,8 @@ class ToolServer:
         return removed
 
     @traced()
-    async def publish_registration(self, *, learn_identity: bool = False) -> None:
-        """publish registration manifest to NATS, optionally reading the reply.
+    async def publish_registration(self, *, await_reply: bool = False) -> RegistrationResponse | None:
+        """publish registration manifest to NATS, optionally awaiting and reading the reply.
 
         sends manifest containing all registered tool definitions
         to registration subject for discovery by registry. requires
@@ -1959,27 +2095,26 @@ class ToolServer:
         when you need to re-publish the current manifest without
         changing it (e.g. on registry recovery).
 
-        **``learn_identity`` asks the registry which namespace this pod OWNS**, and stores
-        the answer on :attr:`owned_namespaces`. The pod cannot work that out for itself:
-        its subject grants are minted at CONNECT from the tool-name NODES on its
-        ``tool_pods`` row, which it never sees, and the tool names it holds locally are
-        LEAVES that no rule reduces back to their node. The registry has just read that
-        row, so the reply is the one place the answer can come from.
+        **``await_reply`` sends the manifest as a request and reads the answer.** The reply names
+        which namespace this pod OWNS, stored on :attr:`owned_namespaces` -- the pod cannot work
+        that out for itself: its subject grants are minted at CONNECT from the tool-name NODES on
+        its ``tool_pods`` row, which it never sees -- and every tool the registry REFUSED, stored
+        on :attr:`refused_tools` and logged at ERROR, one line per tool naming its code and reason.
 
-        **It is OFF by default, and that is the whole reason it is a parameter.** This
-        method is called on every heartbeat and on every dynamic register/deregister; a
-        round trip on each would turn a slow registry into a stalled pod. The identity is
-        learned once, at :meth:`serve`, and re-asked by the heartbeat only while it is
-        still unknown.
+        **It is OFF by default, and that is the whole reason it is a parameter.** This method is
+        called on every heartbeat and on every dynamic register/deregister; a round trip on each
+        would turn a slow registry into a stalled pod. The reply is read at :meth:`serve`, on a
+        serving pod's :meth:`register_tool`, and by the heartbeat only while the identity is still
+        unknown.
 
-        **Every failure of the ask degrades to a warning**, because a NATS request IS a
-        publish: the manifest has left this process before the reply is awaited, so a pod
-        that cannot hear the answer is in exactly the state it was in before this existed.
+        **Every failure of the ask degrades to a warning**, because a NATS request IS a publish:
+        the manifest has left this process before the reply is awaited, so a pod that cannot hear
+        the answer is in exactly the state it was in before this existed.
 
-        :param learn_identity: whether to await the reply and keep the namespaces it names
-        :ptype learn_identity: bool
-        :return: nothing
-        :rtype: None
+        :param await_reply: whether to await the registry's reply and keep what it names
+        :ptype await_reply: bool
+        :return: the reply, or ``None`` when none was awaited or none arrived
+        :rtype: RegistrationResponse | None
         :raises RuntimeError: if called before ``serve`` connects NATS
         """
         nc = self._nc
@@ -2052,8 +2187,9 @@ class ToolServer:
         )
 
         subject = Subjects.tools_register()
-        if learn_identity:
-            await self._register_and_learn_identity(nc, subject, manifest)
+        reply: RegistrationResponse | None = None
+        if await_reply:
+            reply = await self._register_and_read_reply(nc, subject, manifest)
         else:
             await nc.publish(subject=subject, message=manifest)
         log.debug(
@@ -2066,25 +2202,29 @@ class ToolServer:
                 }
             },
         )
+        return reply
 
-    async def _register_and_learn_identity(
+    async def _register_and_read_reply(
         self,
         nc: NatsClient,
         subject: Subject,
         manifest: RegistrationManifest,
-    ) -> None:
-        """publish the manifest as a REQUEST and keep the self-identity its reply names.
+    ) -> RegistrationResponse | None:
+        """publish the manifest as a REQUEST and keep what its reply names.
 
         The manifest is identical either way -- a request is a publish that also carries a
         reply subject -- so the registration itself is unaffected by anything that happens
         to the answer.
 
-        Failures are swallowed to a WARNING rather than raised, and the reason is which
-        failure this is: the registration SUCCEEDED (the manifest was published), and only
-        the identity is missing. Raising here would turn a working registration into a
-        failed startup over a value the pod ran without until now. A refused registration
-        is not treated as an identity either: its reply names nothing, and keeping the
-        previous answer over a refusal would report ownership the registry just denied.
+        A transport failure is swallowed to a WARNING rather than raised, and the reason is
+        which failure this is: the manifest was published, and only the answer is missing.
+        Raising here would turn a working registration into a failed startup over a value the
+        pod ran without until now.
+
+        Every reply that does arrive replaces :attr:`refused_tools` and logs each refusal at
+        ERROR. A refused REGISTRATION is not treated as an identity: its reply names no
+        namespace, and keeping the previous answer over a refusal would report ownership the
+        registry just denied.
 
         :param nc: the connected client
         :ptype nc: NatsClient
@@ -2092,21 +2232,21 @@ class ToolServer:
         :ptype subject: Subject
         :param manifest: the manifest to send
         :ptype manifest: RegistrationManifest
-        :return: nothing
-        :rtype: None
+        :return: the reply, or ``None`` when none arrived
+        :rtype: RegistrationResponse | None
         """
         try:
-            reply = await nc.request(
+            reply: RegistrationResponse = await nc.request(
                 subject=subject,
                 message=manifest,
                 response_type=RegistrationResponse,
                 timeout=_IDENTITY_REPLY_TIMEOUT,
             )
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the identity and never the registration. Logged with its type and message
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the answer and never the registration. Logged with its type and message
             log.warning(
-                "could not learn this pod's owned namespaces from the registration reply; "
-                "its human-in-the-loop family cannot be keyed on a node it was never told, so "
-                "any owner-routed session will subscribe successfully and receive nothing",
+                "could not read the registration reply; this pod does not know which namespaces it "
+                "owns or whether any of its tools were refused, and any owner-routed human-in-the-loop "
+                "session will subscribe successfully and receive nothing",
                 extra={
                     "extra_data": {
                         "pod_id": self._pod_id,
@@ -2115,18 +2255,53 @@ class ToolServer:
                     }
                 },
             )
-            return
+            return None
+        self._record_refusals(reply)
         if not reply.success:
             log.warning(
                 "the registry refused this pod's registration, so it names no owned namespace",
-                extra={"extra_data": {"pod_id": self._pod_id, "error": reply.error}},
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                        "error": reply.error,
+                        "error_code": reply.error_code,
+                    }
+                },
             )
-            return
+            return reply
         self._owned_namespaces = tuple(reply.owned_namespaces)
         log.info(
             "learned the namespaces this pod owns",
             extra={"extra_data": {"pod_id": self._pod_id, "owned_namespaces": list(reply.owned_namespaces)}},
         )
+        return reply
+
+    def _record_refusals(self, reply: RegistrationResponse) -> None:
+        """replace :attr:`refused_tools` with what ``reply`` names, logging each at ERROR.
+
+        :param reply: the registration reply
+        :ptype reply: RegistrationResponse
+        :return: nothing
+        :rtype: None
+        """
+        self._refused_tools = tuple(reply.refused_tools)
+        for refusal in reply.refused_tools:
+            log.error(
+                "the registry refused this pod's tool %s@%s (%s): %s",
+                refusal.name,
+                refusal.version,
+                refusal.code,
+                refusal.reason,
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                        "tool_name": refusal.name,
+                        "tool_version": refusal.version,
+                        "refusal_code": refusal.code,
+                        "reason": refusal.reason,
+                    }
+                },
+            )
 
     def _load_pod_jwks(self, tool_name: str) -> dict[str, Any]:
         """fetch the cached Hub JWKS via the injected provider, converting ANY provider failure to a
@@ -3266,7 +3441,7 @@ class ToolServer:
                 # re-ask ONLY while the answer is still unknown: a pod that started before
                 # the registry did would otherwise never learn which node it owns, and the
                 # heartbeat is the only thing that runs again on its own.
-                await self.publish_registration(learn_identity=self._owned_namespaces is None)
+                await self.publish_registration(await_reply=self._owned_namespaces is None)
             except Exception as exc:
                 log.warning(
                     "periodic re-registration failed",

@@ -34,6 +34,8 @@ from threetears.registry.auth import (
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallResponse
 
+from ._copies import uniform_entry
+
 from ._dispatch_auth import make_authed_request, make_proxy
 
 pytestmark = pytest.mark.asyncio
@@ -111,7 +113,7 @@ def _make_entry(pod_id: str = "pod-001") -> CatalogEntry:
     module is about the spend gate rather than about which delivery path a call takes.
     """
     endpoint = ToolEndpoint(pod_id=pod_id, status="available")
-    return CatalogEntry(
+    return uniform_entry(
         tool_name="threetears.calculator",
         tool_version="1.0.0",
         full_name="threetears.calculator@1.0.0",

@@ -23,6 +23,8 @@ from threetears.registry.registration import (
     RegistrationHandler,
 )
 
+from ._copies import uniform_entry
+
 
 @pytest.fixture(autouse=True)
 def _bind_namespace() -> None:
@@ -351,10 +353,10 @@ class TestCatalogMarkReady:
     @pytest.mark.asyncio
     async def test_mark_ready_promotes_only_pending(self) -> None:
         """mark_ready flips only 'pending' endpoints to 'available'."""
-        from threetears.registry.catalog import CatalogEntry, ToolEndpoint
+        from threetears.registry.catalog import ToolEndpoint
 
         catalog = ToolCatalog()
-        entry_pending = CatalogEntry(
+        entry_pending = uniform_entry(
             tool_name="tool.warming",
             tool_version="1.0",
             full_name="tool.warming@1.0",
@@ -362,7 +364,7 @@ class TestCatalogMarkReady:
             input_schema={},
             endpoints=[ToolEndpoint(pod_id="pod-A", status="pending")],
         )
-        entry_unavailable = CatalogEntry(
+        entry_unavailable = uniform_entry(
             tool_name="tool.down",
             tool_version="1.0",
             full_name="tool.down@1.0",
@@ -394,7 +396,7 @@ class TestCatalogMarkReady:
     async def test_mark_ready_persists_to_kv(self) -> None:
         """mark_ready writes promoted entry to KV so recovery preserves the transition."""
         import json
-        from threetears.registry.catalog import CatalogEntry, ToolEndpoint
+        from threetears.registry.catalog import ToolEndpoint
 
         catalog = ToolCatalog()
         kv = AsyncMock()
@@ -403,7 +405,7 @@ class TestCatalogMarkReady:
         kv.delete = AsyncMock()
         await catalog.load_from_kv(kv)
 
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="tool.promote",
             tool_version="1.0",
             full_name="tool.promote@1.0",
@@ -430,7 +432,7 @@ class TestCatalogMarkReady:
         in-memory status flipped, so a retry can safely re-run the whole
         transition without a partially-applied state.
         """
-        from threetears.registry.catalog import CatalogEntry, ToolEndpoint
+        from threetears.registry.catalog import ToolEndpoint
 
         catalog = ToolCatalog()
         kv = AsyncMock()
@@ -439,7 +441,7 @@ class TestCatalogMarkReady:
         kv.delete = AsyncMock()
         await catalog.load_from_kv(kv)
 
-        entry_one = CatalogEntry(
+        entry_one = uniform_entry(
             tool_name="tool.one",
             tool_version="1.0",
             full_name="tool.one@1.0",
@@ -447,7 +449,7 @@ class TestCatalogMarkReady:
             input_schema={},
             endpoints=[ToolEndpoint(pod_id="pod-X", status="pending")],
         )
-        entry_two = CatalogEntry(
+        entry_two = uniform_entry(
             tool_name="tool.two",
             tool_version="1.0",
             full_name="tool.two@1.0",
@@ -482,7 +484,7 @@ class TestCatalogMarkReady:
         import json
         from datetime import UTC, datetime
 
-        from threetears.registry.catalog import CatalogEntry, ToolEndpoint
+        from threetears.registry.catalog import ToolEndpoint
 
         catalog = ToolCatalog()
         kv = AsyncMock()
@@ -492,7 +494,7 @@ class TestCatalogMarkReady:
         await catalog.load_from_kv(kv)
 
         original_date = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="tool.dated",
             tool_version="1.0",
             full_name="tool.dated@1.0",

@@ -47,9 +47,11 @@ from threetears.core.security import (
 from threetears.nats import IncomingMessage, Subject, set_default_namespace
 
 from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard
-from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.client import ToolCallClient, ToolCallError
 from threetears.registry.proxy import CallProxy, ProxyCallResponse
+
+from ._copies import uniform_entry
 
 _NS = "test"
 _SERVING_POD = "serving-pod"
@@ -183,7 +185,7 @@ def _pod_token(priv: Any, *, pod_id: UUID, holder_key: Ed25519PrivateKey, custom
 async def _catalog() -> ToolCatalog:
     catalog = ToolCatalog()
     await catalog.register(
-        CatalogEntry(
+        uniform_entry(
             tool_name=_TOOL,
             tool_version=_VERSION,
             full_name=f"{_TOOL}@{_VERSION}",

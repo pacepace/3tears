@@ -48,6 +48,8 @@ from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 
+from ._copies import uniform_entry
+
 _ISS = "hub"
 _KID = "kid-1"
 _TOOL = "threetears.calculator"
@@ -199,7 +201,7 @@ def _user_assertion(
 
 
 def _entry() -> CatalogEntry:
-    return CatalogEntry(
+    return uniform_entry(
         tool_name=_TOOL,
         tool_version="1.0.0",
         full_name=f"{_TOOL}@1.0.0",

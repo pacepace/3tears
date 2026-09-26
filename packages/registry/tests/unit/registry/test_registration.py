@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import UUID
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
-from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.registration import (
     RegistrationHandler,
     RegistrationResponse,
 )
+
+from ._copies import uniform_entry
 
 
 @pytest.fixture(autouse=True)
@@ -140,7 +143,7 @@ def _make_entry(
         status=status,
         in_flight=0,
     )
-    result = CatalogEntry(
+    result = uniform_entry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
@@ -465,6 +468,11 @@ class _RecordingAuthenticator:
             )
         return result
 
+    async def verify_agent(self, token: str) -> "UUID | None":
+        """verify no agent: these tests register Tool Pods and tokenless manifests."""
+        del token
+        return None
+
     async def provider_nodes(self) -> tuple[str, ...]:
         from threetears.core.namespaces import build_tool_provider_node_name
 
@@ -477,10 +485,26 @@ class _RecordingAuthenticator:
         return tuple(nodes)
 
 
-def _manifest_with_token(token: str | None, tools: list[dict[str, Any]] | None = None) -> RegistrationManifest:
-    """build a manifest carrying ``token`` as its bootstrap_token (the self-minted JWT slot)."""
+#: the pod id an agent's in-process ToolServer registers under. a TOKENLESS manifest is only
+#: ever admitted under one of these: a single-token id is a Tool Pod's, whose copies serve every
+#: caller and so must come from a verified publisher.
+_AGENT_POD = Subjects.agent_inprocess_pod_id(UUID("01948a00-aaaa-7000-8000-00000000000a"), "inst-1")
+
+
+def _manifest_with_token(
+    token: str | None,
+    tools: list[dict[str, Any]] | None = None,
+    *,
+    pod_id: str | None = None,
+) -> RegistrationManifest:
+    """build a manifest carrying ``token`` as its bootstrap_token (the self-minted JWT slot).
+
+    a tokenless manifest registers under an agent's in-process pod id -- the only publisher that
+    presents no token -- unless ``pod_id`` says otherwise.
+    """
     base = _make_manifest(tools=tools)
-    return RegistrationManifest(pod_id=base.pod_id, tools=base.tools, bootstrap_token=token)
+    chosen = pod_id if pod_id is not None else (base.pod_id if token is not None else _AGENT_POD)
+    return RegistrationManifest(pod_id=chosen, tools=base.tools, bootstrap_token=token)
 
 
 class TestRegistrationHandlerAuthenticator:
@@ -940,6 +964,10 @@ class TestAnUnreadableOwnershipGraphRefuses:
         """an authenticator whose graph read raises."""
 
         async def verify_pod(self, token: str) -> "ToolPodAuth | None":
+            del token
+            return None
+
+        async def verify_agent(self, token: str) -> "UUID | None":
             del token
             return None
 

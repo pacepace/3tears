@@ -16,7 +16,12 @@ import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.dynamic_pod import BuiltSpec, DynamicToolPod
-from threetears.agent.tools.server import ToolServer
+from threetears.agent.tools.server import (
+    RefusedTool,
+    RegistrationResponse,
+    ToolRegistrationRefused,
+    ToolServer,
+)
 
 
 # --- test tools ---
@@ -124,6 +129,10 @@ class _FakeToolServer(ToolServer):
         self._connected = False
         self._ready = False
         self._serve_gate = asyncio.Event()
+        # whether each publish awaited the registry's reply, in publish order.
+        self.awaited_replies: list[bool] = []
+        # the refusals the next awaited reply names.
+        self.next_refusals: list[RefusedTool] = []
 
     def set_connected(self, connected: bool) -> None:
         """flip the fake's connected state for publish-gating tests.
@@ -158,14 +167,21 @@ class _FakeToolServer(ToolServer):
         self.registered = [t for t in self.registered if t.mcp_name() != mcp_name]
         return len(self.registered) < before
 
-    async def publish_registration(self) -> None:
-        """record a manifest publish.
+    async def publish_registration(self, *, await_reply: bool = False) -> RegistrationResponse | None:
+        """record a manifest publish and, when awaited, answer with the scripted refusals.
 
-        :return: nothing
-        :rtype: None
+        :param await_reply: whether the caller awaits the registry's reply
+        :ptype await_reply: bool
+        :return: the scripted reply when awaited, else ``None``
+        :rtype: RegistrationResponse | None
         """
         self.publish_count += 1
         self.published_tool_counts.append(len(self.registered))
+        self.awaited_replies.append(await_reply)
+        reply: RegistrationResponse | None = None
+        if await_reply:
+            reply = RegistrationResponse(success=True, pod_id="pod-test", refused_tools=list(self.next_refusals))
+        return reply
 
     async def shutdown(self) -> None:
         """record a shutdown and release the serve gate.
@@ -760,3 +776,74 @@ async def test_register_spec_before_serve_connects_is_safe() -> None:
     assert fake.publish_count == 0
 
     await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_live_registration_awaits_the_registry_and_raises_on_refusal() -> None:
+    """a spec whose tool the registry refuses fails its register_spec, naming the tool."""
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_first", tool_count=1)], fake)
+    await pod.start()
+    await asyncio.sleep(0)
+    fake.set_connected(True)
+    fake.next_refusals = [
+        RefusedTool(name="ds_live.tool1", version="1.0", code="OWNED_ELSEWHERE", reason="another pod owns it")
+    ]
+
+    with pytest.raises(ToolRegistrationRefused) as excinfo:
+        await pod.register_spec(_StubSpec("ds_live", tool_count=2))
+
+    assert [r.name for r in excinfo.value.refused] == ["ds_live.tool1"]
+    assert fake.awaited_replies[-1] is True
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_of_another_specs_tool_does_not_fail_this_spec() -> None:
+    """only this spec's tools are this registration's business."""
+    fake = _FakeToolServer()
+    pod = _StubPod([_StubSpec("ds_first", tool_count=1)], fake)
+    await pod.start()
+    await asyncio.sleep(0)
+    fake.set_connected(True)
+    fake.next_refusals = [RefusedTool(name="ds_first.tool0", version="1.0", code="OWNED_ELSEWHERE", reason="x")]
+
+    await pod.register_spec(_StubSpec("ds_live", tool_count=1))
+
+    await pod.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_pods_identity_token_rides_every_manifest() -> None:
+    """a pod given an identity presents it, re-minted per manifest, on the default server."""
+    from unittest.mock import AsyncMock
+
+    minted: list[str] = []
+
+    def _mint() -> str:
+        minted.append(f"token-{len(minted)}")
+        return minted[-1]
+
+    class _BarePod(DynamicToolPod[_StubSpec]):
+        """a pod using the base's own ToolServer construction."""
+
+        async def load_specs(self) -> list[_StubSpec]:
+            return []
+
+        def spec_key(self, spec: _StubSpec) -> str:
+            return spec.key
+
+        async def build_tools(self, spec: _StubSpec) -> BuiltSpec:
+            return BuiltSpec(key=spec.key, tools=[])
+
+    nc = AsyncMock()
+    pod = _BarePod(nats_url="", nats_client=nc, namespace="3tears", pod_id="hub-internal-pod", identity_token=_mint)
+    server = pod.build_tool_server()
+    server.register(_StubTool("addrnorm.normalize"))
+
+    await server.publish_registration()
+    await server.publish_registration()
+
+    tokens = [call.kwargs["message"].bootstrap_token for call in nc.publish.await_args_list]
+    assert tokens == ["token-0", "token-1"]

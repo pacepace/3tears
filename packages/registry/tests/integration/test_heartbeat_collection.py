@@ -322,8 +322,6 @@ class TestHeartbeatSubscriberFlow:
             tool_name="threetears.sub_tool",
             tool_version="1.0.0",
             full_name="threetears.sub_tool@1.0.0",
-            description="test tool",
-            input_schema={"type": "object", "properties": {}},
             endpoints=[endpoint],
         )
         await catalog.register(entry)
@@ -367,8 +365,6 @@ class TestHeartbeatSubscriberFlow:
             tool_name="threetears.calc",
             tool_version="1.0.0",
             full_name="threetears.calc@1.0.0",
-            description="test",
-            input_schema={"type": "object", "properties": {}},
             endpoints=[endpoint],
         )
         await catalog.register(entry)

@@ -16,6 +16,8 @@ from threetears.nats import RESULT_ACK_TIMEOUT_SECONDS, IncomingMessage, Subject
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallResponse
 
+from ._copies import uniform_entry
+
 from ._dispatch_auth import (
     DEFAULT_AGENT_ID,
     DEFAULT_CORRELATION_ID,
@@ -124,7 +126,7 @@ def _make_entry(
     :rtype: CatalogEntry
     """
     endpoint = ToolEndpoint(pod_id=pod_id, status=status)
-    result = CatalogEntry(
+    result = uniform_entry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
@@ -519,7 +521,7 @@ class TestCallProxyTimeout:
     async def test_short_tool_keeps_its_declared_timeout_on_the_reply_path(self) -> None:
         """a tool inside the synchronous budget is still forwarded with its own declared timeout."""
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.quick",
             tool_version="1.0",
             full_name="test.quick@1.0",
@@ -559,7 +561,7 @@ class TestCallProxyTimeout:
         window in which the pod merely acknowledges.
         """
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.slow_wait",
             tool_version="1.0",
             full_name="test.slow_wait@1.0",
@@ -586,7 +588,7 @@ class TestCallProxyTimeout:
     async def test_falls_back_to_proxy_default_when_no_tool_timeout(self) -> None:
         """proxy uses its own default when tool does not declare timeout_seconds."""
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.fast_tool",
             tool_version="1.0",
             full_name="test.fast_tool@1.0",
@@ -617,7 +619,7 @@ class TestCallProxyTimeout:
         declared timeout (120s) is used, so the 100s sleep completes.
         """
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.slow_wait",
             tool_version="1.0",
             full_name="test.slow_wait@1.0",
@@ -728,7 +730,7 @@ class TestCallProxyRouting:
         endpoint_idle = ToolEndpoint(pod_id="pod-idle", status="available", in_flight=0)
 
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",
@@ -759,7 +761,7 @@ class TestCallProxyRouting:
         endpoint_second = ToolEndpoint(pod_id="pod-second", status="available")
 
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",

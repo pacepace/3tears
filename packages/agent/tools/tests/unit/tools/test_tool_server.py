@@ -1124,7 +1124,7 @@ class TestToolServerProbe:
 
     @pytest.mark.asyncio
     async def test_wait_until_ready_unblocks_when_discovery_reports_available(self) -> None:
-        """wait_until_ready returns True once discovery reports every tool available."""
+        """wait_until_ready returns True once discovery reports this pod's OWN copy of every tool available."""
         from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool
 
         class _FakeTool(TearsTool):
@@ -1159,7 +1159,9 @@ class TestToolServerProbe:
         discovery_response = DiscoveryProbeResponse(
             agent_id="wait-pod",
             tools=[
-                DiscoveryProbeResultEntry(name="test.probe", version="1.0.0", status="available"),
+                DiscoveryProbeResultEntry(
+                    name="test.probe", version="1.0.0", status="available", requester_copy_status="available"
+                ),
             ],
         )
 

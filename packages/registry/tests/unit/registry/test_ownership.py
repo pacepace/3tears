@@ -17,6 +17,11 @@ from __future__ import annotations
 import pytest
 
 from threetears.registry.ownership import (
+    CopyAudience,
+    PublisherStanding,
+    RefusalCode,
+    admit_copy,
+    audience_of,
     most_specific_container,
     tool_is_registrable,
 )
@@ -217,3 +222,175 @@ class TestToolIsRegistrable:
             owned_nodes=("tools.dipp",),
             provider_nodes=("tools.dipp",),
         )
+
+
+class TestAdmitCopy:
+    """the per-copy verdict: who may publish a copy, and to whom it may be served.
+
+    Every refusal is paired with the admitted twin that differs in one input, so a
+    rule that refused everything would fail a twin.
+    """
+
+    _GRAPH = ("tools.pentest", "tools.aibots.admin")
+
+    @staticmethod
+    def _standing(
+        *, verified: bool = True, platform_shared: bool = False, owned: tuple[str, ...] = ()
+    ) -> PublisherStanding:
+        return PublisherStanding(verified=verified, platform_shared=platform_shared, owned_nodes=owned)
+
+    def test_a_serve_everyone_copy_under_a_node_needs_its_owner(self) -> None:
+        """OWNED_ELSEWHERE for anybody else; admitted for the owner."""
+        stray = self._standing()
+        owner = self._standing(owned=("tools.pentest",))
+        assert (
+            admit_copy(
+                tool_name="pentest.sqlmap", audience=CopyAudience.EVERYONE, standing=stray, provider_nodes=self._GRAPH
+            )
+            is RefusalCode.OWNED_ELSEWHERE
+        )
+        assert (
+            admit_copy(
+                tool_name="pentest.sqlmap", audience=CopyAudience.EVERYONE, standing=owner, provider_nodes=self._GRAPH
+            )
+            is None
+        )
+
+    def test_a_serve_everyone_copy_under_no_node_needs_the_platform(self) -> None:
+        """NOT_PLATFORM_SHARED for a verified pod owning nothing; admitted for the shared pod."""
+        stray = self._standing()
+        shared = self._standing(platform_shared=True)
+        assert (
+            admit_copy(
+                tool_name="threetears.calculator",
+                audience=CopyAudience.EVERYONE,
+                standing=stray,
+                provider_nodes=self._GRAPH,
+            )
+            is RefusalCode.NOT_PLATFORM_SHARED
+        )
+        assert (
+            admit_copy(
+                tool_name="threetears.calculator",
+                audience=CopyAudience.EVERYONE,
+                standing=shared,
+                provider_nodes=self._GRAPH,
+            )
+            is None
+        )
+
+    def test_a_pod_that_owns_a_node_is_not_the_platform_outside_it(self) -> None:
+        """owning pentest buys nothing under no node."""
+        owner = self._standing(owned=("tools.pentest",))
+        assert (
+            admit_copy(
+                tool_name="brandnew.thing", audience=CopyAudience.EVERYONE, standing=owner, provider_nodes=self._GRAPH
+            )
+            is RefusalCode.NOT_PLATFORM_SHARED
+        )
+
+    def test_the_platform_does_not_reach_into_an_owned_node(self) -> None:
+        """the shared pod is refused under somebody's node like anyone else."""
+        shared = self._standing(platform_shared=True)
+        assert (
+            admit_copy(
+                tool_name="pentest.sqlmap", audience=CopyAudience.EVERYONE, standing=shared, provider_nodes=self._GRAPH
+            )
+            is RefusalCode.OWNED_ELSEWHERE
+        )
+
+    def test_an_unverified_publisher_may_not_serve_everyone(self) -> None:
+        """UNVERIFIED_PUBLISHER even where a verified pod would be admitted."""
+        unverified = self._standing(verified=False, platform_shared=True)
+        assert (
+            admit_copy(
+                tool_name="threetears.calculator",
+                audience=CopyAudience.EVERYONE,
+                standing=unverified,
+                provider_nodes=self._GRAPH,
+            )
+            is RefusalCode.UNVERIFIED_PUBLISHER
+        )
+
+    def test_an_agent_scoped_copy_is_admitted_under_no_node(self) -> None:
+        """an agent's own copy serves only that agent, so it needs no platform standing."""
+        agent = self._standing()
+        assert (
+            admit_copy(
+                tool_name="threetears.calculator",
+                audience=CopyAudience.AGENT,
+                standing=agent,
+                provider_nodes=self._GRAPH,
+            )
+            is None
+        )
+
+    def test_an_agent_scoped_copy_is_refused_under_somebodys_node(self) -> None:
+        """the existing ownership rule still holds for an agent's own copy."""
+        agent = self._standing()
+        assert (
+            admit_copy(
+                tool_name="pentest.sqlmap", audience=CopyAudience.AGENT, standing=agent, provider_nodes=self._GRAPH
+            )
+            is RefusalCode.OWNED_ELSEWHERE
+        )
+
+    def test_an_unsigned_agent_scoped_copy_is_admitted_during_the_rollout(self) -> None:
+        """0.55.0 admits an unsigned agent's own copy -- still only where a signed one would be."""
+        unsigned = self._standing(verified=False)
+        assert (
+            admit_copy(
+                tool_name="threetears.calculator",
+                audience=CopyAudience.AGENT,
+                standing=unsigned,
+                provider_nodes=self._GRAPH,
+            )
+            is None
+        )
+        assert (
+            admit_copy(
+                tool_name="pentest.sqlmap", audience=CopyAudience.AGENT, standing=unsigned, provider_nodes=self._GRAPH
+            )
+            is RefusalCode.OWNED_ELSEWHERE
+        )
+
+    @pytest.mark.parametrize("audience", [CopyAudience.AGENT, CopyAudience.EVERYONE])
+    def test_a_name_that_composes_no_node_is_invalid_for_any_audience(self, audience: CopyAudience) -> None:
+        """a rooted or empty name is refused before anything else is asked."""
+        shared = self._standing(platform_shared=True)
+        for bad in ("tools.pentest.sqlmap", ""):
+            assert (
+                admit_copy(tool_name=bad, audience=audience, standing=shared, provider_nodes=self._GRAPH)
+                is RefusalCode.INVALID_TOOL_NAME
+            )
+
+    def test_open_mode_enforces_nothing_but_the_name(self) -> None:
+        """no authenticator: every audience admitted, a malformed name still refused."""
+        standing = PublisherStanding.unenforced()
+        assert (
+            admit_copy(
+                tool_name="anything.at.all", audience=CopyAudience.EVERYONE, standing=standing, provider_nodes=()
+            )
+            is None
+        )
+        assert (
+            admit_copy(tool_name="tools.x", audience=CopyAudience.EVERYONE, standing=standing, provider_nodes=())
+            is RefusalCode.INVALID_TOOL_NAME
+        )
+
+
+class TestAudienceOf:
+    """who a copy serves is read from its pod id, the one source routing reads too."""
+
+    def test_an_agents_in_process_pod_serves_that_agent(self) -> None:
+        """a composite id names the owning agent."""
+        from uuid import UUID
+
+        from threetears.nats import Subjects
+
+        pod_id = Subjects.agent_inprocess_pod_id(UUID("01948a00-aaaa-7000-8000-00000000000a"), "inst")
+        assert audience_of(pod_id) is CopyAudience.AGENT
+
+    def test_a_tool_pod_serves_everyone(self) -> None:
+        """a single-token id is a Tool Pod's."""
+        assert audience_of("builtin-tool-server") is CopyAudience.EVERYONE
