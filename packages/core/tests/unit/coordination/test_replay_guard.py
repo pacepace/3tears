@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from threetears.core.coordination import ReplayGuard
+from threetears.core.coordination import replay_guard as replay_guard_module
 from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
 from threetears.core.testing import kv as fake_kv_module
 from threetears.nats import KvError
@@ -393,12 +394,13 @@ class TestReplayGuardWithAnAnchor:
 
 
 class _BrokerClock:
-    """the clock the fake broker stamps every bucket's creation time with, under the test's control.
+    """one clock for the fake broker and the guard, under the test's control.
 
     The property under test is WHEN a bucket is created relative to the artifacts a service
     handles, and on a real clock a test cannot let minutes pass between a service starting and its
-    first request. Only the fake's clock moves: the guard's own reads are the anchor's ``now``, which
-    ``_StubAnchor`` ignores whenever it is given a moment.
+    first request. The fake stamps every bucket's creation time from it, and the guard passes it to
+    its anchor as ``now``, so both hosts read the same moment -- NTP-synchronised, as the drift
+    allowance assumes.
     """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, start: datetime) -> None:
@@ -412,6 +414,7 @@ class _BrokerClock:
                 return clock.moment
 
         monkeypatch.setattr(fake_kv_module, "datetime", _Stamped)
+        monkeypatch.setattr(replay_guard_module, "datetime", _Stamped)
 
     def advance(self, delta: timedelta) -> None:
         """let time pass on the broker.
@@ -543,3 +546,211 @@ class TestBind:
         broker.advance(timedelta(minutes=10))
         issued_at = started + timedelta(minutes=10) - timedelta(seconds=1)
         assert await guard.record_unique("login", issued_at=issued_at) is False
+
+
+class _ClaimingAnchor:
+    """a `ReplayAnchor` shared by every replica: the first caller's ``now`` is recorded and returned to all.
+
+    The claim-or-read ``CollectionReplayAnchor`` performs against its table, held in memory, so two
+    guards standing in for two replicas see one ledger history.
+    """
+
+    def __init__(self, *, fails: Exception | None = None) -> None:
+        self._claimed: datetime | None = None
+        self._fails = fails
+        self.calls = 0
+
+    async def first_existed(self, purpose: str, *, now: datetime) -> datetime:
+        del purpose
+        self.calls += 1
+        if self._fails is not None:
+            raise self._fails
+        if self._claimed is None:
+            self._claimed = now
+        return self._claimed
+
+
+def _anchored(client: FakeNatsClient, anchor: object) -> ReplayGuard:
+    """a guard over the shared ``login_nonces`` bucket with the given anchor.
+
+    :param client: the fake broker
+    :ptype client: FakeNatsClient
+    :param anchor: the anchor double
+    :ptype anchor: object
+    :return: the guard
+    :rtype: ReplayGuard
+    """
+    return ReplayGuard(
+        client,  # type: ignore[arg-type]
+        bucket_name="login_nonces",
+        ttl_seconds=120,
+        verifier_future_tolerance=_SKEW,
+        anchor=anchor,  # type: ignore[arg-type]
+    )
+
+
+class TestBindStampsTheAnchor:
+    """a guard bound at start has its ledger's first-existence moment before it records any nonce."""
+
+    @pytest.mark.asyncio
+    async def test_a_replay_of_the_first_nonce_is_refused_when_a_wipe_races_its_record(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the window this closes: the very first nonce is recorded, then the broker loses the
+        # bucket before anything has stamped the anchor. Stamped only by that first record, the
+        # anchor would take a moment AFTER the wipe, read as a first run, and admit the nonce's
+        # replay. Stamped at bind, it predates the wipe, and the watermark applies.
+        started = datetime.now(UTC)
+        clock = _BrokerClock(monkeypatch, started)
+        anchor = _ClaimingAnchor()
+        replica_a = _anchored(client, anchor)
+        replica_b = _anchored(client, anchor)
+        await replica_a.bind()
+        await replica_b.bind()
+
+        clock.advance(timedelta(minutes=10))
+        bucket = await client.kv_bucket(name="login_nonces")
+        original_create = bucket.create
+
+        async def _create_then_lose_the_bucket(**kwargs: Any) -> int | None:
+            revision = await original_create(**kwargs)
+            monkeypatch.setattr(bucket, "create", original_create)
+            bucket.wipe(date_created=clock.moment)  # the broker restarted; another replica recreated it
+            return revision
+
+        monkeypatch.setattr(bucket, "create", _create_then_lose_the_bucket)
+        first_issued = clock.moment
+        # the wipe raced the nonce's own record, so the guard fails closed on it too.
+        assert await replica_a.record_unique("first-nonce", issued_at=first_issued) is False
+        assert await replica_b.record_unique("first-nonce", issued_at=first_issued) is False
+
+    @pytest.mark.asyncio
+    async def test_bind_reads_the_anchor_before_any_record_and_only_once(self, client: FakeNatsClient) -> None:
+        anchor = _ClaimingAnchor()
+        guard = _anchored(client, anchor)
+        await guard.bind()
+        assert anchor.calls == 1
+        await guard.bind()
+        await guard.record_unique("a", issued_at=_later())
+        assert anchor.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_an_anchor_failure_does_not_fail_the_bind(
+        self, client: FakeNatsClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # an unreachable anchor must not stop a service starting: the guard is exactly as blind
+        # as one with no anchor, and keeps the conservative watermark.
+        anchor = _ClaimingAnchor(fails=KvError("anchor unreachable"))
+        guard = _anchored(client, anchor)
+        with caplog.at_level("WARNING", logger="threetears.core.coordination.replay_guard"):
+            handle = await guard.bind()
+        assert handle is await client.kv_bucket(name="login_nonces")
+        assert any("anchor unreadable" in r.getMessage() for r in caplog.records)
+        # blind means conservative: an artifact inside the watermark is refused...
+        assert await guard.record_unique("n", issued_at=datetime.now(UTC)) is False
+        # ...and the read is tried again rather than remembered as a failure.
+        assert anchor.calls == 2
+
+
+class _RecordingHooks:
+    """wraps a fake client's ``add_reconnect_callback`` to keep every hook registered."""
+
+    def __init__(self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.hooks: list[Any] = []
+        register = client.add_reconnect_callback
+
+        def _register(callback: Any) -> None:
+            self.hooks.append(callback)
+            register(callback)
+
+        monkeypatch.setattr(client, "add_reconnect_callback", _register)
+
+
+class TestRebindOnReconnect:
+    """a bucket lost under a running process is recreated when NATS comes back, not at the next artifact."""
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_lost_under_a_running_process_is_recreated_at_reconnect(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the service has run for an hour when the broker restarts. The reconnect recreates the
+        # bucket then, so a login ten minutes later -- issued well after the restart -- is admitted.
+        # Left to the login itself, the bucket would be created by it, and it would be refused.
+        started = datetime.now(UTC)
+        clock = _BrokerClock(monkeypatch, started)
+        guard = _anchored_after_a_wipe(client, started)
+        await guard.bind()
+        bucket = await client.kv_bucket(name="login_nonces")
+
+        clock.advance(timedelta(hours=1))
+        bucket.vanish()
+        await client.reconnect()
+
+        clock.advance(timedelta(minutes=10))
+        assert await guard.record_unique("login", issued_at=clock.moment - timedelta(seconds=1)) is True
+
+    @pytest.mark.asyncio
+    async def test_without_a_reconnect_the_next_artifact_recreates_the_bucket_and_is_refused(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the same sequence with no reconnect signal: pinned so the cost the hook removes stays visible.
+        started = datetime.now(UTC)
+        clock = _BrokerClock(monkeypatch, started)
+        guard = _anchored_after_a_wipe(client, started)
+        await guard.bind()
+        bucket = await client.kv_bucket(name="login_nonces")
+
+        clock.advance(timedelta(hours=1))
+        bucket.vanish()
+
+        clock.advance(timedelta(minutes=10))
+        assert await guard.record_unique("login", issued_at=clock.moment - timedelta(seconds=1)) is False
+
+    @pytest.mark.asyncio
+    async def test_bind_registers_one_hook_however_often_it_runs(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorded = _RecordingHooks(client, monkeypatch)
+        guard = _guard(client, bucket_name="pop_nonces")
+        await asyncio.gather(*[guard.bind() for _ in range(4)])
+        await guard.bind()
+        await guard.record_unique("x", issued_at=_later())
+        assert len(recorded.hooks) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unbound_guard_registers_no_hook(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorded = _RecordingHooks(client, monkeypatch)
+        _guard(client, bucket_name="pop_nonces")
+        await client.reconnect()
+        assert recorded.hooks == []
+        with pytest.raises(KeyError):
+            await client.kv_bucket(name="pop_nonces", create_if_missing=False)
+
+    @pytest.mark.asyncio
+    async def test_a_hook_that_cannot_reach_the_bucket_logs_and_does_not_raise(
+        self, client: FakeNatsClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # the hook runs inside the client's reconnect path; it must not be the thing that fails it.
+        recorded = _RecordingHooks(client, monkeypatch)
+        guard = _guard(client, bucket_name="pop_nonces")
+        await guard.bind()
+        bucket = await client.kv_bucket(name="pop_nonces")
+        monkeypatch.setattr(bucket, "date_created", AsyncMock(side_effect=KvError("broker still down")))
+
+        with caplog.at_level("WARNING", logger="threetears.core.coordination.replay_guard"):
+            await recorded.hooks[0]()
+
+        assert any("pop_nonces" in r.getMessage() and "reconnect" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_client_without_reconnect_hooks_still_binds(self) -> None:
+        # a KvCapable that is not a NatsClient -- the published double before it grew the hook, a
+        # consumer's own -- binds exactly as before; only the availability improvement is absent.
+        bucket = AsyncMock()
+        spy_client = AsyncMock()
+        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        guard = _guard(spy_client, bucket_name="b")
+        assert await guard.bind() is bucket
+        spy_client.add_reconnect_callback.assert_not_called()

@@ -113,3 +113,31 @@ async def test_a_guard_bound_at_start_admits_what_an_unbound_one_refuses(nats_co
         # the unbound guard creates its bucket now, at first use, so the same fresh artifact is
         # inside its watermark -- the refusal a service pays when nothing bound it at start.
         assert await unbound.record_unique("first-request", issued_at=issued_at) is False
+
+
+async def test_a_reconnect_recreates_a_bucket_lost_under_a_running_guard(nats_container: str) -> None:
+    # the stream is deleted under a bound guard, as a broker restart would, and the connection
+    # then reconnects. The guard's hook recreates the stream as the connection comes back, before
+    # any artifact arrives -- so the next one is measured against the reconnect, not against itself.
+    set_default_namespace(_NAMESPACE)
+    async with await NatsClient.connect(
+        nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="rebind-on-reconnect"
+    ) as nc:
+        guard = ReplayGuard(
+            nc, bucket_name=f"rebind_{uuid4().hex}", ttl_seconds=120, verifier_future_tolerance=_TOLERANCE
+        )
+        handle = await guard.bind()
+        stream = f"KV_{handle.name}"
+        js = nc.jetstream_context()
+        await js.delete_stream(stream)
+
+        await nc.reconnect()
+
+        deadline = asyncio.get_running_loop().time() + 15.0
+        info = None
+        while info is None and asyncio.get_running_loop().time() < deadline:
+            try:
+                info = await js.stream_info(stream)
+            except Exception:  # noqa: BLE001 -- absent until the hook recreates it; the deadline bounds the wait
+                await asyncio.sleep(0.2)
+        assert info is not None, "the reconnect hook did not recreate the stream"

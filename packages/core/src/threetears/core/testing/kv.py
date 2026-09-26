@@ -22,7 +22,11 @@ use:
   returns ``True`` on success or absent key, ``False`` on CAS mismatch.
 - :meth:`FakeKvBucket.date_created` reports when the bucket was created, and
   :meth:`FakeKvBucket.wipe` empties it and moves that time forward, which is
-  what a broker restart does to a memory-backed bucket.
+  what a broker restart does to a memory-backed bucket once something has
+  recreated it; :meth:`FakeKvBucket.vanish` leaves it absent until the next
+  operation recreates it, as the real wrapper's self-heal does.
+- :meth:`FakeNatsClient.add_reconnect_callback` registers a hook and
+  :meth:`FakeNatsClient.reconnect` runs every hook, as a real reconnect does.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
@@ -33,11 +37,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from collections.abc import Generator
+from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.observe import get_logger
+
 __all__ = ["FakeKvBucket", "FakeNatsClient"]
+
+log = get_logger(__name__)
 
 
 class _YieldOnce:
@@ -99,9 +107,26 @@ class FakeKvBucket:
         self._entries: dict[str, _Entry] = {}
         self._revision = 0
         self._date_created = datetime.now(UTC)
+        # set by vanish(): the stream is gone until the next operation recreates it.
+        self._vanished = False
         # a clock only this bucket reads, moved by advance_clock, so a test can make a per-entry
         # TTL lapse without sleeping.
         self._elapsed = timedelta(0)
+
+    async def _arrive(self) -> None:
+        """what every operation does first: yield to the loop, then heal a vanished bucket.
+
+        The yield is so ``gather()`` genuinely interleaves. The heal mirrors the real wrapper,
+        which recreates a vanished stream on the next operation through any handle, so the
+        recreated bucket's creation time is the moment of that operation.
+
+        :return: None
+        :rtype: None
+        """
+        await _YieldOnce()
+        if self._vanished:
+            self._vanished = False
+            self._date_created = datetime.now(UTC)
 
     def advance_clock(self, delta: timedelta) -> None:
         """move this bucket's clock forward, lapsing any per-entry TTL it passes.
@@ -151,7 +176,7 @@ class FakeKvBucket:
         :return: timezone-aware UTC creation time
         :rtype: datetime
         """
-        await _YieldOnce()  # so gather() genuinely interleaves
+        await self._arrive()
         return self._date_created
 
     def keys(self) -> tuple[str, ...]:
@@ -182,6 +207,22 @@ class FakeKvBucket:
             raise ValueError("FakeKvBucket.wipe requires a timezone-aware date_created")
         self._entries.clear()
         self._date_created = date_created if date_created is not None else datetime.now(UTC)
+        self._vanished = False
+
+    def vanish(self) -> None:
+        """lose the bucket the way a broker restart does, leaving it absent until next used.
+
+        Where :meth:`wipe` models a bucket some other caller already recreated, this models the
+        moment in between: the entries are gone, and the next operation through any handle
+        recreates the bucket, taking that operation's moment as its creation time. That is what
+        the real wrapper's self-heal does, and it is the difference between recreating a bucket
+        when the broker comes back and recreating it whenever someone next happens to use it.
+
+        :return: None
+        :rtype: None
+        """
+        self._entries.clear()
+        self._vanished = True
 
     @property
     def ttl(self) -> timedelta | None:
@@ -222,7 +263,7 @@ class FakeKvBucket:
         :return: new revision number, or ``None`` if key already exists
         :rtype: int | None
         """
-        await _YieldOnce()  # so gather() genuinely interleaves
+        await self._arrive()
         if self._live(key) is not None:
             return None
         self._revision += 1
@@ -237,7 +278,7 @@ class FakeKvBucket:
         :return: stored bytes or ``None``
         :rtype: bytes | None
         """
-        await _YieldOnce()  # so gather() genuinely interleaves
+        await self._arrive()
         entry = self._live(key)
         if entry is None:
             return None
@@ -251,7 +292,7 @@ class FakeKvBucket:
         :return: ``(value, revision)`` tuple or ``None``
         :rtype: tuple[bytes, int] | None
         """
-        await _YieldOnce()  # so gather() genuinely interleaves
+        await self._arrive()
         entry = self._live(key)
         if entry is None:
             return None
@@ -271,7 +312,7 @@ class FakeKvBucket:
         :return: new revision, or ``None`` on conflict / missing key
         :rtype: int | None
         """
-        await _YieldOnce()  # so gather() genuinely interleaves
+        await self._arrive()
         entry = self._live(key)
         if entry is None or entry.revision != revision:
             return None
@@ -290,7 +331,7 @@ class FakeKvBucket:
             already gone. an unguarded delete of an absent key is still ``True`` (idempotent).
         :rtype: bool
         """
-        await _YieldOnce()  # so gather() genuinely interleaves
+        await self._arrive()
         entry = self._live(key)
         if entry is None:
             # A revision-guarded delete of a key that is no longer there LOST the race -- it
@@ -316,7 +357,7 @@ class FakeKvBucket:
         :return: new revision number
         :rtype: int
         """
-        await _YieldOnce()  # so gather() genuinely interleaves
+        await self._arrive()
         self._revision += 1
         self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
         return self._revision
@@ -366,6 +407,31 @@ class FakeNatsClient:
         self._buckets: dict[str, FakeKvBucket] = {}
         self.published: list[Any] = []
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
+        self._reconnect_callbacks: list[Callable[[], Awaitable[None]]] = []
+
+    def add_reconnect_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
+        """register an async hook run after each reconnect, as the real client does.
+
+        :param callback: an argument-less coroutine function
+        :ptype callback: Callable[[], Awaitable[None]]
+        :return: None
+        :rtype: None
+        """
+        self._reconnect_callbacks.append(callback)
+
+    async def reconnect(self) -> None:
+        """run every reconnect hook in registration order, as the real client does after reconnecting.
+
+        A hook that raises is logged and does not stop the others, matching the real dispatcher.
+
+        :return: None
+        :rtype: None
+        """
+        for callback in list(self._reconnect_callbacks):
+            try:
+                await callback()
+            except Exception as exc:  # noqa: BLE001 -- one bad hook must not abort the others, as in the real client
+                log.warning("reconnect callback failed: %s", exc)
 
     async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
         """record a message and deliver it to this client's subscribers on that subject.

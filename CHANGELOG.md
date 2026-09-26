@@ -29,11 +29,26 @@ assertion nonce replay").
 - **Fixed:** `ToolServer.serve` binds its proxy-assertion guard -- self-provisioned or injected
   -- before it subscribes the call subject, and `CallProxy.start` binds its pop guard before it
   subscribes `tools.call`. A guard injected into either now needs an async `bind()`.
-- **Not changed:** a wipe while a process keeps running. The bound handle is kept for the
-  process's life and the NATS wrapper's self-heal recreates the vanished stream on the next
-  operation through it; `record_unique` reads the creation time fresh after every fresh create,
-  so this is sound. The recreated bucket is younger than the restart by however long the service
-  sat idle, so the first artifact after an idle wipe is still refused the same way.
+- **Fixed:** `bind()` reads the durable anchor, stamping it when nothing has, before the guard
+  records its first nonce. Left to the first record, the anchor was read after that nonce's
+  create; a wipe landing between the two, with another replica stamping the anchor first, put
+  the ledger's birth after the wipe, read as a first run, and admitted a replay of that nonce.
+  An anchor read or write failure never fails `bind()`: it is logged, the guard keeps the
+  conservative watermark, and the next record tries again. Only a bucket that cannot be opened
+  fails it.
+- **New (minor):** `bind()` registers, once per guard, a hook on the client's
+  `add_reconnect_callback` (when the client's type has one, as `NatsClient` does) that touches
+  the bucket after each NATS reconnect. A bucket a broker restart wiped under a running process
+  is recreated as the connection comes back, instead of by the next artifact, which that
+  artifact's refusal used to pay for. Availability only: correctness still rests on
+  `record_unique` reading the creation time fresh after every fresh create. The hook never raises
+  into the reconnect path; a failed touch is logged. The client offers no way to remove a hook,
+  and none is needed -- a guard lives as long as its client. A client without the hook binds
+  as before.
+- **New (minor):** the shipped test doubles model both. `FakeKvBucket.vanish()` loses the bucket
+  until its next operation recreates it, taking that moment as its creation time (the real
+  wrapper's self-heal); `FakeNatsClient.add_reconnect_callback` and `FakeNatsClient.reconnect()`
+  run hooks in order, a raising one logged and skipped, as the real dispatcher does.
 
 **Consumers:** the hub and identity-core call `bind()` on every `ReplayGuard` they construct,
 at startup, before they serve anything -- the hub's DPoP guard, and each of identity-core's.
