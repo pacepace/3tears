@@ -1708,7 +1708,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 rows_affected = await self.save_to_store(data)
             except Exception as exc:
                 log.error(
-                    "Background L3 write failed",
+                    "Background L3 write failed; withdrawing it from L1 and L2",
                     extra={
                         "extra_data": {
                             "entity_id": str(entity_id),
@@ -1717,7 +1717,15 @@ class BaseCollection(ABC, Generic[EntityT]):
                         }
                     },
                 )
+                # L1 and L2 took this row before L3 was tried, and the broadcast above sent peers
+                # to L2 for it. withdraw it from every tier so every reader goes to L3.
+                await self.invalidate_cache(entity_id)
             else:
+                if rows_affected == 0:
+                    # the store kept a different row than the one L1 and L2 now hold -- a lost
+                    # race on a fenced table, the DO NOTHING outcome on any other. either way
+                    # the caches disagree with L3 until withdrawn.
+                    await self.invalidate_cache(entity_id)
                 # This path is fire-and-forget: there is no caller left to
                 # hand a rowcount back to, and no exception is raised when a
                 # CAS fence rejects the write. On an unconditionally fenced
@@ -1930,6 +1938,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         # rather than silently addressing the scalar.
         entity_id: Any = derive_addressing_id(entity.id, data, self, strict=True)
         original_timestamp = getattr(entity, "original_date_updated", None)
+        # the entity's working copy as it stood before this save stamped it: what the handle
+        # keeps if the L3 write does not land (see ``_withdraw_unstored``).
+        working = dict(data)
 
         now = datetime.now(UTC)
         if entity.is_new:
@@ -1966,18 +1977,25 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
         else:
-            if conn is not None:
-                rows_affected = await self.save_to_store(
-                    data,
-                    original_timestamp,
-                    conn=conn,
-                )
-            else:
-                rows_affected = await self.save_to_store(
-                    data,
-                    original_timestamp,
-                )
+            try:
+                if conn is not None:
+                    rows_affected = await self.save_to_store(
+                        data,
+                        original_timestamp,
+                        conn=conn,
+                    )
+                else:
+                    rows_affected = await self.save_to_store(
+                        data,
+                        original_timestamp,
+                    )
+            # BaseException, not Exception: a cancellation mid-write leaves the outcome as unknown
+            # as any failure does, and CancelledError is not an Exception.
+            except BaseException:
+                self._withdraw_unstored(entity, entity_id, working)
+                raise
             if rows_affected == 0:
+                self._withdraw_unstored(entity, entity_id, working)
                 if entity.is_new:
                     raise RuntimeError(f"L3 insert failed for {self.table_name} entity {entity_id}: 0 rows affected")
                 raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
@@ -1998,6 +2016,41 @@ class BaseCollection(ABC, Generic[EntityT]):
         await self._publish_invalidation(entity_id)
         if generation_failure is not None:
             raise generation_failure
+
+    def _withdraw_unstored(self, entity: BaseEntity, entity_id: Any, working: dict[str, Any]) -> None:
+        """take an entity's working copy out of L1 after its L3 write did not land.
+
+        an entity is a proxy onto its L1 row: construction writes the row and every attribute
+        set writes through, so by the time :meth:`save_entity` reaches L3 the working copy is
+        already this pod's cached answer for that key. when the write is refused (a lost CAS
+        race, an insert that found the row taken) or fails, that copy is state L3 never took.
+        left in L1 it is served as stored: a writer that lost retries through :meth:`ensure`,
+        finds its own change "present", and stops without it ever reaching L3.
+
+        the row is evicted rather than repaired: this pod cannot know the stored row without
+        reading it, and a miss is exactly that read, taken by the next reader. nothing else is
+        touched. L2 and the peers' L1 never held the working copy -- only a write that landed
+        publishes to L2 or broadcasts -- and the winner's own write already invalidated them.
+
+        the working copy moves into the entity's own change buffer, so the caller's handle
+        still reads what it was trying to save, and a retry through the same handle writes it.
+
+        :param entity: the entity whose save did not land
+        :ptype entity: BaseEntity
+        :param entity_id: the key its row is cached under
+        :ptype entity_id: Any
+        :param working: its data as it stood before the save stamped it
+        :ptype working: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        """
+        if self._l1 is not None:
+            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        object.__setattr__(entity, "_changes", working)
+        log.info(
+            "L3 write did not land; its working copy was withdrawn from L1",
+            extra={"extra_data": {"table": self.table_name, "entity_id": str(entity_id)}},
+        )
 
     async def persist_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
         """Persist a write-buffer entry to L3. Used by ``flush_pending``.

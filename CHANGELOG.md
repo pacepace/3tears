@@ -4,6 +4,31 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.55.0 -- unreleased
+
+### A write that did not reach L3 no longer answers from L1
+
+An entity is a proxy onto its L1 row: construction writes the row and every attribute set
+writes through, so an entity's unsaved working copy is already the pod's cached answer for
+its key before `save_entity` runs the L3 compare-and-set. When that write did not land -- a
+lost CAS race, an insert that found the row taken, a store that raised -- the working copy
+stayed in L1 and was served as stored. A writer that lost retried through `ensure()`, found
+its own never-stored change "present", and stopped. The survey engine measured it on a real
+database: 19 of 20 concurrent members served from cache, 2 stored.
+
+- **Fixed:** `save_entity` evicts the entity's L1 row whenever its L3 write is refused (0
+  rows, raising `ConcurrentModificationError` or the insert `RuntimeError`) or raises,
+  cancellation included. The next read pulls through to the stored row. L2 and peer pods
+  never held the working copy (only a landed write publishes), so nothing else is touched.
+  The caller's handle keeps its working copy, so it still reads what it tried to save and a
+  retry through it writes that.
+- **Fixed:** the fire-and-forget subscript write (`collection[id] = row`), which writes L1
+  and L2 and broadcasts before it tries L3, withdraws the row from every tier
+  (`invalidate_cache`) when the L3 write raises or affects no row. Before, L1 and L2 kept
+  a value L3 never took, and peers were sent to L2 for it.
+- Consumers that worked around this by reading L3 on every attempt and evicting after
+  every write (the survey engine's `IndexesData`) can drop the workaround.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,
