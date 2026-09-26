@@ -115,6 +115,16 @@ asking the hub lives here, so neither side owns it.
   `anonymize_details` / `anonymize_ip`, change nothing else, evict caches, and reply with
   the verified agent and the rows matched and changed.
 
+### Search pacing is measured on an injectable clock
+
+`search()` subtracts a pacing wait from the caller's bound, and the only test of that
+could assert it inside a wall-clock window: a loaded event loop's scheduling delay lands
+in the measured wait and pushed it out of the window, failing the suite intermittently.
+
+- **New:** `threetears.search.search(..., clock=time.monotonic)`. Every wall-clock figure
+  the call reports, and the pacing wait it subtracts, are read from `clock`. Production
+  passes nothing; the test drives a manual clock and asserts the exact remainder.
+
 ### Checkpoints are anonymized in place for person erasure
 
 A LangGraph checkpoint names the person who sent each turn: the human message's `name`
