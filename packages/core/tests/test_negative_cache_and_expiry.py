@@ -137,6 +137,17 @@ class _NegativeCaching(_DenylistCollection):
     negative_cache_max_age: ClassVar[timedelta | None] = _MAX_AGE
 
 
+class _OrderedNegativeCaching(_NegativeCaching):
+    """a negative-caching collection whose L3 stores the compare-and-swap order, as l2_cas_mutate requires."""
+
+    @property
+    def persists_l2_order(self) -> bool:
+        return True
+
+    async def save_ordered_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
+        return await self.save_to_store(data)
+
+
 class _Expiring(_DenylistCollection):
     expires_at_column: ClassVar[str | None] = "expires_at"
 
@@ -380,7 +391,7 @@ class TestNegativeCaching:
     @pytest.mark.asyncio
     async def test_a_marker_in_l2_does_not_break_a_cas_mutation(self) -> None:
         nats, store, gens = _wire()
-        coll = _replica(_NegativeCaching, nats, store, gens)
+        coll = _replica(_OrderedNegativeCaching, nats, store, gens)
         assert await coll.get("k") is None  # L2 now holds a marker for k
         await coll.l2_cas_mutate("k", lambda row: ("upsert", {"id": "k", "reason": "set"}))
         raw = await nats.bucket.get(key=f"{_SCOPE}.{_TABLE}.k")

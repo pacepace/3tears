@@ -29,7 +29,11 @@ ensures now evict what they write, so a new owner grant is honoured on the next 
 `create_chat_model`'s default circuit breaker is scoped per provider and credential
 (`CircuitBreakerRegistry.get(..., credential=)`). `nats_distributed_lock` renews by
 compare-and-swap and yields a `LockHold` (`LockLossReason`, `LockLost`); by default a lost lock
-interrupts its body -- read that section before upgrading a caller.
+interrupts its body -- read that section before upgrading a caller. `l2_cas_mutate` fences every
+L3 persist on the order its compare-and-swap won, so L3 can no longer go back to an earlier row;
+a three-tier collection using it must add `l2_epoch` / `l2_revision` columns (coordination
+migration v002 does so for the coordination tables) and may no longer answer `"delete"` -- read
+"A compare-and-swap row in L3 can no longer go back to an earlier value" before upgrading.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -615,6 +619,114 @@ running unlocked and was never told -- the context manager yielded `None`.
   they keep the default: a hub sweep that treats `KvError` as "run without the lock" must not
   re-run a body that `LockLost` interrupted. This is only CAS renewal and a loss signal on the
   existing lock; it is not a held lease.
+
+### A compare-and-swap row in L3 can no longer go back to an earlier value
+
+**Read this before upgrading any collection that calls `l2_cas_mutate` and has an L3 pool:** it
+now refuses to run until the table has two new columns. The migration is below.
+
+`BaseCollection.l2_cas_mutate` orders writes by the L2 (NATS KV) revision a compare-and-swap
+wins, then persists each winner to L3 on its own -- synchronously, or through the write buffer.
+Two replicas winning consecutive revisions could therefore reach L3 in reverse, and the earlier
+row, landing last, stayed. The method's own docstring called this harmless ("a counter can at
+worst resume a few increments low") and said `l3_write_policy="synchronous"` avoided it; it did
+not. L3 matters exactly once L2 loses the key -- and KV storage is memory, so every NATS restart
+loses every key -- and then the next mutation seeds from the stale row and the later change is
+gone for good: a set loses a member for ever, a quota counter miscounts.
+
+- **Fixed:** every L3 persist from `l2_cas_mutate` -- the synchronous write and the write-behind
+  flush -- carries the ORDER its swap won and lands only over a row holding an older one. The
+  order is `(epoch, revision)`: the L2 revision, and the creation time of the L2 stream that
+  revision belongs to. The creation time is what makes the order survive a broker restart, which
+  recreates the bucket with its revisions back at 1; a bare revision would order every write after
+  a restart below every write before it and refuse them all. A persist refused because a newer
+  order is already stored is not an error and nothing is lost: the later swap built on this one.
+  After a wipe, the next mutation seeds from the newest row that reached L3.
+- **Fixed:** the write buffer keeps the newer of two orders for one row, whichever was added
+  last, and the flush reports a superseded ordered write at debug instead of as a lost write.
+- **Fixed:** a read that misses L2 and seeds it from L3 on such a collection now compare-and-swaps
+  the L3 row in, so it can no longer put an older row over a value a swap wrote meanwhile (the next
+  swap would have built on it and persisted over the newer row). `reload_entity` no longer puts the
+  L3 row into L2 there at all.
+- **Fixed:** `WindowedCounter.clear` closes the window -- a compare-and-swap to an expiry of now,
+  which every tier reads as absent -- instead of deleting the row. A delete left L3 nothing to
+  order against, so an attempt another replica recorded just before, still in its write buffer,
+  flushed afterwards and brought the count back.
+- **Changed (breaking):** on a collection with an L3 pool, `l2_cas_mutate` raises `ValueError`
+  before touching L2 unless the collection persists the order (`persists_l2_order`). No unfenced
+  mode remains: an unfenced persist is the data loss this closes, not a degraded form of it.
+- **Changed (breaking):** on a collection with an L3 pool, a `"delete"` from the callback raises
+  `ValueError` before touching L2. A removed row carries no order, so a persist of an earlier
+  winner still in flight would land after the delete and resurrect it. Upsert a row the reads treat
+  as absent instead -- an expiry in the past on a collection that declares `expires_at_column`, or
+  an empty state; it keeps its order in L3. A delete on an L1+L2-only collection (presence) is
+  unchanged.
+- **New (minor):** `threetears.core.exceptions.L2EpochRegressedError`, raised before L2 is
+  touched when L3 holds the row under an order later than anything the current bucket can write --
+  the broker's clock went backwards across a restart. Silently, every write would have been
+  refused in L3 as superseded while the caller was told it succeeded.
+- **New (minor):** `threetears.core.collections.l2_order` (`L2Order`, `L2_EPOCH_COLUMN`,
+  `L2_REVISION_COLUMN`, `L2_ORDER_COLUMNS`, `L2_ORDER_FLOOR`, `l2_order_of`, `with_l2_order`,
+  `without_l2_order`, `l2_order_migration_statements`); `schema_backed.l2_order_columns()` and
+  `TableSchema.declares_l2_order`; `BaseCollection.persists_l2_order` and
+  `BaseCollection.save_ordered_to_store`; `threetears.core.backends.protocol.OrderedDurableStore`,
+  `SqlL3Backend.upsert_ordered` and `schema_sql.build_ordered_upsert_sql`.
+- **Changed:** a write that won no swap -- `save_entity`, a subscript write -- on a collection
+  that persists the order stores `NULL` in both columns, which orders before every swap. Mutating
+  such a row outside `l2_cas_mutate` was already unsupported; it now also cannot pose as a swap.
+- **Changed:** `testing.kv.FakeKvBucket.wipe()` and `vanish()` restart the bucket's revisions at
+  1, as a recreated stream does. A test relying on revisions continuing across a wipe was relying
+  on something no broker does.
+- **Cost:** `l2_cas_mutate` on a collection with an L3 pool reads the bucket's creation time
+  twice per call (once before the first round, once after the win) -- one stream-info round trip
+  each. When the two differ the bucket was recreated around the swap, and the key is read back to
+  tell which stream the swap landed in.
+
+**What L3 guarantees now.** For each row, L3 holds the result of the latest swap whose persist has
+landed, and never goes back to an earlier one, so nothing that reached L3 is lost when L2 loses the
+key. What had not reached L3 when L2 lost the key is still lost: up to one flush interval under
+`"write_behind"`, only a persist still in flight at the restart under `"synchronous"`.
+
+**What a consumer must add.** Every table a collection mutates with `l2_cas_mutate` and persists
+to L3 needs two nullable, mutable columns:
+
+- `l2_epoch TIMESTAMPTZ` -- the creation time of the L2 stream the row's swap won in;
+- `l2_revision BIGINT` -- the revision it won (a busy bucket passes 2**31).
+
+Declare them in the `TableSchema` with `*l2_order_columns()`. `TableSchema` refuses one without
+the other, the wrong types, and a table with `on_conflict` other than `"update"` or with
+`cas_null_safe`. The collection's durable store must implement `OrderedDurableStore`; the SQL
+backend does, a git backend does not (such a collection is refused).
+
+**Migration.** Add a migration to the package that owns the table; never edit a shipped one.
+`l2_order_migration_statements(table)` renders it: two idempotent `ALTER TABLE ... ADD COLUMN IF
+NOT EXISTS` statements, then a backfill of existing rows to the floor order
+(`1970-01-01T00:00:00+00:00`, 0), below anything a live bucket produces, so the first swap after
+the migration supersedes them. Run them as separate statements -- YugabyteDB does not mix DDL and
+DML in one transaction:
+
+```python
+from threetears.core.collections.l2_order import l2_order_migration_statements
+
+async def add_l2_order_columns(store: DataStore) -> None:
+    for statement in l2_order_migration_statements("indexes"):
+        await store.execute(statement)
+
+pkg.version(N)(add_l2_order_columns)
+```
+
+A consumer whose tables are created by the hub from a declared schema (an agent or tool pod,
+whose broker refuses DDL) declares the columns in the schema it publishes; the hub must then add
+them to an existing table, since `CREATE TABLE IF NOT EXISTS` will not.
+
+**In this repository:** the coordination tables `coordination_counters`, `coordination_claims`
+and `coordination_redemptions` now declare the columns, and coordination migration **v002** adds
+them to tables v001 created before them and backfills existing rows (`coordination_revocations`,
+written through `save_entity`, is unchanged). Every consumer running the coordination migrations
+-- identity, scriob, the hub -- must apply v002 before deploying 0.55.0, or `WindowedCounter`,
+`IdempotencyKeyStore`, `RedemptionLedger` and `CollectionReplayAnchor` refuse on their first
+write. A pod declaring `replay_anchor_metadata()` with an L3 tier picks the columns up in its
+declaration.
 
 ## v0.54.0 -- 2026-09-26
 

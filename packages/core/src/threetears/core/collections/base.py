@@ -33,6 +33,13 @@ from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import _CACHED_AT_COLUMN
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
+from threetears.core.collections.l2_order import (
+    L2_ORDER_COLUMNS,
+    L2Order,
+    l2_order_of,
+    with_l2_order,
+    without_l2_order,
+)
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity, derive_addressing_id
@@ -40,6 +47,7 @@ from threetears.core.exceptions import (
     ConcurrentModificationError,
     CorruptCacheEntry,
     GenerationUnavailableError,
+    L2EpochRegressedError,
     L2ScopeNotConfiguredError,
 )
 from threetears.nats.errors import KvError
@@ -526,6 +534,47 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: bool
         """
         return False
+
+    @property
+    def persists_l2_order(self) -> bool:
+        """whether this collection's L3 stores the order a compare-and-swap won, and fences on it.
+
+        ``False`` by default. :meth:`l2_cas_mutate` on a collection with an L3 pool requires
+        ``True``: its winners persist independently, and only a write conditional on the stored
+        order stops an earlier winner that lands last from overwriting a later one (see
+        :mod:`threetears.core.collections.l2_order`). A collection answering ``True`` declares
+        the ``l2_epoch`` / ``l2_revision`` columns and implements :meth:`save_ordered_to_store`;
+        :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection` does both from
+        its declared schema.
+
+        :return: whether :meth:`save_ordered_to_store` is implemented and the order columns exist
+        :rtype: bool
+        """
+        return False
+
+    async def save_ordered_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
+        """persist a compare-and-swap row to L3 only over a row whose stored order is older.
+
+        ``data`` carries the order its swap won in ``l2_epoch`` / ``l2_revision``. The write lands
+        when no row exists, or when the stored row's order is strictly older -- ``NULL`` being
+        older than every order -- and otherwise leaves the stored row alone and reports 0 rows.
+        That 0 is not a failure: the stored row came from a later swap, which built on this one.
+
+        Public extension point, like :meth:`save_to_store`; only reached when
+        :attr:`persists_l2_order` is ``True``.
+
+        :param data: row payload, order columns included
+        :ptype data: dict[str, Any]
+        :param conn: optional backend-specific transaction handle the write joins
+        :ptype conn: Any
+        :return: rows affected: 1 when written, 0 when the stored order is newer or equal
+        :rtype: int
+        :raises NotImplementedError: on a collection that does not persist the order
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not persist the L2 order (persists_l2_order is False), so it "
+            f"cannot write a compare-and-swap row fenced on it"
+        )
 
     @abstractmethod
     async def delete_from_store(self, entity_id: Any) -> None:
@@ -1264,9 +1313,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return empty
             key = self.l2_key(entity_id)
             entry: tuple[bytes, int | None] | None
-            if self._negative_cache_active:
-                # the revision is only needed to replace an entry with an absent-marker by
-                # compare-and-swap, which only a negative-caching collection ever does.
+            if self._negative_cache_active or self.persists_l2_order:
+                # the revision is only needed to replace an entry by compare-and-swap: with an
+                # absent-marker, which only a negative-caching collection records, or with a row
+                # seeded from L3, which an ordered collection must never write over a live value.
                 entry = await kv.get_entry(key=key)
             else:
                 value = await kv.get(key=key)
@@ -1568,7 +1618,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None and self._row_is_expired(pg_data):
             pg_data = None
-        if pg_data is not None:
+        if pg_data is not None and self.persists_l2_order:
+            pg_data = await self._seed_l2_from_store(entity_id, pg_data, lookup.revision)
+        elif pg_data is not None:
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, self._stamped(pg_data), self.primary_key_columns)
             await self._save_to_l2(entity_id, pg_data)
@@ -1576,6 +1628,62 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._write_l1_marker(entity_id, generation)
             await self._write_l2_marker(entity_id, generation, lookup.revision)
         return pg_data
+
+    async def _seed_l2_from_store(self, entity_id: Any, stored: dict[str, Any], revision: int | None) -> dict[str, Any]:
+        """put a row read from L3 into L2 and L1 without ever replacing a compare-and-swap value.
+
+        On a collection whose rows are ordered by :meth:`l2_cas_mutate`, L3 can trail L2: the
+        latest winner's persist may not have landed. An unconditional put of the L3 row, from a
+        read that missed L2 while a swap was landing, would replace the swapped value with an
+        older one, and the next swap would build on that and persist over the newer row with a
+        newer order. So the seed is compare-and-swapped in: created when the key held nothing, or
+        swapped over the expired or undecodable entry the lookup found at ``revision``. When a
+        writer got there first, its value stands, and this read answers with it instead.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param stored: the live row read from L3
+        :ptype stored: dict[str, Any]
+        :param revision: revision of the non-live entry the lookup found, or ``None`` when the key
+            held nothing
+        :ptype revision: int | None
+        :return: the row this read answers with -- the seeded one, or the swapped one that beat it
+        :rtype: dict[str, Any]
+        """
+        seeded = False
+        try:
+            kv = await self._ensure_kv()
+            if kv is None:
+                seeded = True
+            else:
+                key = self.l2_key(entity_id)
+                payload = self.serialize(self._normalise_datetimes_for_write(stored))
+                lifetime = self._l2_entry_lifetime(stored)
+                timed = {} if lifetime is None else {"ttl": lifetime}
+                if revision is None:
+                    seeded = await kv.create(key=key, value=payload, **timed) is not None
+                else:
+                    seeded = await kv.update(key=key, value=payload, revision=revision, **timed) is not None
+        except KvError as exc:
+            log.warning(
+                "L2 seed from L3 failed; the next read asks L3 again",
+                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            )
+            # L2 was not written, so nothing is out of order; L1 may still hold what L3 answered.
+            seeded = True
+        answer = stored
+        if not seeded:
+            # a compare-and-swap landed between this read's L2 miss and now; its value is newer
+            # than anything L3 returned, so it is what this read answers and what L1 keeps.
+            log.debug(
+                "L2 seed from L3 lost to a compare-and-swap; answering with the swapped value",
+                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
+            )
+            current = await self._l2_lookup(entity_id)
+            answer = current.row if current.row is not None else stored
+        if self._l1 is not None and (seeded or answer is not stored):
+            self._l1.upsert(self.table_name, self._stamped(answer), self.primary_key_columns)
+        return answer
 
     @staticmethod
     def _stamped(data: dict[str, Any]) -> dict[str, Any]:
@@ -1688,6 +1796,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         """Async write propagation: always L2, conditionally L3, always signal."""
         now = datetime.now(UTC)
         data["date_updated"] = now
+        if self.persists_l2_order:
+            # as in save_entity: a write that won no compare-and-swap stores no order.
+            data.update(without_l2_order(data))
 
         # Always update L1 with the new timestamp
         if self._l1 is not None:
@@ -1941,6 +2052,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         # the entity's working copy as it stood before this save stamped it: what the handle
         # keeps if the L3 write does not land (see ``_withdraw_unstored``).
         working = dict(data)
+        if self.persists_l2_order:
+            # only a won compare-and-swap stores an order. A save that won none must not carry
+            # one it copied from the row it read: at its own L3 write it would pose as that swap,
+            # and a buffered flush of it would be refused as the row it already is.
+            data = without_l2_order(data)
 
         now = datetime.now(UTC)
         if entity.is_new:
@@ -2055,6 +2171,10 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def persist_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
         """Persist a write-buffer entry to L3. Used by ``flush_pending``.
 
+        A buffered compare-and-swap row -- one carrying the order its swap won, on a collection
+        that persists it -- is written through :meth:`save_ordered_to_store`, so a flush that
+        arrives after a newer winner's leaves the newer row in place.
+
         :param data: row payload keyed by column name
         :ptype data: dict[str, Any]
         :param conn: optional **backend-specific transaction handle** that overrides
@@ -2062,10 +2182,16 @@ class BaseCollection(ABC, Generic[EntityT]):
             inside ONE backend transaction (``flush_pending`` atomic-batch path).
             ``None`` uses the collection's own L3 store (the per-entity fallback).
         :ptype conn: Any
-        :return: rows affected reported by the backend
+        :return: rows affected reported by the backend; for an ordered row, 0 when a row with a
+            newer-or-equal order is already stored
         :rtype: int
         """
-        return await self.save_to_store(data, conn=conn)
+        rows: int
+        if self.persists_l2_order and l2_order_of(data) is not None:
+            rows = await self.save_ordered_to_store(data, conn=conn)
+        else:
+            rows = await self.save_to_store(data, conn=conn)
+        return rows
 
     @traced()
     async def reload_entity(self, entity: BaseEntity) -> None:
@@ -2088,7 +2214,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             # freshly-reloaded row read as locally authored, and locally
             # authored rows never expire.
             self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
-        await self._save_to_l2(entity_id, data)
+        if not self.persists_l2_order:
+            # an ordered collection's L3 can trail L2 (a persist not yet landed), so the L3 row is
+            # never put over L2 here: the next swap would build on it and persist over the newer
+            # row. The next read seeds L2 by compare-and-swap if it holds nothing.
+            await self._save_to_l2(entity_id, data)
         await self._publish_invalidation(entity_id)
 
     @traced()
@@ -2141,7 +2271,8 @@ class BaseCollection(ABC, Generic[EntityT]):
           member left). ``new_row`` is ignored. deleting an
           already-absent value is a successful idempotent no-op, so a
           callback may return ``"delete"`` on a ``None`` row without
-          special-casing.
+          special-casing. **Refused on a collection with an L3 pool**,
+          see below.
         - ``("upsert", new_row)`` -- create-if-absent (so a racing
           creator loses the row) when the value was absent, else
           CAS-update against the read revision. ``new_row`` MUST be
@@ -2161,8 +2292,31 @@ class BaseCollection(ABC, Generic[EntityT]):
           absent-marker -- the callback is shown L3's row, so a counter
           continues from its durable value rather than restarting at zero;
         - the won result is persisted per :attr:`l3_write_policy`:
-          synchronously before this returns, or through the write buffer.
-          A delete always lands synchronously;
+          synchronously before this returns, or through the write buffer;
+        - every persist carries the ORDER its swap won -- the L2 revision,
+          and the creation time of the L2 stream that revision belongs to
+          (:mod:`threetears.core.collections.l2_order`) -- and lands in L3
+          only over a row with an older stored order. Two winners of
+          consecutive revisions persist independently and can reach L3 in
+          either order; the fence is what makes L3 end on the later one
+          either way. A persist refused because a newer order is already
+          stored is not an error: the later swap built on this one, so its
+          row already carries this change. The creation time is what keeps
+          the order monotonic across a broker restart, which recreates the
+          bucket with its revisions back at 1;
+        - so the collection must persist the order
+          (:attr:`persists_l2_order`: the ``l2_epoch`` and ``l2_revision``
+          columns, and :meth:`save_ordered_to_store`). One that does not is
+          refused before L2 is touched: an unfenced persist is the data loss
+          this exists to prevent, not a degraded mode of it;
+        - a ``"delete"`` is refused, before L2 is touched. Removing the row
+          from L3 leaves nothing to carry an order, so a persist of an earlier
+          winner still in flight -- a held connection, another replica's
+          write buffer -- would land afterwards and resurrect the row, and the
+          next mutation would seed from it. Express removal as an upsert the
+          reads treat as absent instead: an expiry in the past on a collection
+          that declares :attr:`expires_at_column`, or an empty state. That row
+          keeps its order, so a late persist is refused;
         - a collection that caches absences advances its write generation
           after a synchronous persist, as :meth:`save_entity` does, and
           raises if it cannot once L1 and the broadcast have run;
@@ -2172,25 +2326,21 @@ class BaseCollection(ABC, Generic[EntityT]):
         - the invalidation broadcast tells peers sharing this registry's L2
           scope to keep the key, which already holds the newest value.
 
+        **What L3 guarantees, exactly.** L3 holds, for each row, the result of
+        the latest swap whose persist has landed, and never goes back to an
+        earlier one. When L2 then loses the key, the next mutation continues
+        from that row, so nothing that reached L3 is lost. What had not yet
+        reached L3 when L2 lost the key is lost: under ``"write_behind"`` that
+        is up to one flush interval of changes, the trade
+        :attr:`l3_write_policy` states for data like attempt counters; under
+        ``"synchronous"`` it narrows to a swap whose persist was still in
+        flight at the instant the broker restarted.
+
         The fence is one scoped L2 key, so a three-tier compare-and-swap row
         is mutated by one principal's replicas; two principals would each
         hold their own key and overwrite each other in L3. Mutate such a row
         only through this method: an unfenced :meth:`save_entity` on the
-        same row invalidates the key for every peer.
-
-        Write-behind can lose the increments of up to one flush interval
-        whenever L2 loses the key before the flush lands: the seed comes
-        from L3, not from any replica's unflushed buffer. That is the trade
-        :attr:`l3_write_policy` states for data like attempt counters; data
-        that cannot tolerate it declares ``"synchronous"``.
-
-        Under either policy the L2 revision orders the writes and L3 does
-        not: two replicas that win consecutive revisions persist
-        independently, so L3 can briefly hold the earlier row until the
-        next write lands. L3 matters only once L2 has lost the key, so a
-        collection whose rows are only ever inserted or deleted (a
-        revocation, a jti ledger) is unaffected, and a counter can at worst
-        resume a few increments low.
+        same row invalidates the key for every peer, and stores no order.
 
         **L1-only fallback**: when no NATS client is wired
         (:meth:`_ensure_kv` is ``None`` -- unit / single-pod), there is
@@ -2220,7 +2370,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :param max_retries: how many times to retry on a CAS conflict
             before surfacing the error
         :ptype max_retries: int
-        :return: what was done, and the row written
+        :return: what was done, and the row written -- on a collection with
+            an L3 pool, carrying the order its swap won
         :rtype: CasMutation
         :raises ConcurrentModificationError: when the retry budget is
             exhausted (a genuine livelock, never the common case)
@@ -2228,27 +2379,31 @@ class BaseCollection(ABC, Generic[EntityT]):
             during bucket resolution -- intentionally not swallowed,
             see the note above
         :raises RuntimeError: when a synchronous L3 persist affects no row
-            (an ``on_conflict="ignore"`` table refusing an update, say); L2
-            is withdrawn first, as for any persist failure
+            and no newer order is stored in its place; L2 is withdrawn first,
+            as for any persist failure
         :raises GenerationUnavailableError: when a collection that caches
             absences persisted the result but could not advance its write
             generation
         :raises ValueError: on a collection with an L3 pool whose every L3
-            write is fenced (``cas_null_safe``), before L2 is touched
+            write is fenced (``cas_null_safe``), or that does not persist the
+            L2 order, before L2 is touched; and on a ``"delete"`` there,
+            before L2 is touched
+        :raises L2EpochRegressedError: when L3 holds the row under an order
+            later than anything the current bucket can write, before L2 is
+            touched
         """
         self._set_span_table()
         kv = await self._ensure_kv()
         if kv is None:
             return await self._l1_only_cas_mutate(entity_id, mutate)
-        if self.l3_pool is not None and self.emits_cas_fence:
-            # the persist carries no fence value, so a fenced table would refuse every update
-            # after the first -- having already let L2 advance. refused before L2 is touched.
-            raise ValueError(
-                f"{type(self).__name__} fences every L3 write (cas_null_safe), so l2_cas_mutate cannot "
-                f"persist to it: the L2 revision is this method's fence and the persist is unfenced"
-            )
+        ordered = self.l3_pool is not None
+        if ordered:
+            self._refuse_unfenceable_cas()
 
         key = self.l2_key(entity_id)
+        # read once, BEFORE any write: a bucket recreated after this read can only make the order
+        # computed from it too low, never too high -- and the won write re-reads it to catch that.
+        epoch = await kv.date_created() if ordered else None
         for attempt in range(max_retries):
             entry = await kv.get_entry(key=key)
             if entry is None:
@@ -2281,20 +2436,31 @@ class BaseCollection(ABC, Generic[EntityT]):
 
             if row is not None and self._row_is_expired(row):
                 row = None
-            if row is None and self.l3_pool is not None:
+            if row is None and ordered:
                 # L2 holds no live row, but L3 is the source of truth: a wiped broker must not reset
                 # a counter to zero. no separate seeding write -- the create below converges, since
                 # a racing seeder that lands first makes it fail and the next round reads L2.
                 seeded = await self.fetch_from_store(entity_id)
                 row = None if seeded is None or self._row_is_expired(seeded) else seeded
+                if seeded is not None:
+                    assert epoch is not None  # narrow: read above whenever ordered
+                    self._refuse_regressed_epoch(entity_id, seeded, epoch)
 
             action, new_row = mutate(row)
             if action == "noop":
                 return CasMutation(action="noop", row=None)
+            if action == "delete" and ordered:
+                raise ValueError(
+                    f"{type(self).__name__} persists compare-and-swap rows to L3, where a delete cannot be "
+                    f"fenced: an earlier winner's persist still in flight would land after it and resurrect "
+                    f"the row. Upsert a row the reads treat as absent instead -- an expiry in the past, or "
+                    f"an empty state -- which keeps its order in L3"
+                )
 
             now = datetime.now(UTC)
             ok: bool
             won_revision: int | None = None
+            payload = b""
             if action == "delete":
                 ok = await kv.delete(key=key, revision=revision)
             else:
@@ -2303,6 +2469,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # a row new to every tier is stamped now; one seeded from L3, or rewritten by a
                 # callback that dropped the field, keeps the creation time it already had.
                 new_row.setdefault("date_created", now if row is None else row.get("date_created", now))
+                if ordered:
+                    # the L2 value is written before its own revision exists, so it carries no
+                    # order; the order is stamped on the row once the swap has won.
+                    new_row = without_l2_order(new_row)
                 lifetime = self._l2_entry_lifetime(new_row)
                 # as in _save_to_l2: the ttl keyword is sent only when this table declares an
                 # expiry, so a bucket shim that predates per-entry lifetimes still satisfies the
@@ -2335,6 +2505,10 @@ class BaseCollection(ABC, Generic[EntityT]):
 
             # CAS won: the L2 revision was the fence. persist to L3 (when there is one) only now,
             # so a write that lost the race is never persisted; then reconcile L1 and notify peers.
+            if ordered and new_row is not None:
+                assert epoch is not None and won_revision is not None  # narrow: an ordered upsert that won
+                order = await self._won_order(entity_id, key, epoch, won_revision, payload)
+                new_row = with_l2_order(new_row, order)
             try:
                 generation_failure = await self._persist_cas_result(entity_id, action, new_row)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- compensates L2 for any persist failure, then re-raises it unchanged
@@ -2358,6 +2532,96 @@ class BaseCollection(ABC, Generic[EntityT]):
                 outcome = CasMutation(action="created" if row is None else "updated", row=new_row)
             return outcome
         raise AssertionError("unreachable: every CAS round either returns or retries within the budget")
+
+    def _refuse_unfenceable_cas(self) -> None:
+        """refuse, before L2 is touched, a compare-and-swap whose L3 persist cannot be ordered.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when every L3 write is fenced (``cas_null_safe``), or the collection
+            does not persist the L2 order
+        """
+        if self.emits_cas_fence:
+            # the persist carries no fence value, so a fenced table would refuse every update
+            # after the first -- having already let L2 advance.
+            raise ValueError(
+                f"{type(self).__name__} fences every L3 write (cas_null_safe), so l2_cas_mutate cannot "
+                f"persist to it: the L2 revision is this method's fence and the persist is unfenced"
+            )
+        if not self.persists_l2_order:
+            raise ValueError(
+                f"{type(self).__name__} has an L3 pool but does not persist the L2 order its swaps win "
+                f"({L2_ORDER_COLUMNS[0]} TIMESTAMPTZ and {L2_ORDER_COLUMNS[1]} BIGINT, written through "
+                f"save_ordered_to_store). Without them two winners persisting in reverse leave L3 on the "
+                f"earlier row, and a broker restart then loses the later change. Declare both columns "
+                f"(threetears.core.collections.schema_backed.l2_order_columns()) and migrate the table "
+                f"(threetears.core.collections.l2_order.l2_order_migration_statements())"
+            )
+
+    def _refuse_regressed_epoch(self, entity_id: Any, stored: dict[str, Any], epoch: datetime) -> None:
+        """refuse a swap whose every possible order is older than the one L3 already holds.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param stored: the row L3 holds
+        :ptype stored: dict[str, Any]
+        :param epoch: the current bucket's creation time
+        :ptype epoch: datetime
+        :return: nothing
+        :rtype: None
+        :raises L2EpochRegressedError: when the stored order's epoch is later than ``epoch``
+        """
+        stored_order = l2_order_of(stored)
+        if stored_order is not None and stored_order.epoch > epoch:
+            raise L2EpochRegressedError(self.table_name, entity_id, stored_order.epoch, epoch)
+
+    async def _won_order(self, entity_id: Any, key: str, epoch: datetime, won_revision: int, payload: bytes) -> L2Order:
+        """the order a won swap holds: its revision, and the creation time of the stream it landed in.
+
+        ``epoch`` was read before the swap. When the bucket's creation time is unchanged now, the
+        swap landed in that stream. When it moved, the bucket was recreated around the swap and
+        either stream could hold it; the key is read back, and when it still holds this swap's
+        value at this swap's revision the swap is in the current stream. Otherwise the earlier time
+        is kept: either the swap's stream died with the swap in it, and that time is the true one,
+        or a later swap in the new stream has already built on this one and carries it into L3.
+        Never guessing the later time is what matters: an order too high would outrank the new
+        stream's writes, which restart at revision 1, and refuse them in L3.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param key: the scoped L2 key the swap won
+        :ptype key: str
+        :param epoch: the bucket's creation time read before the swap
+        :ptype epoch: datetime
+        :param won_revision: the revision the swap produced
+        :ptype won_revision: int
+        :param payload: the bytes the swap wrote
+        :ptype payload: bytes
+        :return: the swap's order
+        :rtype: L2Order
+        :raises KvError: when the bucket cannot be read
+        """
+        kv = await self._ensure_kv()
+        assert kv is not None  # narrow: only reached after a swap won on this bucket
+        current = await kv.date_created()
+        chosen = epoch
+        if current != epoch:
+            entry = await kv.get_entry(key=key)
+            if entry is not None and entry == (payload, won_revision):
+                chosen = current
+            log.info(
+                "L2 bucket was recreated around a compare-and-swap; its order uses the stream it landed in",
+                extra={
+                    "extra_data": {
+                        "entity_id": str(entity_id),  # convert at border: log extra_data field
+                        "table": self.table_name,
+                        "epoch_before": epoch.isoformat(),
+                        "epoch_after": current.isoformat(),
+                        "chosen": chosen.isoformat(),
+                    }
+                },
+            )
+        return L2Order(epoch=chosen, revision=won_revision)
 
     async def _withdraw_unpersisted_cas(
         self,
@@ -2427,38 +2691,72 @@ class BaseCollection(ABC, Generic[EntityT]):
     ) -> GenerationUnavailableError | None:
         """land a won compare-and-swap in L3, per this collection's L3 write policy.
 
-        Nothing to do without an L3 pool: there, L2 is the source of truth. A write-behind upsert
-        joins the write buffer and is flushed later; a synchronous one, and every delete (the
-        buffer holds rows, not removals), is written before this returns.
+        Nothing to do without an L3 pool: there, L2 is the source of truth, and a delete reaches
+        this only there (:meth:`l2_cas_mutate` refuses one on a collection with an L3 pool). A
+        write-behind upsert joins the write buffer, which keeps the newer order when two land
+        on one row, and is flushed later; a synchronous one is written before this returns. Both
+        are written fenced on the order the row carries.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :param action: the action that won
         :ptype action: str
-        :param new_row: the row written, for an upsert
+        :param new_row: the row written, for an upsert, carrying the order its swap won
         :ptype new_row: dict[str, Any] | None
         :return: a write-generation failure for the caller to raise once L1 and the broadcast have
             run, or ``None``
         :rtype: GenerationUnavailableError | None
-        :raises RuntimeError: when a synchronous L3 write affects no row
+        :raises RuntimeError: when a synchronous L3 write affects no row and no newer order is
+            stored in its place
         """
-        if self.l3_pool is None:
-            return None
-        if action == "delete":
-            if self._write_buffer is not None:
-                await self._write_buffer.remove(self.table_name, entity_id)
-            await self.delete_from_store(entity_id)
+        if self.l3_pool is None or action == "delete":
             return None
         assert new_row is not None  # narrow: "upsert" always carries a row
         if self._defers_l3_writes:
             assert self._write_buffer is not None  # narrow: deferral requires one
             await self._write_buffer.add(self.table_name, entity_id, new_row)
             return None
-        if await self.save_to_store(new_row) == 0:
-            raise RuntimeError(
-                f"{self.table_name}: persisting a won compare-and-swap for {entity_id!r} affected no L3 row"
-            )
+        if await self.save_ordered_to_store(new_row) == 0:
+            await self._confirm_superseded(entity_id, new_row)
+            return None
         return await self._advance_generation()
+
+    async def _confirm_superseded(self, entity_id: Any, new_row: dict[str, Any]) -> None:
+        """confirm that an ordered persist which wrote nothing was refused for a newer stored order.
+
+        The ordered write affects no row in exactly one expected case: L3 already holds this row
+        under a newer-or-equal order, because a later swap -- which built on this one -- persisted
+        first. That is success, and it needs no write-generation advance: the later writer's
+        commit advanced it. Anything else that affected no row is a write that went nowhere, and
+        is raised as such.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param new_row: the row whose persist affected nothing, carrying its order
+        :ptype new_row: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: when L3 holds no row, or holds one under an older order
+        """
+        ours = l2_order_of(new_row)
+        stored = await self.fetch_from_store(entity_id)
+        theirs = None if stored is None else l2_order_of(stored)
+        if ours is None or theirs is None or theirs < ours:
+            raise RuntimeError(
+                f"{self.table_name}: persisting a won compare-and-swap for {entity_id!r} affected no L3 row, "
+                f"and L3 holds no newer order in its place (stored order {theirs}, ours {ours})"
+            )
+        log.debug(
+            "compare-and-swap persist superseded by a newer stored order; the later swap carries it",
+            extra={
+                "extra_data": {
+                    "entity_id": str(entity_id),  # convert at border: log extra_data field
+                    "table": self.table_name,
+                    "ours": str(ours),
+                    "stored": str(theirs),
+                }
+            },
+        )
 
     async def _l1_only_cas_mutate(
         self,
