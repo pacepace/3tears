@@ -1,8 +1,10 @@
 """Memory extraction -- distills conversation turns into persistent memories.
 
-Three-layer gating (heuristic, rate limit, LLM worthiness), followed by
-LLM-driven extraction, embedding, similar-memory lookup, and LLM resolution
-(ADD/UPDATE/DELETE/NOOP). Fire-and-forget safe: extract() never raises.
+Gating (heuristic, a read of the conversation's cooldown, LLM worthiness,
+then an atomic claim of the cooldown), followed by LLM-driven extraction,
+embedding, similar-memory lookup, and LLM resolution (ADD/UPDATE/DELETE/NOOP).
+extract() answers an :class:`ExtractionResult` saying what happened; it
+raises only when its task is cancelled.
 
 All memory-table writes go through :class:`MemoriesCollection` (save
 new via the entity lifecycle; updates through
@@ -16,9 +18,12 @@ internally.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -38,16 +43,74 @@ from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
+from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
 
 __all__ = [
     "ChatModelFactory",
+    "ExtractionGate",
+    "ExtractionOutcome",
+    "ExtractionResult",
     "MemoryExtractor",
 ]
 
 log = get_logger(__name__)
 
 _VALID_MEMORY_TYPES = {t.value for t in MemoryType}
+
+#: JetStream's answer to a per-message TTL on a stream without ``allow_msg_ttl``
+#: (``JSMessageTTLDisabledErr``, "per-message TTL is disabled"). observed on the
+#: wire against nats-server; nats-py raises it as ``BadRequestError``, which
+#: :class:`~threetears.nats.NatsKvBucket` wraps in ``KvError``.
+_MSG_TTL_DISABLED_ERR_CODE = 10166
+
+
+class ExtractionOutcome(StrEnum):
+    """what one :meth:`MemoryExtractor.extract` call came to.
+
+    :cvar STORED: the pipeline reached the write stage and at least one write
+        landed, or resolution decided every candidate needed no write
+    :cvar SKIPPED: a gate stopped the turn before anything was written; the
+        result's ``gate`` names which one
+    :cvar FAILED: something went wrong; the result's ``reason`` says what
+    """
+
+    STORED = "stored"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class ExtractionGate(StrEnum):
+    """the gate that stopped a skipped turn.
+
+    :cvar HEURISTIC: message length or turn-count thresholds
+    :cvar RATE_LIMIT: the conversation's extraction cooldown is running, or a
+        concurrent turn claimed it first
+    :cvar WORTHINESS: the worthiness model judged the turn not worth remembering
+    :cvar NOTHING_FOUND: the extraction model found nothing to remember
+    """
+
+    HEURISTIC = "heuristic"
+    RATE_LIMIT = "rate_limit"
+    WORTHINESS = "worthiness"
+    NOTHING_FOUND = "nothing_found"
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionResult:
+    """what :meth:`MemoryExtractor.extract` did with one conversation turn.
+
+    :ivar outcome: stored, skipped or failed
+    :ivar stored: memories written (added or updated) by this turn
+    :ivar gate: the gate that stopped a skipped turn; ``None`` otherwise
+    :ivar reason: human-readable detail -- the gate's own reason, the failure,
+        or the per-action tally of a stored turn. for a person, never parsed
+    """
+
+    outcome: ExtractionOutcome
+    stored: int = 0
+    gate: ExtractionGate | None = None
+    reason: str = ""
 
 
 def _invoke_identity_kwargs(
@@ -76,6 +139,58 @@ def _invoke_identity_kwargs(
     if conversation_id is not None:
         kwargs["conversation_id"] = conversation_id
     return kwargs
+
+
+def _refuses_per_message_ttl(exc: KvError) -> bool:
+    """whether a KV failure is the server refusing a per-message TTL.
+
+    walks the ``__cause__`` chain for JetStream's ``per-message TTL is disabled``
+    error code; the wrapper's ``KvError`` carries nats-py's ``BadRequestError``
+    as its cause.
+
+    :param exc: the KV failure
+    :ptype exc: KvError
+    :return: ``True`` when the stream refused the TTL for want of ``allow_msg_ttl``
+    :rtype: bool
+    """
+    refused = False
+    cause: BaseException | None = exc
+    while cause is not None and not refused:
+        refused = getattr(cause, "err_code", None) == _MSG_TTL_DISABLED_ERR_CODE
+        cause = cause.__cause__
+    return refused
+
+
+@dataclass(slots=True)
+class _ActionTally:
+    """counts of what :meth:`MemoryExtractor._execute_actions` did with the resolved actions.
+
+    :ivar added: new memories written
+    :ivar updated: existing memories rewritten
+    :ivar deleted: existing memories removed
+    :ivar skipped: NOOPs, and UPDATE / DELETE targets that were absent or not the user's
+    :ivar failed: actions that raised
+    """
+
+    added: int = 0
+    updated: int = 0
+    deleted: int = 0
+    skipped: int = 0
+    failed: int = 0
+
+    def as_result(self) -> ExtractionResult:
+        """the turn's result: failed when every attempted action raised, stored otherwise.
+
+        :return: the extraction result this tally amounts to
+        :rtype: ExtractionResult
+        """
+        applied = self.added + self.updated + self.deleted
+        detail = (
+            f"added={self.added} updated={self.updated} deleted={self.deleted} "
+            f"unchanged={self.skipped} failed={self.failed}"
+        )
+        outcome = ExtractionOutcome.FAILED if self.failed and not applied else ExtractionOutcome.STORED
+        return ExtractionResult(outcome=outcome, stored=self.added + self.updated, reason=detail)
 
 
 @runtime_checkable
@@ -169,8 +284,21 @@ class MemoryExtractor:
         *,
         agent_id: UUID,
         customer_id: UUID,
-    ) -> None:
-        """Extract memories from conversation turn. Fire-and-forget safe.
+    ) -> ExtractionResult:
+        """extract memories from one conversation turn and say what happened.
+
+        gates run cheapest first: heuristics, a READ of the conversation's
+        cooldown (so a turn inside it costs no worthiness call), the worthiness
+        model, then an atomic CLAIM of the cooldown. the claim comes after
+        worthiness on purpose: taking it earlier let an unworthy turn -- or one
+        cancelled by the next message -- block the whole cooldown window, and
+        creating it atomically means two turns racing past the read cannot both
+        extract.
+
+        safe to run as a background task: every failure is caught, logged and
+        answered as :attr:`ExtractionOutcome.FAILED`. cancellation is the one
+        exception -- it is logged once at WARNING and re-raised, because a
+        cancelled task must stay cancelled.
 
         :param user_id: user who sent message
         :ptype user_id: UUID
@@ -188,117 +316,174 @@ class MemoryExtractor:
         :ptype agent_id: UUID
         :param customer_id: customer UUID owning memory namespace (required)
         :ptype customer_id: UUID
-        :return: nothing
-        :rtype: None
-        :raises: never (fire-and-forget safe, logs errors internally)
+        :return: stored count, the gate that stopped the turn, or the failure
+        :rtype: ExtractionResult
+        :raises asyncio.CancelledError: when the task running it is cancelled
         """
         try:
-            # agent-internal turn extraction: authorize AGENT-ONLY so the
-            # owner short-circuit gates it (the agent owns its memory
-            # namespace by construction). ``caller_user_id`` is left None on
-            # purpose -- passing the user would force user ∩ agent
-            # intersection, which denies until the user holds a memory grant
-            # that only a successful write creates (a bootstrap deadlock).
-            # ``user_id`` still scopes the stored memory rows below.
-            await authorize_memory_access(
-                action=ACTION_MEMORY_EXTRACT,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                caller_user_id=None,
-                caller_agent_id=agent_id,
-                deps=self._authorizer,
-            )
-
-            passed, reason = self.check_heuristic_gates(
-                user_message,
-                assistant_response,
-                turn_count,
-            )
-            if not passed:
-                log.debug(
-                    "Memory extraction skipped by heuristic gate: %s",
-                    reason,
-                )
-                return
-
-            rate_passed, cooldown = await self.check_rate_limit(conversation_id)
-            if not rate_passed:
-                log.debug(
-                    "Memory extraction skipped by rate limit, cooldown=%d",
-                    cooldown,
-                )
-                return
-
-            worthy, worthiness_reason = await self.check_worthiness(
-                user_message,
-                assistant_response,
+            result = await self._run_extraction(
                 user_id=user_id,
                 conversation_id=conversation_id,
-            )
-            if not worthy:
-                log.debug(
-                    "Memory extraction skipped by worthiness gate: %s",
-                    worthiness_reason,
-                )
-                return
-
-            candidates_raw = await self.extract_candidates(
-                user_message,
-                assistant_response,
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
-            if not candidates_raw:
-                log.debug("No memories extracted from conversation turn")
-                return
-
-            candidates: list[dict[str, Any]] = []
-            for mem in candidates_raw:
-                embedding = await _safe_aembed_query(
-                    self._embedding_provider,
-                    mem["content"],
-                )
-                if embedding is None:
-                    continue
-                similar = await self._get_similar_memories(
-                    embedding,
-                    user_id,
-                    agent_id,
-                )
-                candidates.append(
-                    {
-                        "type": mem["type"],
-                        "content": mem["content"],
-                        "embedding": embedding,
-                        "similar_memories": similar,
-                    }
-                )
-
-            if not candidates:
-                return
-
-            actions = await self.resolve_actions(
-                candidates,
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
-
-            await self._execute_actions(
-                actions,
-                candidates,
-                user_id,
-                conversation_id,
-                message_id_source,
+                message_id_source=message_id_source,
+                user_message=user_message,
+                assistant_response=assistant_response,
+                turn_count=turn_count,
                 agent_id=agent_id,
                 customer_id=customer_id,
             )
-
+        except asyncio.CancelledError:
+            # convert at border: log extra_data fields
+            log.warning(
+                "memory extraction cancelled",
+                extra={"extra_data": {"conversation_id": str(conversation_id), "agent_id": str(agent_id)}},
+            )
+            raise
         except Exception as exc:
             log.error(
-                "Memory extraction failed: %s",
+                "memory extraction failed: %s",
                 exc,
                 exc_info=True,
+                extra={"extra_data": {"conversation_id": str(conversation_id), "agent_id": str(agent_id)}},
             )
+            result = ExtractionResult(outcome=ExtractionOutcome.FAILED, reason=f"{type(exc).__name__}: {exc}")
+        return result
+
+    async def _run_extraction(
+        self,
+        *,
+        user_id: UUID,
+        conversation_id: UUID,
+        message_id_source: UUID,
+        user_message: str,
+        assistant_response: str,
+        turn_count: int,
+        agent_id: UUID,
+        customer_id: UUID,
+    ) -> ExtractionResult:
+        """run the gated pipeline for one turn; failures propagate to :meth:`extract`.
+
+        each gate that stops the turn is a guard clause answering its own
+        :class:`ExtractionResult`.
+
+        :param user_id: user who sent message
+        :ptype user_id: UUID
+        :param conversation_id: conversation this turn belongs to
+        :ptype conversation_id: UUID
+        :param message_id_source: source message ID for extracted memories
+        :ptype message_id_source: UUID
+        :param user_message: raw user message text
+        :ptype user_message: str
+        :param assistant_response: raw assistant response text
+        :ptype assistant_response: str
+        :param turn_count: number of turns in conversation so far
+        :ptype turn_count: int
+        :param agent_id: agent UUID owning memory namespace
+        :ptype agent_id: UUID
+        :param customer_id: customer UUID owning memory namespace
+        :ptype customer_id: UUID
+        :return: what the turn came to
+        :rtype: ExtractionResult
+        :raises MemoryAccessDenied: when the agent may not extract into its namespace
+        :raises KvError: when the rate-limit bucket refuses a per-key lifetime
+        """
+        # agent-internal turn extraction: authorize AGENT-ONLY so the
+        # owner short-circuit gates it (the agent owns its memory
+        # namespace by construction). ``caller_user_id`` is left None on
+        # purpose -- passing the user would force user ∩ agent
+        # intersection, which denies until the user holds a memory grant
+        # that only a successful write creates (a bootstrap deadlock).
+        # ``user_id`` still scopes the stored memory rows below.
+        await authorize_memory_access(
+            action=ACTION_MEMORY_EXTRACT,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            caller_user_id=None,
+            caller_agent_id=agent_id,
+            deps=self._authorizer,
+        )
+
+        passed, reason = self.check_heuristic_gates(user_message, assistant_response, turn_count)
+        if not passed:
+            log.debug("memory extraction skipped by heuristic gate: %s", reason)
+            return ExtractionResult(outcome=ExtractionOutcome.SKIPPED, gate=ExtractionGate.HEURISTIC, reason=reason)
+
+        open_window, cooldown = await self.check_rate_limit(conversation_id)
+        if not open_window:
+            log.debug("memory extraction skipped by rate limit, cooldown=%d", cooldown)
+            return ExtractionResult(
+                outcome=ExtractionOutcome.SKIPPED,
+                gate=ExtractionGate.RATE_LIMIT,
+                reason=f"cooldown running ({cooldown}s)",
+            )
+
+        worthy, worthiness_reason = await self.check_worthiness(
+            user_message,
+            assistant_response,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        if not worthy:
+            log.debug("memory extraction skipped by worthiness gate: %s", worthiness_reason)
+            return ExtractionResult(
+                outcome=ExtractionOutcome.SKIPPED,
+                gate=ExtractionGate.WORTHINESS,
+                reason=worthiness_reason,
+            )
+
+        claimed, cooldown = await self.claim_rate_limit(conversation_id)
+        if not claimed:
+            log.debug("memory extraction skipped: a concurrent turn claimed the cooldown, cooldown=%d", cooldown)
+            return ExtractionResult(
+                outcome=ExtractionOutcome.SKIPPED,
+                gate=ExtractionGate.RATE_LIMIT,
+                reason=f"cooldown claimed by a concurrent turn ({cooldown}s)",
+            )
+
+        candidates_raw = await self.extract_candidates(
+            user_message,
+            assistant_response,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        if not candidates_raw:
+            log.debug("no memories extracted from conversation turn")
+            return ExtractionResult(
+                outcome=ExtractionOutcome.SKIPPED,
+                gate=ExtractionGate.NOTHING_FOUND,
+                reason="the extraction model found nothing to remember",
+            )
+
+        candidates: list[dict[str, Any]] = []
+        for mem in candidates_raw:
+            embedding = await _safe_aembed_query(self._embedding_provider, mem["content"])
+            if embedding is None:
+                continue
+            similar = await self._get_similar_memories(embedding, user_id, agent_id)
+            candidates.append(
+                {
+                    "type": mem["type"],
+                    "content": mem["content"],
+                    "embedding": embedding,
+                    "similar_memories": similar,
+                }
+            )
+        if not candidates:
+            return ExtractionResult(
+                outcome=ExtractionOutcome.FAILED,
+                reason=f"could not embed any of {len(candidates_raw)} candidate(s)",
+            )
+
+        actions = await self.resolve_actions(candidates, user_id=user_id, conversation_id=conversation_id)
+        tally = await self._execute_actions(
+            actions,
+            candidates,
+            user_id,
+            conversation_id,
+            message_id_source,
+            agent_id=agent_id,
+            customer_id=customer_id,
+        )
+        return tally.as_result()
 
     def check_heuristic_gates(
         self,
@@ -331,44 +516,105 @@ class MemoryExtractor:
             return False, f"too_few_turns ({turn_count})"
         return True, "passed"
 
+    def _rate_limit_key(self, conversation_id: UUID) -> str:
+        """the KV key holding one conversation's extraction cooldown.
+
+        :param conversation_id: conversation UUID
+        :ptype conversation_id: UUID
+        :return: KV key
+        :rtype: str
+        """
+        # convert at border: KV key
+        return f"memory.last_extract.{conversation_id}"
+
     async def check_rate_limit(
         self,
         conversation_id: UUID,
     ) -> tuple[bool, int]:
-        """layer 2 extension point: rate limiter via NATS KV create().
+        """layer 2 extension point: READ the conversation's extraction cooldown.
 
-        public stage hook on :class:`MemoryExtractor`. override in
-        subclasses or replace via duck typing to customize rate
-        limiting; tests stub this to bypass the NATS bucket. fail-open
-        on NATS errors is part of the contract. stability contract:
-        signature and return shape are part of public api.
+        public stage hook on :class:`MemoryExtractor`, run BEFORE worthiness so a
+        turn inside the cooldown costs no worthiness call. it only reads: the key
+        is taken by :meth:`claim_rate_limit`, after worthiness says yes, so a turn
+        that stops here or at worthiness never blocks the next one. fail-open on
+        NATS errors is part of the contract. stability contract: signature and
+        return shape are part of public api.
 
         :param conversation_id: conversation UUID to rate-limit
         :ptype conversation_id: UUID
-        :return: (passed, cooldown) pair
+        :return: ``(True, 0)`` when no cooldown is running, ``(False, cooldown)``
+            when one is
         :rtype: tuple[bool, int]
         """
-        if self._nats_client is None:
+        cooldown = self._config.extraction_rate_limit_cooldown_seconds
+        if self._nats_client is None or cooldown <= 0:
             return True, 0
         try:
-            key = f"memory.last_extract.{conversation_id}"
-            cooldown = self._config.extraction_rate_limit_cooldown_seconds
-            # per-conversation SET-NX with a cooldown TTL: ``create`` returns a
-            # revision only when no unexpired key exists; ``None`` (conflict)
-            # means a recent extraction is still inside the cooldown window.
-            # (the old ``bucket_name`` + client-level ``create`` API is gone;
-            # the KV surface is now a bucket handle from ``kv_bucket``.)
-            bucket = await self._nats_client.kv_bucket(
-                name=self._rate_limit_bucket,
+            bucket = await self._nats_client.kv_bucket(name=self._rate_limit_bucket)
+            running = await bucket.get(key=self._rate_limit_key(conversation_id)) is not None
+        except Exception as exc:
+            log.warning("rate limit read failed, allowing extraction: %s", exc)
+            running = False
+        return (False, cooldown) if running else (True, 0)
+
+    async def claim_rate_limit(
+        self,
+        conversation_id: UUID,
+    ) -> tuple[bool, int]:
+        """layer 4 extension point: atomically START the conversation's cooldown.
+
+        public stage hook on :class:`MemoryExtractor`, run AFTER worthiness.
+        a KV ``create`` lands only when no live key exists, so of two turns that
+        both passed :meth:`check_rate_limit` exactly one claims the window.
+
+        the lifetime rides the KEY (a per-message TTL), not the bucket: the
+        bucket is opened by name alone, because a bucket-level ``ttl`` is the
+        stream's ``max_age`` -- set once by whoever created the bucket, and on a
+        shared bucket nothing to do with this cooldown. a bucket whose stream
+        cannot carry a per-message TTL (``allow_msg_ttl`` off, on a handle that
+        could not reconcile it) refuses the write; that is a deployment defect,
+        logged at ERROR naming the bucket and raised -- never answered by a key
+        that would outlive its cooldown. any other NATS failure fails open.
+        stability contract: signature and return shape are part of public api.
+
+        :param conversation_id: conversation UUID to rate-limit
+        :ptype conversation_id: UUID
+        :return: ``(True, 0)`` when this turn claimed the cooldown,
+            ``(False, cooldown)`` when a concurrent turn already had
+        :rtype: tuple[bool, int]
+        :raises KvError: when the bucket refuses a per-key TTL
+        """
+        cooldown = self._config.extraction_rate_limit_cooldown_seconds
+        if self._nats_client is None or cooldown <= 0:
+            return True, 0
+        bucket_name = self._rate_limit_bucket
+        try:
+            bucket = await self._nats_client.kv_bucket(name=bucket_name)
+            bucket_name = bucket.name
+            revision = await bucket.create(
+                key=self._rate_limit_key(conversation_id),
+                value=b"1",
                 ttl=timedelta(seconds=cooldown),
             )
-            revision = await bucket.create(key=key, value=b"1")
-            if revision is None:
-                return False, cooldown
-            return True, 0
+            claimed = revision is not None
+        except KvError as exc:
+            if not _refuses_per_message_ttl(exc):
+                log.warning("rate limit claim failed, allowing extraction: %s", exc)
+                claimed = True
+            else:
+                log.error(
+                    "memory extraction rate-limit bucket %s refuses per-key TTLs (allow_msg_ttl is off), so no "
+                    "cooldown can be set. open it with create_if_missing=True from an identity allowed to "
+                    "update the stream -- that reconciles allow_msg_ttl in place -- or recreate it: %s",
+                    bucket_name,
+                    exc,
+                    extra={"extra_data": {"bucket": bucket_name}},
+                )
+                raise
         except Exception as exc:
-            log.warning("Rate limit check failed, allowing extraction: %s", exc)
-            return True, 0
+            log.warning("rate limit claim failed, allowing extraction: %s", exc)
+            claimed = True
+        return (True, 0) if claimed else (False, cooldown)
 
     async def check_worthiness(
         self,
@@ -670,8 +916,10 @@ class MemoryExtractor:
         *,
         agent_id: UUID,
         customer_id: UUID,
-    ) -> None:
-        """Execute ADD/UPDATE/DELETE/NOOP actions via the Collection.
+    ) -> _ActionTally:
+        """execute ADD/UPDATE/DELETE/NOOP actions via the Collection, counting what landed.
+
+        a failing action is logged and counted, and the rest still run.
 
         :param actions: resolved action list from resolve_actions
         :ptype actions: list[dict[str, Any]]
@@ -687,10 +935,11 @@ class MemoryExtractor:
         :ptype agent_id: UUID
         :param customer_id: customer UUID to tag new memories with
         :ptype customer_id: UUID
-        :return: nothing
-        :rtype: None
+        :return: counts of added, updated, deleted, unchanged and failed actions
+        :rtype: _ActionTally
         """
         now = datetime.now(UTC)
+        tally = _ActionTally()
 
         for act in actions:
             idx = act["index"]
@@ -721,6 +970,7 @@ class MemoryExtractor:
                     }
                     new_entity: MemoryEntity = self._memories.create(new_data)
                     await self._memories.save_entity(new_entity)
+                    tally.added += 1
                     if self._summary_callback:
                         await self._summary_callback(
                             str(memory_id),  # convert at border: summary_callback Callable[[str, str], ...] contract
@@ -769,22 +1019,27 @@ class MemoryExtractor:
                         self._embedding_provider,
                         updated_content,
                     )
-                    if new_embedding is not None:
-                        memory_uuid = UUID(act["memory_id"])
-                        update_entity: MemoryEntity | None = await self._memories.get(
-                            (agent_id, memory_uuid),
+                    if new_embedding is None:
+                        # the embedding helper already logged why; the rewrite cannot land without one.
+                        tally.failed += 1
+                        continue
+                    memory_uuid = UUID(act["memory_id"])
+                    update_entity: MemoryEntity | None = await self._memories.get(
+                        (agent_id, memory_uuid),
+                    )
+                    if update_entity is None or update_entity.user_id != user_id:
+                        tally.skipped += 1
+                        continue
+                    update_entity.content = updated_content
+                    update_entity.type_memory = updated_type
+                    update_entity.embedding = new_embedding
+                    await self._memories.save_entity(update_entity)
+                    tally.updated += 1
+                    if self._summary_callback:
+                        await self._summary_callback(
+                            act["memory_id"],
+                            updated_content,
                         )
-                        if update_entity is None or update_entity.user_id != user_id:
-                            continue
-                        update_entity.content = updated_content
-                        update_entity.type_memory = updated_type
-                        update_entity.embedding = new_embedding
-                        await self._memories.save_entity(update_entity)
-                        if self._summary_callback:
-                            await self._summary_callback(
-                                act["memory_id"],
-                                updated_content,
-                            )
 
                 elif action == "DELETE":
                     memory_uuid = UUID(act["memory_id"])
@@ -792,10 +1047,15 @@ class MemoryExtractor:
                         (agent_id, memory_uuid),
                     )
                     if delete_entity is None or delete_entity.user_id != user_id:
+                        tally.skipped += 1
                         continue
                     # Hard-delete under the unified model; v017's CASCADE
                     # FKs propagate to any chunks + media attached.
                     await self._memories.delete((agent_id, memory_uuid))
+                    tally.deleted += 1
+
+                else:
+                    tally.skipped += 1
 
             except Exception as exc:
                 log.warning(
@@ -803,7 +1063,10 @@ class MemoryExtractor:
                     action,
                     exc,
                 )
+                tally.failed += 1
                 continue
+
+        return tally
 
     @staticmethod
     def _get_response_content(response: Any) -> str:

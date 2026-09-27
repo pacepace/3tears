@@ -9,17 +9,30 @@ through.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import uuid
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
-from threetears.agent.memory.extraction import MemoryExtractor
+from threetears.agent.memory.extraction import (
+    ExtractionGate,
+    ExtractionOutcome,
+    ExtractionResult,
+    MemoryExtractor,
+)
+from threetears.agent.memory.integration import MemoryIntegration, extract_memories
 from threetears.agent.memory.types import MemoryConfig
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.kv import FakeNatsClient
+from threetears.nats.errors import KvError
 
 
 _TEST_AID = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -252,52 +265,384 @@ class TestHeuristicGates:
 # -- Rate limit tests ---------------------------------------------------------
 
 
+class CountingChatModelFactory(StubChatModelFactory):
+    """stub factory that also counts how many models each purpose was asked for."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.calls: dict[str, int] = {"worthiness": 0, "extraction": 0, "resolution": 0}
+
+    async def create_chat_model(self, purpose: str = "extraction") -> Any:
+        self.calls[purpose] = self.calls.get(purpose, 0) + 1
+        return await super().create_chat_model(purpose)
+
+
+class _TtlRefusal(Exception):
+    """stands in for nats-py's ``BadRequestError`` answering ``per-message TTL is disabled``."""
+
+    err_code = 10166
+
+
+class _TtlRefusingBucket:
+    """a bucket bound to a stream without ``allow_msg_ttl``: a per-key TTL write is refused."""
+
+    name = "ns-ratelimits"
+
+    async def get(self, *, key: str) -> bytes | None:
+        del key
+        return None
+
+    async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
+        del value, ttl
+        try:
+            raise _TtlRefusal(
+                "nats: BadRequestError: code=400 err_code=10166 description='per-message TTL is disabled'"
+            )
+        except _TtlRefusal as exc:
+            raise KvError(f"KV create failed: bucket={self.name} key={key}: {exc}") from exc
+
+
+class _SingleBucketClient:
+    """a NATS client double answering every ``kv_bucket`` with one bucket."""
+
+    def __init__(self, bucket: Any) -> None:
+        self.bucket = bucket
+        self.opened_with: list[dict[str, Any]] = []
+
+    async def kv_bucket(self, **kwargs: Any) -> Any:
+        self.opened_with.append(kwargs)
+        return self.bucket
+
+
+def _worthy_factory(**kwargs: Any) -> CountingChatModelFactory:
+    """a counting factory whose turns are worthy and yield one fact."""
+    return CountingChatModelFactory(
+        worthiness_content=json.dumps({"worthy": True, "reason": "biographical"}),
+        extraction_content=json.dumps([{"type": "fact", "content": "Lives in Seattle"}]),
+        **kwargs,
+    )
+
+
+async def _extract_turn(ext: MemoryExtractor, conversation_id: uuid.UUID) -> ExtractionResult:
+    """run one extraction turn that clears the heuristic gate."""
+    return await ext.extract(
+        user_id=uuid.uuid7(),
+        conversation_id=conversation_id,
+        message_id_source=uuid.uuid7(),
+        user_message="x" * 50,
+        assistant_response="y" * 200,
+        turn_count=10,
+        agent_id=_TEST_AID,
+        customer_id=_TEST_CUID,
+    )
+
+
 class TestRateLimit:
+    """the cooldown is READ before worthiness and CLAIMED only after it says yes."""
+
     async def test_no_nats_client_passes(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer, nats_client=None)
-        passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
-        assert passed
-        assert cooldown == 0
+        assert await ext.check_rate_limit(uuid.uuid7()) == (True, 0)
+        assert await ext.claim_rate_limit(uuid.uuid7()) == (True, 0)
 
-    async def test_nats_create_true_passes(
+    async def test_check_reads_without_taking_the_key(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        nats = MagicMock()
-        bucket = MagicMock()
-        bucket.create = AsyncMock(return_value=1)  # revision -> key created
-        nats.kv_bucket = AsyncMock(return_value=bucket)
+        nats = FakeNatsClient()
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
-        assert passed
-        assert cooldown == 0
+        conversation_id = uuid.uuid7()
+        assert await ext.check_rate_limit(conversation_id) == (True, 0)
+        bucket = await nats.kv_bucket(name="ratelimits")
+        assert bucket.keys() == (), "a read took the cooldown key"
 
-    async def test_nats_create_false_rejected(
+    async def test_check_reports_a_live_cooldown(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        nats = MagicMock()
-        bucket = MagicMock()
-        bucket.create = AsyncMock(return_value=None)  # conflict -> within cooldown
-        nats.kv_bucket = AsyncMock(return_value=bucket)
+        nats = FakeNatsClient()
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
-        assert not passed
-        assert cooldown == 300
+        conversation_id = uuid.uuid7()
+        assert await ext.claim_rate_limit(conversation_id) == (True, 0)
+        assert await ext.check_rate_limit(conversation_id) == (False, 300)
 
-    async def test_nats_error_passes_fail_open(
+    async def test_claim_is_atomic(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
+        conversation_id = uuid.uuid7()
+        results = await asyncio.gather(ext.claim_rate_limit(conversation_id), ext.claim_rate_limit(conversation_id))
+        assert sorted(results) == [(False, 300), (True, 0)]
+
+    async def test_claim_gives_the_key_its_own_lifetime(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """the cooldown rides the key, not the bucket: a shared bucket's max_age cannot stretch it."""
+        nats = FakeNatsClient()
+        config = MemoryConfig(extraction_rate_limit_cooldown_seconds=30)
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, config=config)
+        conversation_id = uuid.uuid7()
+        assert await ext.claim_rate_limit(conversation_id) == (True, 0)
+        bucket = await nats.kv_bucket(name="ratelimits")
+        assert bucket.ttl is None, "the cooldown was applied to the bucket, not to the key"
+        bucket.advance_clock(timedelta(seconds=29))
+        assert await ext.check_rate_limit(conversation_id) == (False, 30)
+        bucket.advance_clock(timedelta(seconds=1))
+        assert await ext.check_rate_limit(conversation_id) == (True, 0)
+
+    async def test_read_failure_fails_open(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = MagicMock()
         nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
-        assert passed
-        assert cooldown == 0
+        assert await ext.check_rate_limit(uuid.uuid7()) == (True, 0)
+
+    async def test_claim_transport_failure_fails_open(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = MagicMock()
+        nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
+        assert await ext.claim_rate_limit(uuid.uuid7()) == (True, 0)
+
+    async def test_claim_on_a_bucket_refusing_per_key_ttl_fails_loud(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """a bucket that cannot carry a per-key lifetime is a deployment defect, never a silent pass."""
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=_SingleBucketClient(_TtlRefusingBucket()))
+        with caplog.at_level(logging.ERROR, logger="threetears.agent.memory.extraction"), pytest.raises(KvError):
+            await ext.claim_rate_limit(uuid.uuid7())
+        assert any(
+            record.levelno == logging.ERROR and "ns-ratelimits" in record.getMessage() for record in caplog.records
+        ), f"no ERROR naming the bucket; got {[r.getMessage() for r in caplog.records]!r}"
+
+    async def test_bucket_is_opened_without_a_bucket_ttl(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        client = _SingleBucketClient(await FakeNatsClient().kv_bucket(name="ratelimits"))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=client)
+        await ext.check_rate_limit(uuid.uuid7())
+        await ext.claim_rate_limit(uuid.uuid7())
+        assert client.opened_with == [{"name": "ratelimits"}, {"name": "ratelimits"}]
+
+
+class TestRateLimitOrdering:
+    """the defect metallm hit: an unworthy turn took the cooldown and blocked the worthy one after it."""
+
+    async def test_an_unworthy_turn_does_not_take_the_cooldown(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        factory = CountingChatModelFactory(worthiness_content=json.dumps({"worthy": False, "reason": "chit-chat"}))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=factory)
+        conversation_id = uuid.uuid7()
+        result = await _extract_turn(ext, conversation_id)
+        assert result == ExtractionResult(
+            outcome=ExtractionOutcome.SKIPPED, stored=0, gate=ExtractionGate.WORTHINESS, reason="chit-chat"
+        )
+        bucket = await nats.kv_bucket(name="ratelimits")
+        assert bucket.keys() == (), "an unworthy turn took the cooldown key"
+
+    async def test_the_worthy_turn_after_an_unworthy_one_extracts(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        conversation_id = uuid.uuid7()
+        unworthy = CountingChatModelFactory(worthiness_content=json.dumps({"worthy": False}))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=unworthy)
+        await _extract_turn(ext, conversation_id)
+        worthy = _worthy_factory()
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=worthy)
+        result = await _extract_turn(ext, conversation_id)
+        assert result.outcome is ExtractionOutcome.STORED
+        assert result.stored == 1
+
+    async def test_a_cooldown_skips_the_worthiness_call(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        factory = _worthy_factory()
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=factory)
+        conversation_id = uuid.uuid7()
+        assert (await _extract_turn(ext, conversation_id)).outcome is ExtractionOutcome.STORED
+        assert factory.calls["worthiness"] == 1
+        result = await _extract_turn(ext, conversation_id)
+        assert result.outcome is ExtractionOutcome.SKIPPED
+        assert result.gate is ExtractionGate.RATE_LIMIT
+        assert factory.calls["worthiness"] == 1, "a turn inside the cooldown still paid for a worthiness call"
+
+    async def test_two_concurrent_worthy_turns_exactly_one_extracts(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        factory = _worthy_factory()
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=factory)
+        conversation_id = uuid.uuid7()
+        first, second = await asyncio.gather(_extract_turn(ext, conversation_id), _extract_turn(ext, conversation_id))
+        assert factory.calls["worthiness"] == 2, "precondition: both turns read an open cooldown and were judged"
+        assert sorted([first.outcome, second.outcome]) == [ExtractionOutcome.SKIPPED, ExtractionOutcome.STORED]
+        loser = first if first.outcome is ExtractionOutcome.SKIPPED else second
+        assert loser.gate is ExtractionGate.RATE_LIMIT
+        assert factory.calls["extraction"] == 1, "both racing turns extracted"
+
+
+class TestExtractionResult:
+    """``extract`` says what happened instead of returning nothing."""
+
+    async def test_heuristic_gate(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer)
+        result = await ext.extract(
+            user_id=uuid.uuid7(),
+            conversation_id=uuid.uuid7(),
+            message_id_source=uuid.uuid7(),
+            user_message="hi",
+            assistant_response="y" * 200,
+            turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
+        )
+        assert result == ExtractionResult(
+            outcome=ExtractionOutcome.SKIPPED,
+            stored=0,
+            gate=ExtractionGate.HEURISTIC,
+            reason="user_message_too_short",
+        )
+
+    async def test_nothing_found(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = CountingChatModelFactory(worthiness_content=json.dumps({"worthy": True}), extraction_content="[]")
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.SKIPPED
+        assert result.gate is ExtractionGate.NOTHING_FOUND
+        assert result.stored == 0
+
+    async def test_stored(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer, factory=_worthy_factory())
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.STORED
+        assert result.stored == 1
+        assert result.gate is None
+
+    async def test_every_write_failing_is_a_failure(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        pool = _make_pool()
+        pool.execute = AsyncMock(side_effect=RuntimeError("db down"))
+        ext = _make_extractor(permissive_memory_authorizer, pool=pool, factory=_worthy_factory())
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED
+        assert result.stored == 0
+        assert "1" in result.reason
+
+    async def test_embedding_failure_is_a_failure(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            factory=_worthy_factory(),
+            embedding=StubEmbeddingProvider(fail=True),
+        )
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED
+        assert "embed" in result.reason
+
+    async def test_an_unexpected_error_is_a_failure_naming_it(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            nats_client=_SingleBucketClient(_TtlRefusingBucket()),
+            factory=_worthy_factory(),
+        )
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED
+        assert "ns-ratelimits" in result.reason
+
+    async def test_cancellation_logs_one_warning_and_propagates(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        class _CancelledModel:
+            async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+                del messages, kwargs
+                raise asyncio.CancelledError
+
+        class _CancelledFactory:
+            async def create_chat_model(self, purpose: str = "extraction") -> Any:
+                del purpose
+                return _CancelledModel()
+
+        ext = _make_extractor(permissive_memory_authorizer, factory=_CancelledFactory())  # type: ignore[arg-type]
+        with (
+            caplog.at_level(logging.WARNING, logger="threetears.agent.memory.extraction"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _extract_turn(ext, uuid.uuid7())
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "cancelled" in r.getMessage()]
+        assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+
+    async def test_extract_memories_hands_back_the_result(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer, factory=_worthy_factory())
+        result = await extract_memories(
+            MemoryIntegration(extractor=ext),
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
+            user_id=uuid.uuid7(),
+            conversation_id=uuid.uuid7(),
+            message_id_source=uuid.uuid7(),
+            user_message="x" * 50,
+            assistant_response="y" * 200,
+            turn_count=10,
+        )
+        assert result is not None
+        assert result.outcome is ExtractionOutcome.STORED
+        assert result.stored == 1
+
+    async def test_extract_memories_without_an_extractor_is_none(self) -> None:
+        result = await extract_memories(
+            MemoryIntegration(),
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
+            user_id=uuid.uuid7(),
+            conversation_id=uuid.uuid7(),
+            message_id_source=uuid.uuid7(),
+            user_message="x" * 50,
+            assistant_response="y" * 200,
+            turn_count=10,
+        )
+        assert result is None
 
 
 # -- Worthiness gate tests ----------------------------------------------------
