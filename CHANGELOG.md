@@ -38,6 +38,26 @@ packages (bumped in lock-step).
     is primed), and `CachedHubJwksProvider`'s two intervals (refused at construction).
   - Each loop's stop now also logs `spawn_background`'s INFO "background task cancelled".
 
+### An audit persister for a deployment without a hub
+
+- **New (minor):** `threetears.agent.audit.persist`. The hub persists `{ns}.audit.>` into its
+  own table; a hub-less deployment had to write this itself (scriob did, and dropped
+  `acting_as_principal_id`).
+  - `AUDIT_EVENTS_DDL` / `ensure_audit_events_table`: every `AuditEvent` field, plus
+    `ip_address`, the `id` key and the unique `(correlation_id, event_type)` index the envelope
+    documents.
+  - `persist_audit_event`: a redelivery, or a re-emission under a new envelope id, is one row.
+    Details are written as `$n::text::jsonb`.
+  - `start_audit_persister(nats, db, *, durable, storage="file")`: stream plus sibling
+    dead-letter, shared durable pull consumer. `handle_audit_message` drops a malformed event
+    and raises on a database fault.
+  - `prune_audit_events`.
+  - `anonymize_audit_rows(db, *, actor_user_ids, batch_size=500)` implements the 0.55.0 erasure
+    rule. It keeps every row and id, rewrites `details` through `anonymize_details` under each
+    row's own event type (keeping the stored shape: an object, a string-held object, null, or
+    otherwise the marker) and `ip_address` through `anonymize_ip`, counts rows matched against
+    rows changed, and is idempotent. It never answers the hub's `hub.audit.anonymize` subject.
+
 ### Also fixed on this branch
 
 - The observe logging tests restore every logger level and handler `configure_logging`

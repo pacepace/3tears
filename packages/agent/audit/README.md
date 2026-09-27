@@ -11,9 +11,24 @@ domain-specific envelopes (`WorkspaceAuditEnvelope`,
 `RbacAuditEnvelope`) that produced slightly-different wire shapes per domain
 and made cross-domain audit queries require a UNION.
 
-The package is pure Python with no NATS consumer code and no Postgres code.
-Publish is the only direction: a consumer-side audit consumer owns
-persistence to the audit events table.
+Publishing is the package's core: `AuditEvent` and `publish_audit` import nothing
+beyond the NATS client. On a hub deployment the HUB persists every event into its
+platform table, and the package's persistence code is never used.
+
+A deployment with NO hub (one application owning its own control plane) owns its
+audit table, and `threetears.agent.audit.persist` is its persister:
+
+- `ensure_audit_events_table(db)` creates the table, with every envelope field,
+  `ip_address`, and both idempotency anchors.
+- `start_audit_persister(nats, db, durable=...)` runs a shared durable pull
+  consumer. The stream is file-backed with a dead-letter subject; a malformed event
+  is dropped and a database fault is retried, then dead-lettered.
+- `prune_audit_events(db, older_than=...)` is retention.
+- `anonymize_audit_rows(db, actor_user_ids=...)` is erasure: every row and id is
+  kept, and `details` and `ip_address` are rewritten by the platform's rule. It is
+  this deployment's own erasure and never answers the hub's anonymize subject.
+
+`db` is anything with asyncpg's `execute`/`fetch`, e.g. a pool.
 
 ## Public API
 
