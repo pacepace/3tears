@@ -143,6 +143,34 @@ packages (bumped in lock-step).
   `llm.token_source`). A sink that must count only provider-reported tokens should filter on
   `token_source`.
 
+### A memory namespace a hub-less deployment can provision
+
+- **New (minor):** `threetears.agent.acl.NamespaceCollection.ensure_namespace(*, namespace_id,
+  name, namespace_type, owner_agent_id, customer_id, owner_namespace=None, schema_name=None,
+  metadata=None)`, a get-or-create on a deterministic id.
+  - It is idempotent and converges across pods through the collection's upsert.
+  - The row is read back after the save and refused if it cannot be.
+  - An existing row that disagrees on type, owner or customer raises.
+  - It does not create owners: where the `owner_namespace` foreign key exists, the owner's row
+    must already be there.
+  - The hub's memory-namespace responder is moving onto it (aibots, with the 0.56.0 adoption),
+    so hub and local rows are one write.
+- **New (minor):** `threetears.agent.memory.LocalMemoryNamespaceProvisioner(namespace_collection)`,
+  the `MemoryNamespaceProvisioner` for a deployment with no hub (plug it into
+  `MemoryAuthorizerDependencies(namespace_provisioner=)`).
+  - It writes exactly the hub's row, every field from the public helpers:
+    `memory_namespace_id`, `memory_namespace_name`, `memory_namespace_schema_name` and
+    `build_agent_namespace_name` for `owner_namespace`.
+  - Like the hub, it resolves by (type, owner, customer) first, reads its row back, and refuses a
+    row for another pair. Every failure is `MemoryNamespaceUnavailableError`, which the
+    authorizer turns into a denial.
+  - It trusts the caller's customer, since there is no forwarded identity: construct it only in
+    the application that owns the control plane.
+  - Scriob wrote this row with raw SQL, leaving `owner_namespace` NULL so no agent owned it.
+    metallm stubbed it with a per-process random id.
+- `test_no_namespace_writes.py` counts `ensure_namespace` as a write and exempts exactly one
+  module, the hub-less provisioner, pinned to that one call.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

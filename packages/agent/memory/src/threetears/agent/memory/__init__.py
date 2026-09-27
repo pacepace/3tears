@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         memory_namespace_name,
         memory_namespace_schema_name,
     )
+    from threetears.agent.memory.local_provisioner import LocalMemoryNamespaceProvisioner
     from threetears.agent.memory.namespace_client import (
         HubMemoryNamespaceProvisioner,
         MemoryNamespaceEnsureReply,
@@ -126,6 +127,10 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ConsolidationResult": ("threetears.agent.memory.dream", "ConsolidationResult"),
     "DreamService": ("threetears.agent.memory.dream", "DreamService"),
     "ExtractionPrompts": ("threetears.agent.memory.prompts", "ExtractionPrompts"),
+    "LocalMemoryNamespaceProvisioner": (
+        "threetears.agent.memory.local_provisioner",
+        "LocalMemoryNamespaceProvisioner",
+    ),
     "HubMemoryNamespaceProvisioner": (
         "threetears.agent.memory.namespace_client",
         "HubMemoryNamespaceProvisioner",
@@ -217,6 +222,7 @@ __all__ = [
     "ConsolidationResult",
     "DreamService",
     "ExtractionPrompts",
+    "LocalMemoryNamespaceProvisioner",
     "HubMemoryNamespaceProvisioner",
     "MEMORY_NAMESPACE_TYPE",
     "MEMORY_OWNER_GROUP_PREFIX",

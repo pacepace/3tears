@@ -1492,6 +1492,10 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "get_by_agent_id",
             "get_by_owner_and_customer",
             "find_by_id",
+            # ``ensure_namespace`` DERIVES the partition from ``customer_id`` (``create`` does) and
+            # addresses the existing row by ``namespace_id``, unique platform-wide; a ``row_scope``
+            # argument would let a caller name a partition that contradicts the customer.
+            "ensure_namespace",
             "list_tool_namespaces_for_actor",
             "list_skill_eligible_tool_namespaces",
             # ``rescope`` is cross-partition BY CONSTRUCTION rather than by
@@ -1825,6 +1829,86 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
+
+    async def ensure_namespace(
+        self,
+        *,
+        namespace_id: UUID,
+        name: str,
+        namespace_type: str,
+        owner_agent_id: UUID | None,
+        customer_id: UUID | None,
+        owner_namespace: str | None = None,
+        schema_name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> NamespaceEntity:
+        """get-or-create one namespace row on a deterministic id, and confirm it landed.
+
+        for deployments that own their control plane (no hub to ask), and for the hub itself -- one
+        write for both, so a row the hub materializes and a row a hub-less application materializes
+        cannot drift apart field by field. idempotent: an existing row with this id is returned as is.
+        convergent: concurrent ensures of one id from several pods land on one row, because a new row
+        is saved through the collection's upsert on its primary key. the row is READ BACK after the
+        save, and a write that cannot be confirmed raises rather than reporting success.
+
+        an existing row that disagrees on type, owning agent or customer is refused: a deterministic
+        id is meant to name exactly one thing. where the table carries the ``owner_namespace`` foreign
+        key onto ``name`` (the hub's shape), the owner's own namespace row must already exist; this
+        does not create owners.
+
+        :param namespace_id: the row's id, typically derived from its owner (e.g. ``memory_namespace_id``)
+        :ptype namespace_id: UUID
+        :param name: unique namespace name
+        :ptype name: str
+        :param namespace_type: the type discriminator (``memory``, ``tool``, ...)
+        :ptype namespace_type: str
+        :param owner_agent_id: owning agent, if any
+        :ptype owner_agent_id: UUID | None
+        :param customer_id: owning customer; ``None`` for a platform-scoped row
+        :ptype customer_id: UUID | None
+        :param owner_namespace: the owning agent's own namespace name -- the key the evaluator's
+            ownership short-circuit reads; a row without one is owned by no agent
+        :ptype owner_namespace: str | None
+        :param schema_name: backing schema name, where the type has one
+        :ptype schema_name: str | None
+        :param metadata: row metadata (default ``{}``)
+        :ptype metadata: dict[str, Any] | None
+        :return: the row
+        :rtype: NamespaceEntity
+        :raises ValueError: a row with this id already exists and means something else
+        :raises RuntimeError: the row could not be read back after the save
+        """
+        existing = await self.find_by_id(namespace_id)
+        if existing is None:
+            now = datetime.now(UTC)
+            entity = self.create(
+                {
+                    "namespace_id": namespace_id,
+                    "name": name,
+                    "namespace_type": namespace_type,
+                    "owner_agent_id": owner_agent_id,
+                    "owner_namespace": owner_namespace,
+                    "customer_id": customer_id,
+                    "schema_name": schema_name,
+                    "metadata": dict(metadata or {}),
+                    "date_created": now,
+                    "date_updated": now,
+                }
+            )
+            await self.save_entity(entity)
+            existing = await self.find_by_id(namespace_id)
+            if existing is None:
+                raise RuntimeError(f"namespace {namespace_id} was saved but cannot be read back")
+            log.info(
+                "namespace ensured",
+                extra={"extra_data": {"namespace_id": str(namespace_id), "namespace_type": namespace_type}},
+            )
+        actual = (existing.namespace_type, existing.owner_agent_id, existing.customer_id)
+        if actual != (namespace_type, owner_agent_id, customer_id):
+            raise ValueError(
+                f"namespace {namespace_id} already exists as {actual}, not {(namespace_type, owner_agent_id, customer_id)}"
+            )
+        return existing
 
     async def get_by_name(self, name: str) -> NamespaceEntity | None:
         """look up namespace by unique name.

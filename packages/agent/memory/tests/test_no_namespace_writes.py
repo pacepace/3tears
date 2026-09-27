@@ -24,7 +24,15 @@ from pathlib import Path
 #: mutating Collection methods. a namespace row can only be created, updated or
 #: removed through one of these, so naming them is naming the whole write
 #: surface rather than one spelling of it.
-_WRITE_METHODS = frozenset({"save_entity", "save", "delete", "delete_entity", "create"})
+_WRITE_METHODS = frozenset({"save_entity", "save", "delete", "delete_entity", "create", "ensure_namespace"})
+
+#: the ONE module allowed a namespace write: the provisioner for deployments with NO hub -- an
+#: application that owns its own control plane, where "the hub owns the create" has nobody to mean.
+#: It writes only through ``NamespaceCollection.ensure_namespace`` (the same write the hub makes), is
+#: never constructed on a hub deployment (those keep ``HubMemoryNamespaceProvisioner``), and is pinned
+#: below to that one call. Exempting a file here is a decision about deployment posture; it needs the
+#: same argument this one had (Pace, 2026-09-27), not a green test.
+_HUBLESS_PROVISIONER = "local_provisioner.py"
 
 #: attribute names by which this package reaches the namespaces Collection. the
 #: bundle field, the parameter it is threaded through, and the private handle a
@@ -79,6 +87,8 @@ class TestMemoryPackageNeverWritesNamespaces:
         """no module under the memory package mutates the namespaces Collection."""
         violations: list[str] = []
         for path in sorted(_MEMORY_SRC.rglob("*.py")):
+            if path.name == _HUBLESS_PROVISIONER:
+                continue
             violations.extend(_namespace_writes(path))
         assert violations == [], (
             "the memory package must not write platform.namespaces; the hub owns that "
@@ -100,3 +110,11 @@ class TestMemoryPackageNeverWritesNamespaces:
             probe.unlink()
         assert len(found) == 1
         assert "namespace_collection.save_entity" in found[0]
+
+
+class TestTheHublessProvisionerWritesOnlyThroughEnsure:
+    def test_its_only_namespace_write_is_ensure_namespace(self) -> None:
+        """the exemption covers one call, not a module free to write however it likes."""
+        writes = _namespace_writes(_MEMORY_SRC / _HUBLESS_PROVISIONER)
+        assert writes, "the exempted module no longer writes at all; remove the exemption"
+        assert all(w.endswith(".ensure_namespace(...)") for w in writes), writes
