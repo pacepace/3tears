@@ -437,6 +437,17 @@ window.
 - `breaker=` on `create_chat_model` is still the explicit override. `create_embedding_model`
   attaches no breaker and shares no registry, so it needed no change; no other factory holds a
   default registry.
+- **Bounded:** credential-scoped breakers do not accumulate. When a new credential's breaker is
+  created, every CLOSED credential breaker idle for `credential_idle_seconds` (default 3600: no
+  `get()` for it and no check or outcome on it) is dropped, then the least recently used CLOSED
+  ones while `max_credential_breakers` (default 1024) or more remain. An OPEN or HALF_OPEN breaker
+  is never dropped -- that would forget a tripped credential -- so the count exceeds the cap only
+  by breakers tripped right now, with a warning. Provider-only breakers are never dropped.
+  `status()` keeps reporting a provider whose breakers were all dropped, as closed.
+- **New:** `CircuitBreakerRegistry(..., *, credential_idle_seconds=3600.0,
+  max_credential_breakers=1024, clock=None)`; `CircuitBreaker(..., *, clock=None)` and
+  `CircuitBreaker.restore(..., clock=None)`; `CircuitBreaker.last_activity`. `clock=None` reads
+  `time.monotonic` at call time, as before.
 - Consumers that built a per-credential `CircuitBreakerRegistry` (or a breaker per key) and
   passed it as `breaker=` to keep tenants apart can drop it and rely on the default.
 

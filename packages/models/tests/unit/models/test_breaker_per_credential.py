@@ -161,3 +161,121 @@ class TestTheRegistry:
 
         registry.reset("anthropic")
         assert breaker_b.state == CircuitState.CLOSED
+
+
+class _Clock:
+    """a hand-driven monotonic clock.
+
+    :ivar now: the current reading
+    """
+
+    def __init__(self) -> None:
+        """start at zero."""
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        """read the clock.
+
+        :return: the current reading
+        :rtype: float
+        """
+        return self.now
+
+
+class TestCredentialBreakersAreBounded:
+    """a process that sees many keys, or rotates them, must not keep a breaker for every key forever."""
+
+    def test_an_idle_closed_breaker_is_dropped_when_a_new_credential_arrives(self) -> None:
+        clock = _Clock()
+        registry = CircuitBreakerRegistry(credential_idle_seconds=60, clock=clock)
+        old_key = _key()
+        stale = registry.get("anthropic", credential=old_key)
+
+        clock.now = 61
+        registry.get("anthropic", credential=_key())
+
+        assert registry.get("anthropic", credential=old_key) is not stale, "an idle closed breaker was kept"
+
+    def test_a_breaker_its_model_keeps_using_is_not_idle(self) -> None:
+        """idleness counts checks and outcomes, not only registry lookups: a live model asks once."""
+        clock = _Clock()
+        registry = CircuitBreakerRegistry(credential_idle_seconds=60, clock=clock)
+        key = _key()
+        in_use = registry.get("anthropic", credential=key)
+
+        clock.now = 50
+        in_use.check()
+        clock.now = 100
+        registry.get("anthropic", credential=_key())
+
+        assert registry.get("anthropic", credential=key) is in_use
+
+    def test_a_tripped_breaker_is_never_dropped_however_idle(self) -> None:
+        clock = _Clock()
+        registry = CircuitBreakerRegistry(failure_threshold=1, credential_idle_seconds=60, clock=clock)
+        revoked_key = _key()
+        tripped = registry.get("anthropic", credential=revoked_key)
+        tripped.record_failure()
+
+        clock.now = 10_000
+        registry.get("anthropic", credential=_key())
+
+        assert registry.get("anthropic", credential=revoked_key) is tripped
+        assert tripped.state is CircuitState.OPEN
+
+    def test_the_cap_drops_the_least_recently_used_closed_breaker(self) -> None:
+        clock = _Clock()
+        registry = CircuitBreakerRegistry(max_credential_breakers=2, clock=clock)
+        oldest, newer = _key(), _key()
+        oldest_breaker = registry.get("anthropic", credential=oldest)
+        clock.now = 1
+        newer_breaker = registry.get("anthropic", credential=newer)
+        clock.now = 2
+
+        registry.get("anthropic", credential=_key())
+
+        assert registry.get("anthropic", credential=newer) is newer_breaker
+        assert registry.get("anthropic", credential=oldest) is not oldest_breaker
+
+    def test_the_cap_gives_way_to_tripped_breakers_rather_than_forget_them(self) -> None:
+        clock = _Clock()
+        registry = CircuitBreakerRegistry(failure_threshold=1, max_credential_breakers=2, clock=clock)
+        tripped = [(key, registry.get("anthropic", credential=key)) for key in (_key(), _key())]
+        for _, breaker in tripped:
+            breaker.record_failure()
+
+        registry.get("anthropic", credential=_key())
+
+        for key, breaker in tripped:
+            assert registry.get("anthropic", credential=key) is breaker
+
+    def test_provider_breakers_are_never_dropped(self) -> None:
+        clock = _Clock()
+        registry = CircuitBreakerRegistry(credential_idle_seconds=60, max_credential_breakers=1, clock=clock)
+        provider_breaker = registry.get("anthropic")
+
+        clock.now = 10_000
+        registry.get("anthropic", credential=_key())
+        registry.get("anthropic", credential=_key())
+
+        assert registry.get("anthropic") is provider_breaker
+
+    def test_status_is_unchanged_by_dropping_idle_closed_breakers(self) -> None:
+        clock = _Clock()
+        registry = CircuitBreakerRegistry(failure_threshold=1, credential_idle_seconds=60, clock=clock)
+        registry.get("openai", credential=_key())
+        registry.get("anthropic", credential=_key()).record_failure()
+
+        clock.now = 10_000
+        registry.get("voyageai", credential=_key())
+
+        assert registry.status() == {
+            "anthropic": CircuitState.OPEN,
+            "openai": CircuitState.CLOSED,
+            "voyageai": CircuitState.CLOSED,
+        }
+
+    @pytest.mark.parametrize(("idle", "cap"), [(0, 10), (-1, 10), (60, 0)])
+    def test_a_bound_that_cannot_hold_anything_is_refused(self, idle: float, cap: int) -> None:
+        with pytest.raises(ValueError):
+            CircuitBreakerRegistry(credential_idle_seconds=idle, max_credential_breakers=cap)

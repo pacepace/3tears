@@ -12,6 +12,8 @@ import hashlib
 import secrets
 import threading
 import time
+from collections import OrderedDict
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -29,6 +31,19 @@ __all__ = [
 ]
 
 logger = get_logger(__name__)
+
+
+def _monotonic() -> float:
+    """read :func:`time.monotonic` through this module's ``time`` binding, at call time.
+
+    the default clock. resolving ``time`` when called rather than binding
+    ``time.monotonic`` as a default argument keeps the one clock every breaker
+    reads replaceable in a single place.
+
+    :return: monotonic seconds
+    :rtype: float
+    """
+    return time.monotonic()
 
 
 class CircuitState(StrEnum):
@@ -72,6 +87,9 @@ class CircuitBreaker:
     :ptype failure_threshold: int
     :param recovery_timeout_seconds: seconds to wait in OPEN before probing
     :ptype recovery_timeout_seconds: float
+    :param clock: monotonic seconds source for the recovery window and
+        :attr:`last_activity`; ``None`` reads :func:`time.monotonic`
+    :ptype clock: Callable[[], float] | None
     """
 
     def __init__(
@@ -79,13 +97,17 @@ class CircuitBreaker:
         provider_name: str,
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 30.0,
+        *,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._provider_name = provider_name
         self._failure_threshold = failure_threshold
         self._recovery_timeout_seconds = recovery_timeout_seconds
+        self._clock = clock if clock is not None else _monotonic
         self._state = CircuitState.CLOSED
         self.failure_count = 0
         self.last_failure_time: float = 0.0
+        self._last_activity = self._clock()
         # HALF_OPEN admits exactly ONE probe at a time: the request that trips
         # OPEN -> HALF_OPEN (or the first to arrive while HALF_OPEN) sets this;
         # every other concurrent request is fast-failed until the probe resolves
@@ -105,6 +127,7 @@ class CircuitBreaker:
         seconds_until_probe_permitted: float = 0.0,
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 30.0,
+        clock: Callable[[], float] | None = None,
     ) -> CircuitBreaker:
         """rebuilds a breaker from state that was persisted somewhere else.
 
@@ -150,6 +173,8 @@ class CircuitBreaker:
         :ptype failure_threshold: int
         :param recovery_timeout_seconds: seconds to wait in OPEN before probing
         :ptype recovery_timeout_seconds: float
+        :param clock: monotonic seconds source, as for the constructor
+        :ptype clock: Callable[[], float] | None
         :return: a breaker positioned at the persisted state
         :rtype: CircuitBreaker
         """
@@ -157,12 +182,12 @@ class CircuitBreaker:
             provider_name,
             failure_threshold=failure_threshold,
             recovery_timeout_seconds=recovery_timeout_seconds,
+            clock=clock,
         )
         breaker._state = state
         breaker.failure_count = max(0, failure_count)
-        breaker.last_failure_time = (
-            time.monotonic() - recovery_timeout_seconds + max(0.0, seconds_until_probe_permitted)
-        )
+        now = clock() if clock is not None else _monotonic()
+        breaker.last_failure_time = now - recovery_timeout_seconds + max(0.0, seconds_until_probe_permitted)
         return breaker
 
     @property
@@ -175,6 +200,19 @@ class CircuitBreaker:
         with self._lock:
             return self._state
 
+    @property
+    def last_activity(self) -> float:
+        """the clock reading of the last check, outcome or reset -- or of creation.
+
+        what a registry measures idleness by: a breaker that a live model keeps
+        checking is in use however long ago anyone asked the registry for it.
+
+        :return: clock reading of the breaker's last activity
+        :rtype: float
+        """
+        with self._lock:
+            return self._last_activity
+
     def check(self) -> None:
         """verifies circuit allows request to proceed.
 
@@ -184,6 +222,7 @@ class CircuitBreaker:
         :raises CircuitOpenError: if circuit is open and recovery timeout not elapsed
         """
         with self._lock:
+            self._last_activity = self._clock()
             if self._state == CircuitState.CLOSED:
                 return
 
@@ -195,7 +234,7 @@ class CircuitBreaker:
                 self._probe_in_flight = True
                 return
 
-            elapsed = time.monotonic() - self.last_failure_time
+            elapsed = self._clock() - self.last_failure_time
             if elapsed >= self._recovery_timeout_seconds:
                 # this request becomes the single recovery probe.
                 self._state = CircuitState.HALF_OPEN
@@ -216,6 +255,7 @@ class CircuitBreaker:
         defensively in CLOSED state.
         """
         with self._lock:
+            self._last_activity = self._clock()
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.CLOSED
                 self.failure_count = 0
@@ -239,7 +279,8 @@ class CircuitBreaker:
         """
         with self._lock:
             self.failure_count += 1
-            self.last_failure_time = time.monotonic()
+            self.last_failure_time = self._clock()
+            self._last_activity = self.last_failure_time
 
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.OPEN
@@ -265,6 +306,7 @@ class CircuitBreaker:
         resets failure count and state unconditionally.
         """
         with self._lock:
+            self._last_activity = self._clock()
             self._state = CircuitState.CLOSED
             self.failure_count = 0
             self._probe_in_flight = False
@@ -440,21 +482,60 @@ class CircuitBreakerRegistry:
     processes. it never reaches a log line, an error, or :meth:`status` --
     each breaker still reports and logs under the provider name alone.
 
+    **credential-scoped breakers are bounded.** a process that sees many keys,
+    or rotates them, would otherwise keep one breaker per key it ever saw.
+    whenever a new credential's breaker is created, the registry first drops
+    every CLOSED credential breaker idle for ``credential_idle_seconds`` (no
+    :meth:`get` for it, and no check or outcome on it), then, while it still
+    holds ``max_credential_breakers`` or more, the least recently used CLOSED
+    ones. an OPEN or HALF_OPEN breaker is never dropped -- that would forget a
+    tripped credential and let it be hammered again -- so the count can exceed
+    the cap only by breakers that are tripped right now. a dropped breaker held
+    little: a CLOSED circuit and at most a partial failure count. provider-only
+    breakers (no credential) are never dropped; there is one per provider.
+
     :param failure_threshold: consecutive failures before circuit opens
     :ptype failure_threshold: int
     :param recovery_timeout_seconds: seconds to wait in OPEN before probing
     :ptype recovery_timeout_seconds: float
+    :param credential_idle_seconds: how long a CLOSED credential breaker may
+        sit unused before it is dropped
+    :ptype credential_idle_seconds: float
+    :param max_credential_breakers: how many credential breakers the registry
+        keeps before dropping the least recently used CLOSED ones
+    :ptype max_credential_breakers: int
+    :param clock: monotonic seconds source, shared with every breaker created;
+        ``None`` reads :func:`time.monotonic`
+    :ptype clock: Callable[[], float] | None
+    :raises ValueError: when ``credential_idle_seconds`` is not positive or
+        ``max_credential_breakers`` is less than one
     """
 
     def __init__(
         self,
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 30.0,
+        *,
+        credential_idle_seconds: float = 3600.0,
+        max_credential_breakers: int = 1024,
+        clock: Callable[[], float] | None = None,
     ) -> None:
+        if credential_idle_seconds <= 0:
+            raise ValueError(f"credential_idle_seconds must be positive, got {credential_idle_seconds}")
+        if max_credential_breakers < 1:
+            raise ValueError(f"max_credential_breakers must be at least 1, got {max_credential_breakers}")
         self._failure_threshold = failure_threshold
         self._recovery_timeout_seconds = recovery_timeout_seconds
-        # (provider_name, credential fingerprint or None) -> breaker
-        self._breakers: dict[tuple[str, str | None], CircuitBreaker] = {}
+        self._credential_idle_seconds = credential_idle_seconds
+        self._max_credential_breakers = max_credential_breakers
+        self._clock = clock if clock is not None else _monotonic
+        # (provider_name, credential fingerprint or None) -> breaker, least recently
+        # asked-for first, and the clock reading of each key's last get()
+        self._breakers: OrderedDict[tuple[str, str | None], CircuitBreaker] = OrderedDict()
+        self._last_get: dict[tuple[str, str | None], float] = {}
+        # every provider ever asked for, so status() keeps reporting one whose
+        # breakers were all dropped as idle (they were CLOSED) instead of losing it
+        self._providers: set[str] = set()
         self._fingerprint_key = secrets.token_bytes(32)
         self._lock = threading.Lock()
 
@@ -486,14 +567,63 @@ class CircuitBreakerRegistry:
         :rtype: CircuitBreaker
         """
         key = (provider_name, self._fingerprint(credential))
+        now = self._clock()
         with self._lock:
-            if key not in self._breakers:
-                self._breakers[key] = CircuitBreaker(
+            breaker = self._breakers.get(key)
+            if breaker is None:
+                if key[1] is not None:
+                    self._evict_credential_breakers_locked(now)
+                breaker = CircuitBreaker(
                     provider_name=provider_name,
                     failure_threshold=self._failure_threshold,
                     recovery_timeout_seconds=self._recovery_timeout_seconds,
+                    clock=self._clock,
                 )
-            return self._breakers[key]
+                self._breakers[key] = breaker
+                self._providers.add(provider_name)
+            self._breakers.move_to_end(key)
+            self._last_get[key] = now
+        return breaker
+
+    def _evict_credential_breakers_locked(self, now: float) -> None:
+        """drop idle, then least recently used, CLOSED credential breakers. **caller holds the lock.**
+
+        :param now: the current clock reading
+        :ptype now: float
+        :return: nothing
+        :rtype: None
+        """
+        last_used = {
+            key: max(self._last_get.get(key, 0.0), breaker.last_activity)
+            for key, breaker in self._breakers.items()
+            if key[1] is not None and breaker.state is CircuitState.CLOSED
+        }
+        for key, used in last_used.items():
+            if now - used >= self._credential_idle_seconds:
+                self._drop_locked(key)
+        credential_count = sum(1 for key in self._breakers if key[1] is not None)
+        for key in sorted((k for k in last_used if k in self._breakers), key=lambda k: last_used[k]):
+            if credential_count < self._max_credential_breakers:
+                break
+            self._drop_locked(key)
+            credential_count -= 1
+        if credential_count >= self._max_credential_breakers:
+            logger.warning(
+                "circuit breaker registry is at its credential cap and every remaining credential breaker "
+                "is tripped; keeping them all rather than forgetting a tripped credential",
+                extra={"extra_data": {"credential_breakers": credential_count, "cap": self._max_credential_breakers}},
+            )
+
+    def _drop_locked(self, key: tuple[str, str | None]) -> None:
+        """forget one breaker. **caller holds the lock.**
+
+        :param key: ``(provider_name, fingerprint)``
+        :ptype key: tuple[str, str | None]
+        :return: nothing
+        :rtype: None
+        """
+        self._breakers.pop(key, None)
+        self._last_get.pop(key, None)
 
     def reset(self, provider_name: str, *, credential: str | None = None) -> None:
         """forces circuit breakers for a provider back to CLOSED state.
@@ -524,14 +654,16 @@ class CircuitBreakerRegistry:
         many credentials are in use -- safe to export as metric labels. a
         provider with several credential-scoped breakers reports the worst of
         them (open, then half-open, then closed): "some caller of this provider
-        is being fast-failed".
+        is being fast-failed". a provider whose breakers were all dropped as
+        idle stays in the snapshot as closed, which is what they were.
 
         :return: mapping of provider name to current circuit state
         :rtype: dict[str, CircuitState]
         """
         with self._lock:
             snapshot = [(name, breaker.state) for (name, _fingerprint), breaker in self._breakers.items()]
-        result: dict[str, CircuitState] = {}
+            providers = sorted(self._providers)
+        result: dict[str, CircuitState] = dict.fromkeys(providers, CircuitState.CLOSED)
         for name, state in snapshot:
             current = result.get(name)
             if current is None or _STATE_SEVERITY[state] > _STATE_SEVERITY[current]:
