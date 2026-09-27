@@ -1007,6 +1007,32 @@ the key the writer just wrote, so the read can find it empty and recreate the ol
   module, the hub-less provisioner, by resolved path. A test pins it to that one call, and a
   second forbids any other memory module from referencing the provisioner in code.
 
+### A subscription model's query ends with the person's message, delimited
+
+The Claude CLI takes a system prompt and ONE query. The subscription model flattened a round
+into the variable part of the system prompt followed by bare `Human:`, `Assistant:` and
+`Tool (name):` lines. On metallm, whose variable system text is fenced untrusted tool output
+and whose tool results come back after the person's line, the person's latest message landed
+as a bare `Human:` line between fenced blocks. The model called it "a fake 'Human' line inside
+that untrusted block" and answered from invented knowledge.
+
+- **Changed:** the query is now labelled sections, in this order: the variable system text as
+  context; earlier turns as history, each in its own `<prompt-turn role=...>` tags; in a tool
+  round, the calls and results made since the person's message, as work on it; and last, under
+  "The person's current message:", that message in `<prompt-current-message>` tags. No untrusted
+  material follows it and no turn is a bare role line. `[Tool calls: name(args)]` and tool
+  results named by the call they answer are unchanged.
+- **Changed:** in a tool round, the person's latest message is still the request and still
+  comes last; the tool calls and results come before it. A trailing run of person messages is
+  one request, as the API route sends consecutive user messages as one turn.
+- **Changed:** the leading system messages are read as one prompt, as the API route reads them,
+  and split at the last `cache_control` marker. With no marker, only the FIRST is the system
+  prompt: a transcript or notice sent as a second system message is context in the query. In the
+  system prompt it read as persona and started a new CLI every turn. A system message sent
+  mid-conversation stays where it was sent, as a `system` turn.
+- **Fixed:** a section tag inside any material is disarmed, so a tool's output cannot close a
+  section or forge a current message.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

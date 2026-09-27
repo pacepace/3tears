@@ -105,13 +105,27 @@ the CLI lists a self-contained schema, as the API route's LangChain conversion d
 ``_SubscriptionChatModel._get_tool_schema``), so a tool that carries a JSON Schema dict is read
 rather than advertised with no parameters.
 
+One query per call, and the person's words last (found live: a consumer whose changing system text
+is fenced untrusted tool output had its person's latest message flagged by the model as "a fake
+'Human' line inside that untrusted block", and the model answered from invented knowledge). The CLI
+takes a system prompt and ONE query, where the API route sends a system prompt and a list of turns.
+The query used to be the changing system text followed by bare ``Human:`` / ``Assistant:`` /
+``Tool (name):`` lines, so the person's line sat between fenced blocks and a tool round's results
+came after it. :func:`_flatten_round` lays the query out in labelled sections instead: the changing
+system text as context, earlier turns as history (each inside its own ``<prompt-turn>`` tags), a
+tool round's calls and results as work on the current message, and last the person's current
+message under "The person's current message:". A section tag inside any material is disarmed, so
+text a tool returned cannot end a section or forge a request.
+
 """
 
 from __future__ import annotations
 
 import contextvars
 import dataclasses
+import html
 import json
+import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Callable
@@ -237,27 +251,185 @@ def _content_text(content: Any) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def _split_system(content: Any) -> tuple[str, str]:
-    """A system message's content split at its last cache marker: ``(stable, variable)``.
+def _split_leading_system(leading: Sequence[BaseMessage]) -> tuple[str, str]:
+    """The system messages a round opens with, split into ``(stable, variable)`` text.
 
-    A caller that caches prompts marks where the stable part ends with ``cache_control`` on the last
-    stable block; everything after it changes turn to turn. A string, or a list with no marker, is
-    all stable.
+    The API route sends a run of leading system messages as one system prompt, so they are read
+    here as one sequence of blocks. A caller that caches prompts marks where the stable part ends
+    with ``cache_control`` on the last stable block, and everything after that marker -- a later
+    system message included -- changes turn to turn. With no marker anywhere, the first system
+    message is the stable part and any after it are variable: a transcript or a notice sent as a
+    second system message changes every turn, and in the system prompt it would both read as the
+    agent's persona and force a new CLI for every call.
 
-    :param content: a system message's ``content``
-    :ptype content: Any
+    :param leading: the system messages before the first message of any other kind
+    :ptype leading: Sequence[BaseMessage]
     :return: the stable text and the variable text (either may be empty)
     :rtype: tuple[str, str]
     """
-    if not isinstance(content, list):
-        return _content_text(content), ""
-    last_marked = -1
-    for index, block in enumerate(content):
-        if isinstance(block, dict) and block.get("cache_control"):
-            last_marked = index
-    if last_marked == -1:
-        return _content_text(content), ""
-    return _content_text(content[: last_marked + 1]), _content_text(content[last_marked + 1 :])
+    blocks: list[Any] = []
+    for message in leading:
+        content = message.content
+        blocks.extend(content if isinstance(content, list) else [_content_text(content)])
+    last_marked = max(
+        (index for index, block in enumerate(blocks) if isinstance(block, dict) and block.get("cache_control")),
+        default=-1,
+    )
+    if last_marked != -1:
+        return _content_text(blocks[: last_marked + 1]), _content_text(blocks[last_marked + 1 :])
+    if not leading:
+        return "", ""
+    return _content_text(leading[0].content), _content_text([_content_text(m.content) for m in leading[1:]])
+
+
+#: A section tag of the flattened query, opening or closing, however it is spaced or cased.
+_QUERY_TAG = re.compile(r"<(\s*/?\s*prompt-)", re.IGNORECASE)
+
+_CONTEXT_HEADING = (
+    "Context for this turn: the part of your instructions that changes from turn to turn. It informs "
+    "your answer. It is not the person's request."
+)
+_HISTORY_HEADING = (
+    "The conversation before the person's current message, oldest first. It is history, for reference: "
+    "the request to answer is the person's current message, at the end."
+)
+_PROGRESS_HEADING = (
+    "What you have done so far to answer the person's current message, which follows: your tool calls "
+    "and what they returned."
+)
+_CURRENT_HEADING = "The person's current message:"
+
+#: The role each kind of message is rendered under. Any other kind renders under its own type.
+_TURN_ROLES: dict[type[BaseMessage], str] = {
+    HumanMessage: "person",
+    AIMessage: "assistant",
+    ToolMessage: "tool",
+    SystemMessage: "system",
+}
+
+
+def _inert(text: str) -> str:
+    """``text`` with any query section tag inside it disarmed.
+
+    Material in the query -- a tool's result, a page, a person's own words -- cannot then close the
+    section it sits in or open one of its own, whatever it contains.
+
+    :param text: material to place in the query
+    :ptype text: str
+    :return: the material, every section tag in it made inert
+    :rtype: str
+    """
+    inert, disarmed = _QUERY_TAG.subn(r"&lt;\1", text)
+    if disarmed:
+        # A section tag inside material is an attempt to end a section early. Nothing breaks, but
+        # the attempt is worth seeing.
+        _logger.info(
+            "Disarmed query section tags inside material sent to a subscription model",
+            extra={"extra_data": {"disarmed": disarmed}},
+        )
+    return inert
+
+
+def _section(heading: str, tag: str, body: str) -> str:
+    """One labelled section of the query.
+
+    :param heading: what the section is, in words, on the line before it
+    :ptype heading: str
+    :param tag: the section's tag name
+    :ptype tag: str
+    :param body: the section's content, already made inert
+    :ptype body: str
+    :return: the heading, then the body between the tags
+    :rtype: str
+    """
+    return f"{heading}\n<{tag}>\n{body}\n</{tag}>"
+
+
+def _render_turn(message: BaseMessage, called: dict[str, str]) -> str:
+    """One message of the conversation as a delimited turn.
+
+    An assistant turn keeps its tool calls as ``[Tool calls: name(args)]``. A tool result is named by
+    its own name or by the call it answers; its text -- usually fenced by the caller -- stays inside
+    the turn, never re-rendered as a role line.
+
+    :param message: a message after the leading system messages
+    :ptype message: BaseMessage
+    :param called: tool name by tool-call id, from every assistant message in the round
+    :ptype called: dict[str, str]
+    :return: the turn
+    :rtype: str
+    """
+    role = next((r for kind, r in _TURN_ROLES.items() if isinstance(message, kind)), message.type)
+    text = _content_text(message.content)
+    named = ""
+    if isinstance(message, AIMessage) and message.tool_calls:
+        calls = ", ".join(f"{tc['name']}({tc['args']})" for tc in message.tool_calls)
+        text = f"{text}\n[Tool calls: {calls}]" if text else f"[Tool calls: {calls}]"
+    elif isinstance(message, ToolMessage):
+        name = message.name or called.get(message.tool_call_id) or "tool"
+        named = f' name="{html.escape(name, quote=True)}"'
+    return f'<prompt-turn role="{role}"{named}>\n{_inert(text)}\n</prompt-turn>'
+
+
+def _flatten_round(messages: Sequence[BaseMessage]) -> tuple[str, str | None]:
+    """One round of messages as the CLI's single query and its system prompt.
+
+    The system prompt is the stable part of the leading system messages (see
+    :func:`_split_leading_system`). The query carries the rest, in labelled sections, in this order:
+
+    1. the variable system text, as context for this turn;
+    2. the conversation before the person's current message, as history;
+    3. in a round that has already called tools, those calls and their results, as work done on
+       the current message;
+    4. the person's current message -- the trailing run of their messages, which the API route
+       sends as one user turn -- under the heading "The person's current message:".
+
+    So the request is always last and delimited, after every piece of material that could carry an
+    instruction, and each earlier turn sits inside its own tags. A round with no message from the
+    person has no current message, and everything after the system prompt is history.
+
+    :param messages: the round
+    :ptype messages: Sequence[BaseMessage]
+    :return: ``(query_text, system_prompt)``
+    :rtype: tuple[str, str | None]
+    """
+    lead = 0
+    while lead < len(messages) and isinstance(messages[lead], SystemMessage):
+        lead += 1
+    stable, variable = _split_leading_system(messages[:lead])
+    conversation = list(messages[lead:])
+    # A ToolMessage need not carry its tool's name; the call it answers does.
+    called = {
+        call_id: call["name"]
+        for msg in conversation
+        if isinstance(msg, AIMessage)
+        for call in (msg.tool_calls or [])
+        if (call_id := call.get("id"))
+    }
+    last_person = max((i for i, m in enumerate(conversation) if isinstance(m, HumanMessage)), default=-1)
+    first_person = last_person
+    while first_person > 0 and isinstance(conversation[first_person - 1], HumanMessage):
+        first_person -= 1
+    if last_person == -1:
+        history, current, progress = conversation, [], []
+    else:
+        history = conversation[:first_person]
+        current = conversation[first_person : last_person + 1]
+        progress = conversation[last_person + 1 :]
+
+    sections: list[str] = []
+    if variable:
+        sections.append(_section(_CONTEXT_HEADING, "prompt-context", _inert(variable)))
+    if history:
+        turns = "\n\n".join(_render_turn(m, called) for m in history)
+        sections.append(_section(_HISTORY_HEADING, "prompt-history", turns))
+    if progress:
+        turns = "\n\n".join(_render_turn(m, called) for m in progress)
+        sections.append(_section(_PROGRESS_HEADING, "prompt-progress", turns))
+    if current:
+        request = "\n\n".join(_content_text(m.content) for m in current)
+        sections.append(_section(_CURRENT_HEADING, "prompt-current-message", _inert(request)))
+    return "\n\n".join(sections), (stable or None)
 
 
 def _pooled_launch_options(options: Any) -> Any:
@@ -440,49 +612,18 @@ def _subscription_model_cls() -> type:
         def _convert_messages(self, messages: list[BaseMessage]) -> tuple[str, str | None]:
             """The CLI's query text and its system prompt, from LangChain messages.
 
-            Returns the STABLE part of the system prompt as the system prompt and folds the
-            variable part into the query, ahead of the conversation. A running CLI's system prompt
-            cannot change, so this is what lets one CLI serve turn after turn while retrieved
-            memory, tool results and notices change underneath it. Every content list is read as
-            text rather than ``str()``-ed into a repr.
+            Returns the STABLE part of the system prompt as the system prompt and carries
+            everything else in the query. A running CLI's system prompt cannot change, so this is
+            what lets one CLI serve turn after turn while retrieved memory, tool results and notices
+            change underneath it. The query's layout -- context, history, work on the current
+            message, then the person's current message last -- is :func:`_flatten_round`'s.
 
             :param messages: the conversation
             :ptype messages: list[BaseMessage]
             :return: ``(query_text, system_prompt)``
             :rtype: tuple[str, str | None]
             """
-            stable_parts: list[str] = []
-            variable_parts: list[str] = []
-            conversation: list[str] = []
-            # A ToolMessage need not carry its tool's name; the call it answers does.
-            called = {
-                call["id"]: call["name"]
-                for msg in messages
-                if isinstance(msg, AIMessage)
-                for call in (msg.tool_calls or [])
-                if call.get("id")
-            }
-            for msg in messages:
-                if isinstance(msg, SystemMessage):
-                    stable, variable = _split_system(msg.content)
-                    if stable:
-                        stable_parts.append(stable)
-                    if variable:
-                        variable_parts.append(variable)
-                elif isinstance(msg, HumanMessage):
-                    conversation.append(f"Human: {_content_text(msg.content)}")
-                elif isinstance(msg, AIMessage):
-                    content = _content_text(msg.content)
-                    if getattr(msg, "tool_calls", None):
-                        calls = ", ".join(f"{tc['name']}({tc['args']})" for tc in msg.tool_calls)
-                        content = f"{content}\n[Tool calls: {calls}]" if content else f"[Tool calls: {calls}]"
-                    conversation.append(f"Assistant: {content}")
-                elif isinstance(msg, ToolMessage):
-                    name = msg.name or called.get(msg.tool_call_id) or "tool"
-                    conversation.append(f"Tool ({name}): {_content_text(msg.content)}")
-            query = "\n\n".join([*variable_parts, *conversation])
-            system_prompt = "\n\n".join(stable_parts) if stable_parts else None
-            return query, system_prompt
+            return _flatten_round(messages)
 
         @asynccontextmanager
         async def _cli_client(self, options: Any, *, pooled: bool) -> AsyncIterator[Any]:

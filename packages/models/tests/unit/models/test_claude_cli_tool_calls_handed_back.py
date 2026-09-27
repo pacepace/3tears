@@ -241,7 +241,10 @@ async def test_the_graph_runs_the_tool_pauses_for_approval_and_the_model_reads_t
         assert "__interrupt__" not in final
         assert tool.ran == 1
         assert final["messages"][-1].content == "Done."
-        assert "Tool (threetears.stage_a_write): write landed (notes.md)" in _FakeSDKClient.prompts[-1]
+        assert (
+            '<prompt-turn role="tool" name="threetears.stage_a_write">\nwrite landed (notes.md)\n</prompt-turn>'
+            in _FakeSDKClient.prompts[-1]
+        )
         assert "[Tool calls: threetears.stage_a_write({'path': 'notes.md'})]" in _FakeSDKClient.prompts[-1]
 
 
@@ -257,7 +260,10 @@ async def test_a_rejected_approval_reaches_the_tools_own_reject_branch() -> None
         )
         await graph.ainvoke({"messages": [HumanMessage(content="write notes.md")]}, config)
         await graph.ainvoke(Command(resume="reject"), config)
-        assert "Tool (threetears.stage_a_write): write discarded" in _FakeSDKClient.prompts[-1]
+        assert (
+            '<prompt-turn role="tool" name="threetears.stage_a_write">\nwrite discarded\n</prompt-turn>'
+            in _FakeSDKClient.prompts[-1]
+        )
 
 
 async def test_parallel_tool_calls_come_back_together_under_the_names_the_caller_bound() -> None:
@@ -361,4 +367,4 @@ async def test_a_tool_result_without_a_name_is_named_by_the_call_it_answers() ->
             ToolMessage(content="write landed", tool_call_id="tu-1"),
         ]
     )
-    assert "Tool (threetears.stage_a_write): write landed" in query
+    assert '<prompt-turn role="tool" name="threetears.stage_a_write">\nwrite landed\n</prompt-turn>' in query
