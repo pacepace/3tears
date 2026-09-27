@@ -216,7 +216,10 @@ async def scheduled_tick_job(
     routed_kinds = _validate_routes(dispatch_routes)
 
     try:
-        async with nats_distributed_lock(nats_client, config.tick_lock_key):
+        # cancel_on_loss=False: this lock only spares other pods a redundant due-scan -- the
+        # per-schedule claim CAS is what keeps fires single -- so losing it mid-tick costs at
+        # most duplicate scanning, which is cheaper than abandoning a tick half-dispatched.
+        async with nats_distributed_lock(nats_client, config.tick_lock_key, cancel_on_loss=False):
             await _run_tick_body(schedule_store, fire_store, dispatch_routes, routed_kinds, config)
     except LockHeld:
         log.debug(

@@ -14,8 +14,13 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 
 from threetears.agent.workspace.tools import workspace_reset as workspace_reset_module
 from threetears.agent.workspace.tools.workspace_reset import WorkspaceResetTool
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
-from _helpers.workspace_shims import (
+from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+    FakeAsyncpgAcquireCM,
+    FakeAsyncpgConnection,
+    FakeAsyncpgPool,
+    FakeAsyncpgTransaction,
+)
+from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,

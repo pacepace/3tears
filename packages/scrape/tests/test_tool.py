@@ -19,7 +19,7 @@ from unittest.mock import patch
 import textwrap
 
 import pytest
-from _pacer_fakes import _FakeDelayPacer
+from packages.scrape.tests._pacer_fakes import _FakeDelayPacer
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
 from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit

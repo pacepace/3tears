@@ -47,7 +47,7 @@ from threetears.core.namespaces import (
     build_namespace_name,
 )
 
-from _helpers.workspace_shims import FakeWorkspaceEntity
+from packages.agent.workspace.tests._helpers.workspace_shims import FakeWorkspaceEntity
 
 #: the schema this deployment's platform tables actually live in. Deliberately
 #: NOT ``platform``: that is the value the removed hardcoded default used, and

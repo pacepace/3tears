@@ -46,7 +46,13 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         CrossWorkerCanceller,
         TaskCancelEnvelope,
     )
-    from threetears.nats.distributed_lock import LockHeld, nats_distributed_lock
+    from threetears.nats.distributed_lock import (
+        LockHeld,
+        LockHold,
+        LockLossReason,
+        LockLost,
+        nats_distributed_lock,
+    )
     from threetears.nats.forward import (
         DEFAULT_FORWARD_TIMEOUT,
         ForwardError,
@@ -199,7 +205,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "TokenCallback",
     ),
     "cross_worker_cancel": ("CrossWorkerCanceller", "TaskCancelEnvelope"),
-    "distributed_lock": ("LockHeld", "nats_distributed_lock"),
+    "distributed_lock": ("LockHeld", "LockHold", "LockLossReason", "LockLost", "nats_distributed_lock"),
     "forward": (
         "DEFAULT_FORWARD_TIMEOUT",
         "ForwardError",
@@ -406,6 +412,9 @@ __all__ = [
     "OpRecord",
     # distributed lock
     "LockHeld",
+    "LockHold",
+    "LockLossReason",
+    "LockLost",
     "nats_distributed_lock",
     # cross-worker cancel-by-key (keyed task registry + routed cancel)
     "CrossWorkerCanceller",

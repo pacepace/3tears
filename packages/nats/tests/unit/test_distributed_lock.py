@@ -18,7 +18,7 @@ import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
 from threetears.nats import distributed_lock as distributed_lock_module
-from threetears.nats import LockHeld, NatsKvBucket, nats_distributed_lock
+from threetears.nats import LockHeld, LockHold, LockLossReason, LockLost, NatsKvBucket, nats_distributed_lock
 from threetears.nats.errors import KvError
 
 
@@ -78,6 +78,7 @@ class _FakeKv:
         self.store: dict[str, tuple[bytes, int]] = {}
         self.next_revision = 0
         self.put_calls: list[tuple[str, bytes]] = []
+        self.update_calls: list[tuple[str, bytes, int]] = []
         self.create_calls: list[tuple[str, bytes]] = []
         self.delete_calls: list[str] = []
         self.fail_next_create: BaseException | None = None
@@ -109,6 +110,7 @@ class _FakeKv:
         return self.next_revision
 
     async def update(self, key: str, value: bytes, revision: int) -> int:
+        self.update_calls.append((key, value, revision))
         existing = self.store.get(key)
         if existing is None or existing[1] != revision:
             raise KeyWrongLastSequenceError()
@@ -256,15 +258,17 @@ async def test_heartbeat_refreshes_key() -> None:
         heartbeat=timedelta(milliseconds=30),
     ):
         await _wait_until(
-            lambda: len(fake_kv.put_calls) >= 2,
+            lambda: len(fake_kv.update_calls) >= 2,
             what="two heartbeat refreshes",
         )
-    assert len(fake_kv.put_calls) >= 2
+    assert len(fake_kv.update_calls) >= 2
     # Every renewal rewrites the SAME value the acquire created: that value is
     # the holder's identity, and the release fences on it, so a heartbeat that
     # wrote anything else would hand the lock away mid-hold.
     created_token = fake_kv.create_calls[0][1]
-    assert all(call == ("job", created_token) for call in fake_kv.put_calls)
+    assert all(call[:2] == ("job", created_token) for call in fake_kv.update_calls)
+    # And never unconditionally: a blind put is how a stalled holder overwrites its successor.
+    assert fake_kv.put_calls == []
 
 
 @pytest.mark.asyncio
@@ -480,18 +484,18 @@ async def test_heartbeat_failure_does_not_break_release() -> None:
     """A heartbeat-side broker failure is logged + swallowed; release proceeds."""
     fake_kv = _FakeKv()
 
-    original_put = fake_kv.put
+    original_update = fake_kv.update
     attempted: list[str] = []
 
-    async def failing_put(key: str, value: bytes) -> int:
-        # first put after acquire is the heartbeat refresh; raise so the
-        # branch that logs + lets the TTL expire fires. the attempt is
-        # recorded because the raise means ``put_calls`` never grows, so
-        # it is the only evidence the heartbeat actually ran.
+    async def failing_update(key: str, value: bytes, revision: int) -> int:
+        # the heartbeat's compare-and-swap renewal; raise so the branch that
+        # logs and retries fires. the attempt is recorded because the raise
+        # means ``update_calls`` never grows, so it is the only evidence the
+        # heartbeat actually ran.
         attempted.append(key)
         raise RuntimeError("broker down")
 
-    fake_kv.put = failing_put  # type: ignore[assignment, method-assign]
+    fake_kv.update = failing_update  # type: ignore[assignment, method-assign]
     client = _FakeClient(fake_kv)
     async with nats_distributed_lock(
         client,  # type: ignore[arg-type]
@@ -503,7 +507,7 @@ async def test_heartbeat_failure_does_not_break_release() -> None:
     # release path still runs
     assert fake_kv.delete_calls == ["job"]
     # restore (defensive; the fake is per-test anyway)
-    fake_kv.put = original_put  # type: ignore[method-assign]
+    fake_kv.update = original_update  # type: ignore[method-assign]
 
 
 class TestALockAStuckHolderCannotKeepForever:
@@ -527,18 +531,22 @@ class TestALockAStuckHolderCannotKeepForever:
 
         with patch.object(distributed_lock_module, "_MAX_HOLD", timedelta(seconds=0)):
             async with nats_distributed_lock(
-                client, "wedged", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
-            ):
+                client, "wedged", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1), cancel_on_loss=False
+            ) as hold:
                 # a negative assertion cannot wait for its condition, so this
                 # one stays a sleep: several heartbeat intervals of slack, and
                 # a loaded loop only ever grants MORE of them.
                 await asyncio.sleep(0.05)
-                renewals_while_wedged = len(fake_kv.put_calls)
+                renewals_while_wedged = len(fake_kv.update_calls) + len(fake_kv.put_calls)
 
         assert renewals_while_wedged == 0, (
             "the heartbeat renewed a lock whose holder was past its maximum hold, which is "
             "what keeps a wedged pod's lock alive while every other pod waits"
         )
+        # and the holder is TOLD: a body that keeps going believing it still holds the lock
+        # is the damage the stop exists to bound.
+        assert hold.lost.is_set()
+        assert hold.lost_reason is LockLossReason.MAX_HOLD
 
     @pytest.mark.asyncio
     async def test_an_ordinary_holder_still_gets_its_heartbeats(self) -> None:
@@ -557,11 +565,11 @@ class TestALockAStuckHolderCannotKeepForever:
             client, "healthy", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
         ):
             await _wait_until(
-                lambda: bool(fake_kv.put_calls),
+                lambda: bool(fake_kv.update_calls),
                 what="a heartbeat from a healthy holder",
             )
 
-        assert fake_kv.put_calls, "a healthy holder inside the maximum hold stopped being renewed"
+        assert fake_kv.update_calls, "a healthy holder inside the maximum hold stopped being renewed"
 
     @pytest.mark.asyncio
     async def test_a_stale_holder_does_not_delete_its_successors_lock(self) -> None:
@@ -621,7 +629,7 @@ class TestALockAStuckHolderCannotKeepForever:
             client, "renewed", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
         ):
             await _wait_until(
-                lambda: bool(fake_kv.put_calls),
+                lambda: bool(fake_kv.update_calls),
                 what="a heartbeat to renew the entry",
             )
 
@@ -632,11 +640,11 @@ class TestALockAStuckHolderCannotKeepForever:
 
 # parity-exempt: KeyValue subset whose put lands the write and THEN suspends, so a cancellation can be delivered between the two; used only to force the release race
 class _SlowAckKv(_FakeKv):
-    """A KV whose ``put`` writes and then waits for an acknowledgement.
+    """A KV whose renewal ``update`` writes and then waits for an acknowledgement.
 
     Real brokers behave this way -- the write lands and the ack travels back
     over a network the caller is suspended on -- and the in-memory
-    :class:`_FakeKv` cannot express the gap because its ``put`` never
+    :class:`_FakeKv` cannot express the gap because its ``update`` never
     suspends. Every cancellation-versus-write ordering question needs it.
     """
 
@@ -645,8 +653,11 @@ class _SlowAckKv(_FakeKv):
         self.put_landed = asyncio.Event()
         self.release_ack = asyncio.Event()
 
-    async def put(self, key: str, value: bytes) -> int:
-        self.put_calls.append((key, value))
+    async def update(self, key: str, value: bytes, revision: int) -> int:
+        self.update_calls.append((key, value, revision))
+        existing = self.store.get(key)
+        if existing is None or existing[1] != revision:
+            raise KeyWrongLastSequenceError()
         self.next_revision += 1
         self.store[key] = (value, self.next_revision)
         self.put_landed.set()
@@ -717,3 +728,261 @@ class TestAHolderReleasesALockItRenewedMidFlight:
         assert fake_kv.store.get("handover") == (b"a-successors-token", successor_revision), (
             "the departing holder deleted a key that had already moved to another holder"
         )
+
+
+# ---------------------------------------------------------------------------
+# losing the lock: compare-and-swap renewal, and telling the holder
+# ---------------------------------------------------------------------------
+
+
+# parity-exempt: KeyValue subset whose renewal read suspends until the test lets it continue, so another holder can take the key exactly where a real broker round trip leaves room
+class _StallingKv(_FakeKv):
+    """A KV whose ``get`` (the renewal's read) suspends until the test releases it.
+
+    A holder that stalls -- a blocked event loop, a GC pause, a network partition -- sits
+    somewhere between its reads and its writes while the world moves on. The in-memory
+    fake never suspends, so it cannot put a successor's acquisition inside that gap; this
+    one parks the renewal's read until the test has done exactly that.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stall_reads = False
+        self.read_parked = asyncio.Event()
+        self.resume_read = asyncio.Event()
+
+    async def get(self, key: str) -> _FakeEntry:
+        if self.stall_reads:
+            self.read_parked.set()
+            await self.resume_read.wait()
+        return await super().get(key)
+
+
+def _successor_takes(fake_kv: _FakeKv, key: str) -> tuple[bytes, int]:
+    """expire the holder's entry and let another pod acquire the key.
+
+    :param fake_kv: the KV the lock lives in
+    :ptype fake_kv: _FakeKv
+    :param key: the lock key
+    :ptype key: str
+    :return: the successor's entry
+    :rtype: tuple[bytes, int]
+    """
+    fake_kv.next_revision += 1
+    fake_kv.store[key] = (b"the-successors-token", fake_kv.next_revision)
+    return fake_kv.store[key]
+
+
+class TestAHolderThatLostTheLockNeverTakesItBack:
+    """Renewal is a compare-and-swap on this holder's token, never a blind write."""
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_holder_does_not_overwrite_the_successor_that_acquired_after_expiry(self) -> None:
+        fake_kv = _StallingKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "stalled",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+            cancel_on_loss=False,
+        ) as hold:
+            fake_kv.stall_reads = True
+            await _wait_until(fake_kv.read_parked.is_set, what="the renewal to stall mid-read")
+            successor = _successor_takes(fake_kv, "stalled")
+            fake_kv.stall_reads = False
+            fake_kv.resume_read.set()
+            await asyncio.wait_for(hold.lost.wait(), timeout=5)
+
+            assert fake_kv.store["stalled"] == successor, "the stalled holder overwrote its successor's lock"
+            assert hold.lost_reason is LockLossReason.TAKEN
+        assert fake_kv.store["stalled"] == successor, "the stalled holder released its successor's lock"
+
+    @pytest.mark.asyncio
+    async def test_a_successor_writing_between_the_read_and_the_swap_wins(self) -> None:
+        """The swap is fenced on the revision just read, so a write in between is a loss, not a race."""
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+        original_get = fake_kv.get
+        taken: list[tuple[bytes, int]] = []
+        reads: list[str] = []
+
+        async def _get_then_lose_it(key: str) -> _FakeEntry:
+            reads.append(key)
+            entry = await original_get(key)
+            if not taken:
+                taken.append(_successor_takes(fake_kv, key))
+            return entry
+
+        fake_kv.get = _get_then_lose_it  # type: ignore[method-assign]
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "raced",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+            cancel_on_loss=False,
+        ) as hold:
+            await asyncio.wait_for(hold.lost.wait(), timeout=5)
+            reads_until_loss = len(reads)
+
+        assert fake_kv.store["raced"] == taken[0]
+        assert hold.lost_reason is LockLossReason.TAKEN
+        assert reads_until_loss == 1, "the refused swap was taken for a renewal; the loss surfaced a heartbeat late"
+
+    @pytest.mark.asyncio
+    async def test_an_entry_that_expired_with_nobody_waiting_is_a_loss_too(self) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "expired",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+            cancel_on_loss=False,
+        ) as hold:
+            del fake_kv.store["expired"]
+            await asyncio.wait_for(hold.lost.wait(), timeout=5)
+
+        assert hold.lost_reason is LockLossReason.EXPIRED
+        assert "expired" not in fake_kv.store, "a holder that lost its entry wrote it back"
+
+    @pytest.mark.asyncio
+    async def test_a_lock_still_held_renews_and_is_never_reported_lost(self) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "held",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+        ) as hold:
+            await _wait_until(lambda: len(fake_kv.update_calls) >= 3, what="three renewals")
+            hold.raise_if_lost()
+
+        assert not hold.lost.is_set()
+        assert hold.lost_reason is None
+
+
+class TestTheHolderIsToldWhenTheLockIsLost:
+    @pytest.mark.asyncio
+    async def test_renewals_that_keep_failing_until_the_entry_may_have_expired_are_a_loss(self) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async def _broker_down(key: str, value: bytes, revision: int) -> int:
+            raise RuntimeError("broker down")
+
+        fake_kv.update = _broker_down  # type: ignore[method-assign]
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "unreachable",
+            heartbeat=timedelta(seconds=0.02),
+            ttl=timedelta(seconds=0.2),
+            cancel_on_loss=False,
+        ) as hold:
+            await asyncio.wait_for(hold.lost.wait(), timeout=5)
+
+        assert hold.lost_reason is LockLossReason.RENEWAL_FAILED
+
+    @pytest.mark.asyncio
+    async def test_one_failed_renewal_inside_the_ttl_is_retried_not_a_loss(self) -> None:
+        """A single broker blip must not interrupt a healthy body while the entry cannot have expired."""
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+        original_update = fake_kv.update
+        failures: list[int] = []
+
+        async def _one_blip(key: str, value: bytes, revision: int) -> int:
+            if not failures:
+                failures.append(revision)
+                raise RuntimeError("broker blip")
+            return await original_update(key, value, revision)
+
+        fake_kv.update = _one_blip  # type: ignore[method-assign]
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "blip",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+        ) as hold:
+            await _wait_until(lambda: len(fake_kv.update_calls) >= 2, what="renewals to resume after the blip")
+
+        assert failures
+        assert not hold.lost.is_set()
+
+    @pytest.mark.asyncio
+    async def test_by_default_a_lost_lock_interrupts_the_body_and_raises_lock_lost(self) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+        body_finished = False
+
+        with pytest.raises(LockLost) as lost:
+            async with nats_distributed_lock(
+                client,  # type: ignore[arg-type]
+                "interrupted",
+                heartbeat=timedelta(seconds=0.01),
+                ttl=timedelta(seconds=1),
+            ):
+                _successor_takes(fake_kv, "interrupted")
+                await asyncio.sleep(5)
+                body_finished = True
+
+        assert not body_finished, "the body kept running after its lock was taken"
+        assert lost.value.reason is LockLossReason.TAKEN
+        assert lost.value.key == "interrupted"
+        current = asyncio.current_task()
+        assert current is not None and current.cancelling() == 0, "the loss left a cancellation request pending"
+
+    @pytest.mark.asyncio
+    async def test_an_outside_cancellation_is_still_a_cancellation(self) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+        entered = asyncio.Event()
+
+        async def _hold() -> None:
+            async with nats_distributed_lock(
+                client,  # type: ignore[arg-type]
+                "cancelled",
+                heartbeat=timedelta(seconds=0.01),
+                ttl=timedelta(seconds=1),
+            ):
+                entered.set()
+                await asyncio.sleep(5)
+
+        task = asyncio.create_task(_hold())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_raise_if_lost_names_the_reason(self) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        with patch.object(distributed_lock_module, "_MAX_HOLD", timedelta(seconds=0)):
+            async with nats_distributed_lock(
+                client,  # type: ignore[arg-type]
+                "checked",
+                heartbeat=timedelta(seconds=0.01),
+                ttl=timedelta(seconds=1),
+                cancel_on_loss=False,
+            ) as hold:
+                await asyncio.wait_for(hold.lost.wait(), timeout=5)
+                with pytest.raises(LockLost) as lost:
+                    hold.raise_if_lost()
+
+        assert lost.value.reason is LockLossReason.MAX_HOLD
+
+    @pytest.mark.asyncio
+    async def test_the_single_pod_no_op_yields_a_hold_that_is_never_lost(self) -> None:
+        async with nats_distributed_lock(None, "dev") as hold:
+            assert isinstance(hold, LockHold)
+            hold.raise_if_lost()
+        assert not hold.lost.is_set()

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from threetears.enforcement.fake_parity.walkers import (
     fake_parity_violations,
     find_fakes_in_tree,
@@ -268,16 +270,20 @@ class TestMarkerComment:
 # ------------------------------------------------------------------
 
 
-def _install_production_fixture(tmp_path: Path) -> str:
-    """drop a tiny ``_ProductionDouble`` class into ``tmp_path`` and add to sys.path.
+def _install_production_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """drop a tiny ``_ProductionDouble`` class into ``tmp_path`` and make it importable for this test.
 
     the walker imports the marker target via :func:`importlib.import_module`
-    so the production class must live at a real importable path. dropping
-    a single-file module under ``tmp_path`` and prepending the dir to
-    ``sys.path`` keeps the test self-contained.
+    so the production class must live at a real importable path. the
+    directory is prepended through ``monkeypatch`` so it leaves ``sys.path``
+    (and the cached module leaves ``sys.modules``) when the test ends: a
+    permanent insert made every file in the temp dir -- ``test_thing`` among
+    them -- a top-level module name for the rest of the session.
 
     :param tmp_path: pytest tmp dir
     :ptype tmp_path: Path
+    :param monkeypatch: pytest monkeypatch, which undoes the path change
+    :ptype monkeypatch: pytest.MonkeyPatch
     :return: fully-qualified marker target the test should use
     :rtype: str
     """
@@ -291,16 +297,16 @@ def _install_production_fixture(tmp_path: Path) -> str:
         "    def optional_method(self, alpha=None):\n"
         "        del alpha\n",
     )
-    if str(tmp_path) not in sys.path:
-        sys.path.insert(0, str(tmp_path))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "_production_fixture", raising=False)
     return "_production_fixture.ProductionDouble"
 
 
 class TestMethodSurface:
     """the walker enforces that fake methods accept production-required params."""
 
-    def test_missing_method(self, tmp_path: Path) -> None:
-        target = _install_production_fixture(tmp_path)
+    def test_missing_method(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = _install_production_fixture(tmp_path, monkeypatch)
         _write(
             tmp_path / "test_thing.py",
             f"# parity-with: {target}\nclass _FakeDouble:\n    def required_method(self, alpha, beta):\n        pass\n",
@@ -310,8 +316,8 @@ class TestMethodSurface:
         method_missing = [v for v in violations if v.category == "fake_parity.method_missing"]
         assert any("optional_method" in v.reason for v in method_missing)
 
-    def test_required_param_missing_violates(self, tmp_path: Path) -> None:
-        target = _install_production_fixture(tmp_path)
+    def test_required_param_missing_violates(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = _install_production_fixture(tmp_path, monkeypatch)
         _write(
             tmp_path / "test_thing.py",
             f"# parity-with: {target}\n"
@@ -325,8 +331,8 @@ class TestMethodSurface:
         param_missing = [v for v in violations if v.category == "fake_parity.method_required_arg_missing"]
         assert any("`beta`" in v.reason for v in param_missing)
 
-    def test_kwargs_satisfies_any_required(self, tmp_path: Path) -> None:
-        target = _install_production_fixture(tmp_path)
+    def test_kwargs_satisfies_any_required(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = _install_production_fixture(tmp_path, monkeypatch)
         _write(
             tmp_path / "test_thing.py",
             f"# parity-with: {target}\n"

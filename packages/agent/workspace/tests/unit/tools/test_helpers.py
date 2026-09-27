@@ -29,8 +29,13 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_workspace,
     _write_file_atomic,
 )
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
-from _helpers.workspace_shims import (
+from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+    FakeAsyncpgAcquireCM,
+    FakeAsyncpgConnection,
+    FakeAsyncpgPool,
+    FakeAsyncpgTransaction,
+)
+from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,

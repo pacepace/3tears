@@ -193,7 +193,8 @@ Wiring shape: every consumer of the memory surface REQUIRES a `MemoryAuthorizerD
 - `acl_cache` -- shared `threetears.agent.acl.AclCache` instance;
 - `membership_loader` + `grant_loader` -- the evaluator's loaders (`threetears.agent.acl.MembershipLoader` / `GrantLoader`);
 - `namespace_collection` -- three-tier `NamespaceCollection` used to resolve the memory namespace via `get_by_owner_and_customer(namespace_type="memory", owner_agent_id, customer_id)` (create-if-absent flows through `save_entity`);
-- `group_collection` + `group_member_collection` + `role_collection` + `role_assignment_collection` -- the rbac Collections the first-write owner-assignment path uses via `ensure_memory_owner_assignment(...)`.
+- `group_collection` + `group_member_collection` + `role_collection` + `role_assignment_collection` -- the rbac Collections the first-write owner-assignment path uses via `ensure_memory_owner_assignment(...)`;
+- `invalidation_publisher` (optional) -- the rbac invalidation-bus publisher (e.g. the `NatsClient`). `ensure_memory_owner_assignment` always evicts the rows it writes from `acl_cache`, so the new grant is honoured on the caller's next request; with a publisher it also broadcasts the eviction so every other pod drops the same entries instead of waiting out the ttl.
 
 There is no bypass. Every `MemoriesCollection`, `MemoryRetriever`, `MemoryExtractor`, and LangChain tool factory (`load_memory_search_tool`, `load_memory_add_tool`, `load_memory_recall_tool`) takes the bundle as a required constructor/factory argument; every code path that touches a memory row runs `authorize_memory_access` first. Callers that omit the bundle fail at the type checker and the Python signature boundary.
 

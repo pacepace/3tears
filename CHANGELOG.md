@@ -22,6 +22,14 @@ definition and admits a copy only from a verified publisher (`ToolDefinition`,
 which registrations are accepted -- read that section before deploying. Removed:
 `threetears.agent.tools.bridge`, `to_langchain_tool`'s `args_schema` parameter and the builtin
 tools' pydantic input models -- see "A tool's nested models reach the model".
+`threetears.agent.acl` gains `evict_after_rbac_write`, and the memory and conversation owner
+ensures now evict what they write, so a new owner grant is honoured on the next request.
+`threetears.channels` gains `RoomPolicy`, `RoomAccessRequest`, `WebSocketHandler(room_policy=)`,
+`WebSocketHandler.revoke` and `WebSocketHandler.reevaluate_room`; `resume` is now gated.
+`create_chat_model`'s default circuit breaker is scoped per provider and credential
+(`CircuitBreakerRegistry.get(..., credential=)`). `nats_distributed_lock` renews by
+compare-and-swap and yields a `LockHold` (`LockLossReason`, `LockLost`); by default a lost lock
+interrupts its body -- read that section before upgrading a caller.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -471,6 +479,142 @@ every argument dropped.
 - **Unchanged, and documented on `to_langchain_tool`:** the in-graph path applies no
   `requires_confirmation` gate of its own; a graph running a tool that declares confirmation
   gates the call with its own gate, which reads the flag the wrapped tool carries.
+### An owner grant is honoured on the next request, not a cache ttl later
+
+`ensure_memory_owner_assignment` and `ensure_conversation_owner_assignment` wrote the per-user
+owner group, its membership and the owner assignment, and never told the `AclCache` they were
+handed. The authorization that preceded every ensure had already cached the user's memberships
+and the owner group's contribution on the namespace, both saying "no grant", so the user's next
+request on the same pod was denied from cache for up to the ttl (60 s by default) -- a
+`MemoryAccessDenied` straight after a user's first chat turn. A cache ttl of zero in the tests
+hid it.
+
+- **New (minor):** `threetears.agent.acl.evict_after_rbac_write(cache, publisher=None, *,
+  member_actors=(), group_ids=())`, the rule for any helper that writes a `group_members`,
+  `role_assignments` or `groups` row while holding an `AclCache`: evict the entries the write
+  made stale locally (the same `invalidate_membership_for_actor` / `invalidate_group` calls the
+  bus subscriber makes), then broadcast them on the invalidation bus when a publisher is given.
+  A broadcast failure is logged, not raised: the write has committed and the local cache is
+  already right. It imports the bus only when a publisher is passed, so a consumer without the
+  `[bus]` extra can still evict locally.
+- **Fixed:** both ensures evict what they actually wrote -- a new membership evicts the user's
+  membership entry, a new assignment or group evicts the group's assignment entries -- and an
+  ensure that found every row present evicts and publishes nothing, so running it on every
+  user write stays free.
+- **New:** `MemoryAuthorizerDependencies` and `ConversationAuthorizerDependencies` take an
+  optional `invalidation_publisher` (an `AclInvalidationPublisher`, e.g. the `NatsClient`).
+  With it, other pods evict too; without it they fall back to ttl expiry.
+- **Swept:** no other helper in `agent/acl`, `agent/memory`, `conversations`, `iam` or elsewhere
+  in 3tears writes those tables while holding an `AclCache`. `ensure_platform_builtin_tool_user_role`
+  inserts a `roles` row with no assignments, which no cached entry can reference.
+- Consumers that call `acl_cache.invalidate_membership_for_actor(...)` (or `invalidate_all()`)
+  after `ensure_memory_owner_assignment` can drop that call, and should pass their NATS client
+  as `invalidation_publisher` instead of broadcasting by hand.
+
+### A room's own access rule is enforced on every room action, and a member can be taken out
+
+`WebSocketHandler` gated `join` only on the ACL namespace the room resolves to, and rooms share
+namespaces: anyone with read on a shared namespace could join a colleague's private room and
+receive everything streamed to it (seen live: 23 frames of a private turn). `resume` -- on a frame
+or on the connect query string -- replayed a room's durable tail with no gate at all. A member who
+lost access after joining kept receiving until they disconnected.
+
+- **New (minor):** `room_policy=` on `WebSocketHandler`, a `threetears.channels.RoomPolicy`: an
+  async callable taking a `RoomAccessRequest(room_id, user_id, customer_id, action)` and returning
+  `bool`. It is asked after the namespace gate, and both must allow, on `join` and `resume` (with
+  `join_action`) and on `editor.op` and `cursor` / `typing` / `presence` (with `write_action`).
+  Only a literal `True` allows; any other answer or an exception refuses. A refusal is the same as
+  a namespace denial: an error frame, no presence row, no broadcast, no replay. It also works with
+  no namespace gate wired.
+- **Fixed:** `resume` frames and resume-on-connect are gated with `join_action`. A deployment with
+  a namespace gate now needs the join grant to replay a room; a refused resume-on-connect sends an
+  error frame and the connection goes live without the tail.
+- **New (minor):** `WebSocketHandler.revoke(room_id, user_id, *, reason="access revoked")` takes a
+  user out of a room on every connection this pod holds for them, and
+  `WebSocketHandler.reevaluate_room(room_id, *, reason=...)` re-asks both gates for each current
+  member and takes out the ones now refused (a gate that raises counts as a refusal). An evicted
+  connection leaves the room as a `leave` frame would and receives
+  `{"type": "error", "message": <reason>, "room": <room_id>}`; its socket and other rooms stay.
+  Both are pod-local like `disconnect_user`: a multi-pod deployment calls them on each pod from
+  whatever it already broadcasts on. Room actions on a connection and evictions of it are
+  serialized, so an eviction cannot land inside a join and be undone by it.
+- **Fixed:** a second `join` of a room a connection is already in no longer takes a second room
+  reference, which the single leave on disconnect could never release (the pod stayed subscribed
+  to the room forever).
+- Consumers that subclass `WebSocketHandler` to override the private `_handle_join` must replace
+  that override with `room_policy=`; `_handle_join` and the other private handlers changed
+  signature and the override will no longer be called with the arguments it expects.
+
+### One credential's failures no longer open the circuit for every credential on the provider
+
+`create_chat_model`'s default circuit breaker came from a process-wide registry keyed by provider
+alone. In a multi-tenant process, one customer's revoked, rate-limited or out-of-credit key
+failing five times opened the breaker for every customer on that provider for the recovery
+window.
+
+- **Fixed:** the default breaker is keyed by provider AND `api_key`. A process with one key has
+  one breaker per provider, exactly as before. Breaking stays at provider granularity -- a
+  breaker is never per model, which is a recorded design choice this does not revisit; only
+  credentials are separated.
+- **New:** `CircuitBreakerRegistry.get(provider_name, *, credential=None)` and
+  `reset(provider_name, *, credential=None)`. The registry never holds the credential: it keys
+  it by a 16-hex-character blake2b fingerprint keyed with a random per-registry secret, so the
+  fingerprint is not a digest anyone can recompute from the key and is meaningless outside the
+  registry. Neither the key nor the fingerprint reaches a log line, a `CircuitOpenError`, or
+  `status()`; breakers still log and raise under the provider name. `reset` without a
+  credential resets every breaker on the provider.
+- **Changed:** `CircuitBreakerRegistry.status()` stays keyed by provider name only -- one entry
+  per provider however many credentials are in use, so it is safe to export as metric labels --
+  and reports the worst state among that provider's breakers (open, then half-open, then
+  closed). A registry used without credentials reports exactly what it did.
+- `breaker=` on `create_chat_model` is still the explicit override. `create_embedding_model`
+  attaches no breaker and shares no registry, so it needed no change; no other factory holds a
+  default registry.
+- **Bounded:** credential-scoped breakers do not accumulate. When a new credential's breaker is
+  created, every CLOSED credential breaker idle for `credential_idle_seconds` (default 3600: no
+  `get()` for it and no check or outcome on it) is dropped, then the least recently used CLOSED
+  ones while `max_credential_breakers` (default 1024) or more remain. An OPEN or HALF_OPEN breaker
+  is never dropped -- that would forget a tripped credential -- so the count exceeds the cap only
+  by breakers tripped right now, with a warning. Provider-only breakers are never dropped.
+  `status()` keeps reporting a provider whose breakers were all dropped, as closed.
+- **New:** `CircuitBreakerRegistry(..., *, credential_idle_seconds=3600.0,
+  max_credential_breakers=1024, clock=None)`; `CircuitBreaker(..., *, clock=None)` and
+  `CircuitBreaker.restore(..., clock=None)`; `CircuitBreaker.last_activity`. `clock=None` reads
+  `time.monotonic` at call time, as before.
+- Consumers that built a per-credential `CircuitBreakerRegistry` (or a breaker per key) and
+  passed it as `breaker=` to keep tenants apart can drop it and rely on the default.
+
+### A lock holder that stalled past its TTL no longer overwrites its successor, and is told it lost
+
+`nats_distributed_lock` renewed with an unconditional `put`. A holder that stalled past the TTL
+(a blocked loop, a GC pause, a partition) woke after another pod had acquired the expired key and
+overwrote it: two holders. And when renewal failed or stopped at the maximum hold, the body kept
+running unlocked and was never told -- the context manager yielded `None`.
+
+- **Fixed:** renewal is a compare-and-swap. It reads the entry and swaps it at the revision just
+  read, only while the entry carries this holder's token, the same identity the release already
+  fences on. A missing entry, another holder's token, or a write landing between the read and the
+  swap is a loss, and the entry is left alone.
+- **New (minor):** the context manager yields a `threetears.nats.LockHold` (`key`, `lost` -- an
+  `asyncio.Event` -- `lost_reason`, `raise_if_lost()`). `LockLossReason` says why: `EXPIRED`,
+  `TAKEN`, `RENEWAL_FAILED`, `MAX_HOLD`. `async with nats_distributed_lock(...):` without `as`
+  keeps working, and `client=None` yields a hold that is never lost.
+- **Changed:** by default a loss cancels the body at its next `await`, and the `async with`
+  raises `threetears.nats.LockLost` (neither a `KvError` nor a `LockHeld`: the body has already
+  partly run). A cancellation from anywhere else still propagates as `CancelledError`. Cancelling
+  is the default because a body that keeps writing after its lock is gone is the damage a lock
+  exists to prevent, and a flag nobody reads prevents none of it. `cancel_on_loss=False` keeps the
+  body running and only sets `hold.lost`, for a body whose correctness does not rest on the lock.
+- **Changed:** a failed renewal is retried while the entry cannot yet have expired, rather than
+  stopping the heartbeat for good. It becomes `RENEWAL_FAILED` when the next attempt would land
+  past the TTL. One broker blip no longer lets a healthy holder's lock lapse.
+- The in-workspace callers whose correctness rests elsewhere -- the scheduled-jobs tick (the
+  per-schedule claim CAS) and in-flight lock, and the derived-collection build lock -- pass
+  `cancel_on_loss=False`: losing the lock costs them duplicate work, not a wrong result.
+- Consumers that catch `LockHeld` and `KvError` around the lock should also catch `LockLost` if
+  they keep the default: a hub sweep that treats `KvError` as "run without the lock" must not
+  re-run a body that `LockLost` interrupted. This is only CAS renewal and a loss signal on the
+  existing lock; it is not a held lease.
 
 ## v0.54.0 -- 2026-09-26
 

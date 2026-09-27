@@ -39,8 +39,11 @@ __all__ = [
 logger = get_logger(__name__)
 
 
-# A single shared registry by default — host apps can override by passing
-# their own breaker registry or constructing breakers per model id.
+# A single shared registry by default -- host apps can override by passing
+# their own breaker. It is keyed by provider AND credential: a process calling
+# one provider with several customers' keys must not let one key's failures
+# fast-fail the others, and a process with one key sees one breaker per
+# provider exactly as before.
 _DEFAULT_BREAKER_REGISTRY = CircuitBreakerRegistry()
 
 
@@ -83,6 +86,7 @@ def _build_callbacks(
     purpose: LlmPurpose,
     tracker: UsageTracker | None,
     breaker: CircuitBreaker | None,
+    api_key: str,
     extra_callbacks: list[BaseCallbackHandler] | None,
 ) -> list[BaseCallbackHandler]:
     """builds the default callback list (tracker + breaker + extras).
@@ -97,8 +101,12 @@ def _build_callbacks(
     :ptype purpose: LlmPurpose
     :param tracker: usage tracker (defaults to a fresh instance)
     :ptype tracker: UsageTracker | None
-    :param breaker: circuit breaker (defaults to one from the shared registry)
+    :param breaker: circuit breaker (defaults to the shared registry's breaker
+        for this provider and credential)
     :ptype breaker: CircuitBreaker | None
+    :param api_key: the credential the model calls with; scopes the default
+        breaker, and is never stored or logged
+    :ptype api_key: str
     :param extra_callbacks: additional callbacks the caller wants attached
     :ptype extra_callbacks: list[BaseCallbackHandler] | None
     :return: ordered list of callbacks to wire into the model
@@ -121,7 +129,9 @@ def _build_callbacks(
         ),
     )
 
-    effective_breaker = breaker if breaker is not None else _DEFAULT_BREAKER_REGISTRY.get(provider_name)
+    effective_breaker = (
+        breaker if breaker is not None else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key)
+    )
     callbacks.append(effective_breaker.make_callback())
 
     if extra_callbacks:
@@ -158,7 +168,11 @@ def create_chat_model(
     :ptype purpose: LlmPurpose
     :param tracker: optional shared usage tracker (defaults to a fresh instance)
     :ptype tracker: UsageTracker | None
-    :param breaker: optional explicit circuit breaker (defaults to shared registry)
+    :param breaker: optional explicit circuit breaker. the default is the
+        shared registry's breaker for this provider AND ``api_key``, so calls
+        made with one credential never trip the breaker for another credential
+        on the same provider; a process with one key has one breaker per
+        provider, as before
     :ptype breaker: CircuitBreaker | None
     :param extra_callbacks: optional extra callbacks to attach
     :ptype extra_callbacks: list[BaseCallbackHandler] | None
@@ -195,6 +209,7 @@ def create_chat_model(
         purpose=purpose,
         tracker=tracker,
         breaker=breaker,
+        api_key=api_key,
         extra_callbacks=extra_callbacks,
     )
 

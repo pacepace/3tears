@@ -10,7 +10,7 @@ lives in test_driver_contract.py, not here.
 from __future__ import annotations
 
 import pytest
-from _driver_log_helpers import driver_warnings
+from packages.scrape.tests._driver_log_helpers import driver_warnings
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 

@@ -30,12 +30,12 @@ from threetears.core.security.identity_token import (
 from threetears.media.contracts import ObjectHandle
 from threetears.nats import IncomingMessage
 
-from unit.tools._pod_auth import RecordingNatsClient
+from packages.agent.tools.tests.unit.tools._pod_auth import RecordingNatsClient
 from threetears.core.testing.replay_guard import FakeReplayGuard
-from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
-from unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
-from unit.tools._pod_auth import recording_tool_server as _recording_tool_server
-from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
+from packages.agent.tools.tests.unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
+from packages.agent.tools.tests.unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
+from packages.agent.tools.tests.unit.tools._pod_auth import recording_tool_server as _recording_tool_server
+from packages.agent.tools.tests.unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 
 # -- helpers --

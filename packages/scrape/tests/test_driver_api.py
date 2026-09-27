@@ -22,7 +22,7 @@ import json
 
 import httpx
 import pytest
-from _driver_log_helpers import driver_warnings
+from packages.scrape.tests._driver_log_helpers import driver_warnings
 
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError, _resolve_path
