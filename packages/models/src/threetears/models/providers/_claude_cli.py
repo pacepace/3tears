@@ -33,6 +33,20 @@ nothing; it answers with a placeholder no model turn ever reads. The tool-use bl
 ``AIMessage.tool_calls`` under the caller's own tool names, and the caller's next round arrives
 with the results as ordinary history.
 
+One kind of call gets more turns: a call that asks for a schema and gives the model no tool but the
+CLI's own ``StructuredOutput`` (found live, in 0.55.0: about a third of one consumer's structured
+calls failed with ``error_max_turns``). The CLI does not constrain the model's output to the schema,
+as the Messages API's ``output_config`` does; it checks the model's ``StructuredOutput`` call, answers
+a mismatch with what did not match, and lets the model try again in a turn of its own. A model
+that fills the call with a placeholder -- ``{"$PARAMETER_VALUE": "<the answer, as a string>"}`` -- or
+wraps the answer in one key too many is corrected on the next turn, and one turn left no next turn:
+the call ended with the rejected attempt and no answer. Such a call now runs for
+:data:`_STRUCTURED_OUTPUT_TURNS` turns, with the CLI's own attempt cap pinned to
+:data:`_STRUCTURED_OUTPUT_ATTEMPTS`. It has no tool calls a second turn could run in the caller's
+place (:func:`_answers_only_in_schema`), and a call that runs out of attempts still fails, with
+``error_max_structured_output_retries``. A call that binds tools as well as a schema stays at one
+turn, because its next turn could be spent on the caller's tools.
+
 Token-level streaming: ``ClaudeCodeChatModel._astream`` sets ``include_partial_messages=True`` --
 which makes the Agent SDK subprocess actually emit granular ``StreamEvent`` deltas (the raw Anthropic
 ``content_block_delta``/``text_delta`` shape) -- but the method never handles ``StreamEvent`` at
@@ -220,6 +234,20 @@ _FORWARDED_KWARGS = frozenset(
 
 #: Model turns per call. One: the call ends where the model asks for tools, and the caller runs them.
 _MODEL_TURNS_PER_CALL = 1
+
+#: Attempts a structured answer gets. The CLI checks each ``StructuredOutput`` call against the schema
+#: and answers a mismatch with what did not match, and the model tries again in a turn of its own.
+#: Five is the CLI's own default (2.1.207), pinned so a CLI release cannot move it.
+_STRUCTURED_OUTPUT_ATTEMPTS = 5
+
+#: The CLI's variable for :data:`_STRUCTURED_OUTPUT_ATTEMPTS`. When they run out, the CLI ends the call
+#: with ``error_max_structured_output_retries``.
+_STRUCTURED_OUTPUT_ATTEMPTS_ENV = "MAX_STRUCTURED_OUTPUT_RETRIES"
+
+#: Model turns for a call whose only callable tool is ``StructuredOutput``: one per attempt, and one
+#: more for a turn that does not call the tool at all, so the attempt cap -- not the turn cap -- is
+#: what ends a call that never produces a valid answer.
+_STRUCTURED_OUTPUT_TURNS = _STRUCTURED_OUTPUT_ATTEMPTS + 1
 
 #: The CLI's name for a tool on the bound tool server is this prefix plus the tool's wire name.
 _BOUND_TOOL_PREFIX = f"mcp__{TOOL_SERVER_NAME}__"
@@ -495,6 +523,31 @@ def _flatten_round(messages: Sequence[BaseMessage]) -> tuple[str, str | None]:
     return "\n\n".join(sections), (stable or None)
 
 
+def _answers_only_in_schema(options: Any, bound_tools: Sequence[BaseTool]) -> bool:
+    """Whether a call asks for a schema and gives the model no tool but the CLI's ``StructuredOutput``.
+
+    Such a call may run for more than one model turn. Its extra turns can only ever be the CLI's
+    schema retries: with no caller tool bound, no built-in tool and no other MCP server, there is no
+    tool call a second turn could run in the caller's place. Any other call stays at one turn.
+
+    :param options: the call's ``ClaudeAgentOptions``
+    :ptype options: Any
+    :param bound_tools: the caller's tools bound to the model
+    :ptype bound_tools: Sequence[BaseTool]
+    :return: ``True`` when the only tool the model can call is ``StructuredOutput``
+    :rtype: bool
+    """
+    servers = options.mcp_servers
+    only_the_bound_tool_server = not servers or (isinstance(servers, dict) and set(servers) <= {TOOL_SERVER_NAME})
+    return (
+        options.output_format is not None
+        and isinstance(options.tools, list)
+        and not options.tools
+        and not bound_tools
+        and only_the_bound_tool_server
+    )
+
+
 def _pooled_launch_options(options: Any) -> Any:
     """The options a pooled session launches with, derived from one call's options.
 
@@ -597,8 +650,13 @@ def _subscription_model_cls() -> type:
                 options.cwd = isolation.cwd
             options.extra_args = {**(options.extra_args or {}), **isolation.extra_args}
             # One model turn per call, whatever was asked for: the call ends where the model asks
-            # for tools, and the caller runs them (see the module docstring).
+            # for tools, and the caller runs them (see the module docstring). A call that can only
+            # answer in its schema has no tool calls to hand back, and gets the turns the CLI's own
+            # schema retries need.
             options.max_turns = _MODEL_TURNS_PER_CALL
+            if _answers_only_in_schema(options, self._bound_tools):
+                options.max_turns = _STRUCTURED_OUTPUT_TURNS
+                options.env = {**options.env, _STRUCTURED_OUTPUT_ATTEMPTS_ENV: str(_STRUCTURED_OUTPUT_ATTEMPTS)}
             return options
 
         def bind_tools(  # type: ignore[override] # narrows the supertype's Sequence[dict | type |

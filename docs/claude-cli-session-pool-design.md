@@ -54,8 +54,15 @@ before a second model turn, and the tool calls come back as `AIMessage.tool_call
 graph to run (approval, shaping, its ledger). The handler the CLI calls in between answers with a
 placeholder no turn reads. Verified live on the bundled CLI (2026-09-15): two parallel calls
 emitted, both handlers called, `error_max_turns` after turn 2 of the CLI's count, and the same
-session then answered an ordinary query with `success`. With `max_turns` fixed, it is no longer
-part of what distinguishes one session from another.
+session then answered an ordinary query with `success`.
+
+One exception, since 0.55.1: a call that asks for a schema and gives the model no tool but the CLI's
+own `StructuredOutput` launches with `--max-turns 6` and `MAX_STRUCTURED_OUTPUT_RETRIES=5`. The CLI
+checks each `StructuredOutput` call against the schema and wants a turn of its own to retry a
+mismatch; at one turn about a third of real structured calls ended on `error_max_turns` with no
+answer. Such a call has no caller tool a second turn could run. So `max_turns` takes two values, and
+both it and the environment are part of the key: a structured call with no tools never shares a
+session with any other kind.
 
 ## Session key
 
@@ -64,7 +71,10 @@ A session is reusable for any call whose **launch-time** options match:
 - a digest of the credential (the token never appears in a key or a path);
 - the stable system prompt;
 - `tools` (built-ins), `disallowed_tools`, `permission_mode`, `max_budget_usd`,
-  `fallback_model`, and any caller-set `cwd`.
+  `fallback_model`, and any caller-set `cwd`;
+- `max_turns` and `env`, which differ for a structured call with no tools (above);
+- every other launch-time field of the options, so nothing a caller sets can share a CLI
+  launched without it.
 
 Not in the key, because they are applied per checkout: `model` (`set_model`) and the bound
 tool server (`mcp_set_servers`). Tool auto-approval is granted server-wide at launch
