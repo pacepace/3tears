@@ -1,19 +1,34 @@
-"""Reuse Claude Code CLI subprocesses instead of starting one per model call.
+"""Start Claude Code CLI subprocesses ahead of the calls that need them.
 
 A Claude subscription credential (``sk-ant-oat…``) has no HTTP API: it is spent by driving the
 bundled Claude Code CLI, and ``langchain-claude-code`` starts a fresh subprocess for every call.
 Measured on a production deployment: ~2.4 s to start and ~2.7 s per call, against ~600 ms for the
-same model over HTTP. This module keeps CLIs alive, hands each out to one caller at a time, and
-clears it between callers. Design, with the evidence for every protocol claim:
-``docs/claude-cli-session-pool-design.md``.
+same model over HTTP. This module starts CLIs before they are needed and hands each to exactly one
+call. Design, with the evidence for every protocol claim: ``docs/claude-cli-session-pool-design.md``.
 
-What can change on a live CLI and what cannot decides the shape:
+**A CLI is reset between calls by rewinding its conversation, never with ``/clear``.** The pool
+used to clear a CLI with its local ``/clear`` and hand it to the next caller. ``/clear`` empties the
+conversation but leaves the command itself in it -- a ``<local-command-caveat>``,
+``<command-name>/clear</command-name>`` and an empty ``<local-command-stdout>`` -- and the next
+caller's model reads that as the latest thing the person did (found live, 0.56.0: replies that
+began "This is a local slash command (/clear)" and answered it, and "Nothing." for a message with
+work in it; a reused session quoted those lines back on 10 calls of 10).
+
+Now each call's message is sent with a uuid of the pool's own (:class:`LentClient`), and on return
+the CLI's ``rewind_conversation`` control request cuts the conversation at that message, so the
+next call starts on an empty one and nothing of the reset is in it. The CLI grants a rewind to the
+FIRST message only when its server-side flag ``tengu_rewind_first_message`` is on; when it refuses
+("no preceding assistant"), or the rewind fails any other way, the CLI is stopped instead and a
+fresh one -- a *spare* -- is started in the background for the next call with the same launch
+options. Nothing else resets a live CLI without a visible turn: a new input ``session_id`` keeps the
+conversation, and ``end_session`` ends the process.
+
+What can change on a live CLI and what cannot decides the key:
 
 - the **system prompt** is a launch flag and never changes, so it is part of the key;
 - the **model** changes per call with ``set_model``;
 - the **bound tools** (an in-process MCP server) change per call with the CLI's
-  ``mcp_set_servers`` control request -- ``reconnect_mcp_server`` refuses SDK servers;
-- the **conversation** is dropped with the CLI's local ``/clear``, which is not billed.
+  ``mcp_set_servers`` control request -- ``reconnect_mcp_server`` refuses SDK servers.
 
 Four things keep CLIs from piling up, because each of the others misses a case:
 
@@ -22,7 +37,7 @@ Four things keep CLIs from piling up, because each of the others misses a case:
 - the host closes the pool on a clean stop (:func:`close_claude_cli_pool`);
 - a startup sweep kills CLIs a crashed previous process left behind
   (:func:`sweep_orphaned_claude_clis`), which is the shutdown a crash skips;
-- an idle TTL and hard caps bound the live count while the process runs.
+- an idle TTL and hard caps bound the live count while the process runs -- spares included.
 
 The pool is per process. A host running N worker processes has a ceiling of N times its cap. It
 serves one event loop at a time: the loop that first checks a session out of it, for as long as
@@ -39,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import copy
 import contextvars
 import dataclasses
 import hashlib
@@ -54,10 +70,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from uuid_utils import uuid7
+
 from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
     "POOL_MARKER_ENV",
+    "LentClient",
     "TOOL_SERVER_NAME",
     "ClaudeCliPool",
     "PooledCliSession",
@@ -90,7 +109,7 @@ _PROC = Path("/proc")
 
 
 class ClaudeCliSessionError(RuntimeError):
-    """A pooled CLI session failed to start, prepare, or clear."""
+    """A pooled CLI session failed to start or prepare."""
 
 
 class ClaudeCliPoolExhausted(RuntimeError):
@@ -432,7 +451,7 @@ def _option_fields(options: Any) -> list[str]:
 
 
 def poolable(options: Any) -> bool:
-    """Whether a call with these options may run on a shared, reused CLI.
+    """Whether a call with these options may run on a pooled CLI, one started before the call.
 
     :param options: the call's launch options
     :ptype options: Any
@@ -524,27 +543,6 @@ def launch_key(options: Any, token: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _advertises_clear(server_info: dict[str, Any] | None) -> bool:
-    """Whether the connected CLI advertises the local ``clear`` command.
-
-    A CLI that does not advertise it gets single-use sessions instead: slower, never leaky.
-
-    :param server_info: the initialize handshake result
-    :ptype server_info: dict[str, Any] | None
-    :return: whether ``clear`` is available
-    :rtype: bool
-    """
-    commands = (server_info or {}).get("commands")
-    if not isinstance(commands, list) or not commands:
-        return False
-    for command in commands:
-        if isinstance(command, str) and command.lstrip("/") == "clear":
-            return True
-        if isinstance(command, dict) and str(command.get("name", "")).lstrip("/") == "clear":
-            return True
-    return False
-
-
 def _sdk_process_pid(client: Any) -> Any:
     """the CLI subprocess's pid as the SDK holds it, or ``None`` when its internals have moved.
 
@@ -600,9 +598,9 @@ class _ContextBoundServer:
     """An in-process MCP server whose tool calls run in one borrower's context.
 
     The SDK runs a tool call in a task spawned from its message-reader task, and that task was
-    created when the CLI connected -- inside whichever caller STARTED the session. On a reused
-    session every later borrower's tool calls therefore ran with the first borrower's context
-    variables: an ``interrupt()`` was captured into the first caller's list and the graph never
+    created when the CLI connected -- in whatever context STARTED the session. A pooled session is
+    started before its borrower's call (a spare, in a context of its own), and when sessions were
+    reused every later borrower's tool calls ran with the first borrower's context variables: an ``interrupt()`` was captured into the first caller's list and the graph never
     paused, tool-status events went to the first caller's callbacks, and the tool saw the first
     caller's runnable config. Found by review and reproduced.
 
@@ -645,15 +643,88 @@ def bind_tool_server_to_context(server: Any, context: contextvars.Context | None
     return _ContextBoundServer(server, context)
 
 
+class LentClient:
+    """A pooled CLI's client as one call sees it: every message the call sends carries a known uuid.
+
+    The pool rewinds the conversation to the call's first message when the call returns, and the
+    CLI finds that message by the uuid it was sent with. A string prompt is sent as the SDK sends
+    it, as one user message, with a uuid of the pool's own. Everything else is the client's.
+
+    :param client: the connected ``ClaudeSDKClient``
+    :ptype client: Any
+    """
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        #: The uuid the call's first message was sent with; ``None`` until the call sends one.
+        self.first_message_uuid: str | None = None
+
+    async def query(self, prompt: Any, session_id: str = "default") -> None:
+        """Send the call's message, recording the uuid of the first one sent.
+
+        :param prompt: a string, or the SDK's stream of message dicts
+        :ptype prompt: Any
+        :param session_id: the SDK's session identifier for the message
+        :ptype session_id: str
+        """
+        messages = (
+            [{"type": "user", "message": {"role": "user", "content": prompt}}] if isinstance(prompt, str) else None
+        )
+
+        async def tagged() -> AsyncIterator[dict[str, Any]]:
+            source: Any = messages if messages is not None else prompt
+            if isinstance(source, list):
+                for message in source:
+                    yield self._tag(message)
+            else:
+                async for message in source:
+                    yield self._tag(message)
+
+        await self.client.query(tagged(), session_id=session_id)
+
+    def _tag(self, message: dict[str, Any]) -> dict[str, Any]:
+        """``message`` with the fields the SDK adds, and a uuid when it has none.
+
+        :param message: one message dict
+        :ptype message: dict[str, Any]
+        :return: the message as sent
+        :rtype: dict[str, Any]
+        """
+        sent = {"parent_tool_use_id": None, **message}
+        if sent.get("type") == "user":
+            sent.setdefault("uuid", str(uuid7()))
+            if self.first_message_uuid is None:
+                self.first_message_uuid = str(sent["uuid"])
+        return sent
+
+    def receive_response(self) -> AsyncIterator[Any]:
+        """The client's messages up to and including the call's ``ResultMessage``.
+
+        :return: the messages
+        :rtype: AsyncIterator[Any]
+        """
+        messages: AsyncIterator[Any] = self.client.receive_response()
+        return messages
+
+    def __getattr__(self, name: str) -> Any:
+        """Anything else is the client's own.
+
+        :param name: the attribute
+        :ptype name: str
+        :return: the client's attribute
+        :rtype: Any
+        """
+        return getattr(self.client, name)
+
+
 class PooledCliSession:
     """One live CLI subprocess, lent to exactly one caller at a time."""
 
-    def __init__(self, client: Any, *, key: str, pid: int | None, marker: str, reusable: bool) -> None:
+    def __init__(self, client: Any, *, key: str, pid: int | None, marker: str) -> None:
         self.client = client
         self.key = key
         self.pid = pid
         self.marker = marker
-        self.reusable = reusable
         self.closed = False
         self._model: str | None = None
         #: The CLI's start time, so disposal never signals a recycled pid that is not this CLI.
@@ -678,7 +749,6 @@ class PooledCliSession:
         client = sdk.ClaudeSDKClient(options=options)
         try:
             await client.connect()
-            server_info = await client.get_server_info()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any start failure (including an SDK whose surface moved) must become "no pooled session", so the call falls back to its own CLI instead of failing the turn
             # NOSILENT: best-effort cleanup of a CLI that never came up; the start failure itself is
             # raised immediately below as ClaudeCliSessionError and logged by the caller.
@@ -693,10 +763,7 @@ class PooledCliSession:
             with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
                 await asyncio.shield(asyncio.wait_for(client.disconnect(), timeout=5.0))
             raise
-        reusable = _advertises_clear(server_info)
-        if not reusable:
-            _logger.warning("The Claude CLI does not advertise the clear command; its sessions will be single-use")
-        session = cls(client, key=key, pid=_discover_pid(client, marker), marker=marker, reusable=reusable)
+        session = cls(client, key=key, pid=_discover_pid(client, marker), marker=marker)
         session._model = getattr(options, "model", None)
         return session
 
@@ -745,9 +812,6 @@ class PooledCliSession:
     async def release_tools(self, *, timeout: float) -> None:
         """Drop the last borrower's tool server, so an idle session holds none of its objects.
 
-        Bounded by the same short leash as ``/clear``: it runs after a call has already finished,
-        so a hung CLI must cost that caller seconds, not the control request's default 30.
-
         :param timeout: seconds before the release is abandoned
         :ptype timeout: float
         :raises ClaudeCliSessionError: when the CLI refuses or times out; the pool disposes the session
@@ -755,35 +819,34 @@ class PooledCliSession:
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         try:
-            query = self.client._query  # noqa: SLF001
+            query = self.client._query  # noqa: SLF001 -- the SDK exposes no public server swap
             query.sdk_mcp_servers.pop(TOOL_SERVER_NAME, None)
             await query._send_control_request({"subtype": "mcp_set_servers", "servers": {}}, timeout=timeout)  # noqa: SLF001
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the session cannot be trusted idle; the pool disposes it
             raise ClaudeCliSessionError(f"could not release the Claude CLI's tools: {exc}") from exc
 
-    async def clear(self, *, timeout: float) -> None:
-        """Drop the session's conversation with the CLI's local ``/clear``.
+    async def rewind(self, first_message_uuid: str, *, timeout: float) -> None:
+        """Cut the conversation at the call's first message, leaving it empty and leaving no trace.
 
-        :param timeout: seconds before the clear is abandoned
+        :param first_message_uuid: the uuid the call's first message was sent with
+        :ptype first_message_uuid: str
+        :param timeout: seconds before the rewind is abandoned
         :ptype timeout: float
-        :raises ClaudeCliSessionError: when the clear fails; the pool disposes the session
+        :raises ClaudeCliSessionError: when the CLI refuses the rewind or fails to answer; the pool
+            stops the session rather than hand on a conversation it could not empty
         """
-        import claude_agent_sdk as sdk  # noqa: PLC0415
-
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
-        if not self.reusable:
-            raise ClaudeCliSessionError("this CLI cannot clear its context")
         try:
-            async with asyncio.timeout(timeout):
-                await self.client.query("/clear")
-                async for message in self.client.receive_response():
-                    if isinstance(message, sdk.ResultMessage):
-                        break
-        except TimeoutError as exc:
-            raise ClaudeCliSessionError(f"the Claude CLI did not clear within {timeout}s") from exc
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the SDK surfaces a CLI that died mid-clear as a bare Exception from receive_messages; every failure must dispose the session, never leak its slot
-            raise ClaudeCliSessionError(f"the Claude CLI failed to clear: {exc}") from exc
+            query = self.client._query  # noqa: SLF001 -- the SDK exposes no rewind of the conversation
+            answer = await query._send_control_request(  # noqa: SLF001
+                {"subtype": "rewind_conversation", "target_message_uuid": first_message_uuid}, timeout=timeout
+            )
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the conversation may not be empty; the pool stops the session
+            raise ClaudeCliSessionError(f"the Claude CLI failed to rewind: {exc}") from exc
+        if not isinstance(answer, dict) or answer.get("rewound") is not True:
+            reason = answer.get("error") if isinstance(answer, dict) else answer
+            raise ClaudeCliSessionError(f"the Claude CLI refused to rewind: {reason}")
 
     async def dispose(self, *, grace_seconds: float) -> None:
         """Disconnect, then make sure the process and its children are gone. Idempotent.
@@ -875,7 +938,7 @@ _STRUCTURAL_FAILURE_LIMIT = 3
 
 
 class ClaudeCliPool:
-    """Bounded pools of reusable Claude CLI sessions, one pool per launch key."""
+    """Bounded pools of started Claude CLI sessions, one pool per launch key; each serves one call."""
 
     def __init__(
         self,
@@ -884,7 +947,7 @@ class ClaudeCliPool:
         per_key: int = 2,
         idle_ttl_seconds: float = 300.0,
         checkout_timeout_seconds: float = 2.0,
-        clear_timeout_seconds: float = 5.0,
+        reset_timeout_seconds: float = 5.0,
         kill_grace_seconds: float = 2.0,
         session_factory: Callable[..., Awaitable[PooledCliSession]] | None = None,
     ) -> None:
@@ -894,7 +957,7 @@ class ClaudeCliPool:
         self._per_key = per_key
         self._idle_ttl = idle_ttl_seconds
         self._checkout_timeout = checkout_timeout_seconds
-        self._clear_timeout = clear_timeout_seconds
+        self._reset_timeout = reset_timeout_seconds
         self._kill_grace = kill_grace_seconds
         self._condition = asyncio.Condition()
         self._idle: dict[str, deque[_Idle]] = {}
@@ -903,6 +966,8 @@ class ClaudeCliPool:
         self._total = 0
         self._closing = False
         self._reaper: asyncio.Task[None] | None = None
+        #: Spares being started in the background (:meth:`_start_spare`), so a close can stop them.
+        self._spares: set[asyncio.Task[None]] = set()
         #: How a session is started. Injected by tests; a real host never passes it.
         self._start = session_factory or PooledCliSession.start
         self._structural_failures = 0
@@ -957,10 +1022,12 @@ class ClaudeCliPool:
         """Borrow a connected CLI client for one call.
 
         The caller drives ``client.query`` and reads ``client.receive_response()`` to its
-        ``ResultMessage``. A call that leaves normally is cleared and re-pooled; one that leaves by
-        any exception -- a failure, a timeout, a cancellation, a consumer that stopped reading --
-        disposes of the session, because an abandoned stream is the one way a later caller could
-        read an earlier caller's answer.
+        ``ResultMessage``. A call that leaves normally has its conversation rewound to empty and
+        its session re-pooled; when the rewind is refused the session is stopped and a spare started
+        in its place (see the module docstring). One that leaves by any exception -- a failure, a
+        timeout, a cancellation, a consumer that stopped reading -- is stopped with no spare,
+        because an abandoned stream is the one way a later caller could read an earlier caller's
+        answer, and a CLI that keeps failing must not be restarted in a loop.
 
         :param options: the launch options for a session this call could use
         :ptype options: Any
@@ -970,7 +1037,7 @@ class ClaudeCliPool:
         :ptype tool_server: Any | None
         :param call_context: the borrower's context; its tool calls run in a copy of it
         :ptype call_context: contextvars.Context | None
-        :return: the connected ``ClaudeSDKClient``
+        :return: the connected client, as a :class:`LentClient`
         :rtype: AsyncIterator[Any]
         :raises ClaudeCliPoolExhausted: when no session frees up in time, or when the caller runs
             on an open event loop other than the one this pool serves
@@ -987,6 +1054,7 @@ class ClaudeCliPool:
             await asyncio.shield(self._abandon(stranded))
         key = launch_key(options, token)
         session = await self._acquire(key, options)
+        lent = LentClient(session.client)
         clean = False
         try:
             try:
@@ -997,10 +1065,12 @@ class ClaudeCliPool:
                 self._note_prepare_failure(exc)
                 raise
             self._structural_failures = 0
-            yield session.client
+            yield lent
             clean = True
         finally:
-            await asyncio.shield(self._return(key, session, clean=clean))
+            await asyncio.shield(
+                self._return(key, session, clean=clean, options=options, first_message_uuid=lent.first_message_uuid)
+            )
 
     def _claim_loop(self) -> list[PooledCliSession]:
         """Serve the running loop if it is this pool's, claiming it when no open loop holds the pool.
@@ -1084,6 +1154,9 @@ class ClaudeCliPool:
         self._total = 0
         self._condition = asyncio.Condition()
         self._reaper = None
+        # A spare's task lived on the closed loop and ran no further than the loop did; its CLI,
+        # if it got that far, is registered in ``_all`` and stopped with the rest.
+        self._spares = set()
         if took_over:
             _logger.info(
                 "The event loop the Claude CLI pool served has closed; the pool now serves the next caller's loop",
@@ -1184,6 +1257,12 @@ class ClaudeCliPool:
             self._live.clear()
             self._total = 0
             self._condition.notify_all()
+        spares = list(self._spares)
+        for spare in spares:
+            spare.cancel()
+        # NOSILENT: each spare was cancelled one line above; a spare that had already failed logged
+        # its own failure. Neither is this close's to raise.
+        await asyncio.gather(*spares, return_exceptions=True)
         if self._reaper is not None:
             self._reaper.cancel()
             # NOSILENT: we cancelled the reaper ourselves one line above; its CancelledError is the
@@ -1320,8 +1399,10 @@ class ClaudeCliPool:
             return None
         return oldest[1], self._idle[oldest[1]].popleft().session
 
-    async def _return(self, key: str, session: PooledCliSession, *, clean: bool) -> None:
-        """Clear and re-pool a session, or dispose of it.
+    async def _return(
+        self, key: str, session: PooledCliSession, *, clean: bool, options: Any, first_message_uuid: str | None
+    ) -> None:
+        """Rewind and re-pool a session, or stop it and start a spare in its place.
 
         :param key: the launch key
         :ptype key: str
@@ -1329,15 +1410,20 @@ class ClaudeCliPool:
         :ptype session: PooledCliSession
         :param clean: whether the call finished without any exception
         :ptype clean: bool
+        :param options: the launch options the session started with, for a spare
+        :ptype options: Any
+        :param first_message_uuid: the uuid of the call's first message, ``None`` when it sent none
+        :ptype first_message_uuid: str | None
         """
-        keep = clean and session.reusable and not session.closed and not self._closing
+        keep = clean and not session.closed and not self._closing
         if keep:
             try:
-                await session.release_tools(timeout=self._clear_timeout)
-                await session.clear(timeout=self._clear_timeout)
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever a returning session raises, it must be disposed and its slot freed, and a call that already succeeded must not fail here
+                await session.release_tools(timeout=self._reset_timeout)
+                if first_message_uuid is not None:
+                    await session.rewind(first_message_uuid, timeout=self._reset_timeout)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever a returning session raises, it is stopped and its slot freed, and a call that already succeeded must not fail here
                 _logger.warning(
-                    "A pooled Claude CLI would not clear its context; disposing of it",
+                    "A pooled Claude CLI could not be reset; stopping it and starting a spare",
                     extra={"extra_data": {"key": key[:12], "error": str(exc)}},
                 )
                 keep = False
@@ -1348,6 +1434,73 @@ class ClaudeCliPool:
                     self._condition.notify()
                     return
         await self._dispose(key, session)
+        if clean and not self._closing and not self._broken:
+            self._start_spare(key, options)
+
+    def _start_spare(self, key: str, options: Any) -> None:
+        """Start a spare CLI for ``key`` in the background.
+
+        Spawned in a FRESH context, like the reaper: the call that finished is not the spare's, and
+        its request id would otherwise ride on every line the spare logs.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: launch options; copied, because a start adds its own marker to them
+        :ptype options: Any
+        """
+        task = asyncio.create_task(self._spare(key, copy.copy(options)), context=contextvars.Context())
+        self._spares.add(task)
+        task.add_done_callback(self._spares.discard)
+
+    async def _spare(self, key: str, options: Any) -> None:
+        """Start one spare and put it in the idle set, when the caps have room and none is waiting.
+
+        One spare per key is enough to take the next call off the start; more would hold slots other
+        keys may need. A spare that cannot start is logged and dropped -- the next call starts its
+        own CLI as it would have anyway. A close while it starts disposes of it.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: launch options for the spare
+        :ptype options: Any
+        """
+        async with self._condition:
+            if (
+                self._closing
+                or self._idle.get(key)
+                or self._total >= self._max_sessions
+                or self._live.get(key, 0) >= self._per_key
+            ):
+                return
+            self._live[key] = self._live.get(key, 0) + 1
+            self._total += 1
+        session: PooledCliSession | None = None
+        try:
+            session = await self._start(options, key=key)
+        except ClaudeCliSessionError as exc:
+            _logger.warning(
+                "Could not start a spare Claude CLI; the next call starts its own",
+                extra={"extra_data": {"key": key[:12], "error": str(exc)}},
+            )
+        finally:
+            if session is None:
+                await asyncio.shield(self._forget(key))
+        if session is None:
+            return
+        async with self._condition:
+            parked = not self._closing
+            self._all.add(session)
+            if parked:
+                self._idle.setdefault(key, deque()).append(_Idle(session, time.monotonic()))
+                self._condition.notify()
+        if not parked:
+            await self._dispose(key, session)
+            return
+        self._ensure_reaper()
+        _logger.info(
+            "Started a spare Claude CLI",
+            extra={"extra_data": {"key": key[:12], "pid": session.pid, "live": self._total, "cap": self._max_sessions}},
+        )
 
     async def _forget(self, key: str, session: PooledCliSession | None = None) -> None:
         """Release a slot and wake anyone waiting for one.

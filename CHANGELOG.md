@@ -4,7 +4,39 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.55.1 -- 2026-09-27
+## v0.56.0 -- 2026-09-27
+
+### A pooled Claude CLI is reset by rewinding its conversation, never with `/clear`
+
+The Claude CLI pool reset a CLI between callers with the CLI's local `/clear`. `/clear` empties
+the conversation but leaves the command itself in it: a `<local-command-caveat>`,
+`<command-name>/clear</command-name>` and an empty `<local-command-stdout>`. The next caller's
+model read that as the person's latest input. In a metallm replay of 35 samples
+(`claude-sonnet-5`), two replies began "This is a local slash command (/clear)…" and answered it
+instead of the real message, and several returned "Nothing." for a message with work in it.
+Reproduced with a subscription token, bundled CLI 2.1.207: a reused session asked to quote its
+whole input quoted those lines back on 10 calls of 10. The first call's own words never leaked;
+the reset's did.
+
+**Fixed:** a pooled call's messages go out through `LentClient`, which gives each a uuid, and on
+return the pool sends the CLI's `rewind_conversation` control request to cut the conversation at
+the call's first message. The next call then starts on an empty conversation, with nothing of
+the reset in it: 0 of 10 reused calls showed a trace, and one CLI served all 20 calls. The CLI
+grants that rewind only while its server-side flag `tengu_rewind_first_message` is on. When it
+refuses ("no preceding assistant"), or the rewind fails any other way, the CLI is stopped rather
+than handed on, and a **spare** -- a fresh CLI with the same launch options -- is started in the
+background and parked idle, one per launch key, so the next call does not pay the start. A call
+that fails starts no spare. Nothing else resets a live CLI without a visible turn: a new input
+`session_id` keeps the conversation (measured), and `end_session` ends the process.
+
+- **Changed:** `ClaudeCliPool(clear_timeout_seconds=)` is now `reset_timeout_seconds=` (it bounds
+  the tool release and the rewind); passing the old name raises `TypeError`.
+  `PooledCliSession.clear` is replaced by `PooledCliSession.rewind`, and the constructor no longer
+  takes `reusable`. `ClaudeCliPool.checkout` yields a `LentClient` wrapping the SDK client.
+- **New:** `threetears.models.claude_cli_pool.LentClient`.
+- The live Claude CLI batch (`./scripts/test-live-claude-cli.sh`) gains a test that reuses one
+  pooled CLI three times and fails if the second call's quoted input holds `/clear` or the first
+  call's words. It fails on the code before this fix and passes after.
 
 ### A structured subscription call gets the turns its schema retries need
 

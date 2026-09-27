@@ -777,8 +777,8 @@ def _subscription_model_cls() -> type:
             """
             pool = claude_cli_pool() if pooled else None
             # The borrower's context, captured now -- inside its own run, with its interrupt list,
-            # tool-result list, callbacks and runnable config set. Tool calls on a reused CLI run in
-            # a copy of it; without that they ran in whichever caller first started the CLI.
+            # tool-result list, callbacks and runnable config set. Tool calls on a pooled CLI run in
+            # a copy of it; without that they ran in whatever context started the CLI.
             call_context = contextvars.copy_context()
             async with AsyncExitStack() as stack:
                 client: Any = None

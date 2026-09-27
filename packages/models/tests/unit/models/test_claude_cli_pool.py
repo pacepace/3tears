@@ -2,19 +2,23 @@
 
 A subscription credential is spent by driving the Claude Code CLI, and the package that does it
 starts a fresh subprocess per call. These are the contracts that make reusing one safe: a session
-serves one caller at a time, carries that caller's tools and no one else's, is cleared between
-callers, is thrown away rather than re-pooled the moment its stream is abandoned, and never
-outlives the process that started it.
+serves one caller at a time, carries that caller's tools and no one else's, is rewound to an empty
+conversation between callers -- never cleared with ``/clear``, which leaves itself in the next
+caller's input -- is stopped (and a spare started) when that rewind is refused, is thrown away
+rather than re-pooled the moment its stream is abandoned, and never outlives the process that
+started it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import os
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,6 +60,22 @@ class Options:
     env: dict[str, str] = field(default_factory=dict)
 
 
+# parity-exempt: records the message dicts a LentClient sends; the real client writes them to a CLI's stdin
+class _FakeClient:
+    """Stands in for a connected ``ClaudeSDKClient``: records every message a call sends."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    async def query(self, prompt: Any, session_id: str = "default") -> None:
+        async for message in prompt:
+            self.sent.append({"session_id": session_id, **message})
+
+    async def receive_response(self) -> Any:
+        for message in ():
+            yield message
+
+
 # parity-with: threetears.models.claude_cli_pool.PooledCliSession
 class FakeSession:
     """A session that records what the pool did to it, and never spawns."""
@@ -65,23 +85,24 @@ class FakeSession:
     def __init__(self, options: Any, key: str) -> None:
         self.options = options
         self.key = key
-        self.client = object()
+        self.client = _FakeClient()
         self.pid: int | None = 4242
-        self.reusable = True
         self.closed = False
         self.prepared: list[tuple[str | None, Any]] = []
-        self.clears = 0
+        self.rewinds: list[str] = []
         self.disposals = 0
         self.abandons = 0
         self.abandon_raises: BaseException | None = None
         self.alive = True
-        self.fail_clear = False
+        self.refuse_rewind = False
         self.fail_prepare = False
-        self.clear_raises: BaseException | None = None
+        self.rewind_raises: BaseException | None = None
         self.dispose_delay = 0.0
         self.released = 0
         self.start_ticks: int | None = None
         self.contexts: list[Any] = []
+        #: The loop the session was started on, so a test can tell which loop started it.
+        self.loop = asyncio.get_running_loop()
         FakeSession.instances.append(self)
 
     @classmethod
@@ -103,15 +124,16 @@ class FakeSession:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         self.released += 1
 
-    async def clear(self, *, timeout: float) -> None:
+    async def rewind(self, first_message_uuid: str, *, timeout: float) -> None:
         del timeout
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
-        if self.clear_raises is not None:
-            raise self.clear_raises
-        if self.fail_clear:
-            raise ClaudeCliSessionError("the CLI would not clear")
-        self.clears += 1
+        if self.rewind_raises is not None:
+            raise self.rewind_raises
+        if self.refuse_rewind:
+            # What the CLI answers when its first-message rewind flag is off.
+            raise ClaudeCliSessionError("the Claude CLI refused to rewind: no preceding assistant")
+        self.rewinds.append(first_message_uuid)
 
     async def dispose(self, *, grace_seconds: float) -> None:
         del grace_seconds
@@ -152,6 +174,35 @@ def _pool(**kwargs: Any) -> ClaudeCliPool:
     return ClaudeCliPool(**settings)
 
 
+async def _spares_started(pool: ClaudeCliPool) -> None:
+    """wait for every spare the pool is starting in the background.
+
+    :param pool: the pool
+    :ptype pool: ClaudeCliPool
+    """
+    await asyncio.gather(*list(pool._spares))  # noqa: SLF001 -- a spare starts in a background task the test must let finish
+
+
+async def _call(pool: ClaudeCliPool, options: Any = None, **checkout: Any) -> FakeSession:
+    """one call that sends a message, as the chat model does; the session it ran on.
+
+    :param pool: the pool
+    :ptype pool: ClaudeCliPool
+    :param options: the launch options, default ones when ``None``
+    :ptype options: Any
+    :param checkout: ``checkout`` keyword arguments; ``token`` and ``tool_server`` default
+    :ptype checkout: Any
+    :return: the session the call ran on
+    :rtype: FakeSession
+    """
+    checkout.setdefault("token", TOKEN)
+    checkout.setdefault("tool_server", None)
+    async with pool.checkout(options or Options(), **checkout) as client:
+        await client.query("hello")
+        [session] = [s for s in FakeSession.instances if s.client is client.client]
+    return session
+
+
 class TestTheCliIsReused:
     async def test_a_second_call_gets_the_same_cli(self) -> None:
         pool = _pool()
@@ -159,15 +210,33 @@ class TestTheCliIsReused:
             pass
         async with pool.checkout(Options(), token=TOKEN, tool_server=None) as second:
             pass
-        assert first is second, "the pool started a second CLI for an identical launch"
+        assert first.client is second.client, "the pool started a second CLI for an identical launch"
         assert len(FakeSession.instances) == 1
         await pool.aclose()
 
-    async def test_the_session_is_cleared_between_callers(self) -> None:
+    async def test_the_conversation_is_rewound_to_the_calls_own_first_message(self) -> None:
+        pool = _pool()
+        session = await _call(pool)
+        [sent] = session.client.sent
+        assert sent["type"] == "user" and sent["message"] == {"role": "user", "content": "hello"}
+        assert session.rewinds == [sent["uuid"]], "the conversation was not cut at the call's own message"
+        await pool.aclose()
+
+    async def test_a_session_is_never_reset_with_the_clear_command(self) -> None:
+        """Found live: ``/clear`` leaves ``<command-name>/clear</command-name>`` in the next caller's
+        input, and the model answered it instead of the person."""
+        pool = _pool()
+        session = await _call(pool)
+        await _call(pool)
+        assert all("/clear" not in json.dumps(message) for message in session.client.sent)
+        await pool.aclose()
+
+    async def test_a_call_that_sent_nothing_is_re_pooled_without_a_rewind(self) -> None:
         pool = _pool()
         async with pool.checkout(Options(), token=TOKEN, tool_server=None):
             pass
-        assert FakeSession.instances[0].clears == 1, "one caller's conversation would reach the next"
+        assert FakeSession.instances[0].rewinds == []
+        assert FakeSession.instances[0].disposals == 0
         await pool.aclose()
 
     async def test_a_different_model_reuses_the_cli_and_switches_it(self) -> None:
@@ -242,7 +311,7 @@ class TestResponsesCannotCross:
         pool = _pool(per_key=2)
         async with pool.checkout(Options(), token=TOKEN, tool_server=None) as first:
             async with pool.checkout(Options(), token=TOKEN, tool_server=None) as second:
-                assert first is not second
+                assert first.client is not second.client
         await pool.aclose()
 
     async def test_a_call_that_raises_disposes_the_session(self) -> None:
@@ -251,7 +320,7 @@ class TestResponsesCannotCross:
             async with pool.checkout(Options(), token=TOKEN, tool_server=None):
                 raise RuntimeError("the stream broke mid-answer")
         assert FakeSession.instances[0].disposals == 1
-        assert FakeSession.instances[0].clears == 0
+        assert FakeSession.instances[0].released == 0
         assert pool.live_count == 0
         await pool.aclose()
 
@@ -273,20 +342,133 @@ class TestResponsesCannotCross:
         assert pool.live_count == 0
         await pool.aclose()
 
-    async def test_a_session_that_will_not_clear_is_disposed(self) -> None:
-        pool = _pool()
-        async with pool.checkout(Options(), token=TOKEN, tool_server=None):
-            FakeSession.instances[0].fail_clear = True
-        assert FakeSession.instances[0].disposals == 1
-        assert pool.live_count == 0
+
+class TestARefusedRewindStartsASpare:
+    """The CLI grants a rewind to the first message only while its server-side flag is on. When it
+    refuses, the session is stopped -- never handed on with a conversation in it -- and a spare is
+    started in the background so the next call does not pay the start."""
+
+    async def test_a_refused_rewind_stops_the_session_and_a_spare_takes_the_next_call(self) -> None:
+        pool = _pool(session_factory=_refusing_factory())
+        first = await _call(pool)
+        await _spares_started(pool)
+        assert first.disposals == 1, "a session whose rewind was refused was kept"
+        assert len(FakeSession.instances) == 2, "no spare was started"
+        spare = FakeSession.instances[1]
+        assert spare.prepared == [], "a spare is started, never prepared, until a call takes it"
+        second = await _call(pool)
+        assert second is spare, "the next call started its own CLI while a spare waited"
         await pool.aclose()
 
-    async def test_a_session_that_cannot_clear_is_single_use(self) -> None:
-        pool = _pool()
-        async with pool.checkout(Options(), token=TOKEN, tool_server=None):
-            FakeSession.instances[0].reusable = False
+    async def test_a_rewind_that_raises_anything_stops_the_session_and_the_call_still_succeeds(self) -> None:
+        """The SDK surfaces a CLI that died mid-request as a bare ``Exception``."""
+        pool = _pool(per_key=1)
+        async with pool.checkout(Options(), token=TOKEN, tool_server=None) as client:
+            await client.query("hello")
+            FakeSession.instances[0].rewind_raises = Exception("the CLI exited during the rewind")
+        await _spares_started(pool)
         assert FakeSession.instances[0].disposals == 1
+        assert pool.live_count == 1, "the slot leaked, or no spare took it"
+        await _call(pool)
         await pool.aclose()
+
+    async def test_a_spare_starts_with_a_copy_of_the_calls_launch_options(self) -> None:
+        pool = _pool(session_factory=_refusing_factory())
+        options = Options(system_prompt="persona")
+        await _call(pool, options)
+        await _spares_started(pool)
+        spare = FakeSession.instances[1]
+        assert spare.options is not options, "a start adds its own marker; the call's options would carry it"
+        assert spare.options == options
+        await pool.aclose()
+
+    async def test_a_call_that_fails_starts_no_spare(self) -> None:
+        pool = _pool()
+        with pytest.raises(RuntimeError):
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                raise RuntimeError("the stream broke mid-answer")
+        await _spares_started(pool)
+        assert len(FakeSession.instances) == 1, "a failing CLI would be restarted after every failure"
+        await pool.aclose()
+
+    async def test_one_spare_waits_per_key(self) -> None:
+        pool = _pool(per_key=2, session_factory=_refusing_factory())
+        for _ in range(3):
+            await _call(pool)
+            await _spares_started(pool)
+        assert pool.live_count == 1, "spares piled up for one key"
+        await pool.aclose()
+
+    async def test_a_spare_that_will_not_start_is_dropped_and_frees_its_slot(self) -> None:
+        starts = 0
+
+        async def second_start_fails(options: Any, *, key: str) -> Any:
+            nonlocal starts
+            starts += 1
+            if starts > 1:
+                raise ClaudeCliSessionError("could not start a Claude CLI")
+            session = FakeSession(options, key)
+            session.refuse_rewind = True
+            return session
+
+        pool = _pool(per_key=1, session_factory=second_start_fails)
+        await _call(pool)
+        await _spares_started(pool)
+        assert pool.live_count == 0, "a spare that never started kept its slot"
+        await pool.aclose()
+
+    async def test_a_spare_does_not_inherit_the_call_that_finished(self) -> None:
+        probe: contextvars.ContextVar[str] = contextvars.ContextVar("spare_probe", default="none")
+        seen: list[str] = []
+
+        async def factory(options: Any, *, key: str) -> Any:
+            seen.append(probe.get())
+            session = FakeSession(options, key)
+            session.refuse_rewind = True
+            return session
+
+        pool = _pool(session_factory=factory)
+        probe.set("the-finished-request")
+        await _call(pool)
+        await _spares_started(pool)
+        assert seen == ["the-finished-request", "none"], "the spare carries a request that ended"
+        await pool.aclose()
+
+    async def test_closing_the_pool_stops_a_spare_that_is_still_starting(self) -> None:
+        starting = asyncio.Event()
+        starts = 0
+
+        async def slow_second_start(options: Any, *, key: str) -> Any:
+            nonlocal starts
+            starts += 1
+            if starts > 1:
+                starting.set()
+                await asyncio.sleep(3600)
+            session = FakeSession(options, key)
+            session.refuse_rewind = True
+            return session
+
+        pool = _pool(session_factory=slow_second_start)
+        await _call(pool)
+        await starting.wait()
+        await pool.aclose()
+        assert pool.live_count == 0
+        assert len(FakeSession.instances) == 1, "a spare finished starting after the pool closed"
+
+
+def _refusing_factory() -> Callable[..., Any]:
+    """a session factory whose CLIs refuse every rewind, as a CLI with the flag off does.
+
+    :return: the factory
+    :rtype: Callable[..., Any]
+    """
+
+    async def factory(options: Any, *, key: str) -> Any:
+        session = FakeSession(options, key)
+        session.refuse_rewind = True
+        return session
+
+    return factory
 
 
 class TestTheCapsHold:
@@ -547,18 +729,6 @@ class TestIdleCapacityIsNotHoarded:
 
 
 class TestFailuresTheReviewFound:
-    async def test_a_bare_exception_during_clear_frees_the_slot_and_the_call_still_succeeds(self) -> None:
-        """The SDK surfaces a CLI that died mid-clear as a bare ``Exception``. It escaped ``_return``:
-        the slot was never freed and a call that had succeeded raised out of its cleanup."""
-        pool = _pool(per_key=1)
-        async with pool.checkout(Options(), token=TOKEN, tool_server=None):
-            FakeSession.instances[0].clear_raises = Exception("the CLI exited during /clear")
-        assert FakeSession.instances[0].disposals == 1
-        assert pool.live_count == 0, "the slot leaked, and every later call would find the pool busy"
-        async with pool.checkout(Options(), token=TOKEN, tool_server=None):
-            pass
-        await pool.aclose()
-
     async def test_a_stop_during_an_eviction_does_not_strand_the_victims_slot(self) -> None:
         pool = _pool(max_sessions=1, per_key=1, checkout_timeout_seconds=5.0)
         async with pool.checkout(Options(system_prompt="router"), token=TOKEN, tool_server=None):
@@ -789,9 +959,9 @@ class TestAToolCallThroughTheSdksOwnDispatch:
 
 
 class TestReturningASessionIsBounded:
-    async def test_the_tool_release_on_return_uses_the_short_clear_timeout(self) -> None:
+    async def test_the_tool_release_on_return_uses_the_short_reset_timeout(self) -> None:
         seen: list[float] = []
-        pool = _pool(clear_timeout_seconds=1.5)
+        pool = _pool(reset_timeout_seconds=1.5)
         async with pool.checkout(Options(), token=TOKEN, tool_server=None):
             session = FakeSession.instances[0]
 
@@ -951,7 +1121,7 @@ class TestAPoolServesOneEventLoop:
         )
         served = FakeSession.instances[1]
         assert served.prepared, "the new loop's call must be served by the pool, not refused"
-        assert served.clears == 1 and not served.closed, "the new loop's session must go back into the pool"
+        assert served.released == 1 and not served.closed, "the new loop's session must go back into the pool"
         assert pool.live_count == 1, "the closed loop's session must not hold a slot"
 
     def test_loops_racing_to_take_over_a_closed_loops_pool_get_exactly_one_winner(self) -> None:
@@ -1025,7 +1195,7 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
                 "a refused close must not touch the open loop's sessions"
             )
             owner.run_until_complete(use_once())
-            assert len(FakeSession.instances) == 1 and session.clears == 2, "the pool must still serve its loop"
+            assert len(FakeSession.instances) == 1 and session.released == 2, "the pool must still serve its loop"
 
             owner.run_until_complete(pool.aclose())
             assert session.disposals == 1
@@ -1070,7 +1240,7 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
         try:
             time.sleep(0.2)  # a start time is in clock ticks; the CLI below must start ticks later
             cli = subprocess.Popen(["sleep", "60"])
-            session = PooledCliSession(object(), key="k", pid=cli.pid, marker="m", reusable=True)
+            session = PooledCliSession(object(), key="k", pid=cli.pid, marker="m")
             assert session.start_ticks is not None
             assert session.still_ours(), "the CLI it started must be recognised while it runs"
             assert session.start_ticks != claude_cli_pool._process_start_ticks(bystander.pid)  # noqa: SLF001
@@ -1130,7 +1300,7 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
             asyncio.run(use_once())
 
         assert (other.abandons, other.alive) == (1, False), "one CLI's failure must not spare the others"
-        assert FakeSession.instances[2].clears == 1, "the call that found the stranded CLIs must still be served"
+        assert FakeSession.instances[2].released == 1, "the call that found the stranded CLIs must still be served"
         known = pool.known_pids()
         assert 5001 in known, "a CLI whose stop did not complete must stay visible to the exit backstop"
         assert 5002 not in known
@@ -1154,7 +1324,7 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
 
         cli = subprocess.Popen(["sleep", "60"])
         try:
-            session = PooledCliSession(ClientOnAClosedLoop(), key="k", pid=cli.pid, marker="m", reusable=True)
+            session = PooledCliSession(ClientOnAClosedLoop(), key="k", pid=cli.pid, marker="m")
 
             await session.abandon(grace_seconds=0.5)
             await session.abandon(grace_seconds=0.5)
@@ -1166,3 +1336,40 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
             if cli.poll() is None:
                 cli.kill()
                 cli.wait(timeout=5)
+
+
+class TestTheRewindRequest:
+    """The control request and the two answers the bundled CLI (2.1.207) was measured to give."""
+
+    @staticmethod
+    def _session(answer: Any) -> tuple[PooledCliSession, list[dict[str, Any]]]:
+        from types import SimpleNamespace
+
+        sent: list[dict[str, Any]] = []
+
+        async def send(request: dict[str, Any], timeout: float) -> Any:
+            del timeout
+            sent.append(request)
+            return answer
+
+        client = SimpleNamespace(_query=SimpleNamespace(_send_control_request=send))
+        return PooledCliSession(client, key="k", pid=None, marker="m"), sent
+
+    async def test_a_granted_rewind_cuts_at_the_calls_first_message(self) -> None:
+        session, sent = self._session(
+            {"rewound": True, "targetMessageUuid": "u-1", "prefillText": "hello", "precedingAssistantUuid": None}
+        )
+        await session.rewind("u-1", timeout=1.0)
+        assert sent == [{"subtype": "rewind_conversation", "target_message_uuid": "u-1"}]
+
+    async def test_a_refused_rewind_raises_with_the_clis_reason(self) -> None:
+        session, _ = self._session(
+            {"rewound": False, "prefillText": None, "precedingAssistantUuid": None, "error": "no preceding assistant"}
+        )
+        with pytest.raises(ClaudeCliSessionError, match="no preceding assistant"):
+            await session.rewind("u-1", timeout=1.0)
+
+    async def test_an_answer_that_is_not_a_grant_raises(self) -> None:
+        session, _ = self._session(None)
+        with pytest.raises(ClaudeCliSessionError, match="refused to rewind"):
+            await session.rewind("u-1", timeout=1.0)

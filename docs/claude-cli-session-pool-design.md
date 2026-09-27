@@ -7,8 +7,8 @@ deployment: ~2.4 s to start plus ~2.7 s per call, against ~600 ms for the same m
 HTTP API, and a routing decision stretched to 4–19 s under load. Every conversation turn pays
 it too.
 
-This package pools the CLI: one subprocess per launch configuration, reused and cleared
-between calls. Everything below was verified against the bundled CLI (claude-agent-sdk 0.2.116 and
+This package pools the CLI: one subprocess per launch configuration, reused, and rewound to an
+empty conversation between calls. Everything below was verified against the bundled CLI (claude-agent-sdk 0.2.116 and
 0.2.118), not inferred from documentation. The extra bounds the SDK below 0.3 for that reason.
 
 ## What is fixed when a CLI starts, and what can change per call
@@ -19,7 +19,7 @@ between calls. Everything below was verified against the bundled CLI (claude-age
 | model | `set_model` control request | yes | SDK method |
 | bound tools (in-process MCP server) | `mcp_set_servers` control request | **yes** | swapped a live session's server in 3 ms; the model called the new tool |
 | `max_turns` | `--max-turns` launch flag | per *query* | three queries at cap 2, each used 2 turns, none errored; the model forces 1 (below) |
-| conversation | `/clear` between calls | yes | planted a codeword, cleared, asked: "NONE" |
+| conversation | `rewind_conversation` control request to the call's first message | yes | planted a codeword, rewound, asked the model to quote its whole input: only the CLI's own `currentDate` reminder, 10 calls of 10 |
 | `reconnect_mcp_server` | control request | — | **refused** for SDK servers ("SDK servers should be handled in print.ts") |
 
 ## The system prompt: stable part launches, variable part travels
@@ -95,14 +95,26 @@ A CLI launched with no configuration of its own reads the host's. Measured:
 `claude_cli_isolation(token)` supplies an empty `CLAUDE_CONFIG_DIR` per credential, an empty
 `cwd`, `ENABLE_CLAUDEAI_MCP_SERVERS=false`, `--strict-mcp-config` and
 `--no-session-persistence` (without which the CLI writes a transcript of every exchange to
-disk). `/clear` re-fires SessionStart hooks, which is one more reason a pooled session must be
-isolated.
+disk).
 
 ## Lifecycle
 
 - **Checkout** is exclusive. A call is complete only when its `ResultMessage` has been read.
-- **Return:** `/clear` (a local CLI command — no model round trip, not billed), then back to the
-  idle set. A clear that fails or times out disposes the session instead.
+- **Return:** the tool server is released, and the conversation is rewound to the call's first
+  message: the call's messages go out through `LentClient`, which gives each a uuid, and the
+  `rewind_conversation` control request cuts the conversation at that uuid. Then back to the idle
+  set. The CLI grants a rewind to the FIRST message only while its server-side flag
+  `tengu_rewind_first_message` is on (measured on: 2026-09-27, bundled CLI 2.1.207, subscription
+  credential, isolated configuration); otherwise it answers `rewound: false`, "no preceding
+  assistant". A refused, failed or timed-out rewind stops the session and starts a **spare** --
+  a fresh CLI with the same launch options, started in the background and parked idle, one per key
+  -- so the next call does not pay the start.
+- **Never `/clear`.** It empties the conversation but leaves itself in it: a
+  `<local-command-caveat>`, `<command-name>/clear</command-name>` and an empty
+  `<local-command-stdout>`, which the next caller's model read as the person's latest input and
+  answered (found live in 0.56.0; the reused session quoted those lines back on 10 calls of 10).
+  Nothing else resets a live CLI without a visible turn: a new input `session_id` keeps the
+  conversation (measured), and `end_session` ends the process.
 - **Dispose, never re-pool,** on any error, timeout or cancellation mid-call: an abandoned
   stream is the one way a later borrower could read an earlier caller's answer.
 - **Exhaustion:** past the per-key or process-wide cap, a call waits briefly for a session,

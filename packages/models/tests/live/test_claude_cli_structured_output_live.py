@@ -201,3 +201,36 @@ async def test_a_batch_of_structured_calls_on_the_real_cli_all_answer_in_their_s
     failures = [outcome for outcome in outcomes if outcome is not None]
     assert len(outcomes) == 20, "the batch ran every call"
     assert failures == [], f"{len(failures)} of {len(outcomes)} structured calls failed:\n" + "\n".join(failures)
+
+
+#: Asks the model for everything ahead of the request in its input, so any leftover of an earlier call
+#: or of the pool's reset is quoted back.
+_QUOTE_YOUR_INPUT = (
+    "Quote, verbatim and in order, every message, reminder, tag and line of text that appears in "
+    "your input before this sentence -- everything you were given in this conversation other than "
+    "your system prompt. Put it between <q> and </q>. Paraphrase nothing. If nothing appears "
+    "before this sentence, answer exactly <q></q>."
+)
+
+
+async def test_a_reused_pooled_cli_shows_the_next_call_nothing_of_the_last() -> None:
+    """Found live (0.56.0): the pool reset a CLI with ``/clear``, which left itself in the conversation,
+    and the next caller's model answered "This is a local slash command (/clear)". Two calls in a row
+    reuse one pooled CLI; the second quotes its whole input, which must hold neither the reset nor
+    the first call's words.
+    """
+    if not _TOKEN:
+        pytest.fail("THREETEARS_LIVE_CLAUDE_CLI=1 but CLAUDE_CODE_OAUTH_TOKEN is not set")
+    from threetears.models.factory import create_chat_model  # noqa: PLC0415
+
+    system = SystemMessage(content="You are a careful assistant. You follow instructions exactly.")
+    leaks: list[str] = []
+    for round_number in range(3):
+        word = f"PELICAN{round_number}QX"
+        model = create_chat_model(_MODEL, api_key=_TOKEN, provider="anthropic", tools=[])
+        await model.ainvoke([system, HumanMessage(content=f"Remember this code word: {word}. Reply only OK.")])
+        quoted = str((await model.ainvoke([system, HumanMessage(content=_QUOTE_YOUR_INPUT)])).content)
+        for trace in ("/clear", "command-name", "local-command", "Caveat", "PELICAN", "code word"):
+            if trace.lower() in quoted.lower():
+                leaks.append(f"round {round_number}: {trace!r} in {quoted!r}")
+    assert leaks == [], "a reused CLI showed the next call the last call or its reset:\n" + "\n".join(leaks)

@@ -835,6 +835,7 @@ dependencies = [
     { name = "langchain-openai" },
     { name = "langchain-openrouter" },
     { name = "pydantic" },
+    { name = "uuid-utils" },
 ]
 
 [package.optional-dependencies]
@@ -875,6 +876,7 @@ requires-dist = [
     { name = "langchain-voyageai", marker = "extra == 'voyageai'", specifier = ">=0.3" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "uuid-utils" },
 ]
 provides-extras = ["claude-cli", "voyageai", "whisper", "image", "prometheus"]
 
