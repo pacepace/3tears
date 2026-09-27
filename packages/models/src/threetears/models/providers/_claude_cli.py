@@ -172,6 +172,7 @@ from __future__ import annotations
 
 import contextvars
 import dataclasses
+import hashlib
 import html
 import json
 import re
@@ -887,13 +888,18 @@ def _subscription_model_cls() -> type:
                         attempts.answered(msg)
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
-                        if (failure := _result_failure(msg, tool_calls, "\n".join(all_text), attempts)) is not None:
+                        unwrapped = _unwrapped_answer(msg, options.output_format, attempts)
+                        if (
+                            unwrapped is None
+                            and (failure := _result_failure(msg, tool_calls, "\n".join(all_text), attempts)) is not None
+                        ):
                             raise failure
-                        generation_info = _generation_info(msg, tool_calls)
-                        if options.output_format is not None and msg.structured_output is not None:
+                        generation_info = _generation_info(msg, tool_calls, unwrapped=unwrapped is not None)
+                        answer = msg.structured_output if msg.structured_output is not None else unwrapped
+                        if options.output_format is not None and answer is not None:
                             # The answer is the structured one. The model's prose before it is
                             # not: asked for a shape, Haiku still wrote a paragraph first.
-                            return json.dumps(msg.structured_output), tool_calls, generation_info
+                            return json.dumps(answer), tool_calls, generation_info
             return "\n".join(all_text), tool_calls, generation_info
 
         def _create_ai_message(
@@ -1015,17 +1021,18 @@ def _subscription_model_cls() -> type:
 
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
-                        if (failure := _result_failure(msg, tool_calls, "\n".join(produced), attempts)) is not None:
+                        unwrapped = _unwrapped_answer(msg, options.output_format, attempts)
+                        if (
+                            unwrapped is None
+                            and (failure := _result_failure(msg, tool_calls, "\n".join(produced), attempts)) is not None
+                        ):
                             raise failure
-                        generation_info = _generation_info(msg, tool_calls)
+                        generation_info = _generation_info(msg, tool_calls, unwrapped=unwrapped is not None)
                         usage = _usage_metadata(msg.usage)
+                        answer = msg.structured_output if msg.structured_output is not None else unwrapped
                         content = ""
                         if structured:
-                            content = (
-                                json.dumps(msg.structured_output)
-                                if msg.structured_output is not None
-                                else "\n".join(held)
-                            )
+                            content = json.dumps(answer) if answer is not None else "\n".join(held)
                             if content and run_manager:
                                 await run_manager.on_llm_new_token(content)
                         yield ChatGenerationChunk(
@@ -1080,6 +1087,8 @@ class _StructuredAttempts:
         self._inputs: dict[str, dict[str, Any]] = {}
         self.rejected_output: dict[str, Any] | None = None
         self.rejection: str | None = None
+        #: Every attempt the CLI rejected, oldest first.
+        self.rejected: list[dict[str, Any]] = []
 
     def saw(self, blocks: list[Any]) -> None:
         """Note every ``StructuredOutput`` call among an assistant message's blocks.
@@ -1107,6 +1116,81 @@ class _StructuredAttempts:
             if isinstance(block, ToolResultBlock) and block.is_error and block.tool_use_id in self._inputs:
                 self.rejected_output = self._inputs[block.tool_use_id]
                 self.rejection = _content_text(block.content) or None
+                self.rejected.append(self.rejected_output)
+
+
+#: The one placeholder parameter the model was measured to wrap a whole structured answer in.
+_PLACEHOLDER_PARAMETER = "$PARAMETER_VALUE"
+
+
+def _placeholder_answer(attempt: dict[str, Any], schema: dict[str, Any]) -> Any | None:
+    """The answer inside a placeholder-wrapped attempt, when it is one and it matches the schema.
+
+    Only exactly ``{"$PARAMETER_VALUE": "<JSON text>"}`` qualifies, and only when that text parses
+    and the parsed value validates against the schema the call asked for. Anything else is ``None``.
+
+    :param attempt: a ``StructuredOutput`` input the CLI rejected
+    :ptype attempt: dict[str, Any]
+    :param schema: the JSON schema the call asked for
+    :ptype schema: dict[str, Any]
+    :return: the parsed answer, or ``None``
+    :rtype: Any | None
+    """
+    from jsonschema import Draft202012Validator  # noqa: PLC0415
+
+    wrapped = attempt.get(_PLACEHOLDER_PARAMETER)
+    if set(attempt) != {_PLACEHOLDER_PARAMETER} or not isinstance(wrapped, str):
+        return None
+    try:
+        answer = json.loads(wrapped)
+    except json.JSONDecodeError:
+        return None
+    return answer if Draft202012Validator(schema).is_valid(answer) else None
+
+
+def _unwrapped_answer(result: Any, output_format: Any, attempts: _StructuredAttempts) -> Any | None:
+    """A failed structured call's answer, recovered from an attempt the model wrapped in a placeholder.
+
+    Found live (0.56.0, ``claude-sonnet-5``): about one structured call in forty spent all five
+    attempts sending the whole answer, correct, as a JSON string under a placeholder parameter --
+    ``{"$PARAMETER_VALUE": "<the answer>"}`` -- which the CLI rejects every time. When the call
+    failed with no structured answer, the most recent rejected attempt of exactly that shape whose
+    JSON validates against the call's own schema is the answer. It is logged, once, at WARNING and
+    marked on the result's metadata (``structured_output_unwrapped``).
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param output_format: the call's ``output_format``, ``None`` for a call with no schema
+    :ptype output_format: Any
+    :param attempts: the call's ``StructuredOutput`` attempts
+    :ptype attempts: _StructuredAttempts
+    :return: the recovered answer, or ``None``
+    :rtype: Any | None
+    """
+    schema = output_format.get("schema") if isinstance(output_format, dict) else None
+    if not isinstance(schema, dict) or result.structured_output is not None or not result.is_error:
+        return None
+    answer = next(
+        (
+            found
+            for attempt in reversed(attempts.rejected)
+            if (found := _placeholder_answer(attempt, schema)) is not None
+        ),
+        None,
+    )
+    if answer is not None:
+        _logger.warning(
+            "A structured answer the model wrapped in a placeholder parameter was unwrapped",
+            extra={
+                "extra_data": {
+                    "schema": schema.get("title")
+                    or hashlib.sha256(json.dumps(schema, sort_keys=True).encode("utf-8")).hexdigest()[:12],
+                    "reason": result.subtype,
+                    "rejected_attempts": len(attempts.rejected),
+                }
+            },
+        )
+    return answer
 
 
 def _cli_failure(
@@ -1216,7 +1300,7 @@ def _result_failure(
     return _cli_failure(said, reason=reason, status=result.api_error_status, attempts=attempts)
 
 
-def _generation_info(result: Any, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+def _generation_info(result: Any, tool_calls: list[dict[str, Any]], *, unwrapped: bool = False) -> dict[str, Any]:
     """What a call's ``ResultMessage`` says, as generation info.
 
     A call that asked for tools ends on the CLI's turn limit (``error_max_turns``). That is the
@@ -1226,10 +1310,12 @@ def _generation_info(result: Any, tool_calls: list[dict[str, Any]]) -> dict[str,
     :ptype result: Any
     :param tool_calls: the tool calls the call handed back
     :ptype tool_calls: list[dict[str, Any]]
+    :param unwrapped: whether the answer was recovered from a placeholder (:func:`_unwrapped_answer`)
+    :ptype unwrapped: bool
     :return: generation info
     :rtype: dict[str, Any]
     """
-    failed = bool(result.is_error) and not _ended_for_tools(result, tool_calls)
+    failed = bool(result.is_error) and not _ended_for_tools(result, tool_calls) and not unwrapped
     info: dict[str, Any] = {
         "total_cost_usd": result.total_cost_usd,
         "duration_ms": result.duration_ms,
@@ -1239,6 +1325,8 @@ def _generation_info(result: Any, tool_calls: list[dict[str, Any]]) -> dict[str,
         "is_error": failed,
         "finish_reason": "error" if failed else ("tool_calls" if tool_calls else "stop"),
     }
+    if unwrapped:
+        info["structured_output_unwrapped"] = 1
     if result.usage:
         info["usage"] = result.usage
     return info

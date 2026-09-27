@@ -162,13 +162,18 @@ def _tool_result(tool_use_id: str, content: str, *, is_error: bool | None) -> Us
     return UserMessage(content=[ToolResultBlock(tool_use_id=tool_use_id, content=content, is_error=is_error)])
 
 
+#: A placeholder-wrapped attempt whose JSON misses the schema (no ``overall``), so it stays a rejection.
+_WRAPPED_MISS = {"$PARAMETER_VALUE": json.dumps({"sentences": _ANSWER["sentences"]})}
+
+
 def _placeholder_call() -> AssistantMessage:
-    """the malformed first attempt: the answer as a string under a placeholder parameter name.
+    """the malformed first attempt: an answer as a string under a placeholder parameter name, one
+    that misses the schema, so nothing can be recovered from it.
 
     :return: the assistant message
     :rtype: AssistantMessage
     """
-    return _structured_call("toolu_1", {"$PARAMETER_VALUE": json.dumps(_ANSWER)})
+    return _structured_call("toolu_1", _WRAPPED_MISS)
 
 
 def _recovered() -> tuple[Any, ...]:
@@ -357,7 +362,7 @@ async def test_a_call_that_fails_on_its_schema_carries_what_the_schema_rejected(
         with pytest.raises(ModelProviderError) as raised:
             await _structured(model).ainvoke([HumanMessage(content="check the draft")])
 
-    assert raised.value.rejected_output == {"$PARAMETER_VALUE": json.dumps(_ANSWER)}, "exactly what the model gave"
+    assert raised.value.rejected_output == _WRAPPED_MISS, "exactly what the model gave"
     assert raised.value.rejection == _MISMATCH, "the CLI's own reason, unparsed"
     assert _MISMATCH in str(raised.value), "an operator reading the error sees which field was missed"
     [logged] = [r for r in caplog.records if r.getMessage() == "A subscription model call failed"]
@@ -372,7 +377,7 @@ async def test_a_streamed_call_that_fails_on_its_schema_carries_what_the_schema_
             async for _chunk in _structured(model).astream([HumanMessage(content="check the draft")]):
                 pass
 
-    assert raised.value.rejected_output == {"$PARAMETER_VALUE": json.dumps(_ANSWER)}
+    assert raised.value.rejected_output == _WRAPPED_MISS
     assert raised.value.rejection == _MISMATCH
 
 
@@ -408,3 +413,108 @@ async def test_a_streamed_call_cut_off_after_a_rejected_attempt_raises() -> None
                 pass
 
     assert raised.value.reason == "error_max_turns"
+
+
+def _exhausted_on(*attempts: dict[str, Any]) -> tuple[Any, ...]:
+    """a call whose every attempt the CLI rejected, ending on its attempt cap, as measured live.
+
+    :param attempts: the ``StructuredOutput`` inputs the model sent, in order
+    :ptype attempts: dict[str, Any]
+    :return: the messages the CLI sends
+    :rtype: tuple[Any, ...]
+    """
+    messages: list[Any] = []
+    for number, attempt in enumerate(attempts, start=1):
+        messages.append(_structured_call(f"toolu_{number}", attempt))
+        messages.append(_tool_result(f"toolu_{number}", _MISMATCH, is_error=True))
+    messages.append(_out_of_attempts()[-1])
+    return tuple(messages)
+
+
+def _cut_off_on(attempt: dict[str, Any]) -> tuple[Any, ...]:
+    """a one-turn call whose only attempt was rejected: the turn limit ends it.
+
+    :param attempt: the ``StructuredOutput`` input the model sent
+    :ptype attempt: dict[str, Any]
+    :return: the messages the CLI sends
+    :rtype: tuple[Any, ...]
+    """
+    return (
+        _structured_call("toolu_1", attempt),
+        _tool_result("toolu_1", _MISMATCH, is_error=True),
+        _cut_off_after_one_attempt()[-1],
+    )
+
+
+_WRAPPED = {"$PARAMETER_VALUE": json.dumps(_ANSWER)}
+
+
+class TestAPlaceholderWrappedAnswerIsUnwrapped:
+    """Found live (0.56.0): about one structured call in forty spent all five attempts sending the
+    whole, correct answer as a JSON string under ``$PARAMETER_VALUE``, which the CLI rejects every
+    time. That exact shape, when its JSON matches the call's schema, is the answer."""
+
+    async def test_an_exhausted_call_whose_attempts_were_a_valid_wrapped_answer_answers_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with _fake_cli(*_exhausted_on(_WRAPPED, _WRAPPED, _WRAPPED, _WRAPPED, _WRAPPED)), caplog.at_level("WARNING"):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            message = await _structured(model).ainvoke([HumanMessage(content="check the draft")])
+
+        assert json.loads(message.content) == _ANSWER
+        assert message.response_metadata["structured_output_unwrapped"] == 1, "the recovery must be visible"
+        assert message.response_metadata["is_error"] is False
+        [logged] = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert "placeholder" in logged.getMessage(), "one warning, for the unwrap, and no failure logged"
+        assert json.dumps(_ANSWER) not in json.dumps(logged.__dict__["extra_data"]), "the answer was logged"
+
+    async def test_a_streamed_call_is_unwrapped_the_same_way(self) -> None:
+        with _fake_cli(*_exhausted_on(_WRAPPED)):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            merged: Any = None
+            async for chunk in _structured(model).astream([HumanMessage(content="check the draft")]):
+                merged = chunk if merged is None else merged + chunk
+
+        assert json.loads(merged.content) == _ANSWER
+        assert merged.response_metadata["structured_output_unwrapped"] == 1
+
+    async def test_a_one_turn_call_cut_off_on_a_valid_wrapped_answer_answers_it(self) -> None:
+        with _fake_cli(*_cut_off_on(_WRAPPED)):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            message = await _structured(model.bind_tools([lookup])).ainvoke([HumanMessage(content="look it up")])
+
+        assert json.loads(message.content) == _ANSWER
+
+    async def test_the_latest_valid_wrapped_attempt_is_the_answer(self) -> None:
+        earlier = {"sentences": [{"index": 1, "verdict": "cut"}], "overall": "rewrite"}
+        with _fake_cli(*_exhausted_on({"$PARAMETER_VALUE": json.dumps(earlier)}, {"answer": 1}, _WRAPPED)):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            message = await _structured(model).ainvoke([HumanMessage(content="check the draft")])
+
+        assert json.loads(message.content) == _ANSWER
+
+    @pytest.mark.parametrize(
+        "attempt",
+        [
+            pytest.param({"$PARAMETER_VALUE": json.dumps({"sentences": "none"})}, id="json-that-misses-the-schema"),
+            pytest.param({"$PARAMETER_VALUE": "{'sentences': []"}, id="text-that-is-not-json"),
+            pytest.param({"$PARAMETER_VALUE": _ANSWER}, id="a-value-that-is-not-a-string"),
+            pytest.param({"$FUNCTION_NAME": json.dumps(_ANSWER)}, id="another-placeholder-key"),
+            pytest.param({**_WRAPPED, "overall": "ready"}, id="extra-keys"),
+            pytest.param({"sentences": {"sentences": []}}, id="an-extra-wrapping-key"),
+        ],
+    )
+    async def test_anything_else_is_still_a_rejection(self, attempt: dict[str, Any]) -> None:
+        with _fake_cli(*_exhausted_on(attempt)):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            with pytest.raises(ModelProviderError) as raised:
+                await _structured(model).ainvoke([HumanMessage(content="check the draft")])
+
+        assert raised.value.reason == "error_max_structured_output_retries"
+        assert raised.value.rejected_output == attempt
+
+    async def test_a_call_with_no_schema_is_never_unwrapped(self) -> None:
+        with _fake_cli(*_exhausted_on(_WRAPPED)):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            with pytest.raises(ModelProviderError):
+                await model.ainvoke([HumanMessage(content="hi")])

@@ -94,6 +94,17 @@ caller's place. The same schema then answered 30 calls of 30, 12 of them after o
 attempt. A call that runs out of attempts still raises, with
 `reason="error_max_structured_output_retries"`; a failed result is never returned as an answer.
 
+**New:** a correct answer the model wrapped in a placeholder is accepted. About one structured
+call in forty spent all five attempts sending the whole answer as a JSON string under a
+placeholder parameter, `{"$PARAMETER_VALUE": "<the answer>"}`, which the CLI rejects every time.
+When a structured call fails with no answer and a rejected attempt is exactly that -- one key,
+`$PARAMETER_VALUE`, holding a string that parses as JSON and validates against the call's own
+schema -- the most recent such attempt is the answer. It is logged once at WARNING (the schema's
+title or digest, never the content) and marked `structured_output_unwrapped: 1` on the result's
+metadata. Anything else stays a rejection: another placeholder key (`$PARAMETER_NAME` was seen
+live too), extra keys, a value that is not a string, text that is not JSON, or JSON that misses the
+schema.
+
 **New:** a structured call that fails on its schema says what the schema rejected.
 `ModelProviderError` (and `ModelRateLimitError`) gain `rejected_output` -- the last
 `StructuredOutput` answer the CLI rejected, exactly as the model gave it -- and `rejection`, the
