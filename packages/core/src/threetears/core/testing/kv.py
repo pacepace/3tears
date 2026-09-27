@@ -21,16 +21,18 @@ use:
 - :meth:`FakeKvBucket.delete` accepts an optional ``revision`` and
   returns ``True`` on success or absent key, ``False`` on CAS mismatch.
 - :meth:`FakeKvBucket.date_created` reports when the bucket was created, and
-  :meth:`FakeKvBucket.wipe` empties it and moves that time forward, which is
-  what a broker restart does to a memory-backed bucket once something has
-  recreated it; :meth:`FakeKvBucket.vanish` leaves it absent until the next
-  operation recreates it, as the real wrapper's self-heal does.
+  :meth:`FakeKvBucket.wipe` empties it, moves that time forward and restarts
+  its revisions at 1, which is what a broker restart does to a memory-backed
+  bucket once something has recreated it; :meth:`FakeKvBucket.vanish` leaves
+  it absent until the next operation recreates it, as the real wrapper's
+  self-heal does.
 - :meth:`FakeNatsClient.add_reconnect_callback` registers a hook and
   :meth:`FakeNatsClient.reconnect` runs every hook, as a real reconnect does.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
-is bucket-local and monotonic per bucket.
+is bucket-local and monotonic per incarnation: a wiped or vanished bucket
+starts again at 1, as a recreated stream's sequence does.
 """
 
 from __future__ import annotations
@@ -128,6 +130,7 @@ class FakeKvBucket:
         if self._vanished:
             self._vanished = False
             self._date_created = datetime.now(UTC)
+            self._revision = 0
 
     def advance_clock(self, delta: timedelta) -> None:
         """move this bucket's clock forward, lapsing any per-entry TTL it passes.
@@ -192,7 +195,7 @@ class FakeKvBucket:
         return tuple(key for key in tuple(self._entries) if self._live(key) is not None)
 
     def wipe(self, *, date_created: datetime | None = None) -> None:
-        """empty the bucket and give it a new creation time, as a broker restart does.
+        """empty the bucket, give it a new creation time and restart its revisions, as a broker restart does.
 
         Every handle a test holds keeps working afterwards and silently sees the empty
         bucket -- the same property the real wrapper has, and the one a wipe-detecting
@@ -209,6 +212,8 @@ class FakeKvBucket:
         self._entries.clear()
         self._date_created = date_created if date_created is not None else datetime.now(UTC)
         self._vanished = False
+        # the revision is the stream sequence, and a recreated stream starts it again.
+        self._revision = 0
 
     def vanish(self) -> None:
         """lose the bucket the way a broker restart does, leaving it absent until next used.

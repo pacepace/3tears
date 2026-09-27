@@ -157,6 +157,29 @@ async def test_a_vanished_bucket_is_recreated_by_its_next_operation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_wiped_bucket_restarts_its_revisions_at_one() -> None:
+    # a recreated stream starts its sequence again, and the revision IS the sequence. A double that
+    # kept counting would hide every consumer that orders writes by revision alone and so refuses
+    # every write after a broker restart.
+    client = FakeNatsClient()
+    bucket = await client.kv_bucket(name="collections")
+    for n in range(3):
+        await bucket.put(key=f"k{n}", value=b"v")
+    bucket.wipe()
+    assert await bucket.create(key="k0", value=b"v") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_vanished_bucket_restarts_its_revisions_at_one() -> None:
+    client = FakeNatsClient()
+    bucket = await client.kv_bucket(name="collections")
+    for n in range(3):
+        await bucket.put(key=f"k{n}", value=b"v")
+    bucket.vanish()
+    assert await bucket.put(key="k0", value=b"v") == 1
+
+
+@pytest.mark.asyncio
 async def test_reconnect_runs_every_hook_in_order_past_a_failing_one() -> None:
     client = FakeNatsClient()
     ran: list[str] = []
