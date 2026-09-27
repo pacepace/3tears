@@ -808,13 +808,25 @@ class PooledCliSession:
         objects a closed loop owns, so the process tree is killed directly instead -- which is
         the step of :meth:`dispose` that actually guarantees the CLI is gone.
 
+        Safe to repeat, and it always attempts the kill even on a session already marked
+        closed: an earlier stop that was interrupted before its kill finished leaves the CLI
+        running, and a repeat is how the pool finishes it. A CLI already gone is a no-op.
+
         :param grace_seconds: how long SIGTERM gets before SIGKILL
         :ptype grace_seconds: float
         """
-        if self.closed:
-            return
         self.closed = True
         await asyncio.to_thread(self._kill_if_still_ours, grace_seconds)
+
+    def still_ours(self) -> bool:
+        """Whether this session's CLI process is still running as the process it started as.
+
+        :return: ``False`` when there is no pid, the process is gone, or its pid now names another process
+        :rtype: bool
+        """
+        if self.pid is None or not _alive(self.pid):
+            return False
+        return self.start_ticks is None or _process_start_ticks(self.pid) == self.start_ticks
 
     def _kill_if_still_ours(self, grace_seconds: float) -> None:
         """Kill the CLI's process tree, unless it already exited or its pid now names another process.
@@ -822,12 +834,9 @@ class PooledCliSession:
         :param grace_seconds: how long SIGTERM gets before SIGKILL
         :ptype grace_seconds: float
         """
-        if self.pid is None or not _alive(self.pid):
-            return
-        if self.start_ticks is not None and _process_start_ticks(self.pid) != self.start_ticks:
-            # The CLI exited and its pid now belongs to something else: signal nothing.
-            return
-        kill_process_tree(self.pid, grace_seconds=grace_seconds)
+        # A CLI that exited, or whose pid now belongs to something else, is signalled nothing.
+        if self.pid is not None and self.still_ours():
+            kill_process_tree(self.pid, grace_seconds=grace_seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -912,6 +921,11 @@ class ClaudeCliPool:
         )
         #: Whether a loop has claimed this pool before, so a takeover is logged as one.
         self._served_a_loop = False
+        #: Sessions taken out of the books to be stopped whose kill has not yet completed. A
+        #: session leaves this set only AFTER its CLI is confirmed stopped, so a stop that is
+        #: cancelled or fails part-way leaves it where :meth:`known_pids` -- the interpreter-exit
+        #: backstop -- and the next takeover or close still find it.
+        self._stopping: set[PooledCliSession] = set()
 
     @property
     def live_count(self) -> int:
@@ -921,10 +935,15 @@ class ClaudeCliPool:
     def known_pids(self) -> list[int]:
         """Every live session's pid, for a synchronous last-resort kill at interpreter exit.
 
+        Includes the sessions being stopped whose stop has not completed, while their CLI is
+        still the process it started as.
+
         :return: the pids
         :rtype: list[int]
         """
-        return [s.pid for s in self._all if s.pid is not None and not s.closed]
+        live = [s.pid for s in list(self._all) if s.pid is not None and not s.closed]
+        stopping = [s.pid for s in list(self._stopping) if s.pid is not None and s.still_ours()]
+        return [*live, *stopping]
 
     @asynccontextmanager
     async def checkout(
@@ -1007,20 +1026,35 @@ class ClaudeCliPool:
         :raises ClaudeCliPoolExhausted: when the caller's loop is not the one this pool serves
         """
         running = asyncio.get_running_loop()
+        owner, stranded = self._take_over_if_unserved(running)
+        if owner is not running:
+            raise ClaudeCliPoolExhausted(
+                "the Claude CLI pool serves another event loop; a call on this one runs on its own CLI"
+            )
+        return stranded
+
+    def _take_over_if_unserved(
+        self, running: asyncio.AbstractEventLoop
+    ) -> tuple[asyncio.AbstractEventLoop, list[PooledCliSession]]:
+        """The loop this pool serves, after ``running`` takes it over if no open loop held it.
+
+        :param running: the caller's running loop
+        :ptype running: asyncio.AbstractEventLoop
+        :return: the loop the pool now serves, and the sessions to stop when ``running`` took it
+            over from a closed loop (empty otherwise)
+        :rtype: tuple[asyncio.AbstractEventLoop, list[PooledCliSession]]
+        """
         stranded: list[PooledCliSession] = []
 
         def take_over() -> asyncio.AbstractEventLoop:
             stranded.extend(self._rebind_to(running))
             return running
 
-        if self._owner_loop.get(_ONLY, take_over) is not running:
-            raise ClaudeCliPoolExhausted(
-                "the Claude CLI pool serves another event loop; a call on this one runs on its own CLI"
-            )
-        return stranded
+        owner = self._owner_loop.get(_ONLY, take_over)
+        return owner, stranded
 
     def _rebind_to(self, loop: asyncio.AbstractEventLoop) -> list[PooledCliSession]:
-        """Give this pool fresh loop-bound state for ``loop``, returning every session it held.
+        """Give this pool fresh loop-bound state for ``loop``, returning every session to stop.
 
         Runs under the owner ``BuildOnce``'s lock, when no loop has claimed the pool or the one
         that did has closed. No code can be running on a closed loop, so nothing is using the
@@ -1031,12 +1065,17 @@ class ClaudeCliPool:
         serve a call again. ``_closing`` and the SDK-failure count are about the pool, not the
         loop, and are kept.
 
+        The sessions move to ``_stopping`` rather than out of reach, so the exit backstop still
+        sees them until their kill completes. Whatever an earlier, interrupted stop left there is
+        returned too, so this takeover finishes it.
+
         :param loop: the loop taking the pool over
         :ptype loop: asyncio.AbstractEventLoop
-        :return: the sessions the previous loop held, for the caller to stop
+        :return: the sessions the previous loop held, and any whose earlier stop never completed
         :rtype: list[PooledCliSession]
         """
-        stranded = list(self._all)
+        self._stopping.update(self._all)
+        stranded = list(self._stopping)
         took_over = self._served_a_loop
         self._served_a_loop = True
         self._all.clear()
@@ -1058,25 +1097,37 @@ class ClaudeCliPool:
         :param stranded: the sessions :meth:`_rebind_to` took out of the books
         :ptype stranded: list[PooledCliSession]
         """
-        outcomes = await asyncio.gather(
-            *(session.abandon(grace_seconds=self._kill_grace) for session in stranded), return_exceptions=True
-        )
-        stopped = 0
-        for session, outcome in zip(stranded, outcomes, strict=True):
-            if not isinstance(outcome, BaseException):
-                stopped += 1
-            else:
-                # One CLI that could not be stopped must not fail the call that found it, nor stop
-                # the others. It is named so an operator can stop it; failing that, the next
-                # process's startup sweep reaps it once this one exits.
-                _logger.warning(
-                    "Could not stop a Claude CLI a closed event loop left behind",
-                    extra={"extra_data": {"pid": session.pid, "error": repr(outcome)}},
-                )
+        outcomes = await asyncio.gather(*(self._abandon_one(session) for session in stranded), return_exceptions=True)
+        stopped = sum(1 for outcome in outcomes if outcome is True)
         _logger.info(
             "Stopped the Claude CLIs a closed event loop left behind",
             extra={"extra_data": {"stopped": stopped, "stranded": len(stranded), "pids": [s.pid for s in stranded]}},
         )
+
+    async def _abandon_one(self, session: PooledCliSession) -> bool:
+        """Stop one stranded session, and drop it from ``_stopping`` only once that has succeeded.
+
+        A failure is logged and swallowed here, not raised: one CLI that could not be stopped must
+        neither fail the call that found it nor stop the others. It stays in ``_stopping``, so the
+        exit backstop and the next takeover or close still try it.
+
+        :param session: the session to stop
+        :ptype session: PooledCliSession
+        :return: whether its CLI is now stopped
+        :rtype: bool
+        """
+        stopped = False
+        try:
+            await session.abandon(grace_seconds=self._kill_grace)
+            stopped = True
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- per-session isolation: logged with its pid and kept tracked for the next attempt
+            _logger.warning(
+                "Could not stop a Claude CLI a closed event loop left behind; it stays tracked for the next attempt",
+                extra={"extra_data": {"pid": session.pid, "error": repr(exc)}},
+            )
+        if stopped:
+            self._stopping.discard(session)
+        return stopped
 
     def _note_prepare_failure(self, exc: ClaudeCliSessionError) -> None:
         """Count failures of the SDK surface itself, and stop pooling when they repeat.
@@ -1099,10 +1150,24 @@ class ClaudeCliPool:
             )
 
     async def aclose(self) -> None:
-        """Stop every session this pool holds."""
+        """Stop every session this pool holds.
+
+        A host usually closes the pool from its shutdown hook, which can run on a loop other than
+        the one the pool served -- after that loop has closed. The close therefore takes the pool
+        over exactly as a checkout would, so it never waits on the closed loop's condition, and
+        the closed loop's sessions are killed through :meth:`PooledCliSession.abandon` rather
+        than disposed, which would await clients whose reader tasks died with their loop. Each
+        session stays visible to the exit backstop until its stop completes, and a stop that an
+        earlier takeover never finished is finished here.
+        """
+        self._take_over_if_unserved(asyncio.get_running_loop())
+        # A takeover just now put the closed loop's sessions here; an interrupted earlier stop may
+        # have left others. Taken before this close adds the sessions it disposes itself.
+        stranded = list(self._stopping)
         async with self._condition:
             self._closing = True
             sessions = list(self._all)
+            self._stopping.update(sessions)
             self._all.clear()
             self._idle.clear()
             self._live.clear()
@@ -1117,6 +1182,9 @@ class ClaudeCliPool:
             self._reaper = None
         for session in sessions:
             await session.dispose(grace_seconds=self._kill_grace)
+            self._stopping.discard(session)
+        if stranded:
+            await self._abandon(stranded)
         if sessions:
             _logger.info("Closed the Claude CLI pool", extra={"extra_data": {"disposed": len(sessions)}})
 

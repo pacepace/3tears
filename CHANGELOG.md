@@ -206,7 +206,13 @@ complete as the sweep that found the sites. There is now one construction:
   condition and reaper on that loop, and the CLIs the closed loop held are killed without their
   clients being awaited (their reader tasks died with that loop), never handed on. Without the
   takeover, a startup warm-up through a sync `invoke` -- whose loop closes when it returns --
-  would have turned pooling off for the rest of the process.
+  would have turned pooling off for the rest of the process. Of several loops that find the
+  served loop closed at once, exactly one takes over and the rest fall back. `close_claude_cli_pool`
+  takes over the same way, so a shutdown hook running on a new loop kills the closed loop's CLIs
+  instead of awaiting their dead clients. A session being stopped stays visible to the
+  interpreter-exit backstop until its kill has completed. A kill that fails is logged with its
+  pid; one that fails or is cancelled leaves the others to finish and is retried by the next
+  takeover or close.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 

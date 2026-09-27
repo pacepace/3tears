@@ -73,6 +73,8 @@ class FakeSession:
         self.clears = 0
         self.disposals = 0
         self.abandons = 0
+        self.abandon_raises: BaseException | None = None
+        self.alive = True
         self.fail_clear = False
         self.fail_prepare = False
         self.clear_raises: BaseException | None = None
@@ -119,13 +121,18 @@ class FakeSession:
         if self.dispose_delay:
             await asyncio.sleep(self.dispose_delay)
         self.disposals += 1
+        self.alive = False
 
     async def abandon(self, *, grace_seconds: float) -> None:
         del grace_seconds
-        if self.closed:
-            return
         self.closed = True
+        if self.abandon_raises is not None:
+            raise self.abandon_raises
         self.abandons += 1
+        self.alive = False
+
+    def still_ours(self) -> bool:
+        return self.pid is not None and self.alive
 
 
 @pytest.fixture(autouse=True)
@@ -947,9 +954,117 @@ class TestAPoolServesOneEventLoop:
         assert served.clears == 1 and not served.closed, "the new loop's session must go back into the pool"
         assert pool.live_count == 1, "the closed loop's session must not hold a slot"
 
+    def test_loops_racing_to_take_over_a_closed_loops_pool_get_exactly_one_winner(self) -> None:
+        """two live loops find the served loop closed at once: one takes the pool, the other falls back.
+
+        both loops stay open until both have tried, so neither can be taken over from the other
+        in between -- the race is on the closed loop alone.
+        """
+        pool = _pool()
+
+        async def use_once() -> None:
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                pass
+
+        asyncio.run(use_once())
+        (warm_up,) = FakeSession.instances
+        start = threading.Barrier(2)
+        tried = threading.Barrier(2)
+        outcomes: dict[str, BaseException | str] = {}
+
+        async def contend(name: str) -> None:
+            await asyncio.to_thread(start.wait, 10)
+            try:
+                async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                    outcomes[name] = "served"
+                    await asyncio.to_thread(tried.wait, 10)
+            except BaseException as exc:  # noqa: BLE001 -- the assertions below name whatever it was
+                outcomes.setdefault(name, exc)
+                await asyncio.to_thread(tried.wait, 10)
+
+        threads = [threading.Thread(target=asyncio.run, args=(contend(name),)) for name in ("a", "b")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        served = [name for name, outcome in outcomes.items() if outcome == "served"]
+        refused = [outcome for outcome in outcomes.values() if isinstance(outcome, BaseException)]
+        assert len(served) == 1, f"exactly one loop must take the pool over, got {outcomes!r}"
+        assert len(refused) == 1 and isinstance(refused[0], ClaudeCliPoolExhausted), (
+            f"the other loop must fall back to its own CLI, got {outcomes!r}"
+        )
+        assert "another event loop" in str(refused[0])
+        assert len(FakeSession.instances) == 2, "the refused loop must not have started a session"
+        assert (warm_up.abandons, warm_up.disposals) == (1, 0), "the closed loop's session is stopped exactly once"
+
+        asyncio.run(pool.aclose())
+        assert all(not session.alive for session in FakeSession.instances), "a session outlived the close"
+        assert pool.known_pids() == []
+
 
 class TestAStrandedSessionIsStoppedWithoutItsLoop:
     """a session whose loop closed is stopped by killing its process, never by awaiting its client."""
+
+    def test_closing_on_a_fresh_loop_kills_the_closed_loops_clis_without_awaiting_them(self) -> None:
+        """a host's shutdown hook often runs on a new loop, after the loop the pool served has closed."""
+        pool = _pool()
+
+        async def use_once() -> None:
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                pass
+
+        asyncio.run(use_once())
+        asyncio.run(pool.aclose())
+
+        (session,) = FakeSession.instances
+        assert (session.abandons, session.disposals) == (1, 0), "a client whose loop closed must never be awaited"
+        assert pool.known_pids() == []
+
+    @pytest.mark.parametrize("failure", [OSError("kill refused"), asyncio.CancelledError()])
+    def test_a_stranded_cli_that_does_not_stop_stays_tracked_and_the_others_still_stop(
+        self, failure: BaseException, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """one kill that fails or is cancelled must neither fail the call nor spare the other CLIs.
+
+        the session leaves the books only once its kill has completed, so the one that did not
+        stop is still in ``known_pids`` -- the interpreter-exit backstop -- and the next close
+        finishes it.
+        """
+        pool = _pool(per_key=2)
+
+        async def two_idle() -> None:
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                    pass
+
+        async def use_once() -> None:
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                pass
+
+        asyncio.run(two_idle())
+        stuck, other = FakeSession.instances
+        stuck.pid, other.pid = 5001, 5002
+        stuck.abandon_raises = failure
+
+        with caplog.at_level("WARNING"):
+            asyncio.run(use_once())
+
+        assert (other.abandons, other.alive) == (1, False), "one CLI's failure must not spare the others"
+        assert FakeSession.instances[2].clears == 1, "the call that found the stranded CLIs must still be served"
+        known = pool.known_pids()
+        assert 5001 in known, "a CLI whose stop did not complete must stay visible to the exit backstop"
+        assert 5002 not in known
+        if isinstance(failure, Exception):
+            assert any(
+                "Could not stop a Claude CLI" in record.getMessage() and record.extra_data["pid"] == 5001
+                for record in caplog.records
+            ), "a CLI that could not be stopped must be named in the log"
+
+        stuck.abandon_raises = None
+        asyncio.run(pool.aclose())
+        assert (stuck.abandons, stuck.alive) == (1, False), "the next close must finish the interrupted stop"
+        assert pool.known_pids() == []
 
     async def test_abandoning_kills_the_cli_and_never_disconnects(self) -> None:
         disconnects: list[str] = []
