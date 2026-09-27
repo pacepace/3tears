@@ -133,6 +133,56 @@ tagging any release that touches `packages/models`, with that line pasted into t
 It never did: `tools` defaults to `[]`, and `tools=None` enables the preset. The docstring now
 says so, and that the choice decides whether a structured call gets the schema retries.
 
+### Memory extraction says what it did, and an unworthy turn no longer blocks the cooldown
+
+Reported by metallm after a 56-turn live run saved no memories. Three defects in
+`threetears.agent.memory.extraction.MemoryExtractor`, all fixed here.
+
+**The cooldown was taken before worthiness.** `extract()` created the per-conversation
+rate-limit key inside `check_rate_limit`, before `check_worthiness`. So a turn the worthiness
+model rejected took the key anyway, and so did a turn cancelled by the next message. Either one
+blocked extraction for the whole cooldown. The rate limit now has two stages:
+
+- `check_rate_limit` only READS the key, before worthiness. A turn inside the cooldown is
+  skipped without paying for a worthiness call.
+- The new stage hook `claim_rate_limit` CREATES the key with an atomic KV `create`, after
+  worthiness says yes. Of two turns that race past the read, exactly one claims the key and
+  extracts. The other is skipped at the rate-limit gate.
+
+**The cooldown lived as long as the bucket's `max_age`.** The key was written through
+`kv_bucket(name=..., ttl=cooldown)`, and that `ttl` sets the stream's `max_age`. The stream's
+creator fixes `max_age` once, so on a shared bucket the key lived for that bucket's age: live dev
+had `KV_metallm-locks` at 600 s against a 300 s cooldown. The bucket is now opened by name alone.
+The cooldown rides the key as a per-message TTL: `create(key=..., value=b"1", ttl=cooldown)`.
+
+A per-message TTL needs the stream's `allow_msg_ttl`. The extractor's open declares the bucket,
+and that reconciles `allow_msg_ttl` in place. The one handle that cannot reconcile it is a
+bind-only one that something else in the process opened first. On that handle the server refuses
+the write (`per-message TTL is disabled`, err_code 10166). `claim_rate_limit` logs that at ERROR
+naming the bucket and raises it, and the turn answers `FAILED`. It never writes a key that would
+outlive its cooldown. Any other NATS failure on either stage still fails open. A cooldown of `0`
+or less now turns the rate limit off; before, it wrote a key that never expired.
+
+**`extract()` returned `None`.** It now returns an `ExtractionResult(outcome, stored, gate,
+reason)`:
+
+- `outcome` is an `ExtractionOutcome`: `STORED`, `SKIPPED` or `FAILED`.
+- `stored` counts the memories this turn added or updated.
+- `gate` is the `ExtractionGate` that stopped a skipped turn: `HEURISTIC`, `RATE_LIMIT`,
+  `WORTHINESS` or `NOTHING_FOUND`.
+- `reason` is the human-readable detail. It is never parsed.
+
+A turn whose every resolved write raised is now `FAILED`, and so is one whose candidates could not
+be embedded. Before, both were silent. `extract()` still catches every failure, but it no longer
+swallows cancellation: it logs one WARNING and re-raises `asyncio.CancelledError`.
+`threetears.agent.memory.extract_memories` now returns the result, or `None` when the integration
+has no extractor. All three types are exported from `threetears.agent.memory` and
+`threetears.agent.memory.extraction`.
+
+**Upgrading a caller.** Code that ignored `extract()`'s return value keeps working. A subclass
+that overrode `check_rate_limit` to CREATE the key now runs at read time; move that logic into
+`claim_rate_limit`. metallm's `ExtractionResult` subclass can go.
+
 ## v0.55.0 -- 2026-09-27
 
 Minor: `threetears.agent.audit` gains the erasure rule for audit records:

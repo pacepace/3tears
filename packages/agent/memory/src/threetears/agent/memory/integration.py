@@ -13,11 +13,14 @@ the framework stays uncoupled from the host's memory wiring.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from threetears.agent.memory.extraction import ExtractionResult
 
 __all__ = [
     "MemoryIntegration",
@@ -322,11 +325,12 @@ async def extract_memories(
     user_message: str,
     assistant_response: str,
     turn_count: int,
-) -> None:
+) -> ExtractionResult | None:
     """extract memories from a conversation turn.
 
-    delegates to :meth:`MemoryExtractor.extract` which is
-    fire-and-forget safe. soft-fails on error, logs a warning.
+    delegates to :meth:`MemoryExtractor.extract`, which answers every failure
+    as an :attr:`ExtractionOutcome.FAILED` result and raises only when its task
+    is cancelled.
 
     :param integration: memory integration instance
     :ptype integration: MemoryIntegration
@@ -346,23 +350,29 @@ async def extract_memories(
     :ptype assistant_response: str
     :param turn_count: number of turns in conversation so far
     :ptype turn_count: int
-    :return: nothing
-    :rtype: None
+    :return: what the extraction did, or ``None`` when the integration has no extractor
+    :rtype: ExtractionResult | None
+    :raises asyncio.CancelledError: when the task running it is cancelled
     """
     if integration.extractor is None:
-        return
+        return None
 
-    try:
-        await integration.extractor.extract(
-            user_id,
-            conversation_id,
-            message_id_source,
-            user_message,
-            assistant_response,
-            turn_count,
-            agent_id=agent_id,
-            customer_id=customer_id,
-        )
-        log.debug("memory extraction complete for conversation %s", conversation_id)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- extraction is a fire-and-forget side-effect; a fault must not fail the turn that triggered it
-        log.warning("memory extraction failed (soft-fail): %s", exc)
+    result: ExtractionResult = await integration.extractor.extract(
+        user_id,
+        conversation_id,
+        message_id_source,
+        user_message,
+        assistant_response,
+        turn_count,
+        agent_id=agent_id,
+        customer_id=customer_id,
+    )
+    log.debug(
+        "memory extraction for conversation %s: %s stored=%d gate=%s reason=%s",
+        conversation_id,
+        result.outcome,
+        result.stored,
+        result.gate,
+        result.reason,
+    )
+    return result
