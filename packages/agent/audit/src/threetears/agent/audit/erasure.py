@@ -17,7 +17,11 @@ own ``event_type``, and its ``ip_address`` through
 1. Subscribe :meth:`threetears.nats.Subjects.hub_audit_anonymize`
    (``{ns}.hub.audit.anonymize``) in a queue group, and decode the body as
    :class:`AuditAnonymizeRequest`. A body that does not decode, or breaks its bounds,
-   is answered ``INVALID_REQUEST``.
+   is answered ``INVALID_REQUEST``, echoing ``correlation_id`` whenever the body carried
+   one the responder could read. A refusal it could not tie to a correlation id is
+   answered with none: the client treats a refusal carrying NO correlation id as the
+   refusal of the request it just sent, and a refusal carrying a DIFFERENT one as a
+   stray reply, not an answer.
 2. Verify ``identity_token`` exactly as every other forwarded-token subject does, and
    derive the calling AGENT from the verified claims. A token that does not verify is
    answered ``IDENTITY_UNVERIFIED``. The agent is NEVER taken from the body.
@@ -202,9 +206,13 @@ class AuditAnonymizeReply(BaseModel):
 
 @dataclass(frozen=True)
 class AuditAnonymization:
-    """what the hub reported for a whole request, summed over its batches.
+    """what an audit erasure touched: the one answer both erasure paths give.
 
-    :ivar rows_matched: rows of the calling agent naming the actors
+    :func:`request_audit_anonymization` returns it for the hub's table, summed over its
+    batches; :func:`threetears.agent.audit.persist.anonymize_audit_rows` returns it for a
+    hub-less deployment's own table. A consumer supporting both deployments reads one type.
+
+    :ivar rows_matched: rows naming the actors (on the hub path, rows of the calling agent)
     :ivar rows_changed: of those, rows whose stored content changed
     """
 
@@ -278,19 +286,9 @@ async def request_audit_anonymization(
     return AuditAnonymization(rows_matched=matched, rows_changed=changed)
 
 
-@dataclass(frozen=True)
-class _Counted:
-    """one batch's verified counts.
-
-    :ivar rows_matched: rows matched
-    :ivar rows_changed: rows changed
-    """
-
-    rows_matched: int
-    rows_changed: int
-
-
-async def _send(nats_client: NatsClient, request: AuditAnonymizeRequest, *, timeout_seconds: float) -> _Counted:
+async def _send(
+    nats_client: NatsClient, request: AuditAnonymizeRequest, *, timeout_seconds: float
+) -> AuditAnonymization:
     """send one batch and validate its reply.
 
     :param nats_client: this pod's connected NATS client
@@ -300,10 +298,13 @@ async def _send(nats_client: NatsClient, request: AuditAnonymizeRequest, *, time
     :param timeout_seconds: seconds to wait for the answer
     :ptype timeout_seconds: float
     :return: the batch's counts
-    :rtype: _Counted
-    :raises AuditAnonymizeRefusedError: when the hub refuses with a non-retryable code
-    :raises AuditAnonymizeUnavailableError: when there is no usable answer, or the hub
-        reports ``ANONYMIZE_FAILED``
+    :rtype: AuditAnonymization
+    :raises AuditAnonymizeRefusedError: when the hub refuses with a non-retryable code, its
+        correlation id this batch's or absent (a body the hub could not decode carries none
+        it could echo)
+    :raises AuditAnonymizeUnavailableError: when there is no usable answer -- a reply
+        carrying ANOTHER request's correlation id among them -- or the hub reports
+        ``ANONYMIZE_FAILED``
     """
     correlation_id = request.correlation_id
     log.debug(
@@ -331,9 +332,12 @@ async def _send(nats_client: NatsClient, request: AuditAnonymizeRequest, *, time
         raise AuditAnonymizeUnavailableError(
             f"audit anonymization reply did not decode (correlation_id={correlation_id}): {exc}"
         ) from exc
-    if reply.correlation_id != correlation_id:
-        # a stray reply -- a late answer to an earlier request, or a hub bug -- is not an answer
-        # to this batch, and its counts are not this batch's.
+    # a refusal carrying NO correlation id is this batch's: a hub that could not decode the body had
+    # no id to echo, and filing its INVALID_REQUEST as a stray would tell the caller to retry a request
+    # the hub refuses every time. one carrying ANOTHER id -- a late answer to an earlier request, or a
+    # hub bug -- is not an answer to this batch, and neither is a success under another id.
+    answers_this_batch = reply.correlation_id == correlation_id or (not reply.success and reply.correlation_id is None)
+    if not answers_this_batch:
         raise AuditAnonymizeUnavailableError(
             f"audit anonymization reply carried correlation_id={reply.correlation_id}, not this batch's "
             f"{correlation_id}"
@@ -366,4 +370,4 @@ async def _send(nats_client: NatsClient, request: AuditAnonymizeRequest, *, time
             }
         },
     )
-    return _Counted(rows_matched=reply.rows_matched, rows_changed=reply.rows_changed)
+    return AuditAnonymization(rows_matched=reply.rows_matched, rows_changed=reply.rows_changed)

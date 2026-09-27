@@ -1,20 +1,18 @@
 """Tests for :mod:`threetears.models.tool_name_translation`'s ``NameMangledToolProxy``.
 
-Scoped to the ``canonical_name`` public accessor added alongside the claude-cli dotted-tool-name
-permission fix (see ``test_claude_cli_tool_events.py``), and to the ``config``-propagation bug
-found live the same day: every REAL 3tears builtin tool (a ``StructuredTool`` built by
-:func:`~threetears.agent.tools.langchain_adapter.to_langchain_tool`, whose own ``_arun``/``_run``
-REQUIRE a ``RunnableConfig``) raised ``TypeError: ... missing 1 required keyword-only argument:
-'config'`` the instant it was actually invoked through this proxy -- on ANY provider that uses it,
-not just one. See the module docstring's "config propagation bug" section for the full root cause.
-The module's other primitives are already exercised indirectly via the ``anthropic``/``openrouter``
-provider test files.
+Scoped to the ``canonical_name`` public accessor, and to the proxy answering every call exactly as
+its delegate does: a real 3tears builtin (a ``StructuredTool`` built by
+:func:`~threetears.agent.tools.langchain_adapter.to_langchain_tool`, whose ``_arun``/``_run``
+require a ``RunnableConfig``) reached through the proxy by ``invoke``, ``ainvoke``, ``run`` or
+``arun`` gets its config, keeps a failure's artifact and fires only its own callbacks. The module's
+other primitives are exercised via the ``anthropic``/``openrouter`` provider test files.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, ToolException
 
@@ -302,3 +300,68 @@ class TestASchemaBoundAsATool:
         assert wire[0] is Answer
         assert isinstance(wire[1], NameMangledToolProxy)
         assert reverse == {mangle_tool_name(_DottedTool().name): _DottedTool().name}
+
+
+class _ToolStarts(BaseCallbackHandler):
+    """records the name of every tool whose run a callback saw start."""
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+
+    def on_tool_start(self, serialized: dict[str, Any], input_str: str, **kwargs: Any) -> None:
+        """record the tool's name.
+
+        :param serialized: the tool's serialized description
+        :ptype serialized: dict[str, Any]
+        :param input_str: the tool's input
+        :ptype input_str: str
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: nothing
+        :rtype: None
+        """
+        self.started.append(str(serialized.get("name")))
+
+
+class TestRunAndArunAnswerAsInvokeDoes:
+    """``run`` / ``arun`` are the route LangChain's classic AgentExecutor takes, and they answer as
+    ``invoke`` / ``ainvoke`` do: through the delegate's own entry point, so a failed TearsTool keeps
+    its artifact and only the delegate's callbacks fire."""
+
+    async def test_a_failure_through_arun_keeps_its_artifact(self) -> None:
+        tool = to_langchain_tool(_Refusing())
+        [wire_tool], _reverse_map = build_name_translation([tool])
+
+        direct = await tool.arun({}, tool_call_id="c5")
+        proxied = await wire_tool.arun({}, tool_call_id="c5")
+
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.status == direct.status == "error"
+        assert proxied.artifact == direct.artifact == {"failure": "upstream"}
+
+    def test_a_failure_through_run_keeps_its_artifact(self) -> None:
+        tool = to_langchain_tool(_Refusing())
+        [wire_tool], _reverse_map = build_name_translation([tool])
+
+        proxied = wire_tool.run({}, tool_call_id="c6")
+
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.artifact == {"failure": "upstream"}
+
+    async def test_only_the_delegates_callbacks_fire_through_arun(self) -> None:
+        handler = _ToolStarts()
+        [wire_tool], _reverse_map = build_name_translation([create_calculator_tool({}, "Evaluate.")])
+
+        content = await wire_tool.arun({"expression": "6 * 7"}, callbacks=[handler])
+
+        assert content == "42"
+        assert handler.started == ["threetears.calculator"]
+
+    def test_only_the_delegates_callbacks_fire_through_run(self) -> None:
+        handler = _ToolStarts()
+        [wire_tool], _reverse_map = build_name_translation([create_calculator_tool({}, "Evaluate.")])
+
+        content = wire_tool.run({"expression": "6 * 7"}, callbacks=[handler])
+
+        assert content == "42"
+        assert handler.started == ["threetears.calculator"]

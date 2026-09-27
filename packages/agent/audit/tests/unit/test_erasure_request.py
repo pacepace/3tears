@@ -219,6 +219,39 @@ class TestTheClient:
         with pytest.raises(AuditAnonymizeUnavailableError, match="correlation"):
             await _call(nats, [uuid7()])
 
+    @pytest.mark.parametrize("code", ["INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH"])
+    async def test_a_refusal_with_no_correlation_id_is_still_a_refusal(self, code: str) -> None:
+        """a hub that could not decode the body has no correlation id to echo.
+
+        filing its refusal as a stray reply told the caller the request was safe to retry, and
+        the retry met the same refusal every time.
+
+        :param code: a non-retryable refusal code
+        :ptype code: str
+        """
+        nats = _ScriptedRequests({"success": False, "error_code": code, "error_message": "no", "correlation_id": None})
+
+        with pytest.raises(AuditAnonymizeRefusedError) as refused:
+            await _call(nats, [uuid7()])
+
+        assert refused.value.error_code == code
+
+    async def test_a_refusal_carrying_another_requests_id_is_not_an_answer(self) -> None:
+        """a refusal under ANOTHER id is a stray -- a late answer to an earlier request -- not this one's."""
+        nats = _ScriptedRequests(
+            {"success": False, "error_code": "INVALID_REQUEST", "error_message": "no", "correlation_id": str(uuid7())}
+        )
+
+        with pytest.raises(AuditAnonymizeUnavailableError, match="correlation"):
+            await _call(nats, [uuid7()])
+
+    async def test_a_success_with_no_correlation_id_is_not_an_answer(self) -> None:
+        """counts with no id cannot be tied to this batch, so they are never summed."""
+        nats = _ScriptedRequests({**_success(1, 1), "correlation_id": None})
+
+        with pytest.raises(AuditAnonymizeUnavailableError, match="correlation"):
+            await _call(nats, [uuid7()])
+
     async def test_errors_name_the_batch_they_came_from(self) -> None:
         """a refusal and an unavailability both carry the batch's correlation id, for the operator."""
         refused = _ScriptedRequests({"success": False, "error_code": "AGENT_MISMATCH", "error_message": "no"})

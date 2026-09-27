@@ -41,6 +41,7 @@ from threetears.observe.erasure import ANONYMIZED_MARKER
 __all__ = [
     "IDENTIFYING_METADATA_KEYS",
     "CheckpointAnonymization",
+    "UnreadableCheckpointBlob",
     "anonymize_checkpoint_value",
 ]
 
@@ -54,8 +55,39 @@ IDENTIFYING_METADATA_KEYS: Final[frozenset[str]] = frozenset({"external_user_nam
 
 
 @dataclass(frozen=True)
+class UnreadableCheckpointBlob:
+    """one stored blob the rule could not be applied to, named so an operator can find it.
+
+    a blob the saver's serializer cannot decode -- or whose re-encoding would change its
+    serialization type -- cannot be rewritten, and its bytes may still hold the person's
+    data. it is reported rather than skipped silently, and every other row is still
+    rewritten. the graph cannot load a blob it cannot decode either, so deleting the row
+    loses nothing the graph could use.
+
+    :ivar thread_id: the thread as the caller named it
+    :ivar table: ``checkpoints`` or ``checkpoint_writes``
+    :ivar column: the blob's column (``checkpoint``, ``metadata_`` or ``blob``)
+    :ivar checkpoint_ns: the row's checkpoint namespace
+    :ivar checkpoint_id: the row's checkpoint id
+    :ivar task_id: the pending write's task id; ``None`` for a checkpoint row
+    :ivar idx: the pending write's index; ``None`` for a checkpoint row
+    :ivar error_type: the class of the error that stopped the rewrite (its text is left
+        out: a decoder's message can echo the bytes it could not read)
+    """
+
+    thread_id: str
+    table: str
+    column: str
+    checkpoint_ns: str
+    checkpoint_id: str
+    task_id: str | None
+    idx: int | None
+    error_type: str
+
+
+@dataclass(frozen=True)
 class CheckpointAnonymization:
-    """what one anonymization run rewrote.
+    """what one anonymization run rewrote, and what it could not.
 
     :ivar threads: threads processed
     :ivar checkpoints_rewritten: checkpoint rows whose stored blobs changed
@@ -63,12 +95,16 @@ class CheckpointAnonymization:
     :ivar l2_prefix_swept: whether every namespaced L2 bundle was swept -- ``None`` when the
         saver has no L2, ``False`` when its L2 cannot sweep by prefix (only root-namespace
         bundles were evicted)
+    :ivar unreadable: every stored blob the rule could not be applied to; empty when the
+        erasure reached every row. a non-empty value means the erasure is NOT complete for
+        those rows, however many times the run is repeated
     """
 
     threads: int
     checkpoints_rewritten: int
     writes_rewritten: int
     l2_prefix_swept: bool | None
+    unreadable: tuple[UnreadableCheckpointBlob, ...] = ()
 
 
 def anonymize_checkpoint_value(value: Any) -> Any:

@@ -64,8 +64,7 @@ if TYPE_CHECKING:
 __all__ = ["to_langchain_tool"]
 
 #: the id of the tool call a wrapped TearsTool is answering, while it answers one; ``None`` when
-#: it was invoked with bare arguments. set by :class:`_TearsStructuredTool`'s ``invoke`` /
-#: ``ainvoke``.
+#: it was run with bare arguments. set by :class:`_TearsStructuredTool`'s ``run`` / ``arun``.
 _answering_tool_call: ContextVar[str | None] = ContextVar("threetears_answering_tool_call", default=None)
 
 
@@ -92,9 +91,10 @@ class _TearsStructuredTool(StructuredTool):
     off the artifact rather than parsing prose. so a failure answering a
     tool call builds its own ``ToolMessage`` (``status="error"``,
     artifact kept), which LangChain passes through as it stands. that
-    needs the call's id, which arrives with the call at ``invoke`` /
-    ``ainvoke`` -- where LangGraph's ``ToolNode`` and
-    :class:`~threetears.agent.tools.executor.ToolExecutor` hand it over --
+    needs the call's id, which arrives with the call at ``run`` / ``arun``
+    as ``tool_call_id`` -- ``invoke`` / ``ainvoke`` (LangGraph's
+    ``ToolNode``, :class:`~threetears.agent.tools.executor.ToolExecutor`)
+    pass it there, and LangChain's ``AgentExecutor`` calls them directly --
     and reaches nothing below them.
 
     it also carries the wrapped tool's ``requires_confirmation``: a gate
@@ -106,43 +106,62 @@ class _TearsStructuredTool(StructuredTool):
 
     requires_confirmation: bool = False
 
-    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002
-        """invoke the tool with the call's id visible to the wrapper.
+    def run(self, tool_input: Any, *args: Any, **kwargs: Any) -> Any:
+        """run the tool with the id of the call it answers visible to the wrapper.
 
-        :param input: a tool call, or the tool's bare arguments
-        :ptype input: Any
-        :param config: the runnable config
-        :ptype config: RunnableConfig | None
-        :param kwargs: forwarded to ``StructuredTool.invoke``
+        ``run`` / ``arun`` are the one route every call takes: ``invoke`` / ``ainvoke`` reach them
+        with the call's id as ``tool_call_id``, and LangChain's classic ``AgentExecutor`` calls
+        them directly. setting the id here, rather than in ``invoke``, is what lets a failure
+        answered through ``run`` keep its artifact too.
+
+        :param tool_input: the tool's arguments
+        :ptype tool_input: Any
+        :param args: forwarded to ``StructuredTool.run``
+        :ptype args: Any
+        :param kwargs: forwarded to ``StructuredTool.run``; its ``tool_call_id`` names the call
         :ptype kwargs: Any
         :return: the tool's output
         :rtype: Any
         """
-        token = _answering_tool_call.set(_tool_call_id(input))
+        token = _answering_tool_call.set(_call_id_of(tool_input, kwargs))
         try:
-            output = super().invoke(input, config, **kwargs)
+            output = super().run(tool_input, *args, **kwargs)
         finally:
             _answering_tool_call.reset(token)
         return output
 
-    async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002
-        """invoke the tool asynchronously with the call's id visible to the wrapper.
+    async def arun(self, tool_input: Any, *args: Any, **kwargs: Any) -> Any:
+        """run the tool asynchronously with the id of the call it answers visible; see :meth:`run`.
 
-        :param input: a tool call, or the tool's bare arguments
-        :ptype input: Any
-        :param config: the runnable config
-        :ptype config: RunnableConfig | None
-        :param kwargs: forwarded to ``StructuredTool.ainvoke``
+        :param tool_input: the tool's arguments
+        :ptype tool_input: Any
+        :param args: forwarded to ``StructuredTool.arun``
+        :ptype args: Any
+        :param kwargs: forwarded to ``StructuredTool.arun``; its ``tool_call_id`` names the call
         :ptype kwargs: Any
         :return: the tool's output
         :rtype: Any
         """
-        token = _answering_tool_call.set(_tool_call_id(input))
+        token = _answering_tool_call.set(_call_id_of(tool_input, kwargs))
         try:
-            output = await super().ainvoke(input, config, **kwargs)
+            output = await super().arun(tool_input, *args, **kwargs)
         finally:
             _answering_tool_call.reset(token)
         return output
+
+
+def _call_id_of(tool_input: Any, run_kwargs: dict[str, Any]) -> str | None:
+    """the id of the tool call a ``run`` / ``arun`` is answering, or ``None`` for bare arguments.
+
+    :param tool_input: what the tool was run with
+    :ptype tool_input: Any
+    :param run_kwargs: the keyword arguments ``run`` / ``arun`` received
+    :ptype run_kwargs: dict[str, Any]
+    :return: the call's id
+    :rtype: str | None
+    """
+    call_id = run_kwargs.get("tool_call_id")
+    return call_id if isinstance(call_id, str) else _tool_call_id(tool_input)
 
 
 def _failure_text(tool_name: str, outcome: ToolResult) -> str:
@@ -166,20 +185,22 @@ def _failure_text(tool_name: str, outcome: ToolResult) -> str:
     return "\n\n".join(parts) if parts else f"{tool_name} failed and gave no reason."
 
 
-def _call_context(config: RunnableConfig) -> CallContext | None:
+def _call_context(config: RunnableConfig | None) -> CallContext | None:
     """the call's identity, as the graph config carries it, or ``None`` when it carries none.
 
     Read from ``config["configurable"]["call_context"]``, where the aibots SDK's transport puts the
-    :class:`CallContext` of every turn -- the key its own tool wrapper reads.
+    :class:`CallContext` of every turn -- the key its own tool wrapper reads. A tool ``run`` /
+    ``arun`` directly with no config (LangChain's ``AgentExecutor`` does) is handed ``None``, which
+    carries no call context either.
 
-    :param config: the graph config LangChain hands the tool
-    :ptype config: RunnableConfig
+    :param config: the graph config LangChain hands the tool, or ``None`` when the caller gave none
+    :ptype config: RunnableConfig | None
     :return: the call context, or ``None``
     :rtype: CallContext | None
     :raises TypeError: when the key holds anything but a :class:`CallContext` -- a host bug, said so
         rather than run as if the call had no identity
     """
-    configurable = config.get("configurable") or {}
+    configurable = (config or {}).get("configurable") or {}
     call_context = configurable.get("call_context")
     if call_context is not None and not isinstance(call_context, CallContext):
         raise TypeError(

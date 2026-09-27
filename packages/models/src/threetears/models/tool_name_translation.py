@@ -55,36 +55,12 @@ Per-provider integration is a thin subclass that:
 See :mod:`threetears.models.providers.openrouter` and
 :mod:`threetears.models.providers.anthropic` for the two concrete
 integrations.
-
-``config`` propagation bug (found live: every REAL 3tears builtin tool -- e.g.
-``threetears.calculator`` -- raised ``TypeError: StructuredTool._arun() missing 1 required
-keyword-only argument: 'config'`` whenever actually invoked through a proxied (dotted) name,
-across every provider that uses this module, not just one). Root cause: ``BaseTool.arun()``/
-``run()`` only forward ``config`` (and ``run_manager``) into ``self._arun(...)``/``self._run(...)``
-when THAT method's own signature declares a ``RunnableConfig``-typed parameter -- it introspects
-``self._arun`` via type hints, not just "does a config exist somewhere". ``NameMangledToolProxy``'s
-``_arun``/``_run`` never declared one, so LangChain's own machinery never gave the proxy a
-``config`` to forward, and the proxy's body called ``self._delegate._arun(*args, **kwargs)``
-directly -- bypassing the delegate's own public ``arun()``/``run()`` wrapper (deliberately, per the
-double-callback rationale in the method docstrings below) with no ``config`` in ``kwargs`` at all.
-That's harmless for a delegate whose ``_arun`` doesn't require it (a plain custom ``BaseTool``
-subclass), but every REAL 3tears builtin is a ``StructuredTool`` (built by
-:func:`~threetears.agent.tools.langchain_adapter.to_langchain_tool`), and LangChain's own
-``StructuredTool._arun`` declares ``config: RunnableConfig`` as a REQUIRED keyword-only parameter
--- so every single proxied builtin tool call failed. Fixed by declaring ``config``/``run_manager``
-on the proxy's own ``_arun``/``_run`` (so the caller's introspection finds and supplies them), then
-forwarding them to the delegate ONLY if the delegate's own method actually wants them -- the exact
-same conditional introspection ``BaseTool.arun()``/``run()`` themselves use, applied one level
-deeper.
 """
 
 from __future__ import annotations
 
-import inspect
-from typing import Any, get_type_hints
+from typing import Any
 
-from langchain_core.callbacks import AsyncCallbackManagerForToolRun, CallbackManagerForToolRun
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
 
@@ -116,33 +92,6 @@ def mangle_tool_name(name: str) -> str:
     :rtype: str
     """
     return name.replace(".", "_")
-
-
-def _delegate_context_kwargs(
-    delegate_method: Any,
-    config: RunnableConfig,
-    run_manager: Any,
-) -> dict[str, Any]:
-    """Build the subset of ``{<config param name>: config, "run_manager": run_manager}``
-    ``delegate_method`` actually declares -- mirrors ``BaseTool.arun``/``run``'s own
-    introspection (a ``RunnableConfig``-type-hinted parameter for config, bare presence for
-    ``run_manager``) one level deeper, so a delegate gets exactly what its OWN signature wants,
-    never an unexpected kwarg and never a silently-missing required one.
-    """
-    forwarded: dict[str, Any] = {}
-    try:
-        hints = get_type_hints(delegate_method)
-    except Exception:  # prawduct:allow prawduct/broad-except -- signature introspection on an
-        # arbitrary delegate must never break dispatch; worst case config isn't forwarded and
-        # the delegate raises its own clear error, same as before this fix existed.
-        hints = {}
-    for name, type_ in hints.items():
-        if type_ is RunnableConfig:
-            forwarded[name] = config
-            break
-    if "run_manager" in inspect.signature(delegate_method).parameters:
-        forwarded["run_manager"] = run_manager
-    return forwarded
 
 
 class NameMangledToolProxy(BaseTool):
@@ -211,105 +160,71 @@ class NameMangledToolProxy(BaseTool):
         """
         return self._delegate.name
 
-    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002
-        """invoke the delegate itself, so the answer is exactly the tool's.
+    def run(self, tool_input: Any, *args: Any, **kwargs: Any) -> Any:
+        """run the delegate itself, so the answer is exactly the tool's.
 
         The proxy exists to change the name a provider sees; a call answers as the tool answers
-        it. Invoking the delegate's own ``invoke`` -- not running the proxy's wrapper around the
-        delegate's ``_arun`` -- is what keeps that true for a tool whose answer is decided above
-        ``_arun``: a TearsTool answers a failed call with its own ``ToolMessage``, artifact
-        included, and through ``_arun`` the typed failure record was lost. Only the delegate's
-        callbacks fire, once.
+        it. ``run`` / ``arun`` are the one route every call takes -- ``invoke`` / ``ainvoke``
+        (LangGraph's ``ToolNode``) reach them, and LangChain's classic ``AgentExecutor`` calls them
+        directly -- so handing them to the delegate's own ``run`` / ``arun`` answers every entry
+        point the same way: a TearsTool's failed call keeps its ``ToolMessage`` and artifact, the
+        delegate's config and call id reach it untouched, and only the delegate's callbacks fire,
+        once. The proxy runs no wrapper of its own around the delegate.
 
-        :param input: a tool call, or the tool's bare arguments
-        :ptype input: Any
-        :param config: the runnable config
-        :ptype config: RunnableConfig | None
-        :param kwargs: forwarded to the delegate's ``invoke``
+        :param tool_input: the tool's arguments
+        :ptype tool_input: Any
+        :param args: forwarded to the delegate's ``run``
+        :ptype args: Any
+        :param kwargs: forwarded to the delegate's ``run``
         :ptype kwargs: Any
         :return: what the delegate returns
         :rtype: Any
         """
-        return self._delegate.invoke(input, config, **kwargs)
+        return self._delegate.run(tool_input, *args, **kwargs)
 
-    async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002
-        """invoke the delegate itself asynchronously; see :meth:`invoke`.
+    async def arun(self, tool_input: Any, *args: Any, **kwargs: Any) -> Any:
+        """run the delegate itself asynchronously; see :meth:`run`.
 
-        :param input: a tool call, or the tool's bare arguments
-        :ptype input: Any
-        :param config: the runnable config
-        :ptype config: RunnableConfig | None
-        :param kwargs: forwarded to the delegate's ``ainvoke``
+        :param tool_input: the tool's arguments
+        :ptype tool_input: Any
+        :param args: forwarded to the delegate's ``arun``
+        :ptype args: Any
+        :param kwargs: forwarded to the delegate's ``arun``
         :ptype kwargs: Any
         :return: what the delegate returns
         :rtype: Any
         """
-        return await self._delegate.ainvoke(input, config, **kwargs)
+        return await self._delegate.arun(tool_input, *args, **kwargs)
 
-    async def _arun(
-        self,
-        *args: Any,
-        config: RunnableConfig,
-        run_manager: AsyncCallbackManagerForToolRun | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        """forward async execution to the delegate's ``_arun``.
+    def _run(self, *args: Any, **kwargs: Any) -> Any:
+        """never reached: :meth:`run` hands every call to the delegate.
 
-        Calling ``delegate._arun`` rather than ``delegate.arun`` is
-        deliberate: ``arun`` is the LangChain wrapper that runs
-        callbacks/validation around the subclass's ``_arun`` body.
-        Our proxy already wears that wrapper at the proxy level
-        (LangChain calls ``proxy.arun`` -> ``proxy._arun``); calling
-        ``delegate.arun`` here would double-fire callbacks and
-        re-process the input.
+        ``BaseTool`` declares ``_run`` abstract, so the proxy must define it; a body that forwarded
+        to the delegate's ``_run`` would be a second route below the point the tool decides its
+        answer, which is the route that lost a failure's artifact.
 
-        ``config``/``run_manager`` are declared explicitly (rather than absorbed into
-        ``**kwargs``) so ``BaseTool.arun``'s own introspection of THIS method finds a
-        ``RunnableConfig``-typed parameter and actually supplies them -- see the "config
-        propagation bug" note in this module's docstring. Forwarded to the delegate's ``_arun``
-        ONLY if ITS OWN signature wants them (a real 3tears builtin is a ``StructuredTool``,
-        whose ``_arun`` requires ``config``; a plain custom ``BaseTool`` may not accept it at
-        all, so forwarding unconditionally would break that case with an unexpected-kwarg error).
-
-        :param args: positional forwarded to the delegate
+        :param args: unused
         :ptype args: Any
-        :param config: this call's ``RunnableConfig``, forwarded only if the delegate wants it
-        :ptype config: RunnableConfig
-        :param run_manager: this call's callback manager, forwarded only if the delegate wants it
-        :ptype run_manager: AsyncCallbackManagerForToolRun | None
-        :param kwargs: keyword forwarded to the delegate
+        :param kwargs: unused
         :ptype kwargs: Any
-        :return: delegate result
+        :return: never returns
         :rtype: Any
+        :raises NotImplementedError: always
         """
-        kwargs.update(_delegate_context_kwargs(self._delegate._arun, config, run_manager))
-        return await self._delegate._arun(*args, **kwargs)
+        raise NotImplementedError("NameMangledToolProxy runs through its delegate's run/arun, never a body of its own")
 
-    def _run(
-        self,
-        *args: Any,
-        config: RunnableConfig,
-        run_manager: CallbackManagerForToolRun | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        """forward sync execution to the delegate's ``_run``.
+    async def _arun(self, *args: Any, **kwargs: Any) -> Any:
+        """never reached: :meth:`arun` hands every call to the delegate; see :meth:`_run`.
 
-        Same double-wrapper rationale, and same conditional ``config``/``run_manager``
-        forwarding, as :meth:`_arun`.
-
-        :param args: positional forwarded to the delegate
+        :param args: unused
         :ptype args: Any
-        :param config: this call's ``RunnableConfig``, forwarded only if the delegate wants it
-        :ptype config: RunnableConfig
-        :param run_manager: this call's callback manager, forwarded only if the delegate wants it
-        :ptype run_manager: CallbackManagerForToolRun | None
-        :param kwargs: keyword forwarded to the delegate
+        :param kwargs: unused
         :ptype kwargs: Any
-        :return: delegate result
+        :return: never returns
         :rtype: Any
+        :raises NotImplementedError: always
         """
-        kwargs.update(_delegate_context_kwargs(self._delegate._run, config, run_manager))
-        return self._delegate._run(*args, **kwargs)
+        raise NotImplementedError("NameMangledToolProxy runs through its delegate's run/arun, never a body of its own")
 
 
 def build_name_translation(

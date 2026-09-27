@@ -22,6 +22,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 from threetears.langgraph.anonymize import (
     IDENTIFYING_METADATA_KEYS,
     CheckpointAnonymization,
+    UnreadableCheckpointBlob,
     anonymize_checkpoint_value,
 )
 from threetears.langgraph.caching import (
@@ -188,6 +189,7 @@ __all__ = [
     "ToolResultOffloader",
     "ToolStartedEvent",
     "UUIDSafeSerializer",
+    "UnreadableCheckpointBlob",
     "WorkflowCompletedEvent",
     "WorkflowStartedEvent",
     "WorkflowStepCompletedEvent",

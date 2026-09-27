@@ -11,13 +11,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+import inspect
 from datetime import timedelta
-from unittest.mock import patch
 
 import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
-from threetears.nats import distributed_lock as distributed_lock_module
 from threetears.nats import LockHeld, LockHold, LockLossReason, LockLost, NatsKvBucket, nats_distributed_lock
 from threetears.nats.errors import KvError
 
@@ -529,15 +528,19 @@ class TestALockAStuckHolderCannotKeepForever:
         fake_kv = _FakeKv()
         client = _FakeClient(fake_kv)
 
-        with patch.object(distributed_lock_module, "_MAX_HOLD", timedelta(seconds=0)):
-            async with nats_distributed_lock(
-                client, "wedged", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1), cancel_on_loss=False
-            ) as hold:
-                # a negative assertion cannot wait for its condition, so this
-                # one stays a sleep: several heartbeat intervals of slack, and
-                # a loaded loop only ever grants MORE of them.
-                await asyncio.sleep(0.05)
-                renewals_while_wedged = len(fake_kv.update_calls) + len(fake_kv.put_calls)
+        async with nats_distributed_lock(
+            client,
+            "wedged",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+            cancel_on_loss=False,
+            max_hold=timedelta(seconds=0),
+        ) as hold:
+            # a negative assertion cannot wait for its condition, so this
+            # one stays a sleep: several heartbeat intervals of slack, and
+            # a loaded loop only ever grants MORE of them.
+            await asyncio.sleep(0.05)
+            renewals_while_wedged = len(fake_kv.update_calls) + len(fake_kv.put_calls)
 
         assert renewals_while_wedged == 0, (
             "the heartbeat renewed a lock whose holder was past its maximum hold, which is "
@@ -966,17 +969,17 @@ class TestTheHolderIsToldWhenTheLockIsLost:
         fake_kv = _FakeKv()
         client = _FakeClient(fake_kv)
 
-        with patch.object(distributed_lock_module, "_MAX_HOLD", timedelta(seconds=0)):
-            async with nats_distributed_lock(
-                client,  # type: ignore[arg-type]
-                "checked",
-                heartbeat=timedelta(seconds=0.01),
-                ttl=timedelta(seconds=1),
-                cancel_on_loss=False,
-            ) as hold:
-                await asyncio.wait_for(hold.lost.wait(), timeout=5)
-                with pytest.raises(LockLost) as lost:
-                    hold.raise_if_lost()
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "checked",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+            cancel_on_loss=False,
+            max_hold=timedelta(seconds=0),
+        ) as hold:
+            await asyncio.wait_for(hold.lost.wait(), timeout=5)
+            with pytest.raises(LockLost) as lost:
+                hold.raise_if_lost()
 
         assert lost.value.reason is LockLossReason.MAX_HOLD
 
@@ -986,3 +989,41 @@ class TestTheHolderIsToldWhenTheLockIsLost:
             assert isinstance(hold, LockHold)
             hold.raise_if_lost()
         assert not hold.lost.is_set()
+
+
+class TestTheMaximumHoldIsTheCallersToSet:
+    """a caller whose body legitimately runs longer than the default, or that wants a wedge
+    noticed sooner, sets its own ``max_hold`` rather than living with one number."""
+
+    def test_the_default_is_six_hours(self) -> None:
+        default = inspect.signature(nats_distributed_lock).parameters["max_hold"].default
+        assert default == timedelta(hours=6)
+
+    @pytest.mark.asyncio
+    async def test_a_callers_max_hold_interrupts_a_wedged_body(self) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        with pytest.raises(LockLost) as lost:
+            async with nats_distributed_lock(
+                client,  # type: ignore[arg-type]
+                "wedged-by-its-own-limit",
+                heartbeat=timedelta(seconds=0.01),
+                ttl=timedelta(seconds=1),
+                max_hold=timedelta(seconds=0.03),
+            ):
+                await asyncio.sleep(5)
+
+        assert lost.value.reason is LockLossReason.MAX_HOLD
+
+    @pytest.mark.asyncio
+    async def test_a_negative_max_hold_is_refused(self) -> None:
+        client = _FakeClient(_FakeKv())
+
+        with pytest.raises(ValueError, match="max_hold"):
+            async with nats_distributed_lock(
+                client,  # type: ignore[arg-type]
+                "never",
+                max_hold=timedelta(seconds=-1),
+            ):
+                pass

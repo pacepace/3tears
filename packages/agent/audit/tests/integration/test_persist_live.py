@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
 import pytest
 
-from threetears.agent.audit import AuditEvent
+from threetears.agent.audit import ANONYMIZED_MARKER, AuditEvent, declare_safe_detail_keys
 from threetears.agent.audit.persist import (
     anonymize_audit_rows,
     ensure_audit_events_table,
@@ -27,7 +27,10 @@ from threetears.agent.audit.persist import (
 
 pytestmark = pytest.mark.integration
 
-_MARKER = "[anonymized]"
+_MARKER = ANONYMIZED_MARKER
+
+#: an event family only these tests publish, whose keys the non-ASCII / float case needs kept by the rule
+_KEEPING_FAMILY = "persistlive"
 
 
 @pytest.fixture
@@ -101,7 +104,8 @@ async def test_details_that_are_not_json_native_are_stored(db: asyncpg.Pool) -> 
 
 async def test_an_existing_table_without_the_newer_columns_is_migrated(db_container: str) -> None:
     """A deployment that already persisted audit (scriob's table has no acting_as_principal_id or
-    ip_address) must keep working after adopting this: every insert used to fail."""
+    ip_address) must keep working after adopting this: every insert used to fail. The table here also
+    lacks ``outcome``, which the insert always names and which is NOT NULL with a default."""
     schema = f"audit_old_{uuid.uuid4().hex[:8]}"
     admin = await asyncpg.connect(db_container)
     try:
@@ -113,14 +117,20 @@ async def test_an_existing_table_without_the_newer_columns_is_migrated(db_contai
     try:
         await pool.execute(
             "CREATE TABLE audit_events (id UUID PRIMARY KEY, timestamp TIMESTAMPTZ NOT NULL, event_type TEXT NOT NULL, "
-            "action TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'success', actor_user_id UUID, calling_agent_id UUID, "
+            "action TEXT NOT NULL, actor_user_id UUID, calling_agent_id UUID, "
             "owner_agent_id UUID, customer_id UUID, resource_namespace_id UUID, resource_namespace_type TEXT, "
             "correlation_id UUID NOT NULL, conversation_id UUID, details JSONB NOT NULL DEFAULT '{}')"
         )
         await ensure_audit_events_table(pool)
-        event = _event(acting_as_principal_id=uuid.uuid4())
-        await persist_audit_event(pool, event)
-        assert await pool.fetchval("SELECT acting_as_principal_id FROM audit_events") == event.acting_as_principal_id
+        event = _event(acting_as_principal_id=uuid.uuid4(), outcome="failure")
+        await persist_audit_event(pool, event, ip_address="203.0.113.1")
+        row = await pool.fetchrow("SELECT acting_as_principal_id, outcome, ip_address FROM audit_events")
+        assert row is not None
+        assert (row["acting_as_principal_id"], row["outcome"], row["ip_address"]) == (
+            event.acting_as_principal_id,
+            "failure",
+            "203.0.113.1",
+        )
     finally:
         await pool.close()
 
@@ -135,12 +145,6 @@ async def test_prune_removes_only_rows_older_than_the_window(db: asyncpg.Pool) -
     assert [r["id"] for r in await db.fetch("SELECT id FROM audit_events")] == [fresh.id]
 
 
-def _anonymize(details: Mapping[str, Any], *, event_type: str) -> dict[str, Any]:
-    """A stand-in with the 0.55.0 contract's shape: every key kept, unsafe values masked."""
-    safe = {"user_id"}
-    return {k: (v if k in safe or v is None else _MARKER) for k, v in details.items()}
-
-
 async def test_erasure_rewrites_details_and_ip_but_keeps_every_row_and_id(db: asyncpg.Pool) -> None:
     actor = uuid.uuid4()
     mine = [_event(actor_user_id=actor) for _ in range(3)]
@@ -149,9 +153,7 @@ async def test_erasure_rewrites_details_and_ip_but_keeps_every_row_and_id(db: as
         await persist_audit_event(db, event, ip_address="203.0.113.7")
     before = {r["id"]: dict(r) for r in await db.fetch("SELECT * FROM audit_events")}
 
-    result = await anonymize_audit_rows(
-        db, actor_user_ids=[actor], batch_size=2, anonymize=_anonymize, anonymize_ip=lambda _ip: None, marker=_MARKER
-    )
+    result = await anonymize_audit_rows(db, actor_user_ids=[actor], batch_size=2)
     assert (result.rows_matched, result.rows_changed) == (3, 3)
 
     after = {r["id"]: r for r in await db.fetch("SELECT *, details::text AS details_text FROM audit_events")}
@@ -167,9 +169,7 @@ async def test_erasure_rewrites_details_and_ip_but_keeps_every_row_and_id(db: as
         ), "ids and event fields never change"
     assert after[theirs.id]["ip_address"] == "203.0.113.7", "another actor's rows are untouched"
 
-    again = await anonymize_audit_rows(
-        db, actor_user_ids=[actor], anonymize=_anonymize, anonymize_ip=lambda _ip: None, marker=_MARKER
-    )
+    again = await anonymize_audit_rows(db, actor_user_ids=[actor])
     assert (again.rows_matched, again.rows_changed) == (3, 0), "idempotent"
 
 
@@ -186,9 +186,7 @@ async def test_erasure_handles_every_stored_details_shape(db: asyncpg.Pool) -> N
         await persist_audit_event(db, event)
         await db.execute("UPDATE audit_events SET details = $1::text::jsonb WHERE id = $2", raw, event.id)
         ids[label] = event.id
-    await anonymize_audit_rows(
-        db, actor_user_ids=[actor], anonymize=_anonymize, anonymize_ip=lambda _ip: None, marker=_MARKER
-    )
+    await anonymize_audit_rows(db, actor_user_ids=[actor])
     stored = {r["id"]: json.loads(r["d"]) for r in await db.fetch("SELECT id, details::text AS d FROM audit_events")}
     assert json.loads(stored[ids["string-held object"]]) == {"email": _MARKER}, "judged as the object, kept string-held"
     assert stored[ids["non-object"]] == _MARKER
@@ -198,40 +196,29 @@ async def test_erasure_handles_every_stored_details_shape(db: asyncpg.Pool) -> N
 async def test_erasure_is_idempotent_for_non_ascii_and_float_values(db: asyncpg.Pool) -> None:
     """ "Changed" is decided by the database, not by comparing JSON text: jsonb renders non-ASCII and
     floats its own way, and a text comparison counted untouched rows as changed on every pass."""
+    declare_safe_detail_keys(_KEEPING_FAMILY, ("label", "ratio", "tiny"))
     actor = uuid.uuid4()
-    event = _event(actor_user_id=actor, details={"user_id": "José 日本", "ratio": 1.10, "tiny": 1e-7, "email": "x"})
+    event = _event(
+        actor_user_id=actor,
+        event_type=f"{_KEEPING_FAMILY}.value",
+        details={"label": "José 日本", "ratio": 1.10, "tiny": 1e-7, "email": "x"},
+    )
     await persist_audit_event(db, event)
 
-    def keep_most(details: Mapping[str, Any], *, event_type: str) -> dict[str, Any]:
-        return {k: (_MARKER if k == "email" else v) for k, v in details.items()}
-
-    first = await anonymize_audit_rows(
-        db, actor_user_ids=[actor], anonymize=keep_most, anonymize_ip=lambda _: None, marker=_MARKER
-    )
-    second = await anonymize_audit_rows(
-        db, actor_user_ids=[actor], anonymize=keep_most, anonymize_ip=lambda _: None, marker=_MARKER
-    )
+    first = await anonymize_audit_rows(db, actor_user_ids=[actor])
+    second = await anonymize_audit_rows(db, actor_user_ids=[actor])
     assert (first.rows_changed, second.rows_changed) == (1, 0)
     stored = json.loads(await db.fetchval("SELECT details::text FROM audit_events"))
-    assert stored["user_id"] == "José 日本" and stored["email"] == _MARKER
+    assert stored["label"] == "José 日本" and stored["ratio"] == 1.10 and stored["email"] == _MARKER
 
 
 async def test_a_batch_size_below_one_is_refused(db: asyncpg.Pool) -> None:
     with pytest.raises(ValueError, match="batch_size"):
-        await anonymize_audit_rows(
-            db,
-            actor_user_ids=[uuid.uuid4()],
-            batch_size=0,
-            anonymize=_anonymize,
-            anonymize_ip=lambda _: None,
-            marker=_MARKER,
-        )
+        await anonymize_audit_rows(db, actor_user_ids=[uuid.uuid4()], batch_size=0)
 
 
 async def test_erasure_with_the_platform_anonymizers(db: asyncpg.Pool) -> None:
-    """The production path, with nothing injected. Skips until the 0.55.0 erasure modules are present."""
-    pytest.importorskip("threetears.agent.audit.anonymize")
-    pytest.importorskip("threetears.observe.erasure")
+    """The production path on real column types: an address and an unsafe detail are gone."""
     actor = uuid.uuid4()
     event = _event(actor_user_id=actor, details={"email": "someone@example.test"})
     await persist_audit_event(db, event, ip_address="203.0.113.9")

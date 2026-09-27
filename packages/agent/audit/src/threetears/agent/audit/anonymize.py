@@ -474,8 +474,14 @@ def is_classified_detail_key(key: str, *, event_type: str) -> bool:
     whether someone decided about ``key`` for this event type.
 
     classified means safe for the event type, or recorded as personal. an
-    unclassified key is still masked on erasure; this answers the question a
-    gate asks, so producers cannot publish keys nobody looked at.
+    unclassified key is still masked on erasure. this is the in-process form of
+    the question, for a producer or a test that holds this package.
+
+    the enforcement gate (``threetears.enforcement.audit_details``) does NOT call
+    it: the enforcement package cannot depend on this one, so the gate is handed
+    :func:`safe_detail_keys_for` and :data:`PERSONAL_DETAIL_KEYS` and carries its
+    own copy of this predicate. a change to what "classified" means here must be
+    made there too, or the gate goes on judging by the old rule.
 
     :param key: a details key
     :ptype key: str

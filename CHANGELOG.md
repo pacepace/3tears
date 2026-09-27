@@ -200,7 +200,10 @@ registry and never told to the pod.
 - **Rollout concession, this release only:** an agent's in-process manifest with NO token
   is still admitted, for that agent's own copies only, and logged once per pod id at
   WARNING ("registered unsigned"). A pod id that has registered with a verified token is
-  refused unsigned afterwards. A later release refuses unsigned agent manifests outright.
+  refused unsigned afterwards. 0.56.0 refuses unsigned agent manifests outright, and the family
+  cannot reach it with the concession in place: `test_unsigned_agent_concession_expires.py` fails
+  once the version is 0.56.0 or later while `admit_copy` still admits an unverified agent-scoped
+  copy, and its failure names the one-clause removal. There is no switch for it.
 - **Changed:** re-registration goes through admission every time. A verified pod refused a
   tool it held a copy of loses that copy; other pods' copies are untouched. An unverified
   manifest withdraws nothing.
@@ -292,7 +295,9 @@ should route an audit record's content through it** rather than writing its own.
   events the hub erases from the platform audit table ship declared in the module
   itself; a runtime declaration is for a service anonymizing its own local store.
 - **New (minor):** `is_classified_detail_key(key, *, event_type)`: whether a key is
-  safe for that event type or recorded as personal.
+  safe for that event type or recorded as personal, in process. The enforcement gate below
+  does not call it (it cannot import this package) and carries its own copy of the
+  predicate; a change to one must be made to the other.
 - **New (minor):** enforcement domain `threetears.enforcement.audit_details`, so every
   producing repo runs the same gate over its own `src/`. It fails when a `details` key
   is neither safe nor personal, judging nested literal keys only where every key above
@@ -345,15 +350,18 @@ asking the hub lives here, so neither side owns it.
   summed, and an empty list sends nothing. A refusal (`INVALID_REQUEST`,
   `IDENTITY_UNVERIFIED`, `AGENT_MISMATCH`, or a code this client does not know) raises
   `AuditAnonymizeRefusedError`, carrying the hub's `error_code`; retrying meets it again.
-  No token, a timeout, an undecodable reply, a reply to a different request (its
-  `correlation_id` is checked), a success without counts or naming another agent, and the
-  hub's `ANONYMIZE_FAILED` raise `AuditAnonymizeUnavailableError`, which is safe to retry.
-  Both errors name the batch's `correlation_id`.
+  So does a refusal that carries NO `correlation_id`: a hub that could not decode the body
+  had none to echo, and the responder echoes it whenever it could read one. No token, a
+  timeout, an undecodable reply, a reply carrying another request's `correlation_id` (a
+  refusal among them), a success without counts, without a `correlation_id` or naming
+  another agent, and the hub's `ANONYMIZE_FAILED` raise `AuditAnonymizeUnavailableError`,
+  which is safe to retry. Both errors name the batch's `correlation_id`.
 - **New (minor):** the wire models `AuditAnonymizeRequest` (identity token, correlation
   id, the caller's own `agent_id` for comparison, 1..500 `actor_user_ids`; extra fields
   refused) and `AuditAnonymizeReply` (counts or `error_code` / `error_message`), the error
   vocabulary `AUDIT_ANONYMIZE_ERROR_CODES` (`INVALID_REQUEST`, `IDENTITY_UNVERIFIED`,
-  `AGENT_MISMATCH`, `ANONYMIZE_FAILED`), and `AuditAnonymization`.
+  `AGENT_MISMATCH`, `ANONYMIZE_FAILED`), and `AuditAnonymization` -- the one result type
+  both erasure paths return (the hub-less `anonymize_audit_rows` too).
 - **Grants:** an agent pod may publish the subject; the hub subscribes. A tool pod may not.
 - **Hub responder obligations** are written in `threetears/agent/audit/erasure.py`: verify
   the token and derive the agent from it, refuse a body naming another agent, match only
@@ -391,6 +399,15 @@ live inside serialized checkpoint and pending-write blobs.
   nothing. Then evicts the threads' cached bundles: this pod's L1, and the shared L2 (root
   key, plus a prefix sweep when the cache can), RAISING if an eviction fails. The
   customer is reconciled against the saver's scope as `adelete_thread` does.
+- **Failures are located.** A blob the serializer cannot decode fails the same way on every
+  run, so it is not raised: it is logged at ERROR naming the thread, table, column and row
+  keys, reported in the result's `unreadable` (a tuple of the new
+  `threetears.langgraph.UnreadableCheckpointBlob`), and skipped while every other row and
+  thread is still rewritten. The erasure is complete only when `unreadable` is empty; such a
+  blob may still hold the person's data, and the graph cannot load it either. Anything else
+  (the executor, a cache eviction) is logged at ERROR naming the thread and stage, noted on
+  the exception with the thread, stage and -- for a failed write -- the row, and re-raised; a
+  rerun completes that run.
 - **New (minor):** `threetears.langgraph.IDENTIFYING_METADATA_KEYS`, `anonymize_checkpoint_value`
   (the pure rule), and `CheckpointAnonymization` (what a run rewrote). The rule names what
   identifies the person; an unknown metadata key is KEPT, the inverse of the audit rule,
@@ -492,7 +509,9 @@ A pod raised on them and was failed by a registry about to admit it.
   verification failure with it, including a signing key rotated before the registry's key cache
   refreshed, and the pod mints a fresh token for every manifest.
 - **Fixed:** the three raise only on a final code. A temporary refusal is logged at WARNING once
-  per cause, the heartbeat re-publishes the manifest and now re-reads the verdict while any
+  per episode of its cause -- a cause that clears and comes back (the next key rotation, the next
+  hub read failure) warns again, and the reply that clears the last one logs an INFO line -- the
+  heartbeat re-publishes the manifest and now re-reads the verdict while any
   refusal stands (it re-asked only while the pod's identity was unknown, so a refusal on a reply
   that admitted other tools was never re-read), and the pod is ready once admitted -- no restart.
   A reply refusing the whole manifest with a code and no tool named (`INVALID_MANIFEST`) refuses
@@ -528,9 +547,16 @@ every argument dropped.
   bind instead of advertising an empty one.
 - **Fixed (`3tears-models`):** `NameMangledToolProxy` takes a JSON Schema `args_schema`, and
   carries the delegate's `response_format`, `handle_tool_error` and `handle_validation_error`.
-  A `(content, artifact)` tool answered through the proxy as a bare tuple. Its `invoke` and
-  `ainvoke` now hand the call to the delegate's own, so a proxied call answers exactly as the
-  tool does: through the delegate's `_arun`, a TearsTool's failed call lost its artifact.
+  A `(content, artifact)` tool answered through the proxy as a bare tuple. Its `run` and
+  `arun` -- the one route `invoke` / `ainvoke` take, and the one LangChain's classic
+  `AgentExecutor` calls directly -- hand the call to the delegate's own, so a proxied call
+  answers exactly as the tool does on every entry point: through the delegate's `_arun`, a
+  TearsTool's failed call lost its artifact and fired the proxy's callbacks instead of the
+  tool's. The proxy's forwarding `_arun` / `_run` are gone.
+- **Fixed (`3tears-agent-tools`):** a TearsTool reached through `run` / `arun` (LangChain's
+  `AgentExecutor` route) keeps a failure's artifact, as through `invoke`: the id of the call
+  it answers is read from `tool_call_id` there. And run with no config at all, it runs with
+  no call context rather than failing on a `None` config.
 - **Fixed (`3tears-agent-tools`):** `TearsTool.run`'s input coercion reads the type an
   optional field (`anyOf` with `null`), a nullable type list or a nested model (`$ref`)
   declares. It read only a property's own `type`, so exactly those fields were never coerced.
@@ -660,8 +686,12 @@ window.
   it by a 16-hex-character blake2b fingerprint keyed with a random per-registry secret, so the
   fingerprint is not a digest anyone can recompute from the key and is meaningless outside the
   registry. Neither the key nor the fingerprint reaches a log line, a `CircuitOpenError`, or
-  `status()`; breakers still log and raise under the provider name. `reset` without a
-  credential resets every breaker on the provider.
+  `status()`. A credential-scoped breaker SAYS it is one, so one customer's revoked key does not
+  read as the provider going down: its transition lines name "one credential on <provider>" and
+  carry `credential_scoped` in their extras, and its `CircuitOpenError` says so and carries
+  `credential_scoped=True` (`CircuitBreaker(..., credential_scoped=False)`,
+  `CircuitBreaker.credential_scoped`). `reset` without a credential resets every breaker on the
+  provider.
 - **Changed:** `CircuitBreakerRegistry.status()` stays keyed by provider name only -- one entry
   per provider however many credentials are in use, so it is safe to export as metric labels --
   and reports the worst state among that provider's breakers (open, then half-open, then
@@ -704,6 +734,9 @@ running unlocked and was never told -- the context manager yielded `None`.
   is the default because a body that keeps writing after its lock is gone is the damage a lock
   exists to prevent, and a flag nobody reads prevents none of it. `cancel_on_loss=False` keeps the
   body running and only sets `hold.lost`, for a body whose correctness does not rest on the lock.
+- **New (minor):** `nats_distributed_lock(..., max_hold=timedelta(hours=6))`. Renewal stops at
+  the maximum hold, as it did at the fixed six hours; a caller whose body legitimately runs
+  longer, or that wants a wedge noticed sooner, sets its own. A negative value is refused.
 - **Changed:** a failed renewal is retried while the entry cannot yet have expired, rather than
   stopping the heartbeat for good. It becomes `RENEWAL_FAILED` when the next attempt would land
   past the TTL. One broker blip no longer lets a healthy holder's lock lapse.
@@ -922,8 +955,10 @@ the key the writer just wrote, so the read can find it empty and recreate the ol
   own table; a hub-less deployment had to write this itself (scriob did, and dropped
   `acting_as_principal_id`).
   - `AUDIT_EVENTS_DDL` / `ensure_audit_events_table`: every `AuditEvent` field plus
-    `ip_address`. An existing table gains any column it lacks, so a deployment that already
-    persisted audit keeps working.
+    `ip_address`. An existing table gains every column the insert names beyond `id` and the four
+    required fields (`timestamp`, `event_type`, `action`, `correlation_id`) -- `outcome`,
+    `details` and `actor_user_id` among them, with the CREATE's defaults -- so a deployment that
+    already persisted audit keeps working.
   - `persist_audit_event`: idempotent on the envelope `id`. It is deliberately NOT idempotent
     on `(correlation_id, event_type)`, because producers stamp a whole request's events with
     one correlation id, and merging them loses records. Details are written through a JSON-mode
@@ -931,15 +966,18 @@ the key the writer just wrote, so the read can find it empty and recreate the ol
   - `start_audit_persister(nats, db, *, durable, storage="memory")`: the stream plus a sibling
     dead-letter subject, and a shared durable pull consumer bound to the named stream.
     `storage` must match every other declarer of the `audit` stream. `handle_audit_message`
-    drops a malformed event and raises on a database fault.
+    drops a malformed event, logging its subject and stream sequence (never the exception text,
+    which can echo personal content), and raises on a database fault.
   - `prune_audit_events(..., batch_size=5000)`: batched, and served by a timestamp index.
-  - `anonymize_audit_rows(db, *, actor_user_ids, batch_size=500)` implements the 0.55.0 erasure
-    rule. It keeps every row and id, rewrites `details` through `anonymize_details` under each
-    row's own event type (keeping the stored shape: an object, a string-held object, null, or
+  - `anonymize_audit_rows(db, *, actor_user_ids, batch_size=500) -> AuditAnonymization` applies
+    the 0.55.0 erasure rule and no other: it takes no replacement anonymizer, imports the rule
+    directly, and a family whose keys are safe in this deployment declares them with
+    `declare_safe_detail_keys`. It keeps every row and id, rewrites `details` through
+    `anonymize_details` under each row's own event type (keeping the stored shape: an object, a string-held object, null, or
     otherwise the marker) and `ip_address` through `anonymize_ip`, counts rows matched against
     rows changed (the database decides "changed", so non-ASCII and float values stay
     idempotent), and is idempotent. It never answers the hub's `hub.audit.anonymize`
-    subject. A live test runs the real anonymizers once they are present.
+    subject.
 
 ### Also fixed on this branch
 

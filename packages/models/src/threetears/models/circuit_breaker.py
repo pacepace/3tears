@@ -66,12 +66,18 @@ class CircuitOpenError(Exception):
     :ptype provider_name: str
     :param remaining_seconds: seconds until recovery timeout expires
     :ptype remaining_seconds: float
+    :param credential_scoped: whether the open circuit is ONE credential's on the provider
+        rather than the provider's own -- a revoked key, not an outage. the credential is
+        never named
+    :ptype credential_scoped: bool
     """
 
-    def __init__(self, provider_name: str, remaining_seconds: float) -> None:
+    def __init__(self, provider_name: str, remaining_seconds: float, *, credential_scoped: bool = False) -> None:
         self.provider_name = provider_name
         self.remaining_seconds = remaining_seconds
-        super().__init__(f"Circuit open for {provider_name}, retry in {remaining_seconds:.0f}s")
+        self.credential_scoped = credential_scoped
+        scope = " (one credential on it; the provider itself may be healthy)" if credential_scoped else ""
+        super().__init__(f"Circuit open for {provider_name}{scope}, retry in {remaining_seconds:.0f}s")
 
 
 class CircuitBreaker:
@@ -90,6 +96,12 @@ class CircuitBreaker:
     :param clock: monotonic seconds source for the recovery window and
         :attr:`last_activity`; ``None`` reads :func:`time.monotonic`
     :ptype clock: Callable[[], float] | None
+    :param credential_scoped: whether this breaker guards ONE credential on the provider
+        (:meth:`CircuitBreakerRegistry.get` with ``credential=``) rather than the provider
+        itself. carried into every transition's log line and :class:`CircuitOpenError`, so
+        one customer's revoked key tripping its own breaker does not read as the provider
+        going down; the credential itself is never logged
+    :ptype credential_scoped: bool
     """
 
     def __init__(
@@ -99,8 +111,10 @@ class CircuitBreaker:
         recovery_timeout_seconds: float = 30.0,
         *,
         clock: Callable[[], float] | None = None,
+        credential_scoped: bool = False,
     ) -> None:
         self._provider_name = provider_name
+        self._credential_scoped = credential_scoped
         self._failure_threshold = failure_threshold
         self._recovery_timeout_seconds = recovery_timeout_seconds
         self._clock = clock if clock is not None else _monotonic
@@ -128,6 +142,7 @@ class CircuitBreaker:
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 30.0,
         clock: Callable[[], float] | None = None,
+        credential_scoped: bool = False,
     ) -> CircuitBreaker:
         """rebuilds a breaker from state that was persisted somewhere else.
 
@@ -175,6 +190,8 @@ class CircuitBreaker:
         :ptype recovery_timeout_seconds: float
         :param clock: monotonic seconds source, as for the constructor
         :ptype clock: Callable[[], float] | None
+        :param credential_scoped: whether the breaker guards one credential, as for the constructor
+        :ptype credential_scoped: bool
         :return: a breaker positioned at the persisted state
         :rtype: CircuitBreaker
         """
@@ -183,6 +200,7 @@ class CircuitBreaker:
             failure_threshold=failure_threshold,
             recovery_timeout_seconds=recovery_timeout_seconds,
             clock=clock,
+            credential_scoped=credential_scoped,
         )
         breaker._state = state
         breaker.failure_count = max(0, failure_count)
@@ -199,6 +217,31 @@ class CircuitBreaker:
         """
         with self._lock:
             return self._state
+
+    @property
+    def credential_scoped(self) -> bool:
+        """whether this breaker guards one credential on its provider rather than the provider.
+
+        :return: ``True`` for a credential-scoped breaker
+        :rtype: bool
+        """
+        return self._credential_scoped
+
+    def _log_extra(self) -> dict[str, Any]:
+        """the structured fields every transition line carries -- never the credential.
+
+        :return: the log ``extra``
+        :rtype: dict[str, Any]
+        """
+        return {"extra_data": {"provider": self._provider_name, "credential_scoped": self._credential_scoped}}
+
+    def _subject(self) -> str:
+        """what a transition line names: the provider, or one credential on it.
+
+        :return: the subject of the log line
+        :rtype: str
+        """
+        return f"one credential on {self._provider_name}" if self._credential_scoped else self._provider_name
 
     @property
     def last_activity(self) -> float:
@@ -230,7 +273,7 @@ class CircuitBreaker:
                 # a probe is already testing the provider: fast-fail the rest so
                 # recovery is a single request, not a thundering herd.
                 if self._probe_in_flight:
-                    raise CircuitOpenError(self._provider_name, 0.0)
+                    raise CircuitOpenError(self._provider_name, 0.0, credential_scoped=self._credential_scoped)
                 self._probe_in_flight = True
                 return
 
@@ -241,12 +284,13 @@ class CircuitBreaker:
                 self._probe_in_flight = True
                 logger.warning(
                     "circuit breaker transitioning to HALF_OPEN for %s",
-                    self._provider_name,
+                    self._subject(),
+                    extra=self._log_extra(),
                 )
                 return
 
             remaining = self._recovery_timeout_seconds - elapsed
-            raise CircuitOpenError(self._provider_name, remaining)
+            raise CircuitOpenError(self._provider_name, remaining, credential_scoped=self._credential_scoped)
 
     def record_success(self) -> None:
         """records successful request and transitions state if needed.
@@ -262,7 +306,8 @@ class CircuitBreaker:
                 self._probe_in_flight = False
                 logger.warning(
                     "circuit breaker transitioning to CLOSED for %s",
-                    self._provider_name,
+                    self._subject(),
+                    extra=self._log_extra(),
                 )
                 return
 
@@ -287,7 +332,8 @@ class CircuitBreaker:
                 self._probe_in_flight = False
                 logger.warning(
                     "circuit breaker re-opening for %s after probe failure",
-                    self._provider_name,
+                    self._subject(),
+                    extra=self._log_extra(),
                 )
                 return
 
@@ -295,8 +341,9 @@ class CircuitBreaker:
                 self._state = CircuitState.OPEN
                 logger.warning(
                     "circuit breaker opening for %s after %d failures",
-                    self._provider_name,
+                    self._subject(),
                     self.failure_count,
+                    extra=self._log_extra(),
                 )
                 return
 
@@ -312,7 +359,8 @@ class CircuitBreaker:
             self._probe_in_flight = False
             logger.info(
                 "circuit breaker manually reset for %s",
-                self._provider_name,
+                self._subject(),
+                extra=self._log_extra(),
             )
 
     def make_callback(self) -> BaseCallbackHandler:
@@ -578,6 +626,7 @@ class CircuitBreakerRegistry:
                     failure_threshold=self._failure_threshold,
                     recovery_timeout_seconds=self._recovery_timeout_seconds,
                     clock=self._clock,
+                    credential_scoped=key[1] is not None,
                 )
                 self._breakers[key] = breaker
                 self._providers.add(provider_name)

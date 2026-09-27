@@ -231,16 +231,11 @@ _DEFAULT_BUCKET: Final[str] = "scheduler-locks"
 #: and the fleet starved anyway.
 #:
 #: Renewal therefore stops here, the holder is told (:attr:`LockLossReason.MAX_HOLD`),
-#: and the TTL takes over. Sized far above any caller in this workspace (scheduler
-#: ticks, a derived-collection rebuild, a backup) so a healthy long job is never
-#: interrupted.
-#:
-#: Module-private on purpose. Making it a parameter would grow this package's
-#: public API, which on a patch line is precisely what
-#: ``tests/enforcement/test_api_growth_requires_a_minor_bump.py`` refuses. A
-#: deployment that needs its own number is a reason to add the parameter in a
-#: MINOR release.
-_MAX_HOLD: Final[timedelta] = timedelta(hours=6)
+#: and the TTL takes over. The default is sized far above any caller in this
+#: workspace (scheduler ticks, a derived-collection rebuild, a backup) so a healthy
+#: long job is never interrupted; a caller whose body legitimately runs longer, or
+#: that wants a wedge noticed sooner, passes its own ``max_hold``.
+_DEFAULT_MAX_HOLD: Final[timedelta] = timedelta(hours=6)
 
 
 @asynccontextmanager
@@ -252,6 +247,7 @@ async def nats_distributed_lock(
     ttl: timedelta = _DEFAULT_TTL,
     heartbeat: timedelta = _DEFAULT_HEARTBEAT,
     cancel_on_loss: bool = True,
+    max_hold: timedelta = _DEFAULT_MAX_HOLD,
 ) -> AsyncIterator[LockHold]:
     """Acquire a TTL-based distributed lock backed by NATS JetStream KV.
 
@@ -316,10 +312,15 @@ async def nats_distributed_lock(
         loss on the yielded hold -- for a body whose correctness does not
         rest on the lock and which must not be interrupted mid-way
     :ptype cancel_on_loss: bool
+    :param max_hold: the longest this holder renews the lock; past it renewal stops, the
+        hold reports :attr:`LockLossReason.MAX_HOLD` and the TTL hands the lock on, so a
+        wedged body cannot keep every other claimer out for as long as its process lives.
+        Six hours by default
+    :ptype max_hold: timedelta
     :return: async iterator yielding the :class:`LockHold` while the lock is held
     :rtype: AsyncIterator[LockHold]
-    :raises ValueError: when ``heartbeat >= ttl`` (invalid invariant)
-        or when ``ttl`` does not match the bucket's already-cached TTL
+    :raises ValueError: when ``heartbeat >= ttl`` (invalid invariant), when ``max_hold``
+        is negative, or when ``ttl`` does not match the bucket's already-cached TTL
     :raises LockHeld: when the key is already owned by another holder
     :raises LockLost: when the lock was lost while the body ran and
         ``cancel_on_loss`` is set
@@ -333,6 +334,9 @@ async def nats_distributed_lock(
         return
     if heartbeat >= ttl:
         msg = f"heartbeat {heartbeat} must be less than ttl {ttl}"
+        raise ValueError(msg)
+    if max_hold < timedelta(0):
+        msg = f"max_hold {max_hold} must not be negative"
         raise ValueError(msg)
 
     bucket = await client.kv_bucket(name=bucket_name, ttl=ttl)
@@ -421,13 +425,13 @@ async def nats_distributed_lock(
         Once the next attempt would land past that, the lock can no longer be vouched for
         and the failure is a loss.
 
-        **Renewal stops at :data:`_MAX_HOLD`.** A holder that WEDGES keeps a perfectly
+        **Renewal stops at ``max_hold``.** A holder that WEDGES keeps a perfectly
         healthy heartbeat task renewing a lock whose body is making no progress, which is
         how one stuck pod starved a whole fleet. Past the maximum hold this stops renewing,
         reports the loss, and lets the TTL hand the lock on -- loudly, at ERROR, because a
         lock withdrawn under a live body is a real event a human needs to see.
         """
-        deadline = loop.time() + _MAX_HOLD.total_seconds()
+        deadline = loop.time() + max_hold.total_seconds()
         last_renewal_sent = acquired_at
         log_extra = {"key": key, "bucket": bucket_name, "ttl_seconds": ttl_seconds}
         while True:
@@ -438,7 +442,7 @@ async def nats_distributed_lock(
                     "and is still running; refusing to renew so the TTL can hand it on. The "
                     "body is wedged or far slower than this lock was sized for -- another "
                     "holder may now acquire it.",
-                    extra={"extra_data": {**log_extra, "max_hold_seconds": _MAX_HOLD.total_seconds()}},
+                    extra={"extra_data": {**log_extra, "max_hold_seconds": max_hold.total_seconds()}},
                 )
                 _lose(LockLossReason.MAX_HOLD)
                 return

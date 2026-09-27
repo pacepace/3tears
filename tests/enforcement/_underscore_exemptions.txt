@@ -127,15 +127,6 @@ packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
 packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_datastore_create_table_threads_registry_l2#0:_nats_client
 
-# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
-packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._arun#0:_arun
-# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
-packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._arun#1:_arun
-# rationale: the sync _run override forwards to delegate._run for the same double-wrapper reason as the _arun entries above -- the proxy's own run wrapper has already fired the callback chain.
-packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._run#0:_run
-# rationale: the sync _run override forwards to delegate._run for the same double-wrapper reason as the _arun entries above -- the proxy's own run wrapper has already fired the callback chain.
-packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._run#1:_run
-
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
 packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_emits_on_chat_model_stream#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).

@@ -5,8 +5,10 @@ one application that owns its own control plane -- had to write that persister i
 dropped ``acting_as_principal_id`` on the way). This is it, once:
 
 - :data:`AUDIT_EVENTS_DDL` / :func:`ensure_audit_events_table`: an ``audit_events`` table carrying every
-  :class:`AuditEvent` field and ``ip_address`` for erasure. An EXISTING table is migrated: every column is
-  added if missing, so a deployment that already persisted audit keeps working.
+  :class:`AuditEvent` field and ``ip_address`` for erasure. An EXISTING table is migrated: every column the
+  insert names beyond the table's key and its four required fields (``id``, ``timestamp``, ``event_type``,
+  ``action``, ``correlation_id``, which no audit table lacks) is added if missing, with the default the
+  CREATE gives it, so a deployment that already persisted audit keeps working.
 - :func:`persist_audit_event`: an insert idempotent on the envelope ``id``, so an at-least-once redelivery
   is one row. Deliberately NOT on ``(correlation_id, event_type)``: producers stamp every event of a
   request with the request's correlation id, and two writes of one type in one request are two records
@@ -18,10 +20,13 @@ dropped ``acting_as_principal_id`` on the way). This is it, once:
   unique per table: two apps sharing a namespace and a durable would split the events between them. A malformed event is acked and dropped; a database fault raises, so
   the consumer retries and finally dead-letters it rather than losing the record.
 - :func:`prune_audit_events`: an age-based retention delete, in batches.
-- :func:`anonymize_audit_rows`: erasure under the platform's rule. Every row and every id survives; only
-  ``details`` (through ``anonymize_details``, under each row's own event type) and ``ip_address`` (through
-  ``anonymize_ip``) change. It is this deployment's own erasure -- it never answers the hub's
-  ``hub.audit.anonymize`` subject, which is for the hub's table.
+- :func:`anonymize_audit_rows`: erasure under THE platform rule and no other. Every row and every id
+  survives; only ``details`` (through :func:`~threetears.agent.audit.anonymize_details`, under each row's
+  own event type) and ``ip_address`` (through :func:`~threetears.agent.audit.anonymize_ip`) change. It
+  takes no replacement for either: a deployment that could substitute its own scrub is the per-consumer
+  divergence the one rule exists to end. It is this deployment's own erasure -- it never answers the
+  hub's ``hub.audit.anonymize`` subject, which is for the hub's table -- and answers with the
+  :class:`~threetears.agent.audit.AuditAnonymization` the hub path answers with.
 
 The persister writes Postgres only (no cache tiers), so erasure has no cache to evict.
 """
@@ -30,9 +35,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib
 import json
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -41,14 +45,16 @@ from uuid import UUID
 from pydantic import ValidationError
 from threetears.nats import Subjects
 from threetears.observe import get_logger, spawn_background
+from threetears.observe.erasure import ANONYMIZED_MARKER
 
+from threetears.agent.audit.anonymize import anonymize_details, anonymize_ip
 from threetears.agent.audit.envelope import AuditEvent
+from threetears.agent.audit.erasure import AuditAnonymization
 
 __all__ = [
     "AUDIT_EVENTS_DDL",
     "AUDIT_MAX_DELIVER",
     "AUDIT_STREAM_NAME",
-    "AuditAnonymizationResult",
     "AuditPersisterHandle",
     "AuditStore",
     "anonymize_audit_rows",
@@ -85,10 +91,13 @@ AUDIT_EVENTS_DDL: tuple[str, ...] = (
     "conversation_id UUID, "
     "details JSONB NOT NULL DEFAULT '{}', "
     "ip_address TEXT)",
-    # an existing table (created before a column existed) gains every column it lacks
+    # an existing table (created before a column existed) gains every column the insert names beyond the
+    # key and the four required fields, with the CREATE's own type and default
     *(
         f"ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS {column}"
         for column in (
+            "outcome TEXT NOT NULL DEFAULT 'success'",
+            "actor_user_id UUID",
             "acting_as_principal_id UUID",
             "calling_agent_id UUID",
             "owner_agent_id UUID",
@@ -96,6 +105,7 @@ AUDIT_EVENTS_DDL: tuple[str, ...] = (
             "resource_namespace_id UUID",
             "resource_namespace_type TEXT",
             "conversation_id UUID",
+            "details JSONB NOT NULL DEFAULT '{}'",
             "ip_address TEXT",
         )
     ),
@@ -207,9 +217,19 @@ async def handle_audit_message(db: AuditStore, msg: Any) -> None:  # noqa: ANN40
     try:
         event = AuditEvent.model_validate_json(bytes(msg.data))
     except (ValidationError, ValueError) as exc:
-        # it will never parse: dropping it beats redelivering it forever
+        # it will never parse: dropping it beats redelivering it forever. the subject and stream sequence
+        # locate the dropped event in the stream; the exception's text is left out because it can echo the
+        # event's personal content.
+        metadata = getattr(msg, "metadata", None)
         log.warning(
-            "audit persister: dropping an undecodable event", extra={"extra_data": {"error": type(exc).__name__}}
+            "audit persister: dropping an undecodable event",
+            extra={
+                "extra_data": {
+                    "error": type(exc).__name__,
+                    "subject": getattr(msg, "subject", None),
+                    "stream_sequence": getattr(getattr(metadata, "sequence", None), "stream", None),
+                }
+            },
         )
         await msg.ack()
         return
@@ -337,38 +357,8 @@ def _rowcount(status: Any) -> int:  # noqa: ANN401 -- a driver status string
     return int(tail) if tail.isdigit() else 0
 
 
-@dataclass(frozen=True)
-class AuditAnonymizationResult:
-    """what an erasure touched.
-
-    :ivar rows_matched: rows naming one of the actors
-    :ivar rows_changed: rows whose details or address actually changed (a second pass changes none)
-    """
-
-    rows_matched: int
-    rows_changed: int
-
-
-def _erasure_default(module: str, name: str) -> Any:  # noqa: ANN401
-    """one piece of the platform's erasure rule, imported late.
-
-    ``anonymize_details`` / ``anonymize_ip`` live in ``threetears.agent.audit.anonymize`` and
-    ``ANONYMIZED_MARKER`` in ``threetears.observe.erasure``.
-
-    :param module: the module
-    :ptype module: str
-    :param name: the attribute
-    :ptype name: str
-    :return: the attribute
-    :rtype: Any
-    """
-    return getattr(importlib.import_module(module), name)
-
-
-def _anonymize_stored(
-    raw: str | None, *, event_type: str, anonymize: Callable[..., dict[str, Any]], marker: str
-) -> str | None:
-    """rewrite one stored ``details`` value, keeping the shape it was stored in.
+def _anonymize_stored(raw: str | None, *, event_type: str) -> str | None:
+    """rewrite one stored ``details`` value by the platform rule, keeping the shape it was stored in.
 
     an object is judged key by key; a JSON string holding an object is judged as that object and
     written back string-held; SQL NULL and JSON null stay; anything else becomes the marker.
@@ -377,10 +367,6 @@ def _anonymize_stored(
     :ptype raw: str | None
     :param event_type: the row's own event type
     :ptype event_type: str
-    :param anonymize: the details anonymizer
-    :ptype anonymize: Callable[..., dict[str, Any]]
-    :param marker: the anonymized marker
-    :ptype marker: str
     :return: the new ``details`` as JSON text, or ``None`` for SQL NULL
     :rtype: str | None
     """
@@ -391,15 +377,19 @@ def _anonymize_stored(
     if value is None:
         result = None
     elif isinstance(value, Mapping):
-        result = anonymize(value, event_type=event_type)
+        result = anonymize_details(value, event_type=event_type)
     elif isinstance(value, str):
         try:
             inner = json.loads(value)
         except ValueError:
             inner = None
-        result = json.dumps(anonymize(inner, event_type=event_type)) if isinstance(inner, Mapping) else marker
+        result = (
+            json.dumps(anonymize_details(inner, event_type=event_type))
+            if isinstance(inner, Mapping)
+            else ANONYMIZED_MARKER
+        )
     else:
-        result = marker
+        result = ANONYMIZED_MARKER
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -408,16 +398,14 @@ async def anonymize_audit_rows(
     *,
     actor_user_ids: Iterable[UUID],
     batch_size: int = 500,
-    anonymize: Callable[..., dict[str, Any]] | None = None,
-    anonymize_ip: Callable[[str | None], str | None] | None = None,
-    marker: str | None = None,
-) -> AuditAnonymizationResult:
-    """erase the personal data in every event naming these actors; idempotent.
+) -> AuditAnonymization:
+    """erase the personal data in every event naming these actors, by the platform rule; idempotent.
 
     every row and every id survives (row id, actor, entity ids in details, event type, action, outcome,
-    correlation ids, timestamps); only ``details`` and ``ip_address`` change. rows are read in keyset
-    batches of ``batch_size``. the anonymizers default to the platform's (``anonymize_details``,
-    ``anonymize_ip``, ``ANONYMIZED_MARKER``); pass them to override.
+    correlation ids, timestamps); only ``details`` (through ``anonymize_details``, under the row's own
+    event type) and ``ip_address`` (through ``anonymize_ip``) change. rows are read in keyset batches of
+    ``batch_size``. a family whose details keys are safe for this deployment declares them with
+    ``declare_safe_detail_keys``; there is no other way to change what the rule keeps.
 
     :param db: the deployment's database
     :ptype db: AuditStore
@@ -425,27 +413,15 @@ async def anonymize_audit_rows(
     :ptype actor_user_ids: Iterable[UUID]
     :param batch_size: rows per batch
     :ptype batch_size: int
-    :param anonymize: details anonymizer ``(details, *, event_type) -> dict``
-    :ptype anonymize: Callable[..., dict[str, Any]] | None
-    :param anonymize_ip: address anonymizer
-    :ptype anonymize_ip: Callable[[str | None], str | None] | None
-    :param marker: the value an unreadable ``details`` becomes
-    :ptype marker: str | None
     :return: rows matched and rows changed
-    :rtype: AuditAnonymizationResult
+    :rtype: AuditAnonymization
     :raises ValueError: ``batch_size`` below one
     """
     if batch_size < 1:
         raise ValueError(f"batch_size must be at least 1, got {batch_size}")
     actors = list(actor_user_ids)
     if not actors:
-        return AuditAnonymizationResult(0, 0)
-    if anonymize is None:
-        anonymize = _erasure_default("threetears.agent.audit.anonymize", "anonymize_details")
-    if anonymize_ip is None:
-        anonymize_ip = _erasure_default("threetears.agent.audit.anonymize", "anonymize_ip")
-    if marker is None:
-        marker = _erasure_default("threetears.observe.erasure", "ANONYMIZED_MARKER")
+        return AuditAnonymization(rows_matched=0, rows_changed=0)
     matched = changed = 0
     after: UUID | None = None
     while True:
@@ -460,9 +436,7 @@ async def anonymize_audit_rows(
             break
         for row in rows:
             matched += 1
-            details = _anonymize_stored(
-                row["details"], event_type=row["event_type"], anonymize=anonymize, marker=marker
-            )
+            details = _anonymize_stored(row["details"], event_type=row["event_type"])
             address = anonymize_ip(row["ip_address"])
             # the DATABASE decides "changed": jsonb renders non-ASCII and numbers its own way, so comparing
             # JSON text counted untouched rows as changed on every pass
@@ -476,4 +450,4 @@ async def anonymize_audit_rows(
             changed += _rowcount(status)
         after = rows[-1]["id"]
     log.info("audit rows anonymized", extra={"extra_data": {"rows_matched": matched, "rows_changed": changed}})
-    return AuditAnonymizationResult(matched, changed)
+    return AuditAnonymization(rows_matched=matched, rows_changed=changed)

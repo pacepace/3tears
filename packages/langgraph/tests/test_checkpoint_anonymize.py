@@ -639,3 +639,67 @@ class TestTheCachesAreEvicted:
 
         with pytest.raises(RuntimeError, match="nats: timeout"):
             await saver.aanonymize_threads([_THREAD])
+
+
+class TestAFailedErasureCanBeFound:
+    """an erasure over many threads that fails must say where, and a row that can never be
+    rewritten must not stop every row after it."""
+
+    async def test_an_undecodable_blob_is_reported_and_every_other_row_still_rewritten(
+        self, executor: SqliteQueryExecutor, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a blob that fails to decode fails on every run: failing the run on it stopped the erasure at
+        that row forever, and nothing named which thread held it."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+        await _graph(saver).ainvoke(_turn(), _config(_OTHER_THREAD))
+        bad = executor.db.execute(
+            "SELECT checkpoint_ns, checkpoint_id, task_id, idx FROM checkpoint_writes WHERE thread_id = ? "
+            "ORDER BY checkpoint_ns, checkpoint_id, task_id, idx LIMIT 1",
+            (_THREAD,),
+        ).fetchone()
+        # 0xc1 is never valid msgpack; the person's name still sits in the bytes after it
+        executor.db.execute(
+            "UPDATE checkpoint_writes SET blob = ? WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? "
+            "AND task_id = ? AND idx = ?",
+            (b"\xc1" + _NAME.encode(), _THREAD, *bad),
+        )
+
+        with caplog.at_level("ERROR", logger="threetears.langgraph.checkpoint"):
+            result = await saver.aanonymize_threads([_THREAD, _OTHER_THREAD])
+
+        [reported] = result.unreadable
+        assert (reported.thread_id, reported.table, reported.column) == (_THREAD, "checkpoint_writes", "blob")
+        assert (reported.checkpoint_ns, reported.checkpoint_id, reported.task_id, reported.idx) == tuple(bad)
+        assert result.threads == 2 and result.checkpoints_rewritten > 0, "every other row is still rewritten"
+        survivors = [blob for blob in executor.blobs() if _NAME.encode() in blob or _EXTERNAL_ID.encode() in blob]
+        assert survivors == [b"\xc1" + _NAME.encode()], "only the unreadable blob still holds the name"
+        [logged] = [r for r in caplog.records if "cannot be anonymized" in r.getMessage()]
+        assert logged.__dict__["thread_id"] == _THREAD
+        assert logged.__dict__["task_id"] == bad["task_id"] and logged.__dict__["idx"] == bad["idx"]
+
+        again = await saver.aanonymize_threads([_THREAD])
+        assert again.unreadable == (reported,), "a rerun names the same row, and only it"
+        assert (again.checkpoints_rewritten, again.writes_rewritten) == (0, 0)
+
+    async def test_a_failed_write_names_its_thread_and_stage_and_raises(
+        self, executor: SqliteQueryExecutor, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a failure a rerun can cure still raises -- with the thread and stage an operator needs."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+
+        async def refuse(query: str, *args: object) -> str:
+            raise sqlite3.OperationalError("database is locked")
+
+        executor.execute = refuse  # type: ignore[method-assign]
+
+        with caplog.at_level("ERROR", logger="threetears.langgraph.checkpoint"):
+            with pytest.raises(sqlite3.OperationalError) as raised:
+                await saver.aanonymize_threads([_THREAD])
+
+        notes = "\n".join(getattr(raised.value, "__notes__", []))
+        assert repr(_THREAD) in notes and "(checkpoints)" in notes
+        assert "writing checkpoint ns=" in notes
+        [logged] = [r for r in caplog.records if "anonymization failed" in r.getMessage()]
+        assert (logged.__dict__["thread_id"], logged.__dict__["stage"]) == (_THREAD, "checkpoints")

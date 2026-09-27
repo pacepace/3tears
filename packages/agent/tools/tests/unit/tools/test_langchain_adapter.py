@@ -214,6 +214,29 @@ class TestWhatComesBack:
         assert to_langchain_tool(CalculatorTool()).invoke({"expression": "6 * 7"}) == "42"
 
 
+class TestRunAndArunAnswerAsInvokeDoes:
+    """``run`` / ``arun`` are LangChain's classic ``AgentExecutor`` route: it calls them with the
+    call's id as ``tool_call_id`` and, usually, no config. A failure answered there must keep its
+    artifact as it does through ``invoke``, and a missing config is a call with no call context."""
+
+    async def test_a_failure_through_arun_keeps_its_artifact(self) -> None:
+        failed = ToolResult(success=False, content="", error="down", metadata={"failure": "down"})
+        message = await to_langchain_tool(_Storyboard(failed)).arun({"shots": []}, tool_call_id="call-9")
+        assert isinstance(message, ToolMessage)
+        assert message.status == "error"
+        assert message.tool_call_id == "call-9"
+        assert message.artifact == {"failure": "down"}
+
+    def test_a_failure_through_run_keeps_its_artifact(self) -> None:
+        failed = ToolResult(success=False, content="", error="down", metadata={"failure": "down"})
+        message = to_langchain_tool(_Storyboard(failed)).run({"shots": []}, tool_call_id="call-9")
+        assert isinstance(message, ToolMessage)
+        assert message.artifact == {"failure": "down"}
+
+    async def test_bare_arguments_with_no_config_answer_with_the_text(self) -> None:
+        assert await to_langchain_tool(CalculatorTool()).arun({"expression": "6 * 7"}) == "42"
+
+
 class _GatedStoryboard(_Storyboard):
     """a storyboard whose calls a person must approve first."""
 

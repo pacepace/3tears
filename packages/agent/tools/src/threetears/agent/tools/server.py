@@ -1233,8 +1233,9 @@ class ToolServer:
         # the error of the last reply that refused the registration WITHOUT a code or a tool named
         # -- an older registry's answer -- or None. a temporary state, waited out like one.
         self._unexplained_refusal: str | None = None
-        # the causes of temporary refusals already logged, so each is logged once however many
-        # heartbeats and polls repeat it.
+        # the causes of temporary refusals already logged in their current episode, so each is
+        # logged once however many heartbeats and polls repeat it; a cause leaves the set when a
+        # reply stops carrying it, so its next episode is logged too.
         self._temporary_causes_logged: set[str] = set()
         # whether this pod has logged that the registry answering its discovery is older than it.
         self._older_registry_logged = False
@@ -2408,8 +2409,11 @@ class ToolServer:
         and is kept as :attr:`_unexplained_refusal`, a temporary state.
 
         A final refusal (:func:`refusal_is_final`) is logged at ERROR, one line per tool, on every
-        reply. A temporary one is logged at WARNING once per cause, however many heartbeats repeat
-        it: it is waited out, and a line every heartbeat would bury the one that matters.
+        reply. A temporary one is logged at WARNING once per EPISODE of its cause, however many
+        heartbeats repeat it: it is waited out, and a line every heartbeat would bury the one that
+        matters. An episode ends on the first reply that no longer carries the cause, so the same
+        cause coming back -- the next signing-key rotation, the next hub read failure -- warns again,
+        and the reply that clears the last temporary cause logs one INFO line saying so.
 
         :param reply: the registration reply
         :ptype reply: RegistrationResponse
@@ -2424,6 +2428,20 @@ class ToolServer:
         for refusal in refused:
             if not refusal_is_final(refusal.code):
                 temporary.setdefault(refusal.code, []).append(refusal)
+        unexplained_cause = (
+            f"unexplained: {self._unexplained_refusal}" if self._unexplained_refusal is not None else None
+        )
+        current_causes = set(temporary) | ({unexplained_cause} if unexplained_cause is not None else set())
+        # an episode ends when a reply stops carrying its cause: forget it, so its return warns again
+        cleared = self._temporary_causes_logged - current_causes
+        self._temporary_causes_logged &= current_causes
+        if cleared and not current_causes:
+            log.info(
+                "the registry admitted this pod's tools after a temporary refusal",
+                extra={"extra_data": {"pod_id": self._pod_id, "cleared_causes": sorted(cleared)}},
+            )
+        for refusal in refused:
+            if not refusal_is_final(refusal.code):
                 continue
             log.error(
                 "the registry refused this pod's tool %s@%s (%s): %s",
@@ -2448,16 +2466,16 @@ class ToolServer:
                 f"{refusals[0].reason}); waiting -- the heartbeat re-offers the manifest until the "
                 f"registry admits them: {', '.join(f'{r.name}@{r.version}' for r in refusals)}",
             )
-        if self._unexplained_refusal is not None:
+        if unexplained_cause is not None:
             self._log_temporary_refusal_once(
-                f"unexplained: {self._unexplained_refusal}",
+                unexplained_cause,
                 f"the registry refused this pod's registration without a refusal code "
                 f"({self._unexplained_refusal}), as a registry older than this pod answers; waiting "
                 "-- the heartbeat re-offers the manifest until the registry admits it",
             )
 
     def _log_temporary_refusal_once(self, cause: str, message: str) -> None:
-        """log a temporary refusal at WARNING the first time its cause is seen.
+        """log a temporary refusal at WARNING the first time its cause is seen in this episode.
 
         :param cause: what identifies the cause -- a refusal code, or an unexplained reply's error
         :ptype cause: str

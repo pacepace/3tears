@@ -559,6 +559,37 @@ class TestATemporaryRefusalIsWaitedOut:
         ]
         assert len(named) == 1
 
+    async def test_a_temporary_refusal_that_clears_and_returns_is_warned_again(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """once per EPISODE, not once per process: signing keys rotate again and hub reads fail again.
+
+        a cause logged once for the pod's lifetime made the second outage silent on the pod, and
+        nothing marked the first one clearing.
+
+        :return: none
+        :rtype: None
+        """
+        admitted = RegistrationResponse(success=True, pod_id=_POD, registered_tools=["threetears.calculator@1.0"])
+        server = _server()
+        server._nc = _replying(  # noqa: SLF001
+            _graph_unavailable(success=False), admitted, _graph_unavailable(success=False)
+        )
+        with caplog.at_level(logging.INFO, logger="threetears.agent.tools.server"):
+            for _ in range(3):
+                await server.publish_registration(await_reply=True)
+
+        warned = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "OWNERSHIP_GRAPH_UNAVAILABLE" in r.getMessage()
+        ]
+        cleared = [
+            r for r in caplog.records if r.levelno == logging.INFO and "after a temporary refusal" in r.getMessage()
+        ]
+        assert len(warned) == 2
+        assert len(cleared) == 1
+
     async def test_a_failed_reply_with_no_code_is_temporary(self, caplog: pytest.LogCaptureFixture) -> None:
         """what an older registry sends mid-roll: no code, no tools named. waited, never raised.
 

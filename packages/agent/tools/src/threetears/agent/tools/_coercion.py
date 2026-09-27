@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 
-def coerce_value(value: Any, declared_type: str | None) -> Any:
+def coerce_value(value: Any, json_type: str | None) -> Any:
     """coerce single MCP input value toward its declared JSON schema type.
 
     handles two LLM mistakes: empty string supplied for complex type
@@ -37,8 +37,8 @@ def coerce_value(value: Any, declared_type: str | None) -> Any:
 
     :param value: raw value supplied by caller
     :ptype value: Any
-    :param declared_type: JSON schema ``type`` for this parameter or None
-    :ptype declared_type: str | None
+    :param json_type: JSON schema ``type`` for this parameter or None
+    :ptype json_type: str | None
     :return: value coerced to declared type when possible, else original
     :rtype: Any
     """
@@ -46,7 +46,7 @@ def coerce_value(value: Any, declared_type: str | None) -> Any:
     # only empty *strings* are treated as "give me the empty container" --
     # literal 0, False, or empty tuple must pass through so type-strict
     # subclasses still see the original value (and can reject it).
-    if declared_type == "object" and not isinstance(value, dict):
+    if json_type == "object" and not isinstance(value, dict):
         if value == "":
             result = {}
         elif isinstance(value, str):
@@ -56,7 +56,7 @@ def coerce_value(value: Any, declared_type: str | None) -> Any:
                 parsed = None
             if isinstance(parsed, dict):
                 result = parsed
-    elif declared_type == "array" and not isinstance(value, list):
+    elif json_type == "array" and not isinstance(value, list):
         if value == "":
             result = []
         elif isinstance(value, str):

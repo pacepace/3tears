@@ -22,7 +22,9 @@ A deployment with NO hub (one application owning its own control plane) owns its
 audit table, and `threetears.agent.audit.persist` is its persister:
 
 - `ensure_audit_events_table(db)` creates the table, with every envelope field and
-  `ip_address`, and migrates an existing one by adding any column it lacks.
+  `ip_address`, and migrates an existing one: every column the insert names beyond
+  `id` and the four required fields (`timestamp`, `event_type`, `action`,
+  `correlation_id`) is added if missing, with the default the CREATE gives it.
   Idempotency is on the envelope `id`.
 - `start_audit_persister(nats, db, durable=..., storage="memory")` runs a shared
   durable pull consumer with a dead-letter subject. A malformed event is dropped;
@@ -31,8 +33,11 @@ audit table, and `threetears.agent.audit.persist` is its persister:
   - `durable` must be unique per table.
 - `prune_audit_events(db, older_than=...)` is batched retention.
 - `anonymize_audit_rows(db, actor_user_ids=...)` is erasure: every row and id is
-  kept, and `details` and `ip_address` are rewritten by the platform's rule. It is
-  this deployment's own erasure and never answers the hub's anonymize subject.
+  kept, and `details` and `ip_address` are rewritten by the platform's rule and no
+  other -- it takes no replacement anonymizer. A family whose keys are safe in this
+  deployment declares them with `declare_safe_detail_keys`. It returns the same
+  `AuditAnonymization` the hub path does, and never answers the hub's anonymize
+  subject.
 
 `db` is anything with asyncpg's `execute`/`fetch`, e.g. a pool.
 
@@ -81,9 +86,10 @@ writing its own:
   lookup. A declaration is visible only in the process that makes it, so a
   family whose events the hub erases from the platform audit table is declared
   in `threetears/agent/audit/anonymize.py` itself.
-- `is_classified_detail_key(key, *, event_type)` answers whether a key was
-  classified. The gate that holds producers to the classification is the
-  `threetears.enforcement.audit_details` domain: every producing repo runs it
+- `is_classified_detail_key(key, *, event_type)` answers, in process, whether a key
+  was classified. The gate that holds producers to the classification carries its
+  own copy of that predicate (it cannot import this package): the
+  `threetears.enforcement.audit_details` domain, which every producing repo runs
   over its own `src/` with `safe_keys_for=safe_detail_keys_for,
   personal_keys=PERSONAL_DETAIL_KEYS`, and 3tears runs it as
   `tests/enforcement/test_audit_details_keys_are_classified.py`.
@@ -108,9 +114,11 @@ ones that agent published about those actors, on `{ns}.hub.audit.anonymize`
 `details` and `ip_address` anonymized. The hub takes the agent from the verified identity
 token and touches only rows whose agent is the caller. A refusal (`INVALID_REQUEST`,
 `IDENTITY_UNVERIFIED`, `AGENT_MISMATCH`) raises `AuditAnonymizeRefusedError` with the
-hub's `error_code`, and retrying meets it again. No token, a timeout, a reply that does
-not decode or answers a different request, and the hub's `ANONYMIZE_FAILED` raise
-`AuditAnonymizeUnavailableError`, which is safe to retry. The contract, including every
+hub's `error_code`, and retrying meets it again -- including a refusal that carries no
+correlation id, since a hub that could not decode the body had none to echo. No token, a
+timeout, a reply that does not decode or carries another request's correlation id, and
+the hub's `ANONYMIZE_FAILED` raise `AuditAnonymizeUnavailableError`, which is safe to
+retry. The contract, including every
 obligation of the hub's responder, is the docstring of `threetears/agent/audit/erasure.py`.
 
 ## Design commitments
