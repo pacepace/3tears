@@ -196,7 +196,7 @@ def _build_stack(
     MemoryChunkCollection,
 ]:
     """build a registry with L1 + all four Collections wired."""
-    l1 = SQLiteBackend(db_name=f"mem_l1_{uuid.uuid7().hex[:8]}")
+    l1 = SQLiteBackend(db_name=f"mem_l1_{uuid.uuid4().hex[:8]}")
     l1.initialize(_build_l1_metadata())
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l3_pool=pool)

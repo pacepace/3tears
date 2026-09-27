@@ -80,11 +80,11 @@ class IntentionAccessDenied(AccessDenied):
 def intention_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
     """build the canonical intention namespace name for an (agent, customer) pair.
 
-    Shape ``intentions.<agent_hex[:8]>.<customer_hex[:8]>`` -- a
-    human-readable display / log handle only. Uniqueness is carried by
-    the ``(namespace_type, owner_agent_id, customer_id)`` triple baked
-    into the deterministic id, so the short prefix is not a uniqueness
-    key. Used solely for the evaluator's denial / log messages.
+    Shape ``intentions.<agent hex>.<customer hex>`` -- both ids in full. Never
+    persisted, but not a display handle only: the evaluator judges a subtree grant
+    against it, so a name two agents share is a grant two agents share. It used to be
+    the first eight hex characters of each id, which for a uuid7 is the top of its
+    millisecond timestamp -- shared by every agent minted in the same ~65 seconds.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -93,7 +93,7 @@ def intention_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
     :return: canonical namespace name
     :rtype: str
     """
-    return f"intentions.{agent_id.hex[:8]}.{customer_id.hex[:8]}"
+    return f"intentions.{agent_id.hex}.{customer_id.hex}"
 
 
 def _intention_namespace_id(agent_id: UUID, customer_id: UUID) -> UUID:

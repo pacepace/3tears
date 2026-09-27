@@ -113,6 +113,11 @@ class LocalMemoryNamespaceProvisioner:
     async def ensure(self, *, agent_id: UUID, customer_id: UUID) -> MemoryNamespaceRef:
         """the memory namespace for ``(agent_id, customer_id)``, created if absent.
 
+        ``ensure_namespace`` refuses a row that disagrees with any field it is handed, the
+        name included, so it is reached ONLY for a pair with no row: an existing row --
+        one a deployed database wrote under an earlier name rule among them -- is resolved
+        by its pair and returned as it stands, never compared against today's name.
+
         :param agent_id: the memory's owning agent
         :ptype agent_id: UUID
         :param customer_id: the customer the memory belongs to (trusted -- see the module docstring)
@@ -183,4 +188,5 @@ def _as_ref(row: NamespaceEntity, *, agent_id: UUID, customer_id: UUID) -> Memor
         owner_agent_id=agent_id,
         namespace_type=MEMORY_NAMESPACE_TYPE,
         owner_namespace=row.owner_namespace,
+        name=row.name,
     )

@@ -73,7 +73,21 @@ class TestIntentionNamespaceName:
     def test_shape(self) -> None:
         agent_id = UUID("019470a8-b5c3-7def-8123-456789abcdef")
         customer_id = UUID("11112222-3333-4444-5555-666677778888")
-        assert intention_namespace_name(agent_id, customer_id) == "intentions.019470a8.11112222"
+        assert intention_namespace_name(agent_id, customer_id) == (
+            "intentions.019470a8b5c37def8123456789abcdef.11112222333344445555666677778888"
+        )
+
+    def test_two_agents_minted_in_one_millisecond_get_distinct_names(self) -> None:
+        """a subtree grant is judged by this name; a name shared by two agents is a grant shared by both.
+
+        a uuid7 leads with its timestamp, so a name cut from its head is the same for every
+        agent minted in the same moment.
+        """
+        agent_a = UUID("019470a8-b5c3-7def-8123-456789abcdef")
+        agent_b = UUID("019470a8-b5c3-7a01-9fed-cba987654321")
+        customer_id = UUID("019470a8-b5c4-7000-8000-000000000001")
+        assert agent_a.int >> 80 == agent_b.int >> 80, "the fixture must share the uuid7 timestamp"
+        assert intention_namespace_name(agent_a, customer_id) != intention_namespace_name(agent_b, customer_id)
 
     def test_namespace_type_constant(self) -> None:
         assert INTENTION_NAMESPACE_TYPE == "intention"

@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import pytest
 
+from threetears.core.coordination import lease as lease_module
 from threetears.core.coordination.lease import (
     KVLease,
     LeaseHandle,
@@ -350,4 +352,24 @@ class TestBucketDefaults:
         lease = KVLease(nats_client=client, bucket_name="test_leases")  # type: ignore[arg-type]
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         assert handle.holder.startswith("pod-")
-        assert len(handle.holder) == len("pod-") + 12
+        assert len(handle.holder) == len("pod-") + 32
+
+    async def test_two_factories_built_in_one_millisecond_are_two_holders(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the holder id is the lease's fence on refresh and release, so it must name ONE factory.
+
+        a uuid7 leads with its millisecond timestamp; a holder id cut from that head was shared by
+        every factory built in the same millisecond -- two pods starting together would each
+        pass the other's holder check.
+        """
+        same_millisecond = iter(
+            [UUID("019470a8-b5c3-7def-8123-456789abcdef"), UUID("019470a8-b5c3-7a01-9fed-cba987654321")]
+        )
+        monkeypatch.setattr(lease_module, "uuid7", lambda: next(same_millisecond))
+        client = FakeNatsClient()
+
+        first = KVLease(nats_client=client, bucket_name="test_leases")  # type: ignore[arg-type]
+        second = KVLease(nats_client=client, bucket_name="test_leases")  # type: ignore[arg-type]
+
+        assert first.pod_id != second.pod_id

@@ -520,8 +520,10 @@ class KVLease:
         ``{namespace}-`` over it. Passing a name that already carries the
         namespace therefore produces it twice. The default is the constant
         ``"leases"`` for exactly that reason. default ``pod_id`` is
-        ``f"pod-{uuid7().hex[:12]}"`` -- time-ordered and unique per factory
-        instance.
+        ``f"pod-{uuid7().hex}"`` -- the WHOLE uuid7, unique per factory instance.
+        the holder id is the fence on refresh and release, so it must name one
+        factory; a uuid7's leading hex is its millisecond timestamp, and a prefix
+        of it named every factory built in the same millisecond.
 
         :param nats_client: connected canonical
             :class:`threetears.nats.kv.KvCapable` wrapper; the lease
@@ -537,7 +539,7 @@ class KVLease:
         """
         self._client = nats_client
         self._bucket_name = bucket_name if bucket_name is not None else self._default_bucket_name()
-        self._pod_id = pod_id if pod_id is not None else f"pod-{uuid7().hex[:12]}"
+        self._pod_id = pod_id if pod_id is not None else f"pod-{uuid7().hex}"
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 

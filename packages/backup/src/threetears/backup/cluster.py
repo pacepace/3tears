@@ -175,7 +175,10 @@ class ClusterBackup:
         backup_id = uuid7()
         driver = await self._detect(admin_dsn)
         databases = await self._list_databases(admin_dsn)
-        set_root = f"{self._config.prefix}/{moment:%Y/%m/%d}/{moment:%Y%m%dT%H%M%SZ}-{backup_id.hex[:12]}"
+        # the WHOLE id: its leading hex is its millisecond timestamp, so a prefix of it put two sets
+        # started in one millisecond under one root, the second's dumps replacing the first's. every
+        # reader takes a dump's key from the manifest, so roots already written stay valid.
+        set_root = f"{self._config.prefix}/{moment:%Y/%m/%d}/{moment:%Y%m%dT%H%M%SZ}-{backup_id.hex}"
 
         log.info(
             "cluster backup: starting",

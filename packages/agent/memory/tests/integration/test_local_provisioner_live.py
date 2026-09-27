@@ -69,6 +69,10 @@ async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
             await conn.execute("CREATE UNIQUE INDEX namespaces_id_unique ON namespaces (namespace_id)")
             await conn.execute("CREATE UNIQUE INDEX idx_namespaces_name ON namespaces (name)")
             await conn.execute(
+                "CREATE UNIQUE INDEX idx_namespaces_schema_name_non_workspace ON namespaces (schema_name)"
+                " WHERE namespace_type <> 'workspace' AND schema_name IS NOT NULL"
+            )
+            await conn.execute(
                 "ALTER TABLE namespaces ADD CONSTRAINT namespaces_owner_namespace_fkey"
                 " FOREIGN KEY (owner_namespace) REFERENCES namespaces(name)"
             )
@@ -79,11 +83,10 @@ async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
         await pool.close()
 
 
-async def test_the_local_provisioner_writes_the_hubs_row(pg_pool: asyncpg.Pool) -> None:
-    agent, customer = uuid.uuid4(), uuid.uuid4()
+async def _agent_row(pool: asyncpg.Pool, agent: uuid.UUID, customer: uuid.UUID) -> None:
+    """the agent's own namespace, which the owner_namespace foreign key names (the hub provisions it)."""
     now = datetime.now(UTC)
-    # the agent's own namespace, which the owner_namespace foreign key names (the hub provisions it)
-    await pg_pool.execute(
+    await pool.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, date_created, "
         "date_updated) VALUES ('customer', $1, $2, 'agent', $3, $4, $4)",
         uuid.uuid4(),
@@ -91,10 +94,19 @@ async def test_the_local_provisioner_writes_the_hubs_row(pg_pool: asyncpg.Pool) 
         customer,
         now,
     )
+
+
+def _provisioner(pool: asyncpg.Pool) -> LocalMemoryNamespaceProvisioner:
     registry = CollectionRegistry()
-    registry.configure(l3_pool=pg_pool, kv_key_scope=f"local-prov-{uuid.uuid4().hex[:6]}")
+    registry.configure(l3_pool=pool, kv_key_scope=f"local-prov-{uuid.uuid4().hex[:6]}")
     collection = NamespaceCollection(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""))
-    provisioner = LocalMemoryNamespaceProvisioner(collection)
+    return LocalMemoryNamespaceProvisioner(collection)
+
+
+async def test_the_local_provisioner_writes_the_hubs_row(pg_pool: asyncpg.Pool) -> None:
+    agent, customer = uuid.uuid4(), uuid.uuid4()
+    await _agent_row(pg_pool, agent, customer)
+    provisioner = _provisioner(pg_pool)
 
     ref = await provisioner.ensure(agent_id=agent, customer_id=customer)
     again = await provisioner.ensure(agent_id=agent, customer_id=customer)
@@ -108,3 +120,54 @@ async def test_the_local_provisioner_writes_the_hubs_row(pg_pool: asyncpg.Pool) 
     assert row["owner_namespace"] == build_agent_namespace_name(agent) == ref.owner_namespace
     assert row["schema_name"] == memory_namespace_schema_name(agent, customer)
     assert await pg_pool.fetchval("SELECT count(*) FROM namespaces WHERE namespace_type = 'memory'") == 1
+
+
+#: two agents a uuid7 generator could mint in one millisecond for one customer: identical
+#: leading 48 bits (the timestamp), different random tails.
+_AGENT_A = uuid.UUID("019470a8-b5c3-7def-8123-456789abcdef")
+_AGENT_B = uuid.UUID("019470a8-b5c3-7a01-9fed-cba987654321")
+_CUSTOMER = uuid.UUID("019470a8-b5c4-7000-8000-000000000001")
+
+
+async def test_two_agents_minted_in_one_millisecond_both_get_a_memory_namespace(pg_pool: asyncpg.Pool) -> None:
+    """The production failure, on the real unique indexes: the second agent's row could not be written."""
+    assert _AGENT_A.int >> 80 == _AGENT_B.int >> 80, "the fixture must share the uuid7 timestamp"
+    await _agent_row(pg_pool, _AGENT_A, _CUSTOMER)
+    await _agent_row(pg_pool, _AGENT_B, _CUSTOMER)
+    provisioner = _provisioner(pg_pool)
+
+    first = await provisioner.ensure(agent_id=_AGENT_A, customer_id=_CUSTOMER)
+    second = await provisioner.ensure(agent_id=_AGENT_B, customer_id=_CUSTOMER)
+
+    assert (first.id, second.id) == (memory_namespace_id(_AGENT_A, _CUSTOMER), memory_namespace_id(_AGENT_B, _CUSTOMER))
+    assert await pg_pool.fetchval("SELECT count(*) FROM namespaces WHERE namespace_type = 'memory'") == 2
+
+
+async def test_a_row_named_by_the_earlier_rule_is_found_not_refused(pg_pool: asyncpg.Pool) -> None:
+    """A row a deployed database already holds, named by the eight-character rule, keeps working.
+
+    ``ensure_namespace`` refuses a row that disagrees with any field it is handed, the name included.
+    The provisioner resolves by (type, owner agent, customer) first, so the existing row is returned as
+    it is and never compared against the current rule's name.
+    """
+    await _agent_row(pg_pool, _AGENT_A, _CUSTOMER)
+    now = datetime.now(UTC)
+    await pg_pool.execute(
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, owner_namespace, "
+        "customer_id, schema_name, date_created, date_updated) "
+        "VALUES ('customer', $1, 'memories.019470a8.019470a8', 'memory', $2, $3, $4, "
+        "'memory__019470a8__019470a8', $5, $5)",
+        memory_namespace_id(_AGENT_A, _CUSTOMER),
+        _AGENT_A,
+        build_agent_namespace_name(_AGENT_A),
+        _CUSTOMER,
+        now,
+    )
+
+    ref = await _provisioner(pg_pool).ensure(agent_id=_AGENT_A, customer_id=_CUSTOMER)
+
+    assert ref.id == memory_namespace_id(_AGENT_A, _CUSTOMER)
+    assert ref.name == "memories.019470a8.019470a8"
+    row = await pg_pool.fetchrow("SELECT name, schema_name FROM namespaces WHERE namespace_type = 'memory'")
+    assert row is not None
+    assert (row["name"], row["schema_name"]) == ("memories.019470a8.019470a8", "memory__019470a8__019470a8")

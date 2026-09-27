@@ -187,10 +187,10 @@ async def test_materialize_uses_atomic_write_primitive(tmp_path: Path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_materialize_tempdir_prefix_includes_workspace_hex_prefix(
+async def test_materialize_tempdir_prefix_includes_workspace_hex(
     tmp_path: Path,
 ) -> None:
-    """tempdir name starts with ``workspace-{first-8-hex}-`` per the design."""
+    """tempdir name starts with ``workspace-{hex}-``: the whole id, since a uuid7's head is its timestamp."""
     ws_id = UUID("019470a8-b5c3-7def-8123-456789abcdef")
     coll = _FakeFileCollection([])
     result = await materialize(
@@ -198,7 +198,7 @@ async def test_materialize_tempdir_prefix_includes_workspace_hex_prefix(
         workspace_file_collection=coll,  # type: ignore[arg-type]
         parent_dir=tmp_path,
     )
-    assert result.name.startswith("workspace-019470a8-")
+    assert result.name.startswith("workspace-019470a8b5c37def8123456789abcdef-")
 
 
 @pytest.mark.asyncio

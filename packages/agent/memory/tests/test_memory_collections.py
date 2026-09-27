@@ -253,7 +253,7 @@ def _make_nats_mock() -> AsyncMock:
 @pytest.fixture()
 def l1_backend() -> SQLiteBackend:
     """build an initialized SQLiteBackend for one test."""
-    b = SQLiteBackend(db_name=f"test_mem_{uuid.uuid7().hex[:8]}")
+    b = SQLiteBackend(db_name=f"test_mem_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_metadata())
     yield b
     b.reset()

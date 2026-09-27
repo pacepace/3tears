@@ -139,16 +139,22 @@ class ConversationAccessDenied(AccessDenied):
 
 
 def conversation_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
-    """build the canonical conversation namespace name for an (agent, customer) pair.
+    """build the canonical conversation namespace name for a NEW (agent, customer) row.
 
-    shape: ``conversations.<agent_id_hex[:8]>.<customer_id_hex[:8]>``
-    per the canonical plural-prefix + dot-separator form pinned by
-    :func:`threetears.core.namespaces.build_namespace_name`. uses the
-    first 8 hex chars of each UUID per the task shard convention; the
-    uniqueness is carried by the full
-    (namespace_type, owner_agent_id, customer_id) tuple on the row
-    itself, so the short prefix is a human-readable display handle and
-    not a uniqueness key.
+    shape: ``conversations.<agent_id hex>.<customer_id hex>`` -- both ids in full, per
+    the canonical plural-prefix + dot-separator form pinned by
+    :func:`threetears.core.namespaces.build_namespace_name`. 79 characters, inside the
+    column's 255.
+
+    **the whole hex, because the name is unique.** ``namespaces.name`` carries a UNIQUE
+    index. the earlier shape took the first eight hex characters of each id, which for a
+    uuid7 is the top of its millisecond timestamp, so every agent minted in the same ~65
+    seconds shared it and the second agent's conversation namespace could never be
+    written. the full hex is injective over the pair.
+
+    **a row already written keeps its name.** rows are resolved by ``(namespace_type,
+    owner_agent_id, customer_id)`` and judged by the name they store, so a row named by
+    the earlier rule is found and evaluated exactly as before.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -157,10 +163,25 @@ def conversation_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
     :return: canonical namespace name
     :rtype: str
     """
-    return build_namespace_name(
-        PLURAL_PREFIX_CONVERSATION,
-        agent_id.hex[:8],
-        customer_id.hex[:8],
+    return build_namespace_name(PLURAL_PREFIX_CONVERSATION, agent_id.hex, customer_id.hex)
+
+
+def _conversation_namespace_id(agent_id: UUID, customer_id: UUID) -> UUID:
+    """deterministic namespace id for the (agent, customer) conversation pair.
+
+    same pair -> same :func:`uuid5`, so two concurrent first-writers converge on one row
+    through ``ON CONFLICT (id) DO UPDATE``.
+
+    :param agent_id: owning agent UUID
+    :ptype agent_id: UUID
+    :param customer_id: owning customer UUID
+    :ptype customer_id: UUID
+    :return: deterministic conversation namespace UUID
+    :rtype: UUID
+    """
+    return uuid5(
+        NAMESPACE_DNS,
+        f"threetears.namespaces.conversation.{agent_id.hex}.{customer_id.hex}",
     )
 
 
@@ -168,16 +189,17 @@ def conversation_namespace_schema_name(
     agent_id: UUID,
     customer_id: UUID,
 ) -> str:
-    """build the schema_name persisted on the hub's ``namespaces`` rows.
+    """build the schema_name persisted on a NEW conversation row in the hub's ``namespaces``.
 
-    conversation rows route through the shared per-agent database
-    schema (or the hub's ``conversations`` table) rather than
-    a per-namespace Postgres schema; the row carries a stable synthetic
-    schema string so SELECT queries joining namespaces on
-    ``schema_name`` still match. shape mirrors
-    :func:`conversation_namespace_name` with a ``conversation__``
-    prefix to keep the schema namespace disjoint from the display-name
-    namespace.
+    conversation rows route through the shared per-agent database schema (or the hub's
+    ``conversations`` table) rather than a per-namespace Postgres schema, so no schema of
+    this name exists; the row carries a stable synthetic string so SELECT queries joining
+    namespaces on ``schema_name`` still match.
+
+    shape: ``conversation__<namespace id hex>`` -- the row's own deterministic id, so it
+    is unique exactly when the row is (``schema_name`` is UNIQUE across non-workspace
+    rows, which the earlier ``<hex[:8]>`` shape collided on), and 46 characters, inside
+    Postgres's 63-character identifier limit. rows already written keep their value.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -186,7 +208,7 @@ def conversation_namespace_schema_name(
     :return: schema name string
     :rtype: str
     """
-    return f"conversation__{agent_id.hex[:8]}__{customer_id.hex[:8]}"
+    return f"conversation__{_conversation_namespace_id(agent_id, customer_id).hex}"
 
 
 class ConversationAuthorizerDependencies:
@@ -334,10 +356,7 @@ async def _resolve_or_create_conversation_namespace(
     # deterministic id: same (agent, customer) -> same uuid5 so two
     # concurrent first-writes converge on the same namespace row via
     # ON CONFLICT (id) DO UPDATE. matches the v044 backfill id scheme.
-    new_id = uuid5(
-        NAMESPACE_DNS,
-        f"threetears.namespaces.conversation.{agent_id.hex}.{customer_id.hex}",
-    )
+    new_id = _conversation_namespace_id(agent_id, customer_id)
     now = datetime.now(UTC)
     entity = namespace_collection.entity_class(
         {
@@ -430,13 +449,16 @@ async def authorize_conversation_access(
         namespace_collection=deps.namespace_collection,
     )
     try:
+        # no ``namespace_name``: the evaluator reads the row's own name, the one it STORES.
+        # recomputing it judged a row written under an earlier name rule by a name it does
+        # not carry, and a subtree grant -- the one reader of a namespace's name -- stopped
+        # covering it.
         await authorize_on_entity(
             ns_entity=ns_entity,
             action=action,
             user_id=caller_user_id,
             agent_id=caller_agent_id,
             cache=deps.acl_cache,
-            namespace_name=conversation_namespace_name(agent_id, customer_id),
         )
     except AccessDenied as exc:
         raise ConversationAccessDenied(

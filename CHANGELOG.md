@@ -45,6 +45,90 @@ audit persister for a deployment with no hub (`threetears.agent.audit.persist`).
 subscription call now raises one instead of answering with the failure's text -- read "A failed
 subscription call raises instead of answering with the failure" before upgrading a caller that
 read `is_error` from the metadata.
+Fixed: no name, key or id is cut from the head of a uuid7 any more, so two agents created
+together for one customer both get memory and conversation namespaces -- read "Two agents
+created in the same minute no longer share a namespace name"; existing rows need nothing.
+
+### Two agents created in the same minute no longer share a namespace name
+
+A uuid7 leads with its millisecond timestamp. `uuid7().hex[:8]` is the top 32 bits of that
+timestamp, the same for every id minted in the same ~65 seconds; `hex[:12]` is the same for
+every id minted in the same millisecond. Several derivations took exactly that prefix of an
+entity id, and entity ids are uuid7:
+
+- **Memory and conversation namespaces.** `memory_namespace_name` was
+  `memories.<agent hex[:8]>.<customer hex[:8]>` and `memory_namespace_schema_name`
+  `memory__<agent hex[:8]>__<customer hex[:8]>`; the conversation pair had the same shape.
+  `platform.namespaces` is UNIQUE on `name` and on non-workspace `schema_name`, so two agents
+  created for one customer inside a minute -- a cluster apply creating several agents at once
+  is exactly that -- asked for ONE name, and the second agent's namespace could never be
+  written. Its memory then failed closed on every non-owner access.
+- **Subtree grants over those names.** A subtree grant rooted at `memories.<8 hex>` covered
+  every agent minted in the same minute as the one it was meant for.
+- **`KVLease`'s default holder id** was `pod-<uuid7 hex[:12]>`: every factory built in the same
+  millisecond had the same holder id, and the holder id is the fence on refresh and release.
+- **Backup object keys.** `BackupEngine` wrote `<stamp>-<uuid7 hex[:8]>`, with the stamp to the
+  second: two backups in one millisecond named one object and the second overwrote the first.
+  `ClusterBackup`'s set root `<stamp>-<backup_id hex[:12]>` did the same to a whole set.
+
+**What changes for new rows and objects**
+
+- `memory_namespace_name` / `conversation_namespace_name` spell both ids in full:
+  `memories.<agent hex>.<customer hex>` (74 characters; the column is 255). The full hex is
+  injective over the pair, so two pairs cannot share a name. `identity_namespace_name` and
+  `intention_namespace_name` (never persisted, but judged by subtree grants) do the same.
+- `memory_namespace_schema_name` / `conversation_namespace_schema_name` are
+  `memory__<namespace id hex>` / `conversation__<namespace id hex>`: the row's own deterministic
+  id (uuid5 over both full ids), so the value is unique exactly when the row is, and at 40 / 46
+  characters it stays inside Postgres's 63-character identifier limit should anything ever
+  treat it as a schema. Both ids in full would have been 74.
+- `KVLease` defaults its holder id to `pod-<whole uuid7 hex>`; backup keys and set roots carry
+  the whole uuid7 hex after the stamp, which still leads, so listings sort and parse as before.
+- `MemoryNamespaceRef` gains `name`, carried from the row (the hub's reply, or the local
+  provisioner's read) rather than recomputed.
+- The memory and conversation authorizers no longer recompute the name they hand the
+  evaluator: a resolved row is judged by the name it STORES.
+
+**Why rows already in a database are unaffected -- no migration, no operator step**
+
+Nothing recomputes these names to FIND anything. Memory and conversation rows are resolved by
+`(namespace_type, owner_agent_id, customer_id)`; their grants -- including every
+`MemoryOwner` / `ConversationOwner` grant the platform writes -- address them by id, and the
+ids (`memory_namespace_id`, the conversation uuid5) always used both ids in full and do not
+change. The `schema_name` of these rows is synthetic: no Postgres schema of that name exists,
+nothing binds it into a `search_path`, and teardown drops only a schema whose name matches the
+one the hub provisions for that row type, which these never did. So an existing row keeps its
+eight-character name and schema name and is found, granted and torn down exactly as before;
+only rows created from this release on carry the new shape.
+
+The one reader of a namespace's NAME is a subtree grant, and it now sees the stored name on
+every path that reads a row. `NamespaceCollection.ensure_namespace` refuses a row that
+disagrees with any field it is handed, the name included -- it is reached only for a pair
+that has NO row (the local provisioner and the hub both resolve by the pair first), so it
+never compares an existing row against today's name. Backup keys and set roots are read back
+from listings and manifests, never recomputed; a lease holder id lives only as long as its
+lease.
+
+Two narrow edges, stated rather than inferred:
+
+- The memory owner path (the owning agent acting for itself, with or without a user) resolves
+  in-process without reading a row, so the only name it can give the evaluator is the one the
+  current rule derives. For a row written under the old rule, a SUBTREE grant rooted strictly
+  beneath `memories.<8 hex>` therefore no longer covers that path. Only a platform admin can
+  author a subtree grant, the platform writes none on memory namespaces, and such a root was
+  itself the cross-agent over-grant described above. To confirm none exists:
+  `SELECT assignment_id, scope_namespace_name FROM role_assignments WHERE scope_type = 'subtree'
+  AND (scope_namespace_name LIKE 'memories.%' OR scope_namespace_name LIKE 'conversations.%'
+  OR scope_namespace_name LIKE 'intentions.%' OR scope_namespace_name LIKE 'identity.%');`
+- While old and new pods run side by side, a first write for a brand-new pair can race: if an
+  old pod creates the row under the old name between a new provisioner's lookup and its
+  `ensure_namespace`, that one ensure is refused as a mismatch and the request is denied; the
+  next request resolves the row by its pair and proceeds.
+
+`tests/enforcement/test_no_time_ordered_id_prefix.py` now refuses a prefix slice of `.hex`
+(`x.hex[:n]`, `x.hex[0:n]`) in every package's `src/` and `tests/` unless it is taken from an
+explicit `uuid4()`; the test-only sites it found (in-memory database names, a scratch database,
+a fixture group name) were flakes of the same shape and are fixed.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 

@@ -100,12 +100,12 @@ async def _owner_row(pool: asyncpg.Pool, name: str, customer_id: uuid.UUID) -> N
 def _fields(customer: uuid.UUID, agent: uuid.UUID, namespace_id: uuid.UUID) -> dict[str, object]:
     return {
         "namespace_id": namespace_id,
-        "name": f"memories.{agent.hex[:8]}.{customer.hex[:8]}",
+        "name": f"memories.{agent.hex}.{customer.hex}",
         "namespace_type": "memory",
         "owner_agent_id": agent,
         "customer_id": customer,
         "owner_namespace": "agent-owner",
-        "schema_name": f"memory__{agent.hex[:8]}__{customer.hex[:8]}",
+        "schema_name": f"memory__{namespace_id.hex}",
     }
 
 
@@ -119,7 +119,7 @@ async def test_ensure_creates_the_row_with_every_field(pg_pool: asyncpg.Pool) ->
     assert row["row_scope"] == "customer"
     assert (row["namespace_type"], row["owner_agent_id"], row["customer_id"]) == ("memory", agent, customer)
     assert row["owner_namespace"] == "agent-owner"
-    assert row["schema_name"] == f"memory__{agent.hex[:8]}__{customer.hex[:8]}"
+    assert row["schema_name"] == f"memory__{namespace_id.hex}"
 
 
 async def test_ensure_is_idempotent_and_concurrent_ensures_converge(pg_pool: asyncpg.Pool) -> None:

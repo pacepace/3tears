@@ -146,16 +146,28 @@ class MemoryAccessDenied(AccessDenied):
 
 
 def memory_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
-    """build the canonical memory namespace name for an (agent, customer) pair.
+    """build the canonical memory namespace name for a NEW (agent, customer) row.
 
-    shape: ``memories.<agent_id_hex[:8]>.<customer_id_hex[:8]>`` per
-    the canonical plural-prefix + dot-separator form pinned by
-    :func:`threetears.core.namespaces.build_namespace_name`. uses the
-    first 8 hex chars of each UUID per the task shard convention; the
-    uniqueness is carried by the full
-    (namespace_type, owner_agent_id, customer_id) tuple on the row
-    itself, so the short prefix is a human-readable display handle
-    and not a uniqueness key.
+    shape: ``memories.<agent_id hex>.<customer_id hex>`` -- both ids in full, per the
+    canonical plural-prefix + dot-separator form pinned by
+    :func:`threetears.core.namespaces.build_namespace_name`. 74 characters, inside the
+    column's 255.
+
+    **the whole hex, because the name is unique.** ``namespaces.name`` carries a UNIQUE
+    index, so this name is a uniqueness key whether or not anything looks a row up by it.
+    it used to be the first eight hex characters of each id, and a uuid7's first eight
+    hex characters are the top of its millisecond timestamp: every agent minted in the
+    same ~65 seconds shared them, so two agents created for one customer together asked
+    for ONE name and the second one's namespace could never be written. the full hex is
+    injective over the pair, so two pairs cannot share a name at all.
+
+    **a row already written keeps the name it was written with.** nothing recomputes this
+    name to find a row: rows are resolved by ``(namespace_type, owner_agent_id,
+    customer_id)``, their grants address them by id, and the authorizer judges a resolved
+    row by the name it STORES. a row named by the earlier eight-character rule is
+    therefore found, granted and evaluated exactly as before; only rows created from now
+    on carry this shape. the one caller that has no row to read -- the owner path, which
+    resolves in-process -- names the namespace by this rule.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -164,22 +176,24 @@ def memory_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
     :return: canonical namespace name
     :rtype: str
     """
-    return build_namespace_name(
-        PLURAL_PREFIX_MEMORY,
-        agent_id.hex[:8],
-        customer_id.hex[:8],
-    )
+    return build_namespace_name(PLURAL_PREFIX_MEMORY, agent_id.hex, customer_id.hex)
 
 
 def memory_namespace_schema_name(agent_id: UUID, customer_id: UUID) -> str:
-    """build the schema_name persisted on the hub's ``namespaces`` rows.
+    """build the schema_name persisted on a NEW memory row in the hub's ``namespaces``.
 
-    memory rows route through the shared agent database schema rather
-    than a per-namespace Postgres schema; the row carries a stable
-    synthetic schema string so SELECT queries joining namespaces on
-    ``schema_name`` still match. shape mirrors
-    :func:`memory_namespace_name` with a ``memory__`` prefix to keep
-    the schema namespace disjoint from the display-name namespace.
+    memory rows route through the shared agent database schema rather than a
+    per-namespace Postgres schema, so no schema of this name exists and nothing binds it
+    into a ``search_path``; the row carries a stable synthetic string so SELECT queries
+    joining namespaces on ``schema_name`` still match.
+
+    shape: ``memory__<memory_namespace_id hex>`` -- the row's own deterministic id, so
+    it is unique exactly when the row is. ``schema_name`` is UNIQUE across non-workspace
+    rows, which is why the earlier ``memory__<agent hex[:8]>__<customer hex[:8]>`` shape
+    collided the same way :func:`memory_namespace_name` did. the id rather than both ids
+    in full keeps it at 40 characters, inside Postgres's 63-character identifier limit,
+    so it stays a legal schema name if anything ever treats it as one. rows already
+    written keep the value they were written with; nothing recomputes it.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -188,7 +202,7 @@ def memory_namespace_schema_name(agent_id: UUID, customer_id: UUID) -> str:
     :return: schema name string
     :rtype: str
     """
-    return f"memory__{agent_id.hex[:8]}__{customer_id.hex[:8]}"
+    return f"memory__{memory_namespace_id(agent_id, customer_id).hex}"
 
 
 def memory_namespace_id(agent_id: UUID, customer_id: UUID) -> UUID:
@@ -228,7 +242,8 @@ def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> MemoryNamespac
     (``agent_<hex>``), which has no ``namespaces`` table, so a Collection access
     there fails ``relation "namespaces" does not exist``. the evaluator's owner
     short-circuit allows the action from these five fields alone; no row need
-    exist.
+    exist. with no row to read, the ``name`` is the one :func:`memory_namespace_name`
+    derives.
 
     :param agent_id: owning agent UUID (also the caller on this path)
     :ptype agent_id: UUID
@@ -243,6 +258,7 @@ def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> MemoryNamespac
         owner_agent_id=agent_id,
         namespace_type=MEMORY_NAMESPACE_TYPE,
         owner_namespace=build_agent_namespace_name(agent_id),
+        name=memory_namespace_name(agent_id, customer_id),
     )
 
 
@@ -480,13 +496,16 @@ async def authorize_memory_access(
             namespace_provisioner=deps.namespace_provisioner,
         )
     try:
+        # no ``namespace_name``: the evaluator reads the entity's own name, which for a
+        # resolved row is the name the row STORES. recomputing it here judged a row written
+        # under an earlier name rule by a name it does not carry, and a subtree grant --
+        # the one thing that reads a namespace's name -- stopped covering it.
         await authorize_on_entity(
             ns_entity=ns_entity,
             action=action,
             user_id=caller_user_id,
             agent_id=caller_agent_id,
             cache=deps.acl_cache,
-            namespace_name=memory_namespace_name(agent_id, customer_id),
         )
     except AccessDenied as exc:
         raise MemoryAccessDenied(
