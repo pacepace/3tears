@@ -18,7 +18,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from _pacer_fakes import _FakeDelayPacer
+from packages.scrape.tests._pacer_fakes import _FakeDelayPacer
 from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
 
 _ROBOTS_DISALLOW = "User-agent: *\nDisallow: /private\n"

@@ -33,7 +33,7 @@ from threetears.search.extract import (
     extract,
 )
 
-from _search_instances import PROVENANCE
+from packages.search.tests._search_instances import PROVENANCE
 
 _PAGE_URL = "https://example.org/capybaras"
 _ROBOTS_URL = "https://example.org/robots.txt"
