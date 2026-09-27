@@ -97,11 +97,30 @@ async def test_a_save_from_a_stale_expectation_is_refused() -> None:
     assert (await store.load()) == SummaryState("first", "m1", 2)
 
 
-async def test_a_concurrent_row_update_loses_the_compare_and_swap() -> None:
+async def test_an_unrelated_row_update_does_not_cost_the_summary() -> None:
+    """Any write to the row (a message-count flush) moves its date_updated fence. When the summary
+    state is still the one expected, the save is retried once rather than thrown away."""
     cid = uuid4()
     rows = _FakeConversations(_conversation(cid))
     rows.conflict_next = True
-    assert await _store(rows, cid).save(SummaryState("s", "m1", 1), expected=None) is False
+    assert await _store(rows, cid).save(SummaryState("s", "m1", 1), expected=None) is True
+    assert await _store(rows, cid).load() == SummaryState("s", "m1", 1)
+
+
+async def test_a_competing_fold_during_the_save_loses_the_compare_and_swap() -> None:
+    cid = uuid4()
+    rows = _FakeConversations(_conversation(cid))
+    competitor = SummaryState("theirs", "m2", 3)
+
+    async def conflict_then_theirs(entity: Conversation) -> None:
+        # the other writer's fold landed between our read and our write
+        row = rows.rows[(_AGENT, cid)]
+        row.summarize_into(competitor.text)
+        row.metadata = {SUMMARY_CURSOR_KEY: {"through_id": "m2", "through_count": 3}}
+        raise ConcurrentModificationError("conversations", entity.conversation_id, entity.date_updated)
+
+    rows.save_entity = conflict_then_theirs  # type: ignore[method-assign]
+    assert await _store(rows, cid).save(SummaryState("mine", "m1", 1), expected=None) is False
 
 
 async def test_a_summary_written_without_a_cursor_reads_as_covering_nothing_it_can_locate() -> None:

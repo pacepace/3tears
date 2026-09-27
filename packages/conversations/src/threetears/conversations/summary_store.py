@@ -7,8 +7,11 @@ summary goes in the ``summary`` column the table has always had (through
 -- in ``metadata[SUMMARY_CURSOR_KEY]``. No migration.
 
 A save is a compare-and-swap twice over: the stored state must still be the one the fold started
-from, and the row is written under the collection's own ``date_updated`` fence, so a racing update
-loses cleanly (``False``) instead of interleaving two summaries.
+from, and the row is written under the collection's own ``date_updated`` fence, so a racing fold
+loses cleanly (``False``) instead of interleaving two summaries. A racing write that is NOT a fold
+(the row's message count, a rename) also moves the fence; the save re-checks and retries once while
+the summary state is unchanged. The fence needs a write-through collection: a ``conversations``
+collection configured write-behind skips the L3 fence, leaving only the state comparison.
 
 :func:`dispatch_conversation_summarized` is the matching ``on_summarized`` callback: it fires the
 existing :class:`ConversationSummarizedEvent` on the run's custom-event transport.
@@ -103,9 +106,17 @@ class ConversationSummaryStore:
         :return: ``True`` when stored; ``False`` when the row is gone or another writer got there first
         :rtype: bool
         """
-        conversation = await self._collection.get(self._key)
         stored = False
-        if conversation is not None and _state_of(conversation) == expected:
+        # Twice at most: any write to the row (a message-count flush, a rename) moves its date_updated
+        # fence, and losing the summary to one of those would waste the fold. A retry is safe only
+        # while the summary state is still the one this fold started from.
+        for attempt in range(2):
+            conversation = await self._collection.get(self._key)
+            # On the retry, this fold's own unsaved edit may be what a cached entity shows; that is
+            # not another writer's fold.
+            unchanged = (expected,) if attempt == 0 else (expected, state)
+            if conversation is None or _state_of(conversation) not in unchanged:
+                break
             conversation.summarize_into(state.text)
             conversation.metadata = {
                 **(conversation.metadata or {}),
@@ -114,9 +125,10 @@ class ConversationSummaryStore:
             try:
                 await self._collection.save_entity(conversation)
             except ConcurrentModificationError:
-                log.info("rolling summary lost a concurrent update; the other writer's summary stands")
+                log.info("rolling summary save hit a concurrent row update; re-checking once")
             else:
                 stored = True
+                break
         return stored
 
 

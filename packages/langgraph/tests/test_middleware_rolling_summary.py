@@ -140,17 +140,23 @@ async def test_the_summary_call_is_hidden_from_the_stream_and_billed_as_summariz
 
 
 async def test_a_second_fold_includes_the_prior_summary_and_only_newer_messages() -> None:
-    history = _history(9)
+    # Distinct contents, so the transcript shows exactly which messages were folded.
+    history: list[BaseMessage] = [
+        (_h(i, f"human-{i:02d}") if i % 2 == 0 else _a(i, f"assistant-{i:02d}")) for i in range(9)
+    ]
     store = _FakeSummaryStore(SummaryState(text="EARLIER", through_id="m2", through_count=3))
     model = _Summarizer()
-    sent, _ = await _run(_middleware(store, model, budget=40), history)
+    # Each message is 8 or 12 characters: a 30-character budget keeps m6..m8 and folds m3..m5.
+    sent, _ = await _run(_middleware(store, model, budget=30), history)
     [call] = model.calls
     transcript = " ".join(str(m.content) for m in call["messages"])
     assert "EARLIER" in transcript, "the prior summary is folded into the new one"
-    folded_ids = {m.id for m in history[3 : store.state.through_count]} if store.state else set()
-    assert folded_ids and all(i not in {"m0", "m1", "m2"} for i in folded_ids)
-    assert store.state is not None and store.state.through_count > 3
-    assert "SUMMARY 1" in str(sent[0].content)
+    for i in range(3):
+        assert f"-{i:02d}" not in transcript, f"m{i} was already folded and must not be folded again"
+    for i in range(3, 6):
+        assert f"-{i:02d}" in transcript, f"m{i} is newer than the cursor and over budget"
+    assert store.state == SummaryState(text="SUMMARY 1", through_id="m5", through_count=6)
+    assert sent[1:] == history[6:]
 
 
 async def test_a_mid_turn_step_trims_by_the_cursor_but_does_not_summarize_again() -> None:
@@ -236,3 +242,75 @@ def test_summary_state_is_immutable() -> None:
     assert replace(state, text="u").text == "u"
     with pytest.raises(AttributeError):
         state.text = "v"  # type: ignore[misc]
+
+
+class _Failing(_Summarizer):
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> AIMessage:  # noqa: A002
+        self.calls.append({"messages": list(input), "config": dict(config or {})})
+        raise ConnectionError("provider down")
+
+
+async def test_a_failed_summary_keeps_the_prior_one_and_saves_nothing() -> None:
+    """The fallback summary keeps only assistant sentences; storing it would erase the prior summary."""
+    history = _history(9)
+    prior = SummaryState(text="PRIOR: the user is Alice, budget $5000", through_id="m2", through_count=3)
+    store = _FakeSummaryStore(prior)
+    sent, _ = await _run(_middleware(store, _Failing(), budget=30), history)
+    assert store.state == prior and store.saves == []
+    assert "PRIOR: the user is Alice" in str(sent[0].content)
+    assert sent[1:] == history[3:], "trimmed by the old cursor; over budget for one turn, nothing lost"
+
+
+async def test_an_empty_summary_is_never_stored() -> None:
+    class _Blank(_Summarizer):
+        async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> AIMessage:  # noqa: A002
+            return AIMessage(content="   ")
+
+    store = _FakeSummaryStore()
+    await _run(_middleware(store, _Blank(), budget=40), _history(7))
+    assert store.saves == []
+
+
+async def test_a_count_cursor_at_or_past_the_window_keeps_the_newest_message() -> None:
+    history: list[BaseMessage] = [HumanMessage(content="a"), AIMessage(content="b"), HumanMessage(content="c NEW")]
+    store = _FakeSummaryStore(SummaryState(text="EARLIER", through_id=None, through_count=10))
+    sent, _ = await _run(_middleware(store, _Summarizer(), budget=1000), history)
+    assert sent[1:] == history, "a cursor past the window means the history was trimmed; all of it is new"
+
+
+async def test_a_store_can_be_resolved_per_call() -> None:
+    """An app that compiles its agent once serves many conversations through one middleware."""
+    stores = {"t1": _FakeSummaryStore(), "t2": _FakeSummaryStore()}
+
+    def store_for(request: ModelRequest) -> SummaryStore | None:
+        return stores[request.state["thread"]]  # type: ignore[index]
+
+    middleware = RollingSummaryMiddleware(_Summarizer(), store_for=store_for, token_budget=40, count_tokens=_chars)
+    for thread in ("t1", "t2"):
+        seen: dict[str, Any] = {}
+
+        async def handler(request: ModelRequest) -> Any:
+            seen["request"] = request
+            return SimpleNamespace(result=[AIMessage(content="ok")])
+
+        request = ModelRequest(
+            model=cast("BaseChatModel", _Summarizer()), messages=_history(7), state={"thread": thread}
+        )
+        await middleware.awrap_model_call(request, handler)
+    assert len(stores["t1"].saves) == 1 and len(stores["t2"].saves) == 1
+
+
+def test_exactly_one_of_store_and_store_for_is_given() -> None:
+    with pytest.raises(ValueError, match="store"):
+        RollingSummaryMiddleware(_Summarizer(), token_budget=10)
+    with pytest.raises(ValueError, match="store"):
+        RollingSummaryMiddleware(_Summarizer(), store=_FakeSummaryStore(), store_for=lambda _r: None, token_budget=10)
+
+
+async def test_a_failing_on_summarized_does_not_fail_the_turn() -> None:
+    async def on_summarized(folded: int, text: str) -> None:
+        raise RuntimeError("listener broke")
+
+    store = _FakeSummaryStore()
+    sent, _ = await _run(_middleware(store, _Summarizer(), budget=40, on_summarized=on_summarized), _history(7))
+    assert store.saves and "SUMMARY 1" in str(sent[0].content)

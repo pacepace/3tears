@@ -113,7 +113,9 @@ def _cursor(window: Sequence[BaseMessage], state: SummaryState | None) -> int:
         ids = [m.id for m in window]
         start = ids.index(state.through_id) + 1 if state.through_id in ids else 0
     elif state is not None:
-        start = min(state.through_count, len(window))
+        # A count at or past the window's end means the history was trimmed underneath it, the same as
+        # a missing id: everything present is newer. (Clamping instead would hide the newest message.)
+        start = state.through_count if state.through_count < len(window) else 0
     return start
 
 
@@ -147,13 +149,16 @@ def _partition(
 class RollingSummaryMiddleware(AgentMiddleware):
     """Keep the model's context within a token budget by folding older messages into a rolling summary.
 
-    Build one per turn, bound to that conversation's store. See the module docstring for the
-    guarantees.
+    Give it EITHER ``store`` (build one per turn, bound to that conversation) OR ``store_for`` (compile
+    the agent once; the store is resolved per model call, from the request's state or runtime). Async
+    only (``awrap_model_call``): its store is async. See the module docstring for the guarantees.
 
     :param model: the model that writes summaries
     :ptype model: BaseChatModel
     :param store: this conversation's summary store
-    :ptype store: SummaryStore
+    :ptype store: SummaryStore | None
+    :param store_for: resolves the store for one model call; ``None`` from it skips summarization
+    :ptype store_for: Callable[[ModelRequest], SummaryStore | None] | None
     :param token_budget: tokens the kept (unsummarized) messages may use; must be positive
     :ptype token_budget: int
     :param count_tokens: token counter over a message list (default: an approximation)
@@ -162,7 +167,8 @@ class RollingSummaryMiddleware(AgentMiddleware):
     :ptype prompt: str | None
     :param summary_prefix: heads the summary message the model sees
     :ptype summary_prefix: str
-    :param on_summarized: awaited after each stored fold with (messages folded, summary text)
+    :param on_summarized: awaited after each stored fold with (messages folded, summary text);
+        best-effort -- a failure is logged, never the turn's
     :ptype on_summarized: Callable[[int, str], Awaitable[None]] | None
     """
 
@@ -172,7 +178,8 @@ class RollingSummaryMiddleware(AgentMiddleware):
         self,
         model: BaseChatModel,
         *,
-        store: SummaryStore,
+        store: SummaryStore | None = None,
+        store_for: Callable[[ModelRequest], SummaryStore | None] | None = None,
         token_budget: int,
         count_tokens: Callable[[Sequence[BaseMessage]], int] = count_tokens_approximately,
         prompt: str | None = None,
@@ -182,8 +189,11 @@ class RollingSummaryMiddleware(AgentMiddleware):
         super().__init__()
         if token_budget <= 0:
             raise ValueError(f"token_budget must be positive, got {token_budget}")
+        if (store is None) == (store_for is None):
+            raise ValueError("give exactly one of store (per-turn) and store_for (per-call)")
         self._model = model
         self._store = store
+        self._store_for = store_for
         self._budget = token_budget
         self._count_tokens = count_tokens
         self._prompt = prompt
@@ -202,10 +212,13 @@ class RollingSummaryMiddleware(AgentMiddleware):
         :return: the model response
         :rtype: ModelResponse
         """
+        store = self._store if self._store is not None else self._store_for(request)  # type: ignore[misc]
+        if store is None:
+            return await handler(request)
         messages: list[BaseMessage] = list(request.messages)
         system = messages[0] if messages and isinstance(messages[0], SystemMessage) else None
         window = messages[1:] if system is not None else messages
-        state = await self._store.load()
+        state = await store.load()
         start = _cursor(window, state)
         turn_start = bool(window) and isinstance(window[-1], HumanMessage)
         to_fold, recent = (
@@ -213,20 +226,23 @@ class RollingSummaryMiddleware(AgentMiddleware):
             if turn_start
             else ([], list(window[start:]))
         )
-        if to_fold:
-            text = await self._summarize(state, to_fold)
+        text = await self._summarize(state, to_fold) if to_fold else None
+        if text is None:
+            # Nothing to fold -- or the summary call failed or came back empty. The prior summary stands
+            # and nothing is stored: saving a fallback would advance the cursor past messages it dropped.
+            recent = list(window[start:]) if to_fold else recent
+        else:
             folded = SummaryState(text=text, through_id=to_fold[-1].id, through_count=start + len(to_fold))
-            if await self._store.save(folded, expected=state):
+            if await store.save(folded, expected=state):
                 state = folded
                 log.info(
                     "conversation summarized",
                     extra={"extra_data": {"messages_folded": len(to_fold), "token_budget": self._budget}},
                 )
-                if self._on_summarized is not None:
-                    await self._on_summarized(len(to_fold), text)
+                await self._notify(len(to_fold), text)
             else:
                 # Another writer folded this conversation first. One fold per turn: use theirs.
-                state = await self._store.load()
+                state = await store.load()
                 recent = list(window[_cursor(window, state) :])
         result: ModelResponse
         if state is None:
@@ -237,22 +253,51 @@ class RollingSummaryMiddleware(AgentMiddleware):
             result = await handler(request.override(messages=cast("list[Any]", assembled)))
         return result
 
-    async def _summarize(self, state: SummaryState | None, to_fold: list[BaseMessage]) -> str:
-        """Write the next rolling summary: the prior one plus the messages being folded.
+    async def _summarize(self, state: SummaryState | None, to_fold: list[BaseMessage]) -> str | None:
+        """Write the next rolling summary (the prior one plus the messages being folded), or ``None``.
+
+        ``None`` when the model call fails or returns nothing: the heuristic fallback
+        ``summarize_older_messages`` offers keeps only assistant sentences, so storing it would
+        silently discard the prior summary.
 
         :param state: the stored state (its text is the prior summary)
         :ptype state: SummaryState | None
         :param to_fold: the messages being folded
         :ptype to_fold: list[BaseMessage]
-        :return: the new summary
-        :rtype: str
+        :return: the new summary, or ``None``
+        :rtype: str | None
         """
         older: list[BaseMessage] = list(to_fold)
         if state is not None:
             older.insert(0, SystemMessage(content=f"{_PRIOR_SUMMARY_PREFIX}{state.text}"))
-        return await summarize_older_messages(
-            older,
-            self._model,
-            custom_prompt=self._prompt,
-            config={"tags": [NOSTREAM_TAG], "metadata": {USAGE_PURPOSE_METADATA_KEY: "summarization"}},
-        )
+        text: str | None = None
+        try:
+            text = await summarize_older_messages(
+                older,
+                self._model,
+                custom_prompt=self._prompt,
+                config={"tags": [NOSTREAM_TAG], "metadata": {USAGE_PURPOSE_METADATA_KEY: "summarization"}},
+                fallback=False,
+            )
+        except Exception:  # prawduct:allow prawduct/broad-except -- a provider failure must not fail the turn; the prior summary stands
+            log.warning("rolling summary call failed; keeping the prior summary", exc_info=True)
+        return text if text and text.strip() else None
+
+    async def _notify(self, folded: int, text: str) -> None:
+        """Tell ``on_summarized`` about a stored fold; its failure is logged, never the turn's.
+
+        :param folded: messages folded
+        :ptype folded: int
+        :param text: the new summary
+        :ptype text: str
+        :return: None
+        :rtype: None
+        """
+        if self._on_summarized is None:
+            return
+        try:
+            await self._on_summarized(folded, text)
+        except (
+            Exception
+        ):  # prawduct:allow prawduct/broad-except -- the summary is stored; a listener's failure is not the turn's
+            log.warning("on_summarized failed; the summary is stored", exc_info=True)

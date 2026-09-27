@@ -72,9 +72,14 @@ packages (bumped in lock-step).
 
 ### A rolling summary that keeps the history
 
-- **New (minor):** `threetears.langgraph.RollingSummaryMiddleware(model, *, store, token_budget,
-  count_tokens=..., prompt=None, summary_prefix=..., on_summarized=None)`, with `SummaryState`,
-  the `SummaryStore` Protocol and `USAGE_PURPOSE_METADATA_KEY`. It is non-destructive:
+- **New (minor):** `threetears.langgraph.RollingSummaryMiddleware(model, *, store=None,
+  store_for=None, token_budget, count_tokens=..., prompt=None, summary_prefix=...,
+  on_summarized=None)`, with `SummaryState`, the `SummaryStore` Protocol and
+  `USAGE_PURPOSE_METADATA_KEY`.
+  - It takes exactly one of `store` (one conversation, built per turn) or
+    `store_for(request)` (an agent compiled once; the store is resolved per model call).
+  - It is async only.
+  - It is non-destructive:
   - it overrides the model request only, so the checkpointer keeps every message;
   - it folds older messages into a rolling summary once the messages since the last fold pass
     a token budget;
@@ -83,10 +88,19 @@ packages (bumped in lock-step).
   - its cursor is a message id, with a count fallback;
   - the store's save is a compare-and-swap, and a losing writer uses the winner's summary;
   - the summary call is `NOSTREAM_TAG`-ged and carries `metadata["threetears.usage.purpose"]`.
-  `SummarizationMiddleware` is unchanged.
+  - A failed or empty summary stores nothing and keeps the prior summary, so a provider outage
+    can never replace it with the heuristic fallback. That turn runs over budget instead.
+  - A failing `on_summarized` is logged, never the turn's failure.
+  - A count cursor at or past the window's end reads as "everything is new".
+  - It uses `summarize_older_messages`' new `fallback=False`, which raises instead of returning
+    the heuristic.
+  `SummarizationMiddleware` is unchanged. The summary is capped at 2,000 characters (the
+  existing `summarize` cap), which cuts its newest content first.
 - **New (minor):** `threetears.conversations.ConversationSummaryStore(collection, *, agent_id,
   conversation_id)`. It is the store over a conversations row: the summary goes in the existing
   `summary` column and the cursor in `metadata["summary_through"]`, so no migration is needed.
+  A racing write to the row that is not a fold is retried once while the summary state is
+  unchanged. The fence assumes a write-through collection.
   `dispatch_conversation_summarized` fires the existing `ConversationSummarizedEvent`. Scriob and
   metallm each hand-rolled this, with incompatible cursors.
 
