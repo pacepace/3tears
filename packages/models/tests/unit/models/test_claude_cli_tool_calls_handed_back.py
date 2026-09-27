@@ -40,6 +40,7 @@ pytest.importorskip("claude_agent_sdk")
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock  # noqa: E402
 
 from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
+from threetears.models.errors import ModelProviderError  # noqa: E402
 from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: E402
 
 
@@ -310,10 +311,10 @@ async def test_the_turn_limit_without_a_tool_call_is_still_a_failure() -> None:
                 _result(subtype="error_max_turns"),
             ]
         )
-        message = await model.ainvoke([HumanMessage(content="hi")])
+        with pytest.raises(ModelProviderError) as raised:
+            await model.ainvoke([HumanMessage(content="hi")])
 
-    assert message.response_metadata["is_error"] is True
-    assert message.response_metadata["finish_reason"] == "error"
+    assert raised.value.reason == "error_max_turns", "a failed call raises; it is never answered with its text"
 
 
 async def test_every_call_is_one_model_turn_whatever_the_caller_asked_for() -> None:

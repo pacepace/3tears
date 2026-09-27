@@ -307,3 +307,63 @@ class TestFriendlyApiErrorProviderNames:
         exc = RuntimeError("rate limit exceeded")
         result = friendly_api_error(exc)
         assert "The LLM provider" not in result or "unexpected went wrong" in result
+
+
+class TestAFailureAProviderReportsAsData:
+    """a provider that answers a failure as data -- the claude cli's error result -- raises these.
+
+    they are provider failures to every caller that asks, and are worded like the API route's.
+    """
+
+    def test_both_are_provider_errors(self) -> None:
+        from threetears.models.errors import ModelProviderError, ModelRateLimitError, is_provider_error
+
+        assert is_provider_error(ModelProviderError("boom", provider="Claude subscription"))
+        assert is_provider_error(ModelRateLimitError("limit", provider="Claude subscription"))
+
+    def test_a_rate_limit_is_a_provider_error_a_caller_can_tell_apart(self) -> None:
+        from threetears.models.errors import ModelProviderError, ModelRateLimitError
+
+        limited = ModelRateLimitError("limit", provider="Claude subscription", resets="1:10am (UTC)")
+        assert isinstance(limited, ModelProviderError)
+        assert limited.resets == "1:10am (UTC)"
+
+    def test_the_provider_is_the_one_it_names(self) -> None:
+        from threetears.models.errors import ModelProviderError
+
+        assert identify_provider(ModelProviderError("boom", provider="Claude subscription")) == "Claude subscription"
+
+    def test_a_limit_with_a_reset_says_when(self) -> None:
+        from threetears.models.errors import ModelRateLimitError
+
+        message = friendly_api_error(
+            ModelRateLimitError(
+                "You've hit your session limit · resets 1:10am (UTC)",
+                provider="Claude subscription",
+                resets="1:10am (UTC)",
+            )
+        )
+        assert message == "Claude subscription has reached its usage limit. It resets 1:10am (UTC)."
+
+    def test_a_limit_without_a_reset_is_worded_as_the_api_routes_429(self) -> None:
+        from threetears.models.errors import ModelRateLimitError
+
+        message = friendly_api_error(ModelRateLimitError("slow down", provider="Claude subscription"))
+        assert message == "Claude subscription rate-limited our request. Please retry in about 30 seconds."
+
+    def test_each_reason_is_worded_as_the_api_route_words_its_status(self) -> None:
+        from threetears.models.errors import ModelProviderError
+
+        def worded(reason: str | None, detail: str = "Your credit balance is too low.") -> str:
+            return friendly_api_error(ModelProviderError(detail, provider="Claude subscription", reason=reason))
+
+        assert worded("authentication_failed") == (
+            "Claude subscription rejected our credentials. Please contact an administrator."
+        )
+        assert worded("billing_error") == "Claude subscription: Your credit balance is too low."
+        assert worded("invalid_request", "Prompt is too long") == "Claude subscription: Prompt is too long"
+        assert worded("server_error") == (
+            "Claude subscription is having a server-side outage. Please retry in 2-3 minutes."
+        )
+        assert worded("unknown") == "Claude subscription returned an unexpected error. Please retry in a minute."
+        assert worded(None) == "Claude subscription returned an unexpected error. Please retry in a minute."

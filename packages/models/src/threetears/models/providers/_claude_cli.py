@@ -117,6 +117,17 @@ tool round's calls and results as work on the current message, and last the pers
 message under "The person's current message:". A section tag inside any material is disarmed, so
 text a tool returned cannot end a section or forge a request.
 
+A failed call raises (found live: at the subscription's session limit the reply was "You've hit your
+session limit · resets 1:10am (UTC)" as ordinary content; metallm stored it as a draft and gave it
+to its agent as knowledge, and the circuit breaker counted a success). The CLI reports a failure as
+data -- a synthetic assistant message whose ``error`` names the kind and whose text is the notice,
+then a result flagged ``is_error`` -- where the API route raises. Both are raised here as
+:class:`~threetears.models.errors.ModelRateLimitError` (the ``rate_limit`` code or an HTTP 429, with
+the reset time when the notice gives one) or :class:`~threetears.models.errors.ModelProviderError`,
+before any of the notice is yielded, so the breaker's ``on_llm_error`` sees it as it sees an API
+failure. A call that stopped to hand tool calls back, and one whose result carries the structured
+answer it asked for, did not fail.
+
 """
 
 from __future__ import annotations
@@ -147,6 +158,7 @@ from threetears.models.claude_cli_pool import (
     ClaudeCliSessionError,
     claude_cli_pool,
 )
+from threetears.models.errors import ModelProviderError, ModelRateLimitError
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
 from threetears.tool_schema import self_contained_input_schema
 
@@ -191,6 +203,12 @@ _HANDED_BACK = "This tool call was handed to the caller."
 #: answers by calling it, and the CLI puts the answer on ``ResultMessage.structured_output``. It is
 #: the CLI's, never the caller's: a caller's tool arrives under :data:`_BOUND_TOOL_PREFIX`.
 _STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+
+#: The provider a failed subscription call names, in errors and in the messages worded from them.
+_CLI_PROVIDER = "Claude subscription"
+
+#: When a limit notice says the limit resets: "resets 1:10am (UTC)", "will reset at 5pm".
+_RESETS = re.compile(r"\bresets?\s+(?:at\s+)?(?P<when>[^\n]+)", re.IGNORECASE)
 
 
 def _output_format(output_config: Any) -> dict[str, Any]:
@@ -738,6 +756,10 @@ def _subscription_model_cls() -> type:
                 await client.query(prompt)
                 async for msg in client.receive_response():
                     if isinstance(msg, AssistantMessage):
+                        # A failure the CLI met is sent as a message whose text is the notice.
+                        # It is raised, never answered with, and before any token callback sees it.
+                        if (failure := _assistant_failure(msg)) is not None:
+                            raise failure
                         text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
                         if text:
                             all_text.append(text)
@@ -746,6 +768,8 @@ def _subscription_model_cls() -> type:
                         tool_calls.extend(self._caller_tool_calls(msg.content))
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
+                        if (failure := _result_failure(msg, tool_calls, "\n".join(all_text))) is not None:
+                            raise failure
                         generation_info = _generation_info(msg, tool_calls)
                         if options.output_format is not None and msg.structured_output is not None:
                             # The answer is the structured one. The model's prose before it is
@@ -816,6 +840,8 @@ def _subscription_model_cls() -> type:
             # answer comes, the prose is what the caller gets, so its failure names what was said.
             structured = options.output_format is not None
             held: list[str] = []
+            # Every message's text, streamed or held, for a failed result that says nothing itself.
+            produced: list[str] = []
 
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
@@ -842,7 +868,12 @@ def _subscription_model_cls() -> type:
                         yield chunk
 
                     elif isinstance(msg, AssistantMessage):
+                        # A failure the CLI met is sent as a message whose text is the notice; it
+                        # is raised before a character of it is streamed to the person.
+                        if (failure := _assistant_failure(msg)) is not None:
+                            raise failure
                         text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
+                        produced.append(text)
                         if structured:
                             if text:
                                 held.append(text)
@@ -860,6 +891,8 @@ def _subscription_model_cls() -> type:
 
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
+                        if (failure := _result_failure(msg, tool_calls, "\n".join(produced))) is not None:
+                            raise failure
                         generation_info = _generation_info(msg, tool_calls)
                         usage = _usage_metadata(msg.usage)
                         content = ""
@@ -894,6 +927,105 @@ def _subscription_model_cls() -> type:
     return _SubscriptionChatModel
 
 
+def _ended_for_tools(result: Any, tool_calls: list[dict[str, Any]]) -> bool:
+    """Whether a call ended on the CLI's turn limit because the model asked for tools.
+
+    That is the designed end of such a call (see the module docstring), not a failure, although the
+    CLI flags it as an error.
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param tool_calls: the tool calls the call handed back
+    :ptype tool_calls: list[dict[str, Any]]
+    :return: ``True`` when the call stopped to hand its tool calls back
+    :rtype: bool
+    """
+    return bool(tool_calls) and result.subtype == "error_max_turns"
+
+
+def _cli_failure(detail: str, *, reason: str | None, status: int | None) -> ModelProviderError:
+    """The typed error for a failure the CLI reported.
+
+    A limit -- the CLI's own ``rate_limit`` code, which it sends with a subscription's session-limit
+    notice, or an HTTP 429 on the result -- is a :class:`ModelRateLimitError` carrying when it resets,
+    when the notice says. Anything else is a :class:`ModelProviderError`.
+
+    :param detail: what the CLI said
+    :ptype detail: str
+    :param reason: the CLI's code for the failure, when it gave one
+    :ptype reason: str | None
+    :param status: HTTP status of the failing API call, when the CLI reported one
+    :ptype status: int | None
+    :return: the error to raise
+    :rtype: ModelProviderError
+    """
+    said = detail.strip() or "the Claude CLI reported an error and gave no reason"
+    failure: ModelProviderError
+    if reason == "rate_limit" or status == 429:
+        resets = _RESETS.search(said)
+        failure = ModelRateLimitError(
+            said,
+            provider=_CLI_PROVIDER,
+            reason=reason,
+            status=status,
+            resets=resets.group("when").strip().rstrip(".") if resets else None,
+        )
+    else:
+        failure = ModelProviderError(said, provider=_CLI_PROVIDER, reason=reason, status=status)
+    _logger.warning(
+        "A subscription model call failed",
+        extra={
+            "extra_data": {
+                "error_type": type(failure).__name__,
+                "reason": reason,
+                "status": status,
+                "detail": said,
+            }
+        },
+    )
+    return failure
+
+
+def _assistant_failure(message: Any) -> ModelProviderError | None:
+    """The error an assistant message reports, when the CLI flagged it as one.
+
+    The CLI sends a failure it met calling the API -- a subscription's session limit among them --
+    as a synthetic assistant message whose text is the notice and whose ``error`` names the kind.
+
+    :param message: the CLI's ``AssistantMessage``
+    :ptype message: Any
+    :return: the error to raise, or ``None`` for an ordinary message
+    :rtype: ModelProviderError | None
+    """
+    if message.error is None:
+        return None
+    text = "\n".join(block.text for block in message.content if hasattr(block, "text"))
+    return _cli_failure(text, reason=str(message.error), status=None)
+
+
+def _result_failure(result: Any, tool_calls: list[dict[str, Any]], text: str) -> ModelProviderError | None:
+    """The error a call's result reports, when the call failed.
+
+    Not a failure: a call that stopped to hand tool calls back (:func:`_ended_for_tools`), and a call
+    whose result carries the structured answer it was asked for -- raising would throw that answer
+    away.
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param tool_calls: the tool calls the call handed back
+    :ptype tool_calls: list[dict[str, Any]]
+    :param text: the text the call produced, for a result that says nothing itself
+    :ptype text: str
+    :return: the error to raise, or ``None`` when the call did not fail
+    :rtype: ModelProviderError | None
+    """
+    if not result.is_error or _ended_for_tools(result, tool_calls) or result.structured_output is not None:
+        return None
+    said = result.result or "; ".join(result.errors or []) or text
+    reason = None if result.subtype == "success" else result.subtype
+    return _cli_failure(said, reason=reason, status=result.api_error_status)
+
+
 def _generation_info(result: Any, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
     """What a call's ``ResultMessage`` says, as generation info.
 
@@ -907,8 +1039,7 @@ def _generation_info(result: Any, tool_calls: list[dict[str, Any]]) -> dict[str,
     :return: generation info
     :rtype: dict[str, Any]
     """
-    ended_for_tools = bool(tool_calls) and result.subtype == "error_max_turns"
-    failed = bool(result.is_error) and not ended_for_tools
+    failed = bool(result.is_error) and not _ended_for_tools(result, tool_calls)
     info: dict[str, Any] = {
         "total_cost_usd": result.total_cost_usd,
         "duration_ms": result.duration_ms,

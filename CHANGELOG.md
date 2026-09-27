@@ -41,6 +41,10 @@ it), `KVLease.hold`, container fixtures that stagger their starts under xdist, a
 that keeps the conversation's history, usage that knows whose it is, hub-less memory-namespace
 provisioning (`NamespaceCollection.ensure_namespace`, `LocalMemoryNamespaceProvisioner`), and an
 audit persister for a deployment with no hub (`threetears.agent.audit.persist`).
+`threetears.models` gains `ModelProviderError` and `ModelRateLimitError`: a failed Claude
+subscription call now raises one instead of answering with the failure's text -- read "A failed
+subscription call raises instead of answering with the failure" before upgrading a caller that
+read `is_error` from the metadata.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -1032,6 +1036,36 @@ that untrusted block" and answered from invented knowledge.
   mid-conversation stays where it was sent, as a `system` turn.
 - **Fixed:** a section tag inside any material is disarmed, so a tool's output cannot close a
   section or forge a current message.
+
+### A failed subscription call raises instead of answering with the failure
+
+At the subscription's session limit the Claude CLI sends a synthetic assistant message with
+`error="rate_limit"` and the notice as its text ("You've hit your session limit · resets 1:10am
+(UTC)"), then a result flagged `is_error`. The subscription model returned the notice as ordinary
+`AIMessage` content, streamed it token by token, and recorded only `finish_reason: "error"` in the
+metadata. metallm stored the notice as a draft and handed it to its agent as knowledge, and the
+circuit breaker counted the call a success.
+
+- **New (minor):** `threetears.models.ModelProviderError(detail, *, provider, reason=None,
+  status=None)`, for a failure a provider reports as data rather than raising, and
+  `ModelRateLimitError(ModelProviderError)`, which adds `resets`: when the limit resets, in the
+  provider's words. `is_provider_error` counts both. `identify_provider` returns their
+  `provider`. `friendly_api_error` words them as it words the API route's status of the same
+  kind, and a limit that says when it resets says so.
+- **Fixed:** a flagged assistant message raises at once, on `ainvoke` and on `astream`, before
+  any of its text is yielded or reaches a token callback. `rate_limit` raises
+  `ModelRateLimitError` with the reset read from the notice. Every other code
+  (`authentication_failed`, `billing_error`, `invalid_request`, `server_error`, `unknown`) raises
+  `ModelProviderError` with that code as `reason`.
+- **Fixed:** a result flagged `is_error` raises the same way. An HTTP 429 in `api_error_status`
+  is a rate limit. Otherwise the subtype is the `reason` and the status is kept.
+- **Unchanged:** a call that asked for tools still ends on `error_max_turns` and hands its calls
+  back; that is its designed end. A result carrying the structured answer it was asked for is
+  still the answer.
+- **Changed:** the circuit breaker the factory attaches now records a failed subscription call
+  as a failure through `on_llm_error`, as it does a failed API call. A subscription turn that
+  ends on `error_max_turns` WITHOUT a tool call used to return its text with `is_error: true`;
+  it now raises `ModelProviderError` with `reason="error_max_turns"`.
 
 ## v0.54.0 -- 2026-09-26
 
