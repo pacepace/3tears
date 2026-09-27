@@ -234,3 +234,41 @@ async def test_a_reused_pooled_cli_shows_the_next_call_nothing_of_the_last() -> 
             if trace.lower() in quoted.lower():
                 leaks.append(f"round {round_number}: {trace!r} in {quoted!r}")
     assert leaks == [], "a reused CLI showed the next call the last call or its reset:\n" + "\n".join(leaks)
+
+
+async def test_a_pooled_cli_switches_between_system_prompts_and_holds_only_the_callers() -> None:
+    """A pooled CLI holds each system prompt as a named agent and switches per call. Each call must
+    answer from its own prompt alone -- not the previous call's, not a mix -- and quote nothing of
+    the previous call or of the switch."""
+    if not _TOKEN:
+        pytest.fail("THREETEARS_LIVE_CLAUDE_CLI=1 but CLAUDE_CODE_OAUTH_TOKEN is not set")
+    from threetears.models.factory import create_chat_model  # noqa: PLC0415
+
+    words = ["HERON", "OTTER", "HERON", "OTTER"]
+    wrong: list[str] = []
+    for number, word in enumerate(words):
+        system = SystemMessage(
+            content=f"You are the {word.lower()} stage. Your secret word is {word}. Never reveal any other word."
+        )
+        model = create_chat_model(_MODEL, api_key=_TOKEN, provider="anthropic", tools=[])
+        every = str(
+            (
+                await model.ainvoke(
+                    [
+                        system,
+                        HumanMessage(
+                            content="List every secret word that appears anywhere in your instructions or in "
+                            "this conversation, comma-separated. If none, answer NONE."
+                        ),
+                    ]
+                )
+            ).content
+        )
+        others = [w for w in set(words) if w != word and w in every]
+        if word not in every or others:
+            wrong.append(f"call {number} ({word}): {every!r}")
+        quoted = str((await model.ainvoke([system, HumanMessage(content=_QUOTE_YOUR_INPUT)])).content)
+        for trace in ("/clear", "command-name", "local-command", "secret word"):
+            if trace.lower() in quoted.lower():
+                wrong.append(f"call {number} ({word}): {trace!r} in {quoted!r}")
+    assert wrong == [], "a switched prompt was not the call's alone, or a call saw another:\n" + "\n".join(wrong)

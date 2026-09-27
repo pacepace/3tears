@@ -15,7 +15,8 @@ empty conversation between calls. Everything below was verified against the bund
 
 | Setting | How it reaches the CLI | Per call? | Evidence |
 |---|---|---|---|
-| system prompt | `--system-prompt` launch flag | **no** | a second `initialize` returns before reading `systemPrompt` |
+| system prompt | as a launch flag, no: a second `initialize` returns before reading `systemPrompt`. As a named agent defined at launch, **yes**: `apply_flag_settings {"agent": name}` | yes, among the agents the CLI launched with | through a recording proxy, a switched agent's request (system blocks, messages, tools, `output_config`) was byte-identical to a CLI launched with that prompt; the switch held across the rewind; an agent defined after launch answered 'Agent "..." not found' |
+| JSON schema | `--json-schema` launch flag | **no** | `apply_flag_settings {"jsonSchema": ...}` answered `{}` and the next call had no `structured_output` |
 | model | `set_model` control request | yes | SDK method |
 | bound tools (in-process MCP server) | `mcp_set_servers` control request | **yes** | swapped a live session's server in 3 ms; the model called the new tool |
 | `max_turns` | `--max-turns` launch flag | per *query* | three queries at cap 2, each used 2 turns, none errored; the model forces 1 (below) |
@@ -69,15 +70,21 @@ session with any other kind.
 A session is reusable for any call whose **launch-time** options match:
 
 - a digest of the credential (the token never appears in a key or a path);
-- the stable system prompt;
 - `tools` (built-ins), `disallowed_tools`, `permission_mode`, `max_budget_usd`,
   `fallback_model`, and any caller-set `cwd`;
 - `max_turns` and `env`, which differ for a structured call with no tools (above);
 - every other launch-time field of the options, so nothing a caller sets can share a CLI
   launched without it.
 
-Not in the key, because they are applied per checkout: `model` (`set_model`) and the bound
-tool server (`mcp_set_servers`). Tool auto-approval is granted server-wide at launch
+Not in the key, because they are applied per checkout: `model` (`set_model`), the bound
+tool server (`mcp_set_servers`), and a text system prompt (an agent switch). A CLI launches with
+no system prompt and every prompt its key has seen defined as an agent named from the prompt's
+digest; a call whose prompt a CLI lacks takes an idle CLI that has it, or starts one that defines
+it and every earlier prompt (at most 32 per key, least recently used dropped), and at a cap an idle
+CLI that lacks it makes room. `per_key` now defaults to the whole cap, since one key holds every
+prompt. Measured on seven stage prompts, three stages at once, four sessions: 28 CLI starts and 24
+evictions in 28 calls with the prompt in the key; 7 starts and 3 evictions with the switch, every
+stage answering from its own prompt. Tool auto-approval is granted server-wide at launch
 (`mcp__langchain-tools`), so a swapped-in tool set needs no relaunch.
 
 A call carrying `resume` / `continue_conversation` wants the CLI's own stored session, which

@@ -31,6 +31,7 @@ from threetears.models.claude_cli_pool import (
     ClaudeCliPoolExhausted,
     ClaudeCliSessionError,
     PooledCliSession,
+    agent_name,
     kill_process_tree,
     launch_key,
     sweep_orphaned_claude_clis,
@@ -58,6 +59,7 @@ class Options:
     include_partial_messages: bool = True
     mcp_servers: dict[str, Any] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
+    agents: dict[str, Any] | None = None
 
 
 # parity-exempt: records the message dicts a LentClient sends; the real client writes them to a CLI's stdin
@@ -85,6 +87,10 @@ class FakeSession:
     def __init__(self, options: Any, key: str) -> None:
         self.options = options
         self.key = key
+        #: The agents the CLI was launched with, and every switch made on it.
+        self.agents: frozenset[str] = frozenset(getattr(options, "agents", None) or {})
+        self.agent: str | None = None
+        self.switches: list[str | None] = []
         self.client = _FakeClient()
         self.pid: int | None = 4242
         self.closed = False
@@ -110,11 +116,18 @@ class FakeSession:
         """The production entry point the pool calls; builds a fake instead of a subprocess."""
         return cls(options, key)
 
-    async def prepare(self, *, model: str | None, tool_server: Any | None, call_context: Any = None) -> None:
+    async def prepare(
+        self, *, model: str | None, tool_server: Any | None, call_context: Any = None, agent: str | None = None
+    ) -> None:
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
+        if agent is not None and agent not in self.agents:
+            raise ClaudeCliSessionError(f"this Claude CLI was launched without the agent {agent!r}")
         if self.fail_prepare:
             raise ClaudeCliSessionError("the CLI refused the tool server")
+        if agent != self.agent:
+            self.switches.append(agent)
+            self.agent = agent
         self.prepared.append((model, tool_server))
         self.contexts.append(call_context)
 
@@ -259,15 +272,93 @@ class TestTheCliIsReused:
         assert len(FakeSession.instances) == 2
         await pool.aclose()
 
-    async def test_a_different_system_prompt_gets_a_different_cli(self) -> None:
-        """A running CLI's system prompt cannot change, so a different one cannot share it."""
+
+class TestTheSystemPromptIsSwitchedAsAnAgent:
+    """A launch-flag system prompt never changes, so a CLI launches with none and holds every prompt
+    its key has seen as a named agent; a checkout switches to the call's. Measured live: the model
+    then gets exactly the system blocks a CLI launched with that prompt sends."""
+
+    async def test_a_cli_launches_with_no_system_prompt_and_the_calls_prompt_as_an_agent(self) -> None:
         pool = _pool()
-        async with pool.checkout(Options(system_prompt="persona A"), token=TOKEN, tool_server=None):
-            pass
-        async with pool.checkout(Options(system_prompt="persona B"), token=TOKEN, tool_server=None):
-            pass
+        session = await _call(pool, Options(system_prompt="persona A"))
+        assert session.options.system_prompt is None, "the prompt went to the CLI as a launch flag"
+        assert session.options.agents == {agent_name("persona A"): "persona A"}
+        assert session.switches == [agent_name("persona A")]
+        await pool.aclose()
+
+    async def test_calls_with_prompts_the_cli_knows_share_it_and_switch_between_them(self) -> None:
+        pool = _pool()
+        await _call(pool, Options(system_prompt="persona A"))
+        await _call(pool, Options(system_prompt="persona B"))
+        first, second = FakeSession.instances
+        assert second.options.agents == {
+            agent_name("persona A"): "persona A",
+            agent_name("persona B"): "persona B",
+        }, "a new prompt starts a CLI that holds it and every earlier one"
+        third = await _call(pool, Options(system_prompt="persona A"))
+        fourth = await _call(pool, Options(system_prompt="persona B"))
+        assert third is second and fourth is second, "a CLI that knows both prompts was not shared"
+        assert second.switches == [agent_name("persona B"), agent_name("persona A"), agent_name("persona B")]
         assert len(FakeSession.instances) == 2
         await pool.aclose()
+
+    async def test_a_call_with_no_prompt_switches_the_agent_off(self) -> None:
+        pool = _pool()
+        session = await _call(pool, Options(system_prompt="persona A"))
+        again = await _call(pool, Options(system_prompt=None))
+        assert again is session
+        assert session.switches == [agent_name("persona A"), None]
+        await pool.aclose()
+
+    async def test_at_the_per_key_cap_an_idle_cli_without_the_prompt_makes_room(self) -> None:
+        pool = _pool(per_key=1)
+        old = await _call(pool, Options(system_prompt="persona A"))
+        new = await _call(pool, Options(system_prompt="persona B"))
+        assert old.disposals == 1, "an idle CLI that cannot serve the call held the key's only slot"
+        assert new is not old and pool.live_count == 1
+        await pool.aclose()
+
+    async def test_at_the_process_cap_an_idle_cli_without_the_prompt_makes_room(self) -> None:
+        """Found measuring seven stage prompts on four sessions: sessions started before a prompt
+        appeared sat idle while every call with it ran on a CLI of its own."""
+        pool = _pool(max_sessions=1)
+        old = await _call(pool, Options(system_prompt="persona A"))
+        new = await _call(pool, Options(system_prompt="persona B"))
+        assert old.disposals == 1, "an idle CLI that cannot serve the call held the process's only slot"
+        assert new is not old and pool.live_count == 1
+        await pool.aclose()
+
+    async def test_an_idle_cli_that_knows_the_prompt_is_never_evicted_for_it(self) -> None:
+        pool = _pool(max_sessions=1)
+        first = await _call(pool, Options(system_prompt="persona A"))
+        again = await _call(pool, Options(system_prompt="persona A"))
+        assert again is first and first.disposals == 0
+        await pool.aclose()
+
+    async def test_a_key_holds_a_bounded_number_of_prompts(self) -> None:
+        pool = _pool(per_key=64, max_sessions=64)
+        for number in range(claude_cli_pool._MAX_AGENTS_PER_KEY + 3):  # noqa: SLF001 -- the bound under test
+            await _call(pool, Options(system_prompt=f"persona {number}"))
+        newest = FakeSession.instances[-1]
+        assert len(newest.options.agents) == claude_cli_pool._MAX_AGENTS_PER_KEY  # noqa: SLF001
+        assert agent_name("persona 0") not in newest.options.agents, "the least recently used prompt stayed"
+        await pool.aclose()
+
+    def test_a_system_prompt_is_not_part_of_the_launch_key(self) -> None:
+        assert launch_key(Options(system_prompt="persona A"), TOKEN) == launch_key(
+            Options(system_prompt="persona B"), TOKEN
+        )
+
+    def test_a_prompt_that_is_not_text_stays_in_the_key(self) -> None:
+        """A preset that appends to Claude Code's own prompt cannot be switched as an agent."""
+        preset_a = Options(system_prompt={"type": "preset", "preset": "claude_code", "append": "A"})  # type: ignore[arg-type]
+        preset_b = Options(system_prompt={"type": "preset", "preset": "claude_code", "append": "B"})  # type: ignore[arg-type]
+        assert launch_key(preset_a, TOKEN) != launch_key(preset_b, TOKEN)
+
+    def test_an_agent_name_is_the_prompts_alone(self) -> None:
+        assert agent_name("persona A") == agent_name("persona A")
+        assert agent_name("persona A") != agent_name("persona B")
+        assert "persona" not in agent_name("persona A")
 
 
 class TestToolsBelongToTheCall:
@@ -379,7 +470,9 @@ class TestARefusedRewindStartsASpare:
         await _spares_started(pool)
         spare = FakeSession.instances[1]
         assert spare.options is not options, "a start adds its own marker; the call's options would carry it"
-        assert spare.options == options
+        assert spare.options.system_prompt is None
+        assert spare.options.agents == {agent_name("persona"): "persona"}, "the spare cannot serve the prompt"
+        assert options.system_prompt == "persona" and options.agents is None, "the call's options were changed"
         await pool.aclose()
 
     async def test_a_call_that_fails_starts_no_spare(self) -> None:
@@ -589,7 +682,6 @@ class TestTheLaunchKey:
     @pytest.mark.parametrize(
         "change",
         [
-            {"system_prompt": "another persona"},
             {"tools": ["WebSearch"]},
             {"permission_mode": "default"},
             {"max_turns": 99},
@@ -696,11 +788,11 @@ class TestIdleCapacityIsNotHoarded:
         """Found live: four keys each left one idle session in a four-session pool, and the fifth
         key's call ran on its own CLI "because every session is busy" -- none was."""
         pool = _pool(max_sessions=2, per_key=2)
-        async with pool.checkout(Options(system_prompt="router"), token=TOKEN, tool_server=None):
+        async with pool.checkout(Options(permission_mode="router"), token=TOKEN, tool_server=None):
             pass
-        async with pool.checkout(Options(system_prompt="conversation"), token=TOKEN, tool_server=None):
+        async with pool.checkout(Options(permission_mode="conversation"), token=TOKEN, tool_server=None):
             pass
-        async with pool.checkout(Options(system_prompt="arguments"), token=TOKEN, tool_server=None):
+        async with pool.checkout(Options(permission_mode="arguments"), token=TOKEN, tool_server=None):
             pass
         router, conversation, arguments = FakeSession.instances
         assert router.disposals == 1, "the longest-idle session was not the one that made room"
@@ -711,9 +803,9 @@ class TestIdleCapacityIsNotHoarded:
 
     async def test_a_busy_session_is_never_evicted(self) -> None:
         pool = _pool(max_sessions=1, per_key=1)
-        async with pool.checkout(Options(system_prompt="router"), token=TOKEN, tool_server=None):
+        async with pool.checkout(Options(permission_mode="router"), token=TOKEN, tool_server=None):
             with pytest.raises(ClaudeCliPoolExhausted):
-                async with pool.checkout(Options(system_prompt="conversation"), token=TOKEN, tool_server=None):
+                async with pool.checkout(Options(permission_mode="conversation"), token=TOKEN, tool_server=None):
                     pass
         assert FakeSession.instances[0].disposals == 0
         await pool.aclose()
@@ -721,23 +813,23 @@ class TestIdleCapacityIsNotHoarded:
     def test_a_started_session_logs_which_launch_fields_it_was_keyed_on(self) -> None:
         from threetears.models.claude_cli_pool import launch_fingerprint
 
-        a = launch_fingerprint(Options(system_prompt="persona A"))
-        b = launch_fingerprint(Options(system_prompt="persona B"))
+        a = launch_fingerprint(Options(permission_mode="persona A"))
+        b = launch_fingerprint(Options(permission_mode="persona B"))
         differing = {name for name in a if a[name] != b[name]}
-        assert differing == {"system_prompt"}
-        assert "persona" not in str(a), "a system prompt leaked into the log"
+        assert differing == {"permission_mode"}
+        assert "persona" not in str(a), "an option's value leaked into the log"
 
 
 class TestFailuresTheReviewFound:
     async def test_a_stop_during_an_eviction_does_not_strand_the_victims_slot(self) -> None:
         pool = _pool(max_sessions=1, per_key=1, checkout_timeout_seconds=5.0)
-        async with pool.checkout(Options(system_prompt="router"), token=TOKEN, tool_server=None):
+        async with pool.checkout(Options(permission_mode="router"), token=TOKEN, tool_server=None):
             pass
         victim = FakeSession.instances[0]
         victim.dispose_delay = 0.2
 
         async def caller() -> None:
-            async with pool.checkout(Options(system_prompt="conversation"), token=TOKEN, tool_server=None):
+            async with pool.checkout(Options(permission_mode="conversation"), token=TOKEN, tool_server=None):
                 pass
 
         task = asyncio.create_task(caller())
@@ -1373,3 +1465,42 @@ class TestTheRewindRequest:
         session, _ = self._session(None)
         with pytest.raises(ClaudeCliSessionError, match="refused to rewind"):
             await session.rewind("u-1", timeout=1.0)
+
+
+class TestTheAgentSwitchRequest:
+    """The control request that switches a CLI's system prompt, in the shape the CLI accepted live
+    (``apply_flag_settings`` answered ``{}``, and the model then answered from the switched prompt)."""
+
+    @staticmethod
+    def _session(agents: frozenset[str]) -> tuple[PooledCliSession, list[dict[str, Any]]]:
+        from types import SimpleNamespace
+
+        sent: list[dict[str, Any]] = []
+
+        async def send(request: dict[str, Any], timeout: float) -> Any:
+            del timeout
+            sent.append(request)
+            return {}
+
+        client = SimpleNamespace(_query=SimpleNamespace(_send_control_request=send, sdk_mcp_servers={}))
+        session = PooledCliSession(client, key="k", pid=None, marker="m")
+        session.agents = agents
+        return session, sent
+
+    async def test_a_switch_names_the_agent_and_a_call_with_no_prompt_switches_it_off(self) -> None:
+        name = agent_name("persona A")
+        session, sent = self._session(frozenset({name}))
+        await session.prepare(model=None, tool_server=None, agent=name)
+        await session.prepare(model=None, tool_server=None, agent=name)
+        await session.prepare(model=None, tool_server=None, agent=None)
+        switches = [r for r in sent if r["subtype"] == "apply_flag_settings"]
+        assert switches == [
+            {"subtype": "apply_flag_settings", "settings": {"agent": name}},
+            {"subtype": "apply_flag_settings", "settings": {"agent": None}},
+        ], "a switch was sent to the agent already in place, or none was sent"
+
+    async def test_an_agent_the_cli_was_not_launched_with_is_refused_before_anything_is_sent(self) -> None:
+        session, sent = self._session(frozenset())
+        with pytest.raises(ClaudeCliSessionError, match="launched without the agent"):
+            await session.prepare(model=None, tool_server=None, agent=agent_name("persona A"))
+        assert sent == []

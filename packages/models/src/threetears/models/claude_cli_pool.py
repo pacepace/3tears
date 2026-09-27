@@ -25,7 +25,18 @@ conversation, and ``end_session`` ends the process.
 
 What can change on a live CLI and what cannot decides the key:
 
-- the **system prompt** is a launch flag and never changes, so it is part of the key;
+- the **system prompt** is NOT part of the key. A launch flag prompt never changes, so a CLI
+  launches with none, and every system prompt its key has seen is defined on it as a named agent
+  (:func:`agent_name`); a checkout switches to the call's prompt with the ``apply_flag_settings``
+  control request (``{"agent": name}``, or ``null`` for a call with no prompt). Measured live
+  (bundled CLI 2.1.207): the request the model gets under a switched agent carries exactly the
+  system blocks and messages a CLI launched with that prompt sends; a switched agent holds across
+  the rewind reset; and agents are fixed at launch -- defining one later is accepted, and
+  switching to it answers 'Agent "..." not found'. So a CLI serves the prompts its key had seen
+  when it started, and a call with a new prompt starts a CLI that defines it and every earlier one;
+  a key holds at most :data:`_MAX_AGENTS_PER_KEY` prompts, the least recently used dropped first;
+- the **JSON schema** is part of the key: it is the ``--json-schema`` launch flag, and setting it
+  through ``apply_flag_settings`` was accepted and changed nothing (measured);
 - the **model** changes per call with ``set_model``;
 - the **bound tools** (an in-process MCP server) change per call with the CLI's
   ``mcp_set_servers`` control request -- ``reconnect_mcp_server`` refuses SDK servers.
@@ -77,6 +88,7 @@ from threetears.observe import BuildOnce, get_logger
 __all__ = [
     "POOL_MARKER_ENV",
     "LentClient",
+    "agent_name",
     "TOOL_SERVER_NAME",
     "ClaudeCliPool",
     "PooledCliSession",
@@ -411,8 +423,46 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
 # The launch key
 # ---------------------------------------------------------------------------
 
-#: Options applied per checkout rather than at launch, so they are not part of the key.
-_PER_CHECKOUT_FIELDS = frozenset({"model", "mcp_servers"})
+#: Options applied per checkout rather than at launch, so they are not part of the key. A string
+#: system prompt is one too: it is switched per checkout as a named agent (see the module docstring),
+#: and ``agents`` is how the pool defines those prompts on a CLI.
+_PER_CHECKOUT_FIELDS = frozenset({"model", "mcp_servers", "agents"})
+
+#: The most system prompts a key defines as agents on the CLIs it starts. A caller's stable prompt
+#: is meant to be stable; this bounds a caller whose "stable" part is not.
+_MAX_AGENTS_PER_KEY = 32
+
+#: What a pooled system prompt's agent is described as. The CLI requires a description; nothing
+#: the model reads carries it while its built-in tools are off.
+_AGENT_DESCRIPTION = "a system prompt the Claude CLI pool switches to per call"
+
+
+def agent_name(system_prompt: str) -> str:
+    """The name a system prompt is defined under as an agent on a pooled CLI.
+
+    :param system_prompt: the prompt
+    :ptype system_prompt: str
+    :return: a name derived from the prompt alone, so one prompt has one name on every CLI
+    :rtype: str
+    """
+    return "prompt-" + hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()[:24]
+
+
+def _switched_prompt(options: Any) -> tuple[bool, str | None]:
+    """Whether the options' system prompt can be switched per checkout, and the prompt.
+
+    A string prompt, or none, is switched as an agent. Any other shape -- a preset that appends to
+    Claude Code's own prompt, a prompt file -- stays a launch flag and part of the key.
+
+    :param options: the call's launch options
+    :ptype options: Any
+    :return: ``(switchable, prompt)``, the prompt ``None`` when the call has none
+    :rtype: tuple[bool, str | None]
+    """
+    prompt = getattr(options, "system_prompt", None)
+    switchable = prompt is None or isinstance(prompt, str)
+    return switchable, (prompt or None) if switchable else None
+
 
 #: Options carrying Python callables. A callable has no stable identity to key on and closes over
 #: one caller's state -- the same hazard as a tool server -- so a call that sets any of them is not
@@ -447,7 +497,8 @@ def _option_fields(options: Any) -> list[str]:
         names = [f.name for f in dataclasses.fields(options)]
     else:
         names = [n for n in vars(options) if not n.startswith("_")]
-    return sorted(n for n in names if n not in _PER_CHECKOUT_FIELDS)
+    per_checkout = _PER_CHECKOUT_FIELDS | ({"system_prompt"} if _switched_prompt(options)[0] else set())
+    return sorted(n for n in names if n not in per_checkout)
 
 
 def poolable(options: Any) -> bool:
@@ -727,6 +778,10 @@ class PooledCliSession:
         self.marker = marker
         self.closed = False
         self._model: str | None = None
+        #: The agents -- system prompts, by :func:`agent_name` -- this CLI was launched with.
+        self.agents: frozenset[str] = frozenset()
+        #: The agent the CLI is switched to; ``None`` is the launch prompt, which is empty.
+        self.agent: str | None = None
         #: The CLI's start time, so disposal never signals a recycled pid that is not this CLI.
         self.start_ticks = _process_start_ticks(pid) if pid is not None else None
 
@@ -746,6 +801,12 @@ class PooledCliSession:
 
         marker = _marker()
         options.env = {**(options.env or {}), POOL_MARKER_ENV: marker}
+        prompts: dict[str, str] = dict(getattr(options, "agents", None) or {})
+        if prompts:
+            options.agents = {
+                name: sdk.AgentDefinition(description=_AGENT_DESCRIPTION, prompt=prompt)
+                for name, prompt in prompts.items()
+            }
         client = sdk.ClaudeSDKClient(options=options)
         try:
             await client.connect()
@@ -765,12 +826,18 @@ class PooledCliSession:
             raise
         session = cls(client, key=key, pid=_discover_pid(client, marker), marker=marker)
         session._model = getattr(options, "model", None)
+        session.agents = frozenset(prompts)
         return session
 
     async def prepare(
-        self, *, model: str | None, tool_server: Any | None, call_context: contextvars.Context | None = None
+        self,
+        *,
+        model: str | None,
+        tool_server: Any | None,
+        call_context: contextvars.Context | None = None,
+        agent: str | None = None,
     ) -> None:
-        """Point this session at the caller's model and the caller's tools.
+        """Point this session at the caller's system prompt, model and tools.
 
         The tool server is replaced on EVERY checkout, never reused: its handlers close over the
         caller's own tool objects, which belong to that caller's conversation. A stale server
@@ -782,11 +849,20 @@ class PooledCliSession:
         :ptype tool_server: Any | None
         :param call_context: the borrower's context, which every tool call on this checkout runs in
         :ptype call_context: contextvars.Context | None
-        :raises ClaudeCliSessionError: when either change is refused
+        :param agent: the agent holding the call's system prompt, ``None`` for a call with none
+        :ptype agent: str | None
+        :raises ClaudeCliSessionError: when any change is refused
         """
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
+        if agent is not None and agent not in self.agents:
+            raise ClaudeCliSessionError(f"this Claude CLI was launched without the agent {agent!r}")
         try:
+            if agent != self.agent:
+                await self.client._query._send_control_request(  # noqa: SLF001 -- the SDK exposes no agent switch
+                    {"subtype": "apply_flag_settings", "settings": {"agent": agent}}, timeout=30.0
+                )
+                self.agent = agent
             if model and model != self._model:
                 await self.client.set_model(model)
                 self._model = model
@@ -938,13 +1014,19 @@ _STRUCTURAL_FAILURE_LIMIT = 3
 
 
 class ClaudeCliPool:
-    """Bounded pools of started Claude CLI sessions, one pool per launch key; each serves one call."""
+    """Bounded pools of started Claude CLI sessions, one pool per launch key; each serves one call.
+
+    ``per_key`` defaults to the whole cap. A key once held one system prompt, so two sessions per
+    key still let different stages run side by side; now one key holds every prompt of a credential
+    and its options (see the module docstring), and two would cap an application at two pooled
+    calls at once -- measured: a stage group of three ran one on a CLI of its own.
+    """
 
     def __init__(
         self,
         *,
         max_sessions: int = 8,
-        per_key: int = 2,
+        per_key: int = 8,
         idle_ttl_seconds: float = 300.0,
         checkout_timeout_seconds: float = 2.0,
         reset_timeout_seconds: float = 5.0,
@@ -968,6 +1050,9 @@ class ClaudeCliPool:
         self._reaper: asyncio.Task[None] | None = None
         #: Spares being started in the background (:meth:`_start_spare`), so a close can stop them.
         self._spares: set[asyncio.Task[None]] = set()
+        #: Every system prompt each key has seen, by agent name, least recently used first. A CLI
+        #: starts with all of them defined as agents (see the module docstring).
+        self._prompts: dict[str, dict[str, str]] = {}
         #: How a session is started. Injected by tests; a real host never passes it.
         self._start = session_factory or PooledCliSession.start
         self._structural_failures = 0
@@ -1053,13 +1138,17 @@ class ClaudeCliPool:
             # nothing left that tracks them.
             await asyncio.shield(self._abandon(stranded))
         key = launch_key(options, token)
-        session = await self._acquire(key, options)
+        agent = self._learn_prompt(key, options)
+        session = await self._acquire(key, options, agent)
         lent = LentClient(session.client)
         clean = False
         try:
             try:
                 await session.prepare(
-                    model=getattr(options, "model", None), tool_server=tool_server, call_context=call_context
+                    model=getattr(options, "model", None),
+                    tool_server=tool_server,
+                    call_context=call_context,
+                    agent=agent,
                 )
             except ClaudeCliSessionError as exc:
                 self._note_prepare_failure(exc)
@@ -1278,13 +1367,15 @@ class ClaudeCliPool:
         if sessions:
             _logger.info("Closed the Claude CLI pool", extra={"extra_data": {"disposed": len(sessions)}})
 
-    async def _acquire(self, key: str, options: Any) -> PooledCliSession:
-        """Take an idle session, or start one, or report exhaustion.
+    async def _acquire(self, key: str, options: Any, agent: str | None) -> PooledCliSession:
+        """Take an idle session that defines the call's agent, or start one, or report exhaustion.
 
         :param key: the launch key
         :ptype key: str
         :param options: launch options for a session that has to start
         :ptype options: Any
+        :param agent: the agent holding the call's system prompt, ``None`` for a call with none
+        :ptype agent: str | None
         :return: a session owned exclusively by this caller
         :rtype: PooledCliSession
         :raises ClaudeCliPoolExhausted: when the pool is closed or every slot stays busy
@@ -1296,16 +1387,20 @@ class ClaudeCliPool:
             while True:
                 if self._closing:
                     raise ClaudeCliPoolExhausted("the Claude CLI pool is shutting down")
-                waiting = self._idle.get(key)
-                while waiting:
-                    candidate = waiting.pop().session
-                    if not candidate.closed:
-                        return candidate
+                taken = self._take_idle(key, agent)
+                if taken is not None:
+                    return taken
                 if self._total < self._max_sessions and self._live.get(key, 0) < self._per_key:
                     self._live[key] = self._live.get(key, 0) + 1
                     self._total += 1
                     break
                 victim = self._longest_idle_elsewhere(key) if self._live.get(key, 0) < self._per_key else None
+                if victim is None:
+                    # No slot is free, and an idle session of this key that lacks the call's agent is
+                    # capacity this call cannot use: it makes room, as another key's idle session
+                    # would. Found measuring: at the process cap, sessions started before a new
+                    # prompt appeared sat idle while every call with it ran on a CLI of its own.
+                    victim = self._idle_without(key, agent)
                 if victim is not None:
                     # Found live: four distinct launch keys each left one IDLE session holding a
                     # slot, and the fifth key's call ran on a CLI of its own "because every session
@@ -1344,7 +1439,7 @@ class ClaudeCliPool:
         # starts reaches no ``except`` clause, and a slot lost here is lost for the process's life.
         started = False
         try:
-            session = await self._start(options, key=key)
+            session = await self._start(self._launch_options(key, options), key=key)
             started = True
         finally:
             if not started:
@@ -1380,6 +1475,83 @@ class ClaudeCliPool:
         """
         async with self._condition:
             self._all.add(session)
+
+    def _learn_prompt(self, key: str, options: Any) -> str | None:
+        """Record the call's system prompt under its key; the agent that holds it.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: the call's launch options
+        :ptype options: Any
+        :return: the prompt's agent name, ``None`` when the call has no switched prompt
+        :rtype: str | None
+        """
+        switchable, prompt = _switched_prompt(options)
+        if not switchable or prompt is None:
+            return None
+        name = agent_name(prompt)
+        known = self._prompts.setdefault(key, {})
+        known.pop(name, None)
+        known[name] = prompt
+        while len(known) > _MAX_AGENTS_PER_KEY:
+            known.pop(next(iter(known)))
+        return name
+
+    def _launch_options(self, key: str, options: Any) -> Any:
+        """The options a CLI for ``key`` starts with: no system prompt, every known prompt an agent.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: the call's launch options
+        :ptype options: Any
+        :return: a new options object; the call's own is not mutated
+        :rtype: Any
+        """
+        if not _switched_prompt(options)[0]:
+            return options
+        return dataclasses.replace(options, system_prompt=None, agents=dict(self._prompts.get(key, {})))
+
+    def _take_idle(self, key: str, agent: str | None) -> PooledCliSession | None:
+        """Take the most recently idle session of ``key`` that defines ``agent``. Call under the lock.
+
+        :param key: the launch key
+        :ptype key: str
+        :param agent: the agent the call needs, ``None`` for none
+        :ptype agent: str | None
+        :return: the session, or ``None`` when no idle one can serve the call
+        :rtype: PooledCliSession | None
+        """
+        waiting = self._idle.get(key)
+        if not waiting:
+            return None
+        for index in range(len(waiting) - 1, -1, -1):
+            candidate = waiting[index].session
+            if candidate.closed:
+                del waiting[index]
+                continue
+            if agent is None or agent in candidate.agents:
+                del waiting[index]
+                return candidate
+        return None
+
+    def _idle_without(self, key: str, agent: str | None) -> tuple[str, PooledCliSession] | None:
+        """Take the longest-idle session of ``key`` out of the idle set, one that lacks ``agent``.
+
+        :param key: the launch key
+        :ptype key: str
+        :param agent: the agent the call needs
+        :ptype agent: str | None
+        :return: ``(key, the session)``, or ``None`` when there is none
+        :rtype: tuple[str, PooledCliSession] | None
+        """
+        waiting = self._idle.get(key)
+        if agent is None or not waiting:
+            return None
+        for index, idle in enumerate(waiting):
+            if agent not in idle.session.agents:
+                del waiting[index]
+                return key, idle.session
+        return None
 
     def _longest_idle_elsewhere(self, key: str) -> tuple[str, PooledCliSession] | None:
         """Take the longest-idle session under any OTHER key out of the idle set. Call under the lock.
@@ -1448,7 +1620,9 @@ class ClaudeCliPool:
         :param options: launch options; copied, because a start adds its own marker to them
         :ptype options: Any
         """
-        task = asyncio.create_task(self._spare(key, copy.copy(options)), context=contextvars.Context())
+        task = asyncio.create_task(
+            self._spare(key, self._launch_options(key, copy.copy(options))), context=contextvars.Context()
+        )
         self._spares.add(task)
         task.add_done_callback(self._spares.discard)
 

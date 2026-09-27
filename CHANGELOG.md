@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## v0.56.0 -- 2026-09-27
 
+### One pooled Claude CLI serves every system prompt of a caller
+
+A pooled CLI's system prompt was a launch flag and part of the pool key, so every distinct
+stable prompt -- a pipeline's stages -- needed CLIs of its own. With more prompts than sessions
+the pool thrashed: seven stage prompts, three stages at once, four sessions gave 28 CLI starts and
+24 evictions in 28 calls.
+
+**Changed:** a text system prompt is no longer part of the key. A CLI launches with no system
+prompt and every prompt its key has seen defined as a named agent (`agent_name(prompt)`, a digest),
+and each checkout switches to the call's prompt with the `apply_flag_settings` control request
+(`{"agent": name}`, `null` for a call with none). Proven live before relying on it (bundled CLI
+2.1.207): through a recording proxy, a switched agent's request -- system blocks, messages, tools,
+`output_config` -- is byte-identical to that of a CLI launched with the prompt; the switch holds
+across the rewind reset, which leaves nothing of it in the next call's input; and agents are fixed
+at launch (one defined later answers 'Agent "..." not found'). So a call whose prompt no idle CLI
+has starts a CLI defining it and every earlier prompt (at most 32 per key, least recently used
+dropped), and at a cap an idle CLI lacking the prompt makes room. The same workload: 7 starts, 3
+evictions, every stage answering from its own prompt.
+
+- The JSON schema stays in the key: it is the `--json-schema` launch flag, and setting it through
+  `apply_flag_settings` changed nothing (measured).
+- A system prompt that is not text (a preset, a file) stays a launch flag in the key.
+- `ClaudeCliPool(per_key=)` now defaults to 8, the whole cap: one key holds every prompt, and 2
+  capped an application at two pooled calls at once.
+- **New:** `threetears.models.claude_cli_pool.agent_name`; `PooledCliSession.prepare(agent=)`.
+- The live batch gains a test that switches one pooled CLI between two prompts and fails if a
+  call answers from another's prompt or quotes anything of the switch.
+
 ### A pooled Claude CLI is reset by rewinding its conversation, never with `/clear`
 
 The Claude CLI pool reset a CLI between callers with the CLI's local `/clear`. `/clear` empties
