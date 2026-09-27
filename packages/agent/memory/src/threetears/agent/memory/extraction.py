@@ -542,20 +542,12 @@ class MemoryExtractor:
                 reason="the extraction model found nothing to remember",
             )
 
-        candidates: list[dict[str, Any]] = []
-        for mem in candidates_raw:
-            embedding = await _safe_aembed_query(self._embedding_provider, mem["content"])
-            if embedding is None:
-                continue
-            similar = await self._get_similar_memories(embedding, user_id, agent_id)
-            candidates.append(
-                {
-                    "type": mem["type"],
-                    "content": mem["content"],
-                    "embedding": embedding,
-                    "similar_memories": similar,
-                }
-            )
+        # each candidate's embedding and dedup search depend on nothing but
+        # the candidate, so they run at once; the order of candidates is kept.
+        prepared = await asyncio.gather(
+            *(self._prepare_candidate(mem, user_id=user_id, agent_id=agent_id) for mem in candidates_raw)
+        )
+        candidates = [candidate for candidate in prepared if candidate is not None]
         if not candidates:
             return ExtractionResult(
                 outcome=ExtractionOutcome.FAILED,
@@ -573,6 +565,36 @@ class MemoryExtractor:
             customer_id=customer_id,
         )
         return tally.as_result()
+
+    async def _prepare_candidate(
+        self,
+        mem: dict[str, str],
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+    ) -> dict[str, Any] | None:
+        """embed one extracted candidate and find the memories it may duplicate.
+
+        :param mem: the candidate's ``type`` and ``content``
+        :ptype mem: dict[str, str]
+        :param user_id: owning user UUID (row filter for the dedup search)
+        :ptype user_id: UUID
+        :param agent_id: partition column on memories
+        :ptype agent_id: UUID
+        :return: the candidate with its embedding and similar memories, or ``None`` when it
+            could not be embedded (the embedding helper logs why)
+        :rtype: dict[str, Any] | None
+        """
+        embedding = await _safe_aembed_query(self._embedding_provider, mem["content"])
+        if embedding is None:
+            return None
+        similar = await self._get_similar_memories(embedding, user_id, agent_id)
+        return {
+            "type": mem["type"],
+            "content": mem["content"],
+            "embedding": embedding,
+            "similar_memories": similar,
+        }
 
     def check_heuristic_gates(
         self,
@@ -1068,6 +1090,8 @@ class MemoryExtractor:
         """
         now = datetime.now(UTC)
         tally = _ActionTally()
+        #: (memory id, content) for every row written, summarised after the loop.
+        summaries: list[tuple[str, str]] = []
 
         for act in actions:
             idx = act["index"]
@@ -1099,11 +1123,12 @@ class MemoryExtractor:
                     new_entity: MemoryEntity = self._memories.create(new_data)
                     await self._memories.save_entity(new_entity)
                     tally.added += 1
-                    if self._summary_callback:
-                        await self._summary_callback(
+                    summaries.append(
+                        (
                             str(memory_id),  # convert at border: summary_callback Callable[[str, str], ...] contract
                             candidate["content"],
                         )
+                    )
                     if self._on_memory_created:
                         # Best-effort push: the row is already committed,
                         # so a failing callback (downstream WS down,
@@ -1124,11 +1149,12 @@ class MemoryExtractor:
                         try:
                             # A snapshot of the committed row, not
                             # ``new_entity``. The live handle reads its
-                            # fields from L1 only, and the summary callback
-                            # above can wait minutes on a model. A turn that
-                            # surfaces this memory in that window bumps its
-                            # salience, which evicts the L1 row, and the
-                            # handle then reads every field as None.
+                            # fields from L1 only: a turn that surfaces
+                            # this memory bumps its salience, which evicts
+                            # the row, and the handle then reads every
+                            # field as None. That happened while the
+                            # summary callback, which ran here, waited
+                            # minutes on a model.
                             await self._on_memory_created(
                                 MemoryEntity(dict(new_data), is_new=False),
                             )
@@ -1172,11 +1198,7 @@ class MemoryExtractor:
                     update_entity.embedding = new_embedding
                     await self._memories.save_entity(update_entity)
                     tally.updated += 1
-                    if self._summary_callback:
-                        await self._summary_callback(
-                            act["memory_id"],
-                            updated_content,
-                        )
+                    summaries.append((act["memory_id"], updated_content))
 
                 elif action == "DELETE":
                     memory_uuid = UUID(act["memory_id"])
@@ -1203,7 +1225,43 @@ class MemoryExtractor:
                 tally.failed += 1
                 continue
 
+        await self._summarise(summaries)
         return tally
+
+    async def _summarise(self, written: list[tuple[str, str]]) -> None:
+        """run the summary callback for every row written, all at once.
+
+        each call is a model call in a consumer that summarises (metallm's
+        waited out a 120 s deadline twice in one run), so one after another
+        they cost the sum and at once the longest. they run after every
+        action and push, so a slow summary holds neither. a failing one is
+        logged; its row is already written.
+
+        :param written: ``(memory_id, content)`` per row added or updated
+        :ptype written: list[tuple[str, str]]
+        :return: nothing
+        :rtype: None
+        """
+        callback = self._summary_callback
+        if callback is None or not written:
+            return None
+        outcomes = await asyncio.gather(
+            *(callback(memory_id, content) for memory_id, content in written),
+            return_exceptions=True,
+        )
+        for (memory_id, _content), outcome in zip(written, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                log.warning(
+                    "summary callback failed",
+                    extra={
+                        "extra_data": {
+                            "memory_id": memory_id,
+                            "error_type": type(outcome).__name__,
+                            "error": str(outcome),
+                        },
+                    },
+                )
+        return None
 
     @staticmethod
     def _get_response_content(response: Any) -> str:
