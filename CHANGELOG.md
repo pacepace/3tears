@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## v0.56.0 -- 2026-09-27
 
+**The unsigned-agent registration concession now ends at 0.57.0, not 0.56.0.** 0.55.0 promised to
+refuse unsigned agent manifests in the next minor. 0.56.0 became the fix release for the Claude CLI
+regressions found in 0.55.0 and ships before any deployed agent image has been rebuilt on the SDK
+that signs its registration, so refusing them now would strip every deployed agent of its
+in-process tools when the hub rolls. `test_unsigned_agent_concession_expires.py` now fails from
+0.57.0 while `admit_copy` still admits an unverified agent-scoped copy.
+
 ### One pooled Claude CLI serves every system prompt of a caller
 
 A pooled CLI's system prompt was a launch flag and part of the pool key, so every distinct

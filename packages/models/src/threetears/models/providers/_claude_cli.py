@@ -1149,6 +1149,8 @@ def _placeholder_answer(attempt: dict[str, Any], schema: dict[str, Any]) -> Any 
     try:
         answer = json.loads(wrapped)
     except json.JSONDecodeError:
+        # NOSILENT: a placeholder holding text that is not JSON is not an answer; the caller keeps
+        # the rejection it already has, and the CLI's own rejection message is logged with it.
         return None
     return answer if Draft202012Validator(schema).is_valid(answer) else None
 
