@@ -1067,6 +1067,17 @@ circuit breaker counted the call a success.
   ends on `error_max_turns` WITHOUT a tool call used to return its text with `is_error: true`;
   it now raises `ModelProviderError` with `reason="error_max_turns"`.
 
+### `with_structured_output` works on the name-translating chat models
+
+`with_structured_output(SomeModel)` binds the schema class as a tool. The dot-to-underscore
+tool-name translation that the OpenAI, OpenRouter and Anthropic wrappers apply in `bind_tools`
+read `.name` off every entry, and a pydantic model class has none, so every such call raised
+`AttributeError: name` before reaching the provider.
+
+- **Fixed:** `build_name_translation` passes a class (a pydantic model or TypedDict) or a
+  function through unchanged. Its name is a Python identifier and never holds a dot. A dotted
+  tool beside it is still translated.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

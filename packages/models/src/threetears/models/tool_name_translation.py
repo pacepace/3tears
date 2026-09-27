@@ -333,6 +333,10 @@ def build_name_translation(
       shape and the Anthropic / 3tears-canonical ``{"name":...}``
       flat shape. A shallow-copied dict is returned so the caller's
       original list is not mutated.
+    - **A class or a function** (``with_structured_output`` binds its
+      schema -- a pydantic model or TypedDict -- as a tool). Its name
+      is a Python identifier and never holds a dot, so it passes
+      through unchanged for the provider to convert.
 
     Tools whose canonical name has no dot pass through unchanged
     (no translation needed). The reverse map keys on the
@@ -354,9 +358,11 @@ def build_name_translation(
             wire_tools.append(wire_tool)
             reverse_map.update(mapping)
             continue
-        # BaseTool path
-        canonical = tool.name
-        if "." not in canonical:
+        # BaseTool path. A class (a pydantic model or TypedDict, as with_structured_output binds its
+        # schema) or a function is named by a Python identifier, which never holds a dot: it passes
+        # through as given, and the provider converts it.
+        canonical = None if isinstance(tool, type) else getattr(tool, "name", None)
+        if not isinstance(canonical, str) or "." not in canonical:
             wire_tools.append(tool)
             continue
         mangled = mangle_tool_name(canonical)

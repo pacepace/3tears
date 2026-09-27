@@ -260,3 +260,45 @@ class TestAProxiedTearsToolRunsInTheCallsScope:
 
         assert "Asia/Tokyo" in via_invoke.content
         assert "Asia/Tokyo" in via_arun
+
+
+class TestASchemaBoundAsATool:
+    """``bind_tools`` takes a pydantic model, a TypedDict or a function as well as a tool.
+
+    ``with_structured_output`` binds its schema that way. The translation read ``.name`` off every
+    entry, which a pydantic model class does not have, so every structured call on a
+    name-translating provider raised ``AttributeError: name`` before reaching the wire. A class or a
+    function is named by a Python identifier, which never holds a dot: it passes through as given.
+    """
+
+    def test_a_schema_a_typed_dict_and_a_function_pass_through_unchanged(self) -> None:
+        from typing import TypedDict
+
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            name: str
+
+        class Reply(TypedDict):
+            text: str
+
+        def lookup(term: str) -> str:
+            """looks a term up."""
+            return term
+
+        wire, reverse = build_name_translation([Answer, Reply, lookup])
+
+        assert wire == [Answer, Reply, lookup]
+        assert reverse == {}
+
+    def test_a_dotted_tool_beside_them_is_still_translated(self) -> None:
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            text: str
+
+        wire, reverse = build_name_translation([Answer, _DottedTool()])
+
+        assert wire[0] is Answer
+        assert isinstance(wire[1], NameMangledToolProxy)
+        assert reverse == {mangle_tool_name(_DottedTool().name): _DottedTool().name}
