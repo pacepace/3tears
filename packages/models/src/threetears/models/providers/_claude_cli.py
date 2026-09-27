@@ -583,7 +583,7 @@ def _pooled_launch_options(options: Any) -> Any:
 
 def _subscription_model_cls() -> type:
     """The ``ClaudeCodeChatModel`` subclass with the bound-tool wrapper fixed (lazy import)."""
-    from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent, TextBlock
+    from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent, TextBlock, UserMessage
     from claude_agent_sdk import tool as sdk_tool
     from langchain_claude_code import ClaudeCodeChatModel
 
@@ -867,6 +867,7 @@ def _subscription_model_cls() -> type:
             all_text: list[str] = []
             tool_calls: list[dict[str, Any]] = []
             generation_info: dict[str, Any] = {}
+            attempts = _StructuredAttempts()
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
                 async for msg in client.receive_response():
@@ -881,9 +882,12 @@ def _subscription_model_cls() -> type:
                             if run_manager:
                                 await run_manager.on_llm_new_token(text)
                         tool_calls.extend(self._caller_tool_calls(msg.content))
+                        attempts.saw(msg.content)
+                    elif isinstance(msg, UserMessage):
+                        attempts.answered(msg)
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
-                        if (failure := _result_failure(msg, tool_calls, "\n".join(all_text))) is not None:
+                        if (failure := _result_failure(msg, tool_calls, "\n".join(all_text), attempts)) is not None:
                             raise failure
                         generation_info = _generation_info(msg, tool_calls)
                         if options.output_format is not None and msg.structured_output is not None:
@@ -957,6 +961,7 @@ def _subscription_model_cls() -> type:
             held: list[str] = []
             # Every message's text, streamed or held, for a failed result that says nothing itself.
             produced: list[str] = []
+            attempts = _StructuredAttempts()
 
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
@@ -989,6 +994,7 @@ def _subscription_model_cls() -> type:
                             raise failure
                         text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
                         produced.append(text)
+                        attempts.saw(msg.content)
                         if structured:
                             if text:
                                 held.append(text)
@@ -1004,9 +1010,12 @@ def _subscription_model_cls() -> type:
                         streamed_block_indices = set()
                         tool_calls.extend(self._caller_tool_calls(msg.content))
 
+                    elif isinstance(msg, UserMessage):
+                        attempts.answered(msg)
+
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
-                        if (failure := _result_failure(msg, tool_calls, "\n".join(produced))) is not None:
+                        if (failure := _result_failure(msg, tool_calls, "\n".join(produced), attempts)) is not None:
                             raise failure
                         generation_info = _generation_info(msg, tool_calls)
                         usage = _usage_metadata(msg.usage)
@@ -1058,12 +1067,59 @@ def _ended_for_tools(result: Any, tool_calls: list[dict[str, Any]]) -> bool:
     return bool(tool_calls) and result.subtype == "error_max_turns"
 
 
-def _cli_failure(detail: str, *, reason: str | None, status: int | None) -> ModelProviderError:
+class _StructuredAttempts:
+    """The ``StructuredOutput`` attempts one call made, and the last one the CLI rejected.
+
+    The CLI answers each attempt with a tool result: an error naming what did not match the schema,
+    or an acceptance. A call that ends without an answer raises, and the error carries the last
+    rejected attempt and its reason, so whoever reads it can see which field the model kept missing
+    without replaying the call.
+    """
+
+    def __init__(self) -> None:
+        self._inputs: dict[str, dict[str, Any]] = {}
+        self.rejected_output: dict[str, Any] | None = None
+        self.rejection: str | None = None
+
+    def saw(self, blocks: list[Any]) -> None:
+        """Note every ``StructuredOutput`` call among an assistant message's blocks.
+
+        :param blocks: the assistant message's content blocks
+        :ptype blocks: list[Any]
+        """
+        from claude_agent_sdk import ToolUseBlock  # noqa: PLC0415
+
+        for block in blocks:
+            if isinstance(block, ToolUseBlock) and block.name == _STRUCTURED_OUTPUT_TOOL:
+                self._inputs[block.id] = dict(block.input or {})
+
+    def answered(self, message: Any) -> None:
+        """Note the CLI's rejection of a ``StructuredOutput`` call, when a user message carries one.
+
+        :param message: a ``UserMessage`` the CLI sent
+        :ptype message: Any
+        """
+        from claude_agent_sdk import ToolResultBlock  # noqa: PLC0415
+
+        if not isinstance(message.content, list):
+            return
+        for block in message.content:
+            if isinstance(block, ToolResultBlock) and block.is_error and block.tool_use_id in self._inputs:
+                self.rejected_output = self._inputs[block.tool_use_id]
+                self.rejection = _content_text(block.content) or None
+
+
+def _cli_failure(
+    detail: str, *, reason: str | None, status: int | None, attempts: _StructuredAttempts | None = None
+) -> ModelProviderError:
     """The typed error for a failure the CLI reported.
 
     A limit -- the CLI's own ``rate_limit`` code, which it sends with a subscription's session-limit
     notice, or an HTTP 429 on the result -- is a :class:`ModelRateLimitError` carrying when it resets,
-    when the notice says. Anything else is a :class:`ModelProviderError`.
+    when the notice says. Anything else is a :class:`ModelProviderError`. Either carries the last
+    structured answer the CLI rejected, and why, when there was one. The log line names the rejection
+    and the rejected answer's top-level keys, not its values: they are the model's words about the
+    caller's material.
 
     :param detail: what the CLI said
     :ptype detail: str
@@ -1071,10 +1127,14 @@ def _cli_failure(detail: str, *, reason: str | None, status: int | None) -> Mode
     :ptype reason: str | None
     :param status: HTTP status of the failing API call, when the CLI reported one
     :ptype status: int | None
+    :param attempts: the call's ``StructuredOutput`` attempts, when it asked for a schema
+    :ptype attempts: _StructuredAttempts | None
     :return: the error to raise
     :rtype: ModelProviderError
     """
     said = detail.strip() or "the Claude CLI reported an error and gave no reason"
+    rejected_output = attempts.rejected_output if attempts is not None else None
+    rejection = attempts.rejection if attempts is not None else None
     failure: ModelProviderError
     if reason == "rate_limit" or status == 429:
         resets = _RESETS.search(said)
@@ -1084,9 +1144,18 @@ def _cli_failure(detail: str, *, reason: str | None, status: int | None) -> Mode
             reason=reason,
             status=status,
             resets=resets.group("when").strip().rstrip(".") if resets else None,
+            rejected_output=rejected_output,
+            rejection=rejection,
         )
     else:
-        failure = ModelProviderError(said, provider=_CLI_PROVIDER, reason=reason, status=status)
+        failure = ModelProviderError(
+            said,
+            provider=_CLI_PROVIDER,
+            reason=reason,
+            status=status,
+            rejected_output=rejected_output,
+            rejection=rejection,
+        )
     _logger.warning(
         "A subscription model call failed",
         extra={
@@ -1095,6 +1164,8 @@ def _cli_failure(detail: str, *, reason: str | None, status: int | None) -> Mode
                 "reason": reason,
                 "status": status,
                 "detail": said,
+                "rejection": rejection,
+                "rejected_keys": sorted(rejected_output) if rejected_output is not None else None,
             }
         },
     )
@@ -1118,7 +1189,9 @@ def _assistant_failure(message: Any) -> ModelProviderError | None:
     return _cli_failure(text, reason=str(message.error), status=None)
 
 
-def _result_failure(result: Any, tool_calls: list[dict[str, Any]], text: str) -> ModelProviderError | None:
+def _result_failure(
+    result: Any, tool_calls: list[dict[str, Any]], text: str, attempts: _StructuredAttempts
+) -> ModelProviderError | None:
     """The error a call's result reports, when the call failed.
 
     Not a failure: a call that stopped to hand tool calls back (:func:`_ended_for_tools`), and a call
@@ -1131,6 +1204,8 @@ def _result_failure(result: Any, tool_calls: list[dict[str, Any]], text: str) ->
     :ptype tool_calls: list[dict[str, Any]]
     :param text: the text the call produced, for a result that says nothing itself
     :ptype text: str
+    :param attempts: the call's ``StructuredOutput`` attempts
+    :ptype attempts: _StructuredAttempts
     :return: the error to raise, or ``None`` when the call did not fail
     :rtype: ModelProviderError | None
     """
@@ -1138,7 +1213,7 @@ def _result_failure(result: Any, tool_calls: list[dict[str, Any]], text: str) ->
         return None
     said = result.result or "; ".join(result.errors or []) or text
     reason = None if result.subtype == "success" else result.subtype
-    return _cli_failure(said, reason=reason, status=result.api_error_status)
+    return _cli_failure(said, reason=reason, status=result.api_error_status, attempts=attempts)
 
 
 def _generation_info(result: Any, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1204,10 +1279,22 @@ def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -
     with different tokens never share process env (no global ``os.environ`` write, no cross-user race).
     HTTP-API kwargs the CLI backend cannot take are dropped (see :data:`_FORWARDED_KWARGS`).
 
-    Claude Code's own built-in tool belt (Bash, Read, Write, Edit, WebFetch, WebSearch, …) is
-    active by default and independent of any LangChain tools bound via ``bind_tools()``. A caller
-    that wants the model to use ONLY its own bound tools should pass ``tools=[]`` — omitting it
-    keeps the full built-in preset available.
+    Claude Code's own built-in tool belt (Bash, Read, Write, Edit, WebFetch, WebSearch, …) is OFF
+    unless asked for: ``tools`` defaults to ``[]`` (see ``_SubscriptionChatModel.tools``), a list
+    enables the built-ins it names, and ``tools=None`` enables the whole preset. Built-ins are
+    independent of any LangChain tools bound via ``bind_tools()``. The choice also sets how many
+    model turns a structured call gets: with no built-in and no bound tool it may take the CLI's
+    schema retries (:data:`_STRUCTURED_OUTPUT_TURNS`); with any, one turn, so a rejected
+    ``StructuredOutput`` attempt fails the call (see :func:`_answers_only_in_schema`).
+
+    :param model_name: the Anthropic model id
+    :ptype model_name: str
+    :param token: the subscription OAuth token
+    :ptype token: str
+    :param extra_kwargs: provider kwargs; only :data:`_FORWARDED_KWARGS` are kept
+    :ptype extra_kwargs: Any
+    :return: the subscription-backed chat model
+    :rtype: BaseChatModel
     """
     opts = {k: v for k, v in extra_kwargs.items() if k in _FORWARDED_KWARGS}
     model: BaseChatModel = _subscription_model_cls()(model=model_name, oauth_token=token, **opts)

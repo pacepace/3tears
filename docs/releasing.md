@@ -41,12 +41,13 @@ An intra-family API addition ships in a MINOR bump
      fails, leaving a family that cannot install until the version is republished.
 2. PR into `develop`.
 3. PR `develop` into `main`, with no version bump on that second PR.
-4. **A release that touches `packages/models`:** run the live Claude CLI structured-output test
-   on the commit you are about to tag, and tag only on a pass. It needs the Agent SDK the
-   workspace's dev group installs, and a subscription token from `claude setup-token`:
+4. **A release that touches `packages/models`:** run the live Claude CLI structured-output batch
+   on a clean checkout of the `main` commit you are about to tag, and tag only on a pass. It
+   needs the Agent SDK the workspace's dev group installs, and a subscription token from
+   `claude setup-token`:
 
    ```bash
-   THREETEARS_LIVE_CLAUDE_CLI=1 CLAUDE_CODE_OAUTH_TOKEN=<token> uv run --frozen pytest packages/models/tests/live/test_claude_cli_structured_output_live.py -rs
+   CLAUDE_CODE_OAUTH_TOKEN=<token> ./scripts/test-live-claude-cli.sh
    ```
 
    It makes 20 real structured calls through the real CLI, six at a time, and passes only if
@@ -54,7 +55,14 @@ An intra-family API addition ships in a MINOR bump
    messages, which is how 0.55.0 shipped with a third of one consumer's structured calls failing:
    no faked sequence contained the real model's first, rejected attempt. A logged-in `claude` on
    the host does not stand in for the token -- 3tears runs the CLI in an isolated configuration
-   directory where a stored login is never read. A skip is not a pass: `-rs` shows one.
+   directory where a stored login is never read. The script turns the test on itself, so it
+   fails rather than skips when the token or the SDK is missing.
+
+   The script prints one line and writes it to `build/release-evidence/live-claude-cli.txt`:
+   the commit, whether the tree was clean, the version, the exit status and pytest's summary.
+   **Paste that line into the `develop`-into-`main` PR's description** before tagging. Tag only
+   when its `commit=` is the commit being tagged, `tree=clean`, and `exit=0`. A release PR with
+   no such line has not run the batch.
 5. Tag from `main`.
 
 Do not cut a release tag on a plain develop-to-main sync that is not meant to ship.

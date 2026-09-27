@@ -1,6 +1,6 @@
 # Testing 3tears
 
-The three suites, why two of them sit outside `./scripts/test.sh`, how to make the integration
+The four suites, why three of them sit outside `./scripts/test.sh`, how to make the integration
 suite run everything it can, and how test fakes declare what they stand in for. The rules are in
 `CLAUDE.md`; this is the detail behind them.
 
@@ -57,10 +57,21 @@ integration tests fail rather than skip. A native build passes.
 ### Legitimate skips on a dev box
 
 They need credentials or tools this repo does not ship: the Redshift live tests
-(`OTS_REDSHIFT_PASSWORD`), the backup suites (`pg_dump`/`pg_restore`/`psql` on PATH), and one
-deliberate manual microbenchmark. Anything else is a test turned off by accident. When reporting
+(`OTS_REDSHIFT_PASSWORD`), the backup suites (`pg_dump`/`pg_restore`/`psql` on PATH), the live
+Claude CLI batch (below), and one deliberate manual microbenchmark. Anything else is a test turned off by accident. When reporting
 results, state the pass count AND the remaining skips with their reasons -- "integration green"
 on its own is not a report.
+
+## The live Claude CLI batch
+
+`./scripts/test-live-claude-cli.sh` makes 20 real structured calls through the real Claude CLI
+on a subscription (`packages/models/tests/live/`). `test.sh` collects the test and skips it:
+it needs a subscription token (`CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`) and spends
+real usage, so it is opt-in (`THREETEARS_LIVE_CLAUDE_CLI=1`, which the script sets). Every other
+test of the subscription route fakes the CLI's messages and can only replay shapes somebody
+already saw; this is the one that shows what a real model does. The release runs it before
+tagging anything that touches `packages/models`, and pastes the line the script records into
+the release PR (`docs/releasing.md`, "Cutting a release").
 
 ## Test fakes
 

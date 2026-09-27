@@ -34,6 +34,14 @@ caller's place. The same schema then answered 30 calls of 30, 12 of them after o
 attempt. A call that runs out of attempts still raises, with
 `reason="error_max_structured_output_retries"`; a failed result is never returned as an answer.
 
+**New:** a structured call that fails on its schema says what the schema rejected.
+`ModelProviderError` (and `ModelRateLimitError`) gain `rejected_output` -- the last
+`StructuredOutput` answer the CLI rejected, exactly as the model gave it -- and `rejection`, the
+CLI's own reason ("Output does not match required schema: ..."). The reason is also in the
+error's message, and the failure's log line names it with the rejected answer's top-level keys,
+never its values. Both are `None` when nothing was rejected. Before, the CLI's reason was
+dropped, and finding which field the model kept missing needed a live replay.
+
 **Unchanged:** a call that binds tools as well as a schema, or enables Claude Code's built-in
 tools, stays at one turn, because a second turn could run those tools in the caller's place. A
 rejected `StructuredOutput` attempt in such a call still raises `error_max_turns`.
@@ -43,10 +51,15 @@ are part of the pool's launch key.
 
 **New release step:** `packages/models/tests/live/test_claude_cli_structured_output_live.py`
 makes 20 real structured calls through the real CLI, six at a time, in the three schema shapes
-the consumer reported, and passes only if every one answers in its schema. It is opt-in
-(`THREETEARS_LIVE_CLAUDE_CLI=1` and `CLAUDE_CODE_OAUTH_TOKEN`), and `docs/releasing.md` now runs it
-before tagging any release that touches `packages/models`. At 0.55.0 it fails, with 4 of 20 calls
-on `error_max_turns`.
+the consumer reported, and passes only if every one answers in its schema. At 0.55.0 it fails,
+with 4 of 20 calls on `error_max_turns`. It is opt-in; `./scripts/test-live-claude-cli.sh` runs
+it (with `CLAUDE_CODE_OAUTH_TOKEN`) so that it cannot skip, and records the commit, version and
+result in `build/release-evidence/live-claude-cli.txt`. `docs/releasing.md` now runs it before
+tagging any release that touches `packages/models`, with that line pasted into the release PR.
+
+`create_subscription_chat`'s docstring said omitting `tools` kept Claude Code's built-in tools.
+It never did: `tools` defaults to `[]`, and `tools=None` enables the preset. The docstring now
+says so, and that the choice decides whether a structured call gets the schema retries.
 
 ## v0.55.0 -- 2026-09-27
 

@@ -19,7 +19,8 @@ an object of several fields, one string field -- 20 calls, six at a time, stream
 ``THREETEARS_LIVE_CLAUDE_CLI_MODEL`` picks the model (default
 :data:`threetears.models.DEFAULT_CHAT_MODEL`, the sonnet model the consumer measured).
 
-Run it with the command in ``docs/releasing.md``, "Cutting a release".
+Run it with ``./scripts/test-live-claude-cli.sh``, which turns it on, cannot skip it, and records
+the result for the release PR (``docs/releasing.md``, "Cutting a release").
 """
 
 from __future__ import annotations

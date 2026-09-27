@@ -319,11 +319,12 @@ async def test_the_turn_limit_without_a_tool_call_is_still_a_failure() -> None:
 
 async def test_every_call_is_one_model_turn_whatever_the_caller_asked_for() -> None:
     with _no_real_sdk_calls():
-        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest", max_turns=12)
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
         _FakeSDKClient.script = _replies(
             [AssistantMessage(content=[TextBlock(text="hi")], model=DEFAULT_CHAT_MODEL), _result()]
         )
-        await model.ainvoke([HumanMessage(content="hi")])
+        # A bound kwarg reaches the option builder as an override; the factory drops max_turns.
+        await model.bind(max_turns=12).ainvoke([HumanMessage(content="hi")])
 
     assert _FakeSDKClient.options[0].max_turns == 1
 

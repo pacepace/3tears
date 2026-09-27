@@ -263,8 +263,9 @@ def _structured(model: Any) -> Any:
 
 async def test_a_call_that_can_only_answer_in_its_schema_gets_the_turns_the_retries_need() -> None:
     with _fake_cli(*_recovered()):
-        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN, max_turns=12)
-        message = await _structured(model).ainvoke([HumanMessage(content="check the draft")])
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        # A bound kwarg reaches the option builder as an override; the factory drops max_turns.
+        message = await _structured(model.bind(max_turns=12)).ainvoke([HumanMessage(content="check the draft")])
 
     [options] = _FakeSDKClient.options
     assert options.max_turns == 6, "five attempts, and one turn more, whatever the caller asked for"
@@ -316,6 +317,18 @@ async def test_a_call_with_the_full_built_in_preset_stays_at_one_turn() -> None:
     assert options.max_turns == 1, "no tools list means Claude Code's whole built-in belt"
 
 
+async def test_a_call_with_a_schema_and_another_mcp_server_stays_at_one_turn() -> None:
+    other_server = {"other": {"type": "stdio", "command": "never-started"}}
+    with _fake_cli(*_recovered()):
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        await _structured(model.bind(mcp_servers=other_server)).ainvoke([HumanMessage(content="use it")])
+
+    [options] = _FakeSDKClient.options
+    assert options.mcp_servers == other_server, "the caller's server reached the options"
+    assert options.max_turns == 1, "a second turn could run that server's tools in the caller's place"
+    assert "MAX_STRUCTURED_OUTPUT_RETRIES" not in options.env
+
+
 async def test_a_call_without_a_schema_stays_at_one_turn() -> None:
     with _fake_cli(AssistantMessage(content=[TextBlock(text="hi")], model=DEFAULT_CHAT_MODEL), _recovered()[-1]):
         model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
@@ -334,6 +347,48 @@ async def test_a_call_that_runs_out_of_attempts_raises() -> None:
 
     assert raised.value.reason == "error_max_structured_output_retries"
     assert "Failed to provide valid structured output after 5 attempts" in str(raised.value)
+
+
+async def test_a_call_that_fails_on_its_schema_carries_what_the_schema_rejected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with _fake_cli(*_out_of_attempts()), caplog.at_level("WARNING"):
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        with pytest.raises(ModelProviderError) as raised:
+            await _structured(model).ainvoke([HumanMessage(content="check the draft")])
+
+    assert raised.value.rejected_output == {"$PARAMETER_VALUE": json.dumps(_ANSWER)}, "exactly what the model gave"
+    assert raised.value.rejection == _MISMATCH, "the CLI's own reason, unparsed"
+    assert _MISMATCH in str(raised.value), "an operator reading the error sees which field was missed"
+    [logged] = [r for r in caplog.records if r.getMessage() == "A subscription model call failed"]
+    assert logged.__dict__["extra_data"]["rejection"] == _MISMATCH
+    assert logged.__dict__["extra_data"]["rejected_keys"] == ["$PARAMETER_VALUE"], "keys, never the model words"
+
+
+async def test_a_streamed_call_that_fails_on_its_schema_carries_what_the_schema_rejected() -> None:
+    with _fake_cli(*_cut_off_after_one_attempt()):
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        with pytest.raises(ModelProviderError) as raised:
+            async for _chunk in _structured(model).astream([HumanMessage(content="check the draft")]):
+                pass
+
+    assert raised.value.rejected_output == {"$PARAMETER_VALUE": json.dumps(_ANSWER)}
+    assert raised.value.rejection == _MISMATCH
+
+
+async def test_an_attempt_the_cli_accepted_is_never_reported_as_rejected() -> None:
+    accepted_then_failed = (
+        _structured_call("toolu_1", _ANSWER),
+        _tool_result("toolu_1", "Structured output provided successfully", is_error=None),
+        _out_of_attempts()[-1],
+    )
+    with _fake_cli(*accepted_then_failed):
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        with pytest.raises(ModelProviderError) as raised:
+            await _structured(model).ainvoke([HumanMessage(content="check the draft")])
+
+    assert raised.value.rejected_output is None
+    assert raised.value.rejection is None
 
 
 async def test_a_call_cut_off_after_a_rejected_attempt_raises_and_is_never_answered_with_it() -> None:
