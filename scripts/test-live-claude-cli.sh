@@ -4,15 +4,19 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Run the live Claude CLI structured-output batch, and record that it ran.
+# Run the live Claude CLI batch -- structured output and the session pool -- and
+# record that it ran.
 #
 # Usage: CLAUDE_CODE_OAUTH_TOKEN=<token> ./scripts/test-live-claude-cli.sh [extra pytest args...]
 #
-# 20 real structured calls through the real Claude CLI on a subscription
-# (packages/models/tests/live/test_claude_cli_structured_output_live.py). Every
-# other test of the subscription route fakes the CLI's messages, which is how
-# 0.55.0 shipped with a third of one consumer's structured calls failing. The
-# release runs this before tagging anything that touches packages/models
+# Real calls through the real Claude CLI on a subscription
+# (packages/models/tests/live/test_claude_cli_structured_output_live.py): a batch
+# of structured calls that must all answer in their schema, and the pool's live
+# proofs -- a reused pooled CLI shows the next call nothing of the last, and one
+# pooled CLI switches between system prompts. Every other test of the subscription
+# route and of claude_cli_pool fakes the CLI's messages, which is how 0.55.0
+# shipped with a third of one consumer's structured calls failing. The release
+# runs this before tagging anything that touches packages/models
 # (docs/releasing.md, "Cutting a release").
 #
 # The token is a subscription token from `claude setup-token`. A logged-in

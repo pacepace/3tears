@@ -41,8 +41,8 @@ An intra-family API addition ships in a MINOR bump
      fails, leaving a family that cannot install until the version is republished.
 2. PR into `develop`.
 3. PR `develop` into `main`, with no version bump on that second PR.
-4. **A release that touches `packages/models`:** run the live Claude CLI structured-output batch
-   on a clean checkout of the `main` commit you are about to tag, and tag only on a pass. It
+4. **A release that touches `packages/models`:** run the live Claude CLI batch (structured output
+   and the session pool) on a clean checkout of the `main` commit you are about to tag, and tag only on a pass. It
    needs the Agent SDK the workspace's dev group installs, and a subscription token from
    `claude setup-token`:
 
@@ -50,8 +50,10 @@ An intra-family API addition ships in a MINOR bump
    CLAUDE_CODE_OAUTH_TOKEN=<token> ./scripts/test-live-claude-cli.sh
    ```
 
-   It makes 20 real structured calls through the real CLI, six at a time, and passes only if
-   every one answers in its schema. Every other test of the subscription route fakes the CLI's
+   It makes a batch of real structured calls through the real CLI, six at a time, that passes
+   only if every one answers in its schema, and runs the session pool's live proofs: a reused
+   pooled CLI shows the next call nothing of the last, and one pooled CLI switches between system
+   prompts, each checked to have run on the pool. Every other test of the subscription route fakes the CLI's
    messages, which is how 0.55.0 shipped with a third of one consumer's structured calls failing:
    no faked sequence contained the real model's first, rejected attempt. A logged-in `claude` on
    the host does not stand in for the token -- 3tears runs the CLI in an isolated configuration

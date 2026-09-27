@@ -33,8 +33,9 @@ _REMOVAL = (
     "the unsigned-agent concession must be removed before {version} ships: in "
     "threetears.registry.ownership.admit_copy drop ``and audience is CopyAudience.EVERYONE`` from the "
     "``not standing.verified`` condition, so an unverified publisher is refused for every audience; then "
-    "delete the admitting branch of RegistrationHandler._unsigned_agent_publisher, its "
-    "_unsigned_agent_pods_warned set, and the 'Rollout concession' paragraph of the CHANGELOG"
+    "delete the admitting branch of RegistrationHandler._unsigned_agent_publisher and its "
+    "_unsigned_agent_pods_warned set, and record the refusal in the {version} CHANGELOG entry -- leave "
+    "the released 'Rollout concession' paragraph as it is: it is the record of what those releases admitted"
 )
 
 

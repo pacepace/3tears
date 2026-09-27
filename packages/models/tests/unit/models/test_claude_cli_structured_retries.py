@@ -278,7 +278,8 @@ async def test_a_call_that_can_only_answer_in_its_schema_gets_the_turns_the_retr
     assert isinstance(message, AIMessage)
     assert json.loads(message.content) == _ANSWER, "the answer is the accepted attempt"
     assert message.tool_calls == [], "a StructuredOutput call is never handed back as a tool call"
-    assert message.response_metadata["is_error"] is False
+    assert message.response_metadata["is_error"] is False, "a call answered after a retry reported an error"
+    assert message.response_metadata["finish_reason"] == "stop"
 
 
 async def test_a_streamed_call_that_can_only_answer_in_its_schema_gets_the_same_turns() -> None:
@@ -464,6 +465,7 @@ class TestAPlaceholderWrappedAnswerIsUnwrapped:
         assert json.loads(message.content) == _ANSWER
         assert message.response_metadata["structured_output_unwrapped"] == 1, "the recovery must be visible"
         assert message.response_metadata["is_error"] is False
+        assert message.response_metadata["finish_reason"] == "stop"
         [logged] = [r for r in caplog.records if r.levelname == "WARNING"]
         assert "placeholder" in logged.getMessage(), "one warning, for the unwrap, and no failure logged"
         assert json.dumps(_ANSWER) not in json.dumps(logged.__dict__["extra_data"]), "the answer was logged"
@@ -477,6 +479,8 @@ class TestAPlaceholderWrappedAnswerIsUnwrapped:
 
         assert json.loads(merged.content) == _ANSWER
         assert merged.response_metadata["structured_output_unwrapped"] == 1
+        assert merged.response_metadata["is_error"] is False
+        assert merged.response_metadata["finish_reason"] == "stop"
 
     async def test_a_one_turn_call_cut_off_on_a_valid_wrapped_answer_answers_it(self) -> None:
         with _fake_cli(*_cut_off_on(_WRAPPED)):

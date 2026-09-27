@@ -501,15 +501,21 @@ def _option_fields(options: Any) -> list[str]:
     return sorted(n for n in names if n not in per_checkout)
 
 
+#: Options the pool itself sets on every CLI it starts. A caller's own value would be replaced at
+#: launch -- ``agents`` holds the pool's system prompts (see the module docstring) -- and is left out
+#: of the key, so a call that sets one is not pooled; it runs on a CLI of its own, as asked.
+_POOL_OWNED_FIELDS = frozenset({"agents"})
+
+
 def poolable(options: Any) -> bool:
     """Whether a call with these options may run on a pooled CLI, one started before the call.
 
     :param options: the call's launch options
     :ptype options: Any
-    :return: ``False`` when a callable option or a resumed session is set
+    :return: ``False`` when a callable option, a resumed session or an option the pool owns is set
     :rtype: bool
     """
-    for name in _CALLABLE_FIELDS | _RESUME_FIELDS:
+    for name in _CALLABLE_FIELDS | _RESUME_FIELDS | _POOL_OWNED_FIELDS:
         if getattr(options, name, None):
             return False
     return True
@@ -1051,7 +1057,9 @@ class ClaudeCliPool:
         #: Spares being started in the background (:meth:`_start_spare`), so a close can stop them.
         self._spares: set[asyncio.Task[None]] = set()
         #: Every system prompt each key has seen, by agent name, least recently used first. A CLI
-        #: starts with all of them defined as agents (see the module docstring).
+        #: starts with all of them defined as agents (see the module docstring). A key's entry lives
+        #: only while the key holds a CLI: it is dropped with the key's last one, so the table is
+        #: bounded by the live CLIs, not by every credential and schema the process has seen.
         self._prompts: dict[str, dict[str, str]] = {}
         #: How a session is started. Injected by tests; a real host never passes it.
         self._start = session_factory or PooledCliSession.start
@@ -1131,7 +1139,9 @@ class ClaudeCliPool:
         if self._broken:
             raise ClaudeCliPoolExhausted("pooling is off: the Claude Agent SDK's surface failed repeatedly")
         if not poolable(options):
-            raise ClaudeCliPoolExhausted("this call carries callables or a resumed session and cannot share a CLI")
+            raise ClaudeCliPoolExhausted(
+                "this call carries callables, a resumed session or its own agents and cannot share a CLI"
+            )
         stranded = self._claim_loop()
         if stranded:
             # Shielded: a call cancelled here must not leave the closed loop's CLIs running with
@@ -1139,7 +1149,13 @@ class ClaudeCliPool:
             await asyncio.shield(self._abandon(stranded))
         key = launch_key(options, token)
         agent = self._learn_prompt(key, options)
-        session = await self._acquire(key, options, agent)
+        try:
+            session = await self._acquire(key, options, agent)
+        except BaseException:
+            # The call runs on a CLI of its own. A key that holds no CLI keeps no prompts: the next
+            # call to it learns its own before it acquires.
+            await asyncio.shield(self._forget_prompts_if_unheld(key))
+            raise
         lent = LentClient(session.client)
         clean = False
         try:
@@ -1243,6 +1259,7 @@ class ClaudeCliPool:
         self._total = 0
         self._condition = asyncio.Condition()
         self._reaper = None
+        self._prompts.clear()
         # A spare's task lived on the closed loop and ran no further than the loop did; its CLI,
         # if it got that far, is registered in ``_all`` and stopped with the rest.
         self._spares = set()
@@ -1344,6 +1361,7 @@ class ClaudeCliPool:
             self._all.clear()
             self._idle.clear()
             self._live.clear()
+            self._prompts.clear()
             self._total = 0
             self._condition.notify_all()
         spares = list(self._spares)
@@ -1438,8 +1456,10 @@ class ClaudeCliPool:
         # reserved. A ``finally`` releases it, not an ``except``: a turn cancelled while its CLI
         # starts reaches no ``except`` clause, and a slot lost here is lost for the process's life.
         started = False
+        launch = self._launch_options(key, options)
+        self._hold_prompts(key, launch)
         try:
-            session = await self._start(self._launch_options(key, options), key=key)
+            session = await self._start(launch, key=key)
             started = True
         finally:
             if not started:
@@ -1507,9 +1527,27 @@ class ClaudeCliPool:
         :return: a new options object; the call's own is not mutated
         :rtype: Any
         """
-        if not _switched_prompt(options)[0]:
+        switchable, prompt = _switched_prompt(options)
+        if not switchable:
             return options
-        return dataclasses.replace(options, system_prompt=None, agents=dict(self._prompts.get(key, {})))
+        agents = dict(self._prompts.get(key, {}))
+        if prompt is not None:
+            # The call's own prompt, always: its key's table may have been dropped with the key's
+            # last CLI -- an eviction to make room for this very call does that.
+            agents.setdefault(agent_name(prompt), prompt)
+        return dataclasses.replace(options, system_prompt=None, agents=agents)
+
+    def _hold_prompts(self, key: str, options: Any) -> None:
+        """Keep, under ``key``, every prompt a CLI starting for it defines.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: the CLI's launch options (:meth:`_launch_options`)
+        :ptype options: Any
+        """
+        known = self._prompts.setdefault(key, {})
+        for name, prompt in (getattr(options, "agents", None) or {}).items():
+            known.setdefault(name, prompt)
 
     def _take_idle(self, key: str, agent: str | None) -> PooledCliSession | None:
         """Take the most recently idle session of ``key`` that defines ``agent``. Call under the lock.
@@ -1605,9 +1643,12 @@ class ClaudeCliPool:
                     self._idle.setdefault(key, deque()).append(_Idle(session, time.monotonic()))
                     self._condition.notify()
                     return
+        # The spare's launch options are taken before the dispose: a key's last CLI takes the key's
+        # learned prompts with it (see :meth:`_forget`), and the spare must define them all.
+        spare_options = self._launch_options(key, copy.copy(options))
         await self._dispose(key, session)
         if clean and not self._closing and not self._broken:
-            self._start_spare(key, options)
+            self._start_spare(key, spare_options)
 
     def _start_spare(self, key: str, options: Any) -> None:
         """Start a spare CLI for ``key`` in the background.
@@ -1617,12 +1658,10 @@ class ClaudeCliPool:
 
         :param key: the launch key
         :ptype key: str
-        :param options: launch options; copied, because a start adds its own marker to them
+        :param options: the spare's own launch options (:meth:`_launch_options`, on a copy)
         :ptype options: Any
         """
-        task = asyncio.create_task(
-            self._spare(key, self._launch_options(key, copy.copy(options))), context=contextvars.Context()
-        )
+        task = asyncio.create_task(self._spare(key, options), context=contextvars.Context())
         self._spares.add(task)
         task.add_done_callback(self._spares.discard)
 
@@ -1648,6 +1687,8 @@ class ClaudeCliPool:
                 return
             self._live[key] = self._live.get(key, 0) + 1
             self._total += 1
+            # The key holds a CLI again, so it keeps the prompts that CLI defines.
+            self._hold_prompts(key, options)
         session: PooledCliSession | None = None
         try:
             session = await self._start(options, key=key)
@@ -1694,7 +1735,19 @@ class ClaudeCliPool:
             if self._live.get(key) == 0:
                 self._live.pop(key, None)
                 self._idle.pop(key, None)
+                # The key's last CLI is gone, and with it every agent the table was kept for.
+                self._prompts.pop(key, None)
             self._condition.notify()
+
+    async def _forget_prompts_if_unheld(self, key: str) -> None:
+        """Drop the prompts learned for ``key`` when no CLI of it is live.
+
+        :param key: the launch key
+        :ptype key: str
+        """
+        async with self._condition:
+            if not self._live.get(key):
+                self._prompts.pop(key, None)
 
     async def _dispose(self, key: str, session: PooledCliSession) -> None:
         """Stop one session and release its slot once the process is actually gone.

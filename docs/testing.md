@@ -62,10 +62,14 @@ Claude CLI batch (below), and one deliberate manual microbenchmark. Anything els
 results, state the pass count AND the remaining skips with their reasons -- "integration green"
 on its own is not a report.
 
-## The live Claude CLI batch
+## The live Claude CLI batch: structured output and the session pool
 
-`./scripts/test-live-claude-cli.sh` makes 20 real structured calls through the real Claude CLI
-on a subscription (`packages/models/tests/live/`). `test.sh` collects the test and skips it:
+`./scripts/test-live-claude-cli.sh` makes real calls through the real Claude CLI on a
+subscription (`packages/models/tests/live/`): a batch of structured calls that must all answer in
+their schema, and the session pool's live proofs -- a reused pooled CLI shows the next call
+nothing of the last, and one pooled CLI switches between system prompts, each checked to have run
+on the pool. A change to `providers/_claude_cli.py` or `claude_cli_pool.py` is covered by it.
+`test.sh` collects these tests and skips them:
 it needs a subscription token (`CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`) and spends
 real usage, so it is opt-in (`THREETEARS_LIVE_CLAUDE_CLI=1`, which the script sets). Every other
 test of the subscription route fakes the CLI's messages and can only replay shapes somebody

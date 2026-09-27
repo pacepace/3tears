@@ -23,21 +23,21 @@ empty conversation between calls. Everything below was verified against the bund
 | conversation | `rewind_conversation` control request to the call's first message | yes | planted a codeword, rewound, asked the model to quote its whole input: only the CLI's own `currentDate` reminder, 10 calls of 10 |
 | `reconnect_mcp_server` | control request | — | **refused** for SDK servers ("SDK servers should be handled in print.ts") |
 
-## The system prompt: stable part launches, variable part travels
+## The system prompt: stable part is switched, variable part travels
 
-The system prompt cannot change on a live CLI, and a caller's prompt usually changes every
-turn (retrieved memory, tool results, notices). Keying sessions on the whole prompt would
-reuse nothing.
+A caller's prompt usually changes every turn (retrieved memory, tool results, notices), and what a
+CLI holds as its system prompt should not. Callers that cache prompts already mark the boundary: a
+`SystemMessage` whose content is a list of blocks, the stable blocks carrying `cache_control`. The
+chat model uses that boundary:
 
-Callers that cache prompts already mark the boundary: a `SystemMessage` whose content is a list
-of blocks, the stable blocks carrying `cache_control`. The pool uses that boundary:
-
-- blocks up to and including the **last** one carrying `cache_control` → the CLI's
-  `--system-prompt`, and part of the session key;
+- blocks up to and including the **last** one carrying `cache_control` → the call's stable system
+  prompt, which the pool switches to on the CLI as a named agent (below). It is not part of the
+  session key;
 - the blocks after it → prepended to the query, ahead of the conversation.
 
-A bare-string system message has no marker, so all of it is stable. Behaviour is unchanged and
-reuse happens only while the string is identical.
+A bare-string system message has no marker, so all of it is stable. A CLI launches with no system
+prompt and every stable prompt its key has seen defined as an agent, named from the prompt's
+digest; each checkout switches to the call's prompt (see the table above and "Session key").
 
 This also fixes a live defect. The base class did `str(msg.content)` on that list, so on a
 subscription route the CLI received the Python **repr** of the blocks — literal `\n`
@@ -57,7 +57,7 @@ placeholder no turn reads. Verified live on the bundled CLI (2026-09-15): two pa
 emitted, both handlers called, `error_max_turns` after turn 2 of the CLI's count, and the same
 session then answered an ordinary query with `success`.
 
-One exception, since 0.55.1: a call that asks for a schema and gives the model no tool but the CLI's
+One exception: a call that asks for a schema and gives the model no tool but the CLI's
 own `StructuredOutput` launches with `--max-turns 6` and `MAX_STRUCTURED_OUTPUT_RETRIES=5`. The CLI
 checks each `StructuredOutput` call against the schema and wants a turn of its own to retry a
 mismatch; at one turn about a third of real structured calls ended on `error_max_turns` with no

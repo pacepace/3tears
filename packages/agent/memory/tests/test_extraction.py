@@ -438,6 +438,45 @@ class TestRateLimit:
         assert client.opened_with == [{"name": "ratelimits"}, {"name": "ratelimits"}]
 
 
+class TestACooldownOfZeroOrLessIsOff:
+    """a cooldown of 0 or less turns the rate limit off. before, it wrote a key that never expired
+    (a zero or negative per-key TTL), which blocked the conversation's extraction for good."""
+
+    @pytest.mark.parametrize("cooldown", [0, -5])
+    async def test_neither_the_read_nor_the_claim_touches_the_bucket(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        cooldown: int,
+    ) -> None:
+        bucket = await FakeNatsClient().kv_bucket(name="ratelimits")
+        client = _SingleBucketClient(bucket)
+        config = MemoryConfig(extraction_rate_limit_cooldown_seconds=cooldown)
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=client, config=config)
+        conversation_id = uuid.uuid7()
+        assert await ext.check_rate_limit(conversation_id) == (True, 0)
+        assert await ext.claim_rate_limit(conversation_id) == (True, 0)
+        assert await ext.claim_rate_limit(conversation_id) == (True, 0), "a second claim was refused"
+        # The read and the claim both skip: the bucket is never even opened. A claim that reached it
+        # would ask for a zero or negative per-key TTL -- refused by the wrapper, and by the fake, and
+        # then passed as a fail-open, so the key count alone could not tell the difference.
+        assert client.opened_with == [], "the rate limit touched its bucket while turned off"
+        assert bucket.keys() == (), "a cooldown key was written with the rate limit off"
+
+    @pytest.mark.parametrize("cooldown", [0, -5])
+    async def test_back_to_back_worthy_turns_both_extract(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        cooldown: int,
+    ) -> None:
+        nats = FakeNatsClient()
+        config = MemoryConfig(extraction_rate_limit_cooldown_seconds=cooldown)
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=_worthy_factory(), config=config)
+        conversation_id = uuid.uuid7()
+        first = await _extract_turn(ext, conversation_id)
+        second = await _extract_turn(ext, conversation_id)
+        assert (first.outcome, second.outcome) == (ExtractionOutcome.STORED, ExtractionOutcome.STORED)
+
+
 class TestRateLimitOrdering:
     """the defect metallm hit: an unworthy turn took the cooldown and blocked the worthy one after it."""
 

@@ -1504,3 +1504,70 @@ class TestTheAgentSwitchRequest:
         with pytest.raises(ClaudeCliSessionError, match="launched without the agent"):
             await session.prepare(model=None, tool_server=None, agent=agent_name("persona A"))
         assert sent == []
+
+
+class TestACallersOwnAgentsAreNotPooled:
+    """The pool sets ``agents`` on every CLI it starts (its system prompts) and leaves the option out of
+    the key, so a caller's own agents would be replaced, or wrapped as a prompt, and shared. Such a
+    call is not pooled: it runs on a CLI of its own, as asked."""
+
+    def test_a_call_with_its_own_agents_is_not_poolable(self) -> None:
+        from threetears.models.claude_cli_pool import poolable
+
+        assert poolable(Options())
+        assert not poolable(Options(agents={"researcher": object()}))
+
+    async def test_it_is_refused_so_it_falls_back_and_nothing_starts(self) -> None:
+        pool = _pool()
+        with pytest.raises(ClaudeCliPoolExhausted, match="its own agents"):
+            async with pool.checkout(Options(agents={"researcher": object()}), token=TOKEN, tool_server=None):
+                pass
+        assert FakeSession.instances == []
+        await pool.aclose()
+
+
+class TestTheLearnedPromptsAreBounded:
+    """A key's learned prompts live only while the key holds a CLI. The key digests the credential,
+    the schema and other options, so an unbounded table grew with every one of them for the life of
+    the process."""
+
+    @staticmethod
+    def _keys(pool: ClaudeCliPool) -> set[str]:
+        return set(pool._prompts)  # noqa: SLF001 -- the table under test has no public accessor
+
+    async def test_a_key_whose_last_cli_is_gone_keeps_no_prompts(self) -> None:
+        pool = _pool(idle_ttl_seconds=0.01)
+        await _call(pool, Options(system_prompt="persona A"))
+        assert len(self._keys(pool)) == 1
+        await asyncio.sleep(0.02)
+        await pool._reap_once()  # noqa: SLF001
+        assert pool.live_count == 0
+        assert self._keys(pool) == set(), "a key with no CLI kept its prompts"
+        await pool.aclose()
+
+    async def test_a_call_that_falls_back_leaves_no_prompts(self) -> None:
+        pool = _pool(max_sessions=1, per_key=1)
+        async with pool.checkout(Options(system_prompt="held"), token=TOKEN, tool_server=None):
+            with pytest.raises(ClaudeCliPoolExhausted):
+                async with pool.checkout(
+                    Options(system_prompt="other", permission_mode="other key"), token=TOKEN, tool_server=None
+                ):
+                    pass
+            assert len(self._keys(pool)) == 1, "the call that ran on its own CLI left its prompt behind"
+        await pool.aclose()
+
+    async def test_a_spare_keeps_the_prompts_it_defines(self) -> None:
+        pool = _pool(session_factory=_refusing_factory())
+        await _call(pool, Options(system_prompt="persona A"))
+        await _spares_started(pool)
+        spare = FakeSession.instances[1]
+        assert spare.options.agents == {agent_name("persona A"): "persona A"}, "the spare lost the key's prompts"
+        [key] = self._keys(pool)
+        assert pool._prompts[key] == {agent_name("persona A"): "persona A"}  # noqa: SLF001
+        await pool.aclose()
+
+    async def test_closing_the_pool_drops_every_prompt(self) -> None:
+        pool = _pool()
+        await _call(pool, Options(system_prompt="persona A"))
+        await pool.aclose()
+        assert self._keys(pool) == set()

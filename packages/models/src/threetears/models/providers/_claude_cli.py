@@ -888,14 +888,9 @@ def _subscription_model_cls() -> type:
                         attempts.answered(msg)
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
-                        unwrapped = _unwrapped_answer(msg, options.output_format, attempts)
-                        if (
-                            unwrapped is None
-                            and (failure := _result_failure(msg, tool_calls, "\n".join(all_text), attempts)) is not None
-                        ):
-                            raise failure
-                        generation_info = _generation_info(msg, tool_calls, unwrapped=unwrapped is not None)
-                        answer = msg.structured_output if msg.structured_output is not None else unwrapped
+                        answer, generation_info = _settle(
+                            msg, options.output_format, tool_calls, "\n".join(all_text), attempts
+                        )
                         if options.output_format is not None and answer is not None:
                             # The answer is the structured one. The model's prose before it is
                             # not: asked for a shape, Haiku still wrote a paragraph first.
@@ -1021,15 +1016,10 @@ def _subscription_model_cls() -> type:
 
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
-                        unwrapped = _unwrapped_answer(msg, options.output_format, attempts)
-                        if (
-                            unwrapped is None
-                            and (failure := _result_failure(msg, tool_calls, "\n".join(produced), attempts)) is not None
-                        ):
-                            raise failure
-                        generation_info = _generation_info(msg, tool_calls, unwrapped=unwrapped is not None)
+                        answer, generation_info = _settle(
+                            msg, options.output_format, tool_calls, "\n".join(produced), attempts
+                        )
                         usage = _usage_metadata(msg.usage)
-                        answer = msg.structured_output if msg.structured_output is not None else unwrapped
                         content = ""
                         if structured:
                             content = json.dumps(answer) if answer is not None else "\n".join(held)
@@ -1161,9 +1151,9 @@ def _unwrapped_answer(result: Any, output_format: Any, attempts: _StructuredAtte
     Found live (0.56.0, ``claude-sonnet-5``): about one structured call in forty spent all five
     attempts sending the whole answer, correct, as a JSON string under a template placeholder --
     ``{"$PARAMETER_VALUE": "<the answer>"}``, or ``$PARAMETER_NAME`` / ``$FUNCTION_NAME`` -- which the
-    CLI rejects every time. When the call failed with no structured answer, the most recent rejected
-    attempt of exactly that shape whose
-    JSON validates against the call's own schema is the answer. It is logged, once, at WARNING and
+    CLI rejects every time. The most recent rejected attempt of exactly that shape whose JSON
+    validates against the call's own schema is the answer. :func:`_settle` asks only when the call
+    ended in error with no structured answer. It is logged, once, at WARNING and
     marked on the result's metadata (``structured_output_unwrapped``).
 
     :param result: the CLI's ``ResultMessage``
@@ -1176,7 +1166,7 @@ def _unwrapped_answer(result: Any, output_format: Any, attempts: _StructuredAtte
     :rtype: Any | None
     """
     schema = output_format.get("schema") if isinstance(output_format, dict) else None
-    if not isinstance(schema, dict) or result.structured_output is not None or not result.is_error:
+    if not isinstance(schema, dict):
         return None
     answer = next(
         (
@@ -1281,38 +1271,48 @@ def _assistant_failure(message: Any) -> ModelProviderError | None:
     return _cli_failure(text, reason=str(message.error), status=None)
 
 
-def _result_failure(
-    result: Any, tool_calls: list[dict[str, Any]], text: str, attempts: _StructuredAttempts
-) -> ModelProviderError | None:
-    """The error a call's result reports, when the call failed.
+def _settle(
+    result: Any, output_format: Any, tool_calls: list[dict[str, Any]], text: str, attempts: _StructuredAttempts
+) -> tuple[Any | None, dict[str, Any]]:
+    """Decide how a call ended: its structured answer and generation info, or the error it raises.
 
-    Not a failure: a call that stopped to hand tool calls back (:func:`_ended_for_tools`), and a call
-    whose result carries the structured answer it was asked for -- raising would throw that answer
-    away.
+    The one place a CLI result's outcome is decided, for the streamed and the invoked call alike.
+    The answer is the result's ``structured_output`` or, when the call ended in error without one, a
+    placeholder-wrapped attempt that validates (:func:`_unwrapped_answer`). A call did NOT fail when
+    it answered -- whatever the result's own ``is_error`` says -- or when it stopped to hand tool
+    calls back (:func:`_ended_for_tools`). Otherwise an ``is_error`` result raises.
 
     :param result: the CLI's ``ResultMessage``
     :ptype result: Any
+    :param output_format: the call's ``output_format``, ``None`` for a call with no schema
+    :ptype output_format: Any
     :param tool_calls: the tool calls the call handed back
     :ptype tool_calls: list[dict[str, Any]]
     :param text: the text the call produced, for a result that says nothing itself
     :ptype text: str
     :param attempts: the call's ``StructuredOutput`` attempts
     :ptype attempts: _StructuredAttempts
-    :return: the error to raise, or ``None`` when the call did not fail
-    :rtype: ModelProviderError | None
+    :return: ``(structured answer or None, generation info)``
+    :rtype: tuple[Any | None, dict[str, Any]]
+    :raises ModelProviderError: when the call failed
     """
-    if not result.is_error or _ended_for_tools(result, tool_calls) or result.structured_output is not None:
-        return None
-    said = result.result or "; ".join(result.errors or []) or text
-    reason = None if result.subtype == "success" else result.subtype
-    return _cli_failure(said, reason=reason, status=result.api_error_status, attempts=attempts)
+    answer = result.structured_output
+    unwrapped = False
+    if answer is None and result.is_error:
+        answer = _unwrapped_answer(result, output_format, attempts)
+        unwrapped = answer is not None
+    if result.is_error and answer is None and not _ended_for_tools(result, tool_calls):
+        said = result.result or "; ".join(result.errors or []) or text
+        reason = None if result.subtype == "success" else result.subtype
+        raise _cli_failure(said, reason=reason, status=result.api_error_status, attempts=attempts)
+    return answer, _generation_info(result, tool_calls, unwrapped=unwrapped)
 
 
 def _generation_info(result: Any, tool_calls: list[dict[str, Any]], *, unwrapped: bool = False) -> dict[str, Any]:
-    """What a call's ``ResultMessage`` says, as generation info.
+    """What a call that did not fail says, as generation info.
 
-    A call that asked for tools ends on the CLI's turn limit (``error_max_turns``). That is the
-    designed end of such a call, not a failure.
+    Only :func:`_settle` builds it, after deciding the call did not fail, so ``is_error`` is always
+    false here -- a result the CLI flagged is reported by the error :func:`_settle` raises instead.
 
     :param result: the CLI's ``ResultMessage``
     :ptype result: Any
@@ -1323,15 +1323,14 @@ def _generation_info(result: Any, tool_calls: list[dict[str, Any]], *, unwrapped
     :return: generation info
     :rtype: dict[str, Any]
     """
-    failed = bool(result.is_error) and not _ended_for_tools(result, tool_calls) and not unwrapped
     info: dict[str, Any] = {
         "total_cost_usd": result.total_cost_usd,
         "duration_ms": result.duration_ms,
         "duration_api_ms": result.duration_api_ms,
         "num_turns": result.num_turns,
         "session_id": result.session_id,
-        "is_error": failed,
-        "finish_reason": "error" if failed else ("tool_calls" if tool_calls else "stop"),
+        "is_error": False,
+        "finish_reason": "tool_calls" if tool_calls else "stop",
     }
     if unwrapped:
         info["structured_output_unwrapped"] = 1

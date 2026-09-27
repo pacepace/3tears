@@ -1,4 +1,9 @@
-"""Real structured calls through the real Claude CLI, on a subscription, and not one of them fails.
+"""The live Claude CLI batch: structured output and the session pool, on the real CLI and a subscription.
+
+Two things only a real CLI shows. A batch of structured calls must all answer in their schema; and
+the session pool must hand a reused CLI to the next call with nothing of the last one in it, and
+switch one CLI between system prompts -- each of those checked to have run on the pool, not on a
+CLI of its own.
 
 Every other test of the subscription route fakes the CLI's messages, so it can only replay a shape
 somebody already saw. 0.55.0 shipped with about a third of one consumer's structured calls failing
@@ -213,15 +218,45 @@ _QUOTE_YOUR_INPUT = (
 )
 
 
-async def test_a_reused_pooled_cli_shows_the_next_call_nothing_of_the_last() -> None:
+#: What the chat model logs when a call gets no pooled CLI and runs on one of its own.
+_FELL_BACK = "No pooled Claude CLI for this call"
+#: What the pool logs when it starts a CLI for a call.
+_STARTED = "Started a pooled Claude CLI"
+
+
+def _pool_events(caplog: pytest.LogCaptureFixture) -> tuple[int, int]:
+    """how many calls fell back to a CLI of their own, and how many pooled CLIs started, so far.
+
+    :param caplog: the test's log capture, at INFO for ``threetears``
+    :ptype caplog: pytest.LogCaptureFixture
+    :return: ``(fallbacks, starts)``
+    :rtype: tuple[int, int]
+    """
+    messages = [record.getMessage() for record in caplog.records]
+    return sum(_FELL_BACK in m for m in messages), sum(_STARTED in m for m in messages)
+
+
+def _require_the_pool() -> None:
+    """fail unless pooling is on: a one-off CLI trivially shows nothing of an earlier call."""
+    from threetears.models import claude_cli_pool  # noqa: PLC0415
+
+    if claude_cli_pool.claude_cli_pool() is None:
+        pytest.fail("pooling is off, so nothing here would exercise a pooled CLI")
+
+
+async def test_a_reused_pooled_cli_shows_the_next_call_nothing_of_the_last(caplog: pytest.LogCaptureFixture) -> None:
     """Found live (0.56.0): the pool reset a CLI with ``/clear``, which left itself in the conversation,
     and the next caller's model answered "This is a local slash command (/clear)". Two calls in a row
     reuse one pooled CLI; the second quotes its whole input, which must hold neither the reset nor
-    the first call's words.
+    the first call's words. Every call must run on the pool, and after the first CLI no other may
+    start: a call that fell back to a CLI of its own would pass the leak check while testing nothing.
     """
     if not _TOKEN:
         pytest.fail("THREETEARS_LIVE_CLAUDE_CLI=1 but CLAUDE_CODE_OAUTH_TOKEN is not set")
     from threetears.models.factory import create_chat_model  # noqa: PLC0415
+
+    _require_the_pool()
+    caplog.set_level("INFO", logger="threetears")
 
     system = SystemMessage(content="You are a careful assistant. You follow instructions exactly.")
     leaks: list[str] = []
@@ -233,16 +268,26 @@ async def test_a_reused_pooled_cli_shows_the_next_call_nothing_of_the_last() -> 
         for trace in ("/clear", "command-name", "local-command", "Caveat", "PELICAN", "code word"):
             if trace.lower() in quoted.lower():
                 leaks.append(f"round {round_number}: {trace!r} in {quoted!r}")
+    fallbacks, starts = _pool_events(caplog)
+    assert fallbacks == 0, f"{fallbacks} of 6 calls ran on a CLI of their own, not the pool"
+    assert starts <= 1, f"{starts} pooled CLIs started for one launch; the calls did not reuse one"
     assert leaks == [], "a reused CLI showed the next call the last call or its reset:\n" + "\n".join(leaks)
 
 
-async def test_a_pooled_cli_switches_between_system_prompts_and_holds_only_the_callers() -> None:
+async def test_a_pooled_cli_switches_between_system_prompts_and_holds_only_the_callers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A pooled CLI holds each system prompt as a named agent and switches per call. Each call must
     answer from its own prompt alone -- not the previous call's, not a mix -- and quote nothing of
-    the previous call or of the switch."""
+    the previous call or of the switch. Every call must run on the pool, and once both prompts are
+    known the later rounds must start no CLI: they are served by switching."""
     if not _TOKEN:
         pytest.fail("THREETEARS_LIVE_CLAUDE_CLI=1 but CLAUDE_CODE_OAUTH_TOKEN is not set")
     from threetears.models.factory import create_chat_model  # noqa: PLC0415
+
+    _require_the_pool()
+    caplog.set_level("INFO", logger="threetears")
+    starts_after_both_known = 0
 
     words = ["HERON", "OTTER", "HERON", "OTTER"]
     wrong: list[str] = []
@@ -271,4 +316,9 @@ async def test_a_pooled_cli_switches_between_system_prompts_and_holds_only_the_c
         for trace in ("/clear", "command-name", "local-command", "secret word"):
             if trace.lower() in quoted.lower():
                 wrong.append(f"call {number} ({word}): {trace!r} in {quoted!r}")
+        if number == 1:
+            starts_after_both_known = _pool_events(caplog)[1]
+    fallbacks, starts = _pool_events(caplog)
+    assert fallbacks == 0, f"{fallbacks} of 8 calls ran on a CLI of their own, not the pool"
+    assert starts == starts_after_both_known, "a CLI started for a prompt the pool already held; no switch"
     assert wrong == [], "a switched prompt was not the call's alone, or a call saw another:\n" + "\n".join(wrong)
