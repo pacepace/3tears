@@ -1327,3 +1327,160 @@ class TestOnMemoryCreatedCallback:
             agent_id=_TEST_AID,
             customer_id=_TEST_CUID,
         )
+
+
+class _GateFactory(CountingChatModelFactory):
+    """worthy turns whose extraction call runs ``during_extraction`` first, then answers or raises."""
+
+    def __init__(self, during_extraction: Any, *, then_raise: BaseException | None = None) -> None:
+        super().__init__(
+            worthiness_content=json.dumps({"worthy": True, "reason": "biographical"}),
+            extraction_content=json.dumps([{"type": "fact", "content": "Lives in Seattle"}]),
+        )
+        self._during = during_extraction
+        self._then_raise = then_raise
+
+    async def create_chat_model(self, purpose: str = "extraction") -> Any:
+        model = await super().create_chat_model(purpose)
+        if purpose != "extraction":
+            return model
+        factory = self
+
+        class _Hooked:
+            async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+                await factory._during()
+                if factory._then_raise is not None:
+                    raise factory._then_raise
+                return await model.ainvoke(messages, **kwargs)
+
+        return _Hooked()
+
+
+class TestAFailedExtractionModelIsAFailure:
+    """an extraction-model outage answered SKIPPED / NOTHING_FOUND -- the same as a quiet turn, so
+    a consumer counting outcomes read an outage as 'nothing to remember'."""
+
+    async def test_a_raising_extraction_model_answers_failed_with_the_reason(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = StubChatModelFactory(
+            worthiness_content=json.dumps({"worthy": True, "reason": "biographical"}), error_on={"extraction"}
+        )
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=FakeNatsClient(), factory=factory)
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED, result
+        assert "extraction model call failed" in result.reason and "LLM unavailable" in result.reason
+
+    async def test_a_reply_that_is_not_json_answers_failed(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = StubChatModelFactory(
+            worthiness_content=json.dumps({"worthy": True}), extraction_content="I could not decide."
+        )
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=FakeNatsClient(), factory=factory)
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.outcome is ExtractionOutcome.FAILED
+        assert "not valid JSON" in result.reason
+
+    async def test_a_model_that_found_nothing_is_still_nothing_found(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        factory = StubChatModelFactory(worthiness_content=json.dumps({"worthy": True}), extraction_content="[]")
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=FakeNatsClient(), factory=factory)
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert (result.outcome, result.gate) == (ExtractionOutcome.SKIPPED, ExtractionGate.NOTHING_FOUND)
+
+    async def test_the_public_hook_still_answers_an_empty_list_on_failure(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(error_on={"extraction"}))
+        assert await ext.extract_candidates("msg", "resp") == []
+
+
+class TestATurnThatStoresNothingGivesTheCooldownBack:
+    """a turn that claimed the cooldown and then failed, or was cancelled by the next message, held the
+    key for the whole window having stored nothing. it gives the key back; a turn that stored, or
+    whose model found nothing, keeps it."""
+
+    async def test_a_failed_turn_releases_its_claim_and_the_next_worthy_turn_extracts(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        conversation_id = uuid.uuid7()
+        failing = StubChatModelFactory(worthiness_content=json.dumps({"worthy": True}), error_on={"extraction"})
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=failing)
+        assert (await _extract_turn(ext, conversation_id)).outcome is ExtractionOutcome.FAILED
+        bucket = await nats.kv_bucket(name="ratelimits")
+        assert bucket.keys() == (), "a failed turn kept the cooldown"
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=_worthy_factory())
+        assert (await _extract_turn(ext, conversation_id)).outcome is ExtractionOutcome.STORED
+
+    async def test_a_turn_cancelled_during_extraction_releases_its_claim_then_stays_cancelled(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        conversation_id = uuid.uuid7()
+        entered = asyncio.Event()
+
+        async def wait_forever() -> None:
+            entered.set()
+            await asyncio.sleep(3600)
+
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=_GateFactory(wait_forever))
+        turn = asyncio.create_task(_extract_turn(ext, conversation_id))
+        await entered.wait()
+        bucket = await nats.kv_bucket(name="ratelimits")
+        assert bucket.keys() != (), "precondition: the turn claimed the cooldown before it was cancelled"
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        assert bucket.keys() == (), "a cancelled turn kept the cooldown"
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=_worthy_factory())
+        assert (await _extract_turn(ext, conversation_id)).outcome is ExtractionOutcome.STORED
+
+    async def test_a_stored_turn_keeps_the_cooldown(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=_worthy_factory())
+        assert (await _extract_turn(ext, uuid.uuid7())).outcome is ExtractionOutcome.STORED
+        assert (await nats.kv_bucket(name="ratelimits")).keys() != ()
+
+    async def test_a_nothing_found_turn_keeps_the_cooldown(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        nats = FakeNatsClient()
+        factory = StubChatModelFactory(worthiness_content=json.dumps({"worthy": True}), extraction_content="[]")
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=factory)
+        result = await _extract_turn(ext, uuid.uuid7())
+        assert result.gate is ExtractionGate.NOTHING_FOUND
+        assert (await nats.kv_bucket(name="ratelimits")).keys() != ()
+
+    async def test_a_release_never_removes_a_key_another_turn_claimed(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """turn A's key expires mid-turn and turn B claims the window; A then fails, and its release
+        -- guarded by the revision A created -- leaves B's key alone."""
+        nats = FakeNatsClient()
+        conversation_id = uuid.uuid7()
+        config = MemoryConfig(extraction_rate_limit_cooldown_seconds=30)
+        other = _make_extractor(permissive_memory_authorizer, nats_client=nats, config=config)
+
+        async def expire_and_let_another_turn_claim() -> None:
+            bucket = await nats.kv_bucket(name="ratelimits")
+            bucket.advance_clock(timedelta(seconds=31))
+            assert await other.claim_rate_limit(conversation_id) == (True, 0)
+
+        factory = _GateFactory(expire_and_let_another_turn_claim, then_raise=RuntimeError("model down"))
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats, factory=factory, config=config)
+        assert (await _extract_turn(ext, conversation_id)).outcome is ExtractionOutcome.FAILED
+        assert await other.check_rate_limit(conversation_id) == (False, 30), "a release removed another turn's key"

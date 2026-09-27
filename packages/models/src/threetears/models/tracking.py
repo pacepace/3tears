@@ -46,6 +46,7 @@ __all__ = [
     "LlmPurpose",
     "ExtractedUsage",
     "extract_usage",
+    "served_provider",
     "TokenSource",
     "current_usage_scope",
     "default_usage_tracker",
@@ -395,6 +396,32 @@ def _reply_text(message: Any) -> str:  # noqa: ANN401 -- any LangChain message
     calls = getattr(message, "tool_calls", None) or []
     args = " ".join(f"{c.get('name', '')} {c.get('args', '')}" for c in calls if isinstance(c, dict))
     return f"{_message_text(message)} {args}".strip()
+
+
+def served_provider(response: LLMResult) -> str | None:
+    """the upstream that actually served one LLM result, as the router reported it.
+
+    OpenRouter names it on every response (``response_metadata["provider"]``) and on the final
+    stream chunk (``generation_info["provider"]``, which a streamed result carries on its
+    generation). A direct provider reports none, and the answer is ``None``.
+
+    :param response: the LLM result
+    :ptype response: LLMResult
+    :return: the serving upstream's name, or ``None`` when the result names none
+    :rtype: str | None
+    """
+    found: str | None = None
+    for batch in getattr(response, "generations", None) or []:
+        for generation in batch:
+            info = getattr(generation, "generation_info", None) or {}
+            metadata = getattr(getattr(generation, "message", None), "response_metadata", None) or {}
+            named = info.get("provider") or metadata.get("provider")
+            if isinstance(named, str) and named:
+                found = named
+                break
+        if found is not None:
+            break
+    return found
 
 
 def extract_usage(response: LLMResult, *, prompt_messages: list[Any] | None = None) -> ExtractedUsage:
@@ -1185,6 +1212,20 @@ class UsageTrackingCallback(BaseCallbackHandler):
             cache_creation_tokens=extracted.cache_creation_tokens,
             token_source=extracted.source,
             **attribution,
+        )
+        logger.info(
+            "LLM call completed",
+            extra={
+                "extra_data": {
+                    "model": self._model_name,
+                    "provider": self._provider_name,
+                    # the upstream a router (OpenRouter) actually sent the call to; None when direct
+                    "served_provider": served_provider(response),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "latency_ms": latency_ms,
+                }
+            },
         )
         self._tracker.record(usage)
 

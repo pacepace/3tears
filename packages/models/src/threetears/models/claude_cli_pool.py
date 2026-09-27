@@ -102,6 +102,7 @@ __all__ = [
     "bind_tool_server_to_context",
     "launch_key",
     "poolable",
+    "repeats_on_every_call",
     "sweep_orphaned_claude_clis",
 ]
 
@@ -700,6 +701,27 @@ def bind_tool_server_to_context(server: Any, context: contextvars.Context | None
     return _ContextBoundServer(server, context)
 
 
+def repeats_on_every_call(exc: BaseException) -> bool:
+    """Whether a failed control request would fail the same way on every call, on every CLI.
+
+    Only two failures qualify, and only they count toward turning pooling off: a REFUSAL, which
+    the SDK raises as a bare ``Exception`` carrying the CLI's error text, and a moved SDK surface
+    (an ``AttributeError``, ``TypeError`` or ``KeyError`` from a private attribute that is gone).
+    The SDK raises its timeout as a bare ``Exception`` too, told apart only by ``__cause__`` being
+    a ``TimeoutError``; a slow answer on a busy host says nothing about the next call, so it does
+    not count. Nor does a transport failure (the SDK's own error types, an ``OSError``): the CLI
+    that died is stopped and a spare started, and pooling stays on.
+
+    :param exc: what the control request raised
+    :ptype exc: BaseException
+    :return: ``True`` for a refusal or a moved SDK surface, ``False`` for anything transient
+    :rtype: bool
+    """
+    if isinstance(exc, (AttributeError, TypeError, KeyError)):
+        return True
+    return type(exc) is Exception and not isinstance(exc.__cause__, TimeoutError)
+
+
 class LentClient:
     """A pooled CLI's client as one call sees it: every message the call sends carries a known uuid.
 
@@ -863,12 +885,20 @@ class PooledCliSession:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         if agent is not None and agent not in self.agents:
             raise ClaudeCliSessionError(f"this Claude CLI was launched without the agent {agent!r}")
-        try:
-            if agent != self.agent:
+        if agent != self.agent:
+            try:
                 await self.client._query._send_control_request(  # noqa: SLF001 -- the SDK exposes no agent switch
                     {"subtype": "apply_flag_settings", "settings": {"agent": agent}}, timeout=30.0
                 )
-                self.agent = agent
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- the SDK raises bare Exception for a refused control request; a CLI that cannot switch cannot serve any prompt the pool keys it for
+                error = ClaudeCliSessionError(f"the Claude CLI could not switch agent: {exc}")
+                #: The switch is what lets one CLI serve every prompt of a key. A CLI that REFUSES
+                #: it refuses it for every call, so a refusal counts toward turning pooling off; a
+                #: timeout or a transport failure only stops this session.
+                error.structural = repeats_on_every_call(exc)  # type: ignore[attr-defined]
+                raise error from exc
+            self.agent = agent
+        try:
             if model and model != self._model:
                 await self.client.set_model(model)
                 self._model = model
@@ -925,10 +955,19 @@ class PooledCliSession:
                 {"subtype": "rewind_conversation", "target_message_uuid": first_message_uuid}, timeout=timeout
             )
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the conversation may not be empty; the pool stops the session
-            raise ClaudeCliSessionError(f"the Claude CLI failed to rewind: {exc}") from exc
+            error = ClaudeCliSessionError(f"the Claude CLI failed to rewind: {exc}")
+            #: A refused request counts toward turning pooling off; a timeout or a transport
+            #: failure stops this session and starts a spare, and pooling stays on.
+            error.structural = repeats_on_every_call(exc)  # type: ignore[attr-defined]
+            raise error from exc
         if not isinstance(answer, dict) or answer.get("rewound") is not True:
             reason = answer.get("error") if isinstance(answer, dict) else answer
-            raise ClaudeCliSessionError(f"the Claude CLI refused to rewind: {reason}")
+            error = ClaudeCliSessionError(f"the Claude CLI refused to rewind: {reason}")
+            #: A refusal ("no preceding assistant" while the CLI's first-message rewind flag is off)
+            #: or an answer of another shape repeats on every call. Each costs a CLI start, so it
+            #: counts toward turning pooling off, as a moved SDK surface does.
+            error.structural = True  # type: ignore[attr-defined]
+            raise error
 
     async def dispose(self, *, grace_seconds: float) -> None:
         """Disconnect, then make sure the process and its children are gone. Idempotent.
@@ -1022,7 +1061,7 @@ _STRUCTURAL_FAILURE_LIMIT = 3
 class ClaudeCliPool:
     """Bounded pools of started Claude CLI sessions, one pool per launch key; each serves one call.
 
-    ``per_key`` defaults to the whole cap. A key once held one system prompt, so two sessions per
+    ``per_key`` defaults to ``max_sessions``, the whole cap, whatever the host sets that to. A key once held one system prompt, so two sessions per
     key still let different stages run side by side; now one key holds every prompt of a credential
     and its options (see the module docstring), and two would cap an application at two pooled
     calls at once -- measured: a stage group of three ran one on a CLI of its own.
@@ -1032,13 +1071,15 @@ class ClaudeCliPool:
         self,
         *,
         max_sessions: int = 8,
-        per_key: int = 8,
+        per_key: int | None = None,
         idle_ttl_seconds: float = 300.0,
         checkout_timeout_seconds: float = 2.0,
         reset_timeout_seconds: float = 5.0,
         kill_grace_seconds: float = 2.0,
         session_factory: Callable[..., Awaitable[PooledCliSession]] | None = None,
     ) -> None:
+        if per_key is None:
+            per_key = max_sessions
         if max_sessions < 1 or per_key < 1:
             raise ValueError("max_sessions and per_key must both be at least 1")
         self._max_sessions = max_sessions
@@ -1167,9 +1208,8 @@ class ClaudeCliPool:
                     agent=agent,
                 )
             except ClaudeCliSessionError as exc:
-                self._note_prepare_failure(exc)
+                self._note_structural_failure(exc)
                 raise
-            self._structural_failures = 0
             yield lent
             clean = True
         finally:
@@ -1308,14 +1348,17 @@ class ClaudeCliPool:
             self._stopping.discard(session)
         return stopped
 
-    def _note_prepare_failure(self, exc: ClaudeCliSessionError) -> None:
-        """Count failures of the SDK surface itself, and stop pooling when they repeat.
+    def _note_structural_failure(self, exc: ClaudeCliSessionError) -> None:
+        """Count failures of the SDK or CLI surface the pool relies on, and stop pooling when they repeat.
 
-        A private attribute or control request that moved in an SDK release fails every prepare.
-        Without this every call would start a pooled CLI, fail, dispose it and then start a one-off
-        CLI -- twice the start cost, logged only as a fallback.
+        A private attribute or control request that moved in an SDK release fails every prepare; a
+        CLI that refuses the agent switch or the rewind reset refuses it on every call. Without
+        this every call would start a pooled CLI, fail, dispose it and start another -- twice the
+        start cost, and logged only per call. The count runs until a call is prepared, served and
+        reset without one; three in a row turn pooling off, logged once, and every call then runs
+        on a CLI of its own.
 
-        :param exc: the prepare failure
+        :param exc: the prepare or reset failure
         :ptype exc: ClaudeCliSessionError
         """
         if not getattr(exc, "structural", False):
@@ -1324,7 +1367,7 @@ class ClaudeCliPool:
         if self._structural_failures >= _STRUCTURAL_FAILURE_LIMIT and not self._broken:
             self._broken = True
             _logger.warning(
-                "The Claude CLI pool turned itself off: the Claude Agent SDK surface it relies on is not there",
+                "The Claude CLI pool turned itself off: the Claude Agent SDK or CLI surface it relies on is not there",
                 extra={"extra_data": {"failures": self._structural_failures, "error": str(exc)}},
             )
 
@@ -1631,12 +1674,15 @@ class ClaudeCliPool:
                 await session.release_tools(timeout=self._reset_timeout)
                 if first_message_uuid is not None:
                     await session.rewind(first_message_uuid, timeout=self._reset_timeout)
+                self._structural_failures = 0
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever a returning session raises, it is stopped and its slot freed, and a call that already succeeded must not fail here
                 _logger.warning(
                     "A pooled Claude CLI could not be reset; stopping it and starting a spare",
                     extra={"extra_data": {"key": key[:12], "error": str(exc)}},
                 )
                 keep = False
+                if isinstance(exc, ClaudeCliSessionError):
+                    self._note_structural_failure(exc)
         if keep:
             async with self._condition:
                 if not self._closing:

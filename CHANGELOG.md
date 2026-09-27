@@ -35,9 +35,14 @@ evictions, every stage answering from its own prompt.
 - The JSON schema stays in the key: it is the `--json-schema` launch flag, and setting it through
   `apply_flag_settings` changed nothing (measured).
 - A system prompt that is not text (a preset, a file) stays a launch flag in the key.
-- `ClaudeCliPool(per_key=)` now defaults to 8, the whole cap: one key holds every prompt, and 2
+- `ClaudeCliPool(per_key=)` now defaults to `max_sessions`, the whole cap: one key holds every prompt, and 2
   capped an application at two pooled calls at once.
 - **New:** `threetears.models.claude_cli_pool.agent_name`; `PooledCliSession.prepare(agent=)`.
+- A CLI that refuses the agent switch or the rewind reset -- both sent through the SDK's private
+  control-request path, proven on claude-agent-sdk 0.2.116 / CLI 2.1.207 (the switch also on
+  0.2.118 / 2.1.209) -- counts toward the pool's self-disable latch: three in a row turn pooling
+  off, logged once, and calls run on CLIs of their own instead of starting pooled CLIs to discard.
+  Only a refusal counts (see "A slow reset no longer turns pooling off" below).
 - The live batch gains a test that switches one pooled CLI between two prompts and fails if a
   call answers from another's prompt or quotes anything of the switch.
 
@@ -155,6 +160,10 @@ blocked extraction for the whole cooldown. The rate limit now has two stages:
 - The new stage hook `claim_rate_limit` CREATES the key with an atomic KV `create`, after
   worthiness says yes. Of two turns that race past the read, exactly one claims the key and
   extracts. The other is skipped at the rate-limit gate.
+- A turn that claimed the key and then ends `FAILED`, or is cancelled -- by the next message,
+  during the long extraction, embedding and resolution stages -- gives the key back. The delete
+  is guarded by the revision the claim created, so it never removes a key another turn claimed
+  after this one's expired. A `STORED` turn, or one whose model found nothing, keeps it.
 
 **The cooldown lived as long as the bucket's `max_age`.** The key was written through
 `kv_bucket(name=..., ttl=cooldown)`, and that `ttl` sets the stream's `max_age`. The stream's
@@ -180,7 +189,10 @@ reason)`:
 - `reason` is the human-readable detail. It is never parsed.
 
 A turn whose every resolved write raised is now `FAILED`, and so is one whose candidates could not
-be embedded. Before, both were silent. `extract()` still catches every failure, but it no longer
+be embedded. So is a turn whose extraction-model call failed, or whose reply was not the JSON list
+it was asked for, with the error as its `reason`: it read `SKIPPED` / `NOTHING_FOUND`, the same as
+a model that found nothing, so an outage looked like a quiet turn. Before, all of these were
+silent. The public `extract_candidates` hook still answers `[]` on such a failure. `extract()` still catches every failure, but it no longer
 swallows cancellation: it logs one WARNING and re-raises `asyncio.CancelledError`.
 `threetears.agent.memory.extract_memories` now returns the result, or `None` when the integration
 has no extractor. All three types are exported from `threetears.agent.memory` and
@@ -189,6 +201,53 @@ has no extractor. All three types are exported from `threetears.agent.memory` an
 **Upgrading a caller.** Code that ignored `extract()`'s return value keeps working. A subclass
 that overrode `check_rate_limit` to CREATE the key now runs at read time; move that logic into
 `claim_rate_limit`. metallm's `ExtractionResult` subclass can go.
+
+### A slow reset no longer turns pooling off
+
+The pool's self-disable latch counted every failed agent switch or rewind reset. The Claude Agent
+SDK raises the same bare `Exception` for a control request that timed out (told apart only by
+`__cause__` being a `TimeoutError`) as for one the CLI refused, and a transport failure landed in
+the same branch, so three slow resets on a busy host turned pooling off for the process.
+
+**Fixed:** `threetears.models.claude_cli_pool.repeats_on_every_call(exc)` decides what counts: a
+refusal (a bare `Exception` not caused by a timeout), a wrong-shaped rewind answer, or a moved SDK
+surface. A timeout or transport failure still stops that session and starts a spare; pooling
+stays on. Pinned through the real `PooledCliSession` over the SDK's real `Query`: three timed-out
+or disconnected resets leave pooling on, three refusals still turn it off.
+
+### A structured ask on OpenRouter keeps the model's provider routing
+
+`ChatOpenRouter` sends `{**params, **kwargs}`, so the structured-output directive's bound
+`provider={"require_parameters": True}` REPLACED the model's whole `provider` block. Every
+structured ask on an OpenRouter model went out without its `only` and `ignore` lists -- no
+provider restrictions at all.
+
+**Fixed:** the factory's model merges a bound `provider` block into its own routing
+(`openrouter_provider`, or `model_kwargs["provider"]`) on every path -- `invoke`, `ainvoke`,
+`stream`, `astream`. A model with `only`/`ignore` sends both lists plus `require_parameters`; a
+model with no routing sends `require_parameters` alone. Pinned at the wire, through the real
+`openrouter` SDK over a mock HTTP transport.
+
+### OpenRouter's served provider is read, and logged per call
+
+OpenRouter names the upstream that served each call (`"provider"`) on every response and stream
+chunk. The `openrouter` SDK's `ChatResult` and `ChatStreamChunk` do not declare it, so parsing
+dropped it, and nobody could tell which upstream answered.
+
+**Fixed:** `threetears.models.providers.openrouter.declare_served_provider()` (run by the factory)
+declares `provider: str | None` on both SDK models and rebuilds the stream wrapper; it is
+idempotent and raises if the classes move. It reaches `response_metadata["provider"]`
+(non-streamed) and the final chunk's `generation_info["provider"]` (streamed).
+`UsageTrackingCallback` now logs one INFO line per call, `LLM call completed`, carrying
+`served_provider` (`None` for a direct provider) with the model, tokens and latency;
+`threetears.models.tracking.served_provider(result)` reads it.
+
+- **Dependency:** `langchain-openrouter>=0.2.9` (the first to copy `provider` through; it
+  requires `openrouter>=0.9.2,<1.0`). `3tears-models` also declares `openrouter>=0.9.2,<1.0`
+  directly, because it imports and extends that SDK's models itself. 0.2.9 is younger than the 14-day supply-chain cooldown,
+  so the root `pyproject.toml` admits it by a fixed-date `exclude-newer-package` entry that stops
+  mattering once the window passes it. `langchain-core` moves to 1.6.3 with it. **A consumer with
+  the same cooldown cannot lock 3tears-models 0.56.0 before 2026-10-06 without the same entry.**
 
 ## v0.55.0 -- 2026-09-27
 

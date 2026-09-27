@@ -11,6 +11,16 @@ This package pools the CLI: one subprocess per launch configuration, reused, and
 empty conversation between calls. Everything below was verified against the bundled CLI (claude-agent-sdk 0.2.116 and
 0.2.118), not inferred from documentation. The extra bounds the SDK below 0.3 for that reason.
 
+The agent switch (`apply_flag_settings`) and the rewind reset (`rewind_conversation`) came later and
+were proven on claude-agent-sdk 0.2.116 with its bundled CLI 2.1.207; the switch also on 0.2.118 with
+CLI 2.1.209. A rewind to a conversation's first message further needs the CLI's server-side flag
+`tengu_rewind_first_message`. Both go through the SDK's private `_send_control_request`, so a CLI
+that refuses either one -- or a surface that moved -- counts toward the pool's self-disable latch:
+three such failures in a row turn pooling off, logged once, and calls run on CLIs of their own.
+A timeout or transport failure does not count (`repeats_on_every_call`): the SDK raises its timeout
+as the same bare `Exception`, told apart only by a `TimeoutError` cause, and a slow reset on a busy
+host says nothing about the next call. That session is stopped and a spare started; pooling stays on.
+
 ## What is fixed when a CLI starts, and what can change per call
 
 | Setting | How it reaches the CLI | Per call? | Evidence |

@@ -236,12 +236,33 @@ def _pool_events(caplog: pytest.LogCaptureFixture) -> tuple[int, int]:
     return sum(_FELL_BACK in m for m in messages), sum(_STARTED in m for m in messages)
 
 
-def _require_the_pool() -> None:
-    """fail unless pooling is on: a one-off CLI trivially shows nothing of an earlier call."""
+def _require_the_pool() -> set[int]:
+    """fail unless pooling is on; the pids of the CLIs the pool already holds.
+
+    :return: the pool's live CLI pids before the test's calls
+    :rtype: set[int]
+    """
     from threetears.models import claude_cli_pool  # noqa: PLC0415
 
-    if claude_cli_pool.claude_cli_pool() is None:
+    pool = claude_cli_pool.claude_cli_pool()
+    if pool is None:
         pytest.fail("pooling is off, so nothing here would exercise a pooled CLI")
+    return set(pool.known_pids())
+
+
+def _new_pool_pids(before: set[int]) -> set[int]:
+    """the pids of the CLIs the pool holds now that it did not hold ``before``.
+
+    :param before: the pids :func:`_require_the_pool` returned
+    :ptype before: set[int]
+    :return: the new pids
+    :rtype: set[int]
+    """
+    from threetears.models import claude_cli_pool  # noqa: PLC0415
+
+    pool = claude_cli_pool.claude_cli_pool()
+    assert pool is not None
+    return set(pool.known_pids()) - before
 
 
 async def test_a_reused_pooled_cli_shows_the_next_call_nothing_of_the_last(caplog: pytest.LogCaptureFixture) -> None:
@@ -255,7 +276,7 @@ async def test_a_reused_pooled_cli_shows_the_next_call_nothing_of_the_last(caplo
         pytest.fail("THREETEARS_LIVE_CLAUDE_CLI=1 but CLAUDE_CODE_OAUTH_TOKEN is not set")
     from threetears.models.factory import create_chat_model  # noqa: PLC0415
 
-    _require_the_pool()
+    before = _require_the_pool()
     caplog.set_level("INFO", logger="threetears")
 
     system = SystemMessage(content="You are a careful assistant. You follow instructions exactly.")
@@ -269,8 +290,11 @@ async def test_a_reused_pooled_cli_shows_the_next_call_nothing_of_the_last(caplo
             if trace.lower() in quoted.lower():
                 leaks.append(f"round {round_number}: {trace!r} in {quoted!r}")
     fallbacks, starts = _pool_events(caplog)
+    # Positive signals from the pool itself, not only the absence of a fallback line: exactly one
+    # pooled CLI started for these calls, and it is the one new process the pool now holds.
+    assert starts == 1, f"{starts} pooled CLIs started for one launch; one should have served every call"
+    assert len(_new_pool_pids(before)) == 1, "the calls were not served by one pooled CLI the pool holds"
     assert fallbacks == 0, f"{fallbacks} of 6 calls ran on a CLI of their own, not the pool"
-    assert starts <= 1, f"{starts} pooled CLIs started for one launch; the calls did not reuse one"
     assert leaks == [], "a reused CLI showed the next call the last call or its reset:\n" + "\n".join(leaks)
 
 
@@ -285,9 +309,10 @@ async def test_a_pooled_cli_switches_between_system_prompts_and_holds_only_the_c
         pytest.fail("THREETEARS_LIVE_CLAUDE_CLI=1 but CLAUDE_CODE_OAUTH_TOKEN is not set")
     from threetears.models.factory import create_chat_model  # noqa: PLC0415
 
-    _require_the_pool()
+    before = _require_the_pool()
     caplog.set_level("INFO", logger="threetears")
     starts_after_both_known = 0
+    pids_after_both_known: set[int] = set()
 
     words = ["HERON", "OTTER", "HERON", "OTTER"]
     wrong: list[str] = []
@@ -318,7 +343,13 @@ async def test_a_pooled_cli_switches_between_system_prompts_and_holds_only_the_c
                 wrong.append(f"call {number} ({word}): {trace!r} in {quoted!r}")
         if number == 1:
             starts_after_both_known = _pool_events(caplog)[1]
+            pids_after_both_known = _new_pool_pids(before)
     fallbacks, starts = _pool_events(caplog)
-    assert fallbacks == 0, f"{fallbacks} of 8 calls ran on a CLI of their own, not the pool"
+    # Positive signals: learning each new prompt started one pooled CLI (two in all), and the later
+    # rounds were served by those same processes, switching between the prompts they hold.
+    assert starts_after_both_known == 2, f"{starts_after_both_known} pooled CLIs started for two new prompts"
+    assert pids_after_both_known, "the pool holds no CLI it started for these calls"
     assert starts == starts_after_both_known, "a CLI started for a prompt the pool already held; no switch"
+    assert _new_pool_pids(before) == pids_after_both_known, "the later rounds ran on CLIs the pool did not hold"
+    assert fallbacks == 0, f"{fallbacks} of 8 calls ran on a CLI of their own, not the pool"
     assert wrong == [], "a switched prompt was not the call's alone, or a call saw another:\n" + "\n".join(wrong)

@@ -193,6 +193,41 @@ class _ActionTally:
         return ExtractionResult(outcome=outcome, stored=self.added + self.updated, reason=detail)
 
 
+@dataclass(slots=True)
+class _Claim:
+    """the cooldown key one turn claimed, so the turn can give it back when it comes to nothing.
+
+    :ivar revision: the KV revision the claim created; ``None`` until a claim lands, and when the
+        claim went through a replaced :meth:`MemoryExtractor.claim_rate_limit` that cannot say
+    """
+
+    revision: int | None = None
+
+
+def _is_own(bound: Any, own: Any) -> bool:
+    """whether a stage hook is still :class:`MemoryExtractor`'s own, not a replacement.
+
+    the pipeline runs a stage's stricter private form only when the public hook was not
+    overridden or replaced: a caller's own hook keeps its own contract.
+
+    :param bound: the hook as the instance resolves it
+    :ptype bound: Any
+    :param own: :class:`MemoryExtractor`'s function for that hook
+    :ptype own: Any
+    :return: ``True`` when the hook is the class's own
+    :rtype: bool
+    """
+    return getattr(bound, "__func__", None) is own
+
+
+class _ExtractionModelFailed(RuntimeError):
+    """the extraction model's call failed, or its reply was not the JSON list it was asked for.
+
+    raised by the pipeline so the turn answers :attr:`ExtractionOutcome.FAILED` with the reason,
+    where the public :meth:`MemoryExtractor.extract_candidates` hook keeps answering ``[]``.
+    """
+
+
 @runtime_checkable
 class ChatModelFactory(Protocol):
     """Protocol for creating chat models for extraction purposes."""
@@ -300,6 +335,11 @@ class MemoryExtractor:
         exception -- it is logged once at WARNING and re-raised, because a
         cancelled task must stay cancelled.
 
+        a turn that claimed the cooldown and then FAILED or was cancelled gives
+        the key back (:meth:`_release_claim`), so a turn that stored nothing --
+        one cancelled by the next message included -- does not block the window.
+        a STORED or NOTHING_FOUND turn keeps it.
+
         :param user_id: user who sent message
         :ptype user_id: UUID
         :param conversation_id: conversation this turn belongs to
@@ -320,6 +360,7 @@ class MemoryExtractor:
         :rtype: ExtractionResult
         :raises asyncio.CancelledError: when the task running it is cancelled
         """
+        claim = _Claim()
         try:
             result = await self._run_extraction(
                 user_id=user_id,
@@ -330,6 +371,7 @@ class MemoryExtractor:
                 turn_count=turn_count,
                 agent_id=agent_id,
                 customer_id=customer_id,
+                claim=claim,
             )
         except asyncio.CancelledError:
             # convert at border: log extra_data fields
@@ -337,6 +379,8 @@ class MemoryExtractor:
                 "memory extraction cancelled",
                 extra={"extra_data": {"conversation_id": str(conversation_id), "agent_id": str(agent_id)}},
             )
+            # shielded: the release must land even though this task is being cancelled
+            await asyncio.shield(self._release_claim(conversation_id, claim))
             raise
         except Exception as exc:
             log.error(
@@ -346,7 +390,36 @@ class MemoryExtractor:
                 extra={"extra_data": {"conversation_id": str(conversation_id), "agent_id": str(agent_id)}},
             )
             result = ExtractionResult(outcome=ExtractionOutcome.FAILED, reason=f"{type(exc).__name__}: {exc}")
+        if result.outcome is ExtractionOutcome.FAILED:
+            await self._release_claim(conversation_id, claim)
         return result
+
+    async def _release_claim(self, conversation_id: UUID, claim: _Claim) -> None:
+        """give back the cooldown key this turn claimed, and only that one.
+
+        the delete is guarded by the revision the claim created, so a key another turn claimed
+        after this one's expired is never removed. a release that cannot reach NATS is logged:
+        the key then simply runs its course.
+
+        :param conversation_id: conversation UUID the key belongs to
+        :ptype conversation_id: UUID
+        :param claim: what this turn claimed
+        :ptype claim: _Claim
+        """
+        if claim.revision is None or self._nats_client is None:
+            return
+        try:
+            bucket = await self._nats_client.kv_bucket(name=self._rate_limit_bucket)
+            released = await bucket.delete(key=self._rate_limit_key(conversation_id), revision=claim.revision)
+        except Exception as exc:
+            log.warning("could not release the extraction cooldown of a turn that stored nothing: %s", exc)
+            return
+        claim.revision = None
+        # convert at border: log extra_data fields
+        log.debug(
+            "released the extraction cooldown of a turn that stored nothing",
+            extra={"extra_data": {"conversation_id": str(conversation_id), "released": released}},
+        )
 
     async def _run_extraction(
         self,
@@ -359,6 +432,7 @@ class MemoryExtractor:
         turn_count: int,
         agent_id: UUID,
         customer_id: UUID,
+        claim: _Claim,
     ) -> ExtractionResult:
         """run the gated pipeline for one turn; failures propagate to :meth:`extract`.
 
@@ -381,8 +455,11 @@ class MemoryExtractor:
         :ptype agent_id: UUID
         :param customer_id: customer UUID owning memory namespace
         :ptype customer_id: UUID
+        :param claim: filled with the cooldown key's revision once this turn claims it
+        :ptype claim: _Claim
         :return: what the turn came to
         :rtype: ExtractionResult
+        :raises _ExtractionModelFailed: when the extraction model's call or reply failed
         :raises MemoryAccessDenied: when the agent may not extract into its namespace
         :raises KvError: when the rate-limit bucket refuses a per-key lifetime
         """
@@ -430,7 +507,10 @@ class MemoryExtractor:
                 reason=worthiness_reason,
             )
 
-        claimed, cooldown = await self.claim_rate_limit(conversation_id)
+        if _is_own(self.claim_rate_limit, MemoryExtractor.claim_rate_limit):
+            claimed, cooldown, claim.revision = await self._claim(conversation_id)
+        else:
+            claimed, cooldown = await self.claim_rate_limit(conversation_id)
         if not claimed:
             log.debug("memory extraction skipped: a concurrent turn claimed the cooldown, cooldown=%d", cooldown)
             return ExtractionResult(
@@ -439,12 +519,18 @@ class MemoryExtractor:
                 reason=f"cooldown claimed by a concurrent turn ({cooldown}s)",
             )
 
-        candidates_raw = await self.extract_candidates(
-            user_message,
-            assistant_response,
-            user_id=user_id,
-            conversation_id=conversation_id,
-        )
+        if _is_own(self.extract_candidates, MemoryExtractor.extract_candidates):
+            # the pipeline's own stage raises on a failed call, so an outage answers FAILED
+            candidates_raw: list[dict[str, str]] = await self._extract_candidates(
+                user_message, assistant_response, user_id=user_id, conversation_id=conversation_id
+            )
+        else:
+            candidates_raw = await self.extract_candidates(
+                user_message,
+                assistant_response,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
         if not candidates_raw:
             log.debug("no memories extracted from conversation turn")
             return ExtractionResult(
@@ -584,9 +670,23 @@ class MemoryExtractor:
         :rtype: tuple[bool, int]
         :raises KvError: when the bucket refuses a per-key TTL
         """
+        claimed, cooldown, _revision = await self._claim(conversation_id)
+        return claimed, cooldown
+
+    async def _claim(self, conversation_id: UUID) -> tuple[bool, int, int | None]:
+        """:meth:`claim_rate_limit`, with the revision the claim created.
+
+        :param conversation_id: conversation UUID to rate-limit
+        :ptype conversation_id: UUID
+        :return: ``(claimed, cooldown, revision)``; the revision is ``None`` when no key was
+            written -- the limit is off, or NATS failed and the claim failed open
+        :rtype: tuple[bool, int, int | None]
+        :raises KvError: when the bucket refuses a per-key TTL
+        """
         cooldown = self._config.extraction_rate_limit_cooldown_seconds
         if self._nats_client is None or cooldown <= 0:
-            return True, 0
+            return True, 0, None
+        revision: int | None = None
         bucket_name = self._rate_limit_bucket
         try:
             bucket = await self._nats_client.kv_bucket(name=bucket_name)
@@ -614,7 +714,7 @@ class MemoryExtractor:
         except Exception as exc:
             log.warning("rate limit claim failed, allowing extraction: %s", exc)
             claimed = True
-        return (True, 0) if claimed else (False, cooldown)
+        return (True, 0, revision) if claimed else (False, cooldown, None)
 
     async def check_worthiness(
         self,
@@ -696,9 +796,42 @@ class MemoryExtractor:
         :rtype: list[dict[str, str]]
         """
         try:
-            model = await self._chat_model_factory.create_chat_model(
-                purpose="extraction",
+            candidates = await self._extract_candidates(
+                user_message, assistant_response, user_id=user_id, conversation_id=conversation_id
             )
+        except _ExtractionModelFailed as exc:
+            log.warning("%s", exc)
+            candidates = []
+        return candidates
+
+    async def _extract_candidates(
+        self,
+        user_message: str,
+        assistant_response: str,
+        *,
+        user_id: UUID | None,
+        conversation_id: UUID | None,
+    ) -> list[dict[str, str]]:
+        """:meth:`extract_candidates`, raising when the model's call or reply fails.
+
+        ``[]`` means the model answered and found nothing; a failed call, a reply that is not
+        JSON, or JSON that is not a list raises, so the pipeline can tell an outage from a quiet
+        turn.
+
+        :param user_message: raw user message
+        :ptype user_message: str
+        :param assistant_response: raw assistant response
+        :ptype assistant_response: str
+        :param user_id: the user, for the model call's identity
+        :ptype user_id: UUID | None
+        :param conversation_id: the conversation, for the model call's identity
+        :ptype conversation_id: UUID | None
+        :return: list of candidate memory dicts
+        :rtype: list[dict[str, str]]
+        :raises _ExtractionModelFailed: when the call or its reply failed
+        """
+        try:
+            model = await self._chat_model_factory.create_chat_model(purpose="extraction")
             prompt = self._prompts.extraction.format(
                 user_message=user_message[:2000],
                 assistant_response=assistant_response[:2000],
@@ -714,31 +847,23 @@ class MemoryExtractor:
             )
             content = self._get_response_content(response)
             memories = json.loads(self._strip_code_block(content))
-            if not isinstance(memories, list):
-                return []
-
-            valid: list[dict[str, str]] = []
-            for mem in memories:
-                if (
-                    isinstance(mem, dict)
-                    and isinstance(mem.get("type"), str)
-                    and isinstance(mem.get("content"), str)
-                    and mem["type"] in _VALID_MEMORY_TYPES
-                    and mem["content"].strip()
-                ):
-                    valid.append(
-                        {
-                            "type": mem["type"],
-                            "content": mem["content"].strip(),
-                        }
-                    )
-            return valid
-        except json.JSONDecodeError, KeyError:
-            log.warning("Failed to parse memory extraction LLM response")
-            return []
+        except json.JSONDecodeError as exc:
+            raise _ExtractionModelFailed(f"the extraction model's reply was not valid JSON: {exc}") from exc
         except Exception as exc:
-            log.warning("Memory extraction LLM call failed: %s", exc)
-            return []
+            raise _ExtractionModelFailed(f"the extraction model call failed: {type(exc).__name__}: {exc}") from exc
+        if not isinstance(memories, list):
+            raise _ExtractionModelFailed(f"the extraction model's reply was {type(memories).__name__}, not a list")
+        valid: list[dict[str, str]] = []
+        for mem in memories:
+            if (
+                isinstance(mem, dict)
+                and isinstance(mem.get("type"), str)
+                and isinstance(mem.get("content"), str)
+                and mem["type"] in _VALID_MEMORY_TYPES
+                and mem["content"].strip()
+            ):
+                valid.append({"type": mem["type"], "content": mem["content"].strip()})
+        return valid
 
     async def _get_similar_memories(
         self,

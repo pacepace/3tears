@@ -29,6 +29,7 @@ json matching this schema". Dispatch across providers lives in
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr
@@ -39,11 +40,16 @@ from threetears.models.providers._name_translation_mixin import NameTranslatingC
 from threetears.models.providers.structured_output import ensure_valid_json_schema
 
 if TYPE_CHECKING:
+    from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import ChatGenerationChunk
+    from langchain_core.outputs import ChatResult as LcChatResult
     from langchain_openrouter import ChatOpenRouter
 
 __all__ = [
     "OPENROUTER_PROVIDER_NAME",
     "create_openrouter_chat",
+    "declare_served_provider",
     "openrouter_structured_output_kwargs",
 ]
 
@@ -68,7 +74,10 @@ def openrouter_structured_output_kwargs(
     makes OpenRouter REJECT the request when the routed upstream model
     cannot honour ``response_format``. Without it OpenRouter silently
     drops the unsupported param and the model returns prose, which is the
-    exact failure structured output exists to prevent.
+    exact failure structured output exists to prevent. The factory's model
+    merges this block INTO its own routing (``openrouter_provider``: an
+    ``only`` / ``ignore`` policy) rather than letting it replace it, so a
+    structured ask is routed exactly as a plain one.
 
     ``require_parameters`` guards only whether the routed model CAN honour
     ``response_format``; it says nothing about the schema being coherent.
@@ -110,6 +119,42 @@ def openrouter_structured_output_kwargs(
     }
 
 
+def declare_served_provider() -> None:
+    """Teach the OpenRouter SDK's response models the ``provider`` field OpenRouter sends.
+
+    OpenRouter names the upstream that actually served the call (``"provider": "Anthropic"``)
+    on every response and every stream chunk. The ``openrouter`` SDK's ``ChatResult`` and
+    ``ChatStreamChunk`` do not declare it, so parsing drops it, and ``langchain-openrouter``
+    (0.2.9+, which copies it into ``response_metadata`` / the final chunk's
+    ``generation_info``) finds nothing. Without it nobody can tell which upstream answered, which
+    is the question an ``only`` / ``ignore`` routing policy exists to settle.
+
+    Idempotent. ``ChatStreamingResponse`` wraps each chunk and holds a copy of its schema taken
+    at import, so it is rebuilt after the chunk is. A class that moved or stopped being a
+    pydantic model raises -- silently skipping it would drop the field again, invisibly.
+
+    :raises ImportError: when the ``openrouter`` SDK no longer has these modules or classes
+    :raises TypeError: when one of them is no longer a pydantic model
+    """
+    from openrouter.components.chatresult import ChatResult as SdkChatResult
+    from openrouter.components.chatstreamchunk import ChatStreamChunk as SdkChatStreamChunk
+    from openrouter.components.chatstreamingresponse import ChatStreamingResponse as SdkChatStreamingResponse
+    from pydantic import BaseModel
+    from pydantic.fields import FieldInfo
+
+    for model in (SdkChatResult, SdkChatStreamChunk, SdkChatStreamingResponse):
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            raise TypeError(f"openrouter's {model!r} is no longer a pydantic model; the served provider cannot be read")
+    for model in (SdkChatResult, SdkChatStreamChunk):
+        if "provider" in model.model_fields:
+            continue
+        served: Any = str | None
+        model.model_fields["provider"] = FieldInfo(annotation=served, default=None)
+        model.__annotations__["provider"] = served
+        model.model_rebuild(force=True)
+        SdkChatStreamingResponse.model_rebuild(force=True)
+
+
 def _build_translating_chat_class() -> type[ChatOpenRouter]:
     """build the :class:`ChatOpenRouter` subclass with name-translation hooks.
 
@@ -125,7 +170,133 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
     """
     from langchain_openrouter import ChatOpenRouter
 
-    class _NameTranslatingChatOpenRouter(NameTranslatingChatMixin, ChatOpenRouter):
+    declare_served_provider()
+
+    class _RoutingChatOpenRouter(ChatOpenRouter):
+        """``ChatOpenRouter`` that keeps the model's provider routing under a bound ``provider``.
+
+        Sits below :class:`NameTranslatingChatMixin` in the MRO, so the mixin's call deadline and
+        name translation wrap it and it wraps the SDK call itself.
+        """
+
+        def _with_model_routing(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+            """``kwargs`` with a bound ``provider`` block merged INTO the model's own routing.
+
+            ``ChatOpenRouter`` builds each request as ``{**params, **kwargs}``, so a bound
+            ``provider`` (the structured-output directive binds
+            ``{"require_parameters": True}``) would REPLACE the model's whole routing block --
+            its ``only`` and ``ignore`` lists -- and the request would go out with no provider
+            restrictions at all. Merged instead: the model's routing, with the bound keys on top.
+
+            :param kwargs: the call's keyword arguments, bound ones included
+            :ptype kwargs: dict[str, Any]
+            :return: the kwargs to send, with the merged ``provider`` block
+            :rtype: dict[str, Any]
+            """
+            bound = kwargs.get("provider")
+            routing = self._default_params.get("provider")
+            if not isinstance(bound, dict) or not isinstance(routing, dict):
+                return kwargs
+            return {**kwargs, "provider": {**routing, **bound}}
+
+        def _generate(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: CallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> LcChatResult:
+            """The parent's generate, with the model's routing kept under a bound ``provider``.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: CallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: the parent's chat result
+            :rtype: LcChatResult
+            """
+            result: LcChatResult = super()._generate(
+                messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs)
+            )
+            return result
+
+        async def _agenerate(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> LcChatResult:
+            """The parent's async generate, with the model's routing kept under a bound ``provider``.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: the parent's chat result
+            :rtype: LcChatResult
+            """
+            result: LcChatResult = await super()._agenerate(
+                messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs)
+            )
+            return result
+
+        def _stream(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: CallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> Iterator[ChatGenerationChunk]:
+            """The parent's stream, with the model's routing kept under a bound ``provider``.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: CallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: the parent's chunks
+            :rtype: Iterator[ChatGenerationChunk]
+            """
+            yield from super()._stream(messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs))
+
+        async def _astream(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            """The parent's async stream, with the model's routing kept under a bound ``provider``.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: the parent's chunks
+            :rtype: AsyncIterator[ChatGenerationChunk]
+            """
+            async for chunk in super()._astream(
+                messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs)
+            ):
+                yield chunk
+
+    class _NameTranslatingChatOpenRouter(NameTranslatingChatMixin, _RoutingChatOpenRouter):
         """``ChatOpenRouter`` with dot<->underscore tool-name translation at
         the wire boundary, hiding Bedrock-style provider quirks from the rest
         of the codebase.

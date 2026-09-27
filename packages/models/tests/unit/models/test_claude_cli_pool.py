@@ -144,8 +144,11 @@ class FakeSession:
         if self.rewind_raises is not None:
             raise self.rewind_raises
         if self.refuse_rewind:
-            # What the CLI answers when its first-message rewind flag is off.
-            raise ClaudeCliSessionError("the Claude CLI refused to rewind: no preceding assistant")
+            # What the CLI answers when its first-message rewind flag is off; it repeats on every
+            # call, so the real session marks it structural.
+            refusal = ClaudeCliSessionError("the Claude CLI refused to rewind: no preceding assistant")
+            refusal.structural = True  # type: ignore[attr-defined]
+            raise refusal
         self.rewinds.append(first_message_uuid)
 
     async def dispose(self, *, grace_seconds: float) -> None:
@@ -486,7 +489,7 @@ class TestARefusedRewindStartsASpare:
 
     async def test_one_spare_waits_per_key(self) -> None:
         pool = _pool(per_key=2, session_factory=_refusing_factory())
-        for _ in range(3):
+        for _ in range(2):  # below the count that turns pooling off
             await _call(pool)
             await _spares_started(pool)
         assert pool.live_count == 1, "spares piled up for one key"
@@ -1571,3 +1574,249 @@ class TestTheLearnedPromptsAreBounded:
         await _call(pool, Options(system_prompt="persona A"))
         await pool.aclose()
         assert self._keys(pool) == set()
+
+
+class TestARefusalThatRepeatsTurnsPoolingOff:
+    """The agent switch and the rewind reset are control requests the SDK sends privately; a CLI that
+    refuses one refuses it on every call. Like a moved SDK surface, three in a row turn pooling off,
+    logged once, and calls run on CLIs of their own instead of starting a pooled CLI to throw away."""
+
+    async def test_three_refused_rewinds_turn_pooling_off_and_calls_fall_back(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pool = _pool(per_key=5, max_sessions=5, session_factory=_refusing_factory())
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                await _call(pool)
+                await _spares_started(pool)
+            with pytest.raises(ClaudeCliPoolExhausted, match="pooling is off"):
+                await _call(pool)
+        off = [r for r in caplog.records if "turned itself off" in r.getMessage()]
+        assert len(off) == 1, "the pool must say once that it turned itself off"
+        await pool.aclose()
+
+    async def test_three_refused_agent_switches_turn_pooling_off(self) -> None:
+        async def refusing_switch(options: Any, *, key: str) -> Any:
+            session = FakeSession(options, key)
+
+            async def refuse(**kwargs: Any) -> None:
+                refusal = ClaudeCliSessionError("the Claude CLI refused the agent switch: unknown setting")
+                refusal.structural = True  # type: ignore[attr-defined]
+                raise refusal
+
+            session.prepare = refuse  # type: ignore[method-assign]
+            return session
+
+        pool = _pool(per_key=5, max_sessions=5, session_factory=refusing_switch)
+        for _ in range(3):
+            with pytest.raises(ClaudeCliSessionError):
+                await _call(pool, Options(system_prompt="persona A"))
+        with pytest.raises(ClaudeCliPoolExhausted, match="pooling is off"):
+            await _call(pool, Options(system_prompt="persona A"))
+        await pool.aclose()
+
+    async def test_a_call_served_and_reset_in_between_restarts_the_count(self) -> None:
+        refusals = iter([True, True, False, True, True])
+
+        async def factory(options: Any, *, key: str) -> Any:
+            session = FakeSession(options, key)
+            original = session.rewind
+
+            async def rewind_per_call(first_message_uuid: str, *, timeout: float) -> None:
+                session.refuse_rewind = next(refusals)
+                await original(first_message_uuid, timeout=timeout)
+
+            session.rewind = rewind_per_call  # type: ignore[method-assign]
+            return session
+
+        pool = _pool(per_key=5, max_sessions=5, session_factory=factory)
+        for _ in range(5):
+            await _call(pool)
+            await _spares_started(pool)
+        assert pool._broken is False, "a clean reset in between did not restart the count"  # noqa: SLF001 -- the latch has no public reader
+        await pool.aclose()
+
+
+class TestTheRealSessionMarksARefusalStructural:
+    """The shapes the SDK gives: a refused control request raises a bare ``Exception``."""
+
+    async def test_a_refused_agent_switch_is_structural(self) -> None:
+        from types import SimpleNamespace
+
+        async def refuse(request: dict[str, Any], timeout: float) -> Any:
+            raise Exception("Unknown setting: agent")  # noqa: TRY002 -- the SDK's own shape for a refusal
+
+        client = SimpleNamespace(_query=SimpleNamespace(_send_control_request=refuse, sdk_mcp_servers={}))
+        session = PooledCliSession(client, key="k", pid=None, marker="m")
+        session.agents = frozenset({agent_name("persona A")})
+        with pytest.raises(ClaudeCliSessionError) as raised:
+            await session.prepare(model=None, tool_server=None, agent=agent_name("persona A"))
+        assert getattr(raised.value, "structural", False) is True
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {"rewound": False, "prefillText": None, "precedingAssistantUuid": None, "error": "no preceding assistant"},
+            None,
+        ],
+    )
+    async def test_a_refused_or_misshapen_rewind_is_structural(self, answer: Any) -> None:
+        from types import SimpleNamespace
+
+        async def send(request: dict[str, Any], timeout: float) -> Any:
+            return answer
+
+        session = PooledCliSession(
+            SimpleNamespace(_query=SimpleNamespace(_send_control_request=send)), key="k", pid=None, marker="m"
+        )
+        with pytest.raises(ClaudeCliSessionError) as raised:
+            await session.rewind("u-1", timeout=1.0)
+        assert getattr(raised.value, "structural", False) is True
+
+
+def _scripted_cli(behaviour: dict[str, str]) -> Any:
+    """a session factory whose sessions are REAL :class:`PooledCliSession` objects over the SDK's real
+    ``Query``, talking the control protocol to a scripted CLI.
+
+    ``behaviour`` maps a control request's subtype to how the CLI treats it: ``"refuse"`` answers
+    an error response (the SDK raises a bare ``Exception``), ``"silent"`` never answers (the SDK
+    raises its timeout, a bare ``Exception`` caused by ``TimeoutError``), ``"broken"`` fails the
+    write (the SDK's own ``CLIConnectionError``). Anything else is answered as the CLI does.
+
+    :param behaviour: subtype to ``"refuse"``, ``"silent"`` or ``"broken"``
+    :ptype behaviour: dict[str, str]
+    :return: the session factory
+    :rtype: Any
+    """
+    sdk = pytest.importorskip("claude_agent_sdk")
+    from claude_agent_sdk._internal.query import Query
+
+    class ScriptedTransport(sdk.Transport):  # type: ignore[misc,name-defined]
+        """the CLI's end of stdin/stdout, answering each control request as scripted."""
+
+        def __init__(self) -> None:
+            self.inbox: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+        async def connect(self) -> None:
+            return None
+
+        async def write(self, data: str) -> None:
+            message = json.loads(data)
+            if message.get("type") != "control_request":
+                return
+            request_id = message["request_id"]
+            how = behaviour.get(message["request"]["subtype"], "answer")
+            if how == "broken":
+                raise sdk.CLIConnectionError("the CLI's stdin is closed")
+            if how == "silent":
+                return
+            if how == "refuse":
+                response: dict[str, Any] = {"subtype": "error", "request_id": request_id, "error": "refused"}
+            else:
+                answer = {"rewound": True} if message["request"]["subtype"] == "rewind_conversation" else {}
+                response = {"subtype": "success", "request_id": request_id, "response": answer}
+            await self.inbox.put({"type": "control_response", "response": response})
+
+        async def read_messages(self) -> Any:
+            while (message := await self.inbox.get()) is not None:
+                yield message
+
+        async def close(self) -> None:
+            await self.inbox.put(None)
+
+        def is_ready(self) -> bool:
+            return True
+
+        async def end_input(self) -> None:
+            return None
+
+    class ScriptedClient:
+        """the parts of ``ClaudeSDKClient`` a pooled session drives, over the SDK's real ``Query``."""
+
+        def __init__(self) -> None:
+            self._query = Query(ScriptedTransport(), is_streaming_mode=True)
+
+        async def set_model(self, model: str | None) -> None:
+            await self._query._send_control_request({"subtype": "set_model", "model": model})  # noqa: SLF001 -- what the SDK's set_model sends
+
+        async def query(self, prompt: Any, session_id: str = "default") -> None:
+            async for message in prompt:
+                await self._query.transport.write(json.dumps({"session_id": session_id, **message}) + "\n")
+
+        async def disconnect(self) -> None:
+            await self._query.close()
+
+    async def factory(options: Any, *, key: str) -> PooledCliSession:
+        client = ScriptedClient()
+        await client._query.start()  # noqa: SLF001 -- the scripted client's own query
+        session = PooledCliSession(client, key=key, pid=None, marker="m")
+        session.agents = frozenset(getattr(options, "agents", None) or {})
+        return session
+
+    return factory
+
+
+class TestOnlyARefusalCountsTowardTurningPoolingOff:
+    """The SDK raises a bare ``Exception`` for a refused control request AND for one that timed out,
+    and a transport failure lands in the same branch. Only the refusal repeats on every call: three
+    slow resets on a busy host must stop three sessions, never pooling for the process."""
+
+    @pytest.mark.parametrize(
+        "behaviour",
+        [
+            {"rewind_conversation": "silent"},
+            {"rewind_conversation": "broken"},
+            {"apply_flag_settings": "broken"},
+        ],
+        ids=["rewind-timeout", "rewind-transport", "switch-transport"],
+    )
+    async def test_three_transient_failures_leave_pooling_on(self, behaviour: dict[str, str]) -> None:
+        pool = _pool(per_key=5, max_sessions=5, reset_timeout_seconds=0.05, session_factory=_scripted_cli(behaviour))
+        for _ in range(4):
+            try:
+                async with pool.checkout(Options(system_prompt="persona A"), token=TOKEN, tool_server=None) as client:
+                    await client.query("hello")
+            except ClaudeCliSessionError:
+                assert "apply_flag_settings" in behaviour, "only a failed switch fails the call itself"
+            await _spares_started(pool)
+        assert pool._broken is False, "a transient failure turned pooling off"  # noqa: SLF001 -- the latch has no public reader
+        await pool.aclose()
+
+    @pytest.mark.parametrize(
+        "behaviour",
+        [{"rewind_conversation": "refuse"}, {"apply_flag_settings": "refuse"}],
+        ids=["rewind-refused", "switch-refused"],
+    )
+    async def test_three_refusals_still_turn_pooling_off(self, behaviour: dict[str, str]) -> None:
+        pool = _pool(per_key=5, max_sessions=5, session_factory=_scripted_cli(behaviour))
+        for _ in range(3):
+            try:
+                async with pool.checkout(Options(system_prompt="persona A"), token=TOKEN, tool_server=None) as client:
+                    await client.query("hello")
+            except ClaudeCliSessionError:
+                assert "apply_flag_settings" in behaviour, "only a refused switch fails the call itself"
+            await _spares_started(pool)
+        with pytest.raises(ClaudeCliPoolExhausted, match="pooling is off"):
+            async with pool.checkout(Options(system_prompt="persona A"), token=TOKEN, tool_server=None):
+                pass
+        await pool.aclose()
+
+
+class TestPerKeyFollowsTheCap:
+    """one key holds every prompt of a credential, so its default share of the pool is the whole cap."""
+
+    async def test_per_key_defaults_to_max_sessions_whatever_it_is(self) -> None:
+        pool = ClaudeCliPool(
+            session_factory=_factory, max_sessions=12, checkout_timeout_seconds=0.05, idle_ttl_seconds=0.0
+        )
+        held: list[Any] = []
+        try:
+            for _ in range(12):
+                context = pool.checkout(Options(), token=TOKEN, tool_server=None)
+                await context.__aenter__()
+                held.append(context)
+            assert pool.live_count == 12, "one key was capped below the pool's own cap"
+        finally:
+            for context in reversed(held):
+                await context.__aexit__(None, None, None)
+            await pool.aclose()
