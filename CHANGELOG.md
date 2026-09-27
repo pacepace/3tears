@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.55.0 -- unreleased
+## v0.55.0 -- 2026-09-27
 
 Minor: `threetears.agent.audit` gains the erasure rule for audit records:
 `anonymize_details`, `anonymize_ip`, `ANONYMIZED_MARKER`, `SAFE_DETAIL_KEYS`,
