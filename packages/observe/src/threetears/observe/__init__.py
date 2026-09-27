@@ -1,16 +1,7 @@
 """3tears-observe: structured logging, tracing, and OpenTelemetry setup.
 
-Provides four modules:
-
-- ``threetears.observe.logging`` -- structured logging with generic context
-  correlation and automatic call-site capture.
-- ``threetears.observe.tracing`` -- ``@traced`` decorator that creates
-  OpenTelemetry spans (zero-cost when OTel is not installed).
-- ``threetears.observe.metrics`` -- ``@metered`` decorator that records
-  prometheus call-count/duration metrics (zero-cost when
-  ``prometheus_client`` is not installed).
-- ``threetears.observe.setup`` -- OpenTelemetry SDK bootstrap for host
-  applications (TracerProvider, LoggerProvider, OTLP exporters).
+The names a consumer imports from here are exactly those in ``__all__``; each
+module's own docstring says what it is for.
 """
 
 # Version derived from pyproject.toml so the metadata is the single
@@ -29,6 +20,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
 from threetears.observe.background import spawn_background
+from threetears.observe.build_once import BuildOnce
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.observe.periodic import PeriodicTask, TickResult
 from threetears.observe.health import HealthCheck, HealthServer, HealthTier
@@ -51,6 +43,7 @@ from threetears.observe.tracing import set_span_attribute, traced
 
 __all__ = [
     "ANONYMIZED_MARKER",
+    "BuildOnce",
     "ContextFormatter",
     "HealthCheck",
     "HealthServer",

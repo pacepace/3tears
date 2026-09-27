@@ -38,6 +38,8 @@ from typing import Any
 
 import pytest
 
+from threetears.observe import BuildOnce
+
 __all__ = [
     "CONTAINER_STAGGER_ENV",
     "check_docker_available",
@@ -48,8 +50,12 @@ __all__ = [
 ]
 
 
-_DOCKER_AVAILABLE: bool | None = None
-_NATS_REACHABLE: dict[str, bool] = {}
+#: probe verdicts, memoised through ``BuildOnce`` so concurrent first callers probe once: docker
+#: under :data:`_DOCKER`, each NATS ``host:port`` under its own (a colon never appears in the former).
+_PROBES: BuildOnce[str, bool] = BuildOnce()
+
+#: the :data:`_PROBES` key the docker verdict is held under.
+_DOCKER = "docker"
 
 #: seconds between xdist workers' first container starts; ``0`` disables the stagger.
 CONTAINER_STAGGER_ENV = "THREETEARS_TEST_CONTAINER_STAGGER_SECONDS"
@@ -103,18 +109,23 @@ def check_docker_available() -> bool:
     :return: True when docker is reachable, False otherwise
     :rtype: bool
     """
-    global _DOCKER_AVAILABLE  # noqa: PLW0603
-    result = _DOCKER_AVAILABLE
-    if result is None:
-        try:
-            import docker  # noqa: PLC0415
+    return _PROBES.get(_DOCKER, _ping_docker)
 
-            client = docker.from_env()  # type: ignore[attr-defined]
-            client.ping()
-            result = True
-        except Exception:
-            result = False
-        _DOCKER_AVAILABLE = result
+
+def _ping_docker() -> bool:
+    """ping the docker daemon once.
+
+    :return: True when docker is reachable, False otherwise
+    :rtype: bool
+    """
+    try:
+        import docker  # noqa: PLC0415
+
+        client = docker.from_env()  # type: ignore[attr-defined]
+        client.ping()
+        result = True
+    except Exception:
+        result = False
     return result
 
 
@@ -148,17 +159,21 @@ def nats_reachable(
     """
     import socket  # noqa: PLC0415
 
-    cache_key = f"{host}:{port}"
-    if cache_key in _NATS_REACHABLE:
-        return _NATS_REACHABLE[cache_key]
+    def _connect() -> bool:
+        """
+        opens and closes one TCP connection to host:port.
 
-    try:
-        with socket.create_connection((host, port), timeout=timeout_seconds):
-            verdict = True
-    except OSError:
-        verdict = False
-    _NATS_REACHABLE[cache_key] = verdict
-    return verdict
+        :return: True when it connected
+        :rtype: bool
+        """
+        try:
+            with socket.create_connection((host, port), timeout=timeout_seconds):
+                verdict = True
+        except OSError:
+            verdict = False
+        return verdict
+
+    return _PROBES.get(f"{host}:{port}", _connect)
 
 
 def skip_without_docker_marker() -> Any:

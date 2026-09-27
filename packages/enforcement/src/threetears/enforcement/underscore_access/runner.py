@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from threetears.observe import BuildOnce
 from threetears.enforcement.common import (
     Exemption,
     MODE_REPORT,
@@ -61,7 +62,7 @@ __all__ = ["run_underscore_enforcement"]
 #: session that runs enforcement over a file, rewrites it, and runs again is a
 #: real caller, and a path-only key would answer the second run from the first
 #: run's parse. The tests for this feature do exactly that shape.
-_SCOPE_CACHE: dict[tuple[str, int], dict[int, str]] = {}
+_SCOPE_CACHE: BuildOnce[tuple[str, int], dict[int, str]] = BuildOnce()
 
 
 _VALID_WALKERS: frozenset[str] = frozenset(
@@ -225,6 +226,24 @@ def _resolve_inheritance_roots(
     return discover_src_roots(config.repo_root)
 
 
+def _read_scopes(path: Path) -> dict[int, str]:
+    """parse one file's line-to-scope map, for :data:`_SCOPE_CACHE`.
+
+    :param path: absolute path of the file
+    :ptype path: Path
+    :return: line -> enclosing qualname; empty for a file that cannot be read
+    :rtype: dict[int, str]
+    """
+    try:
+        scopes = enclosing_scopes(path)
+    except OSError:
+        # A path the walker reached but this cannot read is not a reason to fail
+        # the whole run: it degrades to module scope, which simply will not match
+        # a scope-keyed entry, so the violation is REPORTED rather than hidden.
+        scopes = {}
+    return scopes
+
+
 def _scope_of(path: Path, line: int) -> str:
     """resolve a source line to the qualname of the scope enclosing it.
 
@@ -250,16 +269,7 @@ def _scope_of(path: Path, line: int) -> str:
     except OSError:
         # Unreadable now; report it rather than cache a guess about it.
         return MODULE_SCOPE
-    scopes = _SCOPE_CACHE.get(key)
-    if scopes is None:
-        try:
-            scopes = enclosing_scopes(path)
-        except OSError:
-            # A path the walker reached but this cannot read is not a reason to fail
-            # the whole run: it degrades to module scope, which simply will not match
-            # a scope-keyed entry, so the violation is REPORTED rather than hidden.
-            scopes = {}
-        _SCOPE_CACHE[key] = scopes
+    scopes = _SCOPE_CACHE.get(key, lambda: _read_scopes(path))
     return scopes.get(line, MODULE_SCOPE)
 
 

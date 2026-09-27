@@ -21,9 +21,12 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 
 from threetears.langgraph.anonymize import (
     IDENTIFYING_METADATA_KEYS,
+    KEPT_METADATA_KEYS,
+    METADATA_CHANNEL,
     CheckpointAnonymization,
     UnreadableCheckpointBlob,
     anonymize_checkpoint_value,
+    unclassified_metadata_keys,
 )
 from threetears.langgraph.caching import (
     ChatModelCapabilities,
@@ -145,6 +148,8 @@ __all__ = [
     "FrameworkEvent",
     "FrameworkEventRegistry",
     "IDENTIFYING_METADATA_KEYS",
+    "KEPT_METADATA_KEYS",
+    "METADATA_CHANNEL",
     "ImageGeneratedEvent",
     "NEVER_OFFLOAD_TOOLS",
     "NOSTREAM_TAG",
@@ -197,6 +202,7 @@ __all__ = [
     "WorkflowStepCompletedEvent",
     "annotate_system_prompt",
     "anonymize_checkpoint_value",
+    "unclassified_metadata_keys",
     "compute_tool_key",
     "default_registry",
     "detect_capabilities",

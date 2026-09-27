@@ -26,6 +26,7 @@ from langgraph.types import Command, interrupt
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.langgraph import (
     IDENTIFYING_METADATA_KEYS,
+    KEPT_METADATA_KEYS,
     AsyncQueryExecutor,
     CheckpointAnonymization,
     CheckpointL1Cache,
@@ -35,6 +36,7 @@ from threetears.langgraph import (
     ThreeTierCheckpointSaver,
     anonymize_checkpoint_value,
     merge_metadata,
+    unclassified_metadata_keys,
 )
 
 _UNSCOPED = CheckpointScope.unscoped(reason="tests drive a single-tenant saver")
@@ -423,6 +425,34 @@ class TestTheRule:
 
         assert anonymize_checkpoint_value(value) == value
 
+    def test_every_key_the_turn_fixture_carries_is_classified(self) -> None:
+        """the fixture's turn metadata is fully classified, so a report from it means a new key."""
+        assert set(_turn()["metadata"]) <= IDENTIFYING_METADATA_KEYS | KEPT_METADATA_KEYS
+        assert not IDENTIFYING_METADATA_KEYS & KEPT_METADATA_KEYS, "a key cannot be both identifying and kept"
+
+    def test_an_unclassified_turn_metadata_key_is_named_wherever_the_metadata_sits(self) -> None:
+        """the metadata channel, the ``__start__`` input and a checkpoint's writes all nest it differently."""
+        metadata = {"external_user_id": _EXTERNAL_ID, "channel_ref": "C1", "sender_email": "a@example.com"}
+        checkpoint = {"channel_values": {"metadata": metadata, "messages": []}}
+        start_input = {"__start__": {"metadata": metadata}}
+
+        assert unclassified_metadata_keys(checkpoint) == {"sender_email"}
+        assert unclassified_metadata_keys(start_input) == {"sender_email"}
+        assert unclassified_metadata_keys(metadata, is_metadata=True) == {"sender_email"}
+
+    def test_keys_outside_turn_metadata_are_not_reported(self) -> None:
+        """a graph's own state keys, and keys nested under a classified metadata key, are not turn metadata."""
+        value = {
+            "channel_values": {
+                "messages": [HumanMessage(content="x", name=_NAME)],
+                "summary": {"anything": 1},
+                "metadata": {"knowledge_injected_entries": [{"scope": "customer"}], "channel_ref": "C1"},
+            }
+        }
+
+        assert unclassified_metadata_keys(value) == frozenset()
+        assert unclassified_metadata_keys({"sender_email": "a@example.com"}) == frozenset()
+
     def test_none_stays_none(self) -> None:
         """a message with no name, and a metadata key holding None, carry nothing to anonymize."""
         message = HumanMessage(content="x")
@@ -458,6 +488,33 @@ class TestAnonymizingAThread:
         assert result.checkpoints_rewritten > 0
         assert result.writes_rewritten > 0
         assert result.l2_prefix_swept is None, "no L2, so there was nothing to sweep"
+
+    async def test_a_fully_classified_thread_reports_no_unclassified_key(self, executor: SqliteQueryExecutor) -> None:
+        """a clean result must be earned: every key the turn carried is classified."""
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await _graph(saver).ainvoke(_turn(), _config())
+
+        result = await saver.aanonymize_threads([_THREAD])
+
+        assert result.unclassified_metadata_keys == ()
+
+    async def test_a_key_no_rule_classifies_is_reported_and_its_value_kept(self, executor: SqliteQueryExecutor) -> None:
+        """a producer that starts sending a new sender field is told at erasure time, not never.
+
+        the value is kept -- the rule changes only what it names -- so the report is the only
+        thing standing between the operator and a false "complete".
+        """
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        turn = _turn()
+        turn["metadata"] = {**turn["metadata"], "sender_email": "alice@example.com"}
+        await _graph(saver).ainvoke(turn, _config())
+
+        result = await saver.aanonymize_threads([_THREAD])
+
+        assert result.unclassified_metadata_keys == ("sender_email",)
+        assert not result.unreadable
+        assert any(b"alice@example.com" in blob for blob in executor.blobs()), "an unclassified value is kept"
+        assert not _leaks(executor), "the classified identifying keys are still anonymized"
 
     async def test_the_graph_loads_with_content_and_ids_intact(self, executor: SqliteQueryExecutor) -> None:
         """the state reloads through the real serializer: text and ids unchanged, identity masked."""

@@ -21,7 +21,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from threetears.agent.audit import PERSONAL_DETAIL_KEYS, SAFE_DETAIL_KEYS, safe_detail_keys_for
+from threetears.agent.audit import (
+    PERSONAL_DETAIL_KEYS,
+    SAFE_DETAIL_KEYS,
+    is_classified_detail_key,
+    safe_detail_keys_for,
+)
 from threetears.enforcement.audit_details import (
     AuditDetailsConfig,
     collect_audit_details_sites,
@@ -35,7 +40,7 @@ _CONFIG = AuditDetailsConfig(
     repo_root=_REPO_ROOT,
     src_roots=find_local_src_roots(_REPO_ROOT),
     safe_keys_for=safe_detail_keys_for,
-    personal_keys=PERSONAL_DETAIL_KEYS,
+    is_classified=is_classified_detail_key,
 )
 
 

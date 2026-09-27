@@ -67,8 +67,13 @@ together for one customer both get memory and conversation namespaces -- read "T
 created in the same minute no longer share a namespace name"; existing rows need nothing.
 Fixed: a process-wide object built lazily is built once when several threads ask for it first,
 so `UsageTracker()` no longer raises `Duplicated timeseries in CollectorRegistry` out of
-`create_chat_model` -- read "A process-wide object is built once when several threads ask for it
-first".
+`create_chat_model`, through one new construction, `threetears.observe.BuildOnce`, that an
+enforcement test now requires; and a Claude CLI call from a second event loop falls back to its
+own CLI instead of failing -- read "A process-wide object is built once when several threads ask
+for it first". `threetears.langgraph` also gains `KEPT_METADATA_KEYS`, `METADATA_CHANNEL`,
+`unclassified_metadata_keys` and `CheckpointAnonymization.unclassified_metadata_keys`, and
+`AuditDetailsConfig` takes the classification predicate (`is_classified`) in place of
+`personal_keys`.
 
 ### Two agents created in the same minute no longer share a namespace name
 
@@ -170,9 +175,31 @@ the first one stored the object built another:
   lock checked `is_running()`, which stays False until the new thread enters `run_forever`, so
   work queued on the first loop was stranded beside a second.
 
-Each is now built under a module-level lock, with the unlocked read kept first so every later
-call stays lock-free. The bridge publishes its loop only once the loop is running. Nothing
-changes for a single-threaded caller.
+Each was fixed by hand-copying the same check-lock-recheck idiom, which made the fix only as
+complete as the sweep that found the sites. There is now one construction:
+
+- **New (minor):** `threetears.observe.BuildOnce` (`threetears.observe.build_once`), values built
+  at most once per key however many threads ask first: `get(key, build)` reads lock-free, and
+  only a caller that finds nothing takes the lock, looks again and builds. `is_current=` rebuilds
+  a stored value that went stale (a stopped loop, a deleted directory, an exited worker);
+  `peek`, `pop` and `clear(dispose=)` take values out. All seven sites above go through it, and
+  so do the other lazily filled module-level caches the sweep found: the datasource drivers' OTel
+  instruments, the logger's call-site cache, the underscore gate's scope cache, the test
+  support's docker and NATS probes, the scrape regex worker, and the workspace validator
+  resolver. `tests/enforcement/test_build_once_is_the_only_lazy_fill.py` refuses a function
+  that fills a module-level name after checking it, in every spelling found (a `.get()` or
+  membership check, a `global` rebound, a guard clause that returns early, a walrus, a
+  `try`/`except KeyError`, `setdefault`, a cache imported from another module).
+- The bridge publishes its loop only once the loop is running. Nothing changes for a
+  single-threaded caller.
+- **Fixed:** the process-wide Claude CLI pool is now shared safely across threads, but what it
+  holds is tied to one event loop (its condition, a pooled client's reader task, the idle
+  reaper), and a sync `invoke` runs a loop of its own on its caller's thread. A call from a
+  second loop that had to wait raised `RuntimeError` ("bound to a different event loop"), which
+  no caller treats as "use your own CLI", so the model call failed. The pool now serves the
+  loop that first checks a session out of it, and refuses any other loop with
+  `ClaudeCliPoolExhausted` before touching its state, so that call runs on a CLI of its own,
+  exactly as when every session is busy.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -339,9 +366,9 @@ should route an audit record's content through it** rather than writing its own.
   events the hub erases from the platform audit table ship declared in the module
   itself; a runtime declaration is for a service anonymizing its own local store.
 - **New (minor):** `is_classified_detail_key(key, *, event_type)`: whether a key is
-  safe for that event type or recorded as personal, in process. The enforcement gate below
-  does not call it (it cannot import this package) and carries its own copy of the
-  predicate; a change to one must be made to the other.
+  safe for that event type or recorded as personal. The enforcement gate below judges by
+  this very function, injected as `AuditDetailsConfig.is_classified` because the gate
+  cannot import this package, so "classified" is defined in one place.
 - **New (minor):** enforcement domain `threetears.enforcement.audit_details`, so every
   producing repo runs the same gate over its own `src/`. It fails when a `details` key
   is neither safe nor personal, judging nested literal keys only where every key above
@@ -349,6 +376,12 @@ should route an audit record's content through it** rather than writing its own.
   computed key, a `**spread`, a dict returned by a call or passed in as a parameter)
   rather than passing it. A wrapper helper is refused until it is named in
   `AuditDetailsConfig.forwarders`; its call sites are then read like the constructor's.
+  The classification is injected: `safe_keys_for` (for the rule that a nested key is judged
+  only beneath safe keys) and `is_classified`, the predicate itself (typed
+  `DetailKeyClassifier`), asked once per resolved event type. A shell that passed
+  `personal_keys=` during this release's development passes
+  `is_classified=is_classified_detail_key` instead; the old keyword is refused with a
+  `TypeError` at construction.
   A family's safe keys are credited only for the event types a site can be shown to
   publish, resolved the way a reader would: a literal; a module constant, local or
   imported from the scanned roots (absolute, relative, aliased, re-exported); an
@@ -363,7 +396,7 @@ should route an audit record's content through it** rather than writing its own.
   No exemptions file. Consumer shell:
 
   ```python
-  from threetears.agent.audit import PERSONAL_DETAIL_KEYS, safe_detail_keys_for
+  from threetears.agent.audit import is_classified_detail_key, safe_detail_keys_for
   from threetears.enforcement.audit_details import AuditDetailsConfig, run_audit_details_enforcement
   from threetears.enforcement.common import find_local_src_roots
 
@@ -372,7 +405,7 @@ should route an audit record's content through it** rather than writing its own.
           repo_root=REPO_ROOT,
           src_roots=find_local_src_roots(REPO_ROOT),
           safe_keys_for=safe_detail_keys_for,
-          personal_keys=PERSONAL_DETAIL_KEYS,
+          is_classified=is_classified_detail_key,
           forwarders=frozenset({...}),  # the repo's own wrapper helpers
       )
   )
@@ -457,6 +490,17 @@ live inside serialized checkpoint and pending-write blobs.
   identifies the person; an unknown metadata key is KEPT, the inverse of the audit rule,
   because the `metadata` channel is working state (the injectors' ledgers) that the graph
   reads on resume.
+- **An unknown key is kept, never silently.** The producers of turn metadata (the channel
+  router, the agent runtime, the injectors) mostly live outside 3tears, so a new sender
+  field would otherwise be kept in every checkpoint while the run reported a clean erasure.
+  **New (minor):** `KEPT_METADATA_KEYS` records the keys ruled not to identify a person
+  (`channel_ref`, `workspace_ref`, `user_id` and 3tears' injector ledgers),
+  `unclassified_metadata_keys(value, *, is_metadata=False)` names every top-level key of
+  turn metadata (a mapping under the `metadata` key at any depth, or a pending write to
+  the `METADATA_CHANNEL`) that neither list names, and `CheckpointAnonymization` gains
+  `unclassified_metadata_keys` (sorted), also logged at WARNING and on the run's INFO line.
+  The erasure is complete only when `unreadable` and `unclassified_metadata_keys` are both
+  empty; the fix for a reported key is to classify it and run again.
 - **New (minor):** `threetears.observe.ANONYMIZED_MARKER` (`threetears.observe.erasure`),
   the platform's one erasure marker, homed in the layer every package already depends on
   so the checkpoint saver shares its spelling without depending on the audit package.
@@ -1417,7 +1461,11 @@ fields looking absent from the document.
   `StructuredCallFailedError` when a call the poll depends on fails: candidate generation,
   per-document extraction or judging, and multi-row vision extraction or judging. Nothing is
   persisted and no recipe counter moves, because the model never answered and nothing about the page
-  was observed; the next poll tries again.
+  was observed; the next poll tries again. That includes the page-health verdict cache: a fresh
+  `"changed"` verdict is cached before the regeneration it calls for, and when that regeneration
+  hits the outage the verdict is withdrawn before the error propagates (**new (minor):**
+  `threetears.scrape.health.clear_classification`), so the next poll regenerates instead of reading
+  the verdict as already acted on and recording a `"failed"` row.
 - **Changed:** a call that hangs past that outer deadline (`_PER_DOCUMENT_TIMEOUT_SECONDS` per
   document, `_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS` for a multi-row read) is a failed call, handled
   exactly as an exhausted one. It used to be "no record": the document was skipped, so a poll could

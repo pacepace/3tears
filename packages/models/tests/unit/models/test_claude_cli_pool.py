@@ -13,6 +13,7 @@ import asyncio
 import contextvars
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -811,3 +812,75 @@ class TestTheSdkPidRead:
 
         for client in (SimpleNamespace(), SimpleNamespace(_transport=None), SimpleNamespace(_transport=object())):
             assert claude_cli_pool._sdk_process_pid(client) is None  # noqa: SLF001
+
+
+class TestAPoolServesOneEventLoop:
+    """a call on another loop runs on its own CLI instead of failing on the pool's loop-bound state.
+
+    a sync ``invoke`` runs its own event loop on its caller's thread, so a consumer calling
+    models from several threads reaches the one process-wide pool from several loops. the pool's
+    condition binds to the first loop that waits on it; before the fix, a second loop that then
+    had to wait raised ``RuntimeError`` ("bound to a different event loop"), which no caller
+    treats as "use your own CLI", and the model call failed.
+    """
+
+    def test_a_second_loop_contending_for_the_pool_is_refused_as_exhaustion(self) -> None:
+        pool = _pool(per_key=1)
+        holding = threading.Event()
+        release = threading.Event()
+        outcome: dict[str, BaseException | str] = {}
+
+        async def owner() -> None:
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                # a second call on this loop waits on the condition, which binds it to this loop
+                with pytest.raises(ClaudeCliPoolExhausted):
+                    async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                        pass
+                holding.set()
+                await asyncio.to_thread(release.wait, 10)
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                outcome["owner_after"] = "served"
+            await pool.aclose()
+
+        async def other() -> None:
+            try:
+                async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                    outcome["other"] = "served"
+            except BaseException as exc:  # noqa: BLE001 -- the assertion below names whatever it was
+                outcome["other"] = exc
+
+        def run_owner() -> None:
+            asyncio.run(owner())
+
+        def run_other() -> None:
+            holding.wait(10)
+            try:
+                asyncio.run(other())
+            finally:
+                release.set()
+
+        threads = [threading.Thread(target=run_owner), threading.Thread(target=run_other)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert isinstance(outcome.get("other"), ClaudeCliPoolExhausted), (
+            f"a call on another loop must fall back to its own CLI, got {outcome.get('other')!r}"
+        )
+        assert "another event loop" in str(outcome["other"])
+        assert outcome.get("owner_after") == "served", "the owning loop must still be served afterwards"
+        assert len(FakeSession.instances) == 1, "the refused loop must not have started a session"
+
+    def test_a_second_loop_is_refused_even_when_a_session_is_idle(self) -> None:
+        """an idle session's client reads on the loop it connected on, so it is never handed to another."""
+        pool = _pool()
+
+        async def use_once() -> None:
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                pass
+
+        asyncio.run(use_once())
+        with pytest.raises(ClaudeCliPoolExhausted, match="another event loop"):
+            asyncio.run(use_once())
+        assert FakeSession.instances[0].disposals == 0

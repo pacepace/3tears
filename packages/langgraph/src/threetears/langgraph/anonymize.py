@@ -23,6 +23,15 @@ only that field. a checkpoint is working state the graph reloads and resumes fro
 does on its next turn. so this rule names what identifies the person and changes exactly
 that; a producer that puts a new identifying key into graph state must add it here.
 
+**an unknown key is kept, but never silently.** the producers of turn metadata (the channel
+router, the agent runtime, the injectors) mostly live outside this package, so nothing here
+can know every key they write. :data:`KEPT_METADATA_KEYS` records the keys ruled NOT to
+identify a person; :func:`unclassified_metadata_keys` names every turn-metadata key in a
+stored value that neither list names, and the saver reports them on
+:attr:`CheckpointAnonymization.unclassified_metadata_keys`. a run that met one cannot vouch
+that the erasure is complete: if that key identifies a person, its values are still stored.
+the answer is to classify it here, in one list or the other.
+
 **what it does not reach.** a value held by an object that is not a mapping, a list, a
 tuple or a message (an interrupt payload, a custom state class) is kept as it is, and so
 is identity written into free text -- the message content is kept by ruling.
@@ -40,9 +49,12 @@ from threetears.observe.erasure import ANONYMIZED_MARKER
 
 __all__ = [
     "IDENTIFYING_METADATA_KEYS",
+    "KEPT_METADATA_KEYS",
+    "METADATA_CHANNEL",
     "CheckpointAnonymization",
     "UnreadableCheckpointBlob",
     "anonymize_checkpoint_value",
+    "unclassified_metadata_keys",
 ]
 
 
@@ -52,6 +64,31 @@ __all__ = [
 #: unchanged. ``channel_ref`` / ``workspace_ref`` name a channel and a workspace, not a
 #: person, and the platform's own ``user_id`` is an id, which erasure never changes.
 IDENTIFYING_METADATA_KEYS: Final[frozenset[str]] = frozenset({"external_user_name", "external_user_id"})
+
+#: turn-metadata keys ruled NOT to identify a person, so kept as they are. the router's
+#: ``channel_ref`` / ``workspace_ref`` name a channel and a workspace, and ``user_id`` is the
+#: platform's own id, which erasure never changes; the rest are the ledgers 3tears' own
+#: injectors keep in the metadata channel (memory, knowledge and schema injection), which the
+#: agent reads back on its next turn. a key in neither this set nor
+#: :data:`IDENTIFYING_METADATA_KEYS` is reported by :func:`unclassified_metadata_keys`.
+KEPT_METADATA_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "channel_ref",
+        "workspace_ref",
+        "user_id",
+        "surfaced_memory_ids",
+        "documented_schema_block",
+        "governed_knowledge_block",
+        "knowledge_shadow_disclosures",
+        "knowledge_concept_shadow_disclosures",
+        "knowledge_injected_concepts",
+        "knowledge_injected_entries",
+    }
+)
+
+#: the state channel that carries turn metadata, and the key the turn's input carries it
+#: under -- the name :func:`threetears.langgraph.merge_metadata` reduces.
+METADATA_CHANNEL: Final[str] = "metadata"
 
 
 @dataclass(frozen=True)
@@ -98,6 +135,11 @@ class CheckpointAnonymization:
     :ivar unreadable: every stored blob the rule could not be applied to; empty when the
         erasure reached every row. a non-empty value means the erasure is NOT complete for
         those rows, however many times the run is repeated
+    :ivar unclassified_metadata_keys: every turn-metadata key the run found that neither
+        :data:`IDENTIFYING_METADATA_KEYS` nor :data:`KEPT_METADATA_KEYS` names, sorted. their
+        values were kept. a non-empty value means the run cannot vouch that the erasure is
+        complete: a key a producer added that identifies a person is still stored, until it
+        is classified and the run repeated
     """
 
     threads: int
@@ -105,6 +147,7 @@ class CheckpointAnonymization:
     writes_rewritten: int
     l2_prefix_swept: bool | None
     unreadable: tuple[UnreadableCheckpointBlob, ...] = ()
+    unclassified_metadata_keys: tuple[str, ...] = ()
 
 
 def anonymize_checkpoint_value(value: Any) -> Any:
@@ -136,6 +179,45 @@ def anonymize_checkpoint_value(value: Any) -> Any:
         if any(new is not old for new, old in zip(children, value, strict=True)):
             result = children if isinstance(value, list) else tuple(children)
     return result
+
+
+def unclassified_metadata_keys(value: Any, *, is_metadata: bool = False) -> frozenset[str]:
+    """every turn-metadata key in a stored value that no classification names.
+
+    turn metadata is a mapping stored under the :data:`METADATA_CHANNEL` key, at any depth --
+    the checkpoint's channel values, the turn's ``__start__`` input, a checkpoint's recorded
+    writes -- or a pending write's whole value when it was written to that channel, which the
+    caller says with *is_metadata*. its top-level keys are the ones producers write and the
+    ones classified; what sits beneath a key is that key's own value. the walk reaches the
+    containers :func:`anonymize_checkpoint_value` reaches, and errs toward reporting: a
+    mapping stored under a ``metadata`` key that is not turn metadata has its keys reported
+    too, which costs a line in a report rather than a key missed.
+
+    :param value: a deserialized checkpoint, checkpoint metadata, or pending-write value
+    :ptype value: Any
+    :param is_metadata: whether *value* itself is the metadata channel's value
+    :ptype is_metadata: bool
+    :return: the keys neither :data:`IDENTIFYING_METADATA_KEYS` nor :data:`KEPT_METADATA_KEYS`
+        names
+    :rtype: frozenset[str]
+    """
+    found: set[str] = set()
+    if isinstance(value, BaseMessage):
+        for field_name in ("additional_kwargs", "response_metadata"):
+            found |= unclassified_metadata_keys(getattr(value, field_name))
+    elif isinstance(value, Mapping):
+        if is_metadata:
+            found |= {
+                key
+                for key in value
+                if isinstance(key, str) and key not in IDENTIFYING_METADATA_KEYS and key not in KEPT_METADATA_KEYS
+            }
+        for key, child in value.items():
+            found |= unclassified_metadata_keys(child, is_metadata=key == METADATA_CHANNEL)
+    elif isinstance(value, list | tuple):
+        for child in value:
+            found |= unclassified_metadata_keys(child)
+    return frozenset(found)
 
 
 def _mask(value: Any) -> Any:

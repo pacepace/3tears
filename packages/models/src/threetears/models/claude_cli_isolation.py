@@ -27,8 +27,8 @@ would be handed that person's mail and files as tools. ``--strict-mcp-config`` (
 the caller passes) and ``ENABLE_CLAUDEAI_MCP_SERVERS=false`` each remove all five; both are set,
 so a CLI release that changes one of them does not quietly reopen the other.
 
-Standard library only, so any consumer that spawns the CLI -- a chat model, a session pool -- can
-apply the same isolation without importing the chat-model backend.
+Standard library and ``threetears.observe`` only, so any consumer that spawns the CLI -- a chat
+model, a session pool -- can apply the same isolation without importing the chat-model backend.
 """
 
 from __future__ import annotations
@@ -37,9 +37,10 @@ import atexit
 import hashlib
 import shutil
 import tempfile
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from threetears.observe import BuildOnce
 
 __all__ = ["ClaudeCliIsolation", "claude_cli_isolation"]
 
@@ -51,12 +52,10 @@ STRICT_MCP_CONFIG_FLAG = "strict-mcp-config"
 
 #: Per-credential isolation roots, created once per process. Keyed by a digest of the token, so the
 #: token never appears in a path and two credentials never share even the CLI's own bookkeeping.
-_ROOTS: dict[str, Path] = {}
-
-#: guards the create-on-first-use of a credential's root. options are built on every call, and a
-#: sync call runs on its caller's thread, so several threads reach this at once for one credential;
-#: without the lock each made its own root and the credential got several.
-_ROOTS_LOCK = threading.Lock()
+#: Options are built on every call and a sync call runs on its caller's thread, so several threads
+#: reach this at once for one credential; built through ``BuildOnce`` so the credential gets one
+#: root, and rebuilt when something deleted the directory underneath it.
+_ROOTS: BuildOnce[str, Path] = BuildOnce(is_current=Path.is_dir)
 
 
 @dataclass(frozen=True)
@@ -73,6 +72,21 @@ class ClaudeCliIsolation:
     extra_args: dict[str, str | None] = field(default_factory=dict)
 
 
+def _make_root(key: str) -> Path:
+    """Create one credential's isolation root and have it removed when the process exits.
+
+    :param key: the credential's digest, used in the directory name
+    :ptype key: str
+    :return: the new root
+    :rtype: Path
+    """
+    root = Path(tempfile.mkdtemp(prefix=f"threetears-claude-cli-{key}-"))
+    # One directory per credential per process start would otherwise accumulate in the temp
+    # directory for the life of the host.
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    return root
+
+
 def claude_cli_isolation(token: str | None) -> ClaudeCliIsolation:
     """The isolation settings for a CLI that will run under ``token``.
 
@@ -86,16 +100,7 @@ def claude_cli_isolation(token: str | None) -> ClaudeCliIsolation:
     :rtype: ClaudeCliIsolation
     """
     key = hashlib.sha256((token or "").encode("utf-8")).hexdigest()[:16]
-    root = _ROOTS.get(key)
-    if root is None or not root.is_dir():
-        with _ROOTS_LOCK:
-            root = _ROOTS.get(key)
-            if root is None or not root.is_dir():
-                root = Path(tempfile.mkdtemp(prefix=f"threetears-claude-cli-{key}-"))
-                _ROOTS[key] = root
-                # One directory per credential per process start would otherwise accumulate in the
-                # temp directory for the life of the host.
-                atexit.register(shutil.rmtree, root, ignore_errors=True)
+    root = _ROOTS.get(key, lambda: _make_root(key))
     config_dir = root / "config"
     cwd = root / "cwd"
     config_dir.mkdir(exist_ok=True)

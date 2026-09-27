@@ -1130,27 +1130,36 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         recipe_collection, extraction_collection = _collections()
         finished: list[str] = []
+        deadline = 0.5
+        stuck_deadline_fired = asyncio.Event()
 
         async def fake_extract_chunked(text, schema, *, model_id, api_key):
             if "Acme" in text:
-                # Simulates the live-reproduced hang -- asyncio.wait_for's outer
-                # deadline cancels this mid-sleep; it never returns on its own.
-                await asyncio.sleep(1)
-            await asyncio.sleep(0.07)
+                # Simulates the live-reproduced hang: it never returns on its own, and only
+                # asyncio.wait_for's outer deadline ends it, by cancelling it.
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    stuck_deadline_fired.set()
+                    raise
+            # Half the deadline: this call keeps the other half in hand, and the judge that
+            # follows starts its own deadline half a deadline after the stuck document's began.
+            await asyncio.sleep(deadline / 2)
             return {"employer": "Beta LLC", "affected_count": 7}
 
         async def slow_judge(document, extracted, schema, *, api_key, judge_model_id):
-            # Each of the other document's calls is inside its own 0.1s deadline, but together
-            # they finish at ~0.14s -- AFTER the stuck document's deadline fired at 0.1s -- so
-            # this is only recorded if a hang does not stop the rest of the batch.
-            await asyncio.sleep(0.07)
+            # Recorded only once the stuck document's deadline has fired -- an event, not a
+            # timing guess -- so it proves the hang did not stop the rest of the batch. The wait
+            # is about half of this call's own deadline, so neither call's margin is scheduler
+            # jitter: each has half the deadline to spare.
+            await stuck_deadline_fired.wait()
             finished.append(document.text)
             return True
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract_chunked),
             patch.object(eval_loop_module, "_judge_one_document_extraction", slow_judge),
-            patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", 0.1),
+            patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", deadline),
             pytest.raises(StructuredCallTimeoutError) as exc_info,
         ):
             await run_eval_loop_multi_row(
@@ -1164,7 +1173,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 strategy_type="per_document",
             )
 
-        assert exc_info.value.deadline_seconds == 0.1
+        assert exc_info.value.deadline_seconds == deadline
         assert exc_info.value.log_label == "scrape direct per-document field extraction"
         assert isinstance(exc_info.value.last_error, TimeoutError)
         assert len(finished) == 1 and "Beta" in finished[0], "the hang stopped the other document"

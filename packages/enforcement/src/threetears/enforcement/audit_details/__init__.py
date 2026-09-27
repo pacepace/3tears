@@ -9,7 +9,7 @@ producer publishes a ``details`` key that is neither safe nor personal, or passe
 Per-repo configuration goes through :class:`AuditDetailsConfig`;
 :func:`run_audit_details_enforcement` is the pytest-friendly entry point. A consumer shell::
 
-    from threetears.agent.audit import PERSONAL_DETAIL_KEYS, safe_detail_keys_for
+    from threetears.agent.audit import is_classified_detail_key, safe_detail_keys_for
     from threetears.enforcement.audit_details import AuditDetailsConfig, run_audit_details_enforcement
     from threetears.enforcement.common import find_local_src_roots
 
@@ -19,7 +19,7 @@ Per-repo configuration goes through :class:`AuditDetailsConfig`;
                 repo_root=REPO_ROOT,
                 src_roots=find_local_src_roots(REPO_ROOT),
                 safe_keys_for=safe_detail_keys_for,
-                personal_keys=PERSONAL_DETAIL_KEYS,
+                is_classified=is_classified_detail_key,
                 forwarders=frozenset({"publish_rbac_audit"}),
             )
         )
@@ -28,6 +28,7 @@ Per-repo configuration goes through :class:`AuditDetailsConfig`;
 from threetears.enforcement.audit_details.config import (
     DEFAULT_AUDIT_CONSTRUCTORS,
     AuditDetailsConfig,
+    DetailKeyClassifier,
 )
 from threetears.enforcement.audit_details.runner import (
     run_audit_details_enforcement,
@@ -44,6 +45,7 @@ __all__ = [
     "DEFAULT_AUDIT_CONSTRUCTORS",
     "AuditDetailsConfig",
     "AuditDetailsSite",
+    "DetailKeyClassifier",
     "collect_audit_details_sites",
     "find_audit_details_violations",
     "read_audit_details_sites",

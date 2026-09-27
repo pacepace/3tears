@@ -23,7 +23,6 @@ logs failures with ``exc_info=True`` and never re-raises.
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from types import SimpleNamespace
 from collections.abc import Iterator, Mapping
@@ -38,7 +37,7 @@ from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 from threetears.models.enums import ModelTier
 
@@ -711,15 +710,11 @@ class _PrometheusEmitter:
 # ``id(registry)``; the sentinel ``0`` denotes "default global registry".
 # Multiple consumers in the same process can each pass their own
 # ``CollectorRegistry`` and get independent emitters back.
-_PROM_EMITTERS: dict[int, _PrometheusEmitter] = {}
-
-#: guards the check-then-create on :data:`_PROM_EMITTERS`. a ``UsageTracker`` is built
-#: wherever a model is, and consumers build models from several threads at once: without
-#: it every thread that looked before the first one stored its emitter built another, and
-#: the second one's registration raised ``Duplicated timeseries in CollectorRegistry``
-#: out of ``create_chat_model``. a ``threading`` lock rather than an ``asyncio`` one
-#: because the callers are threads, and construction never awaits.
-_PROM_EMITTERS_LOCK = threading.Lock()
+#: a ``UsageTracker`` is built wherever a model is, and consumers build models from several
+#: threads at once; a second emitter's registration on one registry raises ``Duplicated
+#: timeseries in CollectorRegistry`` out of ``create_chat_model``, so each is built through
+#: :class:`~threetears.observe.build_once.BuildOnce`.
+_PROM_EMITTERS: BuildOnce[int, _PrometheusEmitter] = BuildOnce()
 
 
 def _get_prom_emitter(registry: "CollectorRegistry | None" = None) -> _PrometheusEmitter:
@@ -727,10 +722,9 @@ def _get_prom_emitter(registry: "CollectorRegistry | None" = None) -> _Prometheu
 
     when ``registry`` is ``None`` the default global registry is used and
     the sentinel key ``0`` indexes the cache. The emitter is instantiated
-    on first use per (process, registry) pair, under
-    :data:`_PROM_EMITTERS_LOCK` so concurrent first callers build and
-    register exactly one. the unlocked read first keeps every later call
-    lock-free.
+    on first use per (process, registry) pair, through the
+    :class:`~threetears.observe.build_once.BuildOnce` in :data:`_PROM_EMITTERS`,
+    so concurrent first callers build and register exactly one.
 
     :param registry: optional collector registry; ``None`` uses the
         default global registry
@@ -740,14 +734,7 @@ def _get_prom_emitter(registry: "CollectorRegistry | None" = None) -> _Prometheu
     :rtype: _PrometheusEmitter
     """
     key = 0 if registry is None else id(registry)
-    emitter = _PROM_EMITTERS.get(key)
-    if emitter is None:
-        with _PROM_EMITTERS_LOCK:
-            emitter = _PROM_EMITTERS.get(key)
-            if emitter is None:
-                emitter = _PrometheusEmitter(registry=registry)
-                _PROM_EMITTERS[key] = emitter
-    return emitter
+    return _PROM_EMITTERS.get(key, lambda: _PrometheusEmitter(registry=registry))
 
 
 def _reset_prom_emitter_for_testing() -> None:
@@ -767,10 +754,7 @@ def _reset_prom_emitter_for_testing() -> None:
     to register a same-named counter that the previous emitter already
     put there.
     """
-    with _PROM_EMITTERS_LOCK:
-        for emitter in _PROM_EMITTERS.values():
-            emitter.unregister_from_registry()
-        _PROM_EMITTERS.clear()
+    _PROM_EMITTERS.clear(dispose=lambda emitter: emitter.unregister_from_registry())
 
 
 class UsageTracker:

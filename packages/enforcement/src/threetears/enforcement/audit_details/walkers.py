@@ -51,7 +51,11 @@ from pathlib import Path
 
 from threetears.enforcement.common import Violation, callee_names, iter_python_files, parse_python_file
 
-from threetears.enforcement.audit_details.config import DEFAULT_AUDIT_CONSTRUCTORS, AuditDetailsConfig
+from threetears.enforcement.audit_details.config import (
+    DEFAULT_AUDIT_CONSTRUCTORS,
+    AuditDetailsConfig,
+    DetailKeyClassifier,
+)
 from threetears.enforcement.audit_details.event_types import (
     EventTypeResolver,
     FunctionNode,
@@ -160,33 +164,32 @@ def unclassified_detail_paths(
     site: AuditDetailsSite,
     *,
     safe_keys_for: Callable[[str], frozenset[str]],
-    personal_keys: frozenset[str],
+    is_classified: DetailKeyClassifier,
 ) -> list[tuple[str, ...]]:
     """the key paths at one site that no classification names, where the rule consults them.
 
     a nested key is consulted only when every key above it is safe for the event type;
-    beneath an unsafe key the whole value is anonymized. a site resolving to several event
-    types is credited with the keys safe for every one of them; one resolving to none, with
-    the platform set alone.
+    beneath an unsafe key the whole value is anonymized. a consulted key must be classified
+    for EVERY event type the site resolves to -- asked of *is_classified* for each one, so the
+    verdict is the rule's own rather than a copy of it -- and a site resolving to none is
+    asked about with ``event_type=""``, which credits the platform set alone.
 
     :param site: a read site
     :ptype site: AuditDetailsSite
-    :param safe_keys_for: the safe-key lookup for an event type
+    :param safe_keys_for: the safe-key lookup for an event type, for the ancestor rule
     :ptype safe_keys_for: Callable[[str], frozenset[str]]
-    :param personal_keys: the keys classified as personal
-    :ptype personal_keys: frozenset[str]
+    :param is_classified: the classification predicate
+    :ptype is_classified: DetailKeyClassifier
     :return: the unclassified paths, sorted
     :rtype: list[tuple[str, ...]]
     """
-    safe = (
-        frozenset.intersection(*(safe_keys_for(event_type) for event_type in site.event_types))
-        if site.event_types
-        else safe_keys_for("")
-    )
+    event_types = site.event_types or frozenset({""})
+    safe = frozenset.intersection(*(safe_keys_for(event_type) for event_type in event_types))
     return sorted(
         path
         for path in site.keys
-        if all(ancestor in safe for ancestor in path[:-1]) and path[-1] not in safe and path[-1] not in personal_keys
+        if all(ancestor in safe for ancestor in path[:-1])
+        and not all(is_classified(path[-1], event_type=event_type) for event_type in event_types)
     )
 
 
@@ -271,7 +274,7 @@ def _site_violations(path: Path, site: AuditDetailsSite, config: AuditDetailsCon
             ),
         )
         for key_path in unclassified_detail_paths(
-            site, safe_keys_for=config.safe_keys_for, personal_keys=config.personal_keys
+            site, safe_keys_for=config.safe_keys_for, is_classified=config.is_classified
         )
     ]
     found.extend(

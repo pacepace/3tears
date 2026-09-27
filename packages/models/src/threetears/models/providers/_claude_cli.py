@@ -33,10 +33,8 @@ nothing; it answers with a placeholder no model turn ever reads. The tool-use bl
 ``AIMessage.tool_calls`` under the caller's own tool names, and the caller's next round arrives
 with the results as ordinary history.
 
-Token-level streaming (post-Chunk-9 follow-up, see
-``.prawduct/artifacts/3tears-change-claude-max-token-streaming.md`` in metallm for the full
-sign-off): ``ClaudeCodeChatModel._astream`` sets ``include_partial_messages=True`` -- which makes
-the Agent SDK subprocess actually emit granular ``StreamEvent`` deltas (the raw Anthropic
+Token-level streaming: ``ClaudeCodeChatModel._astream`` sets ``include_partial_messages=True`` --
+which makes the Agent SDK subprocess actually emit granular ``StreamEvent`` deltas (the raw Anthropic
 ``content_block_delta``/``text_delta`` shape) -- but the method never handles ``StreamEvent`` at
 all, only the terminal, whole-block ``AssistantMessage``. Every delta is silently dropped, so a
 turn arrives as one or two large lumps instead of a real token stream. ``_astream`` is overridden

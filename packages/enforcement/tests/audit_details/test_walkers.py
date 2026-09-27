@@ -44,6 +44,20 @@ def _safe_keys_for(event_type: str) -> frozenset[str]:
     return _SAFE | _FAMILY_KEYS if in_family else _SAFE
 
 
+def _is_classified(key: str, *, event_type: str) -> bool:
+    """
+    the synthetic classification predicate, the shape of ``is_classified_detail_key``.
+
+    :param key: a details key
+    :ptype key: str
+    :param event_type: dotted event type
+    :ptype event_type: str
+    :return: whether the key is safe for the event type or personal
+    :rtype: bool
+    """
+    return key in _PERSONAL or key in _safe_keys_for(event_type)
+
+
 def _read(source: str, *, forwarders: frozenset[str] = frozenset()) -> AuditDetailsSite:
     """
     read the single site in a synthetic module.
@@ -70,8 +84,51 @@ def _unclassified(site: AuditDetailsSite) -> list[str]:
     """
     return [
         ".".join(path)
-        for path in unclassified_detail_paths(site, safe_keys_for=_safe_keys_for, personal_keys=_PERSONAL)
+        for path in unclassified_detail_paths(site, safe_keys_for=_safe_keys_for, is_classified=_is_classified)
     ]
+
+
+class TestTheInjectedPredicateDecides:
+    """the gate judges a key by the predicate it is handed, never by a copy of the rule."""
+
+    def test_a_key_the_predicate_calls_classified_is_clean_whatever_the_key_sets_say(self) -> None:
+        site = _read('AuditEvent(event_type="tool.call", details={"brand_new_key": 1})')
+
+        def accepts_it(key: str, *, event_type: str) -> bool:
+            return key == "brand_new_key" or _is_classified(key, event_type=event_type)
+
+        assert unclassified_detail_paths(site, safe_keys_for=_safe_keys_for, is_classified=accepts_it) == []
+        assert _unclassified(site) == ["brand_new_key"]
+
+    def test_the_predicate_is_asked_for_every_resolved_event_type(self) -> None:
+        source = "AuditEvent(event_type='gatesynthetic.fired' if flag else 'tool.call', details={{{key!r}: 1}})"
+        asked: list[str] = []
+
+        def recording(key: str, *, event_type: str) -> bool:
+            asked.append(event_type)
+            return _is_classified(key, event_type=event_type)
+
+        clean = unclassified_detail_paths(
+            _read(source.format(key="tool_name")), safe_keys_for=_safe_keys_for, is_classified=recording
+        )
+        family_only = unclassified_detail_paths(
+            _read(source.format(key="gate_declared_count")), safe_keys_for=_safe_keys_for, is_classified=_is_classified
+        )
+
+        assert clean == []
+        assert sorted(asked) == ["gatesynthetic.fired", "tool.call"]
+        assert family_only == [("gate_declared_count",)], "a family key must be classified for EVERY event type"
+
+    def test_an_unresolved_event_type_is_asked_about_as_the_empty_type(self) -> None:
+        site = _read("AuditEvent(event_type=compute(), details={'tool_name': 'x'})")
+        asked: list[str] = []
+
+        def recording(key: str, *, event_type: str) -> bool:
+            asked.append(event_type)
+            return _is_classified(key, event_type=event_type)
+
+        assert unclassified_detail_paths(site, safe_keys_for=_safe_keys_for, is_classified=recording) == []
+        assert asked == [""]
 
 
 class TestKeysAreRead:
@@ -315,7 +372,7 @@ class TestTheTreeWalk:
             repo_root=tmp_path,
             src_roots=src_roots,
             safe_keys_for=_safe_keys_for,
-            personal_keys=_PERSONAL,
+            is_classified=_is_classified,
         )
 
     def test_a_tree_with_an_unclassified_key_yields_a_violation(self, tmp_path: Path) -> None:
@@ -375,7 +432,7 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> AuditDetailsConfig:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source)
     return AuditDetailsConfig(
-        repo_root=tmp_path, src_roots=(src,), safe_keys_for=_safe_keys_for, personal_keys=_PERSONAL
+        repo_root=tmp_path, src_roots=(src,), safe_keys_for=_safe_keys_for, is_classified=_is_classified
     )
 
 

@@ -339,8 +339,14 @@ def _get_cancellation_fired_counter() -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = ("asyncpg", "datasource.driver.cancellation.fired")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -348,8 +354,9 @@ def _get_cancellation_fired_counter() -> Any:
                 name="datasource.driver.cancellation.fired",
                 description="datasource driver cancellation fired count",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 

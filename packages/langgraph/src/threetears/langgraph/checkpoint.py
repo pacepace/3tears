@@ -74,9 +74,11 @@ from langgraph.checkpoint.base import (
 )
 
 from threetears.langgraph.anonymize import (
+    METADATA_CHANNEL,
     CheckpointAnonymization,
     UnreadableCheckpointBlob,
     anonymize_checkpoint_value,
+    unclassified_metadata_keys,
 )
 from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import (
@@ -1712,6 +1714,16 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
           re-raised with that context noted on the exception. A run that fails part-way
           this way is completed by running it again.
 
+        **Keys no rule classifies.** A turn-metadata key that neither
+        :data:`~threetears.langgraph.anonymize.IDENTIFYING_METADATA_KEYS` nor
+        :data:`~threetears.langgraph.anonymize.KEPT_METADATA_KEYS` names is kept -- masking
+        state the graph reloads could change what it does -- but it is never passed over
+        silently: every such key is reported on the result's
+        ``unclassified_metadata_keys`` and logged at WARNING. The erasure is complete only
+        when ``unreadable`` AND ``unclassified_metadata_keys`` are both empty; a key a
+        producer added that identifies a person stays stored until it is classified and the
+        run repeated.
+
         **Caches.** After a thread's rows are rewritten its cached bundles are evicted:
         this pod's L1 across every namespace, and the shared L2 -- the root-namespace key
         exactly, every namespaced key by prefix sweep when the cache can. L2 is the only
@@ -1732,7 +1744,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype customer: UUID | None
         :param batch_size: rows read per page
         :ptype batch_size: int
-        :return: what was rewritten, and every blob that could not be
+        :return: what was rewritten, every blob that could not be, and every metadata key
+            no rule classifies
         :rtype: CheckpointAnonymization
         :raises TypeError: when thread_ids is a bare string, or customer is neither None nor a UUID
         :raises ValueError: when the customer cannot be reconciled with the scope, or when
@@ -1748,15 +1761,18 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         threads = checkpoints = writes = 0
         swept_all: bool | None = None if self._l2 is None else True
         unreadable: list[UnreadableCheckpointBlob] = []
+        unclassified: set[str] = set()
         for thread_id in thread_ids:
             storage_thread_id = self.storage_thread_id(thread_id, customer=resolved)
             stage = "checkpoints"
             try:
                 thread_checkpoints = await self._anonymize_checkpoint_rows(
-                    thread_id, storage_thread_id, batch_size, unreadable
+                    thread_id, storage_thread_id, batch_size, unreadable, unclassified
                 )
                 stage = "writes"
-                thread_writes = await self._anonymize_write_rows(thread_id, storage_thread_id, batch_size, unreadable)
+                thread_writes = await self._anonymize_write_rows(
+                    thread_id, storage_thread_id, batch_size, unreadable, unclassified
+                )
                 stage = "eviction"
                 swept = await self._evict_anonymized(thread_id, storage_thread_id, customer=resolved)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- boundary: names the thread and stage, then re-raises unchanged in type
@@ -1785,6 +1801,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "until rewritten or expired. Give the cache a delete_prefix (CheckpointL2PrefixCache).",
                 extra={"l2_bucket": self._l2_bucket},
             )
+        unclassified_keys = tuple(sorted(unclassified))
+        if unclassified_keys:
+            log.warning(
+                "checkpoint anonymization kept turn-metadata keys no rule classifies; if any identifies a person "
+                "the erasure is incomplete. Classify each in threetears.langgraph.anonymize "
+                "(IDENTIFYING_METADATA_KEYS or KEPT_METADATA_KEYS) and run it again.",
+                extra={"unclassified_metadata_keys": list(unclassified_keys)},
+            )
         log.info(
             "checkpoint threads anonymized",
             extra={
@@ -1792,6 +1816,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "checkpoints_rewritten": checkpoints,
                 "writes_rewritten": writes,
                 "unreadable_blobs": len(unreadable),
+                "unclassified_metadata_keys": list(unclassified_keys),
             },
         )
         return CheckpointAnonymization(
@@ -1800,20 +1825,34 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             writes_rewritten=writes,
             l2_prefix_swept=swept_all,
             unreadable=tuple(unreadable),
+            unclassified_metadata_keys=unclassified_keys,
         )
 
-    def _rewritten_blob(self, type_tag: str, blob: bytes) -> bytes | None:
+    def _rewritten_blob(
+        self,
+        type_tag: str,
+        blob: bytes,
+        unclassified: set[str],
+        *,
+        is_metadata: bool,
+    ) -> bytes | None:
         """the anonymized re-encoding of one stored blob, or None when nothing identifying is in it.
 
         :param type_tag: the stored serde type tag
         :ptype type_tag: str
         :param blob: the stored bytes
         :ptype blob: bytes
+        :param unclassified: the run's unclassified metadata keys, added to from this blob
+        :ptype unclassified: set[str]
+        :param is_metadata: whether the blob is a write to the metadata channel, so its whole
+            value is turn metadata
+        :ptype is_metadata: bool
         :return: the new bytes, or None when the decoded value is unchanged
         :rtype: bytes | None
         :raises ValueError: when the re-encoding would change the serde type
         """
         decoded = self.serde.loads_typed((type_tag, blob))
+        unclassified |= unclassified_metadata_keys(decoded, is_metadata=is_metadata)
         rewritten = anonymize_checkpoint_value(decoded)
         if rewritten is decoded:
             return None
@@ -1831,6 +1870,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         blob: bytes,
         where: UnreadableCheckpointBlob,
         unreadable: list[UnreadableCheckpointBlob],
+        unclassified: set[str],
+        *,
+        is_metadata: bool = False,
     ) -> bytes | None:
         """:meth:`_rewritten_blob`, with a blob the rule cannot be applied to reported instead of raised.
 
@@ -1842,11 +1884,15 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype where: UnreadableCheckpointBlob
         :param unreadable: the run's report, appended to on failure
         :ptype unreadable: list[UnreadableCheckpointBlob]
+        :param unclassified: the run's unclassified metadata keys, added to from this blob
+        :ptype unclassified: set[str]
+        :param is_metadata: whether the blob is a write to the metadata channel
+        :ptype is_metadata: bool
         :return: the new bytes, or None when unchanged or unreadable
         :rtype: bytes | None
         """
         try:
-            return self._rewritten_blob(type_tag, blob)
+            return self._rewritten_blob(type_tag, blob, unclassified, is_metadata=is_metadata)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a serializer raises what it raises on bytes it cannot read; every failure here is one row reported, never silent
             reported = replace(where, error_type=type(exc).__name__)
             unreadable.append(reported)
@@ -1872,6 +1918,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         storage_thread_id: str,
         batch_size: int,
         unreadable: list[UnreadableCheckpointBlob],
+        unclassified: set[str],
     ) -> int:
         """rewrite one thread's checkpoint rows, a page at a time.
 
@@ -1883,6 +1930,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype batch_size: int
         :param unreadable: the run's report of blobs the rule could not be applied to
         :ptype unreadable: list[UnreadableCheckpointBlob]
+        :param unclassified: the run's report of metadata keys no rule classifies
+        :ptype unclassified: set[str]
         :return: rows rewritten
         :rtype: int
         """
@@ -1913,10 +1962,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     idx=None,
                     error_type="",
                 )
-                new_checkpoint = self._rewritten_or_reported(type_tag, checkpoint_blob, where, unreadable)
+                new_checkpoint = self._rewritten_or_reported(type_tag, checkpoint_blob, where, unreadable, unclassified)
                 has_metadata = bool(metadata_blob) and metadata_blob != b"\x00"
                 new_metadata = (
-                    self._rewritten_or_reported(type_tag, metadata_blob, replace(where, column="metadata_"), unreadable)
+                    self._rewritten_or_reported(
+                        type_tag, metadata_blob, replace(where, column="metadata_"), unreadable, unclassified
+                    )
                     if has_metadata
                     else None
                 )
@@ -1948,6 +1999,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         storage_thread_id: str,
         batch_size: int,
         unreadable: list[UnreadableCheckpointBlob],
+        unclassified: set[str],
     ) -> int:
         """rewrite one thread's pending-write rows, a page at a time.
 
@@ -1959,6 +2011,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype batch_size: int
         :param unreadable: the run's report of blobs the rule could not be applied to
         :ptype unreadable: list[UnreadableCheckpointBlob]
+        :param unclassified: the run's report of metadata keys no rule classifies
+        :ptype unclassified: set[str]
         :return: rows rewritten
         :rtype: int
         """
@@ -1966,7 +2020,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         cursor: tuple[str, str, str, int] = ("", "", "", _MIN_WRITE_IDX)
         while True:
             rows = await self._exec.fetch(
-                "SELECT checkpoint_ns, checkpoint_id, task_id, idx, type, blob "
+                "SELECT checkpoint_ns, checkpoint_id, task_id, idx, channel, type, blob "
                 "FROM checkpoint_writes WHERE thread_id = $1 "
                 "AND (checkpoint_ns > $2 OR (checkpoint_ns = $2 AND (checkpoint_id > $3 "
                 "OR (checkpoint_id = $3 AND (task_id > $4 OR (task_id = $4 AND idx > $5)))))) "
@@ -1986,7 +2040,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     idx=row["idx"],
                     error_type="",
                 )
-                new_blob = self._rewritten_or_reported(row["type"] or "msgpack", bytes(row["blob"]), where, unreadable)
+                new_blob = self._rewritten_or_reported(
+                    row["type"] or "msgpack",
+                    bytes(row["blob"]),
+                    where,
+                    unreadable,
+                    unclassified,
+                    is_metadata=row["channel"] == METADATA_CHANNEL,
+                )
                 if new_blob is not None:
                     try:
                         await self._exec.execute(

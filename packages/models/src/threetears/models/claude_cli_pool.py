@@ -24,7 +24,9 @@ Four things keep CLIs from piling up, because each of the others misses a case:
   (:func:`sweep_orphaned_claude_clis`), which is the shutdown a crash skips;
 - an idle TTL and hard caps bound the live count while the process runs.
 
-The pool is per process. A host running N worker processes has a ceiling of N times its cap.
+The pool is per process. A host running N worker processes has a ceiling of N times its cap. It
+serves the event loop that first checks a session out of it; a call on any other loop -- a sync
+``invoke`` runs its own -- runs on a CLI of its own, as a call does when every session is busy.
 
 Standard library and lazy SDK imports only, so importing this module costs nothing on a host that
 never spends a subscription.
@@ -41,7 +43,6 @@ import json
 import os
 import secrets
 import signal
-import threading
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -50,7 +51,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
     "POOL_MARKER_ENV",
@@ -869,6 +870,12 @@ class ClaudeCliPool:
         self._start = session_factory or PooledCliSession.start
         self._structural_failures = 0
         self._broken = False
+        #: The event loop this pool serves, claimed by its first checkout. Everything the pool
+        #: holds is tied to it: the condition binds to the loop that first waits on it, a pooled
+        #: client's reader task runs on the loop it connected on, and the reaper is a task there.
+        #: A ``BuildOnce`` because a sync ``invoke`` runs its own loop on its caller's thread, so
+        #: two threads can make a first checkout at once and exactly one of them may win.
+        self._owner_loop: BuildOnce[str, asyncio.AbstractEventLoop] = BuildOnce()
 
     @property
     def live_count(self) -> int:
@@ -910,13 +917,15 @@ class ClaudeCliPool:
         :ptype call_context: contextvars.Context | None
         :return: the connected ``ClaudeSDKClient``
         :rtype: AsyncIterator[Any]
-        :raises ClaudeCliPoolExhausted: when no session frees up in time
+        :raises ClaudeCliPoolExhausted: when no session frees up in time, or when the caller runs
+            on an event loop other than the one this pool serves
         :raises ClaudeCliSessionError: when a session cannot be started or prepared
         """
         if self._broken:
             raise ClaudeCliPoolExhausted("pooling is off: the Claude Agent SDK's surface failed repeatedly")
         if not poolable(options):
             raise ClaudeCliPoolExhausted("this call carries callables or a resumed session and cannot share a CLI")
+        self._claim_loop()
         key = launch_key(options, token)
         session = await self._acquire(key, options)
         clean = False
@@ -933,6 +942,27 @@ class ClaudeCliPool:
             clean = True
         finally:
             await asyncio.shield(self._return(key, session, clean=clean))
+
+    def _claim_loop(self) -> None:
+        """Serve the running loop if it is this pool's, claiming it on the first checkout.
+
+        The pool is process-wide, but what it holds is not: its condition binds to the first loop
+        that waits on it, a pooled client's reader task lives on the loop it connected on, and the
+        reaper is a task on the first loop. A sync ``invoke`` runs its own loop on its caller's
+        thread, so a consumer calling models from several threads reaches this one pool from
+        several loops. Another loop touching that state raised ``RuntimeError`` (a condition
+        "bound to a different event loop"), which no caller treats as "run on your own CLI" --
+        the call failed instead of falling back. It is refused as exhaustion instead, before
+        anything loop-bound is touched, so the call runs on a CLI of its own exactly as it does
+        when every session is busy.
+
+        :raises ClaudeCliPoolExhausted: when the caller's loop is not the one this pool serves
+        """
+        running = asyncio.get_running_loop()
+        if self._owner_loop.get(_ONLY, lambda: running) is not running:
+            raise ClaudeCliPoolExhausted(
+                "the Claude CLI pool serves another event loop; a call on this one runs on its own CLI"
+            )
 
     def _note_prepare_failure(self, exc: ClaudeCliSessionError) -> None:
         """Count failures of the SDK surface itself, and stop pooling when they repeat.
@@ -1198,15 +1228,18 @@ class ClaudeCliPool:
 # The process-wide pool
 # ---------------------------------------------------------------------------
 
-_pool: ClaudeCliPool | None = None
 _pool_settings: dict[str, Any] = {}
 _pool_disabled = False
 
-#: guards the build-on-first-use of :data:`_pool`. a sync ``invoke`` runs its own event loop on the
+#: The process-wide pool, built on first use. A sync ``invoke`` runs its own event loop on the
 #: caller's thread, so a consumer calling models from several threads reaches the accessor from
-#: several threads at once; without the lock each one that looked before the first stored its pool
-#: built another -- twice the CLIs the limits allow, and all but one pool orphaned.
-_pool_lock = threading.Lock()
+#: several threads at once; built through ``BuildOnce`` so exactly one pool exists -- a second
+#: would run twice the CLIs the limits allow and be orphaned. It serves the event loop that first
+#: checks a session out of it (:meth:`ClaudeCliPool.checkout`).
+_pool: BuildOnce[str, ClaudeCliPool] = BuildOnce()
+
+#: The key of a ``BuildOnce`` that holds a single value: the process's pool, a pool's loop.
+_ONLY = "only"
 
 
 def configure_claude_cli_pool(*, enabled: bool = True, **settings: Any) -> None:
@@ -1228,25 +1261,25 @@ def claude_cli_pool() -> ClaudeCliPool | None:
     :return: the pool, or ``None``
     :rtype: ClaudeCliPool | None
     """
-    global _pool
     if _pool_disabled:
         return None
-    pool = _pool
-    if pool is None:
-        with _pool_lock:
-            pool = _pool
-            if pool is None:
-                pool = ClaudeCliPool(**_pool_settings)
-                atexit.register(_kill_remaining_at_exit, pool)
-                _pool = pool
+    return _pool.get(_ONLY, _build_pool)
+
+
+def _build_pool() -> ClaudeCliPool:
+    """Build the process's pool with the configured limits, and make sure its CLIs die with it.
+
+    :return: the new pool
+    :rtype: ClaudeCliPool
+    """
+    pool = ClaudeCliPool(**_pool_settings)
+    atexit.register(_kill_remaining_at_exit, pool)
     return pool
 
 
 async def close_claude_cli_pool() -> None:
     """Stop every CLI this process holds. A host calls this on a clean shutdown."""
-    global _pool
-    with _pool_lock:
-        pool, _pool = _pool, None
+    pool = _pool.pop(_ONLY)
     if pool is None:
         return
     await pool.aclose()

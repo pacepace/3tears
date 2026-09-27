@@ -52,6 +52,7 @@ from .collections import (
 )
 from .health import (
     ScrapeTargetHealthCollection,
+    clear_classification,
     content_fingerprint,
     record_classification,
     record_validated_fetch,
@@ -827,7 +828,9 @@ async def _run_reuse_cycle(
 
     - **blocked**: we never received the content. The recipe is untouched.
     - **changed, newly**: the page really is different, so waiting two more polls to act on
-      evidence we already have is pure latency. Regenerate now.
+      evidence we already have is pure latency. Regenerate now. If the regeneration cannot run
+      because a model call failed, the cached verdict is withdrawn before the failure
+      propagates, so the next poll regenerates instead of reading it as already acted on.
     - **changed, but read from the cache**: we already regenerated against this exact page
       and it did not stick. Regenerating again would spend a candidate round on every poll
       for a page we have demonstrably failed to learn -- strictly worse than the three-poll
@@ -866,7 +869,15 @@ async def _run_reuse_cycle(
                 verdict.evidence,
                 extra={"extra_data": {"target_id": target_id}},
             )
-            return await regenerate()
+            try:
+                return await regenerate()
+            except StructuredCallFailedError:
+                # The verdict was cached before regenerating, and a cached "changed" reads as
+                # "regenerated against this page already and it did not stick" -- untrue when the
+                # model was unavailable, and the next poll would record a failed row for a page
+                # it knows changed. Withdrawn, so the next poll asks again and regenerates.
+                await _withdraw_verdict(html, target_id, health_collection=health_collection)
+                raise
 
     return await _commit_reuse(
         existing_recipe,
@@ -876,6 +887,38 @@ async def _run_reuse_cycle(
         recipe_collection=recipe_collection,
         extraction_collection=extraction_collection,
     )
+
+
+async def _withdraw_verdict(
+    html: str,
+    target_id: str,
+    *,
+    health_collection: ScrapeTargetHealthCollection | None,
+) -> None:
+    """Take back the verdict cached for *html* because the action it called for never happened.
+
+    Called while a model failure is on its way out, so a failure here is logged and swallowed:
+    it must not replace the error the caller is about to receive. What is lost is only the
+    withdrawal, and the next poll then counts one failure where it should have regenerated --
+    the behaviour this exists to prevent, but no worse than before it.
+
+    :param html: the page the verdict was about
+    :ptype html: str
+    :param target_id: the target whose verdict is withdrawn
+    :ptype target_id: str
+    :param health_collection: the health store, or ``None`` for a caller that has not opted in
+    :ptype health_collection: ScrapeTargetHealthCollection | None
+    """
+    if health_collection is None:
+        return
+    try:
+        await clear_classification(health_collection, target_id=target_id, fingerprint=content_fingerprint(html))
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- runs while a model failure propagates; it must not mask that error, and it is logged with its traceback below
+        log.exception(
+            "scrape health: could not withdraw the page verdict for target %s; the next poll may count a failure",
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
 
 
 async def _persist_no_survivors(

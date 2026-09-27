@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import dataclass
 from typing import Any, Coroutine, TypeVar
 
 from threetears.core.config import DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS
+from threetears.observe import BuildOnce
 
 __all__ = [
     "T",
@@ -31,9 +33,27 @@ __all__ = [
 
 T = TypeVar("T")
 
-_lock = threading.Lock()
-_loop: asyncio.AbstractEventLoop | None = None
-_thread: threading.Thread | None = None
+
+@dataclass(frozen=True)
+class _BridgeLoop:
+    """the background loop and the daemon thread running it.
+
+    :ivar loop: the loop, running once this is stored
+    :ivar thread: the thread whose ``run_forever`` it is
+    """
+
+    loop: asyncio.AbstractEventLoop
+    thread: threading.Thread
+
+
+#: the one background loop, built on first use and rebuilt if it stopped. several threads reach
+#: the bridge at once, so it is built through ``BuildOnce``: a second loop would strand the work
+#: already queued on the first, and a loop-bound resource made on one would later be used from
+#: the other.
+_background: BuildOnce[str, _BridgeLoop] = BuildOnce(is_current=lambda bridge: bridge.loop.is_running())
+
+#: the one key :data:`_background` holds.
+_ONLY = "only"
 
 # strong references to tasks scheduled on a caller's running loop via
 # ``create_task``. asyncio keeps only a weak reference to such tasks, so an
@@ -42,42 +62,45 @@ _thread: threading.Thread | None = None
 _pending_tasks: set[asyncio.Task[Any]] = set()
 
 
-def _ensure_loop() -> asyncio.AbstractEventLoop:
-    """Lazily start the background event loop on first use.
+def _start_loop() -> _BridgeLoop:
+    """start a background loop on a daemon thread, returning only once it is RUNNING.
 
-    the lock is not released until the new loop is RUNNING. ``is_running()`` is what
-    both checks read, and it stays False between ``Thread.start()`` and the new thread
-    entering ``run_forever``; a caller that took the lock in that gap saw no running
-    loop and started a second one, replacing the first while work was already queued
-    on it -- so a loop-bound resource made on one loop was later used from the other.
+    ``is_running()`` is what :data:`_background` judges a stored loop by, and it stays False between
+    ``Thread.start()`` and the new thread entering ``run_forever``. a loop published in that gap
+    would read as stale to the next caller, which would start a second one and replace the first
+    while work was already queued on it -- so a loop-bound resource made on one loop was later
+    used from the other.
+
+    :return: the running loop and its thread
+    :rtype: _BridgeLoop
+    :raises RuntimeError: if the loop does not start in time
+    """
+    loop = asyncio.new_event_loop()
+    running = threading.Event()
+    # the first callback a loop runs, so it fires once run_forever has begun
+    loop.call_soon(running.set)
+    thread = threading.Thread(
+        target=loop.run_forever,
+        daemon=True,
+        name="threetears-async-bridge",
+    )
+    thread.start()
+    # bounded, so a loop that never starts is an error naming itself rather than a caller
+    # hung here forever holding the lock every later caller waits on
+    if not running.wait(timeout=DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS):
+        raise RuntimeError(
+            f"the threetears async bridge loop did not start within {DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS}s"
+        )
+    return _BridgeLoop(loop=loop, thread=thread)
+
+
+def _ensure_loop() -> asyncio.AbstractEventLoop:
+    """the running background event loop, started on first use.
 
     :return: the running background loop
     :rtype: asyncio.AbstractEventLoop
     """
-    global _loop, _thread
-    if _loop is not None and _loop.is_running():
-        return _loop
-    with _lock:
-        if _loop is not None and _loop.is_running():
-            return _loop
-        loop = asyncio.new_event_loop()
-        running = threading.Event()
-        # the first callback a loop runs, so it fires once run_forever has begun
-        loop.call_soon(running.set)
-        _thread = threading.Thread(
-            target=loop.run_forever,
-            daemon=True,
-            name="threetears-async-bridge",
-        )
-        _thread.start()
-        # bounded, so a loop that never starts is an error naming itself rather than a caller
-        # hung here forever holding the lock every later caller waits on
-        if not running.wait(timeout=DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS):
-            raise RuntimeError(
-                f"the threetears async bridge loop did not start within {DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS}s"
-            )
-        _loop = loop
-        return _loop
+    return _background.get(_ONLY, _start_loop).loop
 
 
 def sync_await(coro: Coroutine[Any, Any, T]) -> T:
@@ -107,27 +130,27 @@ def fire_and_forget(coro: Coroutine[Any, Any, Any]) -> None:
 
 def drain() -> None:
     """Wait for all pending tasks on the background loop to complete."""
-    if _loop is None or not _loop.is_running():
+    bridge = _background.peek(_ONLY)
+    if bridge is None or not bridge.loop.is_running():
         return
+    loop = bridge.loop
 
     async def _drain() -> None:
         # Get all tasks on this loop and wait for them
-        tasks = [t for t in asyncio.all_tasks(_loop) if not t.done() and t is not asyncio.current_task()]
+        tasks = [t for t in asyncio.all_tasks(loop) if not t.done() and t is not asyncio.current_task()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    future = asyncio.run_coroutine_threadsafe(_drain(), _loop)
+    future = asyncio.run_coroutine_threadsafe(_drain(), loop)
     future.result(timeout=10)
 
 
 def shutdown() -> None:
     """Stop the background loop and join the thread. For clean teardown."""
-    global _loop, _thread
-    if _loop is not None and _loop.is_running():
-        _loop.call_soon_threadsafe(_loop.stop)
-    if _thread is not None:
-        _thread.join(timeout=5)
-        _thread = None
-    if _loop is not None:
-        _loop.close()
-        _loop = None
+    bridge = _background.pop(_ONLY)
+    if bridge is None:
+        return
+    if bridge.loop.is_running():
+        bridge.loop.call_soon_threadsafe(bridge.loop.stop)
+    bridge.thread.join(timeout=5)
+    bridge.loop.close()

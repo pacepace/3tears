@@ -333,7 +333,7 @@ packages/models/tests/unit/models/test_tracking_dimensions.py:TestUsageTrackerDi
 packages/models/tests/unit/models/test_tracking_dimensions.py:TestUsageTrackerDimensionSpanAttrs.setup_class#0:_done
 
 # rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
-packages/observe/src/threetears/observe/logging.py:ThreeTearsLogger.makeRecord#0:_getframe
+packages/observe/src/threetears/observe/logging.py:_find_call_site#0:_getframe
 
 # rationale: OpenTelemetry SDK >=1.39 guards trace.set_tracer_provider with the internal _TRACER_PROVIDER_SET_ONCE sentinel; resetting ._done is required for test isolation and repeat-init, and OTel exposes no public reset. type-ignored at the call site. upstream issue: open-telemetry/opentelemetry-python#3978
 packages/observe/src/threetears/observe/setup.py:init_telemetry#0:_TRACER_PROVIDER_SET_ONCE

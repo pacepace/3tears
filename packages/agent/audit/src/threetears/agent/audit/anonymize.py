@@ -477,11 +477,10 @@ def is_classified_detail_key(key: str, *, event_type: str) -> bool:
     unclassified key is still masked on erasure. this is the in-process form of
     the question, for a producer or a test that holds this package.
 
-    the enforcement gate (``threetears.enforcement.audit_details``) does NOT call
-    it: the enforcement package cannot depend on this one, so the gate is handed
-    :func:`safe_detail_keys_for` and :data:`PERSONAL_DETAIL_KEYS` and carries its
-    own copy of this predicate. a change to what "classified" means here must be
-    made there too, or the gate goes on judging by the old rule.
+    the enforcement gate (``threetears.enforcement.audit_details``) judges by
+    this very function: the enforcement package cannot depend on this one, so a
+    shell injects it as ``AuditDetailsConfig.is_classified`` and the gate calls it
+    per event type. a change to what "classified" means is made here alone.
 
     :param key: a details key
     :ptype key: str
