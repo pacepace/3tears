@@ -1188,6 +1188,36 @@ alone, which a redelivery repeats. `correlation_id` ties a request's events toge
 envelope, `publish_audit`, `ToolServer`'s baseline emission, `SchemaBackedCollection`'s
 `on_conflict` note and two READMEs now say so. No code changed.
 
+### A subscription model is given what the API route gives the model
+
+metallm ran one rewrite task through both routes. Median copy-similarity was 0.32 under a
+subscription and 0.18 over the API. The subscription route sent the model more than the API
+route did, and left thinking and effort to Claude Code's defaults.
+
+- **Changed:** thinking is `{"type": "disabled"}` unless the caller asks for it. The CLI's query
+  engine turned adaptive thinking on when none was given. The API route sends none, and the model
+  does not think. A model that refuses a disabled thinking parameter gets none from the CLI, as
+  from the API.
+- **Changed:** effort is `high` unless the caller asks for another, which is what the Messages API
+  applies when a request omits it. The CLI sent each model's launch effort instead, `xhigh` on one
+  current model. It is set in `--effort` and in `CLAUDE_CODE_EFFORT_LEVEL`, which outranks every
+  other source in the CLI's effort resolution.
+- **New (minor):** `create_chat_model(..., thinking=..., effort=...)` reaches a subscription model
+  as it reaches `ChatAnthropic`, in the same shapes, and so does `.bind(thinking=..., effort=...)`.
+  Before, the subscription factory dropped both.
+- **Changed:** the system prompt sent to the CLI starts with a blank line. The CLI sends its own
+  identity line ("You are a Claude agent, built on Anthropic's Claude Agent SDK.") as a system
+  block ahead of the caller's, and the two reached the model glued together. The caller's prompt
+  still REPLACES Claude Code's own (`--system-prompt`, not a preset with `append`).
+- **Unavoidable, documented in `_claude_cli`:**
+  - The identity line. The bundled CLI adds it to every request, whatever the credential, and no
+    option, flag or variable removes it.
+  - A `<system-reminder>` carrying `# currentDate`. The CLI's user context adds the date
+    unconditionally.
+  - An `x-anthropic-billing-header` block with the CLI's version and entrypoint. It could be
+    turned off with `CLAUDE_CODE_ATTRIBUTION_HEADER`, but is left on: its absence is unmeasured on a
+    subscription.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

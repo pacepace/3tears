@@ -259,7 +259,8 @@ class TestTheModelIsWiredToThePool:
         result = await model.ainvoke([_structured_system("persona", "memory"), HumanMessage(content="hi")])
         assert serving_pool["checkouts"] == 1
         assert "pooled answer" in str(result.content)
-        assert serving_pool["system_prompt"] == "persona"
+        # A blank line first: the CLI's own identity line comes before it (see test_claude_cli_api_parity).
+        assert serving_pool["system_prompt"] == "\n\npersona"
         assert "<prompt-context>\nmemory\n</prompt-context>" in serving_pool["client"].queries[0]
 
     async def test_a_streaming_call_runs_on_a_pooled_cli(self, serving_pool: dict[str, Any]) -> None:

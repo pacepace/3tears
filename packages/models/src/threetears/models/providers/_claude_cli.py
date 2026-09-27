@@ -128,6 +128,32 @@ before any of the notice is yielded, so the breaker's ``on_llm_error`` sees it a
 failure. A call that stopped to hand tool calls back, and one whose result carries the structured
 answer it asked for, did not fail.
 
+What reaches the model differs from the API route only where the CLI leaves no choice (found live:
+metallm measured a rewrite task copying its source nearly twice as much under a subscription).
+Read from the Agent SDK (``_internal/transport/subprocess_cli.py``) and the bundled CLI (2.1.207):
+
+- The caller's system prompt REPLACES Claude Code's: a string ``system_prompt`` becomes
+  ``--system-prompt``, whereas a ``{"type": "preset", "append": ...}`` prompt would keep Claude Code's
+  own. The CLI still puts its identity line -- "You are a Claude agent, built on Anthropic's Claude
+  Agent SDK." for a non-interactive session with no appended prompt -- in a system block of its own
+  ahead of the caller's, on every request, for every kind of credential; no option, flag or variable
+  skips it. It reached the model glued to the caller's first line, so the caller's prompt is sent
+  starting with a blank line (:data:`_AFTER_CLI_IDENTITY`).
+- The CLI sends a ``<system-reminder>`` user message ahead of the conversation carrying
+  ``# currentDate`` ("Today's date is ..."). The user context that holds it adds the date
+  unconditionally, and the reminder is sent whenever that context is not empty; nothing turns it
+  off. This, the identity line, and an ``x-anthropic-billing-header`` block (the CLI's version and
+  entrypoint) that the CLI adds to the system prompt are the differences that remain. That block
+  alone could be switched off, with ``CLAUDE_CODE_ATTRIBUTION_HEADER``; it is left on, because what
+  a subscription request without it does has not been measured.
+- Left unset, the CLI's query engine turns adaptive thinking on, and sends each model's own launch
+  effort (``xhigh`` on one current model). The API route sends neither, so the model does not think
+  and the API applies its default effort, ``high``. Both are pinned to that
+  (:data:`_NO_THINKING`, :data:`_API_DEFAULT_EFFORT`), and a caller's ``thinking`` / ``effort`` --
+  the API route's own parameters, in the same shapes -- are passed through instead. The effort is
+  also set in ``CLAUDE_CODE_EFFORT_LEVEL``, which outranks every other source in the CLI's effort
+  resolution, launch pins included.
+
 """
 
 from __future__ import annotations
@@ -186,6 +212,10 @@ _FORWARDED_KWARGS = frozenset(
         "cwd",
         "fallback_model",
         "max_budget_usd",
+        # The API route's ChatAnthropic takes these two as well, so a caller sets them once for
+        # either credential (see _SubscriptionChatModel.thinking / .effort).
+        "thinking",
+        "effort",
     }
 )
 
@@ -209,6 +239,23 @@ _CLI_PROVIDER = "Claude subscription"
 
 #: When a limit notice says the limit resets: "resets 1:10am (UTC)", "will reset at 5pm".
 _RESETS = re.compile(r"\bresets?\s+(?:at\s+)?(?P<when>[^\n]+)", re.IGNORECASE)
+
+#: Thinking when a caller asks for none. The API route sends no ``thinking`` then, and the model does
+#: not think; the CLI left unset turns adaptive thinking on. On a model that rejects a disabled
+#: thinking parameter the CLI omits it, which is what the API route sends too.
+_NO_THINKING: dict[str, Any] = {"type": "disabled"}
+
+#: Effort when a caller asks for none: what the Messages API applies when a request omits it. The
+#: CLI left unset sends each model's own launch effort instead (``xhigh`` on one current model).
+_API_DEFAULT_EFFORT = "high"
+
+#: The CLI's effort variable. It outranks the ``--effort`` flag, the settings and the per-model launch
+#: pins in the bundled CLI's effort resolution, so the effort sent is pinned here as well as in the flag.
+_EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
+
+#: What starts the caller's system prompt. The CLI sends its own identity line as a system block of
+#: its own ahead of the caller's, and the two reached the model with no separator between them.
+_AFTER_CLI_IDENTITY = "\n\n"
 
 
 def _output_format(output_config: Any) -> dict[str, Any]:
@@ -507,6 +554,14 @@ def _subscription_model_cls() -> type:
         # network access with zero caller-side gate.
         tools: list[str] | None = Field(default_factory=list)
 
+        # The API route's ``thinking`` and ``effort``, in the same shapes (the Agent SDK's
+        # ``ThinkingConfig`` is the Messages API's). Declared here for the same reason as
+        # :attr:`tools`: the base class drops a field it does not declare. ``None`` means what it
+        # means on the API route -- no extended thinking, the API's default effort -- not Claude
+        # Code's defaults (see :data:`_NO_THINKING` and :data:`_API_DEFAULT_EFFORT`).
+        thinking: dict[str, Any] | None = None
+        effort: str | None = None
+
         def _build_options(self, **overrides: Any) -> Any:
             """Force ``tools`` from :attr:`tools`, and cut the CLI off from the host's Claude config.
 
@@ -516,6 +571,8 @@ def _subscription_model_cls() -> type:
             for what an un-isolated CLI reads.
             """
             overrides.setdefault("tools", self.tools)
+            overrides.setdefault("thinking", self.thinking or _NO_THINKING)
+            overrides.setdefault("effort", self.effort or _API_DEFAULT_EFFORT)
             if "output_config" in overrides:
                 overrides["output_format"] = _output_format(overrides.pop("output_config"))
             from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415
@@ -535,7 +592,9 @@ def _subscription_model_cls() -> type:
             isolation = claude_cli_isolation(self.oauth_token)
             # A caller that deliberately points the CLI at a configuration or directory of its
             # own has made that choice; only an unset one falls back to the isolated default.
-            options.env = {**isolation.env, **(options.env or {})}
+            options.env = {**isolation.env, **(options.env or {}), _EFFORT_ENV: str(options.effort)}
+            if isinstance(options.system_prompt, str) and options.system_prompt.strip():
+                options.system_prompt = _AFTER_CLI_IDENTITY + options.system_prompt.lstrip("\n")
             if not options.cwd:
                 options.cwd = isolation.cwd
             options.extra_args = {**(options.extra_args or {}), **isolation.extra_args}
