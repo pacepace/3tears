@@ -1714,11 +1714,13 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
           re-raised with that context noted on the exception. A run that fails part-way
           this way is completed by running it again.
 
-        **Keys no rule classifies.** A turn-metadata key that neither
-        :data:`~threetears.langgraph.anonymize.IDENTIFYING_METADATA_KEYS` nor
-        :data:`~threetears.langgraph.anonymize.KEPT_METADATA_KEYS` names is kept -- masking
-        state the graph reloads could change what it does -- but it is never passed over
-        silently: every such key is reported on the result's
+        **Keys no rule classifies.** A turn-metadata key that
+        :func:`~threetears.langgraph.anonymize.metadata_key_classification` does not name --
+        neither the built-in sets nor a declaration made IN THIS PROCESS through
+        :func:`~threetears.langgraph.anonymize.declare_identifying_metadata_keys` or
+        :func:`~threetears.langgraph.anonymize.declare_kept_metadata_keys` -- is kept
+        (masking state the graph reloads could change what it does), but it is never passed
+        over silently: every such key is reported on the result's
         ``unclassified_metadata_keys`` and logged at WARNING. The erasure is complete only
         when ``unreadable`` AND ``unclassified_metadata_keys`` are both empty; a key a
         producer added that identifies a person stays stored until it is classified and the
@@ -1805,8 +1807,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         if unclassified_keys:
             log.warning(
                 "checkpoint anonymization kept turn-metadata keys no rule classifies; if any identifies a person "
-                "the erasure is incomplete. Classify each in threetears.langgraph.anonymize "
-                "(IDENTIFYING_METADATA_KEYS or KEPT_METADATA_KEYS) and run it again.",
+                "the erasure is incomplete. Classify each in the process that runs this anonymization "
+                "(threetears.langgraph declare_identifying_metadata_keys or declare_kept_metadata_keys) "
+                "and run it again.",
                 extra={"unclassified_metadata_keys": list(unclassified_keys)},
             )
         log.info(

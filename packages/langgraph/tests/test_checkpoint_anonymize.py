@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from typing import Annotated, Any, TypedDict
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -27,15 +27,20 @@ from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.langgraph import (
     IDENTIFYING_METADATA_KEYS,
     KEPT_METADATA_KEYS,
+    METADATA_CHANNEL,
     AsyncQueryExecutor,
     CheckpointAnonymization,
     CheckpointL1Cache,
     CheckpointL2Cache,
     CheckpointL2PrefixCache,
     CheckpointScope,
+    MetadataKeyClassification,
     ThreeTierCheckpointSaver,
     anonymize_checkpoint_value,
+    declare_identifying_metadata_keys,
+    declare_kept_metadata_keys,
     merge_metadata,
+    metadata_key_classification,
     unclassified_metadata_keys,
 )
 
@@ -760,3 +765,135 @@ class TestAFailedErasureCanBeFound:
         assert "writing checkpoint ns=" in notes
         [logged] = [r for r in caplog.records if "anonymization failed" in r.getMessage()]
         assert (logged.__dict__["thread_id"], logged.__dict__["stage"]) == (_THREAD, "checkpoints")
+
+
+def _fresh_key(stem: str) -> str:
+    """
+    a turn-metadata key no other test has declared.
+
+    declarations are process-wide and accumulate, so each test declares its own keys.
+
+    :param stem: a readable prefix for the key
+    :ptype stem: str
+    :return: a key unique to this call
+    :rtype: str
+    """
+    return f"{stem}_{uuid4().hex}"
+
+
+class TestDeclaredClassification:
+    """a consumer classifies the turn-metadata keys it writes, in the process that anonymizes."""
+
+    def test_a_declared_identifying_key_is_masked_at_any_depth(self) -> None:
+        """a declared key is anonymized exactly like a built-in identifying one."""
+        key = _fresh_key("sender_timezone")
+        declare_identifying_metadata_keys([key])
+        value = {"__start__": {"metadata": {key: "Europe/Dublin", "channel_ref": "C1"}}}
+
+        assert anonymize_checkpoint_value(value) == {
+            "__start__": {"metadata": {key: ANONYMIZED_MARKER, "channel_ref": "C1"}}
+        }
+        assert unclassified_metadata_keys(value) == frozenset()
+
+    def test_a_declared_kept_key_is_kept_and_not_reported(self) -> None:
+        """a routing key a consumer ruled on is neither masked nor reported."""
+        key = _fresh_key("scope_ref")
+        declare_kept_metadata_keys([key])
+        value = {"channel_values": {"metadata": {key: {"customer_id": "c-1"}}}}
+
+        assert anonymize_checkpoint_value(value) is value
+        assert unclassified_metadata_keys(value) == frozenset()
+
+    def test_the_lookup_holds_the_built_in_sets_and_every_declaration(self) -> None:
+        """one lookup answers for the anonymizer and for a consumer's gate alike."""
+        identifying, kept = _fresh_key("sender_locale"), _fresh_key("route_ref")
+        declare_identifying_metadata_keys([identifying])
+        declare_kept_metadata_keys([kept])
+
+        classification = metadata_key_classification()
+
+        assert isinstance(classification, MetadataKeyClassification)
+        assert IDENTIFYING_METADATA_KEYS <= classification.identifying
+        assert KEPT_METADATA_KEYS <= classification.kept
+        assert identifying in classification.identifying and identifying not in classification.kept
+        assert kept in classification.kept and kept not in classification.identifying
+        assert classification.is_classified(identifying) and classification.is_classified(kept)
+        assert not classification.is_classified(_fresh_key("nobody_decided"))
+
+    def test_declaring_the_same_keys_twice_is_harmless(self) -> None:
+        """a module imported twice, or two call sites declaring one key, converge."""
+        key = _fresh_key("sender_locale")
+        declare_identifying_metadata_keys([key])
+        declare_identifying_metadata_keys([key])
+        declare_kept_metadata_keys(["channel_ref"])
+
+        assert key in metadata_key_classification().identifying
+
+    @pytest.mark.parametrize("built_in", sorted(IDENTIFYING_METADATA_KEYS))
+    def test_a_built_in_identifying_key_cannot_be_declared_kept(self, built_in: str) -> None:
+        """a consumer cannot quietly un-anonymize the sender's identity."""
+        with pytest.raises(ValueError, match="cannot be both"):
+            declare_kept_metadata_keys([built_in])
+
+    @pytest.mark.parametrize("built_in", sorted(KEPT_METADATA_KEYS))
+    def test_a_built_in_kept_key_cannot_be_declared_identifying(self, built_in: str) -> None:
+        """masking a ledger the agent reads back would change what it does next turn."""
+        with pytest.raises(ValueError, match="cannot be both"):
+            declare_identifying_metadata_keys([built_in])
+
+    def test_a_contradicting_batch_declares_nothing(self) -> None:
+        """one key already on the other side refuses the whole batch, so no half-declaration lands."""
+        kept, fresh = _fresh_key("route_ref"), _fresh_key("sender_locale")
+        declare_kept_metadata_keys([kept])
+
+        with pytest.raises(ValueError, match="cannot be both"):
+            declare_identifying_metadata_keys([fresh, kept])
+
+        assert not metadata_key_classification().is_classified(fresh)
+        assert kept not in metadata_key_classification().identifying
+
+    @pytest.mark.parametrize("declare", [declare_identifying_metadata_keys, declare_kept_metadata_keys])
+    @pytest.mark.parametrize("key", ["", " "])
+    def test_a_blank_key_is_refused_and_the_batch_declares_nothing(self, declare: Any, key: str) -> None:
+        """an empty key names nothing and is a caller bug."""
+        fresh = _fresh_key("sender_locale")
+        with pytest.raises(ValueError, match="non-blank"):
+            declare([fresh, key])
+
+        assert not metadata_key_classification().is_classified(fresh)
+
+    @pytest.mark.parametrize("declare", [declare_identifying_metadata_keys, declare_kept_metadata_keys])
+    def test_the_channels_own_name_is_refused(self, declare: Any) -> None:
+        """a forwarded field named ``metadata`` must not classify the whole channel stored under that name."""
+        fresh = _fresh_key("sender_locale")
+        with pytest.raises(ValueError, match="channel itself"):
+            declare([fresh, METADATA_CHANNEL])
+
+        assert not metadata_key_classification().is_classified(fresh)
+        assert not metadata_key_classification().is_classified(METADATA_CHANNEL)
+
+    @pytest.mark.parametrize("declare", [declare_identifying_metadata_keys, declare_kept_metadata_keys])
+    def test_a_bare_string_is_refused_as_the_key_collection(self, declare: Any) -> None:
+        """``"user_locale"`` iterates as characters; that is never what the caller meant."""
+        with pytest.raises(TypeError):
+            declare("user_locale")
+
+    async def test_a_thread_carrying_declared_keys_is_erased_and_reports_nothing(
+        self, executor: SqliteQueryExecutor
+    ) -> None:
+        """the saver consults the declarations: the personal value is gone, the routing value kept."""
+        identifying, kept = _fresh_key("sender_timezone"), _fresh_key("scope_ref")
+        declare_identifying_metadata_keys([identifying])
+        declare_kept_metadata_keys([kept])
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        turn = _turn()
+        turn["metadata"] = {**turn["metadata"], identifying: "Pacific/Chatham", kept: "scope-routing-7"}
+        await _graph(saver).ainvoke(turn, _config())
+        assert any(b"Pacific/Chatham" in blob for blob in executor.blobs()), "the turn stored the value first"
+
+        result = await saver.aanonymize_threads([_THREAD])
+
+        assert result.unclassified_metadata_keys == ()
+        assert not any(b"Pacific/Chatham" in blob for blob in executor.blobs())
+        assert any(b"scope-routing-7" in blob for blob in executor.blobs()), "a kept value survives"
+        assert not _leaks(executor)

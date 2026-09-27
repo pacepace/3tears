@@ -71,9 +71,11 @@ so `UsageTracker()` no longer raises `Duplicated timeseries in CollectorRegistry
 enforcement test now requires; and a Claude CLI call from a second event loop falls back to its
 own CLI instead of failing -- read "A process-wide object is built once when several threads ask
 for it first". `threetears.langgraph` also gains `KEPT_METADATA_KEYS`, `METADATA_CHANNEL`,
-`unclassified_metadata_keys` and `CheckpointAnonymization.unclassified_metadata_keys`, and
-`AuditDetailsConfig` takes the classification predicate (`is_classified`) in place of
-`personal_keys`.
+`unclassified_metadata_keys` and `CheckpointAnonymization.unclassified_metadata_keys`, and a
+consumer classifies its own turn-metadata keys with `declare_identifying_metadata_keys`,
+`declare_kept_metadata_keys` and the one lookup `metadata_key_classification`
+(`MetadataKeyClassification`); `AuditDetailsConfig` takes the classification predicate
+(`is_classified`) in place of `personal_keys`.
 
 ### Two agents created in the same minute no longer share a namespace name
 
@@ -501,6 +503,24 @@ live inside serialized checkpoint and pending-write blobs.
   `unclassified_metadata_keys` (sorted), also logged at WARNING and on the run's INFO line.
   The erasure is complete only when `unreadable` and `unclassified_metadata_keys` are both
   empty; the fix for a reported key is to classify it and run again.
+- **A consumer classifies its own keys (minor).** `KEPT_METADATA_KEYS` is a 3tears constant,
+  so a key a consumer's router or runtime writes (a user's timezone, a knowledge scope) could
+  only be classified by releasing 3tears, and every erasure would report it forever -- a
+  warning that fires every time trains people to ignore it.
+  `declare_identifying_metadata_keys(keys)` adds keys whose value identifies or describes the
+  person (masked at any depth, like `IDENTIFYING_METADATA_KEYS`);
+  `declare_kept_metadata_keys(keys)` adds keys ruled not to (kept, like `KEPT_METADATA_KEYS`).
+  `metadata_key_classification()` returns a `MetadataKeyClassification` (`identifying`,
+  `kept`, `is_classified(key)`): the built-in sets plus every declaration, and the one lookup
+  `anonymize_checkpoint_value` and `unclassified_metadata_keys` consult. A key cannot be on
+  both sides: declaring one already classified the other way raises `ValueError` and the batch
+  declares nothing; a blank key, or `METADATA_CHANNEL` itself (a forwarded field named
+  `metadata` would otherwise classify the whole channel), raises `ValueError`, and a bare string
+  `TypeError`. An
+  undeclared key is still kept and reported, as before. **A declaration is visible only in
+  the process that makes it**, the same caveat as `declare_safe_detail_keys`: make it in the
+  process that calls `aanonymize_threads`, which is often not the agent pod that wrote the
+  key.
 - **New (minor):** `threetears.observe.ANONYMIZED_MARKER` (`threetears.observe.erasure`),
   the platform's one erasure marker, homed in the layer every package already depends on
   so the checkpoint saver shares its spelling without depending on the audit package.
