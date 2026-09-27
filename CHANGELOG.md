@@ -48,6 +48,10 @@ read `is_error` from the metadata.
 Fixed: no name, key or id is cut from the head of a uuid7 any more, so two agents created
 together for one customer both get memory and conversation namespaces -- read "Two agents
 created in the same minute no longer share a namespace name"; existing rows need nothing.
+Fixed: a process-wide object built lazily is built once when several threads ask for it first,
+so `UsageTracker()` no longer raises `Duplicated timeseries in CollectorRegistry` out of
+`create_chat_model` -- read "A process-wide object is built once when several threads ask for it
+first".
 
 ### Two agents created in the same minute no longer share a namespace name
 
@@ -129,6 +133,29 @@ Two narrow edges, stated rather than inferred:
 (`x.hex[:n]`, `x.hex[0:n]`) in every package's `src/` and `tests/` unless it is taken from an
 explicit `uuid4()`; the test-only sites it found (in-memory database names, a scratch database,
 a fixture group name) were flakes of the same shape and are fixed.
+
+### A process-wide object is built once when several threads ask for it first
+
+Several lazily built module-level objects were checked and then filled with no lock. A consumer
+that builds or calls models from several threads -- a sync `invoke` runs its own event loop on the
+caller's thread -- reached them from several threads at once, and every thread that looked before
+the first one stored the object built another:
+
+- `UsageTracker()` raised `ValueError: Duplicated timeseries in CollectorRegistry` out of
+  `create_chat_model`, because each racing thread registered the `threetears_llm_*` instruments
+  again (reported building models from several threads).
+- The same happened to `threetears.observe.metrics`' `counter` / `histogram` / `gauge` /
+  `@metered`, to `get_scheduled_jobs_emitter` and to `get_wake_emitter`.
+- `claude_cli_pool()` built a second process-wide pool, so twice the CLIs the limits allow ran,
+  and all but one pool was orphaned.
+- `claude_cli_isolation` made several isolation roots for one credential.
+- The sync-to-async bridge in `threetears.core` could start a second background event loop. Its
+  lock checked `is_running()`, which stays False until the new thread enters `run_forever`, so
+  work queued on the first loop was stranded beside a second.
+
+Each is now built under a module-level lock, with the unlocked read kept first so every later
+call stays lock-free. The bridge publishes its loop only once the loop is running. Nothing
+changes for a single-threaded caller.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 

@@ -20,6 +20,8 @@ from threetears.scheduled_jobs.metrics import (
     SCHEDULED_JOBS_LABEL_SETS,
     SCHEDULED_JOBS_PROMETHEUS_NAMES,
     ScheduledJobsMetricsEmitter,
+    get_scheduled_jobs_emitter,
+    reset_scheduled_jobs_emitter_for_testing,
 )
 
 
@@ -59,3 +61,70 @@ class TestEmitterSmoke:
         emitter.observe_drift(3.2)
         emitter.unregister_from_registry()
         assert emitter.available is False
+
+
+class TestConcurrentFirstUse:
+    def test_emitters_first_asked_for_on_several_threads_register_once(self) -> None:
+        """concurrent first callers for one registry share one emitter and raise nothing.
+
+        the per-registry cache is checked and then filled; without a lock every thread that
+        checked before the first one filled it built its own emitter, and the second one's
+        registration raised ``Duplicated timeseries``. the registry registers slowly so every
+        thread is certainly inside that window at once.
+        """
+        import threading
+        import time
+
+        prometheus_client = pytest.importorskip("prometheus_client")
+
+        class _SlowRegistry(prometheus_client.CollectorRegistry):  # type: ignore[misc]
+            """a registry that holds each registration open long enough for every thread to arrive."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.registrations = 0
+
+            def register(self, collector: object) -> None:
+                """count, wait, register.
+
+                :param collector: the collector being registered
+                :ptype collector: object
+                :return: None
+                :rtype: None
+                """
+                self.registrations += 1
+                time.sleep(0.05)
+                super().register(collector)
+
+        registry = _SlowRegistry()
+        threads_count = 8
+        start = threading.Barrier(threads_count)
+        emitters: list[object] = []
+        errors: list[BaseException] = []
+        record = threading.Lock()
+
+        def first_use() -> None:
+            start.wait()
+            try:
+                emitter = get_scheduled_jobs_emitter(registry)
+            except BaseException as exc:  # noqa: BLE001 -- the assertion below reports every one
+                with record:
+                    errors.append(exc)
+                return
+            with record:
+                emitters.append(emitter)
+
+        try:
+            workers = [threading.Thread(target=first_use) for _ in range(threads_count)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=30)
+
+            assert errors == [], f"concurrent first callers raised: {errors!r}"
+            assert len({id(emitter) for emitter in emitters}) == 1
+            once = registry.registrations
+            get_scheduled_jobs_emitter(registry)
+            assert registry.registrations == once, "a later call registered again"
+        finally:
+            reset_scheduled_jobs_emitter_for_testing()

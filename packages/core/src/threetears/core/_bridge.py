@@ -33,6 +33,10 @@ _lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
 
+#: how long a first caller waits for the new background loop to be running before it
+#: reports the loop as failed to start. a healthy start takes milliseconds.
+_LOOP_START_TIMEOUT_SECONDS = 30.0
+
 # strong references to tasks scheduled on a caller's running loop via
 # ``create_task``. asyncio keeps only a weak reference to such tasks, so an
 # unreferenced task can be garbage-collected mid-flight, silently dropping the
@@ -41,20 +45,38 @@ _pending_tasks: set[asyncio.Task[Any]] = set()
 
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
-    """Lazily start the background event loop on first use."""
+    """Lazily start the background event loop on first use.
+
+    the lock is not released until the new loop is RUNNING. ``is_running()`` is what
+    both checks read, and it stays False between ``Thread.start()`` and the new thread
+    entering ``run_forever``; a caller that took the lock in that gap saw no running
+    loop and started a second one, replacing the first while work was already queued
+    on it -- so a loop-bound resource made on one loop was later used from the other.
+
+    :return: the running background loop
+    :rtype: asyncio.AbstractEventLoop
+    """
     global _loop, _thread
     if _loop is not None and _loop.is_running():
         return _loop
     with _lock:
         if _loop is not None and _loop.is_running():
             return _loop
-        _loop = asyncio.new_event_loop()
+        loop = asyncio.new_event_loop()
+        running = threading.Event()
+        # the first callback a loop runs, so it fires once run_forever has begun
+        loop.call_soon(running.set)
         _thread = threading.Thread(
-            target=_loop.run_forever,
+            target=loop.run_forever,
             daemon=True,
             name="threetears-async-bridge",
         )
         _thread.start()
+        # bounded, so a loop that never starts is an error naming itself rather than a caller
+        # hung here forever holding the lock every later caller waits on
+        if not running.wait(timeout=_LOOP_START_TIMEOUT_SECONDS):
+            raise RuntimeError(f"the threetears async bridge loop did not start within {_LOOP_START_TIMEOUT_SECONDS}s")
+        _loop = loop
         return _loop
 
 

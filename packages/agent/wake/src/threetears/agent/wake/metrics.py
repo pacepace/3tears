@@ -34,6 +34,7 @@ OBS-01 .. OBS-10.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import get_logger
@@ -403,6 +404,12 @@ class WakeMetricsEmitter:
 # registry path.
 _EMITTERS: dict[int, WakeMetricsEmitter] = {}
 
+#: guards the check-then-create on :data:`_EMITTERS`. the getter is a sync function a
+#: consumer may reach from several threads at once; without the lock every thread that
+#: looked before the first one stored its emitter built another, and the second one's
+#: registration raised ``Duplicated timeseries in CollectorRegistry``.
+_EMITTERS_LOCK = threading.Lock()
+
 
 def get_wake_emitter(
     registry: "CollectorRegistry | None" = None,
@@ -423,8 +430,11 @@ def get_wake_emitter(
     key = 0 if registry is None else id(registry)
     emitter = _EMITTERS.get(key)
     if emitter is None:
-        emitter = WakeMetricsEmitter(registry=registry)
-        _EMITTERS[key] = emitter
+        with _EMITTERS_LOCK:
+            emitter = _EMITTERS.get(key)
+            if emitter is None:
+                emitter = WakeMetricsEmitter(registry=registry)
+                _EMITTERS[key] = emitter
     return emitter
 
 
@@ -441,6 +451,7 @@ def reset_wake_emitter_for_testing() -> None:
     the next emitter's ``_initialise`` would raise ``ValueError:
     Duplicated timeseries``.
     """
-    for emitter in _EMITTERS.values():
-        emitter.unregister_from_registry()
-    _EMITTERS.clear()
+    with _EMITTERS_LOCK:
+        for emitter in _EMITTERS.values():
+            emitter.unregister_from_registry()
+        _EMITTERS.clear()

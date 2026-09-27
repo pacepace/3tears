@@ -41,6 +41,7 @@ import json
 import os
 import secrets
 import signal
+import threading
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -1201,6 +1202,12 @@ _pool: ClaudeCliPool | None = None
 _pool_settings: dict[str, Any] = {}
 _pool_disabled = False
 
+#: guards the build-on-first-use of :data:`_pool`. a sync ``invoke`` runs its own event loop on the
+#: caller's thread, so a consumer calling models from several threads reaches the accessor from
+#: several threads at once; without the lock each one that looked before the first stored its pool
+#: built another -- twice the CLIs the limits allow, and all but one pool orphaned.
+_pool_lock = threading.Lock()
+
 
 def configure_claude_cli_pool(*, enabled: bool = True, **settings: Any) -> None:
     """Set the process-wide pool's limits before first use, or turn pooling off.
@@ -1224,18 +1231,24 @@ def claude_cli_pool() -> ClaudeCliPool | None:
     global _pool
     if _pool_disabled:
         return None
-    if _pool is None:
-        _pool = ClaudeCliPool(**_pool_settings)
-        atexit.register(_kill_remaining_at_exit, _pool)
-    return _pool
+    pool = _pool
+    if pool is None:
+        with _pool_lock:
+            pool = _pool
+            if pool is None:
+                pool = ClaudeCliPool(**_pool_settings)
+                atexit.register(_kill_remaining_at_exit, pool)
+                _pool = pool
+    return pool
 
 
 async def close_claude_cli_pool() -> None:
     """Stop every CLI this process holds. A host calls this on a clean shutdown."""
     global _pool
-    if _pool is None:
+    with _pool_lock:
+        pool, _pool = _pool, None
+    if pool is None:
         return
-    pool, _pool = _pool, None
     await pool.aclose()
 
 

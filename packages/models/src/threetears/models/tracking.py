@@ -23,6 +23,7 @@ logs failures with ``exc_info=True`` and never re-raises.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from collections.abc import Iterator, Mapping
@@ -712,13 +713,24 @@ class _PrometheusEmitter:
 # ``CollectorRegistry`` and get independent emitters back.
 _PROM_EMITTERS: dict[int, _PrometheusEmitter] = {}
 
+#: guards the check-then-create on :data:`_PROM_EMITTERS`. a ``UsageTracker`` is built
+#: wherever a model is, and consumers build models from several threads at once: without
+#: it every thread that looked before the first one stored its emitter built another, and
+#: the second one's registration raised ``Duplicated timeseries in CollectorRegistry``
+#: out of ``create_chat_model``. a ``threading`` lock rather than an ``asyncio`` one
+#: because the callers are threads, and construction never awaits.
+_PROM_EMITTERS_LOCK = threading.Lock()
+
 
 def _get_prom_emitter(registry: "CollectorRegistry | None" = None) -> _PrometheusEmitter:
     """returns the cached Prometheus emitter for the given registry.
 
     when ``registry`` is ``None`` the default global registry is used and
     the sentinel key ``0`` indexes the cache. The emitter is instantiated
-    on first use per (process, registry) pair.
+    on first use per (process, registry) pair, under
+    :data:`_PROM_EMITTERS_LOCK` so concurrent first callers build and
+    register exactly one. the unlocked read first keeps every later call
+    lock-free.
 
     :param registry: optional collector registry; ``None`` uses the
         default global registry
@@ -730,8 +742,11 @@ def _get_prom_emitter(registry: "CollectorRegistry | None" = None) -> _Prometheu
     key = 0 if registry is None else id(registry)
     emitter = _PROM_EMITTERS.get(key)
     if emitter is None:
-        emitter = _PrometheusEmitter(registry=registry)
-        _PROM_EMITTERS[key] = emitter
+        with _PROM_EMITTERS_LOCK:
+            emitter = _PROM_EMITTERS.get(key)
+            if emitter is None:
+                emitter = _PrometheusEmitter(registry=registry)
+                _PROM_EMITTERS[key] = emitter
     return emitter
 
 
@@ -752,9 +767,10 @@ def _reset_prom_emitter_for_testing() -> None:
     to register a same-named counter that the previous emitter already
     put there.
     """
-    for emitter in _PROM_EMITTERS.values():
-        emitter.unregister_from_registry()
-    _PROM_EMITTERS.clear()
+    with _PROM_EMITTERS_LOCK:
+        for emitter in _PROM_EMITTERS.values():
+            emitter.unregister_from_registry()
+        _PROM_EMITTERS.clear()
 
 
 class UsageTracker:

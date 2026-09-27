@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import threading
 import time
 from typing import Any, Callable, TypeVar, overload
 
@@ -166,6 +167,12 @@ _NOOP_METRIC = _NoOpMetric()
 #: module-level object rather than recreated per call.
 _instruments: dict[tuple[str, str, tuple[str, ...]], Any] = {}
 
+#: guards the check-then-create on :data:`_instruments`. the accessors and ``@metered`` are
+#: reached from sync code on any thread (an executor, a worker thread); without it every
+#: thread that looked before the first one stored the instrument built another, and the
+#: second one's registration raised ``Duplicated timeseries`` at the caller.
+_instruments_lock = threading.Lock()
+
 
 def _get_or_create_instrument(
     kind: str,
@@ -192,13 +199,18 @@ def _get_or_create_instrument(
 
     sanitized = _sanitize_metric_name(name)
     key = (kind, sanitized, label_names)
-    if key not in _instruments:
-        from prometheus_client import Counter, Gauge, Histogram
+    instrument = _instruments.get(key)
+    if instrument is None:
+        with _instruments_lock:
+            instrument = _instruments.get(key)
+            if instrument is None:
+                from prometheus_client import Counter, Gauge, Histogram
 
-        instrument_classes = {"counter": Counter, "histogram": Histogram, "gauge": Gauge}
-        instrument_class = instrument_classes[kind]
-        _instruments[key] = instrument_class(sanitized, description or f"{sanitized} {kind}", list(label_names))
-    return _instruments[key]
+                instrument_classes = {"counter": Counter, "histogram": Histogram, "gauge": Gauge}
+                instrument_class = instrument_classes[kind]
+                instrument = instrument_class(sanitized, description or f"{sanitized} {kind}", list(label_names))
+                _instruments[key] = instrument
+    return instrument
 
 
 def counter(
