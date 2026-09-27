@@ -90,6 +90,31 @@ packages (bumped in lock-step).
   `dispatch_conversation_summarized` fires the existing `ConversationSummarizedEvent`. Scriob and
   metallm each hand-rolled this, with incompatible cursors.
 
+### Usage that knows who it belongs to
+
+- **New (minor):** `threetears.models.usage_scope(**fields)` and `current_usage_scope()`.
+  - A scope attributes every usage record made inside it: customer, user, conversation, agent,
+    model id, correlation id, invocation ref, category.
+  - Scopes nest (an inner scope overrides only what it names), and the scope rides a
+    `ContextVar`.
+  - Run metadata `threetears.usage.<field>` attributes one call and wins over the scope;
+    `threetears.usage.purpose` classifies it.
+  - `UsageTrackingCallback` now fills a record's tenant fields and cache read/write tokens.
+    Before, nothing could fill them, so multi-tenant consumers kept a second metering path.
+- **New (minor):** `UsageRecord.token_source`: `"reported"`, `"estimated"` or `"unavailable"`.
+  - A call whose provider reports no usage is estimated from its text (and its prompt) and
+    marked so, instead of recording a silent 0/0.
+  - Every generation is counted, not only the first.
+  - `extract_usage(response, prompt_messages=)` is the shared extraction.
+- **New (minor):** `UsageAccumulator`, a callback totalling one run's calls for per-turn
+  metering (tokens, cache tokens, calls, a combined source, and `cost_usd` as `Decimal`), and
+  `attach_callbacks(model, *handlers)`. `create_chat_model`'s return is a `RunnableBinding`, where
+  `model_copy` silently drops added callbacks; `attach_callbacks` adds to it and keeps the ones
+  already bound.
+- **New (minor):** `set_default_usage_tracker(tracker)` / `default_usage_tracker()`. A
+  factory-built model without `tracker=` uses the process-wide default, so it reaches the
+  consumer's sinks. Before, each model got a fresh tracker with no sinks.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

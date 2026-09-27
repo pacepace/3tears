@@ -93,13 +93,21 @@ from threetears.models.tool_name_validation import (
     validate_tool_name,
 )
 from threetears.models.tracking import (
+    USAGE_METADATA_PREFIX,
     LlmPurpose,
+    TokenSource,
     UsageAuditSink,
     UsageCounterSink,
     UsageRecord,
     UsageTracker,
     UsageTrackingCallback,
+    current_usage_scope,
+    default_usage_tracker,
+    extract_usage,
+    set_default_usage_tracker,
+    usage_scope,
 )
+from threetears.models.usage import UsageAccumulator, attach_callbacks
 
 # Eager-import builtin provider modules so their import-time
 # `register_capabilities()` calls populate the shared registry. The
@@ -115,6 +123,15 @@ from threetears.models.providers import (  # noqa: E402, F401
 )
 
 __all__ = [
+    "USAGE_METADATA_PREFIX",
+    "TokenSource",
+    "UsageAccumulator",
+    "attach_callbacks",
+    "current_usage_scope",
+    "default_usage_tracker",
+    "extract_usage",
+    "set_default_usage_tracker",
+    "usage_scope",
     "BUILTIN_PROVIDERS",
     "CURRENT_ANTHROPIC_CHAT_MODELS",
     "CURRENT_VOYAGEAI_EMBEDDING_MODELS",
