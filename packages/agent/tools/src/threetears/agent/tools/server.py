@@ -536,6 +536,11 @@ class ToolRegistrationRefused(Exception):
 #: serve during a roll. The pod mints a fresh token for every manifest, so the next heartbeat is a
 #: real retry. A pod that is genuinely unverifiable is not raised at once; its readiness wait runs
 #: out and answers ``False``, with the refusal logged at WARNING naming the code.
+#:
+#: Also temporary: ``PUBLISHER_VERIFICATION_UNAVAILABLE`` (the registry's authenticator could not
+#: read the store it verifies against, so nothing was decided) and ``CATALOG_UNAVAILABLE`` (the
+#: verdict was reached but the catalog could not record it). Both used to be a dropped reply, which
+#: this pod saw only as its own request timing out.
 FINAL_REFUSAL_CODES: Final[frozenset[str]] = frozenset(
     {
         "OWNED_ELSEWHERE",

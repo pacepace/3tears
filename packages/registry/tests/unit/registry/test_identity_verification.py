@@ -43,7 +43,8 @@ from threetears.core.security.identity_token import (
     sign_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, make_pop_proof
-from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.nats import IncomingMessage, KvError, set_default_namespace
 from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
@@ -1323,3 +1324,164 @@ class TestDispatchPopEnforcement:
         assert req.pop is not None
         signed_iat = jwt.decode(req.pop, options={"verify_signature": False})["iat"]
         assert guard.issued_at == [datetime.fromtimestamp(signed_iat, UTC)]
+
+
+class _RaisingAuthorizer:
+    """an authorizer whose store cannot be read, as the rbac authorizer's is when the broker refuses."""
+
+    async def is_authorized(
+        self,
+        agent_id: str,
+        user_id: str | None,
+        tool_name: str,
+        tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
+    ) -> bool:
+        """raise the data-layer failure a proxy-backed collection raises.
+
+        :param agent_id: the verified principal
+        :ptype agent_id: str
+        :param user_id: the verified user
+        :ptype user_id: str | None
+        :param tool_name: the tool
+        :ptype tool_name: str
+        :param tool_version: its version
+        :ptype tool_version: str
+        :param principal_is_tool_pod: whether the principal is a tool pod
+        :ptype principal_is_tool_pod: bool
+        :return: never returns
+        :rtype: bool
+        :raises DataLayerUnavailableError: always
+        """
+        del agent_id, user_id, tool_name, tool_version, principal_is_tool_pod
+        raise DataLayerUnavailableError("L3 query failed: NAMESPACE_ACCESS_DENIED: carve-out read refused")
+
+
+class TestAHostFailureIsAnsweredNotTimedOut:
+    """a gate whose store fails answers the caller with a typed code -- never silence.
+
+    Left uncaught, each of these killed the dispatch task with the reply subject unanswered, so the
+    caller waited out its own deadline and read an outage in the registry's store as a dead tool.
+    """
+
+    @staticmethod
+    async def _drive(
+        req: ProxyCallRequest,
+        jwks: dict[str, Any],
+        *,
+        authorizer: Any = None,
+        guard: Any = None,
+        pod_reply: bytes | None = None,
+    ) -> AsyncMock:
+        """dispatch one call through a proxy wired with the given seams.
+
+        :param req: the call
+        :ptype req: ProxyCallRequest
+        :param jwks: the hub key set
+        :ptype jwks: dict[str, Any]
+        :param authorizer: the authorizer, allow-all when ``None``
+        :ptype authorizer: Any
+        :param guard: the replay guard, always-fresh when ``None``
+        :ptype guard: Any
+        :param pod_reply: what the pod answers, a successful reply when ``None``
+        :ptype pod_reply: bytes | None
+        :return: the NATS double
+        :rtype: AsyncMock
+        """
+        proxy = CallProxy(
+            await _catalog(),
+            authorizer if authorizer is not None else AllowAllAuthorizer(),
+            guard if guard is not None else FakeReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
+            namespace="test",
+            jwks_provider=lambda: jwks,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=pod_reply if pod_reply is not None else _tool_reply())
+        await proxy.start(nc)
+        await proxy.handle_call(
+            IncomingMessage(data=req.model_dump_json().encode("utf-8"), reply_subject="r", subject="test.tools.call")
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return nc
+
+    @staticmethod
+    def _reply(nc: AsyncMock) -> ProxyCallResponse:
+        """the one reply the proxy published.
+
+        :param nc: the NATS double
+        :ptype nc: AsyncMock
+        :return: the reply
+        :rtype: ProxyCallResponse
+        """
+        nc.publish_reply.assert_awaited_once()
+        message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
+        return message
+
+    @pytest.mark.asyncio
+    async def test_an_authorizer_that_cannot_read_its_store_refuses_with_a_reply(
+        self, hub: tuple[Any, dict[str, Any]], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """fail closed, and say so: the call is not forwarded and the caller learns why.
+
+        :param hub: the hub key and key set
+        :ptype hub: tuple[Any, dict[str, Any]]
+        :param caplog: the log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        priv, jwks = hub
+        req = _authed_request(
+            priv, token_sub=uuid7(), token_customer=uuid7(), token_user=uuid7(), envelope_agent=uuid7()
+        )
+        with caplog.at_level(logging.ERROR, logger="threetears.registry.proxy"):
+            nc = await self._drive(req, jwks, authorizer=_RaisingAuthorizer())
+
+        nc.request_raw.assert_not_called()
+        reply = self._reply(nc)
+        assert reply.success is False
+        assert reply.error_code == "TOOL_AUTHORIZATION_UNAVAILABLE"
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "NAMESPACE_ACCESS_DENIED" in json.dumps(errors[0].__dict__.get("extra_data", {}))
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_replay_ledger_refuses_with_a_reply(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        """the ledger failing is a failed check (fail closed), but not an unverified proof.
+
+        :param hub: the hub key and key set
+        :ptype hub: tuple[Any, dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        guard = FakeReplayGuard(record_error=KvError("nonce bucket unreachable"))
+
+        nc = await self._drive(req, jwks, guard=guard)
+
+        nc.request_raw.assert_not_called()
+        assert len(guard.seen) == 1
+        assert self._reply(nc).error_code == "TOOL_POP_LEDGER_UNAVAILABLE"
+
+    @pytest.mark.asyncio
+    async def test_a_pod_answer_that_does_not_parse_is_answered(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        """the pod may have run the tool, so this is not retried -- but it is answered.
+
+        :param hub: the hub key and key set
+        :ptype hub: tuple[Any, dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        priv, jwks = hub
+        req = _authed_request(
+            priv, token_sub=uuid7(), token_customer=uuid7(), token_user=uuid7(), envelope_agent=uuid7()
+        )
+
+        nc = await self._drive(req, jwks, pod_reply=b"{not json")
+
+        nc.request_raw.assert_called_once()
+        assert self._reply(nc).error_code == "TOOL_RESPONSE_MALFORMED"

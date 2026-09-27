@@ -549,6 +549,33 @@ A pod raised on them and was failed by a registry about to admit it.
   `wait_until_ready` still answers `False` at its timeout; no 3tears source calls it, and every
   aibots SDK caller treats `False` as not-ready-yet except the agent boot wait, which fails boot.
 
+### A registry whose store fails answers the caller instead of dropping the reply
+
+Found on a live bring-up: the host's authenticator raised `DataLayerUnavailableError` (its broker
+refused the read), the exception escaped the `{ns}.tools.register` callback, and nothing answered.
+Every agent's in-process server logged "could not read the registration reply ...
+RequestTimeoutError" on every heartbeat and never became ready; the cause was one generic
+"subscribe callback raised" line on the registry. The call path had the same shape at three seams.
+
+- **New (minor):** `RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE` -- the authenticator raised
+  instead of answering, so nothing was decided about the publisher (distinct from
+  `UNVERIFIED_PUBLISHER`, which says the credential failed) -- and `RefusalCode.CATALOG_UNAVAILABLE`
+  -- the verdict was reached but the catalog write failed. Neither is in `FINAL_REFUSAL_CODES`, so a
+  pod waits both out on its heartbeat and logs one WARNING naming the code and the registry's
+  reason.
+- **Fixed:** `RegistrationHandler` answers both, logging one ERROR with the cause. Refused tools
+  keep their own codes on a catalog failure, so a final refusal stays final.
+- **Fixed:** `CallProxy` answers `TOOL_AUTHORIZATION_UNAVAILABLE` when the authorizer raises (fail
+  closed, never forwarded), `TOOL_POP_LEDGER_UNAVAILABLE` when the proof-of-possession replay ledger
+  raises (the ledger's contract makes that a failed check; it is not `TOOL_POP_UNVERIFIED`, because
+  the proof was never judged), and `TOOL_RESPONSE_MALFORMED` when a pod's answer does not parse (not
+  retried: the pod may have run the tool). Each used to kill the dispatch task with the caller
+  unanswered until its own deadline.
+- **New (minor):** `FakeReplayGuard(record_error=)` raises from `record_unique`, so a verifier's
+  ledger-failure path can be driven with the shipped double.
+- Discovery was checked and has no such seam: after its request parses it reads only the in-memory
+  catalog.
+
 ### A tool's nested models reach the model, and a TearsTool in a graph behaves as it does over NATS
 
 A tool whose argument model nests another (`shots: list[Shot]`, a sub-object) was shown to a

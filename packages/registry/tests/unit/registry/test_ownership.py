@@ -419,3 +419,12 @@ class TestThePodsFinalRefusalsAreRegistryCodes:
         :rtype: None
         """
         assert RefusalCode.OWNERSHIP_GRAPH_UNAVAILABLE.value not in FINAL_REFUSAL_CODES
+
+    def test_a_store_the_host_could_not_read_is_not_final(self) -> None:
+        """the registry refuses for want of its own store; the next heartbeat is a real retry.
+
+        :return: none
+        :rtype: None
+        """
+        assert RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE.value not in FINAL_REFUSAL_CODES
+        assert RefusalCode.CATALOG_UNAVAILABLE.value not in FINAL_REFUSAL_CODES

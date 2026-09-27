@@ -471,7 +471,17 @@ class TestTheClassificationIsOneSet:
         """
         assert FINAL_REFUSAL_CODES == _REGISTRY_FINAL
 
-    @pytest.mark.parametrize("code", ["OWNERSHIP_GRAPH_UNAVAILABLE", "UNVERIFIED_PUBLISHER", None, "A_NEWER_CODE"])
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "OWNERSHIP_GRAPH_UNAVAILABLE",
+            "UNVERIFIED_PUBLISHER",
+            "PUBLISHER_VERIFICATION_UNAVAILABLE",
+            "CATALOG_UNAVAILABLE",
+            None,
+            "A_NEWER_CODE",
+        ],
+    )
     def test_everything_else_including_no_code_is_temporary(self, code: str | None) -> None:
         """an absent or unknown code is not a verdict this pod can act on by stopping.
 
@@ -589,6 +599,48 @@ class TestATemporaryRefusalIsWaitedOut:
         ]
         assert len(warned) == 2
         assert len(cleared) == 1
+
+    async def test_a_store_the_registry_cannot_read_is_named_not_timed_out(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the live defect's other half: the pod reads the refusal instead of a bare timeout.
+
+        The registry's authenticator raised on a store it could not read, and the registry never
+        answered; the pod logged "could not read the registration reply" every heartbeat and never
+        learned why. The registry now answers with ``PUBLISHER_VERIFICATION_UNAVAILABLE``, which the
+        pod waits out -- one WARNING naming the code and the registry's reason, no raise.
+
+        :param caplog: the log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: none
+        :rtype: None
+        """
+        reason = "the host could not read the store it verifies publishers against: NAMESPACE_ACCESS_DENIED"
+        refused = RegistrationResponse(
+            success=False,
+            pod_id=_POD,
+            refused_tools=[
+                RefusedTool(
+                    name="threetears.calculator",
+                    version="1.0",
+                    code="PUBLISHER_VERIFICATION_UNAVAILABLE",
+                    reason=reason,
+                )
+            ],
+            error=reason,
+            error_code="PUBLISHER_VERIFICATION_UNAVAILABLE",
+        )
+        registry = _ScriptedRegistry(refused)
+        server = _heartbeating_server(registry)
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
+            await server.publish_registration(await_reply=True)
+            assert await server.wait_until_ready(timeout=0.3) is False
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        named = [m for m in warnings if "PUBLISHER_VERIFICATION_UNAVAILABLE" in m and "NAMESPACE_ACCESS_DENIED" in m]
+        assert len(named) == 1
+        assert not [m for m in warnings if "could not read the registration reply" in m]
+        assert [r.code for r in server.refused_tools] == ["PUBLISHER_VERIFICATION_UNAVAILABLE"]
 
     async def test_a_failed_reply_with_no_code_is_temporary(self, caplog: pytest.LogCaptureFixture) -> None:
         """what an older registry sends mid-roll: no code, no tools named. waited, never raised.

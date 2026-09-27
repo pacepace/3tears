@@ -85,6 +85,13 @@ class RefusalCode(StrEnum):
     :cvar INVALID_MANIFEST: the manifest itself was malformed or failed validation
     :cvar NO_TOOLS_ADMITTED: every tool the manifest offered was refused; each one's own code is
         in ``refused_tools``
+    :cvar PUBLISHER_VERIFICATION_UNAVAILABLE: the host's authenticator could not READ the store it
+        verifies publishers against (it raised, rather than answering ``None``). Nothing was
+        decided about the publisher, so this is not ``UNVERIFIED_PUBLISHER``: that one says the
+        credential failed, this one says the check could not run. Temporary; the pod's next
+        heartbeat retries
+    :cvar CATALOG_UNAVAILABLE: the manifest was judged, but the catalog could not record the
+        outcome -- its durable write failed. Temporary; the pod's next heartbeat retries
     """
 
     OWNED_ELSEWHERE = "OWNED_ELSEWHERE"
@@ -95,6 +102,8 @@ class RefusalCode(StrEnum):
     OWNERSHIP_GRAPH_UNAVAILABLE = "OWNERSHIP_GRAPH_UNAVAILABLE"
     INVALID_MANIFEST = "INVALID_MANIFEST"
     NO_TOOLS_ADMITTED = "NO_TOOLS_ADMITTED"
+    PUBLISHER_VERIFICATION_UNAVAILABLE = "PUBLISHER_VERIFICATION_UNAVAILABLE"
+    CATALOG_UNAVAILABLE = "CATALOG_UNAVAILABLE"
 
 
 class CopyAudience(StrEnum):

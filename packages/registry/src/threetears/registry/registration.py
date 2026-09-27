@@ -46,6 +46,8 @@ from threetears.registry.ownership import (
 )
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
@@ -151,6 +153,13 @@ _REFUSAL_REASONS: dict[RefusalCode, str] = {
     ),
     RefusalCode.OWNERSHIP_GRAPH_UNAVAILABLE: (
         "the ownership graph could not be read; nothing is admitted unfiltered, and the next heartbeat retries"
+    ),
+    RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE: (
+        "the registry could not read the store it verifies publishers against, so nothing was decided about "
+        "this publisher; the next heartbeat retries"
+    ),
+    RefusalCode.CATALOG_UNAVAILABLE: (
+        "the registry admitted the tool but could not record it in its catalog; the next heartbeat retries"
     ),
 }
 
@@ -416,7 +425,11 @@ class RegistrationHandler:
             return
 
         verdict = await self._judge(manifest)
-        await self._withdraw_refused_copies(manifest.pod_id, verdict)
+        try:
+            await self._withdraw_refused_copies(manifest.pod_id, verdict)
+        except Exception as exc:  # noqa: BLE001 -- a catalog failure is answered, never left as a dropped reply
+            await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
+            return
         if verdict.error is not None:
             error_code = verdict.error_code.value if verdict.error_code is not None else None
             log.warning(
@@ -445,7 +458,11 @@ class RegistrationHandler:
             )
             return
 
-        registered = await self._register_tools(manifest.pod_id, verdict.admitted, verdict.standing)
+        try:
+            registered = await self._register_tools(manifest.pod_id, verdict.admitted, verdict.standing)
+        except Exception as exc:  # noqa: BLE001 -- a catalog failure is answered, never left as a dropped reply
+            await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
+            return
 
         await self._reply(
             msg,
@@ -620,7 +637,48 @@ class RegistrationHandler:
         if self._authenticator is None:
             result = _Publisher(standing=PublisherStanding.unenforced(), self_identity=agent_identity, name=pod_id)
         elif owner is not None and token is not None:
+            result = await self._verified_agent(pod_id, owner, token, agent_identity)
+        elif owner is not None:
+            result = self._unsigned_agent_publisher(pod_id, agent_identity)
+        elif token is None:
+            result = _Publisher(
+                standing=unverified,
+                self_identity=(),
+                name=pod_id,
+                error=(
+                    "tool pod manifest carries no identity token; a copy that serves every caller must "
+                    "come from a verified publisher"
+                ),
+                error_code=RefusalCode.UNVERIFIED_PUBLISHER,
+            )
+        else:
+            result = await self._verified_tool_pod(pod_id, token, unverified)
+        return result
+
+    async def _verified_agent(
+        self, pod_id: str, owner: UUID, token: str, agent_identity: tuple[str, ...]
+    ) -> _Publisher:
+        """verify an agent's in-process manifest by the agent's own token, naming the agent its pod id names.
+
+        :param pod_id: the manifest's pod id
+        :ptype pod_id: str
+        :param owner: the agent the pod id names
+        :ptype owner: UUID
+        :param token: the agent's raw identity token
+        :ptype token: str
+        :param agent_identity: the agent's namespace, returned on the reply
+        :ptype agent_identity: tuple[str, ...]
+        :return: the verified publisher, or why it is refused
+        :rtype: _Publisher
+        """
+        assert self._authenticator is not None  # guarded by the caller
+        unverified = PublisherStanding(verified=False, platform_shared=False, owned_nodes=())
+        result: _Publisher
+        try:
             verified_agent = await self._authenticator.verify_agent(token)
+        except Exception as exc:  # noqa: BLE001 -- the host's store failing is a refusal, never a dropped reply
+            result = self._verification_unavailable(pod_id, "agent", exc)
+        else:
             if verified_agent is None:
                 result = _Publisher(
                     standing=unverified,
@@ -646,21 +704,6 @@ class RegistrationHandler:
                     self_identity=agent_identity,
                     name=f"agent {owner}",
                 )
-        elif owner is not None:
-            result = self._unsigned_agent_publisher(pod_id, agent_identity)
-        elif token is None:
-            result = _Publisher(
-                standing=unverified,
-                self_identity=(),
-                name=pod_id,
-                error=(
-                    "tool pod manifest carries no identity token; a copy that serves every caller must "
-                    "come from a verified publisher"
-                ),
-                error_code=RefusalCode.UNVERIFIED_PUBLISHER,
-            )
-        else:
-            result = await self._verified_tool_pod(pod_id, token, unverified)
         return result
 
     def _unsigned_agent_publisher(self, pod_id: str, agent_identity: tuple[str, ...]) -> _Publisher:
@@ -711,9 +754,16 @@ class RegistrationHandler:
         :rtype: _Publisher
         """
         assert self._authenticator is not None  # guarded by the caller
-        pod_auth: ToolPodAuth | None = await self._authenticator.verify_pod(token)
         result: _Publisher
-        if pod_auth is None:
+        pod_auth: ToolPodAuth | None = None
+        failure: Exception | None = None
+        try:
+            pod_auth = await self._authenticator.verify_pod(token)
+        except Exception as exc:  # noqa: BLE001 -- the host's store failing is a refusal, never a dropped reply
+            failure = exc
+        if failure is not None:
+            result = self._verification_unavailable(pod_id, "tool pod", failure)
+        elif pod_auth is None:
             log.warning(
                 "tool pod registration rejected: invalid token",
                 extra={"extra_data": {"pod_id": pod_id}},
@@ -748,6 +798,94 @@ class RegistrationHandler:
                 name=pod_auth.name,
             )
         return result
+
+    @staticmethod
+    def _verification_unavailable(pod_id: str, kind: str, exc: Exception) -> _Publisher:
+        """the refusal for a publisher the host could not verify because its store failed.
+
+        The authenticator's contract is to answer ``None`` for every verification FAILURE; raising
+        means the check never ran -- a store read the host's broker refused, a database outage.
+        Left to escape, the exception killed the subscription callback before any reply, and the
+        publisher saw only its own request time out. This is the one ERROR line naming the cause.
+
+        :param pod_id: the manifest's pod id
+        :ptype pod_id: str
+        :param kind: which verifier failed (``"agent"`` or ``"tool pod"``), for the log
+        :ptype kind: str
+        :param exc: what the authenticator raised
+        :ptype exc: Exception
+        :return: an unverified publisher refused with ``PUBLISHER_VERIFICATION_UNAVAILABLE``
+        :rtype: _Publisher
+        """
+        log.error(
+            "tool registration refused: the host could not verify the publisher, because reading the store "
+            "it verifies against failed. the pod is told the refusal is temporary and retries on its heartbeat",
+            extra={
+                "extra_data": {
+                    "pod_id": pod_id,
+                    "publisher_kind": kind,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "error_code": RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE.value,
+                }
+            },
+        )
+        return _Publisher(
+            standing=PublisherStanding(verified=False, platform_shared=False, owned_nodes=()),
+            self_identity=(),
+            name=pod_id,
+            error=(f"{_REFUSAL_REASONS[RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE]} ({type(exc).__name__}: {exc})"),
+            error_code=RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE,
+        )
+
+    async def _answer_catalog_unavailable(
+        self,
+        msg: IncomingMessage,
+        manifest: RegistrationManifest,
+        verdict: _Verdict,
+        exc: Exception,
+    ) -> None:
+        """answer a manifest whose verdict the catalog could not record.
+
+        Every tool the verdict admitted is refused with ``CATALOG_UNAVAILABLE``; every tool it
+        refused keeps its own code, so a final refusal stays final to the pod. Registration is
+        idempotent, so the pod's next heartbeat re-offering the manifest completes whatever part of
+        the write did not land.
+
+        :param msg: the incoming manifest message
+        :ptype msg: IncomingMessage
+        :param manifest: the manifest
+        :ptype manifest: RegistrationManifest
+        :param verdict: what the manifest was judged to be allowed
+        :ptype verdict: _Verdict
+        :param exc: what the catalog raised
+        :ptype exc: Exception
+        :return: nothing
+        :rtype: None
+        """
+        code = RefusalCode.CATALOG_UNAVAILABLE
+        log.error(
+            "tool registration could not be recorded: the catalog write failed. the pod is told the refusal "
+            "is temporary and retries on its heartbeat",
+            extra={
+                "extra_data": {
+                    "pod_id": manifest.pod_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "error_code": code.value,
+                }
+            },
+        )
+        await self._reply(
+            msg,
+            RegistrationResponse(
+                success=False,
+                pod_id=manifest.pod_id,
+                refused_tools=[*verdict.refused, *_refused(verdict.admitted, code)],
+                error=f"{_REFUSAL_REASONS[code]} ({type(exc).__name__}: {exc})",
+                error_code=code.value,
+            ),
+        )
 
     async def _withdraw_refused_copies(self, pod_id: str, verdict: _Verdict) -> None:
         """remove a VERIFIED publisher's prior copy of every tool it was just refused.

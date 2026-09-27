@@ -874,7 +874,11 @@ class CallProxy:
                 body_hash=body_hash,
                 leeway_seconds=POP_LEEWAY_SECONDS,
             )
-            if not await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at):
+            try:
+                fresh = await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at)
+            except Exception as exc:  # noqa: BLE001 -- the ledger failing fails the check closed, with a reply
+                return self._pop_ledger_unavailable(request, exc)
+            if not fresh:
                 raise IdentityTokenError("pop nonce replay")
             return None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
@@ -1096,13 +1100,41 @@ class CallProxy:
             # principal id and an agent's are both UUIDs, and only the verified token's customer
             # claim says which kind this one is. the authorizer admits a pod on its own grant
             # and refuses an agent with no user; the mark is what tells those two apart.
-            authorized = await self._authorizer.is_authorized(
-                agent_id_log,
-                user_id_log,
-                request.tool_name,
-                request.tool_version,
-                principal_is_tool_pod=principal.is_tool_pod,
-            )
+            try:
+                authorized = await self._authorizer.is_authorized(
+                    agent_id_log,
+                    user_id_log,
+                    request.tool_name,
+                    request.tool_version,
+                    principal_is_tool_pod=principal.is_tool_pod,
+                )
+            except Exception as exc:  # noqa: BLE001 -- fail closed WITH a reply; never a dropped call
+                log.error(
+                    "tool call refused: the authorizer could not reach the store it decides from, so the "
+                    "call is denied rather than decided",
+                    extra={
+                        "extra_data": {
+                            "agent_id": agent_id_log,
+                            "user_id": user_id_log,
+                            "tool_name": request.tool_name,
+                            "correlation_id": correlation_id_log,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    },
+                )
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=(
+                        f"authorization for tool {request.tool_name} could not be decided: the authorizer's "
+                        f"store failed ({type(exc).__name__}); retry"
+                    ),
+                    error_code="TOOL_AUTHORIZATION_UNAVAILABLE",
+                    context=request.context,
+                )
+                await self._answer(msg, response, delivery_subject)
+                return
             if not authorized:
                 response = ProxyCallResponse(
                     success=False,
@@ -1490,7 +1522,6 @@ class CallProxy:
                 payload=internal_payload,
                 timeout=timedelta(seconds=effective_timeout),
             )
-            response = ProxyCallResponse.model_validate_json(reply_bytes)
         except (TimeoutError, RequestError) as exc:
             # the wrapper raises RequestError ("timed out" / "no responders" /
             # "connection closed") for transport-level failures; we coalesce
@@ -1523,7 +1554,82 @@ class CallProxy:
                 error_code=error_code,
                 context=request.context,
             )
+        else:
+            response = self._pod_response(reply_bytes, request, pod_id)
         return response
+
+    def _pod_response(self, raw: bytes, request: ProxyCallRequest, pod_id: str) -> ProxyCallResponse:
+        """read a tool pod's answer, or a typed refusal when it is not a :class:`ProxyCallResponse`.
+
+        The pod ANSWERED, so it may have run the tool: this is never ``TOOL_UNAVAILABLE`` (which
+        the failover loop retries on a sibling) but ``TOOL_RESPONSE_MALFORMED``, which it does not.
+        Left to raise, the parse failure killed the dispatch task with the caller unanswered.
+
+        :param raw: the pod's reply bytes
+        :ptype raw: bytes
+        :param request: the call request, for context echoing and the log
+        :ptype request: ProxyCallRequest
+        :param pod_id: the pod that answered
+        :ptype pod_id: str
+        :return: the pod's answer, or the malformed-answer refusal
+        :rtype: ProxyCallResponse
+        """
+        try:
+            response = ProxyCallResponse.model_validate_json(raw)
+        except ValidationError as exc:
+            log.error(
+                "tool pod answered with a body that is not a call response; the caller is told so",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": _correlation_id_str(request),
+                        "error": str(exc),
+                    }
+                },
+            )
+            response = ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"tool pod {pod_id} answered with a malformed response; it may have run the tool",
+                error_code="TOOL_RESPONSE_MALFORMED",
+                context=request.context,
+            )
+        return response
+
+    def _pop_ledger_unavailable(self, request: ProxyCallRequest, exc: Exception) -> ProxyCallResponse:
+        """the refusal for a call whose proof could not be checked against the replay ledger.
+
+        The ledger's contract says a failure MUST be a failed check, never fresh, so the call is
+        denied -- but not as ``TOOL_POP_UNVERIFIED``, which tells the caller its proof is bad. The
+        proof was never judged; the ledger could not be reached. Logged once at ERROR with the cause.
+
+        :param request: the call request
+        :ptype request: ProxyCallRequest
+        :param exc: what the ledger raised
+        :ptype exc: Exception
+        :return: the ``TOOL_POP_LEDGER_UNAVAILABLE`` refusal
+        :rtype: ProxyCallResponse
+        """
+        log.error(
+            "tool call refused: the proof-of-possession replay ledger could not be reached, so the "
+            "proof could not be checked and the call is denied",
+            extra={
+                "extra_data": {
+                    "tool_name": request.tool_name,
+                    "correlation_id": _correlation_id_str(request),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            },
+        )
+        return ProxyCallResponse(
+            success=False,
+            content="",
+            error=f"the replay ledger could not be reached ({type(exc).__name__}); the call was not checked, retry",
+            error_code="TOOL_POP_LEDGER_UNAVAILABLE",
+            context=request.context,
+        )
 
     async def _forward_call_durable(
         self,
@@ -1634,7 +1740,7 @@ class CallProxy:
                 )
         finally:
             await waiter.close()
-        return ProxyCallResponse.model_validate_json(delivered)
+        return self._pod_response(delivered, request, pod_id)
 
     async def _await_pod_accept(
         self,
@@ -1702,7 +1808,7 @@ class CallProxy:
         if accept is None:
             # not an accept envelope: the pod answered the call outright (it could not parse the
             # request far enough to learn where to deliver). that IS the answer; pass it through.
-            return ProxyCallResponse.model_validate_json(accept_bytes)
+            return self._pod_response(accept_bytes, request, pod_id)
         if not accept.accepted:
             log.error(
                 "tool pod refused the delivery subject it was given",
