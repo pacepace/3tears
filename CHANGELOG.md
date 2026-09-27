@@ -718,17 +718,37 @@ pkg.version(N)(add_l2_order_columns)
 ```
 
 A consumer whose tables are created by the hub from a declared schema (an agent or tool pod,
-whose broker refuses DDL) declares the columns in the schema it publishes; the hub must then add
-them to an existing table, since `CREATE TABLE IF NOT EXISTS` will not.
+whose broker refuses DDL) declares the columns in the schema it publishes -- `*l2_order_columns()`
+in the `TableSchema` it renders its `data:` section from -- and re-runs its data sync (an agent:
+`sync_agent_data.py`; a tool pod: `POST /tool-pods/{id}/data/sync`). The hub's diff-and-apply adds
+a declared nullable column to an existing table (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). It
+does not backfill, and needs not: a row whose order is `NULL` orders before every swap, so the
+fence holds from the first write after the sync. The sync is an operator step, not a startup one.
 
 **In this repository:** the coordination tables `coordination_counters`, `coordination_claims`
 and `coordination_redemptions` now declare the columns, and coordination migration **v002** adds
 them to tables v001 created before them and backfills existing rows (`coordination_revocations`,
-written through `save_entity`, is unchanged). Every consumer running the coordination migrations
--- identity, scriob, the hub -- must apply v002 before deploying 0.55.0, or `WindowedCounter`,
-`IdempotencyKeyStore`, `RedemptionLedger` and `CollectionReplayAnchor` refuse on their first
-write. A pod declaring `replay_anchor_metadata()` with an L3 tier picks the columns up in its
-declaration.
+written through `save_entity`, is unchanged). Where v002 runs:
+
+- **the hub and identity-core apply it themselves, at startup**, before they serve: the hub's
+  lifespan runs `run_system_migrations` (which registers this package) ahead of its collections,
+  and identity-core's `IdentityCoreServer.start()` runs `apply_migrations` for its schema and for
+  each configured residency region. Deploying 0.55.0 applies it; no operator step.
+- **a pod that declares `coordination_redemptions` in its data section** (the survey, for its
+  replay anchor; a tool pod with an L3 tier that declares `replay_anchor_metadata()`) regenerates
+  that section and re-runs its data sync, as above. Until it does, the collection's reads and
+  writes name `l2_epoch` / `l2_revision`, which the table lacks, and fail -- and the replay guard
+  reads an anchor failure as "cannot tell" and keeps its conservative watermark, so the effect is
+  the cold-start refusal window, not an outage. **Run the sync before the pods roll out**: the
+  added columns are nullable and the previous version never names them, so syncing first is safe,
+  while a pod on 0.55.0 against an unsynced table fails every read of that table. For a table the
+  pod's own features depend on (the survey's `indexes`, once it declares the columns) that failure
+  is an outage, not a window.
+- any other consumer registering `threetears.core.coordination.migrations` applies v002 wherever
+  it applies v001.
+
+Rows written during a rolling deploy by a replica still on 0.54.0 carry no order; they order
+before every swap, so a 0.55.0 swap supersedes them.
 
 ### A row read from L3 never replaces a newer value in L2
 
