@@ -485,6 +485,16 @@ class TestAPlaceholderWrappedAnswerIsUnwrapped:
 
         assert json.loads(message.content) == _ANSWER
 
+    @pytest.mark.parametrize("key", ["$PARAMETER_VALUE", "$PARAMETER_NAME", "$FUNCTION_NAME"])
+    async def test_every_leaked_template_placeholder_is_unwrapped(self, key: str) -> None:
+        """``$PARAMETER_NAME`` was the shape of the one call still failing after the first unwrap."""
+        with _fake_cli(*_exhausted_on({key: json.dumps(_ANSWER)})):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            message = await _structured(model).ainvoke([HumanMessage(content="check the draft")])
+
+        assert json.loads(message.content) == _ANSWER
+        assert message.response_metadata["structured_output_unwrapped"] == 1
+
     async def test_the_latest_valid_wrapped_attempt_is_the_answer(self) -> None:
         earlier = {"sentences": [{"index": 1, "verdict": "cut"}], "overall": "rewrite"}
         with _fake_cli(*_exhausted_on({"$PARAMETER_VALUE": json.dumps(earlier)}, {"answer": 1}, _WRAPPED)):
@@ -499,7 +509,13 @@ class TestAPlaceholderWrappedAnswerIsUnwrapped:
             pytest.param({"$PARAMETER_VALUE": json.dumps({"sentences": "none"})}, id="json-that-misses-the-schema"),
             pytest.param({"$PARAMETER_VALUE": "{'sentences': []"}, id="text-that-is-not-json"),
             pytest.param({"$PARAMETER_VALUE": _ANSWER}, id="a-value-that-is-not-a-string"),
-            pytest.param({"$FUNCTION_NAME": json.dumps(_ANSWER)}, id="another-placeholder-key"),
+            pytest.param({"$TOOL_INPUT": json.dumps(_ANSWER)}, id="a-key-outside-the-placeholder-family"),
+            pytest.param(
+                {"$PARAMETER_NAME": json.dumps({"sentences": "none"})}, id="parameter-name-missing-the-schema"
+            ),
+            pytest.param({"$FUNCTION_NAME": "not json"}, id="function-name-not-json"),
+            pytest.param({"$PARAMETER_NAME": _ANSWER}, id="parameter-name-not-a-string"),
+            pytest.param({"$PARAMETER_NAME": json.dumps(_ANSWER), "$FUNCTION_NAME": "x"}, id="two-placeholder-keys"),
             pytest.param({**_WRAPPED, "overall": "ready"}, id="extra-keys"),
             pytest.param({"sentences": {"sentences": []}}, id="an-extra-wrapping-key"),
         ],

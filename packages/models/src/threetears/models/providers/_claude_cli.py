@@ -1119,15 +1119,18 @@ class _StructuredAttempts:
                 self.rejected.append(self.rejected_output)
 
 
-#: The one placeholder parameter the model was measured to wrap a whole structured answer in.
-_PLACEHOLDER_PARAMETER = "$PARAMETER_VALUE"
+#: The tool-call template placeholders the model leaks as a parameter name, wrapping a whole
+#: structured answer as a JSON string under one of them. Each was seen live (0.56.0,
+#: ``claude-sonnet-5``) repeated on every attempt of a call until the CLI's attempt cap ended it.
+_TEMPLATE_PLACEHOLDER_KEYS = frozenset({"$PARAMETER_VALUE", "$PARAMETER_NAME", "$FUNCTION_NAME"})
 
 
 def _placeholder_answer(attempt: dict[str, Any], schema: dict[str, Any]) -> Any | None:
     """The answer inside a placeholder-wrapped attempt, when it is one and it matches the schema.
 
-    Only exactly ``{"$PARAMETER_VALUE": "<JSON text>"}`` qualifies, and only when that text parses
-    and the parsed value validates against the schema the call asked for. Anything else is ``None``.
+    Only exactly one key from :data:`_TEMPLATE_PLACEHOLDER_KEYS` holding a string qualifies, and only
+    when that string parses as JSON and the parsed value validates against the schema the call asked
+    for. Anything else is ``None``.
 
     :param attempt: a ``StructuredOutput`` input the CLI rejected
     :ptype attempt: dict[str, Any]
@@ -1138,8 +1141,10 @@ def _placeholder_answer(attempt: dict[str, Any], schema: dict[str, Any]) -> Any 
     """
     from jsonschema import Draft202012Validator  # noqa: PLC0415
 
-    wrapped = attempt.get(_PLACEHOLDER_PARAMETER)
-    if set(attempt) != {_PLACEHOLDER_PARAMETER} or not isinstance(wrapped, str):
+    if len(attempt) != 1:
+        return None
+    [(key, wrapped)] = attempt.items()
+    if key not in _TEMPLATE_PLACEHOLDER_KEYS or not isinstance(wrapped, str):
         return None
     try:
         answer = json.loads(wrapped)
@@ -1152,9 +1157,10 @@ def _unwrapped_answer(result: Any, output_format: Any, attempts: _StructuredAtte
     """A failed structured call's answer, recovered from an attempt the model wrapped in a placeholder.
 
     Found live (0.56.0, ``claude-sonnet-5``): about one structured call in forty spent all five
-    attempts sending the whole answer, correct, as a JSON string under a placeholder parameter --
-    ``{"$PARAMETER_VALUE": "<the answer>"}`` -- which the CLI rejects every time. When the call
-    failed with no structured answer, the most recent rejected attempt of exactly that shape whose
+    attempts sending the whole answer, correct, as a JSON string under a template placeholder --
+    ``{"$PARAMETER_VALUE": "<the answer>"}``, or ``$PARAMETER_NAME`` / ``$FUNCTION_NAME`` -- which the
+    CLI rejects every time. When the call failed with no structured answer, the most recent rejected
+    attempt of exactly that shape whose
     JSON validates against the call's own schema is the answer. It is logged, once, at WARNING and
     marked on the result's metadata (``structured_output_unwrapped``).
 
