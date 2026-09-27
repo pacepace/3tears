@@ -209,7 +209,10 @@ complete as the sweep that found the sites. There is now one construction:
   would have turned pooling off for the rest of the process. Of several loops that find the
   served loop closed at once, exactly one takes over and the rest fall back. `close_claude_cli_pool`
   takes over the same way, so a shutdown hook running on a new loop kills the closed loop's CLIs
-  instead of awaiting their dead clients. A session being stopped stays visible to the
+  instead of awaiting their dead clients. A close from another loop while the served loop is
+  still open is refused with `ClaudeCliPoolExhausted`, touching nothing, and
+  `close_claude_cli_pool` then keeps the pool, letting it go only once a close has succeeded --
+  close it from the loop that serves it. A session being stopped stays visible to the
   interpreter-exit backstop until its kill has completed. A kill that fails is logged with its
   pid; one that fails or is cancelled leaves the others to finish and is retried by the next
   takeover or close.

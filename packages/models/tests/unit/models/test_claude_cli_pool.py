@@ -1006,6 +1006,85 @@ class TestAPoolServesOneEventLoop:
 class TestAStrandedSessionIsStoppedWithoutItsLoop:
     """a session whose loop closed is stopped by killing its process, never by awaiting its client."""
 
+    def test_a_close_from_another_open_loop_is_refused_and_touches_nothing(self) -> None:
+        """the serving loop's condition, sessions and reaper are its own while it is open."""
+        pool = _pool()
+
+        async def use_once() -> None:
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                pass
+
+        owner = asyncio.new_event_loop()
+        try:
+            owner.run_until_complete(use_once())
+            with pytest.raises(ClaudeCliPoolExhausted, match="still open"):
+                asyncio.run(pool.aclose())
+
+            (session,) = FakeSession.instances
+            assert (session.disposals, session.abandons, session.closed) == (0, 0, False), (
+                "a refused close must not touch the open loop's sessions"
+            )
+            owner.run_until_complete(use_once())
+            assert len(FakeSession.instances) == 1 and session.clears == 2, "the pool must still serve its loop"
+
+            owner.run_until_complete(pool.aclose())
+            assert session.disposals == 1
+        finally:
+            owner.close()
+
+    def test_a_refused_process_wide_close_keeps_the_pool_so_it_can_still_be_closed(self) -> None:
+        """dropping the pool before a refused close would leave its CLIs with nothing to close them."""
+        asyncio.run(claude_cli_pool.close_claude_cli_pool())
+        claude_cli_pool.configure_claude_cli_pool(session_factory=_factory, idle_ttl_seconds=0.0)
+        owner = asyncio.new_event_loop()
+        try:
+            pool = claude_cli_pool.claude_cli_pool()
+            assert pool is not None
+
+            async def use_once() -> None:
+                async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                    pass
+
+            owner.run_until_complete(use_once())
+            with pytest.raises(ClaudeCliPoolExhausted, match="still open"):
+                asyncio.run(claude_cli_pool.close_claude_cli_pool())
+            assert claude_cli_pool.claude_cli_pool() is pool, "a refused close must leave the pool in place"
+
+            owner.run_until_complete(claude_cli_pool.close_claude_cli_pool())
+            assert FakeSession.instances[0].disposals == 1
+            assert claude_cli_pool.claude_cli_pool() is not pool, "a completed close must let the pool go"
+        finally:
+            owner.run_until_complete(claude_cli_pool.close_claude_cli_pool())
+            owner.close()
+            claude_cli_pool.configure_claude_cli_pool()
+
+    def test_a_recycled_pid_is_not_taken_for_the_cli_that_had_it(self) -> None:
+        """the real identity check: a live process under a stopped CLI's pid is not that CLI.
+
+        a pid cannot be forced to recycle portably, so the stopped CLI's recorded identity is
+        paired with a different live process's pid -- exactly what the pool holds after reuse.
+        """
+        if claude_cli_pool._process_start_ticks(os.getpid()) is None:  # noqa: SLF001
+            pytest.skip("a process's start time is read from /proc")
+        bystander = subprocess.Popen(["sleep", "60"])
+        try:
+            time.sleep(0.2)  # a start time is in clock ticks; the CLI below must start ticks later
+            cli = subprocess.Popen(["sleep", "60"])
+            session = PooledCliSession(object(), key="k", pid=cli.pid, marker="m", reusable=True)
+            assert session.start_ticks is not None
+            assert session.still_ours(), "the CLI it started must be recognised while it runs"
+            assert session.start_ticks != claude_cli_pool._process_start_ticks(bystander.pid)  # noqa: SLF001
+            cli.kill()
+            cli.wait(timeout=5)
+            assert not session.still_ours(), "a CLI that exited is not still running"
+
+            session.pid = bystander.pid
+
+            assert not session.still_ours(), "a different live process under the pid must not pass as the CLI"
+        finally:
+            bystander.kill()
+            bystander.wait(timeout=5)
+
     def test_closing_on_a_fresh_loop_kills_the_closed_loops_clis_without_awaiting_them(self) -> None:
         """a host's shutdown hook often runs on a new loop, after the loop the pool served has closed."""
         pool = _pool()

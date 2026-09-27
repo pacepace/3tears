@@ -1159,8 +1159,19 @@ class ClaudeCliPool:
         than disposed, which would await clients whose reader tasks died with their loop. Each
         session stays visible to the exit backstop until its stop completes, and a stop that an
         earlier takeover never finished is finished here.
+
+        A close from a loop other than the served one while that loop is still OPEN is refused
+        before anything is touched, as a checkout from it is: the condition, the idle sessions'
+        reader tasks and the reaper all belong to the open loop, which may be using them.
+
+        :raises ClaudeCliPoolExhausted: when another event loop that is still open serves this pool
         """
-        self._take_over_if_unserved(asyncio.get_running_loop())
+        running = asyncio.get_running_loop()
+        owner, _ = self._take_over_if_unserved(running)
+        if owner is not running:
+            raise ClaudeCliPoolExhausted(
+                "the Claude CLI pool serves another event loop that is still open; close it from that loop"
+            )
         # A takeover just now put the closed loop's sessions here; an interrupted earlier stop may
         # have left others. Taken before this close adds the sessions it disposes itself.
         stranded = list(self._stopping)
@@ -1460,11 +1471,21 @@ def _build_pool() -> ClaudeCliPool:
 
 
 async def close_claude_cli_pool() -> None:
-    """Stop every CLI this process holds. A host calls this on a clean shutdown."""
-    pool = _pool.pop(_ONLY)
+    """Stop every CLI this process holds. A host calls this on a clean shutdown.
+
+    The pool is let go only once its close has succeeded: a close refused because another open
+    loop serves the pool leaves it in place and serving, rather than dropping the one reference
+    through which it could still be closed. While the close runs, a call that reaches the pool is
+    told it is shutting down and runs on a CLI of its own.
+
+    :raises ClaudeCliPoolExhausted: when another event loop that is still open serves the pool
+    """
+    pool = _pool.peek(_ONLY)
     if pool is None:
         return
     await pool.aclose()
+    if _pool.peek(_ONLY) is pool:
+        _pool.pop(_ONLY)
 
 
 def _kill_remaining_at_exit(pool: ClaudeCliPool) -> None:
