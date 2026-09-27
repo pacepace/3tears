@@ -576,6 +576,32 @@ RequestTimeoutError" on every heartbeat and never became ready; the cause was on
 - Discovery was checked and has no such seam: after its request parses it reads only the in-memory
   catalog.
 
+### A tool pod exits on SIGTERM even when its shutdown fails, and can follow its owner process
+
+Two tool pods started by the aibots SDK's in-process launcher logged "NATS drain failed; forcing
+close" with `ConnectionResetError` on SIGTERM, then stayed alive for two days.
+`ToolServer.shutdown` raised before it released `serve()`, the signal handler's background task
+died with it, and `serve()` waited forever.
+
+- **Fixed:** `ToolServer.shutdown` releases `serve()` in a `finally`; the exception still reaches
+  its caller.
+- **Fixed:** `ToolServerBootstrap` runs the serve loop as a task and drives every shutdown through
+  `shutdown_server(server, reason=)` (new, public). A shutdown that raises or overruns
+  `THREETEARS_TOOL_POD_SHUTDOWN_TIMEOUT_SECONDS` (default 20) is logged once at ERROR with its
+  cause, the serve loop is cancelled, and teardown runs under the same bound. `run_async` then raises
+  `ToolPodShutdownError` (new) and `run()` exits `EX_SOFTWARE` (70, new). A second signal joins the
+  first shutdown instead of starting another.
+- **New (minor):** `THREETEARS_TOOL_POD_OWNER_PID`, opt-in. When set, the bootstrap polls the pid
+  with `kill(pid, 0)` every `THREETEARS_TOOL_POD_OWNER_POLL_INTERVAL_SECONDS` (default 1). When
+  the process is gone, or the pod is reparented away from it, the bootstrap logs a WARNING naming
+  the pid and shuts the pod down through `shutdown_server`. `resolve_owner_pid()` and `OWNER_PID_ENV`
+  are public. A value that cannot name an owner (`0`, negative, `1`, blank, non-integer, the pod's
+  own pid) is a `ToolPodConfigError` at startup, so `run()` exits `EX_CONFIG`. The aibots SDK sets
+  it when it spawns tool pods.
+- **Behaviour change for a subclass:** the bootstrap's signal handlers call `shutdown_server`
+  rather than `server.shutdown()` directly, and `run_serve` now runs inside a task. A subclass that
+  overrides `make_signal_handler` keeps its own behaviour and loses the bound.
+
 ### A tool's nested models reach the model, and a TearsTool in a graph behaves as it does over NATS
 
 A tool whose argument model nests another (`shots: list[Shot]`, a sub-object) was shown to a

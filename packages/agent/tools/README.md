@@ -18,6 +18,19 @@ The canonical `name` shape is `tools.<sanitized-mcp>.<sanitized-version>` (per `
 
 `ToolServer` holds no `NamespaceCollection` and has no constructor parameter to take one: `register_tool` / `deregister_tool` publish the manifest and nothing else. The pod-side emitter that once wrote and deleted these rows is deleted -- its write could not land (the agent's L3 proxy resolves platform-scoped writes to the per-agent `agent_<hex>` schema, which has no `namespaces` table) and its delete raised on every call (it passed a bare `UUID` to a Collection keyed on the composite `(row_scope, namespace_id)`). `packages/agent/tools/tests/enforcement/test_no_agent_side_namespace_writes.py` fails a build that brings any of it back.
 
+## Tool pod lifecycle: shutdown and owner process
+
+`ToolServerBootstrap` runs every tool pod's lifecycle. Two guarantees about how a pod stops:
+
+- **SIGTERM always ends the process.** SIGTERM and SIGINT run one shutdown path, `ToolServerBootstrap.shutdown_server`. If the server's own shutdown raises (a NATS drain against a reconnecting server raised `ConnectionResetError` in production) or overruns its bound, the failure is logged once at ERROR with its cause, the serve loop is ended anyway, and `run()` exits `EX_SOFTWARE` (70). A caller driving `run_async()` itself receives `ToolPodShutdownError`, chaining the cause. `ToolServer.shutdown` also releases `serve()` in a `finally`, so a pod not run by the bootstrap does not hang either.
+- **A pod can follow the process that owns it.** Set `THREETEARS_TOOL_POD_OWNER_PID` to the pid of the process that spawned the pod, and the pod shuts itself down through the same path once that process no longer exists (a WARNING names the pid). Opt-in; unset watches nothing. The check is `kill(pid, 0)`, portable across macOS and Linux; when the owner is the pod's parent, being reparented counts as the owner gone too. The value must be a decimal integer greater than 1 and not the pod's own pid -- `0`, negatives, `1`, blank and non-integers are refused at startup as a `ToolPodConfigError`, and `run()` exits `EX_CONFIG` (78).
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `THREETEARS_TOOL_POD_OWNER_PID` | unset | pid of the owning process; the pod exits when it is gone |
+| `THREETEARS_TOOL_POD_OWNER_POLL_INTERVAL_SECONDS` | `1.0` | how often the owner is checked (positive) |
+| `THREETEARS_TOOL_POD_SHUTDOWN_TIMEOUT_SECONDS` | `20.0` | bound on the server's shutdown, and separately on the teardown after it (positive) |
+
 ## Installation
 
 ```bash

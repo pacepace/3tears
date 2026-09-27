@@ -3758,20 +3758,25 @@ class ToolServer:
         )
         self._running = False
 
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
-            self._heartbeat_task = None
+        # ``serve`` is released in ``finally``: a step below that raises -- the NATS drain against
+        # a reconnecting server raised ``ConnectionResetError`` in production -- used to skip the
+        # release, and ``serve`` waited forever on an event nothing would set. The exception still
+        # propagates to the caller, which decides what a failed shutdown means for the process.
+        try:
+            if self._heartbeat_task is not None:
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    # NOSILENT: this IS the cancellation requested on the line above
+                    pass
+                self._heartbeat_task = None
 
-        if self._owned_jwks_provider is not None:
-            await self._owned_jwks_provider.stop()
-            self._owned_jwks_provider = None
+            if self._owned_jwks_provider is not None:
+                await self._owned_jwks_provider.stop()
+                self._owned_jwks_provider = None
 
-        if self._nc is not None and self._owns_nats_connection:
-            await self._nc.shutdown()
-
-        self._shutdown_event.set()
+            if self._nc is not None and self._owns_nats_connection:
+                await self._nc.shutdown()
+        finally:
+            self._shutdown_event.set()
