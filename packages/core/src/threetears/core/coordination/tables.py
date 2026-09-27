@@ -29,6 +29,13 @@ deliberate case and a wiring gap look identical from outside and only the log te
 (:meth:`CoordinationCollection.require_l2_fence`): the compare-and-swap IS that guarantee, and
 without L2 two replicas can both be told they were first. That is ``RedemptionLedger`` and
 ``IdempotencyKeyStore`` today.
+
+**The three compare-and-swap tables carry the swap's order** (``l2_epoch``, ``l2_revision``;
+:func:`~threetears.core.collections.schema_backed.l2_order_columns`). Counters, claims and
+redemptions are mutated only through ``l2_cas_mutate``, whose L3 persists are fenced on that order
+so a late persist of an earlier winner cannot overwrite a later one; ``l2_cas_mutate`` refuses a
+table without them. Revocations are written through ``save_entity`` and carry none. Coordination
+migration v002 adds the columns to tables created before them.
 """
 
 from __future__ import annotations
@@ -46,6 +53,7 @@ from threetears.core.collections.base import CasMutation
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
+    BIGINT_TYPE,
     BYTES_TYPE,
     DATETIMETZ_TYPE,
     INT_TYPE,
@@ -54,6 +62,7 @@ from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
+    l2_order_columns,
 )
 from threetears.core.config import CoreConfig, DefaultCoreConfig
 from threetears.core.coordination.flusher import PeriodicFlusher
@@ -474,7 +483,7 @@ class CoordinationCountersCollection(CoordinationCollection):
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
     expires_at_column: ClassVar[str | None] = "expires_at"
     datetime_columns: ClassVar[frozenset[str]] = frozenset(
-        {"window_start", "expires_at", "date_created", "date_updated"}
+        {"window_start", "expires_at", "date_created", "date_updated", "l2_epoch"}
     )
     schema = TableSchema(
         name="coordination_counters",
@@ -486,6 +495,8 @@ class CoordinationCountersCollection(CoordinationCollection):
             # attempts cannot extend it.
             Column("count", INT_TYPE),
             Column("window_start", DATETIMETZ_TYPE),
+            # mutated only through l2_cas_mutate, whose L3 persists are fenced on this order.
+            *l2_order_columns(),
         ],
         cas_column="date_updated",
         indexes=(SchemaIndex("idx_coordination_counters_expiry", "expires_at"),),
@@ -498,7 +509,7 @@ class CoordinationClaimsCollection(CoordinationCollection):
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
     expires_at_column: ClassVar[str | None] = "expires_at"
     datetime_columns: ClassVar[frozenset[str]] = frozenset(
-        {"date_claimed", "date_completed", "expires_at", "date_created", "date_updated"}
+        {"date_claimed", "date_completed", "expires_at", "date_created", "date_updated", "l2_epoch"}
     )
     schema = TableSchema(
         name="coordination_claims",
@@ -514,6 +525,8 @@ class CoordinationClaimsCollection(CoordinationCollection):
             Column("claim_metadata", BYTES_TYPE, nullable=True),
             Column("date_claimed", DATETIMETZ_TYPE, immutable=True),
             Column("date_completed", DATETIMETZ_TYPE, nullable=True),
+            # mutated only through l2_cas_mutate, whose L3 persists are fenced on this order.
+            *l2_order_columns(),
         ],
         cas_column="date_updated",
         indexes=(SchemaIndex("idx_coordination_claims_expiry", "expires_at"),),
@@ -548,11 +561,12 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
     expires_at_column: ClassVar[str | None] = "expires_at"
-    datetime_columns: ClassVar[frozenset[str]] = frozenset({"expires_at", "date_created", "date_updated"})
+    datetime_columns: ClassVar[frozenset[str]] = frozenset({"expires_at", "date_created", "date_updated", "l2_epoch"})
     schema = TableSchema(
         name="coordination_redemptions",
         primary_key=("purpose", "key"),
-        columns=[*_common_columns()],
+        # mutated only through l2_cas_mutate, whose L3 persists are fenced on this order.
+        columns=[*_common_columns(), *l2_order_columns()],
         cas_column="date_updated",
         indexes=(SchemaIndex("idx_coordination_redemptions_expiry", "expires_at"),),
     )
@@ -572,6 +586,7 @@ COORDINATION_TABLE_SCHEMAS: Final[tuple[TableSchema, ...]] = (
 _DDL_TYPES: Final[dict[str, str]] = {
     STRING_TYPE: "text",
     INT_TYPE: "integer",
+    BIGINT_TYPE: "bigint",
     BYTES_TYPE: "bytea",
     DATETIMETZ_TYPE: "timestamptz",
 }

@@ -10,6 +10,7 @@ from enum import StrEnum
 from uuid import uuid4
 
 import threading
+import time
 from typing import Sequence
 
 from opentelemetry import trace
@@ -830,3 +831,68 @@ class TestUsageTrackerCustomRegistry:
         tracker_a = UsageTracker(prom_registry=reg_a)
         tracker_b = UsageTracker(prom_registry=reg_b)
         assert tracker_a._prom is not tracker_b._prom
+
+    def test_trackers_built_on_several_threads_at_once_share_one_emitter(self) -> None:
+        """the first trackers built concurrently register the instruments exactly once.
+
+        a consumer building models from several threads builds a ``UsageTracker`` on each.
+        the emitter cache is checked and then filled, so without a lock every thread that
+        checked before the first one filled it built its own emitter, and the second
+        registration raised ``Duplicated timeseries in CollectorRegistry`` out of
+        ``create_chat_model``. the registry here is slow to register, so every thread is
+        certainly inside that window at once.
+        """
+        try:
+            from prometheus_client import CollectorRegistry
+        except ImportError:
+            import pytest
+
+            pytest.skip("prometheus_client not installed in this environment")
+
+        class _SlowRegistry(CollectorRegistry):
+            """a registry that holds each registration open long enough for every thread to arrive."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.registrations = 0
+
+            def register(self, collector: object) -> None:
+                """count the registration, wait, then register.
+
+                :param collector: the collector being registered
+                :ptype collector: object
+                :return: None
+                :rtype: None
+                """
+                self.registrations += 1
+                time.sleep(0.05)
+                super().register(collector)  # type: ignore[arg-type]
+
+        threads_count = 8
+        registry = _SlowRegistry()
+        start = threading.Barrier(threads_count)
+        trackers: list[UsageTracker] = []
+        errors: list[BaseException] = []
+        record_lock = threading.Lock()
+
+        def build() -> None:
+            start.wait()
+            try:
+                tracker = UsageTracker(prom_registry=registry)
+            except BaseException as exc:  # noqa: BLE001 -- the assertion below reports every one
+                with record_lock:
+                    errors.append(exc)
+                return
+            with record_lock:
+                trackers.append(tracker)
+
+        workers = [threading.Thread(target=build) for _ in range(threads_count)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=30)
+
+        assert errors == [], f"concurrent first trackers raised: {errors!r}"
+        assert len(trackers) == threads_count
+        # one emitter's five instruments, registered once -- not a second emitter per racing thread
+        assert registry.registrations == 5

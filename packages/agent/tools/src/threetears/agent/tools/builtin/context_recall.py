@@ -21,24 +21,14 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.call_scope import current_scope
+from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 
 __all__ = [
-    "ContextRecallInput",
     "ContextRecallTool",
     "create_context_recall_tool",
 ]
-
-
-class ContextRecallInput(BaseModel):
-    """Input for the context_recall tool."""
-
-    context_id: str = Field(
-        description="The id in a [ctx:<id>] mark, with or without the ctx: part.",
-    )
 
 
 def create_context_recall_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -63,7 +53,6 @@ def create_context_recall_tool(config: dict[str, Any], description: str) -> Stru
     return to_langchain_tool(
         ContextRecallTool(),
         description=description,
-        args_schema=ContextRecallInput,
     )
 
 
@@ -91,7 +80,9 @@ class ContextRecallTool(TearsTool):
         resolution order, all degrading to a clear non-success result:
 
         1. empty ``context_id`` -> "requires a context_id".
-        2. no call scope / no context manager in scope -> "unavailable".
+        2. no call scope / no context manager in scope -> "unavailable"; with
+           no scope at all the error names what the caller must supply
+           (:func:`~threetears.agent.tools.call_scope.no_call_scope_message`).
         3. unknown id -> "not found".
         4. found -> success with the full stored content.
 
@@ -111,10 +102,12 @@ class ContextRecallTool(TearsTool):
                 error="missing context_id",
             )
         elif manager is None:
+            # no scope at all is a caller that installed none -- named, so it can supply one; a
+            # scope with no manager is a call that genuinely belongs to no conversation.
             result = ToolResult(
                 success=False,
                 content="Saved results are unavailable here: this call is not part of a conversation.",
-                error="no context manager in scope",
+                error=no_call_scope_message("context_recall") if scope is None else "no context manager in scope",
             )
         else:
             item = await manager.get_context_item(context_id)

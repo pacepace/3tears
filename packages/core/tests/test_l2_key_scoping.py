@@ -38,6 +38,7 @@ from threetears.core.exceptions import (
 )
 from threetears.nats import Principal, Subjects, kv_key_scope_for
 from threetears.nats.errors import KvError
+from threetears.core.testing.kv import FakeKvBucket
 
 _HUB_SCOPE = kv_key_scope_for(Principal.HUB)
 _AGENT_SCOPE = kv_key_scope_for(Principal.AGENT_POD, agent_id=uuid.uuid4())
@@ -108,38 +109,22 @@ class StubCollection(BaseCollection[StubEntity]):
         return raw
 
 
-# parity-with: threetears.nats.kv.NatsKvBucket
-class _InMemoryKvBucket:
-    """in-memory stand-in for the wrapper's KV bucket, kw-only like the real one."""
+class _InMemoryKvBucket(FakeKvBucket):
+    """the shared collections bucket, as the published fake models it.
+
+    Once a hand-rolled subset of get/put/delete; now the published double, so it carries the
+    revision history -- deletion markers and ``get_latest`` included -- that a collection's read
+    path fences its L2 seed on. A subset double that cannot answer the real bucket's questions is
+    how a KV bug ships green.
+    """
 
     def __init__(self) -> None:
-        self.store: dict[str, bytes] = {}
+        """open an empty bucket.
 
-    async def get(self, *, key: str) -> bytes | None:
-        return self.store.get(key)
-
-    async def get_entry(self, *, key: str) -> tuple[bytes, int] | None:
-        raw = self.store.get(key)
-        return None if raw is None else (raw, 1)
-
-    async def put(self, *, key: str, value: bytes) -> int:
-        self.store[key] = value
-        return len(self.store)
-
-    async def create(self, *, key: str, value: bytes) -> int | None:
-        if key in self.store:
-            return None
-        self.store[key] = value
-        return 1
-
-    async def update(self, *, key: str, value: bytes, revision: int) -> int | None:  # noqa: ARG002
-        self.store[key] = value
-        return 1
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
-        existed = key in self.store
-        self.store.pop(key, None)
-        return existed or revision is None
+        :return: None
+        :rtype: None
+        """
+        super().__init__(bucket_name="collections")
 
 
 class _SharedNatsBus:
@@ -520,8 +505,8 @@ class TestInvalidationEvictsL2:
         # both principals cache the grant; each writes its OWN key into the shared bucket.
         await hub.ensure("g1")
         await peer.ensure("g1")
-        assert f"{_HUB_SCOPE}.test_entities.g1" in bus.bucket.store
-        assert f"{_AGENT_SCOPE}.test_entities.g1" in bus.bucket.store
+        assert f"{_HUB_SCOPE}.test_entities.g1" in bus.bucket.keys()
+        assert f"{_AGENT_SCOPE}.test_entities.g1" in bus.bucket.keys()
 
         # the hub revokes: L3 changes, the hub's own key is refreshed, invalidation fires.
         l3["g1"] = {"id": "g1", "name": "revoked", "score": 1}
@@ -531,7 +516,7 @@ class TestInvalidationEvictsL2:
         )
 
         # the peer's own scoped key is gone, so its pull-through reaches L3.
-        assert f"{_AGENT_SCOPE}.test_entities.g1" not in bus.bucket.store
+        assert f"{_AGENT_SCOPE}.test_entities.g1" not in bus.bucket.keys()
         entity = await peer.get("g1")
         assert entity is not None
         assert entity.name == "revoked"
@@ -553,14 +538,14 @@ class TestInvalidationEvictsL2:
         collection.l3_pool = _DECLARES_L3  # type: ignore[assignment]
         await registry.start_invalidation_listener(bus)
         key = collection.l2_key("g1")
-        bus.bucket.store[key] = collection.serialize({"id": "g1", "name": "stale", "score": 1})
+        await bus.bucket.put(key=key, value=collection.serialize({"id": "g1", "name": "stale", "score": 1}))
 
         await bus.publish(
             subject=Subjects.cache_invalidate(),
             message=CacheInvalidationMessage(table="test_entities", ids=["g1"], origin="elsewhere"),
         )
 
-        assert key not in bus.bucket.store
+        assert key not in bus.bucket.keys()
 
     @pytest.mark.asyncio
     async def test_an_uncached_entity_writes_no_delete_marker(
@@ -610,14 +595,14 @@ class TestInvalidationEvictsL2:
         collection, registry = _make_pod(bus, _AGENT_SCOPE, {}, config_always, with_l3=False)
         await registry.start_invalidation_listener(bus)
         key = collection.l2_key("g1")
-        bus.bucket.store[key] = collection.serialize({"id": "g1", "name": "the-truth", "score": 1})
+        await bus.bucket.put(key=key, value=collection.serialize({"id": "g1", "name": "the-truth", "score": 1}))
 
         await bus.publish(
             subject=Subjects.cache_invalidate(),
             message=CacheInvalidationMessage(table="test_entities", ids=["g1"], origin="elsewhere"),
         )
 
-        assert key in bus.bucket.store
+        assert key in bus.bucket.keys()
 
     @pytest.mark.asyncio
     async def test_the_eviction_does_not_rebroadcast(
@@ -637,7 +622,9 @@ class TestInvalidationEvictsL2:
 
         collection, registry = _make_pod(bus, _AGENT_SCOPE, {}, config_always)
         await registry.start_invalidation_listener(bus)
-        bus.bucket.store[collection.l2_key("g1")] = collection.serialize({"id": "g1", "name": "x", "score": 1})
+        await bus.bucket.put(
+            key=collection.l2_key("g1"), value=collection.serialize({"id": "g1", "name": "x", "score": 1})
+        )
         bus.publish = _counting_publish  # type: ignore[method-assign]
 
         await bus.publish(

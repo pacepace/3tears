@@ -29,7 +29,7 @@ from threetears.search.contracts import (
     Spend,
     TransportResponse,
 )
-from _search_instances import PROVENANCE
+from packages.search.tests._search_instances import PROVENANCE
 
 
 class FakeSearchTransport(SearchTransport):  # parity-with: threetears.search.contracts.SearchTransport

@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
-from _bus_shims import FakeBus, RecordingDisplay
+from packages.scrape.tests._bus_shims import FakeBus, RecordingDisplay
 from pydantic import SecretStr
 from threetears.nats import ForwardedHandlerError, NoOwnerError
 from threetears.scrape.operator_control import (

@@ -5,8 +5,13 @@ least-connections implementation as default. strategies select
 a single endpoint from a list of candidates for each tool call.
 
 which endpoints a caller may be routed to at all is decided before any
-strategy runs, by :func:`endpoints_callable_by`: an agent's in-process
-endpoint serves only that agent, a Tool Pod's serves everyone.
+strategy runs. :func:`endpoints_callable_by` answers the ownership half: an
+agent's in-process endpoint serves only that agent, a Tool Pod's serves
+everyone. :meth:`~threetears.registry.catalog.CatalogEntry.select_copies`
+builds on it -- keeping only available copies with a live definition,
+preferring the caller's own in-process copies, and narrowing to copies
+serving the input schema the caller was shown -- and a strategy only ever
+chooses among what that selection leaves.
 """
 
 from __future__ import annotations

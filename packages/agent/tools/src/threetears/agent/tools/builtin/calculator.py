@@ -7,13 +7,11 @@ import re
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 __all__ = [
-    "CalculatorInput",
     "CalculatorTool",
     "create_calculator_tool",
 ]
@@ -95,12 +93,6 @@ def _normalize_expression(expression: str) -> str:
     return rewritten
 
 
-class CalculatorInput(BaseModel):
-    """Input for the calculator tool."""
-
-    expression: str = Field(description="Mathematical expression to evaluate")
-
-
 def _evaluate(expression: str) -> str:
     if not _HAS_SIMPLEEVAL:
         return tool_error("calculator", "evaluate", "simpleeval package is not installed")
@@ -134,7 +126,6 @@ def create_calculator_tool(config: dict[str, Any], description: str) -> Structur
     return to_langchain_tool(
         CalculatorTool(),
         description=description,
-        args_schema=CalculatorInput,
     )
 
 

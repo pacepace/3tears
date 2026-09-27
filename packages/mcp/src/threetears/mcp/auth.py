@@ -30,7 +30,6 @@ auditable.
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -39,7 +38,7 @@ from uuid import UUID
 
 from threetears.epoch import EpochClient, EpochListener, catchup_tick
 from threetears.nats import Subjects
-from threetears.observe import get_logger
+from threetears.observe import PeriodicTask, get_logger
 
 __all__ = [
     "Authorizer",
@@ -439,6 +438,10 @@ class LocalGrantAuthorizer:
             raise ValueError(
                 "epoch_client and epoch_listener must be provided together; passing exactly one is a usage error",
             )
+        if epoch_listener is not None and not (0 < catchup_interval_seconds < float("inf")):
+            # refused HERE, not when the loop is built: by then start() has already primed the cache
+            # and subscribed, and a failure there would leave a registration behind with no loop.
+            raise ValueError(f"catchup_interval_seconds must be positive, got {catchup_interval_seconds}")
         self._grant_loader = grant_loader
         self._epoch_client = epoch_client
         self._epoch_listener = epoch_listener
@@ -449,7 +452,7 @@ class LocalGrantAuthorizer:
         # means "no grant" by default-deny semantics.
         self._cache: set[tuple[UUID, str]] = set()
         self._started = False
-        self._catchup_task: asyncio.Task[None] | None = None
+        self._catchup_task: PeriodicTask | None = None
 
     async def start(self) -> None:
         """prime cache, subscribe to rbac epoch, spawn catch-up tick.
@@ -508,10 +511,15 @@ class LocalGrantAuthorizer:
                 extra={"extra_data": log_extras},
             )
         if epoch_mode:
-            self._catchup_task = asyncio.create_task(
-                self._catchup_loop(),
+            # sleeps first; a tick that errors is logged and retried on the next interval.
+            self._catchup_task = PeriodicTask(
+                self._catchup_once,
+                interval=self._catchup_interval_seconds,
                 name="mcp-rbac-catchup-loop",
+                logger=log,
+                failure_message="MCP rbac catch-up tick errored; will retry on next interval",
             )
+            self._catchup_task.start()
         self._started = True
 
     async def stop(self) -> None:
@@ -539,12 +547,7 @@ class LocalGrantAuthorizer:
         # that already reads as not-started, and the next start() overwrites it.
         task = self._catchup_task
         self._catchup_task = None
-        task.cancel()
-        try:
-            await task
-        # NOSILENT: CancelledError here IS the cancellation we just requested
-        except asyncio.CancelledError:
-            pass
+        await task.stop()
         if self._epoch_listener is not None:
             # the listener's registration outlives the task otherwise, so a
             # later reset would call back into a stopped authorizer and ask it
@@ -557,40 +560,27 @@ class LocalGrantAuthorizer:
             self._epoch_listener.deregister(Subjects.mcp_rbac_epoch(), self._on_rbac_bump)
         log.info("MCP authorizer catch-up loop stopped")
 
-    async def _catchup_loop(self) -> None:
-        """periodic safety-net: pull current epoch; reload if stale.
+    async def _catchup_once(self) -> None:
+        """one safety-net pass: pull the current epoch, reload if stale.
 
-        the listener's subscribe path covers the happy case; this
-        loop covers (a) the documented prime/subscribe race window,
-        (b) a broadcast outright dropped on the wire (subscriber blip,
+        the listener's subscribe path covers the happy case; this pass
+        covers (a) the documented prime/subscribe race window, (b) a
+        broadcast outright dropped on the wire (subscriber blip,
         JetStream redelivery edge), and (c) a counter REPLACED by a
         broker restart, which every KV operation survives silently.
         cheap when nothing has changed -- one counter read. the rbac
         epoch is an ephemeral subject, so that read is NATS KV, not the
-        durable row the tile family keeps.
+        durable row the tile family keeps. cadence, failure isolation
+        and shutdown are ``PeriodicTask``'s.
 
         :return: nothing
         :rtype: None
         """
-        # the loop is only ever spawned under epoch_mode (start() guards the
-        # create_task on epoch_mode), so the listener is non-None here.
+        # only ever started under epoch_mode, so the listener is non-None here.
         assert self._epoch_listener is not None
-        subjects = [(Subjects.mcp_rbac_epoch(), self._on_rbac_bump)]
-        while True:
-            try:
-                await asyncio.sleep(self._catchup_interval_seconds)
-                # the pass itself is the framework's: which subjects to poll,
-                # and whether one failing subject abandons the rest, are not
-                # decisions this consumer should hold its own opinion about.
-                # the LOOP stays here, because cadence and shutdown are.
-                await catchup_tick(self._epoch_listener, subjects)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.warning(
-                    "MCP rbac catch-up tick errored; will retry on next interval",
-                    exc_info=True,
-                )
+        # the pass itself is the framework's: which subjects to poll, and whether one failing
+        # subject abandons the rest, are not decisions this consumer should hold its own opinion about.
+        await catchup_tick(self._epoch_listener, [(Subjects.mcp_rbac_epoch(), self._on_rbac_bump)])
 
     async def allows(self, identity: Identity, permission: str) -> bool:
         """return True iff ``identity`` holds ``permission``.

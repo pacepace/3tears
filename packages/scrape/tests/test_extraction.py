@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from threetears.scrape.llm_retry import StructuredCallExhaustedError
 from threetears.scrape.extraction import (
     NOTICE_DOCUMENT_CLASS,
     OCR_PAGE_IMAGE_CLASS,
@@ -206,14 +207,17 @@ class TestGenerateCandidates:
         assert ainvoke_mock.await_count == 2
         assert candidates == [{"employer": "td.employer"}]
 
-    async def test_total_failure_returns_empty_list_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            candidates = await generate_candidates(_PAGE_HTML, {"employer": str}, api_key="k")
-        assert candidates == []
+            await generate_candidates(_PAGE_HTML, {"employer": str}, api_key="k")
+        assert exc_info.value.last_error is boom
 
     async def test_empty_candidate_list_from_llm_returns_empty(self):
         parsed = _CandidateStrategyList(candidates=[])
@@ -445,14 +449,17 @@ class TestGenerateRowCandidates:
         assert candidates == [{"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer"}}]
         assert ainvoke_mock.await_count == 1
 
-    async def test_total_failure_returns_empty_list_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            candidates = await generate_row_candidates(_ROWS_PAGE_HTML, {"employer": str}, api_key="k")
-        assert candidates == []
+            await generate_row_candidates(_ROWS_PAGE_HTML, {"employer": str}, api_key="k")
+        assert exc_info.value.last_error is boom
 
 
 # ===========================================================================
@@ -566,14 +573,17 @@ class TestGenerateRegexCandidates:
         assert candidates == [r"(?P<employer>[^\n]+)", r"(?P<employer>.+)\nCounty:.+"]
         assert ainvoke_mock.await_count == 1
 
-    async def test_total_failure_returns_empty_list_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            candidates = await generate_regex_candidates(_TEXT_PAGE, {"employer": str}, api_key="k")
-        assert candidates == []
+            await generate_regex_candidates(_TEXT_PAGE, {"employer": str}, api_key="k")
+        assert exc_info.value.last_error is boom
 
     async def test_empty_candidate_list_from_llm_returns_empty(self):
         parsed = _RegexCandidateStrategyList(candidates=[])
@@ -646,14 +656,17 @@ class TestGenerateRegexRowCandidates:
         assert candidates == [r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]+)"]
         assert ainvoke_mock.await_count == 1
 
-    async def test_total_failure_returns_empty_list_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            candidates = await generate_regex_row_candidates(_TEXT_ROWS_PAGE, {"employer": str}, api_key="k")
-        assert candidates == []
+            await generate_regex_row_candidates(_TEXT_ROWS_PAGE, {"employer": str}, api_key="k")
+        assert exc_info.value.last_error is boom
 
 
 # ===========================================================================
@@ -749,15 +762,17 @@ class TestDiscoverCandidates:
         assert result.fields == []
         assert result.field_schema == {}
 
-    async def test_total_llm_failure_returns_honest_empty_result_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            result = await discover_candidates(_PAGE_HTML, api_key="k")
-        assert result.validated is False
-        assert result.fields == []
+            await discover_candidates(_PAGE_HTML, api_key="k")
+        assert exc_info.value.last_error is boom
 
 
 # ===========================================================================
@@ -900,14 +915,17 @@ class TestDiscoverRowCandidates:
         assert result.validated is False
         assert result.sample_records == []
 
-    async def test_total_llm_failure_returns_honest_empty_result_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            result = await discover_row_candidates(_ROWS_PAGE_HTML, api_key="k")
-        assert result.validated is False
+            await discover_row_candidates(_ROWS_PAGE_HTML, api_key="k")
+        assert exc_info.value.last_error is boom
 
 
 # ===========================================================================
@@ -1025,14 +1043,17 @@ class TestExtractFieldsDirectly:
             result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
         assert result == {"employer": "Acme Corp"}
 
-    async def test_total_llm_failure_returns_none_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
-        assert result is None
+            await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
+        assert exc_info.value.last_error is boom
 
     async def test_whitespace_around_a_returned_value_is_normalized(self):
         fake_model, _ = _fake_structured_model({"employer": "  Acme   Corp  \n", "affected_count": "42"})
@@ -1134,24 +1155,30 @@ class TestExtractFieldsDirectlyChunked:
         assert result["county"] == "Baltimore"
         assert len(result) == 5
 
-    async def test_one_chunks_total_failure_only_costs_that_chunks_fields(self):
-        fake_a, _ = _fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
-        fake_b, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_one_chunks_total_failure_fails_the_document_not_just_its_fields(self):
+        """A chunk that never answered must not leave its fields looking absent from the document."""
+        boom = RuntimeError("boom")
+        fake_a, ainvoke_a = _fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
+        fake_b, _ = _fake_structured_model(side_effect=boom)
         with (
-            patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_a, fake_b]),
+            # the second chunk's call is made afresh on each of its six attempts
+            patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_a] + [fake_b] * 6),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            result = await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
-        assert result == {"employer": "Acme Corp", "notice_date": "May 1, 2026"}
+            await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
+        assert exc_info.value.last_error is boom
+        # The chunk that answered was awaited too, not left running unobserved.
+        assert ainvoke_a.await_count == 1
 
-    async def test_every_chunk_failing_returns_an_empty_dict_not_a_crash(self):
+    async def test_every_chunk_failing_raises_never_an_empty_dict(self):
         fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError),
         ):
-            result = await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
-        assert result == {}
+            await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
 
     async def test_custom_fields_per_call_of_one_makes_one_call_per_field(self):
         schema = {"employer": str, "notice_date": str}
@@ -1208,14 +1235,17 @@ class TestExtractFieldsFromImages:
             result = await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
         assert result == {"employer": "Acme Corp"}
 
-    async def test_total_llm_failure_returns_none_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            result = await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
-        assert result is None
+            await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert exc_info.value.last_error is boom
 
     async def test_an_implausibly_long_field_value_triggers_a_retry(self):
         garbage = {"employer": "x" * 5000, "affected_count": "42"}
@@ -1323,14 +1353,17 @@ class TestExtractMultiRowFieldsFromImages:
         assert result == [{"employer": "Acme Corp", "affected_count": 1}]
         assert ainvoke_mock.await_count == 2
 
-    async def test_total_llm_failure_returns_none_not_a_crash(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+    async def test_total_failure_raises_never_an_empty_answer(self):
+        """A model that never answered has not said there is nothing here."""
+        boom = RuntimeError("boom")
+        fake_model, _ = _fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
         ):
-            result = await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
-        assert result is None
+            await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert exc_info.value.last_error is boom
 
     async def test_an_implausibly_long_field_value_on_any_row_triggers_a_retry(self):
         garbage = {"records": [{"employer": "x" * 5000, "affected_count": "1"}]}

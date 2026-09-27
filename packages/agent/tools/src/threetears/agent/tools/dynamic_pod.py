@@ -29,7 +29,13 @@ from typing import Any, Generic, TypeVar
 from uuid import uuid7
 
 from threetears.agent.tools.base_tool import TearsTool
-from threetears.agent.tools.server import ToolServer
+from threetears.agent.tools.server import (
+    ToolRegistrationRefused,
+    ToolServer,
+    refusal_is_final,
+    refusals_in_reply,
+)
+from threetears.nats import TokenCallback
 from threetears.observe import get_logger, spawn_background, traced
 
 __all__ = ["BuiltSpec", "DynamicToolPod"]
@@ -95,6 +101,12 @@ class DynamicToolPod(ABC, Generic[SpecT]):
     :ptype namespace: str
     :param pod_id: unique pod identifier; generated (uuid7) when omitted
     :ptype pod_id: str | None
+    :param identity_token: provider of this pod's OWN identity token, called fresh for every
+        registration manifest. a pod's copies serve every caller, so the registry admits them only
+        from a verified publisher; a pod registering with no identity is refused
+        ``UNVERIFIED_PUBLISHER``. for a pod the host runs in its own process this is the identity
+        the host issues it, which the host's registry authenticator verifies as the platform
+    :ptype identity_token: TokenCallback | None
     """
 
     def __init__(
@@ -104,6 +116,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         nats_client: Any,
         namespace: str,
         pod_id: str | None = None,
+        identity_token: TokenCallback | None = None,
     ) -> None:
         """initialize the dynamic tool pod.
 
@@ -116,6 +129,9 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :ptype namespace: str
         :param pod_id: unique pod identifier; generated when omitted
         :ptype pod_id: str | None
+        :param identity_token: provider of this pod's own identity token, presented on every
+            registration manifest; ``None`` registers unverified
+        :ptype identity_token: TokenCallback | None
         :return: nothing
         :rtype: None
         """
@@ -123,6 +139,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         self._nats_client = nats_client
         self._namespace = namespace
         self._pod_id = pod_id or str(uuid7())
+        self._identity_token = identity_token
         self._tool_server: ToolServer | None = None
         self._serve_task: asyncio.Task[None] | None = None
         self._resources: dict[str, Any] = {}
@@ -147,9 +164,12 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         the base owns ToolServer construction; this is the single seam
         subclasses / tests override to supply an alternative (a fake, a
         differently-configured server). production subclasses use the
-        default, which attaches the injected ``nats_client``. the pod
-        writes no ``namespaces`` row of its own -- the hub reconciles
-        those off the registration manifest.
+        default, which attaches the injected ``nats_client`` and hands
+        the pod's identity provider to the server as its ``auth_token``
+        -- on an injected connection that provider mints only the
+        registration manifest's credential. the pod writes no
+        ``namespaces`` row of its own -- the hub reconciles those off the
+        registration manifest.
 
         :return: newly constructed ToolServer
         :rtype: ToolServer
@@ -159,6 +179,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             nats_client=self._nats_client,
             namespace=self._namespace,
             pod_id=self._pod_id,
+            auth_token=self._identity_token,
         )
 
     @abstractmethod
@@ -388,11 +409,19 @@ class DynamicToolPod(ABC, Generic[SpecT]):
 
         safe to call before :meth:`start` has built the server: the guard makes it a no-op.
 
+        a manifest published here is sent as a request and its reply READ: when the registry
+        refused any of this spec's tools FINALLY (:func:`~threetears.agent.tools.server.refusal_is_final`),
+        :class:`ToolRegistrationRefused` names them; a temporary refusal is logged by the server and
+        waited out on the heartbeat, never raised. the tools
+        stay registered on the server and are re-offered on every heartbeat, so a refusal whose
+        cause is fixed upstream heals without another call.
+
         :param spec: spec to build + register tools for
         :ptype spec: SpecT
         :return: nothing
         :rtype: None
         :raises ValueError: when :meth:`build_tools` returns a key other than :meth:`spec_key`'s
+        :raises ToolRegistrationRefused: when the registry refused any of this spec's tools finally
         :raises Exception: whatever :meth:`build_tools` raised; when the spec held tools and
             the server is serving, the reduced manifest is published first
         """
@@ -454,6 +483,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :ptype manifest_changed: bool
         :return: nothing
         :rtype: None
+        :raises ToolRegistrationRefused: when the registry's reply refused any of ``built``'s tools finally
         """
         serving = self._ensure_serving()
         if not manifest_changed:
@@ -463,7 +493,12 @@ class DynamicToolPod(ABC, Generic[SpecT]):
                 self._pod_id,
             )
         elif server.is_ready and server.is_connected:
-            await server.publish_registration()
+            reply = await server.publish_registration(await_reply=True)
+            spec_tools = [(tool.mcp_name(), tool.mcp_version()) for tool in built.tools]
+            refused = refusals_in_reply(reply, spec_tools) if reply is not None else ()
+            final = tuple(refusal for refusal in refused if refusal_is_final(refusal.code))
+            if final:
+                raise ToolRegistrationRefused(final, pod_id=self._pod_id)
             log.info(
                 "dynamic tool pod spec registered: key=%s pod_id=%s",
                 built.key,

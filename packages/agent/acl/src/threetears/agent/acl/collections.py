@@ -1492,6 +1492,10 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "get_by_agent_id",
             "get_by_owner_and_customer",
             "find_by_id",
+            # ``ensure_namespace`` DERIVES the partition from ``customer_id`` (``create`` does) and
+            # addresses the existing row by ``namespace_id``, unique platform-wide; a ``row_scope``
+            # argument would let a caller name a partition that contradicts the customer.
+            "ensure_namespace",
             "list_tool_namespaces_for_actor",
             "list_skill_eligible_tool_namespaces",
             # ``rescope`` is cross-partition BY CONSTRUCTION rather than by
@@ -1825,6 +1829,105 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
+
+    async def ensure_namespace(
+        self,
+        *,
+        namespace_id: UUID,
+        name: str,
+        namespace_type: str,
+        owner_agent_id: UUID | None,
+        customer_id: UUID | None,
+        owner_namespace: str | None = None,
+        schema_name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> NamespaceEntity:
+        """get-or-create one namespace row on a deterministic id, and confirm it is the row asked for.
+
+        for deployments that own their control plane (no hub to ask), and for the hub itself -- one
+        write for both, so a row the hub materializes and a row a hub-less application materializes
+        cannot drift apart field by field.
+
+        the write is INSERT-IF-ABSENT (``ON CONFLICT DO NOTHING``, no conflict target), never an
+        upsert: under a race the loser's insert is absorbed by whichever unique index it meets --
+        the primary key, ``UNIQUE (namespace_id)`` or ``UNIQUE (name)`` -- instead of raising, and an
+        existing row is never overwritten. the row is then READ BACK by id, and every field asked for
+        is compared: a row that exists but means something else (type, owner, customer, name, owner
+        namespace, schema) is refused, never silently returned or clobbered.
+
+        where the table carries the ``owner_namespace`` foreign key onto ``name`` (the hub's shape),
+        the owner's own namespace row must already exist; this does not create owners.
+
+        :param namespace_id: the row's id, typically derived from its owner (e.g. ``memory_namespace_id``)
+        :ptype namespace_id: UUID
+        :param name: unique namespace name
+        :ptype name: str
+        :param namespace_type: the type discriminator (``memory``, ``tool``, ...)
+        :ptype namespace_type: str
+        :param owner_agent_id: owning agent, if any
+        :ptype owner_agent_id: UUID | None
+        :param customer_id: owning customer; ``None`` for a platform-scoped row
+        :ptype customer_id: UUID | None
+        :param owner_namespace: the owning agent's own namespace name -- the key the evaluator's
+            ownership short-circuit reads; a row without one is owned by no agent
+        :ptype owner_namespace: str | None
+        :param schema_name: backing schema name, where the type has one
+        :ptype schema_name: str | None
+        :param metadata: row metadata for a NEW row (default ``{}``); an existing row's is not compared
+        :ptype metadata: dict[str, Any] | None
+        :return: the row
+        :rtype: NamespaceEntity
+        :raises ValueError: a row with this id exists and disagrees on a requested field, or a unique
+            value it carries (the name, or another unique column) is taken by a row with another id
+        :raises RuntimeError: the collection has no L3 pool to write through
+        :raises Exception: the backend's own error for what the table refuses outright -- a
+            ``CHECK`` (e.g. a platform-scoped row of a customer-only type) or a missing owner under
+            the ``owner_namespace`` foreign key
+        """
+        if self.l3_pool is None:
+            raise RuntimeError("ensure_namespace needs an L3 pool to write through")
+        existing = await self.find_by_id(namespace_id)
+        if existing is None:
+            now = datetime.now(UTC)
+            await self.l3_pool.execute(
+                "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, "
+                "owner_namespace, customer_id, schema_name, metadata, date_created, date_updated) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $10) ON CONFLICT DO NOTHING",
+                "platform" if customer_id is None else "customer",
+                namespace_id,
+                name,
+                namespace_type,
+                owner_agent_id,
+                owner_namespace,
+                customer_id,
+                schema_name,
+                _json.dumps(dict(metadata or {})),
+                now,
+            )
+            existing = await self.find_by_id(namespace_id)
+            if existing is None:
+                # absorbed by a unique index other than the id's -- the name, or any unique column the
+                # deploying app added (a schema name, say)
+                raise ValueError(
+                    f"namespace {namespace_id} was not written: a unique value it carries (name {name!r}, "
+                    f"schema {schema_name!r}, ...) is already taken by a row with another id"
+                )
+            log.info(
+                "namespace ensured",
+                extra={"extra_data": {"namespace_id": str(namespace_id), "namespace_type": namespace_type}},
+            )
+        wanted = (namespace_type, owner_agent_id, customer_id, name, owner_namespace, schema_name)
+        actual = (
+            existing.namespace_type,
+            existing.owner_agent_id,
+            existing.customer_id,
+            existing.name,
+            existing.owner_namespace,
+            existing.schema_name,
+        )
+        if actual != wanted:
+            raise ValueError(f"namespace {namespace_id} already exists as {actual}, not {wanted}")
+        return existing
 
     async def get_by_name(self, name: str) -> NamespaceEntity | None:
         """look up namespace by unique name.

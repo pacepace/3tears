@@ -488,8 +488,14 @@ def _get_cancellation_fired_counter() -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = ("redshift", "datasource.driver.cancellation.fired")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -497,8 +503,9 @@ def _get_cancellation_fired_counter() -> Any:
                 name="datasource.driver.cancellation.fired",
                 description="datasource driver cancellation fired count",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 
@@ -515,8 +522,14 @@ def _get_cancellation_failed_counter() -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = ("redshift", "datasource.driver.cancellation.failed")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -524,8 +537,9 @@ def _get_cancellation_failed_counter() -> Any:
                 name="datasource.driver.cancellation.failed",
                 description="datasource driver cancellation failed count",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 
@@ -541,8 +555,14 @@ def _get_cache_hit_counter() -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = ("redshift", "datasource.driver.cache.hit")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -550,8 +570,9 @@ def _get_cache_hit_counter() -> Any:
                 name="datasource.driver.cache.hit",
                 description="datasource driver connection-cache hit count",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 
@@ -567,8 +588,14 @@ def _get_cache_miss_counter() -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = ("redshift", "datasource.driver.cache.miss")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -576,8 +603,9 @@ def _get_cache_miss_counter() -> Any:
                 name="datasource.driver.cache.miss",
                 description="datasource driver connection-cache miss count",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 
@@ -595,8 +623,14 @@ def _get_executor_saturation_gauge() -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = ("redshift", "datasource.driver.executor.saturation")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -610,8 +644,9 @@ def _get_executor_saturation_gauge() -> Any:
                 name="datasource.driver.executor.saturation",
                 description="bridge-executor active-worker pressure snapshot",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 

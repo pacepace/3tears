@@ -19,13 +19,15 @@ from typing import Any
 import pytest
 
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.collections.schema_backed import BYTES_TYPE, INT_TYPE, STRING_TYPE
+from threetears.core.collections.schema_backed import BIGINT_TYPE, BYTES_TYPE, INT_TYPE, STRING_TYPE
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.coordination.migrations import PACKAGE_NAME, register
 from threetears.core.coordination.migrations.v001_create_coordination_tables import create_coordination_tables
+from threetears.core.coordination.migrations.v002_add_l2_order_columns import add_l2_order_columns
 from threetears.core.coordination.tables import (
     COORDINATION_TABLE_SCHEMAS,
     CoordinationClaimsCollection,
@@ -97,6 +99,16 @@ class _RowStore:
         del table, kwargs
         self.rows[(data["purpose"], data["key"])] = dict(data)
         return 1
+
+    async def upsert_ordered(self, table: str, data: dict[str, Any], *, conn: Any = None) -> int:
+        # the conditional write the SQL backend generates: land only over an older stored order.
+        del conn
+        stored = self.rows.get((data["purpose"], data["key"]))
+        stored_order = None if stored is None else l2_order_of(stored)
+        incoming = l2_order_of(data)
+        if stored_order is not None and incoming is not None and stored_order >= incoming:
+            return 0
+        return await self.upsert(table, data)
 
     async def delete(self, table: str, pk: dict[str, Any], *, conn: Any = None) -> None:
         del table, conn
@@ -184,6 +196,8 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
                     if column.column_type == INT_TYPE
                     else "BYTEA"
                     if column.column_type == BYTES_TYPE
+                    else "BIGINT"
+                    if column.column_type == BIGINT_TYPE
                     else "TIMESTAMPTZ"
                 )
                 for column in schema.columns
@@ -213,6 +227,27 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
         # scriob re-registers 3tears platform packages at agent scope; the tables are the same.
         assert register(agent_runner, scope=MigrationScope.AGENT).scope is MigrationScope.AGENT
         assert register(MigrationRunner()).name == PACKAGE_NAME
+
+    def test_v002_adds_the_order_columns_and_is_registered_after_v001(self) -> None:
+        versions = register(MigrationRunner()).versions
+        assert versions == {1: create_coordination_tables, 2: add_l2_order_columns}
+
+    @pytest.mark.asyncio
+    async def test_v002_adds_both_columns_then_backfills_each_compare_and_swap_table(self) -> None:
+        # one statement per execute, DDL before DML: YugabyteDB runs neither mixed into the other.
+        store = _RecordingStore()
+        await add_l2_order_columns(store)  # type: ignore[arg-type]
+        for table in ("coordination_counters", "coordination_claims", "coordination_redemptions"):
+            statements = [s for s in store.statements if f" {table} " in f"{s} "]
+            assert statements == [
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS l2_epoch TIMESTAMPTZ",
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS l2_revision BIGINT",
+                f"UPDATE {table} SET l2_epoch = '1970-01-01T00:00:00+00:00'::timestamptz, l2_revision = 0 "
+                f"WHERE l2_epoch IS NULL OR l2_revision IS NULL",
+            ], f"{table}: wrong v002 statements"
+        assert not [s for s in store.statements if "coordination_revocations" in s], (
+            "v002 touched a table nothing compare-and-swaps"
+        )
 
 
 class TestTheSharedCollection:
@@ -526,7 +561,19 @@ class TestRowExpiryShape:
 
     def test_a_redemption_row_is_presence_plus_expiry(self) -> None:
         columns = {c.name for c in CoordinationRedemptionsCollection.schema.columns}
-        assert columns == {"purpose", "key", "expires_at", "date_created", "date_updated"}
+        # presence plus expiry, plus the compare-and-swap order its persist is fenced on.
+        assert columns == {"purpose", "key", "expires_at", "date_created", "date_updated", "l2_epoch", "l2_revision"}
+
+    def test_every_compare_and_swap_table_carries_the_order_and_revocations_does_not(self) -> None:
+        # counters, claims and redemptions are written through l2_cas_mutate, which refuses a table
+        # that cannot store the order its swaps win; revocations is written through save_entity.
+        for collection in (
+            CoordinationCountersCollection,
+            CoordinationClaimsCollection,
+            CoordinationRedemptionsCollection,
+        ):
+            assert collection.schema.declares_l2_order, f"{collection.schema.name} cannot store the swap order"
+        assert not CoordinationRevocationsCollection.schema.declares_l2_order
 
     def test_a_counter_window_becomes_its_expiry(self) -> None:
         # the shape 04b relies on: a row expires when its window closes, so a stale window is

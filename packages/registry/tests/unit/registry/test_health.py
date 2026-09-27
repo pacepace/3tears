@@ -23,6 +23,8 @@ from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.l1_cache import create_registry_l1_backend
 
+from ._copies import uniform_entry
+
 
 # -- helpers --
 
@@ -67,7 +69,7 @@ def _make_entry(
     :rtype: CatalogEntry
     """
     endpoint = ToolEndpoint(pod_id=pod_id, status="available")
-    result = CatalogEntry(
+    result = uniform_entry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
@@ -237,7 +239,7 @@ class TestHeartbeatSubscriberHandling:
         """subscriber marks endpoints available and records tools on entity."""
         catalog = ToolCatalog()
         endpoint = ToolEndpoint(pod_id="pod-001", status="unavailable")
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",
@@ -334,7 +336,7 @@ class TestHeartbeatSubscriberHealthCheck:
         catalog = ToolCatalog()
         endpoint_stale = ToolEndpoint(pod_id="pod-stale", status="available")
         endpoint_healthy = ToolEndpoint(pod_id="pod-healthy", status="available")
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",

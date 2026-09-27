@@ -31,6 +31,7 @@ from sqlalchemy import Column, DateTime, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
+from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -260,6 +261,19 @@ class _LiveCounter(_LiveDenylist):
             DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
             write_buffer=WriteBuffer(),
         )
+
+    @property
+    def persists_l2_order(self) -> bool:
+        return True
+
+    async def save_ordered_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
+        # the conditional write the SQL backend generates: land only over an older stored order.
+        stored = self._rows.get(str(data["id"]))
+        stored_order = None if stored is None else l2_order_of(stored)
+        incoming = l2_order_of(data)
+        if stored_order is not None and incoming is not None and stored_order >= incoming:
+            return 0
+        return await self.save_to_store(data)
 
 
 async def test_listening_peers_in_one_scope_keep_a_compare_and_swap_counter(nats_container: str) -> None:

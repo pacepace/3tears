@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from _driver_log_helpers import driver_warnings
+from packages.scrape.tests._driver_log_helpers import driver_warnings
 
 from threetears.scrape.drivers.listing_detail import (
     ListingDetailDriver,

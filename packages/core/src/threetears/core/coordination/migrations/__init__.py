@@ -15,6 +15,8 @@ whose broker refuses it -- declares the same schemas in its data section instead
 version history:
 
 - v001 -- create the four coordination tables, rendered from their collections' declared schemas.
+- v002 -- add the compare-and-swap order columns (``l2_epoch``, ``l2_revision``) to the counters,
+  claims and redemptions tables, and backfill existing rows to the order floor.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from __future__ import annotations
 from threetears.core.coordination.migrations.v001_create_coordination_tables import (
     create_coordination_tables,
 )
+from threetears.core.coordination.migrations.v002_add_l2_order_columns import add_l2_order_columns
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -44,12 +47,14 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
     """
     pkg = PackageMigrations(name=PACKAGE_NAME, scope=scope)
     pkg.version(1)(create_coordination_tables)
+    pkg.version(2)(add_l2_order_columns)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_l2_order_columns",
     "create_coordination_tables",
     "register",
 ]

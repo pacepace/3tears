@@ -97,7 +97,7 @@ class MemoryNamespaceRef:
 
     frozen and deliberately narrow: :func:`~threetears.agent.acl.authorize_on_entity`
     reads ``id`` / ``customer_id`` / ``namespace_type`` / ``owner_agent_id`` /
-    ``owner_namespace`` and nothing else, so a ref cannot be mistaken for a
+    ``owner_namespace`` / ``name`` and nothing else, so a ref cannot be mistaken for a
     persisted entity and cannot be saved by anything.
 
     :param id: namespace UUID
@@ -112,6 +112,11 @@ class MemoryNamespaceRef:
         the evaluator's ownership short-circuit reads; ``None`` when the row
         records no owner
     :ptype owner_namespace: str | None
+    :param name: the name the row STORES, which is what a subtree grant is judged
+        against; a row written under an earlier name rule keeps that name, so it is
+        carried from the row rather than recomputed. ``None`` when the source had no
+        name to give, which no subtree grant covers
+    :ptype name: str | None
     """
 
     id: UUID
@@ -119,6 +124,7 @@ class MemoryNamespaceRef:
     owner_agent_id: UUID
     namespace_type: str
     owner_namespace: str | None = None
+    name: str | None = None
 
 
 class MemoryNamespaceProvisioner(Protocol):
@@ -362,4 +368,5 @@ def _ref_from_reply(
         owner_agent_id=agent_id,
         namespace_type=reply.namespace_type,
         owner_namespace=reply.owner_namespace,
+        name=reply.name,
     )

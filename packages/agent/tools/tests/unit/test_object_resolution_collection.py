@@ -57,6 +57,11 @@ class _InMemoryKvBucket:
     async def get(self, *, key: str) -> bytes | None:
         return self.store.get(key)
 
+    async def get_latest(self, *, key: str) -> tuple[bytes | None, int]:
+        # revisions are not modelled: this collection has no L3, so nothing ever seeds L2 at one.
+        value = self.store.get(key)
+        return (value, 0 if value is None else 1)
+
     async def put(self, *, key: str, value: bytes) -> int:
         self.store[key] = value
         return len(self.store)

@@ -47,15 +47,29 @@ from threetears.core.egress import EgressDriver, EgressRegistry
 
 from .robots import RobotsDecision, RobotsGate
 from .session_state import usable_session_state
-from .collections import ScrapeExtractionCollection, ScrapeRecipeCollection, decode_field_schema, decode_nav_steps
+from .collections import (
+    ScrapeExtraction,
+    ScrapeExtractionCollection,
+    ScrapeRecipeCollection,
+    decode_field_schema,
+    decode_nav_steps,
+)
 from .driver import NavStep, RenderedPage, ScrapeDriver
 from .eval_loop import StrategyType, run_eval_loop, run_eval_loop_multi_row
 from .extraction import FieldSchema
 from .health import ScrapeTargetHealthCollection, clear_robots_block, record_robots_block
+from .llm_retry import StructuredCallFailedError
 
-__all__ = ["ScrapeTool"]
+__all__ = ["MODEL_UNAVAILABLE_STATUS", "ScrapeTool"]
 
 log = get_logger(__name__)
+
+#: The ``validation_status`` this tool reports when a model call the eval loop depended on
+#: failed every attempt. Like ``"backoff"``, a payload value and never a stored one: the eval
+#: loop persists nothing for it, because the model never answered and nothing about the page
+#: was observed. Distinct from ``"failed"``, which means the page WAS read and nothing could be
+#: extracted from it -- the outcome a model outage used to be recorded as.
+MODEL_UNAVAILABLE_STATUS = "model_unavailable"
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -1041,23 +1055,35 @@ class ScrapeTool(TearsTool):
             assert page is not None  # narrowed by `error is None` above
             eval_loop_fn = run_eval_loop_multi_row if multi_row else run_eval_loop
             try:
-                extraction = await eval_loop_fn(
-                    target_id,
-                    page.html,
-                    page.final_url,
-                    schema,
-                    recipe_collection=self._recipe_collection,
-                    extraction_collection=self._extraction_collection,
-                    health_collection=self._health_collection,
-                    api_key=self._api_key,
-                    strategy_type=strategy_type,
-                    # The driver already knows the status; not passing it would leave the
-                    # classifier guessing about evidence we are holding.
-                    page_status=page.status,
+                extraction: ScrapeExtraction | None = None
+                model_failure: StructuredCallFailedError | None = None
+                try:
+                    extraction = await eval_loop_fn(
+                        target_id,
+                        page.html,
+                        page.final_url,
+                        schema,
+                        recipe_collection=self._recipe_collection,
+                        extraction_collection=self._extraction_collection,
+                        health_collection=self._health_collection,
+                        api_key=self._api_key,
+                        strategy_type=strategy_type,
+                        # The driver already knows the status; not passing it would leave the
+                        # classifier guessing about evidence we are holding.
+                        page_status=page.status,
+                    )
+                except StructuredCallFailedError as exc:
+                    # A model call the eval loop depended on failed every attempt (logged once
+                    # where it happened). The loop persisted nothing, because the model never
+                    # answered; this answers the caller with that, as its own outcome, rather
+                    # than as an extraction that found nothing.
+                    model_failure = exc
+                records: list[dict[str, Any]] = (
+                    [] if extraction is None else extraction.structured_fields.get("records", [])
                 )
-                records: list[dict[str, Any]] = extraction.structured_fields.get("records", [])
+                validation_status = MODEL_UNAVAILABLE_STATUS if extraction is None else extraction.validation_status
                 content = json.dumps(
-                    {"target_id": target_id, "validation_status": extraction.validation_status, "records": records},
+                    {"target_id": target_id, "validation_status": validation_status, "records": records},
                     default=str,
                 )
                 # `blocked` is not success -- no records were produced -- but it is also not
@@ -1066,7 +1092,7 @@ class ScrapeTool(TearsTool):
                 # The distinction is surfaced in `error` because that is the field a caller
                 # actually reads on a failed ToolResult; `validation_status` was already in
                 # metadata and was already being ignored.
-                blocked = extraction.validation_status == "blocked"
+                blocked = validation_status == "blocked"
                 if self._circuit is not None:
                     # Every non-blocked outcome closes the circuit, including an extraction that
                     # failed: this circuit counts FETCHES, and a page we can plainly read is a
@@ -1098,20 +1124,27 @@ class ScrapeTool(TearsTool):
                 # failing eval loop is not a fetch outcome and must not be recorded as one.
                 self._release_probe(target_id)
                 raise
-            result = ToolResult(
-                success=extraction.validation_status == "validated",
-                error=(
+            error_text: str | None = None
+            if blocked:
+                error_text = (
                     "blocked: a bot wall or human-verification page stood where the content "
                     "should be, so nothing was extracted. The stored extraction strategy is "
                     "not implicated and was left untouched; retrying immediately will hit the "
                     "same wall."
                 )
-                if blocked
-                else None,
+            elif model_failure is not None:
+                error_text = (
+                    f"{MODEL_UNAVAILABLE_STATUS}: {model_failure}. The page was fetched, but the model "
+                    "never answered, so nothing was extracted and nothing was recorded; the next poll "
+                    "tries again."
+                )
+            result = ToolResult(
+                success=validation_status == "validated",
+                error=error_text,
                 content=content,
                 metadata={
                     "target_id": target_id,
-                    "validation_status": extraction.validation_status,
+                    "validation_status": validation_status,
                     "record_count": len(records),
                     "source_url": page.final_url,
                 },

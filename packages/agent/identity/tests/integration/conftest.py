@@ -18,6 +18,7 @@ from typing import Any
 import asyncpg
 import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table, Text
+from threetears.core.testing.kv import FakeKvBucket
 
 
 @pytest.fixture(scope="module")
@@ -115,30 +116,16 @@ async def make_pool(url: str, schema: str) -> asyncpg.Pool:
     return pool
 
 
-class InMemoryKvBucket:
-    """KV bucket stand-in matching ``NatsKvBucket``."""
-
-    def __init__(self) -> None:
-        self.kv: dict[str, bytes] = {}
-
-    async def get(self, *, key: str) -> bytes | None:
-        return self.kv.get(key)
-
-    async def put(self, *, key: str, value: bytes) -> int:
-        self.kv[key] = value
-        return len(self.kv)
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
-        existed = key in self.kv
-        self.kv.pop(key, None)
-        return existed or revision is None
-
-
 class InMemoryNatsBus:
-    """NATS stand-in with a KV bucket (L2)."""
+    """NATS stand-in with a KV bucket (L2).
+
+    the bucket is the shared :class:`~threetears.core.testing.kv.FakeKvBucket`, which
+    mirrors the whole ``NatsKvBucket`` surface, so a collection path that reads a key's
+    latest revision here meets the same method it meets in production.
+    """
 
     def __init__(self) -> None:
-        self._bucket = InMemoryKvBucket()
+        self._bucket = FakeKvBucket("identity-test")
 
     async def kv_bucket(
         self,
@@ -148,7 +135,7 @@ class InMemoryNatsBus:
         storage: str = "file",  # noqa: ARG002
         create_if_missing: bool = True,  # noqa: ARG002
         history: int = 1,  # noqa: ARG002
-    ) -> InMemoryKvBucket:
+    ) -> FakeKvBucket:
         return self._bucket
 
     async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002

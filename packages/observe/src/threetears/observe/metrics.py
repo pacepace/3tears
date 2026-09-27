@@ -33,6 +33,8 @@ import inspect
 import time
 from typing import Any, Callable, TypeVar, overload
 
+from threetears.observe.build_once import BuildOnce
+
 __all__ = ["counter", "gauge", "histogram", "metered"]
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -163,8 +165,12 @@ _NOOP_METRIC = _NoOpMetric()
 #: lazily created instruments, keyed by (kind, sanitized name, label_names)
 #: -- created once per distinct key, reused across every call, mirroring
 #: how a real Counter/Histogram/Gauge is meant to be a long-lived
-#: module-level object rather than recreated per call.
-_instruments: dict[tuple[str, str, tuple[str, ...]], Any] = {}
+#: module-level object rather than recreated per call. the accessors and
+#: ``@metered`` are reached from sync code on any thread (an executor, a
+#: worker thread), and a second registration of one name raises
+#: ``Duplicated timeseries`` at the caller, so the instruments are built
+#: through :class:`~threetears.observe.build_once.BuildOnce`.
+_instruments: BuildOnce[tuple[str, str, tuple[str, ...]], Any] = BuildOnce()
 
 
 def _get_or_create_instrument(
@@ -191,14 +197,20 @@ def _get_or_create_instrument(
         return _NOOP_METRIC
 
     sanitized = _sanitize_metric_name(name)
-    key = (kind, sanitized, label_names)
-    if key not in _instruments:
+
+    def _build() -> Any:
+        """
+        registers the instrument this key names.
+
+        :return: the new prometheus instrument
+        :rtype: Any
+        """
         from prometheus_client import Counter, Gauge, Histogram
 
         instrument_classes = {"counter": Counter, "histogram": Histogram, "gauge": Gauge}
-        instrument_class = instrument_classes[kind]
-        _instruments[key] = instrument_class(sanitized, description or f"{sanitized} {kind}", list(label_names))
-    return _instruments[key]
+        return instrument_classes[kind](sanitized, description or f"{sanitized} {kind}", list(label_names))
+
+    return _instruments.get((kind, sanitized, label_names), _build)
 
 
 def counter(

@@ -461,7 +461,7 @@ class _NoopRoleAssignmentCollection:
         role_id: UUID,
         scope_type: str,
         scope_id: UUID | None,
-    ) -> UUID:
+    ) -> tuple[UUID, bool]:
         """return a synthetic assignment id without persisting anything.
 
         :param group_id: group UUID (unused)
@@ -472,11 +472,14 @@ class _NoopRoleAssignmentCollection:
         :ptype scope_type: str
         :param scope_id: scope UUID (unused)
         :ptype scope_id: UUID | None
-        :return: synthetic assignment UUID
-        :rtype: UUID
+        :return: synthetic assignment UUID, and ``False`` because nothing
+            was inserted -- the same ``(assignment_id, created)`` shape
+            :meth:`RoleAssignmentCollection.ensure_group_role_assignment`
+            returns
+        :rtype: tuple[UUID, bool]
         """
         _ = group_id, role_id, scope_type, scope_id
-        return uuid4()
+        return uuid4(), False
 
 
 @pytest.fixture

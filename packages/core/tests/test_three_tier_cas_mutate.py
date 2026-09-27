@@ -25,6 +25,7 @@ from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer, flush_pending
+from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -88,6 +89,19 @@ class _Counters(BaseCollection[_Counter]):
             return 0
         self._store.rows[str(data["id"])] = dict(data)
         return 1
+
+    @property
+    def persists_l2_order(self) -> bool:
+        return True
+
+    async def save_ordered_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
+        # the conditional write the SQL backend generates: land only over an older stored order.
+        stored = self._store.rows.get(str(data["id"]))
+        stored_order = None if stored is None else l2_order_of(stored)
+        incoming = l2_order_of(data)
+        if stored_order is not None and incoming is not None and stored_order >= incoming:
+            return 0
+        return await self.save_to_store(data)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         self._store.rows.pop(str(entity_id), None)
@@ -248,13 +262,17 @@ class TestTheL3WritePolicy:
         assert buffer.pending_count() == 0
 
     @pytest.mark.asyncio
-    async def test_a_delete_lands_in_l3_synchronously_even_when_writes_are_behind(self) -> None:
+    async def test_a_delete_is_refused_before_l2_or_l3_is_touched(self) -> None:
+        # a delete leaves L3 nothing to carry the swap's order, so an earlier winner's persist
+        # still in flight would land after it and resurrect the row; removal is an upsert the
+        # reads treat as absent instead.
         nats, store, buffer = _Nats(), _Store(), WriteBuffer()
-        store.rows["acct-1"] = {"id": "acct-1", "count": 5}
         coll, _ = _replica(_WriteBehindCounters, nats, store, buffer=buffer)
-        outcome = await coll.l2_cas_mutate("acct-1", lambda _row: ("delete", None))
-        assert outcome.action == "deleted"
-        assert "acct-1" not in store.rows
+        await coll.l2_cas_mutate("acct-1", _increment)
+        with pytest.raises(ValueError, match="delete"):
+            await coll.l2_cas_mutate("acct-1", lambda _row: ("delete", None))
+        assert await _l2_count(nats) == 1
+        assert buffer.pending_count() == 1
 
     @pytest.mark.asyncio
     async def test_a_synchronous_persist_that_affects_no_row_raises(self) -> None:
@@ -363,13 +381,28 @@ class TestCreationTime:
 
 class TestOutcomes:
     @pytest.mark.asyncio
-    async def test_created_updated_deleted_and_noop_are_reported(self) -> None:
+    async def test_created_updated_and_noop_are_reported(self) -> None:
         nats, store = _Nats(), _Store()
         coll, _ = _replica(_SynchronousCounters, nats, store)
         assert (await coll.l2_cas_mutate("acct-1", _increment)).action == "created"
         assert (await coll.l2_cas_mutate("acct-1", _increment)).action == "updated"
         assert (await coll.l2_cas_mutate("acct-1", lambda _row: ("noop", None))).action == "noop"
+
+    @pytest.mark.asyncio
+    async def test_deleted_is_reported_where_l2_is_the_only_record(self) -> None:
+        # without an L3 pool there is no late persist to resurrect the row, so a delete stands.
+        nats, store = _Nats(), _Store()
+        l1 = SQLiteBackend(db_name=f"cas_{uuid.uuid4().hex[:8]}")
+        l1.initialize(_metadata())
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=l1, l2_client=nats, kv_key_scope=_SCOPE)
+        coll = _SynchronousCounters(
+            registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), store, None
+        )
+        assert (await coll.l2_cas_mutate("acct-1", _increment)).action == "created"
         assert (await coll.l2_cas_mutate("acct-1", lambda _row: ("delete", None))).action == "deleted"
+        bucket = await nats.kv_bucket(name="collections")
+        assert await bucket.get(key=_KEY) is None
 
 
 class TestNegativeCachingThroughCas:

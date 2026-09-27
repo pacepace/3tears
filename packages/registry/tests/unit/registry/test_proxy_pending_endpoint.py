@@ -20,6 +20,8 @@ import pytest
 from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
+from ._copies import uniform_entry
+
 from ._dispatch_auth import make_authed_request, make_proxy
 
 
@@ -72,7 +74,7 @@ def _make_entry_with_pending_endpoint(
     :rtype: CatalogEntry
     """
     endpoint = ToolEndpoint(pod_id=pod_id, status="pending")
-    result = CatalogEntry(
+    result = uniform_entry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
@@ -155,7 +157,7 @@ class TestCallProxyRefusesPendingEndpoints:
     async def test_mixed_pending_and_available_routes_to_available(self) -> None:
         """proxy routes to available endpoint when other endpoints are pending."""
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",
@@ -197,7 +199,7 @@ class TestCallProxyRefusesPendingEndpoints:
     async def test_tool_not_ready_distinct_from_tool_unavailable(self) -> None:
         """TOOL_NOT_READY used for pending endpoints; TOOL_UNAVAILABLE for unavailable."""
         catalog = ToolCatalog()
-        entry_unavail = CatalogEntry(
+        entry_unavail = uniform_entry(
             tool_name="tool.down",
             tool_version="1.0",
             full_name="tool.down@1.0",

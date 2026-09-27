@@ -1232,20 +1232,22 @@ class TestTheTimeoutIsTheWholeCall:
 
     @pytest.mark.asyncio
     async def test_a_long_stream_that_keeps_arriving_finishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The limit is on silence, not length: six chunks 30 ms apart outlast a 50 ms timeout."""
+        """The limit is on silence, not length: ten chunks 30 ms apart -- 300 ms in all -- outlast a
+        150 ms timeout. The gap sits well inside the timeout: at 30 ms against 50 ms, scheduler
+        jitter on a loaded machine was enough to trip it."""
         import asyncio
 
         from langchain_core.outputs import ChatGenerationChunk
         from langchain_openrouter import ChatOpenRouter
 
         async def _steady(self: Any, *args: Any, **kwargs: Any):
-            for i in range(6):
+            for i in range(10):
                 await asyncio.sleep(0.03)
                 yield ChatGenerationChunk(message=AIMessageChunk(content=str(i)))
 
         monkeypatch.setattr(ChatOpenRouter, "_astream", _steady)
-        seen = [str(c.content) async for c in self._model(50).astream([HumanMessage(content="hi")])]
-        assert "".join(seen) == "012345"
+        seen = [str(c.content) async for c in self._model(150).astream([HumanMessage(content="hi")])]
+        assert "".join(seen) == "0123456789"
 
     @pytest.mark.asyncio
     async def test_no_timeout_set_means_no_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:

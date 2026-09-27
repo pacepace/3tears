@@ -202,7 +202,8 @@ async def test_temp_db_name_uses_the_random_half_of_the_uuid(monkeypatch: pytest
 
     created = next(s for s in log if s.startswith("CREATE DATABASE"))
     assert fixed.hex[-12:] in created
-    assert fixed.hex[:12] not in created
+    # the leading 48 bits of a uuid7 are its millisecond timestamp, spelled as 12 hex digits
+    assert f"{fixed.int >> 80:012x}" not in created
 
 
 @pytest.mark.asyncio

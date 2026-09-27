@@ -133,7 +133,7 @@ def backup_set(seeded: Any, tmp_path_factory: pytest.TempPathFactory) -> Any:
 
 async def _scratch_restore(cluster: ClusterBackup, manifest: BackupManifest, admin_dsn: str, database: str) -> str:
     """Restore one database of the set into a fresh scratch db; returns its dsn."""
-    scratch_name = f"scratch_{uuid7().hex[:12]}"
+    scratch_name = f"scratch_{uuid7().hex[-12:]}"
     admin = await asyncpg.connect(admin_dsn)
     try:
         await admin.execute(f'CREATE DATABASE "{scratch_name}"')

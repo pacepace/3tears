@@ -37,7 +37,13 @@ from threetears.scrape.extraction import (
     _RowCandidateStrategy,
     _RowCandidateStrategyList,
 )
-from threetears.scrape.health import ScrapeTargetHealthCollection, content_fingerprint
+from threetears.scrape.health import (
+    ScrapeTargetHealthCollection,
+    clear_classification,
+    content_fingerprint,
+    record_classification,
+)
+from threetears.scrape.llm_retry import StructuredCallFailedError
 
 # A wall: real HTML, HTTP 200, and nothing any stored selector will ever match.
 _WALL = """
@@ -493,6 +499,100 @@ async def test_a_changed_verdict_stops_regenerating_once_it_has_been_acted_on(
     recipe = await recipes.get("warn_oh")
     assert recipe is not None
     assert recipe.consecutive_validation_failures == 1, "the second poll must fall back to counting the failure"
+
+
+async def test_a_changed_verdict_whose_regeneration_hit_an_outage_regenerates_next_poll(
+    collections: tuple[ScrapeRecipeCollection, ScrapeExtractionCollection, ScrapeTargetHealthCollection],
+) -> None:
+    """An outage is not an attempt: the next poll must regenerate, not count a failure.
+
+    The ``changed`` verdict is cached before the regeneration it calls for runs, and a cached
+    ``changed`` means "already regenerated against this page and it did not stick". Poll 1 gets
+    a fresh verdict and then every candidate-generation attempt fails, so no regeneration
+    happened. Before the fix, poll 2 read the cached verdict as acted on and fell through to
+    counting the failure: a ``failed`` row and ``consecutive_validation_failures == 1`` for a
+    page the loop knew had changed and never re-learned.
+    """
+    recipes, extractions, health = collections
+    await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
+    learnable = _RowCandidateStrategyList(
+        candidates=[_RowCandidateStrategy(row_selector="tr", field_selectors={"employer": "td.org"})]
+    )
+    judged = _JudgeVerdict(winning_candidate_index=0, reasoning="the new cell holds the employer")
+
+    async def _poll() -> Any:
+        return await run_eval_loop_multi_row(
+            "warn_oh",
+            _RESTYLED_PAGE,
+            "https://example.gov/warn",
+            _SCHEMA,
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            health_collection=health,
+            api_key="k",
+        )
+
+    first_requested: list[type] = []
+    with (
+        patch(
+            "threetears.scrape.llm_retry.create_chat_model",
+            side_effect=fake_models(
+                {PageVerdict: _CHANGED, _RowCandidateStrategyList: RuntimeError("upstream is down")}, first_requested
+            ),
+        ),
+        pytest.raises(StructuredCallFailedError),
+    ):
+        await _poll()
+
+    assert _RowCandidateStrategyList in first_requested, "poll 1 must have tried to regenerate"
+    after_outage = await health.get("warn_oh")
+    assert after_outage is None or after_outage.classified_verdict is None, (
+        "a changed verdict whose regeneration never ran is still cached as acted on"
+    )
+
+    second_requested: list[type] = []
+    with patch(
+        "threetears.scrape.llm_retry.create_chat_model",
+        side_effect=fake_models(
+            {PageVerdict: _CHANGED, _RowCandidateStrategyList: learnable, _JudgeVerdict: judged}, second_requested
+        ),
+    ):
+        result = await _poll()
+
+    assert _RowCandidateStrategyList in second_requested, "poll 2 counted a failure instead of regenerating"
+    assert result.validation_status == "validated"
+    recipe = await recipes.get("warn_oh")
+    assert recipe is not None
+    assert recipe.consecutive_validation_failures == 0
+    assert recipe.extraction_strategy == {"row_selector": "tr", "field_selectors": {"employer": "td.org"}}
+
+
+async def test_withdrawing_a_verdict_leaves_a_newer_pages_verdict_alone(
+    collections: tuple[ScrapeRecipeCollection, ScrapeExtractionCollection, ScrapeTargetHealthCollection],
+) -> None:
+    """Only the verdict about the page whose regeneration failed is taken back.
+
+    Another poll may have classified a newer page meanwhile; that is a different observation,
+    and withdrawing it would make the next poll pay for a question already answered.
+    """
+    _, _, health = collections
+    await record_classification(
+        health, target_id="warn_oh", fingerprint=content_fingerprint(_WALL), kind="blocked", evidence="a wall"
+    )
+
+    untouched = await clear_classification(health, target_id="warn_oh", fingerprint=content_fingerprint(_RESTYLED_PAGE))
+    kept = await health.get("warn_oh")
+
+    assert untouched is None
+    assert kept is not None
+    assert kept.classified_verdict == "blocked"
+
+    cleared = await clear_classification(health, target_id="warn_oh", fingerprint=content_fingerprint(_WALL))
+
+    assert cleared is not None
+    assert cleared.classified_verdict is None
+    assert cleared.classified_fingerprint is None
+    assert cleared.last_blocked_at is not None, "withdrawing the verdict must not rewrite the block history"
 
 
 async def test_omitting_the_health_collection_spends_nothing_and_changes_nothing(

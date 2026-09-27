@@ -33,10 +33,8 @@ nothing; it answers with a placeholder no model turn ever reads. The tool-use bl
 ``AIMessage.tool_calls`` under the caller's own tool names, and the caller's next round arrives
 with the results as ordinary history.
 
-Token-level streaming (post-Chunk-9 follow-up, see
-``.prawduct/artifacts/3tears-change-claude-max-token-streaming.md`` in metallm for the full
-sign-off): ``ClaudeCodeChatModel._astream`` sets ``include_partial_messages=True`` -- which makes
-the Agent SDK subprocess actually emit granular ``StreamEvent`` deltas (the raw Anthropic
+Token-level streaming: ``ClaudeCodeChatModel._astream`` sets ``include_partial_messages=True`` --
+which makes the Agent SDK subprocess actually emit granular ``StreamEvent`` deltas (the raw Anthropic
 ``content_block_delta``/``text_delta`` shape) -- but the method never handles ``StreamEvent`` at
 all, only the terminal, whole-block ``AssistantMessage``. Every delta is silently dropped, so a
 turn arrives as one or two large lumps instead of a real token stream. ``_astream`` is overridden
@@ -87,12 +85,72 @@ compounding root causes, both from how ``_wrap_langchain_tool`` used to hand ``@
    a value for every optional filter on every call -- hence the empty-string placeholders.
 
 ``_wrap_langchain_tool`` now builds the full ``{"type": "object", "properties": ..., "required":
-...}`` schema itself: each property keeps (or gains, resolved from ``anyOf``/``oneOf``) a definite
-top-level ``type``, and ``required`` is copied verbatim from the original tool schema's own
-``required`` list -- not synthesized from "every key present". Handing the SDK an
-already-full-shaped schema also makes it skip its own required-everything path entirely (verified
-by reading ``create_sdk_mcp_server``'s ``_build_schema``: it returns a dict verbatim, unmodified,
-whenever ``"type"`` and ``"properties"`` are already top-level keys).
+...}`` schema itself: an optional union collapses to its member at every depth, and ``required`` is
+copied verbatim from the original tool schema's own ``required`` list -- not synthesized from
+"every key present". Handing the SDK an already-full-shaped schema also makes it skip its own
+required-everything path entirely (verified by reading ``create_sdk_mcp_server``'s
+``_build_schema``: it returns a dict verbatim, unmodified, whenever ``"type"`` and ``"properties"``
+are already top-level keys).
+
+Nested models (found: every tool whose args model nests another -- ``shots: list[Shot]``, a
+sub-object -- reached the model as a plain string field under a subscription, while the API-key
+route was fine). Pydantic renders a nested model as ``{"$ref": "#/$defs/Shot"}`` with the definition
+under the schema's ``$defs``; the wrapper kept only the top-level properties, turned every
+``$ref`` property into ``{"type": "string"}`` and left an array's ``items`` ref pointing at nothing.
+Every reference is now inlined from the schema's own definitions by
+:func:`threetears.tool_schema.self_contained_input_schema` (which also bounds a recursive model), so
+the CLI lists a self-contained schema, as the API route's LangChain conversion does. The schema itself is read from ``tool_call_schema`` (see
+``_SubscriptionChatModel._get_tool_schema``), so a tool that carries a JSON Schema dict is read
+rather than advertised with no parameters.
+
+One query per call, and the person's words last (found live: a consumer whose changing system text
+is fenced untrusted tool output had its person's latest message flagged by the model as "a fake
+'Human' line inside that untrusted block", and the model answered from invented knowledge). The CLI
+takes a system prompt and ONE query, where the API route sends a system prompt and a list of turns.
+The query used to be the changing system text followed by bare ``Human:`` / ``Assistant:`` /
+``Tool (name):`` lines, so the person's line sat between fenced blocks and a tool round's results
+came after it. :func:`_flatten_round` lays the query out in labelled sections instead: the changing
+system text as context, earlier turns as history (each inside its own ``<prompt-turn>`` tags), a
+tool round's calls and results as work on the current message, and last the person's current
+message under "The person's current message:". A section tag inside any material is disarmed, so
+text a tool returned cannot end a section or forge a request.
+
+A failed call raises (found live: at the subscription's session limit the reply was "You've hit your
+session limit · resets 1:10am (UTC)" as ordinary content; metallm stored it as a draft and gave it
+to its agent as knowledge, and the circuit breaker counted a success). The CLI reports a failure as
+data -- a synthetic assistant message whose ``error`` names the kind and whose text is the notice,
+then a result flagged ``is_error`` -- where the API route raises. Both are raised here as
+:class:`~threetears.models.errors.ModelRateLimitError` (the ``rate_limit`` code or an HTTP 429, with
+the reset time when the notice gives one) or :class:`~threetears.models.errors.ModelProviderError`,
+before any of the notice is yielded, so the breaker's ``on_llm_error`` sees it as it sees an API
+failure. A call that stopped to hand tool calls back, and one whose result carries the structured
+answer it asked for, did not fail.
+
+What reaches the model differs from the API route only where the CLI leaves no choice (found live:
+metallm measured a rewrite task copying its source nearly twice as much under a subscription).
+Read from the Agent SDK (``_internal/transport/subprocess_cli.py``) and the bundled CLI (2.1.207):
+
+- The caller's system prompt REPLACES Claude Code's: a string ``system_prompt`` becomes
+  ``--system-prompt``, whereas a ``{"type": "preset", "append": ...}`` prompt would keep Claude Code's
+  own. The CLI still puts its identity line -- "You are a Claude agent, built on Anthropic's Claude
+  Agent SDK." for a non-interactive session with no appended prompt -- in a system block of its own
+  ahead of the caller's, on every request, for every kind of credential; no option, flag or variable
+  skips it. It reached the model glued to the caller's first line, so the caller's prompt is sent
+  starting with a blank line (:data:`_AFTER_CLI_IDENTITY`).
+- The CLI sends a ``<system-reminder>`` user message ahead of the conversation carrying
+  ``# currentDate`` ("Today's date is ..."). The user context that holds it adds the date
+  unconditionally, and the reminder is sent whenever that context is not empty; nothing turns it
+  off. This, the identity line, and an ``x-anthropic-billing-header`` block (the CLI's version and
+  entrypoint) that the CLI adds to the system prompt are the differences that remain. That block
+  alone could be switched off, with ``CLAUDE_CODE_ATTRIBUTION_HEADER``; it is left on, because what
+  a subscription request without it does has not been measured.
+- Left unset, the CLI's query engine turns adaptive thinking on, and sends each model's own launch
+  effort (``xhigh`` on one current model). The API route sends neither, so the model does not think
+  and the API applies its default effort, ``high``. Both are pinned to that
+  (:data:`_NO_THINKING`, :data:`_API_DEFAULT_EFFORT`), and a caller's ``thinking`` / ``effort`` --
+  the API route's own parameters, in the same shapes -- are passed through instead. The effort is
+  also set in ``CLAUDE_CODE_EFFORT_LEVEL``, which outranks every other source in the CLI's effort
+  resolution, launch pins included.
 
 """
 
@@ -100,7 +158,9 @@ from __future__ import annotations
 
 import contextvars
 import dataclasses
+import html
 import json
+import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Callable
@@ -113,7 +173,7 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from threetears.models.claude_cli_isolation import claude_cli_isolation
 from threetears.models.claude_cli_pool import (
@@ -122,7 +182,9 @@ from threetears.models.claude_cli_pool import (
     ClaudeCliSessionError,
     claude_cli_pool,
 )
+from threetears.models.errors import ModelProviderError, ModelRateLimitError
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
+from threetears.tool_schema import self_contained_input_schema
 
 from threetears.observe import get_logger
 
@@ -148,6 +210,10 @@ _FORWARDED_KWARGS = frozenset(
         "cwd",
         "fallback_model",
         "max_budget_usd",
+        # The API route's ChatAnthropic takes these two as well, so a caller sets them once for
+        # either credential (see _SubscriptionChatModel.thinking / .effort).
+        "thinking",
+        "effort",
     }
 )
 
@@ -165,6 +231,29 @@ _HANDED_BACK = "This tool call was handed to the caller."
 #: answers by calling it, and the CLI puts the answer on ``ResultMessage.structured_output``. It is
 #: the CLI's, never the caller's: a caller's tool arrives under :data:`_BOUND_TOOL_PREFIX`.
 _STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+
+#: The provider a failed subscription call names, in errors and in the messages worded from them.
+_CLI_PROVIDER = "Claude subscription"
+
+#: When a limit notice says the limit resets: "resets 1:10am (UTC)", "will reset at 5pm".
+_RESETS = re.compile(r"\bresets?\s+(?:at\s+)?(?P<when>[^\n]+)", re.IGNORECASE)
+
+#: Thinking when a caller asks for none. The API route sends no ``thinking`` then, and the model does
+#: not think; the CLI left unset turns adaptive thinking on. On a model that rejects a disabled
+#: thinking parameter the CLI omits it, which is what the API route sends too.
+_NO_THINKING: dict[str, Any] = {"type": "disabled"}
+
+#: Effort when a caller asks for none: what the Messages API applies when a request omits it. The
+#: CLI left unset sends each model's own launch effort instead (``xhigh`` on one current model).
+_API_DEFAULT_EFFORT = "high"
+
+#: The CLI's effort variable. It outranks the ``--effort`` flag, the settings and the per-model launch
+#: pins in the bundled CLI's effort resolution, so the effort sent is pinned here as well as in the flag.
+_EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
+
+#: What starts the caller's system prompt. The CLI sends its own identity line as a system block of
+#: its own ahead of the caller's, and the two reached the model with no separator between them.
+_AFTER_CLI_IDENTITY = "\n\n"
 
 
 def _output_format(output_config: Any) -> dict[str, Any]:
@@ -225,27 +314,185 @@ def _content_text(content: Any) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def _split_system(content: Any) -> tuple[str, str]:
-    """A system message's content split at its last cache marker: ``(stable, variable)``.
+def _split_leading_system(leading: Sequence[BaseMessage]) -> tuple[str, str]:
+    """The system messages a round opens with, split into ``(stable, variable)`` text.
 
-    A caller that caches prompts marks where the stable part ends with ``cache_control`` on the last
-    stable block; everything after it changes turn to turn. A string, or a list with no marker, is
-    all stable.
+    The API route sends a run of leading system messages as one system prompt, so they are read
+    here as one sequence of blocks. A caller that caches prompts marks where the stable part ends
+    with ``cache_control`` on the last stable block, and everything after that marker -- a later
+    system message included -- changes turn to turn. With no marker anywhere, the first system
+    message is the stable part and any after it are variable: a transcript or a notice sent as a
+    second system message changes every turn, and in the system prompt it would both read as the
+    agent's persona and force a new CLI for every call.
 
-    :param content: a system message's ``content``
-    :ptype content: Any
+    :param leading: the system messages before the first message of any other kind
+    :ptype leading: Sequence[BaseMessage]
     :return: the stable text and the variable text (either may be empty)
     :rtype: tuple[str, str]
     """
-    if not isinstance(content, list):
-        return _content_text(content), ""
-    last_marked = -1
-    for index, block in enumerate(content):
-        if isinstance(block, dict) and block.get("cache_control"):
-            last_marked = index
-    if last_marked == -1:
-        return _content_text(content), ""
-    return _content_text(content[: last_marked + 1]), _content_text(content[last_marked + 1 :])
+    blocks: list[Any] = []
+    for message in leading:
+        content = message.content
+        blocks.extend(content if isinstance(content, list) else [_content_text(content)])
+    last_marked = max(
+        (index for index, block in enumerate(blocks) if isinstance(block, dict) and block.get("cache_control")),
+        default=-1,
+    )
+    if last_marked != -1:
+        return _content_text(blocks[: last_marked + 1]), _content_text(blocks[last_marked + 1 :])
+    if not leading:
+        return "", ""
+    return _content_text(leading[0].content), _content_text([_content_text(m.content) for m in leading[1:]])
+
+
+#: A section tag of the flattened query, opening or closing, however it is spaced or cased.
+_QUERY_TAG = re.compile(r"<(\s*/?\s*prompt-)", re.IGNORECASE)
+
+_CONTEXT_HEADING = (
+    "Context for this turn: the part of your instructions that changes from turn to turn. It informs "
+    "your answer. It is not the person's request."
+)
+_HISTORY_HEADING = (
+    "The conversation before the person's current message, oldest first. It is history, for reference: "
+    "the request to answer is the person's current message, at the end."
+)
+_PROGRESS_HEADING = (
+    "What you have done so far to answer the person's current message, which follows: your tool calls "
+    "and what they returned."
+)
+_CURRENT_HEADING = "The person's current message:"
+
+#: The role each kind of message is rendered under. Any other kind renders under its own type.
+_TURN_ROLES: dict[type[BaseMessage], str] = {
+    HumanMessage: "person",
+    AIMessage: "assistant",
+    ToolMessage: "tool",
+    SystemMessage: "system",
+}
+
+
+def _inert(text: str) -> str:
+    """``text`` with any query section tag inside it disarmed.
+
+    Material in the query -- a tool's result, a page, a person's own words -- cannot then close the
+    section it sits in or open one of its own, whatever it contains.
+
+    :param text: material to place in the query
+    :ptype text: str
+    :return: the material, every section tag in it made inert
+    :rtype: str
+    """
+    inert, disarmed = _QUERY_TAG.subn(r"&lt;\1", text)
+    if disarmed:
+        # A section tag inside material is an attempt to end a section early. Nothing breaks, but
+        # the attempt is worth seeing.
+        _logger.info(
+            "Disarmed query section tags inside material sent to a subscription model",
+            extra={"extra_data": {"disarmed": disarmed}},
+        )
+    return inert
+
+
+def _section(heading: str, tag: str, body: str) -> str:
+    """One labelled section of the query.
+
+    :param heading: what the section is, in words, on the line before it
+    :ptype heading: str
+    :param tag: the section's tag name
+    :ptype tag: str
+    :param body: the section's content, already made inert
+    :ptype body: str
+    :return: the heading, then the body between the tags
+    :rtype: str
+    """
+    return f"{heading}\n<{tag}>\n{body}\n</{tag}>"
+
+
+def _render_turn(message: BaseMessage, called: dict[str, str]) -> str:
+    """One message of the conversation as a delimited turn.
+
+    An assistant turn keeps its tool calls as ``[Tool calls: name(args)]``. A tool result is named by
+    its own name or by the call it answers; its text -- usually fenced by the caller -- stays inside
+    the turn, never re-rendered as a role line.
+
+    :param message: a message after the leading system messages
+    :ptype message: BaseMessage
+    :param called: tool name by tool-call id, from every assistant message in the round
+    :ptype called: dict[str, str]
+    :return: the turn
+    :rtype: str
+    """
+    role = next((r for kind, r in _TURN_ROLES.items() if isinstance(message, kind)), message.type)
+    text = _content_text(message.content)
+    named = ""
+    if isinstance(message, AIMessage) and message.tool_calls:
+        calls = ", ".join(f"{tc['name']}({tc['args']})" for tc in message.tool_calls)
+        text = f"{text}\n[Tool calls: {calls}]" if text else f"[Tool calls: {calls}]"
+    elif isinstance(message, ToolMessage):
+        name = message.name or called.get(message.tool_call_id) or "tool"
+        named = f' name="{html.escape(name, quote=True)}"'
+    return f'<prompt-turn role="{role}"{named}>\n{_inert(text)}\n</prompt-turn>'
+
+
+def _flatten_round(messages: Sequence[BaseMessage]) -> tuple[str, str | None]:
+    """One round of messages as the CLI's single query and its system prompt.
+
+    The system prompt is the stable part of the leading system messages (see
+    :func:`_split_leading_system`). The query carries the rest, in labelled sections, in this order:
+
+    1. the variable system text, as context for this turn;
+    2. the conversation before the person's current message, as history;
+    3. in a round that has already called tools, those calls and their results, as work done on
+       the current message;
+    4. the person's current message -- the trailing run of their messages, which the API route
+       sends as one user turn -- under the heading "The person's current message:".
+
+    So the request is always last and delimited, after every piece of material that could carry an
+    instruction, and each earlier turn sits inside its own tags. A round with no message from the
+    person has no current message, and everything after the system prompt is history.
+
+    :param messages: the round
+    :ptype messages: Sequence[BaseMessage]
+    :return: ``(query_text, system_prompt)``
+    :rtype: tuple[str, str | None]
+    """
+    lead = 0
+    while lead < len(messages) and isinstance(messages[lead], SystemMessage):
+        lead += 1
+    stable, variable = _split_leading_system(messages[:lead])
+    conversation = list(messages[lead:])
+    # A ToolMessage need not carry its tool's name; the call it answers does.
+    called = {
+        call_id: call["name"]
+        for msg in conversation
+        if isinstance(msg, AIMessage)
+        for call in (msg.tool_calls or [])
+        if (call_id := call.get("id"))
+    }
+    last_person = max((i for i, m in enumerate(conversation) if isinstance(m, HumanMessage)), default=-1)
+    first_person = last_person
+    while first_person > 0 and isinstance(conversation[first_person - 1], HumanMessage):
+        first_person -= 1
+    if last_person == -1:
+        history, current, progress = conversation, [], []
+    else:
+        history = conversation[:first_person]
+        current = conversation[first_person : last_person + 1]
+        progress = conversation[last_person + 1 :]
+
+    sections: list[str] = []
+    if variable:
+        sections.append(_section(_CONTEXT_HEADING, "prompt-context", _inert(variable)))
+    if history:
+        turns = "\n\n".join(_render_turn(m, called) for m in history)
+        sections.append(_section(_HISTORY_HEADING, "prompt-history", turns))
+    if progress:
+        turns = "\n\n".join(_render_turn(m, called) for m in progress)
+        sections.append(_section(_PROGRESS_HEADING, "prompt-progress", turns))
+    if current:
+        request = "\n\n".join(_content_text(m.content) for m in current)
+        sections.append(_section(_CURRENT_HEADING, "prompt-current-message", _inert(request)))
+    return "\n\n".join(sections), (stable or None)
 
 
 def _pooled_launch_options(options: Any) -> Any:
@@ -305,6 +552,14 @@ def _subscription_model_cls() -> type:
         # network access with zero caller-side gate.
         tools: list[str] | None = Field(default_factory=list)
 
+        # The API route's ``thinking`` and ``effort``, in the same shapes (the Agent SDK's
+        # ``ThinkingConfig`` is the Messages API's). Declared here for the same reason as
+        # :attr:`tools`: the base class drops a field it does not declare. ``None`` means what it
+        # means on the API route -- no extended thinking, the API's default effort -- not Claude
+        # Code's defaults (see :data:`_NO_THINKING` and :data:`_API_DEFAULT_EFFORT`).
+        thinking: dict[str, Any] | None = None
+        effort: str | None = None
+
         def _build_options(self, **overrides: Any) -> Any:
             """Force ``tools`` from :attr:`tools`, and cut the CLI off from the host's Claude config.
 
@@ -314,6 +569,8 @@ def _subscription_model_cls() -> type:
             for what an un-isolated CLI reads.
             """
             overrides.setdefault("tools", self.tools)
+            overrides.setdefault("thinking", self.thinking or _NO_THINKING)
+            overrides.setdefault("effort", self.effort or _API_DEFAULT_EFFORT)
             if "output_config" in overrides:
                 overrides["output_format"] = _output_format(overrides.pop("output_config"))
             from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415
@@ -333,7 +590,9 @@ def _subscription_model_cls() -> type:
             isolation = claude_cli_isolation(self.oauth_token)
             # A caller that deliberately points the CLI at a configuration or directory of its
             # own has made that choice; only an unset one falls back to the isolated default.
-            options.env = {**isolation.env, **(options.env or {})}
+            options.env = {**isolation.env, **(options.env or {}), _EFFORT_ENV: str(options.effort)}
+            if isinstance(options.system_prompt, str) and options.system_prompt.strip():
+                options.system_prompt = _AFTER_CLI_IDENTITY + options.system_prompt.lstrip("\n")
             if not options.cwd:
                 options.cwd = isolation.cwd
             options.extra_args = {**(options.extra_args or {}), **isolation.extra_args}
@@ -376,33 +635,43 @@ def _subscription_model_cls() -> type:
             wire_tools, _reverse_map = build_name_translation(list(tools))
             return super().bind_tools(wire_tools, tool_choice=tool_choice, **kwargs)
 
+        def _get_tool_schema(self, tool: BaseTool) -> dict[str, Any]:
+            """The JSON Schema of the arguments the model fills in for ``tool``.
+
+            Read from ``tool_call_schema``, which is what the API route shows the model: it leaves
+            out arguments the caller injects (a tool-call id, a runnable config) and it is the
+            schema itself when a tool carries one as a JSON Schema dict. The base class called
+            ``args_schema.model_json_schema()``, which a dict does not have, and answered every
+            failure with an empty schema -- a tool advertised with no parameters, and nothing said.
+            A schema that cannot be rendered now fails the bind, as it does on the API route.
+
+            :param tool: a bound tool
+            :ptype tool: BaseTool
+            :return: the tool's argument schema
+            :rtype: dict[str, Any]
+            """
+            call_schema = tool.tool_call_schema
+            rendered: dict[str, Any]
+            if isinstance(call_schema, dict):
+                rendered = dict(call_schema)
+            elif issubclass(call_schema, BaseModel):
+                rendered = call_schema.model_json_schema()
+            else:
+                rendered = call_schema.schema()  # a pydantic v1 model
+            return rendered
+
         def _wrap_langchain_tool(self, tool: BaseTool, schema: dict[str, Any]) -> Callable[..., Any]:
-            props = schema.get("properties", {})
+            """The SDK tool the CLI lists for ``tool``: its schema made self-contained, its handler inert.
 
-            def _resolve_property(prop: dict[str, Any]) -> dict[str, Any]:
-                """Resolve ``prop`` to a JSON Schema property with a definite top-level ``type``,
-                unwrapping the ``anyOf``/``oneOf`` shape pydantic emits for an ``X | None`` field
-                (no top-level ``type`` key there -- see the "Optional-parameter schema mistyping"
-                note in this module's docstring)."""
-                if "type" in prop:
-                    return prop
-                for branch in prop.get("anyOf") or prop.get("oneOf") or ():
-                    branch_type = branch.get("type")
-                    if branch_type and branch_type != "null":
-                        resolved = dict(branch)
-                        if "description" in prop:
-                            resolved.setdefault("description", prop["description"])
-                        return resolved
-                return {"type": "string"}
-
-            # A full JSON Schema (not a bare {name: python_type} map) so the SDK's own schema
-            # builder uses it verbatim, INCLUDING our `required` list -- rather than its fallback
-            # path, which marks every key required regardless of the source tool's actual schema.
-            input_schema: dict[str, Any] = {
-                "type": "object",
-                "properties": {n: _resolve_property(p) for n, p in props.items()},
-                "required": schema.get("required", []),
-            }
+            :param tool: a bound tool
+            :ptype tool: BaseTool
+            :param schema: the tool's argument schema, from :meth:`_get_tool_schema`
+            :ptype schema: dict[str, Any]
+            :return: the SDK tool
+            :rtype: Callable[..., Any]
+            :raises ValueError: when the schema holds a reference that cannot be inlined
+            """
+            input_schema = self_contained_input_schema(schema, tool_name=tool.name)
 
             @sdk_tool(tool.name, tool.description or "", input_schema)
             async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
@@ -418,49 +687,18 @@ def _subscription_model_cls() -> type:
         def _convert_messages(self, messages: list[BaseMessage]) -> tuple[str, str | None]:
             """The CLI's query text and its system prompt, from LangChain messages.
 
-            Returns the STABLE part of the system prompt as the system prompt and folds the
-            variable part into the query, ahead of the conversation. A running CLI's system prompt
-            cannot change, so this is what lets one CLI serve turn after turn while retrieved
-            memory, tool results and notices change underneath it. Every content list is read as
-            text rather than ``str()``-ed into a repr.
+            Returns the STABLE part of the system prompt as the system prompt and carries
+            everything else in the query. A running CLI's system prompt cannot change, so this is
+            what lets one CLI serve turn after turn while retrieved memory, tool results and notices
+            change underneath it. The query's layout -- context, history, work on the current
+            message, then the person's current message last -- is :func:`_flatten_round`'s.
 
             :param messages: the conversation
             :ptype messages: list[BaseMessage]
             :return: ``(query_text, system_prompt)``
             :rtype: tuple[str, str | None]
             """
-            stable_parts: list[str] = []
-            variable_parts: list[str] = []
-            conversation: list[str] = []
-            # A ToolMessage need not carry its tool's name; the call it answers does.
-            called = {
-                call["id"]: call["name"]
-                for msg in messages
-                if isinstance(msg, AIMessage)
-                for call in (msg.tool_calls or [])
-                if call.get("id")
-            }
-            for msg in messages:
-                if isinstance(msg, SystemMessage):
-                    stable, variable = _split_system(msg.content)
-                    if stable:
-                        stable_parts.append(stable)
-                    if variable:
-                        variable_parts.append(variable)
-                elif isinstance(msg, HumanMessage):
-                    conversation.append(f"Human: {_content_text(msg.content)}")
-                elif isinstance(msg, AIMessage):
-                    content = _content_text(msg.content)
-                    if getattr(msg, "tool_calls", None):
-                        calls = ", ".join(f"{tc['name']}({tc['args']})" for tc in msg.tool_calls)
-                        content = f"{content}\n[Tool calls: {calls}]" if content else f"[Tool calls: {calls}]"
-                    conversation.append(f"Assistant: {content}")
-                elif isinstance(msg, ToolMessage):
-                    name = msg.name or called.get(msg.tool_call_id) or "tool"
-                    conversation.append(f"Tool ({name}): {_content_text(msg.content)}")
-            query = "\n\n".join([*variable_parts, *conversation])
-            system_prompt = "\n\n".join(stable_parts) if stable_parts else None
-            return query, system_prompt
+            return _flatten_round(messages)
 
         @asynccontextmanager
         async def _cli_client(self, options: Any, *, pooled: bool) -> AsyncIterator[Any]:
@@ -575,6 +813,10 @@ def _subscription_model_cls() -> type:
                 await client.query(prompt)
                 async for msg in client.receive_response():
                     if isinstance(msg, AssistantMessage):
+                        # A failure the CLI met is sent as a message whose text is the notice.
+                        # It is raised, never answered with, and before any token callback sees it.
+                        if (failure := _assistant_failure(msg)) is not None:
+                            raise failure
                         text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
                         if text:
                             all_text.append(text)
@@ -583,6 +825,8 @@ def _subscription_model_cls() -> type:
                         tool_calls.extend(self._caller_tool_calls(msg.content))
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
+                        if (failure := _result_failure(msg, tool_calls, "\n".join(all_text))) is not None:
+                            raise failure
                         generation_info = _generation_info(msg, tool_calls)
                         if options.output_format is not None and msg.structured_output is not None:
                             # The answer is the structured one. The model's prose before it is
@@ -653,6 +897,8 @@ def _subscription_model_cls() -> type:
             # answer comes, the prose is what the caller gets, so its failure names what was said.
             structured = options.output_format is not None
             held: list[str] = []
+            # Every message's text, streamed or held, for a failed result that says nothing itself.
+            produced: list[str] = []
 
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
@@ -679,7 +925,12 @@ def _subscription_model_cls() -> type:
                         yield chunk
 
                     elif isinstance(msg, AssistantMessage):
+                        # A failure the CLI met is sent as a message whose text is the notice; it
+                        # is raised before a character of it is streamed to the person.
+                        if (failure := _assistant_failure(msg)) is not None:
+                            raise failure
                         text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
+                        produced.append(text)
                         if structured:
                             if text:
                                 held.append(text)
@@ -697,6 +948,8 @@ def _subscription_model_cls() -> type:
 
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
+                        if (failure := _result_failure(msg, tool_calls, "\n".join(produced))) is not None:
+                            raise failure
                         generation_info = _generation_info(msg, tool_calls)
                         usage = _usage_metadata(msg.usage)
                         content = ""
@@ -731,6 +984,105 @@ def _subscription_model_cls() -> type:
     return _SubscriptionChatModel
 
 
+def _ended_for_tools(result: Any, tool_calls: list[dict[str, Any]]) -> bool:
+    """Whether a call ended on the CLI's turn limit because the model asked for tools.
+
+    That is the designed end of such a call (see the module docstring), not a failure, although the
+    CLI flags it as an error.
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param tool_calls: the tool calls the call handed back
+    :ptype tool_calls: list[dict[str, Any]]
+    :return: ``True`` when the call stopped to hand its tool calls back
+    :rtype: bool
+    """
+    return bool(tool_calls) and result.subtype == "error_max_turns"
+
+
+def _cli_failure(detail: str, *, reason: str | None, status: int | None) -> ModelProviderError:
+    """The typed error for a failure the CLI reported.
+
+    A limit -- the CLI's own ``rate_limit`` code, which it sends with a subscription's session-limit
+    notice, or an HTTP 429 on the result -- is a :class:`ModelRateLimitError` carrying when it resets,
+    when the notice says. Anything else is a :class:`ModelProviderError`.
+
+    :param detail: what the CLI said
+    :ptype detail: str
+    :param reason: the CLI's code for the failure, when it gave one
+    :ptype reason: str | None
+    :param status: HTTP status of the failing API call, when the CLI reported one
+    :ptype status: int | None
+    :return: the error to raise
+    :rtype: ModelProviderError
+    """
+    said = detail.strip() or "the Claude CLI reported an error and gave no reason"
+    failure: ModelProviderError
+    if reason == "rate_limit" or status == 429:
+        resets = _RESETS.search(said)
+        failure = ModelRateLimitError(
+            said,
+            provider=_CLI_PROVIDER,
+            reason=reason,
+            status=status,
+            resets=resets.group("when").strip().rstrip(".") if resets else None,
+        )
+    else:
+        failure = ModelProviderError(said, provider=_CLI_PROVIDER, reason=reason, status=status)
+    _logger.warning(
+        "A subscription model call failed",
+        extra={
+            "extra_data": {
+                "error_type": type(failure).__name__,
+                "reason": reason,
+                "status": status,
+                "detail": said,
+            }
+        },
+    )
+    return failure
+
+
+def _assistant_failure(message: Any) -> ModelProviderError | None:
+    """The error an assistant message reports, when the CLI flagged it as one.
+
+    The CLI sends a failure it met calling the API -- a subscription's session limit among them --
+    as a synthetic assistant message whose text is the notice and whose ``error`` names the kind.
+
+    :param message: the CLI's ``AssistantMessage``
+    :ptype message: Any
+    :return: the error to raise, or ``None`` for an ordinary message
+    :rtype: ModelProviderError | None
+    """
+    if message.error is None:
+        return None
+    text = "\n".join(block.text for block in message.content if hasattr(block, "text"))
+    return _cli_failure(text, reason=str(message.error), status=None)
+
+
+def _result_failure(result: Any, tool_calls: list[dict[str, Any]], text: str) -> ModelProviderError | None:
+    """The error a call's result reports, when the call failed.
+
+    Not a failure: a call that stopped to hand tool calls back (:func:`_ended_for_tools`), and a call
+    whose result carries the structured answer it was asked for -- raising would throw that answer
+    away.
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param tool_calls: the tool calls the call handed back
+    :ptype tool_calls: list[dict[str, Any]]
+    :param text: the text the call produced, for a result that says nothing itself
+    :ptype text: str
+    :return: the error to raise, or ``None`` when the call did not fail
+    :rtype: ModelProviderError | None
+    """
+    if not result.is_error or _ended_for_tools(result, tool_calls) or result.structured_output is not None:
+        return None
+    said = result.result or "; ".join(result.errors or []) or text
+    reason = None if result.subtype == "success" else result.subtype
+    return _cli_failure(said, reason=reason, status=result.api_error_status)
+
+
 def _generation_info(result: Any, tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
     """What a call's ``ResultMessage`` says, as generation info.
 
@@ -744,8 +1096,7 @@ def _generation_info(result: Any, tool_calls: list[dict[str, Any]]) -> dict[str,
     :return: generation info
     :rtype: dict[str, Any]
     """
-    ended_for_tools = bool(tool_calls) and result.subtype == "error_max_turns"
-    failed = bool(result.is_error) and not ended_for_tools
+    failed = bool(result.is_error) and not _ended_for_tools(result, tool_calls)
     info: dict[str, Any] = {
         "total_cost_usd": result.total_cost_usd,
         "duration_ms": result.duration_ms,

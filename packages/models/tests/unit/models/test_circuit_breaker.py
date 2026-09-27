@@ -406,3 +406,53 @@ class TestRestore:
         """corrupt or hand-edited durable state must not produce a negative count."""
         cb = CircuitBreaker.restore("deepseek", state=CircuitState.CLOSED, failure_count=-7)
         assert cb.failure_count == 0
+
+
+class TestACredentialBreakerSaysItIsOne:
+    """one customer's revoked key tripping its own breaker must not read as the provider going down."""
+
+    _KEY = "sk-live-not-a-real-key-0123456789"
+
+    def _tripped(self, registry: CircuitBreakerRegistry, *, credential: str | None) -> CircuitBreaker:
+        breaker = registry.get("anthropic", credential=credential)
+        for _ in range(2):
+            breaker.record_failure()
+        return breaker
+
+    def test_the_open_error_says_one_credential_and_never_names_it(self) -> None:
+        registry = CircuitBreakerRegistry(failure_threshold=2, recovery_timeout_seconds=60.0)
+        breaker = self._tripped(registry, credential=self._KEY)
+
+        with pytest.raises(CircuitOpenError) as raised:
+            breaker.check()
+
+        assert breaker.credential_scoped is True
+        assert raised.value.credential_scoped is True
+        assert "one credential on it" in str(raised.value)
+        assert self._KEY not in str(raised.value)
+
+    def test_the_opening_line_carries_the_scope_and_never_the_credential(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        registry = CircuitBreakerRegistry(failure_threshold=2, recovery_timeout_seconds=60.0)
+        with caplog.at_level("WARNING", logger="threetears.models.circuit_breaker"):
+            self._tripped(registry, credential=self._KEY)
+
+        [opened] = [r for r in caplog.records if "opening" in r.getMessage()]
+        assert opened.__dict__["extra_data"] == {"provider": "anthropic", "credential_scoped": True}
+        assert "one credential on anthropic" in opened.getMessage()
+        assert self._KEY not in opened.getMessage()
+
+    def test_a_provider_breaker_still_reads_as_the_provider(self, caplog: pytest.LogCaptureFixture) -> None:
+        registry = CircuitBreakerRegistry(failure_threshold=2, recovery_timeout_seconds=60.0)
+        with caplog.at_level("WARNING", logger="threetears.models.circuit_breaker"):
+            breaker = self._tripped(registry, credential=None)
+
+        with pytest.raises(CircuitOpenError) as raised:
+            breaker.check()
+
+        assert breaker.credential_scoped is False
+        assert raised.value.credential_scoped is False
+        assert str(raised.value).startswith("Circuit open for anthropic, retry in")
+        [opened] = [r for r in caplog.records if "opening" in r.getMessage()]
+        assert opened.__dict__["extra_data"]["credential_scoped"] is False

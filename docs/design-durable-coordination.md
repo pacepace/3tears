@@ -302,16 +302,31 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
      `save_entity` broadcast still evicts everywhere, because its put can land out of order.
    - *One principal per row.* The fence is a scoped key, so two principals mutating one row
      would hold two fences and overwrite each other in L3.
-   - *What L3 does not order.* Two replicas that win consecutive revisions persist
-     independently, so L3 can briefly hold the earlier row. L3 is read only once L2 has lost
-     the key, so insert-or-delete data (revocations, the jti ledger) is unaffected and a
-     counter can at worst resume a few increments low.
+   - *L3 is ordered by the swap.* Two replicas that win consecutive revisions persist
+     independently and can reach L3 in reverse; left unfenced, the earlier row landing last
+     stays, and once L2 loses the key the next mutation seeds from it and the later change is
+     gone for good. So every persist -- synchronous or flushed -- carries the order its swap won,
+     `(epoch, revision)`, in the row's `l2_epoch` / `l2_revision` columns, and lands only over an
+     older stored order (`threetears.core.collections.l2_order`). The epoch is the L2 stream's
+     creation time, read before the first round and again after the win; it moves forward when
+     a broker restart recreates the bucket with its revisions back at 1, which a bare revision
+     fence would refuse for ever. A persist refused for a newer stored order is not an error --
+     the later swap built on it. A collection that cannot store the order is refused before L2
+     is touched, as is a stored order ahead of the current bucket (a broker clock that went
+     backwards). L3 therefore holds, per row, the latest swap whose persist has landed; only
+     what had not landed when L2 lost the key is lost.
+   - *No delete.* A `"delete"` is refused on a three-tier collection: a removed row carries no
+     order, so an earlier winner's persist still in flight would resurrect it. Removal is an
+     upsert the reads treat as absent -- `WindowedCounter.clear` closes the window with an expiry
+     of now -- which keeps its order.
+   - *Reads do not reorder L2.* A read that misses L2 seeds it from L3 by create-if-absent, so it
+     cannot put an older row over a value a swap wrote meanwhile.
 4. **L3 write policy per collection** (`l3_write_policy`). The process-wide strategy and table
    list stay the default; a collection that knows what its data can tolerate declares
    `"write_behind"` (counters) or `"synchronous"` (revocations), and the declaration wins. A
    write-behind declaration without a write buffer is refused at construction, and so is one
-   on a collection that caches absences. Deletes always land synchronously, because the
-   buffer holds rows, not removals.
+   on a collection that caches absences. The write buffer keeps the newer of two swap orders
+   for one row, whichever arrived last.
 
 ## The tables the primitives keep their state in
 
@@ -341,6 +356,11 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
   collection reads, so a consumer's table cannot drift from the table the code expects. A
   consumer that cannot run DDL -- an agent or tool pod, whose broker refuses it -- declares the
   same schemas in its data section instead.
+- **The compare-and-swap tables carry the swap's order.** Counters, claims and redemptions add
+  `l2_epoch TIMESTAMPTZ` and `l2_revision BIGINT`, which `l2_cas_mutate` fences every persist on;
+  revocations, written through `save_entity`, do not. Migration v002 adds them to tables v001
+  created before them and backfills existing rows to the floor order, so the fence holds from the
+  first swap after it.
 - **Lifecycle.** A write-behind table's flusher starts on its first write and is stopped by
   `CollectionRegistry.close_collections()` in the process's shutdown path, beside
   `stop_invalidation_listener()`. Without that call the last flush interval is lost on shutdown.

@@ -25,7 +25,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: packages whose hard-dependency list is an argued ruling, not an accretion.
 #:
-#: ``media-contracts`` needs no entry: its floor is *nothing*, which
+#: ``media-contracts`` and ``tool-schema`` need no entry: their floor is *nothing*, which
 #: ``contract_packages`` above already states more strongly. This list is for the
 #: packages that cannot be dependency-free but whose floor was still ruled -- where
 #: "nothing" is unavailable and "these three" is the promise instead.
@@ -49,7 +49,7 @@ _CONFIG = DependencyAlignmentConfig(
     repo_root=_REPO_ROOT,
     package_globs=("packages/*", "packages/agent/*"),
     exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_dependency_alignment_exemptions.txt",
-    contract_packages=("packages/media-contracts",),
+    contract_packages=("packages/media-contracts", "packages/tool-schema"),
     dependency_floors=_DEPENDENCY_FLOORS,
 )
 

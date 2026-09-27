@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-workspace"
-version = "0.54.0"
+version = "0.55.0"
 description = "workspace primitives for 3tears agents: workspace entities, sandbox, format handlers, tools"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,12 +22,12 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.54.0,<0.55.0",
-    "3tears-agent-acl>=0.54.0,<0.55.0",
-    "3tears-agent-audit>=0.54.0,<0.55.0",
-    "3tears-agent-tools>=0.54.0,<0.55.0",
-    "3tears-nats>=0.54.0,<0.55.0",
-    "3tears-observe>=0.54.0,<0.55.0",
+    "3tears>=0.55.0,<0.56.0",
+    "3tears-agent-acl>=0.55.0,<0.56.0",
+    "3tears-agent-audit>=0.55.0,<0.56.0",
+    "3tears-agent-tools>=0.55.0,<0.56.0",
+    "3tears-nats>=0.55.0,<0.56.0",
+    "3tears-observe>=0.55.0,<0.56.0",
     "pydantic>=2.0",
     "ruamel.yaml>=0.18",
     "jsonpath-ng>=1.6",
@@ -55,8 +55,8 @@ packages = ["threetears.agent.workspace"]
 explicit_package_bases = true
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-markers = [
-    "integration: integration tests requiring docker or real infra",
-]
+# no [tool.pytest.ini_options] block: pytest roots a run at the closest
+# pyproject that has one, so a per-package block makes `scripts/test.sh <pkg>`
+# drop the workspace configuration (import mode, pythonpath, markers) and the
+# tests' relative helper imports fail to collect. inherit from the workspace
+# instead; tests/enforcement/test_one_pytest_config.py holds this.

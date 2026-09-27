@@ -157,6 +157,56 @@ async def test_a_vanished_bucket_is_recreated_by_its_next_operation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_wiped_bucket_restarts_its_revisions_at_one() -> None:
+    # a recreated stream starts its sequence again, and the revision IS the sequence. A double that
+    # kept counting would hide every consumer that orders writes by revision alone and so refuses
+    # every write after a broker restart.
+    client = FakeNatsClient()
+    bucket = await client.kv_bucket(name="collections")
+    for n in range(3):
+        await bucket.put(key=f"k{n}", value=b"v")
+    bucket.wipe()
+    assert await bucket.create(key="k0", value=b"v") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_delete_leaves_a_marker_whose_revision_fences_a_later_write() -> None:
+    # a real delete publishes a marker with its own revision. A write expecting the revision the
+    # writer saw before the delete must lose; one expecting the marker's must land; and a create
+    # lands over a marker, which is exactly why a create cannot fence a seed.
+    client = FakeNatsClient()
+    bucket = await client.kv_bucket(name="collections")
+    assert await bucket.get_latest(key="k") == (None, 0)
+    written = await bucket.put(key="k", value=b"v")
+    assert await bucket.get_latest(key="k") == (b"v", written)
+    await bucket.delete(key="k")
+    assert await bucket.get_entry(key="k") is None
+    _, marker = await bucket.get_latest(key="k")
+    assert marker > written
+    assert await bucket.update(key="k", value=b"stale", revision=written) is None
+    assert await bucket.update(key="k", value=b"seed", revision=0) is None, "revision 0 expects no message at all"
+    assert await bucket.update(key="k", value=b"seed", revision=marker) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_update_at_revision_zero_lands_only_on_a_key_with_no_message() -> None:
+    client = FakeNatsClient()
+    bucket = await client.kv_bucket(name="collections")
+    assert await bucket.update(key="fresh", value=b"v", revision=0) is not None
+    assert await bucket.update(key="fresh", value=b"v2", revision=0) is None
+
+
+@pytest.mark.asyncio
+async def test_a_vanished_bucket_restarts_its_revisions_at_one() -> None:
+    client = FakeNatsClient()
+    bucket = await client.kv_bucket(name="collections")
+    for n in range(3):
+        await bucket.put(key=f"k{n}", value=b"v")
+    bucket.vanish()
+    assert await bucket.put(key="k0", value=b"v") == 1
+
+
+@pytest.mark.asyncio
 async def test_reconnect_runs_every_hook_in_order_past_a_failing_one() -> None:
     client = FakeNatsClient()
     ran: list[str] = []

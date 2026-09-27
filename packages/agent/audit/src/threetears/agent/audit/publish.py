@@ -19,8 +19,8 @@ never block the tool call.
 the hub-side ``unified_audit_consumer`` binds a durable push consumer on
 ``{namespace}.audit.>`` (manual ack after the L3 write, bounded
 redelivery, dead-letter) so new event types route automatically without
-a consumer-side change and redelivery collapses to a single row via the
-idempotency indexes on ``audit_events``.
+a consumer-side change and redelivery collapses to a single row: a
+redelivered envelope repeats its ``id``, which is the row's primary key.
 """
 
 from __future__ import annotations

@@ -10,10 +10,12 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
 
+from threetears.backup import engine as engine_module
 from threetears.backup.config import BackupConfig
 from threetears.backup.drivers import DbDumpDriver
 from threetears.backup.engine import BackupEngine, DeleteNotAllowedError
@@ -179,3 +181,26 @@ async def test_delete_backup_guard_and_success(tmp_path: Path) -> None:
     allowed = BackupEngine(_config(allow_delete=True), FilesystemObjectStore(tmp_path), FakePlainDriver())
     await allowed.delete_backup(record.key)
     assert await allowed.list_backups() == []
+
+
+@pytest.mark.asyncio
+async def test_two_backups_in_one_millisecond_are_two_objects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A key cut from the head of a uuid7 is its timestamp, so a second backup overwrote the first.
+
+    The stamp is to the second and the uuid7's leading hex to the millisecond: two backups taken in
+    one millisecond (two schedulers, a retry racing its original) named ONE object, and the second
+    silently replaced the first.
+    """
+    same_millisecond = iter(
+        [UUID("019470a8-b5c3-7def-8123-456789abcdef"), UUID("019470a8-b5c3-7a01-9fed-cba987654321")]
+    )
+    monkeypatch.setattr(engine_module, "uuid7", lambda: next(same_millisecond))
+    engine = _engine(tmp_path, FakePlainDriver())
+    when = datetime(2026, 7, 1, 3, 0, tzinfo=UTC)
+
+    first = await engine.create_backup("dsn", when=when)
+    second = await engine.create_backup("dsn", when=when)
+
+    assert first.key != second.key
+    assert len(await engine.list_backups()) == 2
+    assert (await engine.list_backups())[0].created_at == when, "the stamp still leads the key"

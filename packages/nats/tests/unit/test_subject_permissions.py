@@ -456,6 +456,20 @@ class TestBootCompleteness:
         # read-only for the pod: it asks, it never answers.
         assert f"{_NS}.namespace.discover" not in pod.subscribe
 
+    def test_audit_anonymize_is_agent_publish_hub_subscribe(self) -> None:
+        # erasure of an agent's own audit rows: the AGENT pod asks, forwarding its identity
+        # token; the hub answers, touching only rows whose agent is the verified caller. the
+        # subject sits under ``hub.`` and never under ``audit.``, because the durable audit
+        # stream captures ``{ns}.audit.>`` and would persist a request there as an event.
+        agent = _build(Principal.AGENT_POD)
+        hub = _build(Principal.HUB)
+        assert f"{_NS}.hub.audit.anonymize" in agent.publish
+        assert f"{_NS}.hub.audit.anonymize" in hub.subscribe
+        assert f"{_NS}.hub.audit.anonymize" not in agent.subscribe
+        # a tool pod runs on a caller's behalf and has no audit rows of its own to erase.
+        tool_pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert f"{_NS}.hub.audit.anonymize" not in tool_pod.publish
+
     def test_engagement_scope_resolve_grant_is_pod_publish_hub_subscribe(self) -> None:
         # engagement scope (consumer A of the §2 keystone): the consuming tool pod
         # PUBLISHES the resolve (forwarding the invoking agent's identity token);

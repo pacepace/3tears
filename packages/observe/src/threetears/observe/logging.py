@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 from types import FrameType
 from typing import Any
 
+from threetears.observe.build_once import BuildOnce
+
 __all__ = [
     "NOISY_LIBRARY_LOGGERS",
     "ContextFormatter",
@@ -110,7 +112,10 @@ def representative_exception(exc: BaseException) -> BaseException:
 # Call-site cache -- shared by ThreeTearsLogger and ContextFormatter
 # ---------------------------------------------------------------------------
 
-_call_site_cache: dict[tuple[str, int], tuple[str, str | None, str]] = {}
+#: (filename, line) -> (shortened file, enclosing class, reserved). Built through ``BuildOnce``
+#: because a record is made on whichever thread logs, so a call site's first records can arrive
+#: from several threads at once.
+_call_site_cache: BuildOnce[tuple[str, int], tuple[str, str | None, str]] = BuildOnce()
 
 # Configurable path prefixes to strip from filenames for shorter log output.
 # Host apps can append to this list (e.g. ``path_strip_prefixes.append("myapp/src/")``).
@@ -215,6 +220,36 @@ class ContextFormatter(logging.Formatter):
 # ---------------------------------------------------------------------------
 
 
+def _find_call_site(fn: str, lno: int) -> tuple[str, str | None, str]:
+    """walk the calling stack to the frame at *fn*:*lno* and name the class it runs in.
+
+    the class comes from ``self`` or ``cls`` in that frame's locals; a frame with neither, or no
+    matching frame at all, has none.
+
+    :param fn: the call site's filename
+    :ptype fn: str
+    :param lno: the call site's line number
+    :ptype lno: int
+    :return: ``(shortened file, enclosing class, "")``
+    :rtype: tuple[str, str | None, str]
+    """
+    call_site_class: str | None = None
+    frame: FrameType | None = sys._getframe()
+    while frame is not None:
+        frame_info = frame.f_code
+        if frame_info.co_filename == fn and frame.f_lineno == lno:
+            f_locals = frame.f_locals
+            if "self" in f_locals:
+                call_site_class = type(f_locals["self"]).__name__
+            elif "cls" in f_locals:
+                cls_obj = f_locals["cls"]
+                if isinstance(cls_obj, type):
+                    call_site_class = cls_obj.__name__
+            break
+        frame = frame.f_back
+    return (_shorten_path(fn), call_site_class, "")
+
+
 class ThreeTearsLogger(logging.Logger):
     """Custom logger with automatic call-site capture.
 
@@ -240,29 +275,7 @@ class ThreeTearsLogger(logging.Logger):
         call_site_line = lno
         call_site_func = func or "unknown"
 
-        cache_key = (fn, lno)
-
-        call_site_class: str | None = None
-        call_site_file: str | None = None
-        if cache_key in _call_site_cache:
-            call_site_file, call_site_class, _ = _call_site_cache[cache_key]
-        else:
-            frame: FrameType | None = sys._getframe()
-            while frame is not None:
-                frame_info = frame.f_code
-                if frame_info.co_filename == fn and frame.f_lineno == lno:
-                    f_locals = frame.f_locals
-                    if "self" in f_locals:
-                        call_site_class = type(f_locals["self"]).__name__
-                    elif "cls" in f_locals:
-                        cls_obj = f_locals["cls"]
-                        if isinstance(cls_obj, type):
-                            call_site_class = cls_obj.__name__
-                    break
-                frame = frame.f_back
-
-            call_site_file = _shorten_path(fn)
-            _call_site_cache[cache_key] = (call_site_file, call_site_class, "")
+        call_site_file, call_site_class, _ = _call_site_cache.get((fn, lno), lambda: _find_call_site(fn, lno))
 
         record = super().makeRecord(name, level, fn, lno, msg, args, exc_info, func, extra, sinfo)
 

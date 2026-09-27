@@ -171,8 +171,11 @@ async def materialize(
         files from workspace
     :rtype: Path
     """
+    # the directory's uniqueness comes from mkdtemp's own random suffix; the prefix is the label an
+    # operator reads, and it spells the whole id because a uuid7's leading hex is its timestamp and
+    # would label every workspace created in the same minute alike.
     tempdir_str = tempfile.mkdtemp(
-        prefix=f"workspace-{workspace_id.hex[:8]}-",
+        prefix=f"workspace-{workspace_id.hex}-",
         dir=None if parent_dir is None else str(parent_dir),
     )
     tempdir = Path(tempdir_str)

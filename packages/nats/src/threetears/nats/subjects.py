@@ -1126,6 +1126,24 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
 
     @classmethod
+    def hub_audit_anonymize(cls) -> Subject:
+        """request/reply subject for anonymizing the audit rows an agent published.
+
+        An AGENT pod erasing a person asks the hub to anonymize the platform audit rows
+        that agent published about them (``threetears.agent.audit.request_audit_anonymization``).
+        The agent forwards its ``identity_token``; the hub verifies it, derives the agent
+        from the signed claims, refuses a body naming a different agent, and touches only
+        rows whose agent is the verified caller.
+
+        Under ``hub.`` and never under ``audit.``: the durable audit stream captures
+        ``{ns}.audit.>``, so a request there would be persisted and consumed as an event.
+
+        :return: subject ``{ns}.hub.audit.anonymize``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.audit.anonymize", kind="point")
+
+    @classmethod
     def hub_channel_engagement_default_resolve(cls) -> Subject:
         """request/reply subject for resolving a channel's default engagement.
 

@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from threetears.search.adapters.searxng import SearxngAdapter
 from threetears.search.contracts import Criterion, SearchProvider, SearchTransport
 from threetears.search.testing import ProviderConformanceCase, ProviderConformanceSuite
-from _searxng_payloads import MALFORMED_BODY, TWO_RESULTS_BODY, ZERO_RESULTS_BODY
+from packages.search.tests._searxng_payloads import MALFORMED_BODY, TWO_RESULTS_BODY, ZERO_RESULTS_BODY
 
 
 def _searxng(transport: SearchTransport) -> SearchProvider:

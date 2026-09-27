@@ -1,16 +1,7 @@
 """
 shared pytest setup for the 3tears-conversations test suite.
 
-exposes the core coordination fake-NATS KV helpers to tests that need
-L2 parity with the rest of the 3tears packages. mirrors the hook used
-by agent-workspace so the two suites track the same implementation.
+the fake NATS KV these tests use for L2 parity is published as
+:mod:`threetears.core.testing.kv` and imported normally; nothing here puts
+another suite's test directory on ``sys.path``.
 """
-
-from __future__ import annotations
-
-import sys
-from pathlib import Path
-
-_CORE_COORDINATION_TESTS = Path(__file__).resolve().parent.parent.parent / "core" / "tests" / "unit" / "coordination"
-if str(_CORE_COORDINATION_TESTS) not in sys.path:
-    sys.path.insert(0, str(_CORE_COORDINATION_TESTS))

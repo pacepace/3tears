@@ -31,6 +31,7 @@ Every refusal below is paired with an admitted twin, per the sibling module.
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 from unittest.mock import AsyncMock
 
 import pytest
@@ -39,7 +40,7 @@ from threetears.agent.tools.aliases import WORKSPACE_TOOLS
 from threetears.agent.tools.builtin import STANDARD_BUILTIN_FACTORIES
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
 from threetears.core.namespaces import build_tool_provider_node_name
-from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.ownership import tool_is_registrable
@@ -182,6 +183,17 @@ class _Directory:
         del token
         return None
 
+    async def verify_agent(self, token: str) -> UUID | None:
+        """refuse every token; the in-process pod under test registers unsigned.
+
+        :param token: the presented token
+        :ptype token: str
+        :return: always ``None``
+        :rtype: UUID | None
+        """
+        del token
+        return None
+
     async def provider_nodes(self) -> tuple[str, ...]:
         """the whole inventory this graph holds.
 
@@ -225,7 +237,10 @@ def _in_process_manifest() -> bytes:
         )
         for name in _IN_PROCESS
     ]
-    manifest = RegistrationManifest(pod_id="agent-pod-001", tools=entries, bootstrap_token=None)
+    # the pod id an agent's in-process server actually registers under: the agent id and an
+    # instance. a single-token id would be a Tool Pod's, whose copies serve every caller.
+    pod_id = Subjects.agent_inprocess_pod_id(UUID("01948a00-aaaa-7000-8000-00000000000a"), "inst-1")
+    manifest = RegistrationManifest(pod_id=pod_id, tools=entries, bootstrap_token=None)
     return manifest.model_dump_json().encode("utf-8")
 
 

@@ -25,6 +25,7 @@ from threetears.core.testing.replay_guard import FakeReplayGuard
 
 import asyncio
 import time
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
@@ -57,7 +58,7 @@ from threetears.core.security import (
 from threetears.nats import IncomingMessage, NatsClient, Subjects, set_default_namespace
 
 from threetears.registry.auth import AllowAllLimitGuard
-from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolDefinition, ToolEndpoint
 from threetears.registry.client import ToolCallClient, ToolCallError
 from threetears.registry.proxy import CallProxy, ProxyCallResponse
 from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
@@ -232,18 +233,24 @@ async def _serve_fake_tool(nc: NatsClient, received: list[CallRequest]) -> Any:
 
 async def _catalog() -> ToolCatalog:
     catalog = ToolCatalog()
+    serving = ToolEndpoint(pod_id=_SERVING_POD, status="available")
+    serving.announce(
+        ToolDefinition(
+            description="echo",
+            input_schema={"type": "object", "properties": {}},
+            # under the sync reply budget, so the registry answers on the reply inbox. a tool
+            # declaring more rides the durable result stream on the registry-to-pod hop, which
+            # this bus does not provision; that path has its own tests.
+            timeout_seconds=5.0,
+        ),
+        datetime.now(UTC),
+    )
     await catalog.register(
         CatalogEntry(
             tool_name=_TOOL,
             tool_version=_VERSION,
             full_name=f"{_TOOL}@{_VERSION}",
-            description="echo",
-            input_schema={"type": "object", "properties": {}},
-            endpoints=[ToolEndpoint(pod_id=_SERVING_POD, status="available")],
-            # under the sync reply budget, so the registry answers on the reply inbox. a tool
-            # declaring more rides the durable result stream on the registry-to-pod hop, which
-            # this bus does not provision; that path has its own tests.
-            timeout_seconds=5.0,
+            endpoints=[serving],
         )
     )
     return catalog

@@ -338,6 +338,8 @@ class TestFindTargetPage:
         assert result.verified is False
         assert result.url == ""
         assert "could not coerce" in result.verification_note
+        # The note names the failure, so it is not read as "the agent named no page".
+        assert "RuntimeError: boom" in result.verification_note
 
     async def test_turn_exhaustion_with_no_usable_output_returns_honest_result(self):
         # ToolExecutor sets error="max rounds exhausted" only when at least one tool call was

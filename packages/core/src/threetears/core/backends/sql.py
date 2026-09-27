@@ -455,6 +455,32 @@ class SqlL3Backend:
             params = schema_sql.build_insert_params(schema, data)
         return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
+    async def upsert_ordered(self, table: str, row: Mapping[str, Any], *, conn: Any = None) -> int:
+        """Insert ``row``, or update the stored row only when its compare-and-swap order is older.
+
+        :class:`~threetears.core.backends.protocol.OrderedDurableStore`'s one operation. The SQL
+        is generated from the registered schema by
+        :func:`~threetears.core.backends.schema_sql.build_ordered_upsert_sql`, so the table must
+        have one: without it neither the key nor the mutable columns are known.
+
+        :param table: the table, whose schema is registered
+        :ptype table: str
+        :param row: the row, ``l2_epoch`` / ``l2_revision`` included
+        :ptype row: Mapping[str, Any]
+        :param conn: optional caller-supplied connection (a transaction handle) the write binds to
+        :ptype conn: Any
+        :return: ``1`` when written, ``0`` when the stored order is newer or equal
+        :rtype: int
+        :raises ValueError: when no schema is registered for ``table``
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"upsert_ordered on {table!r} needs its schema registered; none is")
+        data = dict(row)
+        sql = schema_sql.build_ordered_upsert_sql(schema, data)
+        params = schema_sql.build_insert_params(schema, data)
+        return parse_rowcount(await self._execute(sql, *params, conn=conn))
+
     async def delete(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> None:
         """Delete the row whose primary key equals ``pk`` via a generated DELETE (missing is not an error).
 

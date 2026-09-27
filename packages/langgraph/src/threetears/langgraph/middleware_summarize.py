@@ -9,9 +9,10 @@ and the window is replaced with ``[summary, *recent]``.
 
 Distinct from langchain's batteries-included ``SummarizationMiddleware`` in two
 ways the platform needs: (1) the summary is produced by 3tears'
-``summarize_older_messages`` (one shared distillation prompt + heuristic fallback
-across every 3tears product), and (2) the internal summary model call is tagged
-with :data:`~threetears.langgraph.streaming.NOSTREAM_TAG` so its tokens never leak
+``summarize_older_messages`` (one shared distillation prompt across every 3tears
+product; a failed summary rewrites nothing and is retried on the next model
+call), and (2) the internal summary model call is tagged with
+:data:`~threetears.langgraph.streaming.NOSTREAM_TAG` so its tokens never leak
 into the user-facing token stream that :meth:`StreamingResponse.run_graph`
 accumulates.
 
@@ -41,7 +42,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
 
 from threetears.langgraph.streaming import NOSTREAM_TAG
-from threetears.langgraph.summarize import summarize_older_messages
+from threetears.langgraph.summarize import SummarizationFailedError, summarize_older_messages
 from threetears.observe import get_logger
 
 __all__ = ["SummarizationMiddleware"]
@@ -151,7 +152,9 @@ class SummarizationMiddleware(AgentMiddleware):
         :ptype state: AgentState[Any]
         :param runtime: the LangGraph runtime (unused; part of the hook contract).
         :ptype runtime: Runtime[Any]
-        :return: a ``messages`` rewrite when summarization ran, else ``None``.
+        :return: a ``messages`` rewrite when summarization ran, else ``None`` -- including when the
+            summary call failed: the rewrite deletes the older messages, so it happens only over a
+            real summary, and the next model call tries again.
         :rtype: dict[str, Any] | None
         """
         messages = state["messages"]
@@ -163,26 +166,37 @@ class SummarizationMiddleware(AgentMiddleware):
             return None
         older = messages[:cutoff]
         preserved = messages[cutoff:]
-        summary = await summarize_older_messages(
-            older,
-            self.model,
-            custom_prompt=self.custom_prompt,
-            config={"tags": [NOSTREAM_TAG]},
-        )
-        summary_message = HumanMessage(
-            content=f"Summary of the conversation so far:\n\n{summary}",
-            id=str(uuid7()),
-        )
-        log.info(
-            "conversation summarized",
-            extra={
-                "extra_data": {
-                    "summarized_messages": len(older),
-                    "preserved_messages": len(preserved),
-                }
-            },
-        )
-        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), summary_message, *preserved]}
+        rewrite: dict[str, Any] | None = None
+        try:
+            summary = await summarize_older_messages(
+                older,
+                self.model,
+                custom_prompt=self.custom_prompt,
+                config={"tags": [NOSTREAM_TAG]},
+            )
+        except SummarizationFailedError:
+            # summarize_older_messages logged the cause. Nothing is rewritten: the window stays over
+            # the trigger, so the next model call tries again.
+            log.info(
+                "conversation left unsummarized; the next model call retries",
+                extra={"extra_data": {"unsummarized_messages": len(messages)}},
+            )
+        else:
+            summary_message = HumanMessage(
+                content=f"Summary of the conversation so far:\n\n{summary}",
+                id=str(uuid7()),
+            )
+            log.info(
+                "conversation summarized",
+                extra={
+                    "extra_data": {
+                        "summarized_messages": len(older),
+                        "preserved_messages": len(preserved),
+                    }
+                },
+            )
+            rewrite = {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), summary_message, *preserved]}
+        return rewrite
 
     def before_model(
         self,

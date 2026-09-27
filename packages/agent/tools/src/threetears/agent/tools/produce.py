@@ -32,7 +32,7 @@ from threetears.media.contracts import (
 )
 from threetears.observe import get_logger
 
-from threetears.agent.tools.call_scope import current_scope
+from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 from threetears.agent.tools.context_envelope import CallContext
 
 __all__ = [
@@ -131,10 +131,7 @@ async def stream_result_to_object_store(
     """
     scope = current_scope()
     if scope is None:
-        raise ProduceObjectError(
-            "stream_result_to_object_store called outside a ToolServer call "
-            "scope; a producing tool runs inside enter_call_scope"
-        )
+        raise ProduceObjectError(no_call_scope_message("stream_result_to_object_store"))
     store = scope.object_store
     if store is None:
         raise ProduceObjectError(
