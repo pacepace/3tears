@@ -883,9 +883,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = (data["agent_id"], data["memory_id"])
-            # Promote to L2
-            await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
 
@@ -966,8 +963,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = (data["agent_id"], data["memory_id"])
-            await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
 
@@ -1797,8 +1792,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = (data["agent_id"], data["memory_id"])
-            await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
 
@@ -3742,7 +3735,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         SQL into a Collection method. multi-row scan is not primary-
         key-addressable: the query touches every row sharing the
         ``conversation_id`` prefix of the composite pk, so L1 row-level
-        cache does not apply. each hit is promoted into L2 so other
+        cache does not apply. hits are NOT promoted into L2 (not written to L2: a row read from L3 can be older than a write that landed after the query, and an unfenced put would serve that older row to every reader -- the next single-row read seeds L2 at the key's revision instead), so other
         pods starting cold can resolve the row without an L3 round-
         trip.
 
@@ -3773,8 +3766,6 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         for row in rows:
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
-            entity_id = (data["conversation_id"], data["item_id"])
-            await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
 

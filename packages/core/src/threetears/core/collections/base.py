@@ -134,10 +134,10 @@ class _L2Lookup:
 
     :ivar row: a live row, or ``None``
     :ivar marker: an absent-marker, whatever its generation, or ``None``
-    :ivar revision: the entry's revision whenever the key held anything that is not a live row --
-        a marker, an expired row, an undecodable entry -- so a replacement can compare-and-swap
-        against it and never overwrite a writer's value; ``None`` when the key holds nothing or
-        the read fetched no revision
+    :ivar revision: whenever the key held no live row, the revision of its latest message -- a
+        marker, an expired row, an undecodable entry, a deletion, or ``0`` for a key with no
+        message at all -- so a replacement written at it lands only if nothing has happened to the
+        key since this read; ``None`` for a live row, or when L2 could not be read
     """
 
     row: dict[str, Any] | None
@@ -1312,15 +1312,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             if kv is None:
                 return empty
             key = self.l2_key(entity_id)
-            entry: tuple[bytes, int | None] | None
-            if self._negative_cache_active or self.persists_l2_order:
-                # the revision is only needed to replace an entry by compare-and-swap: with an
-                # absent-marker, which only a negative-caching collection records, or with a row
-                # seeded from L3, which an ordered collection must never write over a live value.
-                entry = await kv.get_entry(key=key)
-            else:
-                value = await kv.get(key=key)
-                entry = None if value is None else (value, None)
+            # the key's LATEST message, a deletion marker included: its revision is what lets a
+            # replacement -- an absent-marker, or a row seeded from L3 -- land only if nothing has
+            # happened to the key since this read, where a create would also land over a write
+            # that was made and then evicted in between.
+            raw, latest = await kv.get_latest(key=key)
         except KvError as exc:
             log.warning(
                 "L2 cache read failed",
@@ -1333,9 +1329,9 @@ class BaseCollection(ABC, Generic[EntityT]):
                 },
             )
             return empty
-        if entry is None:
-            return empty
-        raw, revision = entry
+        revision = latest
+        if raw is None:
+            return _L2Lookup(row=None, marker=None, revision=revision)
         try:
             decoded = self._decode_l2_value(raw)
         except CorruptCacheEntry as exc:
@@ -1618,70 +1614,88 @@ class BaseCollection(ABC, Generic[EntityT]):
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None and self._row_is_expired(pg_data):
             pg_data = None
-        if pg_data is not None and self.persists_l2_order:
+        if pg_data is not None:
             pg_data = await self._seed_l2_from_store(entity_id, pg_data, lookup.revision)
-        elif pg_data is not None:
-            if self._l1 is not None:
-                self._l1.upsert(self.table_name, self._stamped(pg_data), self.primary_key_columns)
-            await self._save_to_l2(entity_id, pg_data)
         elif generation is not None:
             self._write_l1_marker(entity_id, generation)
             await self._write_l2_marker(entity_id, generation, lookup.revision)
         return pg_data
 
-    async def _seed_l2_from_store(self, entity_id: Any, stored: dict[str, Any], revision: int | None) -> dict[str, Any]:
-        """put a row read from L3 into L2 and L1 without ever replacing a compare-and-swap value.
+    async def _seed_l2(self, entity_id: Any, stored: dict[str, Any], revision: int) -> bool:
+        """put a row read from L3 into L2 only if nothing has happened to the key since it was read.
 
-        On a collection whose rows are ordered by :meth:`l2_cas_mutate`, L3 can trail L2: the
-        latest winner's persist may not have landed. An unconditional put of the L3 row, from a
-        read that missed L2 while a swap was landing, would replace the swapped value with an
-        older one, and the next swap would build on that and persist over the newer row with a
-        newer order. So the seed is compare-and-swapped in: created when the key held nothing, or
-        swapped over the expired or undecodable entry the lookup found at ``revision``. When a
-        writer got there first, its value stands, and this read answers with it instead.
+        The one way a read path moves a row from L3 into L2. A row read from L3 is only as new as
+        the moment the query ran. A writer whose ``save_entity`` committed and put its row into L2
+        after that moment holds a NEWER value, and an unconditional put from the read would land
+        the older row over it: every reader on every replica is then served the older value until
+        the next write or the entry's lifetime -- the write was correct and every reader wrong. On
+        a collection whose rows :meth:`l2_cas_mutate` orders it is worse: the next swap builds on
+        the older row and persists over the newer one.
+
+        A create-if-absent is not enough. The save's broadcast makes every peer in its scope delete
+        the key it just wrote, so the key can be empty again by the time the read seeds, and a
+        create lands there. So the seed is written at ``revision`` -- the revision of the key's
+        latest message, a deletion marker included, read BEFORE the L3 query
+        (:meth:`~threetears.nats.NatsKvBucket.get_latest`) -- and lands only while the key's
+        history is exactly as the read found it. Any write or deletion since refuses it.
+
+        A transport failure writes nothing, so nothing is out of order; it degrades to a warning
+        as every L2 write on a three-tier read path does.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :param stored: the live row read from L3
         :ptype stored: dict[str, Any]
-        :param revision: revision of the non-live entry the lookup found, or ``None`` when the key
-            held nothing
-        :ptype revision: int | None
-        :return: the row this read answers with -- the seeded one, or the swapped one that beat it
-        :rtype: dict[str, Any]
+        :param revision: the key's latest revision as read before the L3 query; ``0`` when the key
+            had no message at all
+        :ptype revision: int
+        :return: whether the key changed since it was read, so this row was not written
+        :rtype: bool
         """
-        seeded = False
+        superseded = False
         try:
             kv = await self._ensure_kv()
-            if kv is None:
-                seeded = True
-            else:
+            if kv is not None:
                 key = self.l2_key(entity_id)
                 payload = self.serialize(self._normalise_datetimes_for_write(stored))
                 lifetime = self._l2_entry_lifetime(stored)
                 timed = {} if lifetime is None else {"ttl": lifetime}
-                if revision is None:
-                    seeded = await kv.create(key=key, value=payload, **timed) is not None
-                else:
-                    seeded = await kv.update(key=key, value=payload, revision=revision, **timed) is not None
+                superseded = await kv.update(key=key, value=payload, revision=revision, **timed) is None
         except KvError as exc:
             log.warning(
                 "L2 seed from L3 failed; the next read asks L3 again",
                 extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
             )
-            # L2 was not written, so nothing is out of order; L1 may still hold what L3 answered.
-            seeded = True
-        answer = stored
-        if not seeded:
-            # a compare-and-swap landed between this read's L2 miss and now; its value is newer
-            # than anything L3 returned, so it is what this read answers and what L1 keeps.
+        if superseded:
             log.debug(
-                "L2 seed from L3 lost to a compare-and-swap; answering with the swapped value",
+                "L2 seed from L3 lost to a write made since the read; the newer state stands",
                 extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
             )
+        return superseded
+
+    async def _seed_l2_from_store(self, entity_id: Any, stored: dict[str, Any], revision: int | None) -> dict[str, Any]:
+        """seed L2 and L1 with a row a pull-through read from L3, answering with whatever is newest.
+
+        :meth:`_seed_l2` decides whether the row reaches L2. When the key changed since the read
+        and holds a live value, that value is newer than anything L3 returned, so it is what this
+        read answers and what L1 keeps; answering with the L3 row would hand this caller the value
+        every other reader has already moved past.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param stored: the live row read from L3
+        :ptype stored: dict[str, Any]
+        :param revision: the key's latest revision as the lookup found it, or ``None`` when L2
+            could not be read -- in which case L2 is left alone
+        :ptype revision: int | None
+        :return: the row this read answers with -- the seeded one, or the newer one that beat it
+        :rtype: dict[str, Any]
+        """
+        answer = stored
+        if revision is not None and await self._seed_l2(entity_id, stored, revision):
             current = await self._l2_lookup(entity_id)
             answer = current.row if current.row is not None else stored
-        if self._l1 is not None and (seeded or answer is not stored):
+        if self._l1 is not None:
             self._l1.upsert(self.table_name, self._stamped(answer), self.primary_key_columns)
         return answer
 
@@ -2203,6 +2217,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity_id = entity.addressing_id
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
+        # L2's state BEFORE the L3 read, so the refresh below lands only if nothing was written
+        # to the key in between (see _seed_l2).
+        before = await self._l2_latest_before_refresh(entity_id)
         data = await self.fetch_from_store(entity_id)
         if data is None:
             raise ValueError(f"Entity {entity_id} not found in storage")
@@ -2214,12 +2231,36 @@ class BaseCollection(ABC, Generic[EntityT]):
             # freshly-reloaded row read as locally authored, and locally
             # authored rows never expire.
             self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
-        if not self.persists_l2_order:
-            # an ordered collection's L3 can trail L2 (a persist not yet landed), so the L3 row is
-            # never put over L2 here: the next swap would build on it and persist over the newer
-            # row. The next read seeds L2 by compare-and-swap if it holds nothing.
-            await self._save_to_l2(entity_id, data)
+        if before is not None:
+            live, revision = before
+            # a live L2 value is refreshed only where L3 is never behind L2: a collection whose L3
+            # writes are deferred, or whose rows l2_cas_mutate orders, can hold a newer value in L2
+            # than in L3 (a persist not yet landed), and replacing it would move every reader back.
+            if not live or not (self._defers_l3_writes or self.persists_l2_order):
+                await self._seed_l2(entity_id, data, revision)
         await self._publish_invalidation(entity_id)
+
+    async def _l2_latest_before_refresh(self, entity_id: Any) -> tuple[bool, int] | None:
+        """read whether L2 holds a live value for ``entity_id``, and its latest revision.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: ``(holds a live value, latest revision)``, or ``None`` when there is no L2 or it
+            could not be read -- in which case a refresh leaves L2 alone
+        :rtype: tuple[bool, int] | None
+        """
+        result: tuple[bool, int] | None = None
+        try:
+            kv = await self._ensure_kv()
+            if kv is not None:
+                raw, revision = await kv.get_latest(key=self.l2_key(entity_id))
+                result = (raw is not None, revision)
+        except KvError as exc:
+            log.warning(
+                "L2 read before a reload failed; the reload leaves L2 as it is",
+                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            )
+        return result
 
     @traced()
     async def delete(self, entity_id: Any) -> bool:

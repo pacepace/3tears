@@ -36,6 +36,8 @@ class _FakeKv:
 
     def __init__(self) -> None:
         self.store: dict[str, tuple[bytes, int]] = {}
+        # the revision of each key's deletion marker, as nats-py reports it on KeyNotFoundError.entry
+        self.markers: dict[str, int] = {}
         self.next_revision = 0
         self.fail_next: BaseException | None = None
 
@@ -49,6 +51,9 @@ class _FakeKv:
         self._maybe_fail()
         entry = self.store.get(key)
         if entry is None:
+            marker = self.markers.get(key)
+            if marker is not None:
+                raise KeyNotFoundError(_FakeEntry(value=b"", revision=marker), "DEL")
             raise KeyNotFoundError()
         value, rev = entry
         return _FakeEntry(value=value, revision=rev)
@@ -81,6 +86,8 @@ class _FakeKv:
         if key not in self.store:
             raise KeyNotFoundError()
         del self.store[key]
+        self.next_revision += 1
+        self.markers[key] = self.next_revision
 
 
 def _make_bucket() -> tuple[NatsKvBucket, _FakeKv]:
@@ -226,6 +233,30 @@ async def test_get_entry_returns_value_and_revision() -> None:
 async def test_get_entry_returns_none_on_miss() -> None:
     bucket, _ = _make_bucket()
     assert await bucket.get_entry(key="absent") is None
+
+
+@pytest.mark.asyncio
+async def test_get_latest_returns_a_live_value_and_its_revision() -> None:
+    bucket, kv = _make_bucket()
+    rev = await kv.put("k", b"v")
+    assert await bucket.get_latest(key="k") == (b"v", rev)
+
+
+@pytest.mark.asyncio
+async def test_get_latest_reports_a_deleted_key_by_its_markers_revision() -> None:
+    # get_entry reports a deleted key as absent; the marker's revision is what lets a writer land
+    # only if nothing has happened to the key since it looked.
+    bucket, kv = _make_bucket()
+    await kv.put("k", b"v")
+    await kv.delete("k")
+    assert await bucket.get_entry(key="k") is None
+    assert await bucket.get_latest(key="k") == (None, kv.markers["k"])
+
+
+@pytest.mark.asyncio
+async def test_get_latest_reports_a_never_written_key_as_revision_zero() -> None:
+    bucket, _ = _make_bucket()
+    assert await bucket.get_latest(key="absent") == (None, 0)
 
 
 @pytest.mark.asyncio

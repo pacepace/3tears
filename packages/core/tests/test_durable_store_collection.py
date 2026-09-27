@@ -112,6 +112,39 @@ def _make_nats_mock() -> AsyncMock:
     bucket.get = AsyncMock(side_effect=_get)
     bucket.put = AsyncMock(side_effect=_put)
     bucket.delete = AsyncMock(side_effect=_delete)
+
+    # each key's latest revision, a deletion's included, so a read that seeds L2 at the revision it
+    # saw before its L3 query behaves as on the real bucket: it lands only if nothing happened since.
+    latest: dict[str, int] = {}
+    sequence = [0]
+
+    def _advance(key: str) -> int:
+        sequence[0] += 1
+        latest[key] = sequence[0]
+        return sequence[0]
+
+    async def _get_latest(*, key: str) -> tuple[bytes | None, int]:
+        return (store.get(key), latest.get(key, 0))
+
+    async def _put_tracked(*, key: str, value: bytes) -> int:
+        await _put(key=key, value=value)
+        return _advance(key)
+
+    async def _update(*, key: str, value: bytes, revision: int) -> int | None:
+        if latest.get(key, 0) != revision:
+            return None
+        store[key] = value
+        return _advance(key)
+
+    async def _delete_tracked(*, key: str, revision: int | None = None) -> bool:
+        deleted = await _delete(key=key, revision=revision)
+        _advance(key)
+        return deleted
+
+    bucket.get_latest = AsyncMock(side_effect=_get_latest)
+    bucket.put = AsyncMock(side_effect=_put_tracked)
+    bucket.update = AsyncMock(side_effect=_update)
+    bucket.delete = AsyncMock(side_effect=_delete_tracked)
     nats = AsyncMock()
     nats.kv_bucket = AsyncMock(return_value=bucket)
     nats.publish = AsyncMock()

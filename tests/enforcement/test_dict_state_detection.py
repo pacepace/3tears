@@ -216,6 +216,16 @@ _ALLOWLIST = (
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
+        attr_name="_markers",
+        rationale=(
+            "the revision of each deleted key's marker -- the other half of the double's storage "
+            "beside _entries, since a real delete publishes a message whose revision a fenced "
+            "write depends on. Same test-double rationale as FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeNatsClient",
         attr_name="_buckets",
         rationale=(

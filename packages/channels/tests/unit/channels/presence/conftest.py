@@ -21,55 +21,25 @@ from threetears.channels.presence.room_state import RoomState
 from threetears.channels.presence.sweeper import PresenceSweeper
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.kv import FakeKvBucket
 
 
-class _InMemoryKvBucket:
-    """typed-wrapper KV bucket stand-in WITH CAS, matching ``NatsKvBucket``."""
+class _InMemoryKvBucket(FakeKvBucket):
+    """the shared collections bucket, as the published fake models it.
+
+    Once a hand-rolled subset of get/put/delete; now the published double, so it carries the
+    revision history -- deletion markers and ``get_latest`` included -- that a collection's read
+    path fences its L2 seed on. A subset double that cannot answer the real bucket's questions is
+    how a KV bug ships green.
+    """
 
     def __init__(self) -> None:
-        # key -> (value, revision); revision is a monotonically-increasing int.
-        self._store: dict[str, tuple[bytes, int]] = {}
-        self._seq = 0
+        """open an empty bucket.
 
-    def _next(self) -> int:
-        self._seq += 1
-        return self._seq
-
-    async def get(self, *, key: str) -> bytes | None:
-        entry = self._store.get(key)
-        return entry[0] if entry is not None else None
-
-    async def get_entry(self, *, key: str) -> tuple[bytes, int] | None:
-        return self._store.get(key)
-
-    async def put(self, *, key: str, value: bytes) -> int:
-        rev = self._next()
-        self._store[key] = (value, rev)
-        return rev
-
-    async def create(self, *, key: str, value: bytes) -> int | None:
-        if key in self._store:
-            return None
-        rev = self._next()
-        self._store[key] = (value, rev)
-        return rev
-
-    async def update(self, *, key: str, value: bytes, revision: int) -> int | None:
-        entry = self._store.get(key)
-        if entry is None or entry[1] != revision:
-            return None
-        rev = self._next()
-        self._store[key] = (value, rev)
-        return rev
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
-        entry = self._store.get(key)
-        if entry is None:
-            return True
-        if revision is not None and entry[1] != revision:
-            return False
-        del self._store[key]
-        return True
+        :return: None
+        :rtype: None
+        """
+        super().__init__(bucket_name="collections")
 
 
 class InMemoryNatsBus:

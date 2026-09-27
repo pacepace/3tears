@@ -845,6 +845,38 @@ class NatsKvBucket:
             return None
         return (bytes(entry.value), int(entry.revision))
 
+    async def get_latest(self, *, key: str) -> tuple[bytes | None, int]:
+        """the key's latest message: its value, and its revision even when that message is a deletion.
+
+        :meth:`get_entry` answers "is there a live value" and reports a deleted key as absent,
+        dropping the revision of the deletion marker. That revision is what a writer needs to
+        write ONLY IF NOTHING HAS HAPPENED to the key since it looked: an :meth:`update` at the
+        revision this returns lands only while the key's history is unchanged, where
+        :meth:`create` would also land over a deletion made in between. A read that seeds a value
+        from another tier depends on exactly that difference.
+
+        :param key: key to read
+        :ptype key: str
+        :return: ``(value, revision)`` for a live value; ``(None, revision)`` for a key whose latest
+            message is a delete or purge marker; ``(None, 0)`` for a key with no message at all.
+            An :meth:`update` at the returned revision lands only if no message has been written
+            to the key since
+        :rtype: tuple[bytes | None, int]
+        :raises KvError: on transport failure
+        """
+        try:
+            entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
+        except KeyNotFoundError as exc:
+            # nats-py raises this for a missing key AND for a deleted one; only the second carries
+            # the marker entry, whose revision is the key's latest.
+            marker = getattr(exc, "entry", None)
+            marker_revision = getattr(marker, "revision", None)
+            return (None, int(marker_revision) if marker_revision else 0)
+        except Exception as exc:
+            raise KvError(f"KV get_latest failed: bucket={self._full_name} key={key}: {exc}") from exc
+        revision = int(entry.revision) if entry.revision is not None else 0
+        return (bytes(entry.value) if entry.value is not None else None, revision)
+
     async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
         """unconditional write. returns new revision.
 
@@ -944,7 +976,8 @@ class NatsKvBucket:
         :ptype key: str
         :param value: bytes to store
         :ptype value: bytes
-        :param revision: expected current revision
+        :param revision: expected current revision -- the key's latest message, a deletion marker
+            included (:meth:`get_latest`); ``0`` expects the key to have no message at all
         :ptype revision: int
         :param ttl: a server-side lifetime for the new entry; ``None`` keeps the bucket's own
             expiry. Whole seconds, at least one. Needs the stream's ``allow_msg_ttl``
@@ -1108,6 +1141,8 @@ class KvBucketLike(Protocol):
     async def get(self, *, key: str) -> bytes | None: ...
 
     async def get_entry(self, *, key: str) -> tuple[bytes, int] | None: ...
+
+    async def get_latest(self, *, key: str) -> tuple[bytes | None, int]: ...
 
     async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int: ...
 

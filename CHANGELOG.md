@@ -33,7 +33,9 @@ interrupts its body -- read that section before upgrading a caller. `l2_cas_muta
 L3 persist on the order its compare-and-swap won, so L3 can no longer go back to an earlier row;
 a three-tier collection using it must add `l2_epoch` / `l2_revision` columns (coordination
 migration v002 does so for the coordination tables) and may no longer answer `"delete"` -- read
-"A compare-and-swap row in L3 can no longer go back to an earlier value" before upgrading.
+"A compare-and-swap row in L3 can no longer go back to an earlier value" before upgrading. A row
+read from L3 no longer replaces a newer value in L2 on any collection (`NatsKvBucket.get_latest`);
+a hand-rolled KV test double must now answer `get_latest` and `update`.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -644,10 +646,10 @@ gone for good: a set loses a member for ever, a quota counter miscounts.
   After a wipe, the next mutation seeds from the newest row that reached L3.
 - **Fixed:** the write buffer keeps the newer of two orders for one row, whichever was added
   last, and the flush reports a superseded ordered write at debug instead of as a lost write.
-- **Fixed:** a read that misses L2 and seeds it from L3 on such a collection now compare-and-swaps
-  the L3 row in, so it can no longer put an older row over a value a swap wrote meanwhile (the next
-  swap would have built on it and persisted over the newer row). `reload_entity` no longer puts the
-  L3 row into L2 there at all.
+- **Fixed:** a read that misses L2 and seeds it from L3 can no longer put an older row over a
+  value a swap wrote meanwhile (the next swap would have built on it and persisted over the newer
+  row). This now holds for every collection -- see "A row read from L3 never replaces a newer value
+  in L2".
 - **Fixed:** `WindowedCounter.clear` closes the window -- a compare-and-swap to an expiry of now,
   which every tier reads as absent -- instead of deleting the row. A delete left L3 nothing to
   order against, so an attempt another replica recorded just before, still in its write buffer,
@@ -727,6 +729,47 @@ written through `save_entity`, is unchanged). Every consumer running the coordin
 `IdempotencyKeyStore`, `RedemptionLedger` and `CollectionReplayAnchor` refuse on their first
 write. A pod declaring `replay_anchor_metadata()` with an L3 tier picks the columns up in its
 declaration.
+
+### A row read from L3 never replaces a newer value in L2
+
+A read that missed L2 fetched the row from L3 and put it into L2 unconditionally. When a writer's
+`save_entity` committed and put its newer row into L2 between that fetch and the put, the read
+landed the OLDER row over it, and every reader on every replica was then served the older value
+until the next write or the entry's lifetime -- the write was correct and every reader wrong.
+`reload_entity` and the list loaders of `ConversationsCollection`, `FolderCollection`,
+`MemoriesCollection`, `ConversationMemoryRefsCollection`, `WorkspacesCollection` and
+`WorkspaceFilesCollection` did the same.
+
+A create-if-absent does not close it: the save's broadcast makes every peer in its scope delete
+the key the writer just wrote, so the read can find it empty and recreate the older row.
+
+- **Fixed:** a read now seeds L2 at the key's latest revision as it read it BEFORE its L3 query --
+  a deletion marker's included -- so the seed lands only if nothing has happened to the key since.
+  A read that lost to a newer write answers with that write's row, not the older one it fetched.
+  `reload_entity` refreshes L2 the same way, and leaves a live value alone on a collection whose L3
+  can trail L2 (write-behind, or ordered by `l2_cas_mutate`). The negative-cache absent-marker is
+  written the same way.
+- **Changed:** the list and lookup loaders above no longer put their rows into L2. A list query
+  has no per-key revision from before it ran, so it cannot seed L2 safely; the next single-row
+  read seeds the key correctly. The cost is one L3 read on the first `get` after a list, per key.
+- **New (minor):** `NatsKvBucket.get_latest(key)` returns the key's latest message --
+  `(value, revision)`, `(None, marker revision)` for a deleted key, `(None, 0)` for a key never
+  written -- and `KvBucketLike` declares it. `NatsKvBucket.update(revision=0)` is documented to
+  land only on a key with no message at all.
+- **Changed (breaking for hand-rolled KV doubles):** `BaseCollection` reads L2 through
+  `get_latest` and seeds through `update`. A test double standing in for the bucket must answer
+  both; `threetears.core.testing.kv.FakeKvBucket` does, and now models deletion markers (a delete
+  publishes one with its own revision, a create lands over it, an `update` lands only at the key's
+  latest revision, `0` included). Doubles in this repository were moved onto it or given the same
+  history.
+- **New (enforcement):** `tests/enforcement/test_no_unfenced_l2_seed_from_l3.py` refuses a function
+  that reads rows from L3 and calls `_save_to_l2`. A statement that writes and returns its own row
+  (`INSERT ... RETURNING`) is a write, not a read, and is allowed.
+- **Known gap, not closed here:** a list loader still builds its entities on its own pod's L1,
+  because an entity is a proxy onto its L1 row. An invalidation that arrived while the list query
+  ran can therefore be overwritten in that pod's L1 by the older row, until the next invalidation
+  or `l1_max_age`. It is pod-local, not every reader; closing it means building list entities
+  without writing L1, which is a change to `BaseEntity` construction.
 
 ## v0.54.0 -- 2026-09-26
 

@@ -101,22 +101,43 @@ def _make_nats_mock() -> AsyncMock:
     convenience.
     """
     store: dict[str, bytes] = {}
+    # each key's latest revision, a deletion's included, so a seed fenced on it behaves as on the
+    # real bucket: ``update`` lands only while the key's history is what the reader saw.
+    latest: dict[str, int] = {}
+    sequence = [0]
+
+    def _advance(key: str) -> int:
+        sequence[0] += 1
+        latest[key] = sequence[0]
+        return sequence[0]
 
     async def _get(*, key: str) -> bytes | None:
         return store.get(key)
 
+    async def _get_latest(*, key: str) -> tuple[bytes | None, int]:
+        return (store.get(key), latest.get(key, 0))
+
     async def _put(*, key: str, value: bytes) -> int:
         store[key] = value
-        return len(store)
+        return _advance(key)
+
+    async def _update(*, key: str, value: bytes, revision: int) -> int | None:
+        if latest.get(key, 0) != revision:
+            return None
+        store[key] = value
+        return _advance(key)
 
     async def _delete(*, key: str, revision: int | None = None) -> bool:  # noqa: ARG001
         existed = key in store
         store.pop(key, None)
+        _advance(key)
         return existed or revision is None
 
     bucket = AsyncMock()
     bucket.get = AsyncMock(side_effect=_get)
+    bucket.get_latest = AsyncMock(side_effect=_get_latest)
     bucket.put = AsyncMock(side_effect=_put)
+    bucket.update = AsyncMock(side_effect=_update)
     bucket.delete = AsyncMock(side_effect=_delete)
 
     nats = AsyncMock()
