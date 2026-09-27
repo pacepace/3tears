@@ -175,5 +175,5 @@ async def test_a_name_taken_by_another_row_is_refused(pg_pool: asyncpg.Pool) -> 
     collection = _collection(pg_pool)
     first = _fields(customer, agent, uuid.uuid4())
     await collection.ensure_namespace(**first)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="name"):
+    with pytest.raises(ValueError, match="already taken"):
         await collection.ensure_namespace(**{**first, "namespace_id": uuid.uuid4()})  # type: ignore[arg-type]

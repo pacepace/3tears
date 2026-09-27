@@ -1877,8 +1877,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :ptype metadata: dict[str, Any] | None
         :return: the row
         :rtype: NamespaceEntity
-        :raises ValueError: a row with this id exists and disagrees on a requested field, or the
-            name is already taken by a row with another id
+        :raises ValueError: a row with this id exists and disagrees on a requested field, or a unique
+            value it carries (the name, or another unique column) is taken by a row with another id
         :raises RuntimeError: the collection has no L3 pool to write through
         :raises Exception: the backend's own error for what the table refuses outright -- a
             ``CHECK`` (e.g. a platform-scoped row of a customer-only type) or a missing owner under
@@ -1906,7 +1906,12 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             existing = await self.find_by_id(namespace_id)
             if existing is None:
-                raise ValueError(f"namespace name {name!r} is already taken by a row with another id")
+                # absorbed by a unique index other than the id's -- the name, or any unique column the
+                # deploying app added (a schema name, say)
+                raise ValueError(
+                    f"namespace {namespace_id} was not written: a unique value it carries (name {name!r}, "
+                    f"schema {schema_name!r}, ...) is already taken by a row with another id"
+                )
             log.info(
                 "namespace ensured",
                 extra={"extra_data": {"namespace_id": str(namespace_id), "namespace_type": namespace_type}},

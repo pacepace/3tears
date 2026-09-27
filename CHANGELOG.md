@@ -24,8 +24,10 @@ packages (bumped in lock-step).
 - The presence sweeper, the registry health check, the MCP rbac catch-up and the write-behind
   `PeriodicFlusher` run on it. Their public APIs and failure log messages are unchanged.
 - `CachedHubJwksProvider` runs on it too, keeping its cadence (short until the first success,
-  then steady) and its log message. A second `start()` while it runs, or overlapping it, is
-  now a no-op; it used to spawn a second loop.
+  then steady) and its log message. A `start()` while it runs is a no-op; it used to spawn a
+  second loop. One overlapping a start in progress returns when that start has finished. A
+  `stop()` during the initial fetch wins, so no loop is built afterwards. Its intervals must be
+  finite and positive.
 - **Behaviour changes:**
   - The presence sweeper's and the registry health subscriber's `start()` are now idempotent;
     twice used to spawn two loops.

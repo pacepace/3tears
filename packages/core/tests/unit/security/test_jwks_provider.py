@@ -274,3 +274,50 @@ class TestLoopConfiguration:
             assert len(loops) == 1
         finally:
             await provider.stop()
+
+    async def test_a_stop_during_the_initial_fetch_leaves_no_loop(self) -> None:
+        """Shutdown while a slow Hub holds the boot fetch must not leave a loop stop() never reached."""
+        nc = _client({"keys": []})
+        release = asyncio.Event()
+        real = nc.request_raw
+
+        async def slow(*args: Any, **kwargs: Any) -> Any:
+            await release.wait()
+            return await real(*args, **kwargs)
+
+        nc.request_raw = slow
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=3600)
+        starting = asyncio.create_task(provider.start())
+        await asyncio.sleep(0.01)
+        await provider.stop()
+        release.set()
+        await starting
+        loops = [t for t in asyncio.all_tasks() if t.get_name() == "hub-jwks-refresh" and not t.done()]
+        assert loops == []
+
+    async def test_an_overlapping_start_returns_once_the_first_is_warm(self) -> None:
+        nc = _client(_JWKS)
+        release = asyncio.Event()
+        real = nc.request_raw
+
+        async def slow(*args: Any, **kwargs: Any) -> Any:
+            await release.wait()
+            return await real(*args, **kwargs)
+
+        nc.request_raw = slow
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=3600)
+        first = asyncio.create_task(provider.start())
+        await asyncio.sleep(0.01)
+        second = asyncio.create_task(provider.start())
+        await asyncio.sleep(0.01)
+        assert not second.done(), "the overlapping start must not report started before the fetch"
+        release.set()
+        await asyncio.gather(first, second)
+        try:
+            assert provider()["keys"], "both callers see a warm cache"
+        finally:
+            await provider.stop()
+
+    def test_a_nan_interval_is_refused_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            _provider(_client({"keys": []}), refresh_interval_seconds=float("nan"))

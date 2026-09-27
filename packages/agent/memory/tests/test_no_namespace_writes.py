@@ -83,7 +83,9 @@ def _namespace_writes(path: Path) -> list[str]:
         if node.func.attr not in _WRITE_METHODS:
             continue
         receiver = _receiver_name(node.func.value)
-        if receiver in _NAMESPACE_HANDLES:
+        # ensure_namespace exists only on the namespaces collection, so any receiver is one -- a handle
+        # renamed ``ns`` must not slip past a list of known names
+        if receiver in _NAMESPACE_HANDLES or node.func.attr == "ensure_namespace":
             found.append(f"{path.name}:{node.lineno}: {receiver}.{node.func.attr}(...)")
     return found
 
@@ -118,6 +120,12 @@ class TestMemoryPackageNeverWritesNamespaces:
         assert "namespace_collection.save_entity" in found[0]
 
 
+def test_ensure_namespace_is_caught_on_any_receiver(tmp_path: Path) -> None:
+    probe = tmp_path / "probe.py"
+    probe.write_text("async def f(ns):\n    await ns.ensure_namespace(namespace_id=1)\n")
+    assert _namespace_writes(probe) == ["probe.py:2: ns.ensure_namespace(...)"]
+
+
 class TestTheHublessProvisionerWritesOnlyThroughEnsure:
     def test_its_only_namespace_write_is_ensure_namespace(self) -> None:
         """the exemption covers one call, not a module free to write however it likes."""
@@ -127,7 +135,8 @@ class TestTheHublessProvisionerWritesOnlyThroughEnsure:
 
     def test_no_other_memory_module_constructs_the_hubless_provisioner(self) -> None:
         """the exemption covers a module, not a way around the rule: nothing else in the package may
-        reach it (only the application that owns the control plane constructs it)."""
+        reach it (only the application that owns the control plane constructs it). A static scan: a
+        deliberately dynamic reach (importlib plus a computed name) is out of its sight."""
         naming = [
             path.relative_to(_MEMORY_SRC).as_posix()
             for path in sorted(_MEMORY_SRC.rglob("*.py"))
