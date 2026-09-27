@@ -42,6 +42,7 @@ exclude-newer-span = "P14D"
 3tears-datasources = { timestamp = "2026-09-26T23:44:35.318463Z", span = "PT0S" }
 3tears-agent-audit = { timestamp = "2026-09-26T23:44:35.318461Z", span = "PT0S" }
 3tears-agent-memory = { timestamp = "2026-09-26T23:44:35.318462Z", span = "PT0S" }
+langchain-openrouter = "2026-09-22T05:00:00Z"
 
 [manifest]
 members = [
@@ -122,7 +123,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "3tears-nats" },
@@ -182,7 +183,7 @@ provides-extras = ["nats", "tracing", "socks", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
@@ -206,7 +207,7 @@ provides-extras = ["bus"]
 
 [[package]]
 name = "3tears-agent-audit"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/audit" }
 dependencies = [
     { name = "3tears-nats", extra = ["client"] },
@@ -223,7 +224,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-identity"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/identity" }
 dependencies = [
     { name = "3tears" },
@@ -248,7 +249,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-intention"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/intention" }
 dependencies = [
     { name = "3tears" },
@@ -275,7 +276,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-knowledge"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/knowledge" }
 dependencies = [
     { name = "3tears" },
@@ -302,7 +303,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/memory" }
 dependencies = [
     { name = "3tears" },
@@ -329,7 +330,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-skills"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/skills" }
 dependencies = [
     { name = "3tears" },
@@ -350,7 +351,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/tools" }
 dependencies = [
     { name = "3tears" },
@@ -450,7 +451,7 @@ provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "visio
 
 [[package]]
 name = "3tears-agent-wake"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/wake" }
 dependencies = [
     { name = "3tears" },
@@ -486,7 +487,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-agent-workspace"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/agent/workspace" }
 dependencies = [
     { name = "3tears" },
@@ -517,7 +518,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-backup"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/backup" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -534,7 +535,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-channels"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/channels" }
 dependencies = [
     { name = "3tears" },
@@ -578,7 +579,7 @@ provides-extras = ["slack", "discord", "websocket", "webhook"]
 
 [[package]]
 name = "3tears-conversations"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/conversations" }
 dependencies = [
     { name = "3tears" },
@@ -597,7 +598,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-datasources"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/datasources" }
 dependencies = [
     { name = "3tears" },
@@ -645,7 +646,7 @@ provides-extras = ["redshift", "snowflake", "bigquery", "dev"]
 
 [[package]]
 name = "3tears-enforcement"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/enforcement" }
 dependencies = [
     { name = "3tears" },
@@ -667,7 +668,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "3tears-epoch"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/epoch" }
 dependencies = [
     { name = "3tears" },
@@ -688,7 +689,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-geo"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/geo" }
 dependencies = [
     { name = "3tears" },
@@ -709,7 +710,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-iam"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/iam" }
 dependencies = [
     { name = "3tears" },
@@ -757,7 +758,7 @@ provides-extras = ["saml", "webauthn"]
 
 [[package]]
 name = "3tears-langgraph"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/langgraph" }
 dependencies = [
     { name = "3tears" },
@@ -786,7 +787,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-mcp"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/mcp" }
 dependencies = [
     { name = "3tears" },
@@ -817,12 +818,12 @@ requires-dist = [
 
 [[package]]
 name = "3tears-media-contracts"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/media-contracts" }
 
 [[package]]
 name = "3tears-models"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/models" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -834,7 +835,9 @@ dependencies = [
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "langchain-openrouter" },
+    { name = "openrouter" },
     { name = "pydantic" },
+    { name = "uuid-utils" },
 ]
 
 [package.optional-dependencies]
@@ -871,16 +874,18 @@ requires-dist = [
     { name = "langchain-claude-code", marker = "extra == 'claude-cli'", specifier = ">=0.1.0" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "langchain-openai", specifier = ">=1.1" },
-    { name = "langchain-openrouter", specifier = ">=0.1" },
+    { name = "langchain-openrouter", specifier = ">=0.2.9" },
     { name = "langchain-voyageai", marker = "extra == 'voyageai'", specifier = ">=0.3" },
+    { name = "openrouter", specifier = ">=0.9.2,<1.0" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "uuid-utils" },
 ]
 provides-extras = ["claude-cli", "voyageai", "whisper", "image", "prometheus"]
 
 [[package]]
 name = "3tears-nats"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/nats" }
 dependencies = [
     { name = "3tears-observe" },
@@ -904,7 +909,7 @@ provides-extras = ["client"]
 
 [[package]]
 name = "3tears-object-store"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/object-store" }
 dependencies = [
     { name = "3tears" },
@@ -923,7 +928,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-observe"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/observe" }
 
 [package.optional-dependencies]
@@ -947,7 +952,7 @@ provides-extras = ["otel", "asgi"]
 
 [[package]]
 name = "3tears-registry"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/registry" }
 dependencies = [
     { name = "3tears" },
@@ -972,7 +977,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-scheduled-jobs"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/scheduled-jobs" }
 dependencies = [
     { name = "3tears" },
@@ -1000,7 +1005,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-scrape"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/scrape" }
 dependencies = [
     { name = "3tears" },
@@ -1050,7 +1055,7 @@ provides-extras = ["reprobe", "hitl"]
 
 [[package]]
 name = "3tears-search"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/search" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -1078,7 +1083,7 @@ provides-extras = ["standalone", "extract"]
 
 [[package]]
 name = "3tears-tool-schema"
-version = "0.55.0"
+version = "0.56.0"
 source = { editable = "packages/tool-schema" }
 
 [[package]]
@@ -2644,9 +2649,10 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.4.9"
+version = "1.6.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "httpx" },
     { name = "jsonpatch" },
     { name = "langchain-protocol" },
     { name = "langsmith" },
@@ -2657,9 +2663,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2a/b9/e937d0a90b26540bff07e7a7c64349f3b29c2dcc36257cd1cd3fdce17f2a/langchain_core-1.4.9.tar.gz", hash = "sha256:f8078901145bed0466755277500a5a22822a7b628808c4c0a28d4fc88895fcf2", size = 967294, upload-time = "2026-07-08T20:06:54.191Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/d7/1482670ccebc863166852516a08a1956fc50da40fbe2fe7dd218abfef4a1/langchain_core-1.6.3.tar.gz", hash = "sha256:88b430944fbd4d40fa98135d6c873581d497b6f33515d01962337548e918df2f", size = 1006228, upload-time = "2026-09-11T17:37:45.614Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/70/ade2fada52772798ef815b6352b59e71b116aa0c32c3aef5be3dc2cbed12/langchain_core-1.4.9-py3-none-any.whl", hash = "sha256:28e3909e2a10cc81504952d795ac0a9e014c0018121ef89d48dd396fa09ec624", size = 558293, upload-time = "2026-07-08T20:06:52.382Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/18/cf18cfec118b02e003f35300b54d6a1173dc6e4905cffdf5ea49e390a7f9/langchain_core-1.6.3-py3-none-any.whl", hash = "sha256:114fe1868c9ed60606662b9dd0074bf3152cc6b0b1522ba37cbd6b04f55ca77d", size = 571753, upload-time = "2026-09-11T17:37:43.875Z" },
 ]
 
 [[package]]
@@ -2678,15 +2684,15 @@ wheels = [
 
 [[package]]
 name = "langchain-openrouter"
-version = "0.2.6"
+version = "0.2.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "openrouter" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/25/38/9e83b0b0c2127d286e3a02b5e043a155a53bbf6f99ebc2525f444142d46c/langchain_openrouter-0.2.6.tar.gz", hash = "sha256:dc77927cd70d837adea977b1253cf7cebc3055724c419169ac1321d936281ba8", size = 182409, upload-time = "2026-07-05T20:57:08.732Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/ad/c908cc9161858fe0c720e8e0d32d64462c5a09bf64e463e1709d679919bc/langchain_openrouter-0.2.9.tar.gz", hash = "sha256:e3c130bfc58a517811044b6cb56e13b2e7d1ee219c38e025f4522aa0400f9c8e", size = 183837, upload-time = "2026-09-22T04:15:59.13Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/1b/ce511f21221cf6bff2ecc72f7d318277742a8e9244a49f3c110a1f497c66/langchain_openrouter-0.2.6-py3-none-any.whl", hash = "sha256:267127e34f921450298ab82fbbef8dd0d4bb2b440040769df0af203ce13048f4", size = 29329, upload-time = "2026-07-05T20:57:07.67Z" },
+    { url = "https://files.pythonhosted.org/packages/65/ad/7a0f0f39b92d0b93123d6e11e4bf35a560a07cbf59bfee7ab0c6052d251f/langchain_openrouter-0.2.9-py3-none-any.whl", hash = "sha256:375a79a4a849069d2254627185210b2f2b9fe84c69326e10d71c3d48f8b41f06", size = 30170, upload-time = "2026-09-22T04:15:57.853Z" },
 ]
 
 [[package]]

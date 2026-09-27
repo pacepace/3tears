@@ -7,36 +7,47 @@ deployment: ~2.4 s to start plus ~2.7 s per call, against ~600 ms for the same m
 HTTP API, and a routing decision stretched to 4–19 s under load. Every conversation turn pays
 it too.
 
-This package pools the CLI: one subprocess per launch configuration, reused and cleared
-between calls. Everything below was verified against the bundled CLI (claude-agent-sdk 0.2.116 and
+This package pools the CLI: one subprocess per launch configuration, reused, and rewound to an
+empty conversation between calls. Everything below was verified against the bundled CLI (claude-agent-sdk 0.2.116 and
 0.2.118), not inferred from documentation. The extra bounds the SDK below 0.3 for that reason.
+
+The agent switch (`apply_flag_settings`) and the rewind reset (`rewind_conversation`) came later and
+were proven on claude-agent-sdk 0.2.116 with its bundled CLI 2.1.207; the switch also on 0.2.118 with
+CLI 2.1.209. A rewind to a conversation's first message further needs the CLI's server-side flag
+`tengu_rewind_first_message`. Both go through the SDK's private `_send_control_request`, so a CLI
+that refuses either one -- or a surface that moved -- counts toward the pool's self-disable latch:
+three such failures in a row turn pooling off, logged once, and calls run on CLIs of their own.
+A timeout or transport failure does not count (`repeats_on_every_call`): the SDK raises its timeout
+as the same bare `Exception`, told apart only by a `TimeoutError` cause, and a slow reset on a busy
+host says nothing about the next call. That session is stopped and a spare started; pooling stays on.
 
 ## What is fixed when a CLI starts, and what can change per call
 
 | Setting | How it reaches the CLI | Per call? | Evidence |
 |---|---|---|---|
-| system prompt | `--system-prompt` launch flag | **no** | a second `initialize` returns before reading `systemPrompt` |
+| system prompt | as a launch flag, no: a second `initialize` returns before reading `systemPrompt`. As a named agent defined at launch, **yes**: `apply_flag_settings {"agent": name}` | yes, among the agents the CLI launched with | through a recording proxy, a switched agent's request (system blocks, messages, tools, `output_config`) was byte-identical to a CLI launched with that prompt; the switch held across the rewind; an agent defined after launch answered 'Agent "..." not found' |
+| JSON schema | `--json-schema` launch flag | **no** | `apply_flag_settings {"jsonSchema": ...}` answered `{}` and the next call had no `structured_output` |
 | model | `set_model` control request | yes | SDK method |
 | bound tools (in-process MCP server) | `mcp_set_servers` control request | **yes** | swapped a live session's server in 3 ms; the model called the new tool |
 | `max_turns` | `--max-turns` launch flag | per *query* | three queries at cap 2, each used 2 turns, none errored; the model forces 1 (below) |
-| conversation | `/clear` between calls | yes | planted a codeword, cleared, asked: "NONE" |
+| conversation | `rewind_conversation` control request to the call's first message | yes | planted a codeword, rewound, asked the model to quote its whole input: only the CLI's own `currentDate` reminder, 10 calls of 10 |
 | `reconnect_mcp_server` | control request | — | **refused** for SDK servers ("SDK servers should be handled in print.ts") |
 
-## The system prompt: stable part launches, variable part travels
+## The system prompt: stable part is switched, variable part travels
 
-The system prompt cannot change on a live CLI, and a caller's prompt usually changes every
-turn (retrieved memory, tool results, notices). Keying sessions on the whole prompt would
-reuse nothing.
+A caller's prompt usually changes every turn (retrieved memory, tool results, notices), and what a
+CLI holds as its system prompt should not. Callers that cache prompts already mark the boundary: a
+`SystemMessage` whose content is a list of blocks, the stable blocks carrying `cache_control`. The
+chat model uses that boundary:
 
-Callers that cache prompts already mark the boundary: a `SystemMessage` whose content is a list
-of blocks, the stable blocks carrying `cache_control`. The pool uses that boundary:
-
-- blocks up to and including the **last** one carrying `cache_control` → the CLI's
-  `--system-prompt`, and part of the session key;
+- blocks up to and including the **last** one carrying `cache_control` → the call's stable system
+  prompt, which the pool switches to on the CLI as a named agent (below). It is not part of the
+  session key;
 - the blocks after it → prepended to the query, ahead of the conversation.
 
-A bare-string system message has no marker, so all of it is stable. Behaviour is unchanged and
-reuse happens only while the string is identical.
+A bare-string system message has no marker, so all of it is stable. A CLI launches with no system
+prompt and every stable prompt its key has seen defined as an agent, named from the prompt's
+digest; each checkout switches to the call's prompt (see the table above and "Session key").
 
 This also fixes a live defect. The base class did `str(msg.content)` on that list, so on a
 subscription route the CLI received the Python **repr** of the blocks — literal `\n`
@@ -54,20 +65,36 @@ before a second model turn, and the tool calls come back as `AIMessage.tool_call
 graph to run (approval, shaping, its ledger). The handler the CLI calls in between answers with a
 placeholder no turn reads. Verified live on the bundled CLI (2026-09-15): two parallel calls
 emitted, both handlers called, `error_max_turns` after turn 2 of the CLI's count, and the same
-session then answered an ordinary query with `success`. With `max_turns` fixed, it is no longer
-part of what distinguishes one session from another.
+session then answered an ordinary query with `success`.
+
+One exception: a call that asks for a schema and gives the model no tool but the CLI's
+own `StructuredOutput` launches with `--max-turns 6` and `MAX_STRUCTURED_OUTPUT_RETRIES=5`. The CLI
+checks each `StructuredOutput` call against the schema and wants a turn of its own to retry a
+mismatch; at one turn about a third of real structured calls ended on `error_max_turns` with no
+answer. Such a call has no caller tool a second turn could run. So `max_turns` takes two values, and
+both it and the environment are part of the key: a structured call with no tools never shares a
+session with any other kind.
 
 ## Session key
 
 A session is reusable for any call whose **launch-time** options match:
 
 - a digest of the credential (the token never appears in a key or a path);
-- the stable system prompt;
 - `tools` (built-ins), `disallowed_tools`, `permission_mode`, `max_budget_usd`,
-  `fallback_model`, and any caller-set `cwd`.
+  `fallback_model`, and any caller-set `cwd`;
+- `max_turns` and `env`, which differ for a structured call with no tools (above);
+- every other launch-time field of the options, so nothing a caller sets can share a CLI
+  launched without it.
 
-Not in the key, because they are applied per checkout: `model` (`set_model`) and the bound
-tool server (`mcp_set_servers`). Tool auto-approval is granted server-wide at launch
+Not in the key, because they are applied per checkout: `model` (`set_model`), the bound
+tool server (`mcp_set_servers`), and a text system prompt (an agent switch). A CLI launches with
+no system prompt and every prompt its key has seen defined as an agent named from the prompt's
+digest; a call whose prompt a CLI lacks takes an idle CLI that has it, or starts one that defines
+it and every earlier prompt (at most 32 per key, least recently used dropped), and at a cap an idle
+CLI that lacks it makes room. `per_key` now defaults to the whole cap, since one key holds every
+prompt. Measured on seven stage prompts, three stages at once, four sessions: 28 CLI starts and 24
+evictions in 28 calls with the prompt in the key; 7 starts and 3 evictions with the switch, every
+stage answering from its own prompt. Tool auto-approval is granted server-wide at launch
 (`mcp__langchain-tools`), so a swapped-in tool set needs no relaunch.
 
 A call carrying `resume` / `continue_conversation` wants the CLI's own stored session, which
@@ -85,14 +112,26 @@ A CLI launched with no configuration of its own reads the host's. Measured:
 `claude_cli_isolation(token)` supplies an empty `CLAUDE_CONFIG_DIR` per credential, an empty
 `cwd`, `ENABLE_CLAUDEAI_MCP_SERVERS=false`, `--strict-mcp-config` and
 `--no-session-persistence` (without which the CLI writes a transcript of every exchange to
-disk). `/clear` re-fires SessionStart hooks, which is one more reason a pooled session must be
-isolated.
+disk).
 
 ## Lifecycle
 
 - **Checkout** is exclusive. A call is complete only when its `ResultMessage` has been read.
-- **Return:** `/clear` (a local CLI command — no model round trip, not billed), then back to the
-  idle set. A clear that fails or times out disposes the session instead.
+- **Return:** the tool server is released, and the conversation is rewound to the call's first
+  message: the call's messages go out through `LentClient`, which gives each a uuid, and the
+  `rewind_conversation` control request cuts the conversation at that uuid. Then back to the idle
+  set. The CLI grants a rewind to the FIRST message only while its server-side flag
+  `tengu_rewind_first_message` is on (measured on: 2026-09-27, bundled CLI 2.1.207, subscription
+  credential, isolated configuration); otherwise it answers `rewound: false`, "no preceding
+  assistant". A refused, failed or timed-out rewind stops the session and starts a **spare** --
+  a fresh CLI with the same launch options, started in the background and parked idle, one per key
+  -- so the next call does not pay the start.
+- **Never `/clear`.** It empties the conversation but leaves itself in it: a
+  `<local-command-caveat>`, `<command-name>/clear</command-name>` and an empty
+  `<local-command-stdout>`, which the next caller's model read as the person's latest input and
+  answered (found live in 0.56.0; the reused session quoted those lines back on 10 calls of 10).
+  Nothing else resets a live CLI without a visible turn: a new input `session_id` keeps the
+  conversation (measured), and `end_session` ends the process.
 - **Dispose, never re-pool,** on any error, timeout or cancellation mid-call: an abandoned
   stream is the one way a later borrower could read an earlier caller's answer.
 - **Exhaustion:** past the per-key or process-wide cap, a call waits briefly for a session,

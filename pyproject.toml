@@ -161,6 +161,10 @@ dev-dependencies = [
 "3tears-scrape" = "PT0S"
 "3tears-search" = "PT0S"
 "3tears-tool-schema" = "PT0S"
+# A fixed date, not a span: it admits langchain-openrouter 0.2.9 (published 2026-09-22T04:15Z),
+# the first release that surfaces OpenRouter's served `provider` in response_metadata, and admits
+# nothing newer. It stops mattering on its own once the 14-day window passes that date.
+"langchain-openrouter" = "2026-09-22T05:00:00Z"
 
 [tool.ruff]
 line-length = 120

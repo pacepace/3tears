@@ -1,19 +1,45 @@
-"""Reuse Claude Code CLI subprocesses instead of starting one per model call.
+"""Start Claude Code CLI subprocesses ahead of the calls that need them.
 
 A Claude subscription credential (``sk-ant-oat…``) has no HTTP API: it is spent by driving the
 bundled Claude Code CLI, and ``langchain-claude-code`` starts a fresh subprocess for every call.
 Measured on a production deployment: ~2.4 s to start and ~2.7 s per call, against ~600 ms for the
-same model over HTTP. This module keeps CLIs alive, hands each out to one caller at a time, and
-clears it between callers. Design, with the evidence for every protocol claim:
-``docs/claude-cli-session-pool-design.md``.
+same model over HTTP. This module starts CLIs before they are needed and hands each to exactly one
+call. Design, with the evidence for every protocol claim: ``docs/claude-cli-session-pool-design.md``.
 
-What can change on a live CLI and what cannot decides the shape:
+**A CLI is reset between calls by rewinding its conversation, never with ``/clear``.** The pool
+used to clear a CLI with its local ``/clear`` and hand it to the next caller. ``/clear`` empties the
+conversation but leaves the command itself in it -- a ``<local-command-caveat>``,
+``<command-name>/clear</command-name>`` and an empty ``<local-command-stdout>`` -- and the next
+caller's model reads that as the latest thing the person did (found live, 0.56.0: replies that
+began "This is a local slash command (/clear)" and answered it, and "Nothing." for a message with
+work in it; a reused session quoted those lines back on 10 calls of 10).
 
-- the **system prompt** is a launch flag and never changes, so it is part of the key;
+Now each call's message is sent with a uuid of the pool's own (:class:`LentClient`), and on return
+the CLI's ``rewind_conversation`` control request cuts the conversation at that message, so the
+next call starts on an empty one and nothing of the reset is in it. The CLI grants a rewind to the
+FIRST message only when its server-side flag ``tengu_rewind_first_message`` is on; when it refuses
+("no preceding assistant"), or the rewind fails any other way, the CLI is stopped instead and a
+fresh one -- a *spare* -- is started in the background for the next call with the same launch
+options. Nothing else resets a live CLI without a visible turn: a new input ``session_id`` keeps the
+conversation, and ``end_session`` ends the process.
+
+What can change on a live CLI and what cannot decides the key:
+
+- the **system prompt** is NOT part of the key. A launch flag prompt never changes, so a CLI
+  launches with none, and every system prompt its key has seen is defined on it as a named agent
+  (:func:`agent_name`); a checkout switches to the call's prompt with the ``apply_flag_settings``
+  control request (``{"agent": name}``, or ``null`` for a call with no prompt). Measured live
+  (bundled CLI 2.1.207): the request the model gets under a switched agent carries exactly the
+  system blocks and messages a CLI launched with that prompt sends; a switched agent holds across
+  the rewind reset; and agents are fixed at launch -- defining one later is accepted, and
+  switching to it answers 'Agent "..." not found'. So a CLI serves the prompts its key had seen
+  when it started, and a call with a new prompt starts a CLI that defines it and every earlier one;
+  a key holds at most :data:`_MAX_AGENTS_PER_KEY` prompts, the least recently used dropped first;
+- the **JSON schema** is part of the key: it is the ``--json-schema`` launch flag, and setting it
+  through ``apply_flag_settings`` was accepted and changed nothing (measured);
 - the **model** changes per call with ``set_model``;
 - the **bound tools** (an in-process MCP server) change per call with the CLI's
-  ``mcp_set_servers`` control request -- ``reconnect_mcp_server`` refuses SDK servers;
-- the **conversation** is dropped with the CLI's local ``/clear``, which is not billed.
+  ``mcp_set_servers`` control request -- ``reconnect_mcp_server`` refuses SDK servers.
 
 Four things keep CLIs from piling up, because each of the others misses a case:
 
@@ -22,7 +48,7 @@ Four things keep CLIs from piling up, because each of the others misses a case:
 - the host closes the pool on a clean stop (:func:`close_claude_cli_pool`);
 - a startup sweep kills CLIs a crashed previous process left behind
   (:func:`sweep_orphaned_claude_clis`), which is the shutdown a crash skips;
-- an idle TTL and hard caps bound the live count while the process runs.
+- an idle TTL and hard caps bound the live count while the process runs -- spares included.
 
 The pool is per process. A host running N worker processes has a ceiling of N times its cap. It
 serves one event loop at a time: the loop that first checks a session out of it, for as long as
@@ -39,6 +65,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import copy
 import contextvars
 import dataclasses
 import hashlib
@@ -54,10 +81,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from uuid_utils import uuid7
+
 from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
     "POOL_MARKER_ENV",
+    "LentClient",
+    "agent_name",
     "TOOL_SERVER_NAME",
     "ClaudeCliPool",
     "PooledCliSession",
@@ -71,6 +102,7 @@ __all__ = [
     "bind_tool_server_to_context",
     "launch_key",
     "poolable",
+    "repeats_on_every_call",
     "sweep_orphaned_claude_clis",
 ]
 
@@ -90,7 +122,7 @@ _PROC = Path("/proc")
 
 
 class ClaudeCliSessionError(RuntimeError):
-    """A pooled CLI session failed to start, prepare, or clear."""
+    """A pooled CLI session failed to start or prepare."""
 
 
 class ClaudeCliPoolExhausted(RuntimeError):
@@ -392,8 +424,46 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
 # The launch key
 # ---------------------------------------------------------------------------
 
-#: Options applied per checkout rather than at launch, so they are not part of the key.
-_PER_CHECKOUT_FIELDS = frozenset({"model", "mcp_servers"})
+#: Options applied per checkout rather than at launch, so they are not part of the key. A string
+#: system prompt is one too: it is switched per checkout as a named agent (see the module docstring),
+#: and ``agents`` is how the pool defines those prompts on a CLI.
+_PER_CHECKOUT_FIELDS = frozenset({"model", "mcp_servers", "agents"})
+
+#: The most system prompts a key defines as agents on the CLIs it starts. A caller's stable prompt
+#: is meant to be stable; this bounds a caller whose "stable" part is not.
+_MAX_AGENTS_PER_KEY = 32
+
+#: What a pooled system prompt's agent is described as. The CLI requires a description; nothing
+#: the model reads carries it while its built-in tools are off.
+_AGENT_DESCRIPTION = "a system prompt the Claude CLI pool switches to per call"
+
+
+def agent_name(system_prompt: str) -> str:
+    """The name a system prompt is defined under as an agent on a pooled CLI.
+
+    :param system_prompt: the prompt
+    :ptype system_prompt: str
+    :return: a name derived from the prompt alone, so one prompt has one name on every CLI
+    :rtype: str
+    """
+    return "prompt-" + hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()[:24]
+
+
+def _switched_prompt(options: Any) -> tuple[bool, str | None]:
+    """Whether the options' system prompt can be switched per checkout, and the prompt.
+
+    A string prompt, or none, is switched as an agent. Any other shape -- a preset that appends to
+    Claude Code's own prompt, a prompt file -- stays a launch flag and part of the key.
+
+    :param options: the call's launch options
+    :ptype options: Any
+    :return: ``(switchable, prompt)``, the prompt ``None`` when the call has none
+    :rtype: tuple[bool, str | None]
+    """
+    prompt = getattr(options, "system_prompt", None)
+    switchable = prompt is None or isinstance(prompt, str)
+    return switchable, (prompt or None) if switchable else None
+
 
 #: Options carrying Python callables. A callable has no stable identity to key on and closes over
 #: one caller's state -- the same hazard as a tool server -- so a call that sets any of them is not
@@ -428,18 +498,25 @@ def _option_fields(options: Any) -> list[str]:
         names = [f.name for f in dataclasses.fields(options)]
     else:
         names = [n for n in vars(options) if not n.startswith("_")]
-    return sorted(n for n in names if n not in _PER_CHECKOUT_FIELDS)
+    per_checkout = _PER_CHECKOUT_FIELDS | ({"system_prompt"} if _switched_prompt(options)[0] else set())
+    return sorted(n for n in names if n not in per_checkout)
+
+
+#: Options the pool itself sets on every CLI it starts. A caller's own value would be replaced at
+#: launch -- ``agents`` holds the pool's system prompts (see the module docstring) -- and is left out
+#: of the key, so a call that sets one is not pooled; it runs on a CLI of its own, as asked.
+_POOL_OWNED_FIELDS = frozenset({"agents"})
 
 
 def poolable(options: Any) -> bool:
-    """Whether a call with these options may run on a shared, reused CLI.
+    """Whether a call with these options may run on a pooled CLI, one started before the call.
 
     :param options: the call's launch options
     :ptype options: Any
-    :return: ``False`` when a callable option or a resumed session is set
+    :return: ``False`` when a callable option, a resumed session or an option the pool owns is set
     :rtype: bool
     """
-    for name in _CALLABLE_FIELDS | _RESUME_FIELDS:
+    for name in _CALLABLE_FIELDS | _RESUME_FIELDS | _POOL_OWNED_FIELDS:
         if getattr(options, name, None):
             return False
     return True
@@ -524,27 +601,6 @@ def launch_key(options: Any, token: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _advertises_clear(server_info: dict[str, Any] | None) -> bool:
-    """Whether the connected CLI advertises the local ``clear`` command.
-
-    A CLI that does not advertise it gets single-use sessions instead: slower, never leaky.
-
-    :param server_info: the initialize handshake result
-    :ptype server_info: dict[str, Any] | None
-    :return: whether ``clear`` is available
-    :rtype: bool
-    """
-    commands = (server_info or {}).get("commands")
-    if not isinstance(commands, list) or not commands:
-        return False
-    for command in commands:
-        if isinstance(command, str) and command.lstrip("/") == "clear":
-            return True
-        if isinstance(command, dict) and str(command.get("name", "")).lstrip("/") == "clear":
-            return True
-    return False
-
-
 def _sdk_process_pid(client: Any) -> Any:
     """the CLI subprocess's pid as the SDK holds it, or ``None`` when its internals have moved.
 
@@ -600,9 +656,9 @@ class _ContextBoundServer:
     """An in-process MCP server whose tool calls run in one borrower's context.
 
     The SDK runs a tool call in a task spawned from its message-reader task, and that task was
-    created when the CLI connected -- inside whichever caller STARTED the session. On a reused
-    session every later borrower's tool calls therefore ran with the first borrower's context
-    variables: an ``interrupt()`` was captured into the first caller's list and the graph never
+    created when the CLI connected -- in whatever context STARTED the session. A pooled session is
+    started before its borrower's call (a spare, in a context of its own), and when sessions were
+    reused every later borrower's tool calls ran with the first borrower's context variables: an ``interrupt()`` was captured into the first caller's list and the graph never
     paused, tool-status events went to the first caller's callbacks, and the tool saw the first
     caller's runnable config. Found by review and reproduced.
 
@@ -645,17 +701,115 @@ def bind_tool_server_to_context(server: Any, context: contextvars.Context | None
     return _ContextBoundServer(server, context)
 
 
+def repeats_on_every_call(exc: BaseException) -> bool:
+    """Whether a failed control request would fail the same way on every call, on every CLI.
+
+    Only two failures qualify, and only they count toward turning pooling off: a REFUSAL, which
+    the SDK raises as a bare ``Exception`` carrying the CLI's error text, and a moved SDK surface
+    (an ``AttributeError``, ``TypeError`` or ``KeyError`` from a private attribute that is gone).
+    The SDK raises its timeout as a bare ``Exception`` too, told apart only by ``__cause__`` being
+    a ``TimeoutError``; a slow answer on a busy host says nothing about the next call, so it does
+    not count. Nor does a transport failure (the SDK's own error types, an ``OSError``): the CLI
+    that died is stopped and a spare started, and pooling stays on.
+
+    :param exc: what the control request raised
+    :ptype exc: BaseException
+    :return: ``True`` for a refusal or a moved SDK surface, ``False`` for anything transient
+    :rtype: bool
+    """
+    if isinstance(exc, (AttributeError, TypeError, KeyError)):
+        return True
+    return type(exc) is Exception and not isinstance(exc.__cause__, TimeoutError)
+
+
+class LentClient:
+    """A pooled CLI's client as one call sees it: every message the call sends carries a known uuid.
+
+    The pool rewinds the conversation to the call's first message when the call returns, and the
+    CLI finds that message by the uuid it was sent with. A string prompt is sent as the SDK sends
+    it, as one user message, with a uuid of the pool's own. Everything else is the client's.
+
+    :param client: the connected ``ClaudeSDKClient``
+    :ptype client: Any
+    """
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        #: The uuid the call's first message was sent with; ``None`` until the call sends one.
+        self.first_message_uuid: str | None = None
+
+    async def query(self, prompt: Any, session_id: str = "default") -> None:
+        """Send the call's message, recording the uuid of the first one sent.
+
+        :param prompt: a string, or the SDK's stream of message dicts
+        :ptype prompt: Any
+        :param session_id: the SDK's session identifier for the message
+        :ptype session_id: str
+        """
+        messages = (
+            [{"type": "user", "message": {"role": "user", "content": prompt}}] if isinstance(prompt, str) else None
+        )
+
+        async def tagged() -> AsyncIterator[dict[str, Any]]:
+            source: Any = messages if messages is not None else prompt
+            if isinstance(source, list):
+                for message in source:
+                    yield self._tag(message)
+            else:
+                async for message in source:
+                    yield self._tag(message)
+
+        await self.client.query(tagged(), session_id=session_id)
+
+    def _tag(self, message: dict[str, Any]) -> dict[str, Any]:
+        """``message`` with the fields the SDK adds, and a uuid when it has none.
+
+        :param message: one message dict
+        :ptype message: dict[str, Any]
+        :return: the message as sent
+        :rtype: dict[str, Any]
+        """
+        sent = {"parent_tool_use_id": None, **message}
+        if sent.get("type") == "user":
+            sent.setdefault("uuid", str(uuid7()))
+            if self.first_message_uuid is None:
+                self.first_message_uuid = str(sent["uuid"])
+        return sent
+
+    def receive_response(self) -> AsyncIterator[Any]:
+        """The client's messages up to and including the call's ``ResultMessage``.
+
+        :return: the messages
+        :rtype: AsyncIterator[Any]
+        """
+        messages: AsyncIterator[Any] = self.client.receive_response()
+        return messages
+
+    def __getattr__(self, name: str) -> Any:
+        """Anything else is the client's own.
+
+        :param name: the attribute
+        :ptype name: str
+        :return: the client's attribute
+        :rtype: Any
+        """
+        return getattr(self.client, name)
+
+
 class PooledCliSession:
     """One live CLI subprocess, lent to exactly one caller at a time."""
 
-    def __init__(self, client: Any, *, key: str, pid: int | None, marker: str, reusable: bool) -> None:
+    def __init__(self, client: Any, *, key: str, pid: int | None, marker: str) -> None:
         self.client = client
         self.key = key
         self.pid = pid
         self.marker = marker
-        self.reusable = reusable
         self.closed = False
         self._model: str | None = None
+        #: The agents -- system prompts, by :func:`agent_name` -- this CLI was launched with.
+        self.agents: frozenset[str] = frozenset()
+        #: The agent the CLI is switched to; ``None`` is the launch prompt, which is empty.
+        self.agent: str | None = None
         #: The CLI's start time, so disposal never signals a recycled pid that is not this CLI.
         self.start_ticks = _process_start_ticks(pid) if pid is not None else None
 
@@ -675,10 +829,15 @@ class PooledCliSession:
 
         marker = _marker()
         options.env = {**(options.env or {}), POOL_MARKER_ENV: marker}
+        prompts: dict[str, str] = dict(getattr(options, "agents", None) or {})
+        if prompts:
+            options.agents = {
+                name: sdk.AgentDefinition(description=_AGENT_DESCRIPTION, prompt=prompt)
+                for name, prompt in prompts.items()
+            }
         client = sdk.ClaudeSDKClient(options=options)
         try:
             await client.connect()
-            server_info = await client.get_server_info()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any start failure (including an SDK whose surface moved) must become "no pooled session", so the call falls back to its own CLI instead of failing the turn
             # NOSILENT: best-effort cleanup of a CLI that never came up; the start failure itself is
             # raised immediately below as ClaudeCliSessionError and logged by the caller.
@@ -693,17 +852,20 @@ class PooledCliSession:
             with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
                 await asyncio.shield(asyncio.wait_for(client.disconnect(), timeout=5.0))
             raise
-        reusable = _advertises_clear(server_info)
-        if not reusable:
-            _logger.warning("The Claude CLI does not advertise the clear command; its sessions will be single-use")
-        session = cls(client, key=key, pid=_discover_pid(client, marker), marker=marker, reusable=reusable)
+        session = cls(client, key=key, pid=_discover_pid(client, marker), marker=marker)
         session._model = getattr(options, "model", None)
+        session.agents = frozenset(prompts)
         return session
 
     async def prepare(
-        self, *, model: str | None, tool_server: Any | None, call_context: contextvars.Context | None = None
+        self,
+        *,
+        model: str | None,
+        tool_server: Any | None,
+        call_context: contextvars.Context | None = None,
+        agent: str | None = None,
     ) -> None:
-        """Point this session at the caller's model and the caller's tools.
+        """Point this session at the caller's system prompt, model and tools.
 
         The tool server is replaced on EVERY checkout, never reused: its handlers close over the
         caller's own tool objects, which belong to that caller's conversation. A stale server
@@ -715,10 +877,27 @@ class PooledCliSession:
         :ptype tool_server: Any | None
         :param call_context: the borrower's context, which every tool call on this checkout runs in
         :ptype call_context: contextvars.Context | None
-        :raises ClaudeCliSessionError: when either change is refused
+        :param agent: the agent holding the call's system prompt, ``None`` for a call with none
+        :ptype agent: str | None
+        :raises ClaudeCliSessionError: when any change is refused
         """
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
+        if agent is not None and agent not in self.agents:
+            raise ClaudeCliSessionError(f"this Claude CLI was launched without the agent {agent!r}")
+        if agent != self.agent:
+            try:
+                await self.client._query._send_control_request(  # noqa: SLF001 -- the SDK exposes no agent switch
+                    {"subtype": "apply_flag_settings", "settings": {"agent": agent}}, timeout=30.0
+                )
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- the SDK raises bare Exception for a refused control request; a CLI that cannot switch cannot serve any prompt the pool keys it for
+                error = ClaudeCliSessionError(f"the Claude CLI could not switch agent: {exc}")
+                #: The switch is what lets one CLI serve every prompt of a key. A CLI that REFUSES
+                #: it refuses it for every call, so a refusal counts toward turning pooling off; a
+                #: timeout or a transport failure only stops this session.
+                error.structural = repeats_on_every_call(exc)  # type: ignore[attr-defined]
+                raise error from exc
+            self.agent = agent
         try:
             if model and model != self._model:
                 await self.client.set_model(model)
@@ -745,9 +924,6 @@ class PooledCliSession:
     async def release_tools(self, *, timeout: float) -> None:
         """Drop the last borrower's tool server, so an idle session holds none of its objects.
 
-        Bounded by the same short leash as ``/clear``: it runs after a call has already finished,
-        so a hung CLI must cost that caller seconds, not the control request's default 30.
-
         :param timeout: seconds before the release is abandoned
         :ptype timeout: float
         :raises ClaudeCliSessionError: when the CLI refuses or times out; the pool disposes the session
@@ -755,35 +931,43 @@ class PooledCliSession:
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         try:
-            query = self.client._query  # noqa: SLF001
+            query = self.client._query  # noqa: SLF001 -- the SDK exposes no public server swap
             query.sdk_mcp_servers.pop(TOOL_SERVER_NAME, None)
             await query._send_control_request({"subtype": "mcp_set_servers", "servers": {}}, timeout=timeout)  # noqa: SLF001
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the session cannot be trusted idle; the pool disposes it
             raise ClaudeCliSessionError(f"could not release the Claude CLI's tools: {exc}") from exc
 
-    async def clear(self, *, timeout: float) -> None:
-        """Drop the session's conversation with the CLI's local ``/clear``.
+    async def rewind(self, first_message_uuid: str, *, timeout: float) -> None:
+        """Cut the conversation at the call's first message, leaving it empty and leaving no trace.
 
-        :param timeout: seconds before the clear is abandoned
+        :param first_message_uuid: the uuid the call's first message was sent with
+        :ptype first_message_uuid: str
+        :param timeout: seconds before the rewind is abandoned
         :ptype timeout: float
-        :raises ClaudeCliSessionError: when the clear fails; the pool disposes the session
+        :raises ClaudeCliSessionError: when the CLI refuses the rewind or fails to answer; the pool
+            stops the session rather than hand on a conversation it could not empty
         """
-        import claude_agent_sdk as sdk  # noqa: PLC0415
-
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
-        if not self.reusable:
-            raise ClaudeCliSessionError("this CLI cannot clear its context")
         try:
-            async with asyncio.timeout(timeout):
-                await self.client.query("/clear")
-                async for message in self.client.receive_response():
-                    if isinstance(message, sdk.ResultMessage):
-                        break
-        except TimeoutError as exc:
-            raise ClaudeCliSessionError(f"the Claude CLI did not clear within {timeout}s") from exc
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the SDK surfaces a CLI that died mid-clear as a bare Exception from receive_messages; every failure must dispose the session, never leak its slot
-            raise ClaudeCliSessionError(f"the Claude CLI failed to clear: {exc}") from exc
+            query = self.client._query  # noqa: SLF001 -- the SDK exposes no rewind of the conversation
+            answer = await query._send_control_request(  # noqa: SLF001
+                {"subtype": "rewind_conversation", "target_message_uuid": first_message_uuid}, timeout=timeout
+            )
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the conversation may not be empty; the pool stops the session
+            error = ClaudeCliSessionError(f"the Claude CLI failed to rewind: {exc}")
+            #: A refused request counts toward turning pooling off; a timeout or a transport
+            #: failure stops this session and starts a spare, and pooling stays on.
+            error.structural = repeats_on_every_call(exc)  # type: ignore[attr-defined]
+            raise error from exc
+        if not isinstance(answer, dict) or answer.get("rewound") is not True:
+            reason = answer.get("error") if isinstance(answer, dict) else answer
+            error = ClaudeCliSessionError(f"the Claude CLI refused to rewind: {reason}")
+            #: A refusal ("no preceding assistant" while the CLI's first-message rewind flag is off)
+            #: or an answer of another shape repeats on every call. Each costs a CLI start, so it
+            #: counts toward turning pooling off, as a moved SDK surface does.
+            error.structural = True  # type: ignore[attr-defined]
+            raise error
 
     async def dispose(self, *, grace_seconds: float) -> None:
         """Disconnect, then make sure the process and its children are gone. Idempotent.
@@ -875,26 +1059,34 @@ _STRUCTURAL_FAILURE_LIMIT = 3
 
 
 class ClaudeCliPool:
-    """Bounded pools of reusable Claude CLI sessions, one pool per launch key."""
+    """Bounded pools of started Claude CLI sessions, one pool per launch key; each serves one call.
+
+    ``per_key`` defaults to ``max_sessions``, the whole cap, whatever the host sets that to. A key once held one system prompt, so two sessions per
+    key still let different stages run side by side; now one key holds every prompt of a credential
+    and its options (see the module docstring), and two would cap an application at two pooled
+    calls at once -- measured: a stage group of three ran one on a CLI of its own.
+    """
 
     def __init__(
         self,
         *,
         max_sessions: int = 8,
-        per_key: int = 2,
+        per_key: int | None = None,
         idle_ttl_seconds: float = 300.0,
         checkout_timeout_seconds: float = 2.0,
-        clear_timeout_seconds: float = 5.0,
+        reset_timeout_seconds: float = 5.0,
         kill_grace_seconds: float = 2.0,
         session_factory: Callable[..., Awaitable[PooledCliSession]] | None = None,
     ) -> None:
+        if per_key is None:
+            per_key = max_sessions
         if max_sessions < 1 or per_key < 1:
             raise ValueError("max_sessions and per_key must both be at least 1")
         self._max_sessions = max_sessions
         self._per_key = per_key
         self._idle_ttl = idle_ttl_seconds
         self._checkout_timeout = checkout_timeout_seconds
-        self._clear_timeout = clear_timeout_seconds
+        self._reset_timeout = reset_timeout_seconds
         self._kill_grace = kill_grace_seconds
         self._condition = asyncio.Condition()
         self._idle: dict[str, deque[_Idle]] = {}
@@ -903,6 +1095,13 @@ class ClaudeCliPool:
         self._total = 0
         self._closing = False
         self._reaper: asyncio.Task[None] | None = None
+        #: Spares being started in the background (:meth:`_start_spare`), so a close can stop them.
+        self._spares: set[asyncio.Task[None]] = set()
+        #: Every system prompt each key has seen, by agent name, least recently used first. A CLI
+        #: starts with all of them defined as agents (see the module docstring). A key's entry lives
+        #: only while the key holds a CLI: it is dropped with the key's last one, so the table is
+        #: bounded by the live CLIs, not by every credential and schema the process has seen.
+        self._prompts: dict[str, dict[str, str]] = {}
         #: How a session is started. Injected by tests; a real host never passes it.
         self._start = session_factory or PooledCliSession.start
         self._structural_failures = 0
@@ -957,10 +1156,12 @@ class ClaudeCliPool:
         """Borrow a connected CLI client for one call.
 
         The caller drives ``client.query`` and reads ``client.receive_response()`` to its
-        ``ResultMessage``. A call that leaves normally is cleared and re-pooled; one that leaves by
-        any exception -- a failure, a timeout, a cancellation, a consumer that stopped reading --
-        disposes of the session, because an abandoned stream is the one way a later caller could
-        read an earlier caller's answer.
+        ``ResultMessage``. A call that leaves normally has its conversation rewound to empty and
+        its session re-pooled; when the rewind is refused the session is stopped and a spare started
+        in its place (see the module docstring). One that leaves by any exception -- a failure, a
+        timeout, a cancellation, a consumer that stopped reading -- is stopped with no spare,
+        because an abandoned stream is the one way a later caller could read an earlier caller's
+        answer, and a CLI that keeps failing must not be restarted in a loop.
 
         :param options: the launch options for a session this call could use
         :ptype options: Any
@@ -970,7 +1171,7 @@ class ClaudeCliPool:
         :ptype tool_server: Any | None
         :param call_context: the borrower's context; its tool calls run in a copy of it
         :ptype call_context: contextvars.Context | None
-        :return: the connected ``ClaudeSDKClient``
+        :return: the connected client, as a :class:`LentClient`
         :rtype: AsyncIterator[Any]
         :raises ClaudeCliPoolExhausted: when no session frees up in time, or when the caller runs
             on an open event loop other than the one this pool serves
@@ -979,28 +1180,42 @@ class ClaudeCliPool:
         if self._broken:
             raise ClaudeCliPoolExhausted("pooling is off: the Claude Agent SDK's surface failed repeatedly")
         if not poolable(options):
-            raise ClaudeCliPoolExhausted("this call carries callables or a resumed session and cannot share a CLI")
+            raise ClaudeCliPoolExhausted(
+                "this call carries callables, a resumed session or its own agents and cannot share a CLI"
+            )
         stranded = self._claim_loop()
         if stranded:
             # Shielded: a call cancelled here must not leave the closed loop's CLIs running with
             # nothing left that tracks them.
             await asyncio.shield(self._abandon(stranded))
         key = launch_key(options, token)
-        session = await self._acquire(key, options)
+        agent = self._learn_prompt(key, options)
+        try:
+            session = await self._acquire(key, options, agent)
+        except BaseException:
+            # The call runs on a CLI of its own. A key that holds no CLI keeps no prompts: the next
+            # call to it learns its own before it acquires.
+            await asyncio.shield(self._forget_prompts_if_unheld(key))
+            raise
+        lent = LentClient(session.client)
         clean = False
         try:
             try:
                 await session.prepare(
-                    model=getattr(options, "model", None), tool_server=tool_server, call_context=call_context
+                    model=getattr(options, "model", None),
+                    tool_server=tool_server,
+                    call_context=call_context,
+                    agent=agent,
                 )
             except ClaudeCliSessionError as exc:
-                self._note_prepare_failure(exc)
+                self._note_structural_failure(exc)
                 raise
-            self._structural_failures = 0
-            yield session.client
+            yield lent
             clean = True
         finally:
-            await asyncio.shield(self._return(key, session, clean=clean))
+            await asyncio.shield(
+                self._return(key, session, clean=clean, options=options, first_message_uuid=lent.first_message_uuid)
+            )
 
     def _claim_loop(self) -> list[PooledCliSession]:
         """Serve the running loop if it is this pool's, claiming it when no open loop holds the pool.
@@ -1084,6 +1299,10 @@ class ClaudeCliPool:
         self._total = 0
         self._condition = asyncio.Condition()
         self._reaper = None
+        self._prompts.clear()
+        # A spare's task lived on the closed loop and ran no further than the loop did; its CLI,
+        # if it got that far, is registered in ``_all`` and stopped with the rest.
+        self._spares = set()
         if took_over:
             _logger.info(
                 "The event loop the Claude CLI pool served has closed; the pool now serves the next caller's loop",
@@ -1129,14 +1348,17 @@ class ClaudeCliPool:
             self._stopping.discard(session)
         return stopped
 
-    def _note_prepare_failure(self, exc: ClaudeCliSessionError) -> None:
-        """Count failures of the SDK surface itself, and stop pooling when they repeat.
+    def _note_structural_failure(self, exc: ClaudeCliSessionError) -> None:
+        """Count failures of the SDK or CLI surface the pool relies on, and stop pooling when they repeat.
 
-        A private attribute or control request that moved in an SDK release fails every prepare.
-        Without this every call would start a pooled CLI, fail, dispose it and then start a one-off
-        CLI -- twice the start cost, logged only as a fallback.
+        A private attribute or control request that moved in an SDK release fails every prepare; a
+        CLI that refuses the agent switch or the rewind reset refuses it on every call. Without
+        this every call would start a pooled CLI, fail, dispose it and start another -- twice the
+        start cost, and logged only per call. The count runs until a call is prepared, served and
+        reset without one; three in a row turn pooling off, logged once, and every call then runs
+        on a CLI of its own.
 
-        :param exc: the prepare failure
+        :param exc: the prepare or reset failure
         :ptype exc: ClaudeCliSessionError
         """
         if not getattr(exc, "structural", False):
@@ -1145,7 +1367,7 @@ class ClaudeCliPool:
         if self._structural_failures >= _STRUCTURAL_FAILURE_LIMIT and not self._broken:
             self._broken = True
             _logger.warning(
-                "The Claude CLI pool turned itself off: the Claude Agent SDK surface it relies on is not there",
+                "The Claude CLI pool turned itself off: the Claude Agent SDK or CLI surface it relies on is not there",
                 extra={"extra_data": {"failures": self._structural_failures, "error": str(exc)}},
             )
 
@@ -1182,8 +1404,15 @@ class ClaudeCliPool:
             self._all.clear()
             self._idle.clear()
             self._live.clear()
+            self._prompts.clear()
             self._total = 0
             self._condition.notify_all()
+        spares = list(self._spares)
+        for spare in spares:
+            spare.cancel()
+        # NOSILENT: each spare was cancelled one line above; a spare that had already failed logged
+        # its own failure. Neither is this close's to raise.
+        await asyncio.gather(*spares, return_exceptions=True)
         if self._reaper is not None:
             self._reaper.cancel()
             # NOSILENT: we cancelled the reaper ourselves one line above; its CancelledError is the
@@ -1199,13 +1428,15 @@ class ClaudeCliPool:
         if sessions:
             _logger.info("Closed the Claude CLI pool", extra={"extra_data": {"disposed": len(sessions)}})
 
-    async def _acquire(self, key: str, options: Any) -> PooledCliSession:
-        """Take an idle session, or start one, or report exhaustion.
+    async def _acquire(self, key: str, options: Any, agent: str | None) -> PooledCliSession:
+        """Take an idle session that defines the call's agent, or start one, or report exhaustion.
 
         :param key: the launch key
         :ptype key: str
         :param options: launch options for a session that has to start
         :ptype options: Any
+        :param agent: the agent holding the call's system prompt, ``None`` for a call with none
+        :ptype agent: str | None
         :return: a session owned exclusively by this caller
         :rtype: PooledCliSession
         :raises ClaudeCliPoolExhausted: when the pool is closed or every slot stays busy
@@ -1217,16 +1448,20 @@ class ClaudeCliPool:
             while True:
                 if self._closing:
                     raise ClaudeCliPoolExhausted("the Claude CLI pool is shutting down")
-                waiting = self._idle.get(key)
-                while waiting:
-                    candidate = waiting.pop().session
-                    if not candidate.closed:
-                        return candidate
+                taken = self._take_idle(key, agent)
+                if taken is not None:
+                    return taken
                 if self._total < self._max_sessions and self._live.get(key, 0) < self._per_key:
                     self._live[key] = self._live.get(key, 0) + 1
                     self._total += 1
                     break
                 victim = self._longest_idle_elsewhere(key) if self._live.get(key, 0) < self._per_key else None
+                if victim is None:
+                    # No slot is free, and an idle session of this key that lacks the call's agent is
+                    # capacity this call cannot use: it makes room, as another key's idle session
+                    # would. Found measuring: at the process cap, sessions started before a new
+                    # prompt appeared sat idle while every call with it ran on a CLI of its own.
+                    victim = self._idle_without(key, agent)
                 if victim is not None:
                     # Found live: four distinct launch keys each left one IDLE session holding a
                     # slot, and the fifth key's call ran on a CLI of its own "because every session
@@ -1264,8 +1499,10 @@ class ClaudeCliPool:
         # reserved. A ``finally`` releases it, not an ``except``: a turn cancelled while its CLI
         # starts reaches no ``except`` clause, and a slot lost here is lost for the process's life.
         started = False
+        launch = self._launch_options(key, options)
+        self._hold_prompts(key, launch)
         try:
-            session = await self._start(options, key=key)
+            session = await self._start(launch, key=key)
             started = True
         finally:
             if not started:
@@ -1302,6 +1539,101 @@ class ClaudeCliPool:
         async with self._condition:
             self._all.add(session)
 
+    def _learn_prompt(self, key: str, options: Any) -> str | None:
+        """Record the call's system prompt under its key; the agent that holds it.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: the call's launch options
+        :ptype options: Any
+        :return: the prompt's agent name, ``None`` when the call has no switched prompt
+        :rtype: str | None
+        """
+        switchable, prompt = _switched_prompt(options)
+        if not switchable or prompt is None:
+            return None
+        name = agent_name(prompt)
+        known = self._prompts.setdefault(key, {})
+        known.pop(name, None)
+        known[name] = prompt
+        while len(known) > _MAX_AGENTS_PER_KEY:
+            known.pop(next(iter(known)))
+        return name
+
+    def _launch_options(self, key: str, options: Any) -> Any:
+        """The options a CLI for ``key`` starts with: no system prompt, every known prompt an agent.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: the call's launch options
+        :ptype options: Any
+        :return: a new options object; the call's own is not mutated
+        :rtype: Any
+        """
+        switchable, prompt = _switched_prompt(options)
+        if not switchable:
+            return options
+        agents = dict(self._prompts.get(key, {}))
+        if prompt is not None:
+            # The call's own prompt, always: its key's table may have been dropped with the key's
+            # last CLI -- an eviction to make room for this very call does that.
+            agents.setdefault(agent_name(prompt), prompt)
+        return dataclasses.replace(options, system_prompt=None, agents=agents)
+
+    def _hold_prompts(self, key: str, options: Any) -> None:
+        """Keep, under ``key``, every prompt a CLI starting for it defines.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: the CLI's launch options (:meth:`_launch_options`)
+        :ptype options: Any
+        """
+        known = self._prompts.setdefault(key, {})
+        for name, prompt in (getattr(options, "agents", None) or {}).items():
+            known.setdefault(name, prompt)
+
+    def _take_idle(self, key: str, agent: str | None) -> PooledCliSession | None:
+        """Take the most recently idle session of ``key`` that defines ``agent``. Call under the lock.
+
+        :param key: the launch key
+        :ptype key: str
+        :param agent: the agent the call needs, ``None`` for none
+        :ptype agent: str | None
+        :return: the session, or ``None`` when no idle one can serve the call
+        :rtype: PooledCliSession | None
+        """
+        waiting = self._idle.get(key)
+        if not waiting:
+            return None
+        for index in range(len(waiting) - 1, -1, -1):
+            candidate = waiting[index].session
+            if candidate.closed:
+                del waiting[index]
+                continue
+            if agent is None or agent in candidate.agents:
+                del waiting[index]
+                return candidate
+        return None
+
+    def _idle_without(self, key: str, agent: str | None) -> tuple[str, PooledCliSession] | None:
+        """Take the longest-idle session of ``key`` out of the idle set, one that lacks ``agent``.
+
+        :param key: the launch key
+        :ptype key: str
+        :param agent: the agent the call needs
+        :ptype agent: str | None
+        :return: ``(key, the session)``, or ``None`` when there is none
+        :rtype: tuple[str, PooledCliSession] | None
+        """
+        waiting = self._idle.get(key)
+        if agent is None or not waiting:
+            return None
+        for index, idle in enumerate(waiting):
+            if agent not in idle.session.agents:
+                del waiting[index]
+                return key, idle.session
+        return None
+
     def _longest_idle_elsewhere(self, key: str) -> tuple[str, PooledCliSession] | None:
         """Take the longest-idle session under any OTHER key out of the idle set. Call under the lock.
 
@@ -1320,8 +1652,10 @@ class ClaudeCliPool:
             return None
         return oldest[1], self._idle[oldest[1]].popleft().session
 
-    async def _return(self, key: str, session: PooledCliSession, *, clean: bool) -> None:
-        """Clear and re-pool a session, or dispose of it.
+    async def _return(
+        self, key: str, session: PooledCliSession, *, clean: bool, options: Any, first_message_uuid: str | None
+    ) -> None:
+        """Rewind and re-pool a session, or stop it and start a spare in its place.
 
         :param key: the launch key
         :ptype key: str
@@ -1329,25 +1663,105 @@ class ClaudeCliPool:
         :ptype session: PooledCliSession
         :param clean: whether the call finished without any exception
         :ptype clean: bool
+        :param options: the launch options the session started with, for a spare
+        :ptype options: Any
+        :param first_message_uuid: the uuid of the call's first message, ``None`` when it sent none
+        :ptype first_message_uuid: str | None
         """
-        keep = clean and session.reusable and not session.closed and not self._closing
+        keep = clean and not session.closed and not self._closing
         if keep:
             try:
-                await session.release_tools(timeout=self._clear_timeout)
-                await session.clear(timeout=self._clear_timeout)
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever a returning session raises, it must be disposed and its slot freed, and a call that already succeeded must not fail here
+                await session.release_tools(timeout=self._reset_timeout)
+                if first_message_uuid is not None:
+                    await session.rewind(first_message_uuid, timeout=self._reset_timeout)
+                self._structural_failures = 0
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever a returning session raises, it is stopped and its slot freed, and a call that already succeeded must not fail here
                 _logger.warning(
-                    "A pooled Claude CLI would not clear its context; disposing of it",
+                    "A pooled Claude CLI could not be reset; stopping it and starting a spare",
                     extra={"extra_data": {"key": key[:12], "error": str(exc)}},
                 )
                 keep = False
+                if isinstance(exc, ClaudeCliSessionError):
+                    self._note_structural_failure(exc)
         if keep:
             async with self._condition:
                 if not self._closing:
                     self._idle.setdefault(key, deque()).append(_Idle(session, time.monotonic()))
                     self._condition.notify()
                     return
+        # The spare's launch options are taken before the dispose: a key's last CLI takes the key's
+        # learned prompts with it (see :meth:`_forget`), and the spare must define them all.
+        spare_options = self._launch_options(key, copy.copy(options))
         await self._dispose(key, session)
+        if clean and not self._closing and not self._broken:
+            self._start_spare(key, spare_options)
+
+    def _start_spare(self, key: str, options: Any) -> None:
+        """Start a spare CLI for ``key`` in the background.
+
+        Spawned in a FRESH context, like the reaper: the call that finished is not the spare's, and
+        its request id would otherwise ride on every line the spare logs.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: the spare's own launch options (:meth:`_launch_options`, on a copy)
+        :ptype options: Any
+        """
+        task = asyncio.create_task(self._spare(key, options), context=contextvars.Context())
+        self._spares.add(task)
+        task.add_done_callback(self._spares.discard)
+
+    async def _spare(self, key: str, options: Any) -> None:
+        """Start one spare and put it in the idle set, when the caps have room and none is waiting.
+
+        One spare per key is enough to take the next call off the start; more would hold slots other
+        keys may need. A spare that cannot start is logged and dropped -- the next call starts its
+        own CLI as it would have anyway. A close while it starts disposes of it.
+
+        :param key: the launch key
+        :ptype key: str
+        :param options: launch options for the spare
+        :ptype options: Any
+        """
+        async with self._condition:
+            if (
+                self._closing
+                or self._idle.get(key)
+                or self._total >= self._max_sessions
+                or self._live.get(key, 0) >= self._per_key
+            ):
+                return
+            self._live[key] = self._live.get(key, 0) + 1
+            self._total += 1
+            # The key holds a CLI again, so it keeps the prompts that CLI defines.
+            self._hold_prompts(key, options)
+        session: PooledCliSession | None = None
+        try:
+            session = await self._start(options, key=key)
+        except ClaudeCliSessionError as exc:
+            _logger.warning(
+                "Could not start a spare Claude CLI; the next call starts its own",
+                extra={"extra_data": {"key": key[:12], "error": str(exc)}},
+            )
+        finally:
+            if session is None:
+                await asyncio.shield(self._forget(key))
+        if session is None:
+            return
+        async with self._condition:
+            parked = not self._closing
+            self._all.add(session)
+            if parked:
+                self._idle.setdefault(key, deque()).append(_Idle(session, time.monotonic()))
+                self._condition.notify()
+        if not parked:
+            await self._dispose(key, session)
+            return
+        self._ensure_reaper()
+        _logger.info(
+            "Started a spare Claude CLI",
+            extra={"extra_data": {"key": key[:12], "pid": session.pid, "live": self._total, "cap": self._max_sessions}},
+        )
 
     async def _forget(self, key: str, session: PooledCliSession | None = None) -> None:
         """Release a slot and wake anyone waiting for one.
@@ -1367,7 +1781,19 @@ class ClaudeCliPool:
             if self._live.get(key) == 0:
                 self._live.pop(key, None)
                 self._idle.pop(key, None)
+                # The key's last CLI is gone, and with it every agent the table was kept for.
+                self._prompts.pop(key, None)
             self._condition.notify()
+
+    async def _forget_prompts_if_unheld(self, key: str) -> None:
+        """Drop the prompts learned for ``key`` when no CLI of it is live.
+
+        :param key: the launch key
+        :ptype key: str
+        """
+        async with self._condition:
+            if not self._live.get(key):
+                self._prompts.pop(key, None)
 
     async def _dispose(self, key: str, session: PooledCliSession) -> None:
         """Stop one session and release its slot once the process is actually gone.

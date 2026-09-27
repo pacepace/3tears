@@ -615,7 +615,7 @@ class RegistrationHandler:
           refused -- a failed signature is never downgraded to an unsigned one. With no token the
           manifest is UNSIGNED: agents built on an older SDK register this way, and in this
           release they keep their own agent-scoped copies (see
-          :func:`~threetears.registry.ownership.admit_copy`), warned once per pod id, and 0.56.0
+          :func:`~threetears.registry.ownership.admit_copy`), warned once per pod id, and 0.57.0
           refuses them -- ``test_unsigned_agent_concession_expires.py`` fails until it does. A pod id
           that has ever registered verified is refused unsigned, so the concession cannot be used
           to rewrite a signed agent's copy;
@@ -735,7 +735,7 @@ class RegistrationHandler:
                 log.warning(
                     "agent in-process server registered unsigned; its copies are admitted for its own agent "
                     "only. an agent SDK that signs its registration with the agent's own identity removes "
-                    "this line; 0.56.0 refuses unsigned registrations",
+                    "this line; 0.57.0 refuses unsigned registrations",
                     extra={"extra_data": {"pod_id": pod_id}},
                 )
             result = _Publisher(standing=unverified, self_identity=agent_identity, name=pod_id)

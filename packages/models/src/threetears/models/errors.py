@@ -45,14 +45,31 @@ class ModelProviderError(RuntimeError):
     :ptype reason: str | None
     :param status: HTTP status of the provider's failing API call, when known
     :ptype status: int | None
+    :param rejected_output: for a call asked for a structured answer, the last answer the
+        provider rejected against the schema, exactly as the model gave it
+    :ptype rejected_output: dict[str, Any] | None
+    :param rejection: why the provider rejected ``rejected_output``, in its own words
+    :ptype rejection: str | None
     """
 
-    def __init__(self, detail: str, *, provider: str, reason: str | None = None, status: int | None = None) -> None:
+    def __init__(
+        self,
+        detail: str,
+        *,
+        provider: str,
+        reason: str | None = None,
+        status: int | None = None,
+        rejected_output: dict[str, Any] | None = None,
+        rejection: str | None = None,
+    ) -> None:
         self.detail = detail
         self.provider = provider
         self.reason = reason
         self.status = status
-        super().__init__(f"{provider} call failed ({reason or status or 'error'}): {detail}")
+        self.rejected_output = rejected_output
+        self.rejection = rejection
+        said = f"{detail} (last rejected answer: {rejection})" if rejection else detail
+        super().__init__(f"{provider} call failed ({reason or status or 'error'}): {said}")
 
 
 class ModelRateLimitError(ModelProviderError):
@@ -71,6 +88,11 @@ class ModelRateLimitError(ModelProviderError):
     :ptype status: int | None
     :param resets: when the limit resets, in the provider's words, when it said
     :ptype resets: str | None
+    :param rejected_output: the last structured answer the provider rejected, as for
+        :class:`ModelProviderError`
+    :ptype rejected_output: dict[str, Any] | None
+    :param rejection: why the provider rejected ``rejected_output``, in its own words
+    :ptype rejection: str | None
     """
 
     def __init__(
@@ -81,9 +103,18 @@ class ModelRateLimitError(ModelProviderError):
         reason: str | None = None,
         status: int | None = None,
         resets: str | None = None,
+        rejected_output: dict[str, Any] | None = None,
+        rejection: str | None = None,
     ) -> None:
         self.resets = resets
-        super().__init__(detail, provider=provider, reason=reason, status=status)
+        super().__init__(
+            detail,
+            provider=provider,
+            reason=reason,
+            status=status,
+            rejected_output=rejected_output,
+            rejection=rejection,
+        )
 
 
 #: The packages a model call's own errors come from.

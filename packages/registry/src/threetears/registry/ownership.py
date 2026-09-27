@@ -180,9 +180,10 @@ def admit_copy(
     1. a name that composes no node is :attr:`RefusalCode.INVALID_TOOL_NAME`, in every mode;
     2. open mode (``standing.enforced`` false) admits everything else;
     3. an unverified publisher may not serve everyone (:attr:`RefusalCode.UNVERIFIED_PUBLISHER`).
-       **Release 0.55.0 still admits an unverified publisher's AGENT-SCOPED copy**, because agents
-       built on an older SDK register unsigned and refusing them outright would strip every
-       not-yet-rebuilt agent of its in-process tools mid-deploy. Refusing those too is dropping
+       **The 0.55 and 0.56 releases still admit an unverified publisher's AGENT-SCOPED copy**,
+       because agents built on an older SDK register unsigned and refusing them outright would strip
+       every not-yet-rebuilt agent of its in-process tools mid-deploy; 0.57.0 refuses them
+       (``test_unsigned_agent_concession_expires.py`` enforces it). Refusing those too is dropping
        ``and audience is CopyAudience.EVERYONE`` from that one condition;
     4. a name under a provider node needs that node's owner (:attr:`RefusalCode.OWNED_ELSEWHERE`),
        whatever the audience -- an agent owns no provider node, so its own copy of a name inside
