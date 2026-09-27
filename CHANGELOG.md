@@ -1078,6 +1078,23 @@ read `.name` off every entry, and a pydantic model class has none, so every such
   function through unchanged. Its name is a Python identifier and never holds a dot. A dotted
   tool beside it is still translated.
 
+### The factory's usage tracker and circuit breaker survive `bind_tools`
+
+`create_chat_model` attached its tracker and breaker with `with_config(callbacks=...)`, which
+returns a `RunnableBinding`. `bind_tools` and `with_structured_output` are the chat model's own
+methods, reached through the binding's attribute proxy, and what they return is built from the
+bare model, so the callbacks were left behind. Every tool-bound or structured call -- every call
+an agent makes -- went unmetered, and the breaker never saw one fail. metallm confirmed it with a
+probe.
+
+- **Fixed:** `create_chat_model` returns a `RunnableBinding` subclass whose proxied methods
+  return a runnable bound again with the same callbacks and arguments. `bind_tools(...)`,
+  `with_structured_output(...)`, a `.bind(...)` after either, and `attach_callbacks(...)` then
+  `bind_tools(...)` all run the tracker and the breaker. The returned object is still a
+  `RunnableBinding` with the callbacks in `config["callbacks"]`.
+- **Changed:** a consumer that re-attached the factory's callbacks after `bind_tools` to work
+  around this now runs them twice. Nothing in 3tears, metallm or the aibots repos does.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,

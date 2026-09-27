@@ -17,8 +17,10 @@ pass an explicit ``provider`` kwarg (or to register capabilities first).
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any, cast
 
+from langchain_core.runnables import Runnable, RunnableBinding
 from threetears.observe import get_logger
 
 from threetears.models.capabilities import ModelCapabilities, get_capabilities
@@ -45,6 +47,47 @@ logger = get_logger(__name__)
 # fast-fail the others, and a process with one key sees one breaker per
 # provider exactly as before.
 _DEFAULT_BREAKER_REGISTRY = CircuitBreakerRegistry()
+
+
+class _CallbacksKeptBinding(RunnableBinding[Any, Any]):
+    """The model with the factory's callbacks bound, kept through every re-binding a caller does.
+
+    A plain ``RunnableBinding`` reaches the chat model's own methods -- ``bind_tools``,
+    ``with_structured_output`` -- through an attribute proxy, and what they return is built from
+    the bare model: the binding's callbacks were left behind. Every tool-bound or structured call
+    then ran with no usage tracker and no circuit breaker, which is every call an agent makes.
+
+    Here a proxied method that returns a runnable returns it bound again, with this binding's
+    config and arguments, so the callbacks run however the model is re-bound. The binding's own
+    ``bind``, ``with_config``, ``with_retry`` and ``with_types`` already keep them, and return this
+    class.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        """the bound model's attribute; a method returning a runnable returns it re-bound.
+
+        :param name: the attribute
+        :ptype name: str
+        :return: the attribute, wrapped when it is callable
+        :rtype: Any
+        """
+        attr = super().__getattr__(name)
+        if not callable(attr):
+            return attr
+
+        @functools.wraps(attr)
+        def kept(*args: Any, **kwargs: Any) -> Any:
+            result = attr(*args, **kwargs)
+            if isinstance(result, Runnable):
+                result = type(self)(
+                    bound=result,
+                    kwargs=self.kwargs,
+                    config=self.config,
+                    config_factories=self.config_factories,
+                )
+            return result
+
+        return kept
 
 
 def _resolve_provider(
@@ -155,8 +198,9 @@ def create_chat_model(
 
     resolves the provider name from the capabilities registry (or the
     explicit ``provider`` kwarg), invokes the appropriate provider factory
-    function, and attaches the usage tracker + circuit breaker callbacks
-    via ``with_config(callbacks=[...])``.
+    function, and binds the usage tracker + circuit breaker callbacks to it in
+    a ``RunnableBinding`` that keeps them through ``bind_tools``,
+    ``with_structured_output`` and every other re-binding a caller does.
 
     :param model_id: model identifier
     :ptype model_id: str
@@ -213,13 +257,13 @@ def create_chat_model(
         extra_callbacks=extra_callbacks,
     )
 
-    # `with_config` returns a RunnableBinding wrapping the model, not the model itself, so
-    # the concrete chat-model type is erased even though every chat-model method callers
-    # use (`with_structured_output`, `invoke`, `ainvoke`, `bind_tools`) is proxied straight
-    # through. Widening this function's return type to `Runnable` instead would be the
-    # wrong trade: `with_structured_output` is not on `Runnable`, so it would break every
-    # caller in the workspace to describe an object that does in fact have it.
-    configured = cast("BaseChatModel", model.with_config(callbacks=callbacks))
+    # The binding wraps the model, not the model itself, so the concrete chat-model type is
+    # erased even though every chat-model method callers use (`with_structured_output`,
+    # `invoke`, `ainvoke`, `bind_tools`) is proxied straight through. Widening this function's
+    # return type to `Runnable` instead would be the wrong trade: `with_structured_output` is
+    # not on `Runnable`, so it would break every caller in the workspace to describe an object
+    # that does in fact have it.
+    configured = cast("BaseChatModel", _CallbacksKeptBinding(bound=model, config={"callbacks": callbacks}))
     return configured
 
 
