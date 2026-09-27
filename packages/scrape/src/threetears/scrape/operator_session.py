@@ -11,16 +11,13 @@ So a pod claims a session before it acts as that session's owner, and stops acti
 the claim goes. :func:`claim_session` is that claim.
 
 **Why this reaches for KVLease and not nats_distributed_lock.** The lock looks like the closer
-fit -- it is one context manager, it owns its own heartbeat, and its docstring pairs it with
-:func:`threetears.nats.serve_owner`, which is the other half of this surface. It is still the
-wrong primitive here, for one specific reason: its heartbeat is an unconditional
-``bucket.put``. If a holder stalls long enough for its entry to expire and another pod wins the
-key, the first pod's next heartbeat overwrites the winner's entry and neither one ever learns.
-Two holders, no error, and for a display that is exactly the divergence being prevented.
-:meth:`LeaseHandle.refresh` is a compare-and-swap against the recorded holder and raises
-:class:`LeaseLost` instead, which is the property this module is built on. What KVLease does not
-carry is the renewal loop, and that loop is short precisely because its entire job is to react
-to the exception the lock cannot raise.
+fit -- it is one context manager, it owns its own heartbeat, it renews by compare-and-swap, and
+it reports a lost hold through :class:`~threetears.nats.LockHold`. The one property that still
+rules it out is its fixed maximum hold: past it the lock stops renewing so a wedged body cannot
+starve a fleet, and an operator session has no such ceiling -- a long solve would lose its
+display mid-session. :meth:`LeaseHandle.refresh` is a compare-and-swap against the recorded
+holder and raises :class:`LeaseLost`, and this module's short renewal loop turns that into the
+loss it reports.
 
 **A claim can be lost without anything failing.** Losing it is not an error condition to
 retry -- it means another pod is now the owner, and continuing to serve is the fault. The claim
