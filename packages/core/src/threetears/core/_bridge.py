@@ -19,6 +19,8 @@ import asyncio
 import threading
 from typing import Any, Coroutine, TypeVar
 
+from threetears.core.config import DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS
+
 __all__ = [
     "T",
     "drain",
@@ -32,10 +34,6 @@ T = TypeVar("T")
 _lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
-
-#: how long a first caller waits for the new background loop to be running before it
-#: reports the loop as failed to start. a healthy start takes milliseconds.
-_LOOP_START_TIMEOUT_SECONDS = 30.0
 
 # strong references to tasks scheduled on a caller's running loop via
 # ``create_task``. asyncio keeps only a weak reference to such tasks, so an
@@ -74,8 +72,10 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
         _thread.start()
         # bounded, so a loop that never starts is an error naming itself rather than a caller
         # hung here forever holding the lock every later caller waits on
-        if not running.wait(timeout=_LOOP_START_TIMEOUT_SECONDS):
-            raise RuntimeError(f"the threetears async bridge loop did not start within {_LOOP_START_TIMEOUT_SECONDS}s")
+        if not running.wait(timeout=DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS):
+            raise RuntimeError(
+                f"the threetears async bridge loop did not start within {DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS}s"
+            )
         _loop = loop
         return _loop
 
