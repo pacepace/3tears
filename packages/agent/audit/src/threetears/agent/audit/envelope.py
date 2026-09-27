@@ -17,8 +17,9 @@ durable push consumer on ``{namespace}.audit.>`` -- manual ack AFTER the
 L3 write, bounded redelivery, dead-letter -- and persists to
 ``platform_audit.audit_events``. delivery is at-least-once: a consumer
 restart replays un-acked envelopes, and the persistence path is
-idempotent (see ``id`` / ``correlation_id`` below) so a replay collapses
-to a single row.
+idempotent on the envelope ``id`` alone (see ``id`` below) so a replay
+collapses to a single row. ``correlation_id`` is not part of that: it
+ties a request's events together, and many events share one.
 
 anti-drift guarantees:
 
@@ -139,12 +140,13 @@ class AuditEvent(BaseModel):
         path; explicit emissions pass ``success`` by convention unless
         they know otherwise
     :ptype outcome: str
-    :param correlation_id: request / tool-call correlation UUID; used
-        with ``event_type`` as the SECONDARY idempotency key (the partial
-        unique index ``idx_audit_events_correlation_event`` on
-        ``(correlation_id, event_type)``) so that the SAME logical event
-        re-emitted under a DIFFERENT envelope ``id`` still collapses to a
-        single row under JetStream at-least-once redelivery
+    :param correlation_id: the request (or turn) this event belongs to; it
+        ties that request's events together, so an audit trail can be traced
+        by it. it is NOT an idempotency key: every event of a request carries
+        the same one, and many share an ``event_type`` too -- every
+        ``tool.call`` in a turn, one ``rbac.assignment.delete`` per
+        assignment -- and each is its own record. idempotency is the envelope
+        ``id`` alone, which a redelivery repeats
     :ptype correlation_id: UUID
     :param conversation_id: conversation UUID when the event was
         emitted on behalf of a user-facing conversation (agent-tools

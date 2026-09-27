@@ -3476,10 +3476,10 @@ class ToolServer:
         if context is not None and context.correlation_id is not None:
             correlation_id = context.correlation_id
         else:
-            # malformed request / no-context dispatch: mint a fresh
-            # correlation id so the ``(correlation_id, event_type)``
-            # unique index still distinguishes concurrent baseline
-            # rows for otherwise-identical tool names.
+            # malformed request / no-context dispatch: there is no
+            # request to tie this event to, so it gets a correlation id
+            # of its own (the column is NOT NULL). the row's identity is
+            # its envelope id either way.
             correlation_id = uuid7()
         event = AuditEvent(
             id=uuid7(),

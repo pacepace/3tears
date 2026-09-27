@@ -716,7 +716,8 @@ class TableSchema:
         from asyncpg naturally (journal / append-only tables).
         ``"ignore"`` emits ``ON CONFLICT (pk) DO NOTHING``; duplicate
         primary keys are silently dropped (dedup-on-redelivery tables
-        like ``audit_events`` keyed on ``(correlation_id, event_type)``)
+        like ``audit_events``, where a redelivered envelope repeats its
+        ``id``)
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
         which leaves every existing schema's emitted SQL untouched.

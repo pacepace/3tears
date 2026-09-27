@@ -1095,6 +1095,15 @@ probe.
 - **Changed:** a consumer that re-attached the factory's callbacks after `bind_tools` to work
   around this now runs them twice. Nothing in 3tears, metallm or the aibots repos does.
 
+### `AuditEvent.correlation_id` is documented as what it is
+
+The docstring called `(correlation_id, event_type)` the audit table's secondary idempotency key.
+The hub has dropped that unique index: it discarded distinct events that share the pair, such as
+every `tool.call` after the first in a turn. An audit event's idempotency is its envelope `id`
+alone, which a redelivery repeats. `correlation_id` ties a request's events together. The
+envelope, `publish_audit`, `ToolServer`'s baseline emission, `SchemaBackedCollection`'s
+`on_conflict` note and two READMEs now say so. No code changed.
+
 ## v0.54.0 -- 2026-09-26
 
 Minor: `threetears.models` gains `ModelCallTimeout` and `is_provider_error`,
