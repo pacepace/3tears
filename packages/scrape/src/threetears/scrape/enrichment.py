@@ -10,6 +10,11 @@ consumer that trusts ``structured_fields`` is trusting something a candidate
 strategy structurally validated, while anything read out of
 ``enrichment_notes`` is unvalidated model commentary and has to be treated
 as such.
+
+A pass whose every attempt fails is recorded as failed, with its reason, in
+``ScrapeExtraction.enrichment_status`` / ``enrichment_failure``, and never as
+``{}``: ``{}`` means the model answered and had nothing to add, and a reader
+must never have to infer which of the two it is looking at.
 """
 
 from __future__ import annotations
@@ -22,9 +27,9 @@ from threetears.models import LlmPurpose
 from threetears.observe import get_logger
 
 from .collections import ScrapeExtraction, ScrapeExtractionCollection
-from .llm_retry import bounded_retry_structured_call
+from .llm_retry import StructuredCallExhaustedError, bounded_retry_structured_call_or_raise
 
-__all__ = ["DEFAULT_ENRICHMENT_MODEL_ID", "enrich_extraction", "run_enrichment"]
+__all__ = ["DEFAULT_ENRICHMENT_MODEL_ID", "EnrichmentFailedError", "enrich_extraction", "run_enrichment"]
 
 log = get_logger(__name__)
 
@@ -35,6 +40,35 @@ _ENRICHMENT_TIMEOUT_SECONDS = 30
 _ENRICHMENT_ATTEMPTS = 6
 _ENRICHMENT_BACKOFF_SECONDS = 2.0
 _MAX_HTML_CHARS_IN_PROMPT = 12000
+
+
+class EnrichmentFailedError(RuntimeError):
+    """Every attempt of the enrichment pass failed.
+
+    Raised by :func:`run_enrichment`. :func:`enrich_extraction` catches it and stores
+    the row as ``enrichment_status="failed"`` with :attr:`reason` as its
+    ``enrichment_failure``. The last attempt's own exception is chained as
+    ``__cause__``.
+
+    :param reason: the last attempt's exception as ``"<ExceptionType>: <message>"``
+    :ptype reason: str
+    :param attempts: how many attempts were made, every one of which failed
+    :ptype attempts: int
+    """
+
+    def __init__(self, reason: str, *, attempts: int) -> None:
+        """Record why the pass failed and after how many attempts.
+
+        :param reason: the last attempt's exception as ``"<ExceptionType>: <message>"``
+        :ptype reason: str
+        :param attempts: how many attempts were made, every one of which failed
+        :ptype attempts: int
+        :return: nothing
+        :rtype: None
+        """
+        self.reason = reason
+        self.attempts = attempts
+        super().__init__(f"scrape enrichment failed after {attempts} attempts: {reason}")
 
 
 class _EnrichmentResult(BaseModel):
@@ -74,10 +108,10 @@ async def run_enrichment(
 ) -> dict[str, str]:
     """Run the secondary enrichment LLM pass and return free-form notes.
 
-    Same bounded-retry shape as ``extraction.generate_candidates`` /
-    ``eval_loop``'s judge call: never raises, returns an empty dict only
-    after every attempt fails (an honest "nothing to add" degrade, not a
-    crash).
+    Same bounded retry as ``extraction.generate_candidates`` / ``eval_loop``'s judge
+    call, but exhaustion raises rather than degrading: an empty dict is only ever the
+    model's own answer that there is nothing to add. The failure is logged once, here,
+    with its cause. ``asyncio.CancelledError`` is not a failure and propagates untouched.
 
     :param html: the rendered page's full HTML
     :ptype html: str
@@ -92,24 +126,35 @@ async def run_enrichment(
     :ptype attempts: int
     :param backoff_seconds: base backoff between retries (multiplied by attempt number)
     :ptype backoff_seconds: float
-    :return: free-form key -> note pairs; empty on total failure or genuinely nothing to add
+    :return: free-form key -> note pairs; empty only when the model had nothing to add
     :rtype: dict[str, str]
+    :raises EnrichmentFailedError: if every attempt failed
     """
     prompt = _build_enrichment_prompt(html, structured_fields)
-    result = await bounded_retry_structured_call(
-        prompt,
-        _EnrichmentResult,
-        model_id=model_id,
-        api_key=api_key,
-        purpose=LlmPurpose.SUMMARIZATION,
-        temperature=0.3,
-        timeout=_ENRICHMENT_TIMEOUT_SECONDS,
-        attempts=attempts,
-        backoff_seconds=backoff_seconds,
-        log_label="scrape enrichment",
-        degraded_to="no notes",
-    )
-    return {} if result is None else result.notes
+    try:
+        result = await bounded_retry_structured_call_or_raise(
+            prompt,
+            _EnrichmentResult,
+            model_id=model_id,
+            api_key=api_key,
+            purpose=LlmPurpose.SUMMARIZATION,
+            temperature=0.3,
+            timeout=_ENRICHMENT_TIMEOUT_SECONDS,
+            attempts=attempts,
+            backoff_seconds=backoff_seconds,
+            log_label="scrape enrichment",
+        )
+    except StructuredCallExhaustedError as exc:
+        cause = exc.last_error
+        reason = f"{type(cause).__name__}: {cause}"
+        log.error(
+            "scrape enrichment failed after %d attempts: %s",
+            exc.attempts,
+            reason,
+            extra={"extra_data": {"model_id": model_id}},
+        )
+        raise EnrichmentFailedError(reason, attempts=exc.attempts) from cause
+    return result.notes
 
 
 async def enrich_extraction(
@@ -120,11 +165,23 @@ async def enrich_extraction(
     model_id: str = DEFAULT_ENRICHMENT_MODEL_ID,
     api_key: str,
 ) -> ScrapeExtraction:
-    """Run the enrichment pass over *html* and persist the result onto *extraction*'s row.
+    """Run the enrichment pass over *html* and persist its outcome onto *extraction*'s row.
 
-    Only ``enrichment_notes`` changes -- ``structured_fields`` (and every
+    Only the three enrichment fields change -- ``structured_fields`` (and every
     other field) is carried through unmodified, so the eval loop's already-
     validated data is never touched by this second, separate LLM pass.
+
+    The row records what happened, so no reader has to infer it:
+
+    * the model answered -- ``enrichment_status="enriched"``, its notes (``{}`` when it
+      had nothing to add), no ``enrichment_failure``;
+    * every attempt failed -- ``enrichment_status="failed"``, ``enrichment_notes=None``,
+      and the reason in ``enrichment_failure``. Not raised: the stored row is the
+      result, and the failure was already logged once by :func:`run_enrichment`.
+
+    The row describes the latest run. Passing a ``"failed"`` row back in is how it is
+    retried; passing an ``"enriched"`` one back in replaces its notes, including with a
+    failure if that run fails. ``asyncio.CancelledError`` propagates and persists nothing.
 
     :param extraction: the already-persisted row to enrich
     :ptype extraction: ScrapeExtraction
@@ -139,9 +196,17 @@ async def enrich_extraction(
     :return: the updated, re-persisted row
     :rtype: ScrapeExtraction
     """
-    notes = await run_enrichment(html, extraction.structured_fields, model_id=model_id, api_key=api_key)
     row = extraction.to_dict()
-    row["enrichment_notes"] = notes
+    try:
+        notes = await run_enrichment(html, extraction.structured_fields, model_id=model_id, api_key=api_key)
+    except EnrichmentFailedError as exc:
+        row["enrichment_notes"] = None
+        row["enrichment_status"] = "failed"
+        row["enrichment_failure"] = exc.reason
+    else:
+        row["enrichment_notes"] = notes
+        row["enrichment_status"] = "enriched"
+        row["enrichment_failure"] = None
     updated = extraction_collection.create(row)
     await extraction_collection.save_entity(updated)
     return updated

@@ -47,7 +47,9 @@ from .driver import NavStep
 from .extraction import FieldSchema
 
 __all__ = [
+    "ENRICHMENT_STATUSES",
     "VALIDATION_STATUSES",
+    "EnrichmentStatus",
     "ScrapeExtraction",
     "ScrapeExtractionCollection",
     "ScrapeRecipe",
@@ -435,6 +437,25 @@ ValidationStatus = Literal["validated", "needs_review", "failed", "blocked"]
 #: restated, so a new status cannot be added without this following it.
 VALIDATION_STATUSES: frozenset[str] = frozenset(get_args(ValidationStatus))
 
+#: The outcome of the enrichment pass, as stored on :attr:`ScrapeExtraction.enrichment_status`.
+#:
+#: ``"enriched"`` -- the model answered. :attr:`ScrapeExtraction.enrichment_notes` holds its
+#: notes, and ``{}`` there means it genuinely had nothing to add.
+#: ``"failed"`` -- every attempt failed. :attr:`ScrapeExtraction.enrichment_notes` is ``None``
+#: and :attr:`ScrapeExtraction.enrichment_failure` says why. The row is eligible for another
+#: :func:`~threetears.scrape.enrichment.enrich_extraction` run.
+#:
+#: A stored ``NULL`` (read as ``None``) means the pass never ran on this row. That is a third
+#: state, not a value of this Literal, for the same reason ``enrichment_notes`` is ``None``
+#: rather than ``{}`` then: nothing ran, so there is no outcome to name.
+#:
+#: Exists because the pass used to store ``{}`` for a total failure, which a reader could not
+#: tell apart from "the model had nothing to add". The data now says which one happened.
+EnrichmentStatus = Literal["enriched", "failed"]
+
+#: Every value :data:`EnrichmentStatus` permits, derived from the Literal rather than restated.
+ENRICHMENT_STATUSES: frozenset[str] = frozenset(get_args(EnrichmentStatus))
+
 
 class ScrapeExtraction(BaseEntity):
     """One row per fetch -- the actual output.
@@ -472,6 +493,8 @@ class ScrapeExtraction(BaseEntity):
         normalized.setdefault("extraction_recipe_id", None)
         normalized.setdefault("field_confidences", None)
         normalized.setdefault("enrichment_notes", None)
+        normalized.setdefault("enrichment_status", None)
+        normalized.setdefault("enrichment_failure", None)
         normalized.setdefault("validation_status", "needs_review")
         super().__init__(normalized, is_new=is_new, collection=collection)
 
@@ -524,8 +547,49 @@ class ScrapeExtraction(BaseEntity):
 
     @property
     def enrichment_notes(self) -> dict[str, Any] | None:
-        """The secondary LLM pass's free-form findings; ``None`` when enrichment never ran."""
+        """The secondary LLM pass's free-form findings, meaningful only beside :attr:`enrichment_status`.
+
+        ``None`` when the pass never ran or when it failed; read :attr:`enrichment_status`
+        to know which. ``{}`` only ever means the pass ran and the model had nothing to add:
+        a failed pass is never stored as ``{}``.
+
+        :return: the notes, or ``None`` when there are none to read
+        :rtype: dict[str, Any] | None
+        """
         result: dict[str, Any] | None = _decode_json_field(self._get_raw("enrichment_notes"), None)
+        return result
+
+    @property
+    def enrichment_status(self) -> EnrichmentStatus | None:
+        """One of :data:`EnrichmentStatus`, or ``None`` when the pass never ran on this row.
+
+        ``"failed"`` rows are the ones to retry: pass them to
+        :func:`~threetears.scrape.enrichment.enrich_extraction` again.
+
+        :return: the stored outcome of the enrichment pass
+        :rtype: EnrichmentStatus | None
+        :raises ValueError: if the stored value is not one :data:`EnrichmentStatus` permits --
+            an unknown outcome is refused rather than read as either known one
+        """
+        raw = self._get_raw("enrichment_status")
+        if raw is not None and raw not in ENRICHMENT_STATUSES:
+            raise ValueError(
+                f"scrape_extractions row {self.id}: enrichment_status {raw!r} is not one of "
+                f"{sorted(ENRICHMENT_STATUSES)}"
+            )
+        return cast("EnrichmentStatus | None", raw)
+
+    @property
+    def enrichment_failure(self) -> str | None:
+        """Why the enrichment pass failed; set only when :attr:`enrichment_status` is ``"failed"``.
+
+        The last attempt's exception as ``"<ExceptionType>: <message>"``, or, on a row the
+        v013 migration translated, the sentence saying the outcome was not recorded.
+
+        :return: the failure reason, or ``None`` when the pass did not fail
+        :rtype: str | None
+        """
+        result: str | None = self._get_raw("enrichment_failure")
         return result
 
     @property

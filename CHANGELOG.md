@@ -52,6 +52,11 @@ its `fallback` parameter is gone. `threetears.agent.tools` gains `DocumentParseE
 `parse_document` raises it instead of returning `[Parsing failed: ...]` or `[Unsupported document
 type: ...]` as the document's text -- read "A failed summary raises instead of answering with a
 sentence" before upgrading a caller of either.
+`threetears.scrape` records a failed enrichment pass as failed: `enrich_extraction` stores
+`enrichment_status="failed"` and the reason in `enrichment_failure` instead of `enrichment_notes = {}`,
+`run_enrichment` raises `EnrichmentFailedError` instead of returning `{}`, and scrape migration v013
+adds the two columns and translates existing rows -- read "A failed enrichment is stored as failed,
+not as empty notes" before upgrading a caller or a reader of `enrichment_notes`.
 Fixed: no name, key or id is cut from the head of a uuid7 any more, so two agents created
 together for one customer both get memory and conversation namespaces -- read "Two agents
 created in the same minute no longer share a namespace name"; existing rows need nothing.
@@ -1316,6 +1321,60 @@ The same shape in `parse_document`, fixed with it:
   was a successful one whose document said it had failed. The scrape `DocumentDriver` raises
   `DocumentDriverError("parse_failed")` chained to it, as before, but no longer string-matches the
   text, so a real document whose text starts with `[Parsing failed:` is no longer refused.
+
+### A failed enrichment is stored as failed, not as empty notes
+
+`enrich_extraction` stored `enrichment_notes = {}` on a `scrape_extractions` row when every
+attempt of the enrichment pass failed -- the same value it stored when the model answered and had
+nothing to add. A reader could not tell a provider outage from a page with nothing noteworthy, and
+nothing could find the rows that needed another run. The same shape as the summary and document
+parse fixes above: the data now carries the fact that it failed.
+
+- **New (minor):** `ScrapeExtraction.enrichment_status` -- `"enriched"`, `"failed"`, or `None` when
+  the pass never ran on the row (`EnrichmentStatus`, `ENRICHMENT_STATUSES`) -- and
+  `ScrapeExtraction.enrichment_failure`, the reason when it failed. A stored status outside the
+  vocabulary raises `ValueError` on read rather than reading as either.
+- **New (minor):** `threetears.scrape.enrichment.EnrichmentFailedError(reason, *, attempts)`, a
+  `RuntimeError`; `reason` is the last attempt's exception as `"<Type>: <message>"`, and that
+  exception is chained as `__cause__`.
+- **New (minor):** `threetears.scrape.llm_retry.bounded_retry_structured_call_or_raise` and
+  `StructuredCallExhaustedError` (`attempts`, `model_id`, `log_label`, `last_error`): the same
+  bounded retry, raising on exhaustion, for a caller that persists the outcome.
+  `bounded_retry_structured_call` is that call with exhaustion answered as `None` and logged once,
+  unchanged for its callers, except that `attempts < 1` now raises `ValueError` where it returned
+  `None` without trying.
+- **Changed (callers must handle it):** `run_enrichment` raises `EnrichmentFailedError` when every
+  attempt fails, instead of returning `{}`. It logs the failure once, with its cause.
+  `asyncio.CancelledError` is not a failure and propagates untouched. `{}` now only ever means the
+  model had nothing to add.
+  - **What a caller of `run_enrichment` does:** catch `EnrichmentFailedError` and record the
+    failure -- or call `enrich_extraction`, which does. Do not catch it and store `{}`: that is
+    the defect.
+- **Changed:** `enrich_extraction` stores the outcome and does not raise for a failed pass: success
+  writes `enrichment_status="enriched"`, the notes and `enrichment_failure=None`; total failure
+  writes `enrichment_status="failed"`, `enrichment_notes=None` and the reason. The row describes the
+  latest run, so passing a `"failed"` row back in retries it, and re-running an `"enriched"` row
+  replaces its notes, with a failure if that run fails.
+  - **What a reader of `enrichment_notes` does:** read `enrichment_status` first. `None` notes no
+    longer mean "never ran" alone; they mean never ran (`enrichment_status is None`) or failed
+    (`"failed"`). Never treat `None` or `{}` notes as "nothing to add" without the status.
+  - **What a retry sweep does:** select `WHERE enrichment_status = 'failed'` and pass each row to
+    `enrich_extraction` again.
+- **Migration (scrape v013, applied by `threetears.scrape.migrations.apply_migrations`):** adds the
+  nullable `enrichment_status` and `enrichment_failure` columns to `scrape_extractions` and
+  translates existing rows once, in the migration and nowhere else. Notes `NULL` stays never-ran;
+  non-empty notes become `"enriched"`; `{}` (and a double-encoded `"{}"`) is genuinely ambiguous
+  and becomes `"failed"` with notes cleared and `LEGACY_EMPTY_ENRICHMENT_FAILURE` as the reason,
+  which says the outcome was not recorded and that re-enriching settles it. A retry sweep
+  therefore re-runs those rows once; a deployment that does not want that model spend can leave
+  them, and they stay honestly marked. Each statement is its own `execute`, and every UPDATE is
+  gated on `enrichment_status IS NULL`, so a replay changes nothing.
+- **For scriob (scrape's consumer outside this checkout):** run `apply_migrations` before deploying
+  the new code, since the pass now writes the two new columns; replace any `except`/`{}` handling
+  around `run_enrichment` with `EnrichmentFailedError`; change every read of `enrichment_notes`
+  that treats `{}` or `None` as "nothing to add" to branch on `enrichment_status`; and, if it
+  wants failed passes retried, add the `enrichment_status = 'failed'` sweep. No reader or caller
+  exists in the 14-eng-ai-bot, -agents, -agent-admin or 14-eng-ai-survey repos.
 
 ### `with_structured_output` works on the name-translating chat models
 

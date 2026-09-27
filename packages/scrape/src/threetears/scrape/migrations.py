@@ -18,7 +18,7 @@ from threetears.core.data.migrations import ConnectionSession, MigrationRunner, 
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["PACKAGE_NAME", "apply_migrations", "register"]
+__all__ = ["LEGACY_EMPTY_ENRICHMENT_FAILURE", "PACKAGE_NAME", "apply_migrations", "register"]
 
 log = get_logger(__name__)
 
@@ -272,6 +272,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(10)(v010_create_scrape_target_health)
     pkg.version(11)(v011_target_health_last_egress)
     pkg.version(12)(v012_target_health_robots_block)
+    pkg.version(13)(v013_extraction_enrichment_status)
     runner.register(pkg)
     return pkg
 
@@ -312,6 +313,55 @@ async def v012_target_health_robots_block(store: DataStore) -> None:
     """
     await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS robots_blocked_at TIMESTAMPTZ")
     await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS robots_blocked_reason TEXT")
+
+
+#: The ``enrichment_failure`` v013 writes on a row whose stored ``{}`` cannot say whether the
+#: pass succeeded with nothing to add or failed outright. A module constant so the test that
+#: reads the backfilled row back compares against the same sentence the migration wrote.
+LEGACY_EMPTY_ENRICHMENT_FAILURE = (
+    "outcome not recorded: stored before 3tears 0.55.0 as empty notes, which then meant either "
+    "that the model had nothing to add or that every attempt failed; enrich this row again to find out"
+)
+
+
+async def v013_extraction_enrichment_status(store: DataStore) -> None:
+    """Record whether the enrichment pass succeeded, and why it failed when it did.
+
+    Until 0.55.0 a pass whose every attempt failed stored ``enrichment_notes = {}``, the same
+    value as a pass whose model answered with nothing to add, so a failure read as a success
+    and nothing could find the rows that needed another run. ``enrichment_status`` (``NULL`` =
+    never ran, ``'enriched'``, ``'failed'``) and ``enrichment_failure`` (the reason) now carry
+    the outcome, and a failed pass stores ``enrichment_notes = NULL``.
+
+    Existing rows are translated here, once, and nowhere else -- nothing reads the old shape:
+
+    * ``enrichment_notes`` NULL -- the pass never ran. Left as it is.
+    * non-empty notes -- only an answering model produces notes, so ``'enriched'``.
+    * ``{}`` -- genuinely ambiguous. Marked ``'failed'`` with notes cleared and
+      :data:`LEGACY_EMPTY_ENRICHMENT_FAILURE` as the reason, which says the outcome was not
+      recorded rather than claiming a failure it cannot prove. Calling it ``'enriched'`` would
+      re-assert the very conflation this fixes; ``'failed'`` makes it eligible for a re-run,
+      which settles it. ``"{}"`` (the empty object double-encoded as a JSON string, which a pool
+      whose codec also ``json.dumps`` writes) is matched too.
+
+    Each statement is its own ``execute``: YugabyteDB auto-commits DDL, so an UPDATE sharing a
+    transaction with the ALTER that added its column runs against a stale snapshot and can
+    silently update nothing. Every UPDATE is gated on ``enrichment_status IS NULL``, so a replay
+    touches no row the first run, or the pass itself, has already stamped.
+    """
+    await store.execute("ALTER TABLE scrape_extractions ADD COLUMN IF NOT EXISTS enrichment_status TEXT")
+    await store.execute("ALTER TABLE scrape_extractions ADD COLUMN IF NOT EXISTS enrichment_failure TEXT")
+    await store.execute(
+        "UPDATE scrape_extractions SET enrichment_status = 'enriched' "
+        "WHERE enrichment_status IS NULL AND enrichment_notes IS NOT NULL "
+        "AND enrichment_notes NOT IN ('{}'::jsonb, '\"{}\"'::jsonb)"
+    )
+    await store.execute(
+        "UPDATE scrape_extractions SET enrichment_status = 'failed', enrichment_notes = NULL, "
+        "enrichment_failure = $1 "
+        "WHERE enrichment_status IS NULL AND enrichment_notes IN ('{}'::jsonb, '\"{}\"'::jsonb)",
+        LEGACY_EMPTY_ENRICHMENT_FAILURE,
+    )
 
 
 async def apply_migrations(pool: Any) -> None:
