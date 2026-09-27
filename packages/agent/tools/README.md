@@ -150,12 +150,18 @@ from threetears.agent.tools import (
 Parse PDF, DOCX, XLSX, and plain text with optional OCR:
 
 ```python
-from threetears.agent.tools import parse_document, OcrConfig
+from threetears.agent.tools import DocumentParseError, OcrConfig, parse_document
 
-result = await parse_document(
-    file_bytes=data,
-    filename="report.pdf",
-    ocr_config=OcrConfig(enabled=True),
-)
-# result.sections -- list of DocumentSection with title, content, page numbers
+try:
+    result = await parse_document(
+        data,
+        "application/pdf",
+        "report.pdf",
+        ocr_config=OcrConfig(enabled=True),
+    )
+except DocumentParseError as exc:
+    ...  # exc.reason is "unsupported_type" or "parse_failed"; the parser's error is exc.__cause__
+# result.sections -- list of DocumentSection with heading, content, page numbers
 ```
+
+A document that cannot be read raises `DocumentParseError`; its failure is never returned as the document's text.

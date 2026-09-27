@@ -34,7 +34,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, To
 from langchain_core.messages.utils import count_tokens_approximately
 
 from threetears.langgraph.streaming import NOSTREAM_TAG
-from threetears.langgraph.summarize import summarize_older_messages
+from threetears.langgraph.summarize import SummarizationFailedError, summarize_older_messages
 from threetears.observe import get_logger
 
 __all__ = [
@@ -228,8 +228,8 @@ class RollingSummaryMiddleware(AgentMiddleware):
         )
         text = await self._summarize(state, to_fold) if to_fold else None
         if text is None:
-            # Nothing to fold -- or the summary call failed or came back empty. The prior summary stands
-            # and nothing is stored: saving a fallback would advance the cursor past messages it dropped.
+            # Nothing to fold -- or the summary call failed. The prior summary stands and nothing is
+            # stored, so the cursor never moves past messages no summary covers.
             recent = list(window[start:]) if to_fold else recent
         else:
             folded = SummaryState(text=text, through_id=to_fold[-1].id, through_count=start + len(to_fold))
@@ -256,9 +256,10 @@ class RollingSummaryMiddleware(AgentMiddleware):
     async def _summarize(self, state: SummaryState | None, to_fold: list[BaseMessage]) -> str | None:
         """Write the next rolling summary (the prior one plus the messages being folded), or ``None``.
 
-        ``None`` when the model call fails or returns nothing: the heuristic fallback
-        ``summarize_older_messages`` offers keeps only assistant sentences, so storing it would
-        silently discard the prior summary.
+        ``None`` when the summary call failed (:class:`SummarizationFailedError` -- raised, timed out,
+        or answered with no text). Nothing is stored and no cursor moves, so the prior summary stands
+        and the next turn folds the same messages again. The failure was logged, with its cause, where
+        it happened.
 
         :param state: the stored state (its text is the prior summary)
         :ptype state: SummaryState | None
@@ -277,11 +278,13 @@ class RollingSummaryMiddleware(AgentMiddleware):
                 self._model,
                 custom_prompt=self._prompt,
                 config={"tags": [NOSTREAM_TAG], "metadata": {USAGE_PURPOSE_METADATA_KEY: "summarization"}},
-                fallback=False,
             )
-        except Exception:  # prawduct:allow prawduct/broad-except -- a provider failure must not fail the turn; the prior summary stands
-            log.warning("rolling summary call failed; keeping the prior summary", exc_info=True)
-        return text if text and text.strip() else None
+        except SummarizationFailedError:
+            log.info(
+                "rolling summary not written; the prior summary stands and the next turn retries",
+                extra={"extra_data": {"messages_unfolded": len(to_fold)}},
+            )
+        return text
 
     async def _notify(self, folded: int, text: str) -> None:
         """Tell ``on_summarized`` about a stored fold; its failure is logged, never the turn's.

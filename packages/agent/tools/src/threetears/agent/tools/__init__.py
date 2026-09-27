@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     )
     from threetears.agent.tools.context import ToolContextManager
     from threetears.agent.tools.document import (
+        DocumentParseError,
         DocumentResult,
         DocumentSection,
         OcrConfig,
@@ -94,6 +95,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ContextItemCollection": ("threetears.agent.tools.collections", "ContextItemCollection"),
     "ContextItemEntity": ("threetears.agent.tools.entities", "ContextItemEntity"),
     "DEFAULT_ROUTING_PROMPT": ("threetears.agent.tools.router", "DEFAULT_ROUTING_PROMPT"),
+    "DocumentParseError": ("threetears.agent.tools.document", "DocumentParseError"),
     "DocumentResult": ("threetears.agent.tools.document", "DocumentResult"),
     "DocumentSection": ("threetears.agent.tools.document", "DocumentSection"),
     "GeneratedImage": ("threetears.agent.tools.protocols", "GeneratedImage"),
@@ -150,6 +152,7 @@ __all__ = [
     "context_items_table",
     "migrate_context_items_schema",
     "DEFAULT_ROUTING_PROMPT",
+    "DocumentParseError",
     "DocumentResult",
     "DocumentSection",
     "GeneratedImage",

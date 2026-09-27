@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from packages.scrape.tests._driver_log_helpers import driver_warnings
-from threetears.agent.tools.document import DocumentResult, DocumentSection, OcrConfig
+from threetears.agent.tools.document import DocumentParseError, DocumentResult, DocumentSection, OcrConfig
 from threetears.core.http_client import TracedHttpClient
 
 from threetears.scrape.driver import RenderedPage
@@ -507,19 +507,16 @@ class TestDocumentDriver:
         )
         driver = DocumentDriver(client=client)
 
-        fake_result = DocumentResult(
-            text="[Unsupported document type: application/octet-stream]",
-            title=None,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
+        refused = DocumentParseError(
+            "unsupported_type", "no parser reads application/octet-stream", filename="mystery-file"
         )
-        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(side_effect=refused))
 
         with pytest.raises(DocumentDriverError) as exc_info:
             await driver.render("https://example.gov/mystery-file")
 
         assert exc_info.value.code == "parse_failed"
+        assert exc_info.value.__cause__ is refused
         await client.aclose()
 
     async def test_render_raises_when_parse_document_reports_a_parsing_failure(
@@ -528,15 +525,35 @@ class TestDocumentDriver:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
         driver = DocumentDriver(client=client)
 
-        fake_result = DocumentResult(
-            text="[Parsing failed: corrupt file]", title=None, page_count=None, word_count=0, was_ocr=False
-        )
-        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        failed = DocumentParseError("parse_failed", "XLSX parsing failed: corrupt file", filename="warn.xlsx")
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(side_effect=failed))
 
         with pytest.raises(DocumentDriverError) as exc_info:
             await driver.render("https://example.gov/warn.xlsx")
 
         assert exc_info.value.code == "parse_failed"
+        assert exc_info.value.__cause__ is failed
+        await client.aclose()
+
+    async def test_a_document_whose_text_merely_starts_like_a_failure_is_still_a_document(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure is the typed error now, so a real document's text is never string-matched as one."""
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
+        driver = DocumentDriver(client=client)
+
+        fake_result = DocumentResult(
+            text="[Parsing failed: this is what the notice itself says]",
+            title=None,
+            page_count=None,
+            word_count=8,
+            was_ocr=False,
+        )
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+
+        page = await driver.render("https://example.gov/warn.xlsx")
+
+        assert "this is what the notice itself says" in page.html
         await client.aclose()
 
     async def test_render_propagates_was_ocr_true_onto_rendered_page(self, monkeypatch: pytest.MonkeyPatch) -> None:

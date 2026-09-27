@@ -11,6 +11,7 @@ Token counting is injected as a character count so every budget below is exact.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import replace
 from types import SimpleNamespace
@@ -251,7 +252,7 @@ class _Failing(_Summarizer):
 
 
 async def test_a_failed_summary_keeps_the_prior_one_and_saves_nothing() -> None:
-    """The fallback summary keeps only assistant sentences; storing it would erase the prior summary."""
+    """A failed summary call stores nothing: a stand-in would replace the prior summary for good."""
     history = _history(9)
     prior = SummaryState(text="PRIOR: the user is Alice, budget $5000", through_id="m2", through_count=3)
     store = _FakeSummaryStore(prior)
@@ -259,6 +260,37 @@ async def test_a_failed_summary_keeps_the_prior_one_and_saves_nothing() -> None:
     assert store.state == prior and store.saves == []
     assert "PRIOR: the user is Alice" in str(sent[0].content)
     assert sent[1:] == history[3:], "trimmed by the old cursor; over budget for one turn, nothing lost"
+
+
+class _TimesOut(_Summarizer):
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> AIMessage:  # noqa: A002
+        self.calls.append({"messages": list(input), "config": dict(config or {})})
+        raise TimeoutError("summary call timed out")
+
+
+async def test_a_timed_out_summary_keeps_the_prior_one_and_the_next_turn_retries() -> None:
+    """A timeout stores nothing and moves no cursor, so the next turn folds the same messages again."""
+    history = _history(9)
+    prior = SummaryState(text="PRIOR", through_id="m2", through_count=3)
+    store = _FakeSummaryStore(prior)
+    await _run(_middleware(store, _TimesOut(), budget=30), history)
+    assert store.state == prior and store.saves == []
+    retry = _Summarizer()
+    await _run(_middleware(store, retry, budget=30), history)
+    assert len(retry.calls) == 1 and store.saves and store.saves[0].text == "SUMMARY 1"
+
+
+async def test_a_cancelled_summary_call_cancels_the_turn() -> None:
+    """Cancellation is not a failed summary: it is never swallowed into "keep the prior one"."""
+
+    class _Cancelled(_Summarizer):
+        async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> AIMessage:  # noqa: A002
+            raise asyncio.CancelledError
+
+    store = _FakeSummaryStore()
+    with pytest.raises(asyncio.CancelledError):
+        await _run(_middleware(store, _Cancelled(), budget=40), _history(7))
+    assert store.saves == []
 
 
 async def test_an_empty_summary_is_never_stored() -> None:

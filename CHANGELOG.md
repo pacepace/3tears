@@ -45,6 +45,13 @@ audit persister for a deployment with no hub (`threetears.agent.audit.persist`).
 subscription call now raises one instead of answering with the failure's text -- read "A failed
 subscription call raises instead of answering with the failure" before upgrading a caller that
 read `is_error` from the metadata.
+`threetears.langgraph` gains `SummarizationFailedError`: `summarize_older_messages` raises it
+when the summary call fails, times out or answers with nothing, instead of returning "The earlier
+part of this conversation could not be summarized." or a heuristic stand-in as the summary, and
+its `fallback` parameter is gone. `threetears.agent.tools` gains `DocumentParseError`:
+`parse_document` raises it instead of returning `[Parsing failed: ...]` or `[Unsupported document
+type: ...]` as the document's text -- read "A failed summary raises instead of answering with a
+sentence" before upgrading a caller of either.
 Fixed: no name, key or id is cut from the head of a uuid7 any more, so two agents created
 together for one customer both get memory and conversation namespaces -- read "Two agents
 created in the same minute no longer share a namespace name"; existing rows need nothing.
@@ -1120,13 +1127,13 @@ the key the writer just wrote, so the read can find it empty and recreate the ol
   - the store's save is a compare-and-swap, and a losing writer uses the winner's summary;
   - the summary call is `NOSTREAM_TAG`-ged and carries `metadata["threetears.usage.purpose"]`.
   - A failed or empty summary stores nothing and keeps the prior summary, so a provider outage
-    can never replace it with the heuristic fallback. That turn runs over budget instead.
+    can never replace it. That turn runs over budget instead.
   - A failing `on_summarized` is logged, never the turn's failure.
   - A count cursor at or past the window's end reads as "everything is new".
-  - It uses `summarize_older_messages`' new `fallback=False`, which raises instead of returning
-    the heuristic.
-  `SummarizationMiddleware` is unchanged. The summary is capped at 2,000 characters (the
-  existing `summarize` cap), which cuts its newest content first.
+  - A failed summary reaches it as `SummarizationFailedError` -- see "A failed summary raises
+    instead of answering with a sentence".
+  The summary is capped at 2,000 characters (the existing `summarize` cap), which cuts its newest
+  content first.
 - **New (minor):** `threetears.conversations.ConversationSummaryStore(collection, *, agent_id,
   conversation_id)`. It is the store over a conversations row: the summary goes in the existing
   `summary` column and the cursor in `metadata["summary_through"]`, so no migration is needed.
@@ -1268,6 +1275,47 @@ circuit breaker counted the call a success.
   as a failure through `on_llm_error`, as it does a failed API call. A subscription turn that
   ends on `error_max_turns` WITHOUT a tool call used to return its text with `is_error: true`;
   it now raises `ModelProviderError` with `reason="error_max_turns"`.
+
+### A failed summary raises instead of answering with a sentence
+
+When the summary model call failed, `summarize_older_messages` caught the exception and returned
+a heuristic stand-in: the last sentence of each assistant message, or, when there were none,
+"The earlier part of this conversation could not be summarized." -- as if it were the summary.
+metallm's history block stored that sentence as the conversation's permanent narrative, because
+nothing about a returned string says it is a failure. `SummarizationMiddleware` did the same
+thing destructively: it deleted the older messages from the checkpoint and put the stand-in, or
+an empty summary, in their place.
+
+- **New (minor):** `threetears.langgraph.SummarizationFailedError(reason, *, message_count)`, a
+  `RuntimeError`. The model's own exception is chained as `__cause__`; an empty answer has none.
+- **Changed (callers must handle it):** `summarize_older_messages` raises
+  `SummarizationFailedError` when the model call raises, times out, or answers with no text. The
+  failure is logged once, where it happens, with its cause. It never returns placeholder text.
+  `asyncio.CancelledError` is not a failed summary and propagates untouched.
+  - **What a caller does:** catch `SummarizationFailedError`, keep what it had -- the prior summary
+    or the un-summarized window -- store nothing, advance no cursor, and let the next turn try
+    again. Do not catch it and write a sentence of your own in its place: that is the defect.
+- **Removed:** the heuristic fallback, and `summarize_older_messages`' `fallback` keyword (added
+  earlier in this unreleased version). A caller passing `fallback=` gets a `TypeError`; drop the
+  argument.
+- **Fixed:** `SummarizationMiddleware` rewrites the window only over a real summary. A failed
+  summary leaves the window as it was, so the next model call, still over the trigger, tries
+  again.
+- **Unchanged:** `RollingSummaryMiddleware` already kept the prior summary on a failure; it now
+  catches the typed error rather than every exception.
+
+The same shape in `parse_document`, fixed with it:
+
+- **New (minor):** `threetears.agent.tools.DocumentParseError(reason, detail, *, filename)`, a
+  `RuntimeError`, with `reason` one of `"unsupported_type"` or `"parse_failed"`
+  (`DocumentParseFailure`). The parser's own exception is chained as `__cause__`.
+- **Changed (callers must handle it):** `parse_document` raises it instead of returning a
+  `DocumentResult` whose `text` is `[Unsupported document type: ...]` or `[Parsing failed: ...]`.
+  The `parse_document` tool (and `ParseDocumentTool`) already turned a raise into a `[TOOL ERROR]`
+  answer, so a document that cannot be read is now a failed tool call (`success=False`) where it
+  was a successful one whose document said it had failed. The scrape `DocumentDriver` raises
+  `DocumentDriverError("parse_failed")` chained to it, as before, but no longer string-matches the
+  text, so a real document whose text starts with `[Parsing failed:` is no longer refused.
 
 ### `with_structured_output` works on the name-translating chat models
 

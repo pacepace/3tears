@@ -121,6 +121,7 @@ from threetears.langgraph.tool_structure import (
 )
 from threetears.langgraph.summarize import (
     DEFAULT_SUMMARIZATION_PROMPT,
+    SummarizationFailedError,
     summarize_older_messages,
 )
 from threetears.langgraph.util import summarize_args
@@ -173,6 +174,7 @@ __all__ = [
     "StreamingResponse",
     "StreamingResponseError",
     "StructuredToolResultFields",
+    "SummarizationFailedError",
     "SummarizationMiddleware",
     "RollingSummaryMiddleware",
     "SummaryState",
