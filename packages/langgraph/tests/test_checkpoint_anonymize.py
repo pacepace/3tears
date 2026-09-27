@@ -521,6 +521,54 @@ class TestAnonymizingAThread:
         assert any(b"alice@example.com" in blob for blob in executor.blobs()), "an unclassified value is kept"
         assert not _leaks(executor), "the classified identifying keys are still anonymized"
 
+    async def test_a_key_only_a_pending_metadata_write_carries_is_reported(self, executor: SqliteQueryExecutor) -> None:
+        """a pending write's whole value is turn metadata when it was written to the metadata channel.
+
+        a write's blob is the bare mapping a node returned under ``metadata``, with no
+        ``metadata`` key around it, so only the row's channel says it is turn metadata. here a
+        node adds a key in the same step as a sibling that interrupts: its write is stored as a
+        pending write and reaches no checkpoint, so the report can come from nowhere else.
+        """
+        pending_key = "sender_phone"
+
+        def tag(state: ChatState) -> dict[str, Any]:
+            """
+            add a sender field to the turn metadata.
+
+            :param state: graph state
+            :ptype state: ChatState
+            :return: the metadata update
+            :rtype: dict[str, Any]
+            """
+            del state
+            return {METADATA_CHANNEL: {pending_key: "+15550100"}}
+
+        builder = StateGraph(ChatState)
+        builder.add_node("tag", tag)
+        builder.add_node("approve", _approve)
+        builder.add_edge(START, "tag")
+        builder.add_edge(START, "approve")
+        builder.add_edge("tag", END)
+        builder.add_edge("approve", END)
+        saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)
+        await builder.compile(checkpointer=saver).ainvoke(_turn(), _config())
+        metadata_writes = [
+            bytes(row[0])
+            for row in executor.db.execute("SELECT blob FROM checkpoint_writes WHERE channel = ?", (METADATA_CHANNEL,))
+        ]
+        checkpoint_blobs = [
+            bytes(value)
+            for row in executor.db.execute("SELECT checkpoint, metadata_ FROM checkpoints")
+            for value in row
+            if value is not None
+        ]
+        assert any(pending_key.encode() in blob for blob in metadata_writes), "the fixture stored no pending write"
+        assert not any(pending_key.encode() in blob for blob in checkpoint_blobs), "the key must be in no checkpoint"
+
+        result = await saver.aanonymize_threads([_THREAD])
+
+        assert result.unclassified_metadata_keys == (pending_key,)
+
     async def test_the_graph_loads_with_content_and_ids_intact(self, executor: SqliteQueryExecutor) -> None:
         """the state reloads through the real serializer: text and ids unchanged, identity masked."""
         saver = ThreeTierCheckpointSaver(executor, scope=_UNSCOPED)

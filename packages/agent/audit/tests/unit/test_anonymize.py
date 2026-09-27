@@ -397,6 +397,23 @@ class TestDeclaredExtensions:
         assert kept == {"reason": "target_blocked"}
         assert masked == {"reason": ANONYMIZED_MARKER}
 
+    @pytest.mark.parametrize("event_type", ["security.exploit.approval.approved", "security.exploit.approval.denied"])
+    def test_the_approver_of_a_paused_tool_call_keeps_their_id(self, event_type: str) -> None:
+        """``decided_by`` is the deciding user's uuid on the hub's approval events, and erasure never changes an id.
+
+        the name does not say it holds an id, so it is declared for this family alone: under any
+        other event type the same key is masked, since a producer there could mean a name by it.
+        """
+        approver = str(uuid7())
+
+        kept = anonymize_details({"decided_by": approver, "decision": "approve"}, event_type=event_type)
+        masked = anonymize_details({"decided_by": "Alice Liddell"}, event_type=_PLAIN_EVENT)
+
+        assert kept == {"decided_by": approver, "decision": "approve"}
+        assert is_classified_detail_key("decided_by", event_type=event_type)
+        assert masked == {"decided_by": ANONYMIZED_MARKER}
+        assert "decided_by" not in SAFE_DETAIL_KEYS
+
     @pytest.mark.parametrize("prefix", ["", ".survey", "survey.", "survey..response", "survey response"])
     def test_a_malformed_prefix_is_refused(self, prefix: str) -> None:
         """a prefix is one or more non-empty dotted segments, nothing else."""

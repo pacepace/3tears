@@ -199,9 +199,14 @@ complete as the sweep that found the sites. There is now one construction:
   reaper), and a sync `invoke` runs a loop of its own on its caller's thread. A call from a
   second loop that had to wait raised `RuntimeError` ("bound to a different event loop"), which
   no caller treats as "use your own CLI", so the model call failed. The pool now serves the
-  loop that first checks a session out of it, and refuses any other loop with
-  `ClaudeCliPoolExhausted` before touching its state, so that call runs on a CLI of its own,
-  exactly as when every session is busy.
+  loop that first checks a session out of it for as long as that loop is open, and refuses any
+  other open loop with `ClaudeCliPoolExhausted` before touching its state, so that call runs on
+  a CLI of its own, exactly as when every session is busy. Once the served loop closes it can
+  never run a call again, so the next checkout's loop takes the pool over: the pool gets a fresh
+  condition and reaper on that loop, and the CLIs the closed loop held are killed without their
+  clients being awaited (their reader tasks died with that loop), never handed on. Without the
+  takeover, a startup warm-up through a sync `invoke` -- whose loop closes when it returns --
+  would have turned pooling off for the rest of the process.
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -367,6 +372,10 @@ should route an audit record's content through it** rather than writing its own.
   declaration is visible only in the process that makes it, so the families whose
   events the hub erases from the platform audit table ship declared in the module
   itself; a runtime declaration is for a service anonymizing its own local store.
+  `security.exploit.approval` keeps `decided_by`, the uuid of the user who approved or
+  denied a paused tool call: an id, which erasure never changes. It is declared for that
+  family rather than platform-wide because the name does not say it holds an id, so under
+  any other event type it is masked.
 - **New (minor):** `is_classified_detail_key(key, *, event_type)`: whether a key is
   safe for that event type or recorded as personal. The enforcement gate below judges by
   this very function, injected as `AuditDetailsConfig.is_classified` because the gate

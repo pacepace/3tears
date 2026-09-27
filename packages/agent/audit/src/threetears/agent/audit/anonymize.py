@@ -352,8 +352,11 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "rbac.assignment.delete": frozenset({"reason"}),
         # allow / deny (hub)
         "rbac.introspect": frozenset({"decision"}),
-        # the approval verdict (hub)
-        "security.exploit.approval": frozenset({"decision"}),
+        # the approval verdict, and the uuid of the user who approved or denied the paused tool
+        # call -- an id, which erasure never changes. declared for this family rather than in
+        # SAFE_DETAIL_KEYS because the name does not say it holds an id: another producer
+        # could put a display name under it, and there it stays masked (hub)
+        "security.exploit.approval": frozenset({"decision", "decided_by"}),
         # a decimal score delta and a regression flag (hub)
         "knowledge.candidate": frozenset({"delta", "regression"}),
         # http verb and status code (hub)

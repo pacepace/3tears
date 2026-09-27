@@ -26,6 +26,7 @@ from threetears.models.claude_cli_pool import (
     ClaudeCliPool,
     ClaudeCliPoolExhausted,
     ClaudeCliSessionError,
+    PooledCliSession,
     kill_process_tree,
     launch_key,
     sweep_orphaned_claude_clis,
@@ -71,6 +72,7 @@ class FakeSession:
         self.prepared: list[tuple[str | None, Any]] = []
         self.clears = 0
         self.disposals = 0
+        self.abandons = 0
         self.fail_clear = False
         self.fail_prepare = False
         self.clear_raises: BaseException | None = None
@@ -117,6 +119,13 @@ class FakeSession:
         if self.dispose_delay:
             await asyncio.sleep(self.dispose_delay)
         self.disposals += 1
+
+    async def abandon(self, *, grace_seconds: float) -> None:
+        del grace_seconds
+        if self.closed:
+            return
+        self.closed = True
+        self.abandons += 1
 
 
 @pytest.fixture(autouse=True)
@@ -872,15 +881,94 @@ class TestAPoolServesOneEventLoop:
         assert outcome.get("owner_after") == "served", "the owning loop must still be served afterwards"
         assert len(FakeSession.instances) == 1, "the refused loop must not have started a session"
 
-    def test_a_second_loop_is_refused_even_when_a_session_is_idle(self) -> None:
-        """an idle session's client reads on the loop it connected on, so it is never handed to another."""
+    def test_a_second_live_loop_is_refused_even_when_a_session_is_idle(self) -> None:
+        """an idle session's client reads on the loop it connected on, so it is never handed to another.
+
+        the serving loop is open but not running between its calls, as an application loop driven
+        by ``run_until_complete`` is: open is what counts, since it can run a call again.
+        """
         pool = _pool()
 
         async def use_once() -> None:
             async with pool.checkout(Options(), token=TOKEN, tool_server=None):
                 pass
 
-        asyncio.run(use_once())
-        with pytest.raises(ClaudeCliPoolExhausted, match="another event loop"):
-            asyncio.run(use_once())
-        assert FakeSession.instances[0].disposals == 0
+        owner = asyncio.new_event_loop()
+        try:
+            owner.run_until_complete(use_once())
+            with pytest.raises(ClaudeCliPoolExhausted, match="another event loop"):
+                asyncio.run(use_once())
+            (session,) = FakeSession.instances
+            assert (session.disposals, session.abandons) == (0, 0), "the live loop's idle session was taken from it"
+
+            owner.run_until_complete(use_once())
+            assert len(FakeSession.instances) == 1, "the serving loop must still reuse its own session"
+            owner.run_until_complete(pool.aclose())
+        finally:
+            owner.close()
+
+    def test_a_loop_that_closed_hands_the_pool_to_the_next_loop(self) -> None:
+        """a startup warm-up through a sync ``invoke`` must not turn pooling off for the process.
+
+        the warm-up's loop claims the pool and closes when the warm-up returns. before the fix the
+        pool stayed bound to it, and every later call on the application's loop was refused and ran
+        on a CLI of its own. the closed loop's session is stopped without its client being awaited
+        (its reader task died with its loop), and the new loop gets fresh loop-bound state: here the
+        closed loop had waited on the pool's condition, so reusing that condition would raise
+        "bound to a different event loop" the first time the new loop has to wait.
+        """
+        pool = _pool(per_key=1)
+        outcome: dict[str, BaseException | str] = {}
+
+        async def contend() -> None:
+            async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                try:
+                    async with pool.checkout(Options(), token=TOKEN, tool_server=None):
+                        pass
+                except BaseException as exc:  # noqa: BLE001 -- the assertion below names whatever it was
+                    outcome.setdefault("waited", exc)
+
+        asyncio.run(contend())
+        assert isinstance(outcome.pop("waited"), ClaudeCliPoolExhausted), "the warm-up loop never waited"
+        (warm_up,) = FakeSession.instances
+
+        asyncio.run(contend())
+
+        waited = outcome.get("waited")
+        assert isinstance(waited, ClaudeCliPoolExhausted), (
+            f"a wait on the new loop must time out as exhaustion, got {waited!r}"
+        )
+        assert len(FakeSession.instances) == 2, "the new loop must be served by a CLI the pool started for it"
+        assert (warm_up.abandons, warm_up.disposals) == (1, 0), (
+            "the closed loop's session must be stopped without awaiting its client"
+        )
+        served = FakeSession.instances[1]
+        assert served.prepared, "the new loop's call must be served by the pool, not refused"
+        assert served.clears == 1 and not served.closed, "the new loop's session must go back into the pool"
+        assert pool.live_count == 1, "the closed loop's session must not hold a slot"
+
+
+class TestAStrandedSessionIsStoppedWithoutItsLoop:
+    """a session whose loop closed is stopped by killing its process, never by awaiting its client."""
+
+    async def test_abandoning_kills_the_cli_and_never_disconnects(self) -> None:
+        disconnects: list[str] = []
+
+        class ClientOnAClosedLoop:
+            async def disconnect(self) -> None:
+                disconnects.append("disconnect")
+
+        cli = subprocess.Popen(["sleep", "60"])
+        try:
+            session = PooledCliSession(ClientOnAClosedLoop(), key="k", pid=cli.pid, marker="m", reusable=True)
+
+            await session.abandon(grace_seconds=0.5)
+            await session.abandon(grace_seconds=0.5)
+
+            assert cli.wait(timeout=5) is not None, "the stranded CLI outlived its abandonment"
+            assert session.closed
+            assert disconnects == [], "a client whose loop closed must never be awaited"
+        finally:
+            if cli.poll() is None:
+                cli.kill()
+                cli.wait(timeout=5)
