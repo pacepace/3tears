@@ -5,16 +5,19 @@ one application that owns its own control plane -- had to write that persister i
 dropped ``acting_as_principal_id`` on the way). This is it, once:
 
 - :data:`AUDIT_EVENTS_DDL` / :func:`ensure_audit_events_table`: an ``audit_events`` table carrying every
-  :class:`AuditEvent` field, ``ip_address`` for erasure, and both idempotency anchors the envelope
-  documents -- the ``id`` primary key and the unique ``(correlation_id, event_type)`` index.
-- :func:`persist_audit_event`: an insert that collapses an at-least-once redelivery, and the same logical
-  event re-emitted under a new envelope id, to one row.
-- :func:`start_audit_persister`: ensures the ``audit`` stream (file-backed by default, matching the
-  platform's other declarers -- a storage mismatch on one stream name crashes the second declarer) with
-  its sibling dead-letter subject, and runs a shared durable PULL consumer, so every replica may run it
-  and each event is persisted once. A malformed event is acked and dropped; a database fault raises, so
+  :class:`AuditEvent` field and ``ip_address`` for erasure. An EXISTING table is migrated: every column is
+  added if missing, so a deployment that already persisted audit keeps working.
+- :func:`persist_audit_event`: an insert idempotent on the envelope ``id``, so an at-least-once redelivery
+  is one row. Deliberately NOT on ``(correlation_id, event_type)``: producers stamp every event of a
+  request with the request's correlation id, and two writes of one type in one request are two records
+  an audit trail must keep.
+- :func:`start_audit_persister`: ensures the ``audit`` stream with its sibling dead-letter subject and runs
+  a shared durable PULL consumer, so every replica may run it and each event is persisted once. The
+  stream's storage must match every other declarer of that stream name in the deployment (a mismatch
+  crashes the second declarer); it defaults to memory, as the NATS client does. The durable name must be
+  unique per table: two apps sharing a namespace and a durable would split the events between them. A malformed event is acked and dropped; a database fault raises, so
   the consumer retries and finally dead-letters it rather than losing the record.
-- :func:`prune_audit_events`: an age-based retention delete.
+- :func:`prune_audit_events`: an age-based retention delete, in batches.
 - :func:`anonymize_audit_rows`: erasure under the platform's rule. Every row and every id survives; only
   ``details`` (through ``anonymize_details``, under each row's own event type) and ``ip_address`` (through
   ``anonymize_ip``) change. It is this deployment's own erasure -- it never answers the hub's
@@ -82,9 +85,21 @@ AUDIT_EVENTS_DDL: tuple[str, ...] = (
     "conversation_id UUID, "
     "details JSONB NOT NULL DEFAULT '{}', "
     "ip_address TEXT)",
-    # the SECONDARY idempotency anchor (AuditEvent.correlation_id): one logical event re-emitted under a
-    # new envelope id is one row
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_correlation_event ON audit_events (correlation_id, event_type)",
+    # an existing table (created before a column existed) gains every column it lacks
+    *(
+        f"ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS {column}"
+        for column in (
+            "acting_as_principal_id UUID",
+            "calling_agent_id UUID",
+            "owner_agent_id UUID",
+            "customer_id UUID",
+            "resource_namespace_id UUID",
+            "resource_namespace_type TEXT",
+            "conversation_id UUID",
+            "ip_address TEXT",
+        )
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_time ON audit_events (timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_customer_time ON audit_events (customer_id, timestamp DESC)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events (event_type)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_user_id)",
@@ -96,8 +111,7 @@ _INSERT = (
     "owner_agent_id, customer_id, resource_namespace_id, resource_namespace_type, correlation_id, "
     "conversation_id, details, ip_address"
     ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::text::jsonb, $16) "
-    # no conflict target: the id key AND the (correlation_id, event_type) index both absorb a replay
-    "ON CONFLICT DO NOTHING"
+    "ON CONFLICT (id) DO NOTHING"
 )
 
 
@@ -151,7 +165,8 @@ async def persist_audit_event(db: AuditStore, event: AuditEvent, *, ip_address: 
     :ptype db: AuditStore
     :param event: the envelope
     :ptype event: AuditEvent
-    :param ip_address: the caller's address, when the producer recorded one
+    :param ip_address: the caller's address; the envelope carries none, so only a direct caller that has
+        one passes it (the consumer path stores NULL)
     :ptype ip_address: str | None
     :return: None
     :rtype: None
@@ -172,8 +187,10 @@ async def persist_audit_event(db: AuditStore, event: AuditEvent, *, ip_address: 
         event.resource_namespace_type,
         event.correlation_id,
         event.conversation_id,
-        json.dumps(event.details),
-        ip_address if ip_address is not None else getattr(event, "ip_address", None),
+        # JSON-mode dump: details built in-process may hold UUIDs and datetimes; ensure_ascii off so text
+        # is stored as written
+        json.dumps(event.model_dump(mode="json")["details"], ensure_ascii=False),
+        ip_address,
     )
 
 
@@ -213,11 +230,14 @@ class AuditPersisterHandle:
         :return: None
         :rtype: None
         """
-        await self.consumer.stop()
-        self.task.cancel()
-        # NOSILENT: this IS the cancellation requested on the line above
-        with contextlib.suppress(asyncio.CancelledError):
-            await self.task
+        try:
+            await self.consumer.stop()
+        finally:
+            # the task ends even when stopping the consumer fails (a connection already closed at shutdown)
+            self.task.cancel()
+            # NOSILENT: this IS the cancellation requested on the line above
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.task
 
 
 async def start_audit_persister(
@@ -225,7 +245,7 @@ async def start_audit_persister(
     db: AuditStore,
     *,
     durable: str,
-    storage: str = "file",
+    storage: str = "memory",
     max_deliver: int = AUDIT_MAX_DELIVER,
 ) -> AuditPersisterHandle:
     """ensure the audit stream and run a shared durable pull consumer persisting every event.
@@ -238,14 +258,15 @@ async def start_audit_persister(
     :ptype db: AuditStore
     :param durable: the consumer's durable name, stable across restarts and shared by replicas
     :ptype durable: str
-    :param storage: the stream's storage; ``file`` matches the platform's other declarers
+    :param storage: the stream's storage (``memory`` or ``file``); must match every other declarer of the
+        ``audit`` stream in this deployment
     :ptype storage: str
     :param max_deliver: attempts before an event is dead-lettered
     :ptype max_deliver: int
     :return: the running persister
     :rtype: AuditPersisterHandle
     """
-    await nats_client.ensure_jetstream_stream(
+    stream = await nats_client.ensure_jetstream_stream(
         name=AUDIT_STREAM_NAME,
         subjects=[Subjects.audit_wildcard().path, Subjects.audit_deadletter().path],
         storage=storage,
@@ -262,14 +283,18 @@ async def start_audit_persister(
         cb=_on_message,
         max_deliver=max_deliver,
         dead_letter_subject=Subjects.audit_deadletter(),
+        # named, so binding needs no stream-names lookup (not granted to least-privilege accounts)
+        stream=stream,
     )
     task = spawn_background(consumer.run(), name=f"audit-persister:{durable}", logger=log)
     log.info("audit persister started", extra={"extra_data": {"durable": durable, "storage": storage}})
     return AuditPersisterHandle(consumer, task)
 
 
-async def prune_audit_events(db: AuditStore, *, older_than: timedelta, now: datetime | None = None) -> int:
-    """delete events older than the retention window.
+async def prune_audit_events(
+    db: AuditStore, *, older_than: timedelta, now: datetime | None = None, batch_size: int = 5000
+) -> int:
+    """delete events older than the retention window, ``batch_size`` rows at a time.
 
     :param db: the deployment's database
     :ptype db: AuditStore
@@ -277,12 +302,39 @@ async def prune_audit_events(db: AuditStore, *, older_than: timedelta, now: date
     :ptype older_than: timedelta
     :param now: the reference instant (default: now)
     :ptype now: datetime | None
+    :param batch_size: rows per delete, so a large backlog never holds one long lock
+    :ptype batch_size: int
     :return: rows deleted
     :rtype: int
+    :raises ValueError: ``batch_size`` below one
     """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be at least 1, got {batch_size}")
     cutoff = (now if now is not None else datetime.now(UTC)) - older_than
-    status = await db.execute("DELETE FROM audit_events WHERE timestamp < $1", cutoff)
-    return int(str(status).rsplit(" ", 1)[-1]) if str(status).startswith("DELETE") else 0
+    deleted = 0
+    while True:
+        status = await db.execute(
+            "DELETE FROM audit_events WHERE id IN (SELECT id FROM audit_events WHERE timestamp < $1 LIMIT $2)",
+            cutoff,
+            batch_size,
+        )
+        count = _rowcount(status)
+        deleted += count
+        if count < batch_size:
+            break
+    return deleted
+
+
+def _rowcount(status: Any) -> int:  # noqa: ANN401 -- a driver status string
+    """the row count from a command status such as ``"DELETE 3"`` or ``"UPDATE 1"``.
+
+    :param status: the status
+    :ptype status: Any
+    :return: the count (0 when there is none)
+    :rtype: int
+    """
+    tail = str(status).rsplit(" ", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
 
 
 @dataclass(frozen=True)
@@ -297,17 +349,20 @@ class AuditAnonymizationResult:
     rows_changed: int
 
 
-def _erasure() -> tuple[Callable[..., dict[str, Any]], Callable[[str | None], str | None], str]:
-    """the platform's erasure rule: ``anonymize_details``, ``anonymize_ip`` and the marker.
+def _erasure_default(module: str, name: str) -> Any:  # noqa: ANN401
+    """one piece of the platform's erasure rule, imported late.
 
-    imported late: they live in ``threetears.agent.audit.anonymize`` and ``threetears.observe.erasure``.
+    ``anonymize_details`` / ``anonymize_ip`` live in ``threetears.agent.audit.anonymize`` and
+    ``ANONYMIZED_MARKER`` in ``threetears.observe.erasure``.
 
-    :return: the details anonymizer, the address anonymizer, the marker
-    :rtype: tuple[Callable[..., dict[str, Any]], Callable[[str | None], str | None], str]
+    :param module: the module
+    :ptype module: str
+    :param name: the attribute
+    :ptype name: str
+    :return: the attribute
+    :rtype: Any
     """
-    anonymize = importlib.import_module("threetears.agent.audit.anonymize")
-    erasure = importlib.import_module("threetears.observe.erasure")
-    return anonymize.anonymize_details, anonymize.anonymize_ip, erasure.ANONYMIZED_MARKER
+    return getattr(importlib.import_module(module), name)
 
 
 def _anonymize_stored(
@@ -345,7 +400,7 @@ def _anonymize_stored(
         result = json.dumps(anonymize(inner, event_type=event_type)) if isinstance(inner, Mapping) else marker
     else:
         result = marker
-    return json.dumps(result)
+    return json.dumps(result, ensure_ascii=False)
 
 
 async def anonymize_audit_rows(
@@ -378,15 +433,19 @@ async def anonymize_audit_rows(
     :ptype marker: str | None
     :return: rows matched and rows changed
     :rtype: AuditAnonymizationResult
+    :raises ValueError: ``batch_size`` below one
     """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be at least 1, got {batch_size}")
     actors = list(actor_user_ids)
     if not actors:
         return AuditAnonymizationResult(0, 0)
-    if anonymize is None or anonymize_ip is None or marker is None:
-        default_details, default_ip, default_marker = _erasure()
-        anonymize = anonymize or default_details
-        anonymize_ip = anonymize_ip or default_ip
-        marker = marker if marker is not None else default_marker
+    if anonymize is None:
+        anonymize = _erasure_default("threetears.agent.audit.anonymize", "anonymize_details")
+    if anonymize_ip is None:
+        anonymize_ip = _erasure_default("threetears.agent.audit.anonymize", "anonymize_ip")
+    if marker is None:
+        marker = _erasure_default("threetears.observe.erasure", "ANONYMIZED_MARKER")
     matched = changed = 0
     after: UUID | None = None
     while True:
@@ -405,14 +464,16 @@ async def anonymize_audit_rows(
                 row["details"], event_type=row["event_type"], anonymize=anonymize, marker=marker
             )
             address = anonymize_ip(row["ip_address"])
-            if details != row["details"] or address != row["ip_address"]:
-                await db.execute(
-                    "UPDATE audit_events SET details = $1::text::jsonb, ip_address = $2 WHERE id = $3",
-                    details,
-                    address,
-                    row["id"],
-                )
-                changed += 1
+            # the DATABASE decides "changed": jsonb renders non-ASCII and numbers its own way, so comparing
+            # JSON text counted untouched rows as changed on every pass
+            status = await db.execute(
+                "UPDATE audit_events SET details = $1::text::jsonb, ip_address = $2 WHERE id = $3 "
+                "AND (details IS DISTINCT FROM $1::text::jsonb OR ip_address IS DISTINCT FROM $2)",
+                details,
+                address,
+                row["id"],
+            )
+            changed += _rowcount(status)
         after = rows[-1]["id"]
     log.info("audit rows anonymized", extra={"extra_data": {"rows_matched": matched, "rows_changed": changed}})
     return AuditAnonymizationResult(matched, changed)

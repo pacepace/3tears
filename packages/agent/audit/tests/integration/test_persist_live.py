@@ -73,13 +73,56 @@ async def test_an_event_round_trips_with_every_envelope_field(db: asyncpg.Pool) 
     assert json.loads(row["details_text"]) == event.details, "details read back as a JSON object"
 
 
-async def test_redelivery_collapses_to_one_row_by_id_and_by_correlation(db: asyncpg.Pool) -> None:
+async def test_a_redelivery_is_one_row(db: asyncpg.Pool) -> None:
     event = _event()
     await persist_audit_event(db, event)
     await persist_audit_event(db, event)
-    reemitted = event.model_copy(update={"id": uuid.uuid7()})  # same logical event, new envelope id
-    await persist_audit_event(db, reemitted)
     assert await db.fetchval("SELECT count(*) FROM audit_events") == 1
+
+
+async def test_two_different_events_in_one_request_are_two_rows(db: asyncpg.Pool) -> None:
+    """Producers stamp every event of a request with the request's correlation id; two writes of one
+    type in one request are two records, and an audit trail must not merge them."""
+    correlation = uuid.uuid4()
+    first = _event(correlation_id=correlation, details={"path": "a"})
+    second = _event(correlation_id=correlation, details={"path": "b"})
+    await persist_audit_event(db, first)
+    await persist_audit_event(db, second)
+    assert await db.fetchval("SELECT count(*) FROM audit_events") == 2
+
+
+async def test_details_that_are_not_json_native_are_stored(db: asyncpg.Pool) -> None:
+    user = uuid.uuid4()
+    event = _event(details={"user_id": user, "at": datetime(2026, 1, 1, tzinfo=UTC)})
+    await persist_audit_event(db, event)
+    stored = json.loads(await db.fetchval("SELECT details::text FROM audit_events WHERE id = $1", event.id))
+    assert stored["user_id"] == str(user)
+
+
+async def test_an_existing_table_without_the_newer_columns_is_migrated(db_container: str) -> None:
+    """A deployment that already persisted audit (scriob's table has no acting_as_principal_id or
+    ip_address) must keep working after adopting this: every insert used to fail."""
+    schema = f"audit_old_{uuid.uuid4().hex[:8]}"
+    admin = await asyncpg.connect(db_container)
+    try:
+        await admin.execute(f"CREATE SCHEMA {schema}")
+    finally:
+        await admin.close()
+    pool = await asyncpg.create_pool(db_container, min_size=1, max_size=2, server_settings={"search_path": schema})
+    assert pool is not None
+    try:
+        await pool.execute(
+            "CREATE TABLE audit_events (id UUID PRIMARY KEY, timestamp TIMESTAMPTZ NOT NULL, event_type TEXT NOT NULL, "
+            "action TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'success', actor_user_id UUID, calling_agent_id UUID, "
+            "owner_agent_id UUID, customer_id UUID, resource_namespace_id UUID, resource_namespace_type TEXT, "
+            "correlation_id UUID NOT NULL, conversation_id UUID, details JSONB NOT NULL DEFAULT '{}')"
+        )
+        await ensure_audit_events_table(pool)
+        event = _event(acting_as_principal_id=uuid.uuid4())
+        await persist_audit_event(pool, event)
+        assert await pool.fetchval("SELECT acting_as_principal_id FROM audit_events") == event.acting_as_principal_id
+    finally:
+        await pool.close()
 
 
 async def test_prune_removes_only_rows_older_than_the_window(db: asyncpg.Pool) -> None:
@@ -150,3 +193,83 @@ async def test_erasure_handles_every_stored_details_shape(db: asyncpg.Pool) -> N
     assert json.loads(stored[ids["string-held object"]]) == {"email": _MARKER}, "judged as the object, kept string-held"
     assert stored[ids["non-object"]] == _MARKER
     assert stored[ids["json null"]] is None
+
+
+async def test_erasure_is_idempotent_for_non_ascii_and_float_values(db: asyncpg.Pool) -> None:
+    """ "Changed" is decided by the database, not by comparing JSON text: jsonb renders non-ASCII and
+    floats its own way, and a text comparison counted untouched rows as changed on every pass."""
+    actor = uuid.uuid4()
+    event = _event(actor_user_id=actor, details={"user_id": "José 日本", "ratio": 1.10, "tiny": 1e-7, "email": "x"})
+    await persist_audit_event(db, event)
+
+    def keep_most(details: Mapping[str, Any], *, event_type: str) -> dict[str, Any]:
+        return {k: (_MARKER if k == "email" else v) for k, v in details.items()}
+
+    first = await anonymize_audit_rows(
+        db, actor_user_ids=[actor], anonymize=keep_most, anonymize_ip=lambda _: None, marker=_MARKER
+    )
+    second = await anonymize_audit_rows(
+        db, actor_user_ids=[actor], anonymize=keep_most, anonymize_ip=lambda _: None, marker=_MARKER
+    )
+    assert (first.rows_changed, second.rows_changed) == (1, 0)
+    stored = json.loads(await db.fetchval("SELECT details::text FROM audit_events"))
+    assert stored["user_id"] == "José 日本" and stored["email"] == _MARKER
+
+
+async def test_a_batch_size_below_one_is_refused(db: asyncpg.Pool) -> None:
+    with pytest.raises(ValueError, match="batch_size"):
+        await anonymize_audit_rows(
+            db,
+            actor_user_ids=[uuid.uuid4()],
+            batch_size=0,
+            anonymize=_anonymize,
+            anonymize_ip=lambda _: None,
+            marker=_MARKER,
+        )
+
+
+async def test_erasure_with_the_platform_anonymizers(db: asyncpg.Pool) -> None:
+    """The production path, with nothing injected. Skips until the 0.55.0 erasure modules are present."""
+    pytest.importorskip("threetears.agent.audit.anonymize")
+    pytest.importorskip("threetears.observe.erasure")
+    actor = uuid.uuid4()
+    event = _event(actor_user_id=actor, details={"email": "someone@example.test"})
+    await persist_audit_event(db, event, ip_address="203.0.113.9")
+    result = await anonymize_audit_rows(db, actor_user_ids=[actor])
+    assert result.rows_matched == 1
+    row = await db.fetchrow("SELECT details::text AS d, ip_address FROM audit_events")
+    assert row is not None and "someone@example.test" not in row["d"] and row["ip_address"] is None
+
+
+async def test_prune_works_in_batches(db: asyncpg.Pool) -> None:
+    now = datetime.now(UTC)
+    for _ in range(5):
+        await persist_audit_event(db, _event(timestamp=now - timedelta(days=90)))
+    assert await prune_audit_events(db, older_than=timedelta(days=30), now=now, batch_size=2) == 5
+    assert await db.fetchval("SELECT count(*) FROM audit_events") == 0
+
+
+async def test_a_published_event_reaches_the_table_through_nats(db: asyncpg.Pool, nats_container: str) -> None:
+    """The whole path on a real broker: publish, stream, shared pull consumer, row."""
+    import asyncio
+
+    from threetears.agent.audit import publish_audit
+    from threetears.agent.audit.persist import start_audit_persister
+    from threetears.nats import NatsClient, set_default_namespace
+
+    namespace = f"auditlive{uuid.uuid4().hex[:6]}"
+    set_default_namespace(namespace)
+    async with await NatsClient.connect(
+        nats_url=nats_container, nats_subject_namespace=namespace, client_name="audit"
+    ) as nats:
+        handle = await start_audit_persister(nats, db, durable="live-audit-persist")
+        try:
+            event = _event()
+            await publish_audit(event, nats_client=nats, namespace=namespace)
+            for _ in range(100):
+                if await db.fetchval("SELECT count(*) FROM audit_events WHERE id = $1", event.id):
+                    break
+                await asyncio.sleep(0.1)
+            assert await db.fetchval("SELECT count(*) FROM audit_events WHERE id = $1", event.id) == 1
+        finally:
+            await handle.stop()

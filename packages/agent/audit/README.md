@@ -18,12 +18,15 @@ platform table, and the package's persistence code is never used.
 A deployment with NO hub (one application owning its own control plane) owns its
 audit table, and `threetears.agent.audit.persist` is its persister:
 
-- `ensure_audit_events_table(db)` creates the table, with every envelope field,
-  `ip_address`, and both idempotency anchors.
-- `start_audit_persister(nats, db, durable=...)` runs a shared durable pull
-  consumer. The stream is file-backed with a dead-letter subject; a malformed event
-  is dropped and a database fault is retried, then dead-lettered.
-- `prune_audit_events(db, older_than=...)` is retention.
+- `ensure_audit_events_table(db)` creates the table, with every envelope field and
+  `ip_address`, and migrates an existing one by adding any column it lacks.
+  Idempotency is on the envelope `id`.
+- `start_audit_persister(nats, db, durable=..., storage="memory")` runs a shared
+  durable pull consumer with a dead-letter subject. A malformed event is dropped;
+  a database fault is retried, then dead-lettered.
+  - `storage` must match every other declarer of the `audit` stream.
+  - `durable` must be unique per table.
+- `prune_audit_events(db, older_than=...)` is batched retention.
 - `anonymize_audit_rows(db, actor_user_ids=...)` is erasure: every row and id is
   kept, and `details` and `ip_address` are rewritten by the platform's rule. It is
   this deployment's own erasure and never answers the hub's anonymize subject.

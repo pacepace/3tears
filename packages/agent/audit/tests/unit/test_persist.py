@@ -99,7 +99,7 @@ class _Nats:
         return self.consumer
 
 
-async def test_start_ensures_a_file_backed_stream_with_the_dead_letter_and_stops_cleanly() -> None:
+async def test_start_ensures_a_memory_stream_by_default_with_the_dead_letter_and_stops_cleanly() -> None:
     from threetears.nats import Subjects, set_default_namespace
 
     set_default_namespace("unitaudit")
@@ -107,11 +107,28 @@ async def test_start_ensures_a_file_backed_stream_with_the_dead_letter_and_stops
     handle = await start_audit_persister(nats, _Db(), durable="app-audit-persist")
     try:
         [stream] = nats.streams
-        assert stream["name"] == AUDIT_STREAM_NAME and stream["storage"] == "file"
+        assert stream["name"] == AUDIT_STREAM_NAME and stream["storage"] == "memory"
         assert Subjects.audit_deadletter().path in stream["subjects"]
         [sub] = nats.subscriptions
         assert sub["durable"] == "app-audit-persist"
         assert sub["dead_letter_subject"] == Subjects.audit_deadletter()
+        assert sub["stream"] == "ns-audit", "the ensured stream is named, sparing a stream-names lookup"
     finally:
         await handle.stop()
     assert nats.consumer.stopped
+
+
+async def test_stop_cancels_the_task_even_when_the_consumer_stop_fails() -> None:
+    import asyncio
+
+    from threetears.agent.audit.persist import AuditPersisterHandle
+
+    class _Broken:
+        async def stop(self) -> None:
+            raise ConnectionError("connection already closed")
+
+    task = asyncio.create_task(asyncio.Event().wait())
+    with pytest.raises(ConnectionError):
+        await AuditPersisterHandle(_Broken(), task).stop()
+    await asyncio.sleep(0)
+    assert task.cancelled() or task.done()
