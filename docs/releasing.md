@@ -35,6 +35,10 @@ An intra-family API addition ships in a MINOR bump
 ## Cutting a release
 
 1. Bump the version.
+   - **A release that adds a package:** register that package's pending trusted publisher on
+     PyPI first. Nothing checks for it -- `verify-dist-complete.sh` only confirms every member
+     built -- and a tag pushed without it publishes the members ahead of the new one, then
+     fails, leaving a family that cannot install until the version is republished.
 2. PR into `develop`.
 3. PR `develop` into `main`, with no version bump on that second PR.
 4. Tag from `main`.

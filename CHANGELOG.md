@@ -615,9 +615,11 @@ consumer can take it -- a LangGraph app, an MCP server, a model adapter or a val
 - **Changed (`3tears-models`, `3tears-agent-tools`):** the subscription route and
   `TearsTool.run`'s input coercion use it; their private copies are gone. Both now depend on
   `3tears-tool-schema` within the family's bounded range.
-- **Release note:** a new project on PyPI needs a trusted publisher before its first upload. The
-  release workflow publishes every workspace member and `verify-dist-complete.sh` fails the
-  build without it.
+- **Release note:** a new project on PyPI needs a trusted publisher registered before its first
+  upload, and nothing checks for one: `verify-dist-complete.sh` only confirms every workspace
+  member built. A tag pushed without it publishes the members ahead of the new one and then
+  fails, leaving a family that cannot install. Register the pending publisher before pushing
+  the tag (`docs/releasing.md`, "Cutting a release"). It was registered for this release.
 
 ### A temporary registration refusal is waited out, not fatal
 
@@ -1458,6 +1460,9 @@ parse fixes above: the data now carries the fact that it failed.
   therefore re-runs those rows once; a deployment that does not want that model spend can leave
   them, and they stay honestly marked. Each statement is its own `execute`, and every UPDATE is
   gated on `enrichment_status IS NULL`, so a replay changes nothing.
+- **Rolling back to 0.54.x after v013:** 0.54.x ignores the two new columns. A row v013 turned
+  from `{}` into `"failed"` has its notes cleared, so 0.54.x reads it as never enriched and may
+  enrich it again; every other row reads as before. Nothing breaks, and nothing needs undoing.
 - **Cached copies:** a row cached in L1 or L2 before v013 ran is out of the migration's reach, and
   nothing in 3tears re-keys or wipes a collection's cache when its stored shape changes. So the
   `ScrapeExtraction` constructor -- the one point every tier reads through -- applies v013's rules
