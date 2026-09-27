@@ -108,18 +108,22 @@ packages (bumped in lock-step).
 
 - **New (minor):** `threetears.models.usage_scope(**fields)` and `current_usage_scope()`.
   - A scope attributes every usage record made inside it: customer, user, conversation, agent,
-    model id, correlation id, invocation ref, category.
+    model id, correlation id, origin invocation ref, invocation ref, category. Values are checked:
+    a UUID field takes a UUID or its string, and anything else raises.
   - Scopes nest (an inner scope overrides only what it names), and the scope rides a
     `ContextVar`.
   - Run metadata `threetears.usage.<field>` attributes one call and wins over the scope;
-    `threetears.usage.purpose` classifies it.
-  - `UsageTrackingCallback` now fills a record's tenant fields and cache read/write tokens.
-    Before, nothing could fill them, so multi-tenant consumers kept a second metering path.
+    `threetears.usage.purpose` classifies it. The scope is taken when the call starts.
+  - `UsageTrackingCallback` now fills a record's tenant fields and cache read/write tokens,
+    including OpenAI's `prompt_tokens_details.cached_tokens`. Before, nothing could fill them,
+    so multi-tenant consumers kept a second metering path.
 - **New (minor):** `UsageRecord.token_source`: `"reported"`, `"estimated"` or `"unavailable"`.
   - A call whose provider reports no usage is estimated from its text (and its prompt) and
     marked so, instead of recording a silent 0/0.
-  - Every generation is counted, not only the first.
-  - `extract_usage(response, prompt_messages=)` is the shared extraction.
+  - Every generation is counted, not only the first, but one call's usage repeated on each
+    choice (ChatOpenAI with `n > 1`) is counted once.
+  - A tool-call-only reply is estimated from its arguments.
+  - `extract_usage(response, prompt_messages=) -> ExtractedUsage` is the shared extraction.
 - **New (minor):** `UsageAccumulator`, a callback totalling one run's calls for per-turn
   metering (tokens, cache tokens, calls, a combined source, and `cost_usd` as `Decimal`), and
   `attach_callbacks(model, *handlers)`. `create_chat_model`'s return is a `RunnableBinding`, where
@@ -127,7 +131,17 @@ packages (bumped in lock-step).
   already bound.
 - **New (minor):** `set_default_usage_tracker(tracker)` / `default_usage_tracker()`. A
   factory-built model without `tracker=` uses the process-wide default, so it reaches the
-  consumer's sinks. Before, each model got a fresh tracker with no sinks.
+  consumer's sinks. Before, each model got a fresh tracker with no sinks. It applies to models
+  built after it is set.
+- **Changed:** `UsageTrackingCallback` now runs inline (`run_inline = True`). LangChain used to
+  run it on an executor thread during async calls, where the tracker drove its sinks on a
+  throwaway event loop. A sink bound to the application's loop (an asyncpg pool) failed there,
+  swallowed at WARNING.
+- **Changed:** a call whose provider reports no usage now records ESTIMATED tokens where it used
+  to record 0. The estimates flow into the `threetears_llm_*_tokens_total` counters and into
+  `cost_usd`, and each record and span says which it is (`token_source`,
+  `llm.token_source`). A sink that must count only provider-reported tokens should filter on
+  `token_source`.
 
 ## v0.54.0 -- 2026-09-26
 

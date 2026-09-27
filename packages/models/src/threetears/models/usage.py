@@ -12,10 +12,11 @@ adds handlers to it (or to a bare model) and keeps the ones already bound.
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
-from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.callbacks import BaseCallbackHandler, BaseCallbackManager
 from langchain_core.language_models import BaseChatModel
 from langchain_core.outputs import LLMResult
 from langchain_core.runnables import RunnableBinding
@@ -26,7 +27,11 @@ __all__ = ["UsageAccumulator", "attach_callbacks"]
 
 
 def _combine(current: TokenSource | None, new: TokenSource) -> TokenSource:
-    """the source of a total: reported only while every part was reported.
+    """the source of a total.
+
+    ``"reported"`` only while every call was reported, and ``"unavailable"`` only while no call
+    counted anything. any mix -- a reported call beside an estimated one, or beside one that counted
+    nothing -- is ``"estimated"``: the total is not the provider's exact figure.
 
     :param current: the source so far (``None`` before the first call)
     :ptype current: TokenSource | None
@@ -35,9 +40,7 @@ def _combine(current: TokenSource | None, new: TokenSource) -> TokenSource:
     :return: the combined source
     :rtype: TokenSource
     """
-    if current is None or current == new:
-        return new
-    return "unavailable" if current == new == "unavailable" else "estimated"
+    return new if current is None or current == new else "estimated"
 
 
 class UsageAccumulator(BaseCallbackHandler):
@@ -57,7 +60,8 @@ class UsageAccumulator(BaseCallbackHandler):
     :ivar cache_creation_tokens: prompt-cache writes so far
     :ivar calls: LLM calls heard
     :ivar token_source: ``"reported"`` while every call's counts came from the provider,
-        ``"estimated"`` once any was estimated, ``None`` before the first call
+        ``"unavailable"`` while none counted anything, ``"estimated"`` for any mix, ``None`` before
+        the first call
     """
 
     run_inline = True
@@ -118,6 +122,23 @@ class UsageAccumulator(BaseCallbackHandler):
         _ = serialized, kwargs
         self._prompts[run_id] = [m for batch in messages for m in batch]
 
+    def on_llm_start(self, serialized: dict[str, Any], prompts: list[str], *, run_id: UUID, **kwargs: Any) -> None:
+        """remember a completion-style call's prompt, for an input estimate.
+
+        :param serialized: the model (unused)
+        :ptype serialized: dict[str, Any]
+        :param prompts: the prompt strings
+        :ptype prompts: list[str]
+        :param run_id: the call's run id
+        :ptype run_id: UUID
+        :param kwargs: other callback context (unused)
+        :ptype kwargs: Any
+        :return: None
+        :rtype: None
+        """
+        _ = serialized, kwargs
+        self._prompts[run_id] = [SimpleNamespace(content=p) for p in prompts]
+
     def on_llm_end(self, response: LLMResult, *, run_id: UUID, **kwargs: Any) -> None:
         """add one call's usage to the totals.
 
@@ -159,7 +180,9 @@ def attach_callbacks(model: BaseChatModel, *handlers: BaseCallbackHandler) -> Ba
     """``model`` with ``handlers`` added to the callbacks it already carries.
 
     works on the ``RunnableBinding`` ``create_chat_model`` returns -- whose tracker and breaker
-    callbacks are kept -- and on a bare chat model.
+    callbacks are kept, whether bound as a list or inside a callback manager -- and on a bare chat
+    model. (``with_config(callbacks=...)`` REPLACES a binding's callbacks, and ``model_copy`` drops
+    them, which is why this exists.)
 
     :param model: a chat model, bound or bare
     :ptype model: BaseChatModel
@@ -169,18 +192,10 @@ def attach_callbacks(model: BaseChatModel, *handlers: BaseCallbackHandler) -> Ba
     :rtype: BaseChatModel
     """
     existing: list[Any] = []
-    if isinstance(model, RunnableBinding):
-        bound = model.config.get("callbacks") if model.config else None
-        existing = list(bound) if isinstance(bound, list) else []
-        rebound = RunnableBinding(
-            bound=model.bound,
-            kwargs=model.kwargs,
-            config={**(model.config or {}), "callbacks": [*existing, *handlers]},
-            config_factories=model.config_factories,
-            custom_input_type=model.custom_input_type,
-            custom_output_type=model.custom_output_type,
-        )
-        result = cast("BaseChatModel", rebound)
-    else:
-        result = cast("BaseChatModel", model.with_config(callbacks=list(handlers)))
-    return result
+    if isinstance(model, RunnableBinding) and model.config:
+        bound = model.config.get("callbacks")
+        if isinstance(bound, list):
+            existing = list(bound)
+        elif isinstance(bound, BaseCallbackManager):
+            existing = list(bound.handlers)
+    return cast("BaseChatModel", model.with_config(callbacks=[*existing, *handlers]))

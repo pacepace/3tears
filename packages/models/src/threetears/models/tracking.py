@@ -44,6 +44,7 @@ from threetears.models.enums import ModelTier
 __all__ = [
     "USAGE_METADATA_PREFIX",
     "LlmPurpose",
+    "ExtractedUsage",
     "extract_usage",
     "TokenSource",
     "current_usage_scope",
@@ -239,7 +240,7 @@ _USAGE_SCOPE: ContextVar[Mapping[str, Any]] = ContextVar("threetears_usage_scope
 
 
 @contextmanager
-def usage_scope(**fields: Any) -> Iterator[None]:  # noqa: ANN401 -- UUID or str per field, checked below
+def usage_scope(**fields: Any) -> Iterator[None]:  # noqa: ANN401 -- UUID or str per field, coerced below
     """attribute every usage record made inside the block (tenant, user, conversation, ...).
 
     scopes nest: an inner scope overrides only the fields it names, and the outer one returns on
@@ -254,11 +255,21 @@ def usage_scope(**fields: Any) -> Iterator[None]:  # noqa: ANN401 -- UUID or str
     :return: a context manager
     :rtype: Iterator[None]
     :raises TypeError: a field name ``UsageRecord`` does not carry
+    :raises ValueError: a value that is not the field's type (a UUID field takes a UUID or its string)
     """
     unknown = sorted(set(fields) - set(_SCOPE_FIELDS))
     if unknown:
         raise TypeError(f"usage_scope got unknown field(s) {unknown}; known: {sorted(_SCOPE_FIELDS)}")
-    merged = {**_USAGE_SCOPE.get(), **{name: value for name, value in fields.items() if value is not None}}
+    coerced: dict[str, Any] = {}
+    for name, value in fields.items():
+        if value is None:
+            continue
+        parsed = _parse_field(name, value)
+        if parsed is None:
+            kind = "a UUID" if _SCOPE_FIELDS[name] else "a string"
+            raise ValueError(f"usage_scope field {name} must be {kind}, got {value!r}")
+        coerced[name] = parsed
+    merged = {**_USAGE_SCOPE.get(), **coerced}
     token = _USAGE_SCOPE.set(merged)
     try:
         yield
@@ -301,6 +312,18 @@ def _attribution_from_metadata(metadata: Mapping[str, Any] | None) -> tuple[dict
     return fields, purpose
 
 
+def _attribution_at_start(metadata: Mapping[str, Any] | None) -> tuple[dict[str, Any], LlmPurpose | None]:
+    """a call's attribution as it starts: the scope in force, with the run's metadata over it.
+
+    :param metadata: the run's metadata
+    :ptype metadata: Mapping[str, Any] | None
+    :return: the attribution fields, and the purpose when the metadata names one
+    :rtype: tuple[dict[str, Any], LlmPurpose | None]
+    """
+    named, purpose = _attribution_from_metadata(metadata)
+    return {**current_usage_scope(), **named}, purpose
+
+
 def _parse_field(name: str, value: Any) -> Any:  # noqa: ANN401 -- UUID or str per field
     """coerce one attribution value to its field's type; ``None`` when it cannot be.
 
@@ -325,8 +348,8 @@ def _parse_field(name: str, value: Any) -> Any:  # noqa: ANN401 -- UUID or str p
 
 
 @dataclass
-class _Extracted:
-    """token counts pulled from one LLM result."""
+class ExtractedUsage:
+    """the token counts of one LLM result (:func:`extract_usage`), and where they came from."""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -361,53 +384,75 @@ def _estimate_tokens(text: str) -> int:
     return max(1, round(len(text) / 4)) if text else 0
 
 
-def extract_usage(response: LLMResult, *, prompt_messages: list[Any] | None = None) -> _Extracted:
+def _reply_text(message: Any) -> str:  # noqa: ANN401 -- any LangChain message
+    """what a reply emitted: its text plus any tool-call arguments.
+
+    :param message: the reply
+    :ptype message: Any
+    :return: text to estimate from
+    :rtype: str
+    """
+    calls = getattr(message, "tool_calls", None) or []
+    args = " ".join(f"{c.get('name', '')} {c.get('args', '')}" for c in calls if isinstance(c, dict))
+    return f"{_message_text(message)} {args}".strip()
+
+
+def extract_usage(response: LLMResult, *, prompt_messages: list[Any] | None = None) -> ExtractedUsage:
     """the token counts of one LLM result, and where they came from.
 
-    the provider's own counts win: ``llm_output["token_usage"]`` (OpenAI style) first, else every
-    generation's ``usage_metadata`` summed (cache reads and writes from ``input_token_details``). a
-    generation with no reported usage is estimated from its text, and the whole result is then
-    ``"estimated"`` -- with the input estimated from ``prompt_messages`` when given. with nothing to
-    count it is ``"unavailable"`` and zero, never a silent zero passed off as reported.
+    the provider's own counts win. ``llm_output["token_usage"]`` (OpenAI style, with cache reads from
+    ``prompt_tokens_details.cached_tokens``) first; else the generations' ``usage_metadata`` (cache
+    reads and writes from ``input_token_details``) -- summed across generations, except that one
+    call's usage repeated on every choice (ChatOpenAI with ``n > 1``) is counted once. a generation
+    with no reported usage is estimated from what it emitted (text and tool-call arguments), and the
+    whole result is then ``"estimated"``, with the input estimated from ``prompt_messages`` when
+    nothing was reported. with nothing to count it is ``"unavailable"`` and zero -- never a silent zero
+    passed off as reported.
 
     :param response: the LLM result
     :ptype response: LLMResult
     :param prompt_messages: the messages sent, for an input estimate
     :ptype prompt_messages: list[Any] | None
     :return: the counts and their source
-    :rtype: _Extracted
+    :rtype: ExtractedUsage
     """
-    out = _Extracted()
+    out = ExtractedUsage()
     llm_output = getattr(response, "llm_output", None) or {}
     token_usage = llm_output.get("token_usage") if isinstance(llm_output, dict) else None
-    if isinstance(token_usage, dict) and (token_usage.get("prompt_tokens") or token_usage.get("completion_tokens")):
-        out.input_tokens = int(token_usage.get("prompt_tokens", 0) or token_usage.get("input_tokens", 0))
-        out.output_tokens = int(token_usage.get("completion_tokens", 0) or token_usage.get("output_tokens", 0))
+    if isinstance(token_usage, dict) and any(
+        token_usage.get(k) for k in ("prompt_tokens", "completion_tokens", "input_tokens", "output_tokens")
+    ):
+        out.input_tokens = int(token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0)
+        out.output_tokens = int(token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0)
+        details = token_usage.get("prompt_tokens_details") or {}
+        out.cache_read_tokens = int(details.get("cached_tokens", 0) or 0) if isinstance(details, dict) else 0
         out.source = "reported"
         return out
-    reported = estimated = False
+    usages: list[dict[str, Any]] = []
+    estimated_output = 0
     for batch in getattr(response, "generations", None) or []:
         for generation in batch:
             message = getattr(generation, "message", None)
             usage = getattr(message, "usage_metadata", None) if message is not None else None
             if isinstance(usage, dict):
-                reported = True
-                out.input_tokens += int(usage.get("input_tokens", 0) or 0)
-                out.output_tokens += int(usage.get("output_tokens", 0) or 0)
-                details = usage.get("input_token_details") or {}
-                out.cache_read_tokens += int(details.get("cache_read", 0) or 0)
-                out.cache_creation_tokens += int(details.get("cache_creation", 0) or 0)
+                usages.append(usage)
             else:
-                text = _message_text(message) if message is not None else str(getattr(generation, "text", ""))
-                tokens = _estimate_tokens(text)
-                if tokens:
-                    estimated = True
-                    out.output_tokens += tokens
-    if estimated:
+                emitted = _reply_text(message) if message is not None else str(getattr(generation, "text", ""))
+                estimated_output += _estimate_tokens(emitted)
+    if len(usages) > 1 and all(u == usages[0] for u in usages[1:]):
+        usages = usages[:1]  # one call's usage on every choice, not one usage per choice
+    for usage in usages:
+        out.input_tokens += int(usage.get("input_tokens", 0) or 0)
+        out.output_tokens += int(usage.get("output_tokens", 0) or 0)
+        details = usage.get("input_token_details") or {}
+        out.cache_read_tokens += int(details.get("cache_read", 0) or 0)
+        out.cache_creation_tokens += int(details.get("cache_creation", 0) or 0)
+    out.output_tokens += estimated_output
+    if estimated_output:
         out.source = "estimated"
-        if not reported and prompt_messages:
+        if not usages and prompt_messages:
             out.input_tokens = sum(_estimate_tokens(_message_text(m)) for m in prompt_messages)
-    elif reported:
+    elif usages:
         out.source = "reported"
     return out
 
@@ -882,6 +927,9 @@ class UsageTracker:
                 span.set_attribute("llm.cache_read_tokens", usage.cache_read_tokens)
             if usage.cache_creation_tokens:
                 span.set_attribute("llm.cache_creation_tokens", usage.cache_creation_tokens)
+            # an estimated count is not a provider's count; say which this is
+            if usage.token_source is not None:
+                span.set_attribute("llm.token_source", usage.token_source)
 
             if usage.tier is not None:
                 span.set_attribute("llm.tier", str(usage.tier))
@@ -963,6 +1011,10 @@ class UsageTracker:
 class UsageTrackingCallback(BaseCallbackHandler):
     """LangChain callback that records ``UsageRecord`` on every ``on_llm_end``.
 
+    runs INLINE: LangChain would otherwise run this sync handler on an executor thread during an async
+    call, where the tracker's sinks -- a consumer's database pool, bound to the event loop -- would be
+    driven on a throwaway loop of their own and fail.
+
     captures wall-clock latency between ``on_llm_start`` (or
     ``on_chat_model_start``) and ``on_llm_end``, extracts token counts from
     the standard LangChain ``LLMResult.llm_output`` or per-generation
@@ -999,6 +1051,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
         :ptype cost_per_output_token: Decimal | None
         """
         super().__init__()
+        self.run_inline = True
         self._tracker = tracker
         self._model_name = model_name
         self._provider_name = provider_name
@@ -1035,7 +1088,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
         _ = serialized
         key = run_id if run_id is not None else id(self)
         self._starts[key] = time.monotonic()
-        self._attribution[key] = _attribution_from_metadata(kwargs.get("metadata"))
+        self._attribution[key] = _attribution_at_start(kwargs.get("metadata"))
         self._prompts[key] = [SimpleNamespace(content=p) for p in prompts]
 
     def on_chat_model_start(
@@ -1063,7 +1116,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
         _ = serialized
         key = run_id if run_id is not None else id(self)
         self._starts[key] = time.monotonic()
-        self._attribution[key] = _attribution_from_metadata(kwargs.get("metadata"))
+        self._attribution[key] = _attribution_at_start(kwargs.get("metadata"))
         self._prompts[key] = [m for batch in messages for m in batch]
 
     def on_llm_end(
@@ -1086,12 +1139,12 @@ class UsageTrackingCallback(BaseCallbackHandler):
         key = run_id if run_id is not None else id(self)
         start = self._starts.pop(key, None)
         latency_ms = int((time.monotonic() - start) * 1000) if start is not None else 0
-        named, purpose = self._attribution.pop(key, ({}, None))
+        # taken when the call started (scope, then the run's metadata over it); a call whose start this
+        # callback never saw is attributed by the scope in force now
+        attribution, purpose = self._attribution.pop(key, (current_usage_scope(), None))
         extracted = extract_usage(response, prompt_messages=self._prompts.pop(key, None))
         input_tokens, output_tokens = extracted.input_tokens, extracted.output_tokens
         total_tokens = input_tokens + output_tokens
-        # the enclosing usage_scope attributes the call; the run's own metadata wins over it
-        attribution = {**current_usage_scope(), **named}
 
         cost_usd: Decimal | None = None
         if self._cost_per_input_token is not None and self._cost_per_output_token is not None:

@@ -37,7 +37,7 @@ from threetears.models import (
     set_default_usage_tracker,
     usage_scope,
 )
-from threetears.models.tracking import UsageAuditSink
+from threetears.models.tracking import UsageAuditSink, extract_usage
 
 
 class _Sink(UsageAuditSink):
@@ -232,3 +232,127 @@ def test_uuid_metadata_is_parsed_and_junk_is_ignored() -> None:
     assert recorded[0].user_id == user
     assert recorded[0].customer_id is None
     assert isinstance(recorded[0].user_id, UUID)
+
+
+class _LoopBoundSink(UsageAuditSink):
+    """Like an asyncpg-backed sink: it only works on the event loop it was built on."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.get_running_loop()
+        self.records: list[UsageRecord] = []
+
+    async def record(self, record: UsageRecord) -> None:
+        assert asyncio.get_running_loop() is self.loop, "a sink was driven on a loop it does not belong to"
+        await asyncio.sleep(0)
+        self.records.append(record)
+
+
+async def test_records_reach_a_sink_bound_to_the_running_loop() -> None:
+    """The default tracker's whole point is the consumer's database sink, which lives on its loop."""
+    sink = _LoopBoundSink()
+    tracker = UsageTracker(audit_sink=sink)
+    model = GenericFakeChatModel(messages=iter([_reply(usage=_USAGE)])).with_config(
+        callbacks=[tracker.make_callback(model_name="fake", provider_name="fake")]
+    )
+    await model.ainvoke([HumanMessage(content="hi")])
+    await _settle()
+    assert len(sink.records) == 1
+
+
+def test_openai_shaped_usage_reads_its_cache_tokens() -> None:
+    tracker = UsageTracker()
+    recorded: list[UsageRecord] = []
+    tracker.record = recorded.append  # type: ignore[method-assign]
+    result = LLMResult(
+        generations=[[ChatGeneration(message=_reply())]],
+        llm_output={
+            "token_usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "prompt_tokens_details": {"cached_tokens": 80},
+            }
+        },
+    )
+    tracker.make_callback(model_name="fake", provider_name="fake").on_llm_end(result, run_id=uuid4())
+    assert (recorded[0].input_tokens, recorded[0].output_tokens, recorded[0].cache_read_tokens) == (100, 10, 80)
+
+
+def test_llm_output_keyed_input_output_tokens_is_read() -> None:
+    result = LLMResult(
+        generations=[[ChatGeneration(message=_reply())]],
+        llm_output={"token_usage": {"input_tokens": 7, "output_tokens": 3}},
+    )
+    usage = extract_usage(result)
+    assert (usage.input_tokens, usage.output_tokens, usage.source) == (7, 3, "reported")
+
+
+def test_one_call_usage_repeated_on_each_choice_is_counted_once() -> None:
+    """ChatOpenAI puts the whole call's usage on every choice when n > 1."""
+    usage = extract_usage(_result(_reply(usage=_USAGE), _reply(usage=dict(_USAGE))))
+    assert (usage.input_tokens, usage.output_tokens) == (12, 5)
+
+
+def test_a_tool_call_only_reply_is_estimated_from_its_arguments() -> None:
+    reply = AIMessage(content="", tool_calls=[{"name": "search", "args": {"query": "the harbor at dawn"}, "id": "c1"}])
+    usage = extract_usage(_result(reply), prompt_messages=[HumanMessage(content="find the harbor scene please")])
+    assert usage.source == "estimated" and usage.output_tokens > 0 and usage.input_tokens > 0
+
+
+def test_a_scope_value_of_the_wrong_type_is_refused() -> None:
+    with pytest.raises(ValueError, match="customer_id"):
+        with usage_scope(customer_id="not-a-uuid"):
+            pass
+
+
+def test_a_scope_accepts_a_uuid_given_as_a_string() -> None:
+    customer = uuid4()
+    with usage_scope(customer_id=str(customer)):
+        assert current_usage_scope() == {"customer_id": customer}
+
+
+def test_the_scope_is_taken_when_the_call_starts() -> None:
+    tracker = UsageTracker()
+    recorded: list[UsageRecord] = []
+    tracker.record = recorded.append  # type: ignore[method-assign]
+    callback = tracker.make_callback(model_name="fake", provider_name="fake")
+    run, customer = uuid4(), uuid4()
+    with usage_scope(customer_id=customer):
+        callback.on_chat_model_start({}, [[]], run_id=run)
+    callback.on_llm_end(_result(_reply(usage=_USAGE)), run_id=run)
+    assert recorded[0].customer_id == customer
+
+
+@pytest.mark.parametrize(
+    ("sources", "expected"),
+    [
+        (["reported", "reported"], "reported"),
+        (["unavailable", "unavailable"], "unavailable"),
+        (["reported", "estimated"], "estimated"),
+        (["reported", "unavailable"], "estimated"),
+        (["unavailable", "reported"], "estimated"),
+    ],
+)
+def test_the_accumulated_source_is_exact_only_when_every_call_was_reported(sources: list[str], expected: str) -> None:
+    from threetears.models.usage import _combine
+
+    total = None
+    for source in sources:
+        total = _combine(total, source)  # type: ignore[arg-type]
+    assert total == expected
+
+
+async def test_attach_keeps_callbacks_held_by_a_callback_manager() -> None:
+    from langchain_core.callbacks import AsyncCallbackManager
+
+    first, second = _Heard(), _Heard()
+    model = GenericFakeChatModel(messages=iter([_reply(usage=_USAGE)])).with_config(
+        callbacks=AsyncCallbackManager(handlers=[first])
+    )
+    await attach_callbacks(model, second).ainvoke([HumanMessage(content="hi")])
+    assert (first.ends, second.ends) == (1, 1)
+
+
+def test_the_extracted_usage_type_is_public() -> None:
+    from threetears.models import ExtractedUsage
+
+    assert isinstance(extract_usage(_result(_reply(usage=_USAGE))), ExtractedUsage)

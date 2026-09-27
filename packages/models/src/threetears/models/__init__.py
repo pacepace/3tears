@@ -94,6 +94,7 @@ from threetears.models.tool_name_validation import (
 )
 from threetears.models.tracking import (
     USAGE_METADATA_PREFIX,
+    ExtractedUsage,
     LlmPurpose,
     TokenSource,
     UsageAuditSink,
@@ -124,6 +125,7 @@ from threetears.models.providers import (  # noqa: E402, F401
 
 __all__ = [
     "USAGE_METADATA_PREFIX",
+    "ExtractedUsage",
     "TokenSource",
     "UsageAccumulator",
     "attach_callbacks",
