@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-tool-schema"
-version = "0.55.1"
+version = "0.56.0"
 description = "Dependency-free helpers that make a tool's JSON Schema self-contained for models and validators"
 readme = "README.md"
 requires-python = ">=3.14"
