@@ -289,7 +289,10 @@ class MemoryExtractor:
             invocation per row that lands in storage. the consumer
             receives the full :class:`MemoryEntity` so it can build a
             push notification (server-sent event, websocket frame,
-            slack message, etc.) with no follow-up database read. an
+            slack message, etc.) with no follow-up database read. the
+            entity is a detached snapshot of the row as written: its
+            fields do not depend on the cache still holding the row,
+            and setting one does not write it back. an
             exception inside the callback is logged at WARNING and
             swallowed so a flaky downstream push doesn't break the
             extraction pipeline (the row is already committed; the
@@ -1119,7 +1122,16 @@ class MemoryExtractor:
                         # prometheus-client wrap the callback and
                         # increment their own Counter on the exception.
                         try:
-                            await self._on_memory_created(new_entity)
+                            # A snapshot of the committed row, not
+                            # ``new_entity``. The live handle reads its
+                            # fields from L1 only, and the summary callback
+                            # above can wait minutes on a model. A turn that
+                            # surfaces this memory in that window bumps its
+                            # salience, which evicts the L1 row, and the
+                            # handle then reads every field as None.
+                            await self._on_memory_created(
+                                MemoryEntity(dict(new_data), is_new=False),
+                            )
                         except Exception as cb_exc:
                             # convert at border: callback-failed log extra_data fields
                             log_user_id = str(user_id)
