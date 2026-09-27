@@ -287,9 +287,11 @@ class MemoryAuthorizerDependencies:
         ``RoleAssignmentCollection`` used by
         :func:`ensure_memory_owner_assignment` via
         :meth:`ensure_group_role_assignment`
-    :ivar namespace_provisioner: hub-backed
+    :ivar namespace_provisioner: the
         :class:`~threetears.agent.memory.namespace_client.MemoryNamespaceProvisioner`
-        asked to materialize a missing memory namespace row. optional, and
+        asked to materialize a missing memory namespace row -- ``HubMemoryNamespaceProvisioner`` on a
+        hub deployment, ``LocalMemoryNamespaceProvisioner`` where the application owns its control
+        plane. optional, and
         ``None`` is a real configuration rather than an omission: the hub's own
         process resolves memory namespaces against a Collection that reaches
         the ``namespaces`` table directly and has nobody to ask. a process that
@@ -340,8 +342,8 @@ class MemoryAuthorizerDependencies:
         :param role_assignment_collection: three-tier
             ``RoleAssignmentCollection``
         :ptype role_assignment_collection: RoleAssignmentCollection
-        :param namespace_provisioner: hub-backed provisioner for a missing
-            memory namespace row, or ``None``
+        :param namespace_provisioner: the provisioner for a missing memory namespace row (the hub's,
+            or the local one for a hub-less deployment), or ``None``
         :ptype namespace_provisioner: MemoryNamespaceProvisioner | None
         :param invalidation_publisher: rbac invalidation-bus publisher for
             cross-pod eviction after an ensure writes, or ``None``
@@ -368,8 +370,9 @@ async def _resolve_or_create_memory_namespace(
 
     looks the triple ``(memory, agent_id, customer_id)`` up first via
     :meth:`NamespaceCollection.get_by_owner_and_customer`, which is a READ and
-    stays here. when no row matches, the row is materialized by the HUB through
-    ``namespace_provisioner`` and this process writes nothing: an agent that
+    stays here. when no row matches, the row is materialized through ``namespace_provisioner`` --
+    by the HUB on a hub deployment, or by the application that owns the control plane where there is
+    no hub -- and this module writes nothing: an agent that
     could insert into the hub's ``namespaces`` table chooses what the control plane
     says about itself, which is why the broker's platform-write carve-out for
     ``namespace_type='memory'`` existed and why removing this writer is what

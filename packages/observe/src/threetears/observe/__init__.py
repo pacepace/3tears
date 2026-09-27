@@ -30,6 +30,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 
 from threetears.observe.background import spawn_background
 from threetears.observe.erasure import ANONYMIZED_MARKER
+from threetears.observe.periodic import PeriodicTask, TickResult
 from threetears.observe.health import HealthCheck, HealthServer, HealthTier
 from threetears.observe.inflight import InflightRequestsGauge
 from threetears.observe.logging import (
@@ -55,7 +56,9 @@ __all__ = [
     "HealthServer",
     "HealthTier",
     "InflightRequestsGauge",
+    "PeriodicTask",
     "ThreeTearsLogger",
+    "TickResult",
     "clear_context",
     "NOISY_LIBRARY_LOGGERS",
     "configure_logging",

@@ -115,6 +115,8 @@ async def summarize_older_messages(
     chat_model: BaseChatModel,
     custom_prompt: str | None = None,
     config: RunnableConfig | None = None,
+    *,
+    fallback: bool = True,
 ) -> str:
     """Summarize a list of older messages into a concise narrative.
 
@@ -132,6 +134,9 @@ async def summarize_older_messages(
         model call. Callers streaming a response tag this with the framework's
         no-stream marker (``{"tags": [NOSTREAM_TAG]}``) so the internal summary
         call's tokens never leak into the user-facing token stream.
+    :param fallback: on a failed model call, return the heuristic summary (the default). ``False``
+        re-raises instead -- for a caller whose summary replaces an earlier one, where the
+        heuristic (which keeps only assistant sentences) would silently discard it.
     :return: the summary text (capped at :data:`_MAX_SUMMARY_LENGTH` characters).
     """
     prompt = custom_prompt or DEFAULT_SUMMARIZATION_PROMPT
@@ -147,6 +152,8 @@ async def summarize_older_messages(
         )
         summary = _message_text(result).strip()
     except Exception:  # prawduct:allow prawduct/broad-except -- provider/LLM errors fall back to the heuristic summary
+        if not fallback:
+            raise
         _logger.warning(
             "Summarization LLM call failed, using fallback",
             exc_info=True,

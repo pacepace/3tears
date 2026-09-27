@@ -33,6 +33,25 @@ def _clean_context():
     _call_site_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _restore_logging_levels():
+    """Put back every logger level and handler list ``configure_logging`` may change.
+
+    It sets the ROOT and ``threetears`` levels (to WARNING in one test) and the noisy-library levels, and
+    the tests restored only handlers. So every test that ran after this file and captured INFO saw
+    nothing -- ``test_fence`` and ``mcp``'s admin-logging test failed only after this module ran.
+    """
+    from threetears.observe import NOISY_LIBRARY_LOGGERS
+
+    names = ["", "threetears", *NOISY_LIBRARY_LOGGERS]
+    saved = {name: (logging.getLogger(name).level, logging.getLogger(name).handlers[:]) for name in names}
+    yield
+    for name, (level, handlers) in saved.items():
+        logger = logging.getLogger(name)
+        logger.setLevel(level)
+        logger.handlers = handlers
+
+
 class TestContext:
     """Generic context get/set/clear."""
 

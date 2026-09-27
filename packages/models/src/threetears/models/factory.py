@@ -24,7 +24,7 @@ from threetears.observe import get_logger
 from threetears.models.capabilities import ModelCapabilities, get_capabilities
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitBreakerRegistry
 from threetears.models.enums import ModelType
-from threetears.models.tracking import LlmPurpose, UsageTracker
+from threetears.models.tracking import LlmPurpose, UsageTracker, default_usage_tracker
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import BaseCallbackHandler
@@ -114,7 +114,7 @@ def _build_callbacks(
     """
     callbacks: list[BaseCallbackHandler] = []
 
-    effective_tracker = tracker if tracker is not None else UsageTracker()
+    effective_tracker = tracker if tracker is not None else default_usage_tracker()
     cost_in = capabilities.cost_per_input_token if capabilities is not None else None
     cost_out = capabilities.cost_per_output_token if capabilities is not None else None
     tier = capabilities.model_tier if capabilities is not None else None

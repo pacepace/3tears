@@ -192,7 +192,8 @@ Wiring shape: every consumer of the memory surface REQUIRES a `MemoryAuthorizerD
 
 - `acl_cache` -- shared `threetears.agent.acl.AclCache` instance;
 - `membership_loader` + `grant_loader` -- the evaluator's loaders (`threetears.agent.acl.MembershipLoader` / `GrantLoader`);
-- `namespace_collection` -- three-tier `NamespaceCollection` used to resolve the memory namespace via `get_by_owner_and_customer(namespace_type="memory", owner_agent_id, customer_id)` (create-if-absent flows through `save_entity`);
+- `namespace_collection` -- three-tier `NamespaceCollection` used to resolve the memory namespace via `get_by_owner_and_customer(namespace_type="memory", owner_agent_id, customer_id)`. This package never writes the row itself;
+- `namespace_provisioner` -- what materializes a missing row. A hub deployment passes `HubMemoryNamespaceProvisioner` (NATS request/reply; the hub writes the row). A deployment with NO hub, one application owning its own control plane, passes `LocalMemoryNamespaceProvisioner(namespace_collection)`. That writes the same row the hub writes, through `NamespaceCollection.ensure_namespace`, and trusts the caller's customer, since there is no forwarded identity. `None` means a missing row is a denial;
 - `group_collection` + `group_member_collection` + `role_collection` + `role_assignment_collection` -- the rbac Collections the first-write owner-assignment path uses via `ensure_memory_owner_assignment(...)`;
 - `invalidation_publisher` (optional) -- the rbac invalidation-bus publisher (e.g. the `NatsClient`). `ensure_memory_owner_assignment` always evicts the rows it writes from `acl_cache`, so the new grant is honoured on the caller's next request; with a publisher it also broadcasts the eviction so every other pod drops the same entries instead of waiting out the ttl.
 

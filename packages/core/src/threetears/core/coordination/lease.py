@@ -16,6 +16,12 @@ usage::
     async with handle:
         ...
 
+to HOLD a lease across real work, renewed in the background and told when it is lost::
+
+    held = await lease.hold("git-writer.story-1", ttl=timedelta(seconds=30), renew_every=timedelta(seconds=10))
+    ...                        # watch held.lost / await held.until_lost()
+    await held.release()       # or: async with held: ...
+
 ``nats_client`` is the canonical
 :class:`threetears.nats.kv.KvCapable` wrapper. the lease opens its
 bucket via :meth:`KvCapable.kv_bucket` so all CAS / miss semantics
@@ -31,6 +37,7 @@ correctly with the rest of the codebase.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -47,6 +54,7 @@ if TYPE_CHECKING:
     from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
+    "HeldLease",
     "KVLease",
     "LeaseHandle",
     "LeaseLost",
@@ -163,6 +171,7 @@ class LeaseHandle:
         holder: str,
         revision: int,
         ttl_seconds: int,
+        date_expires: datetime | None = None,
     ) -> None:
         """bind handle to parent lease and successful-acquire result state.
 
@@ -176,6 +185,9 @@ class LeaseHandle:
         :ptype revision: int
         :param ttl_seconds: default TTL for implicit refresh TTL reuse
         :ptype ttl_seconds: int
+        :param date_expires: the expiry written into the entry's envelope -- the instant other pods
+            treat it as stale
+        :ptype date_expires: datetime | None
         :return: None
         :rtype: None
         """
@@ -184,6 +196,7 @@ class LeaseHandle:
         self.holder = holder
         self.revision = revision
         self.ttl_seconds = ttl_seconds
+        self.date_expires = date_expires
         self.released = False
 
     async def refresh(self, ttl_seconds: int | None = None) -> None:
@@ -244,6 +257,245 @@ class LeaseHandle:
         :rtype: None
         """
         await self.release()
+
+
+class HeldLease:
+    """a lease this pod holds and renews in the background, and learns it has lost.
+
+    returned by :meth:`KVLease.hold` (construct it only through that). renewal is the handle's
+    compare-and-swap :meth:`LeaseHandle.refresh` on a background task, so a takeover surfaces as
+    :class:`LeaseLost` rather than being overwritten. losing the lease is REPORTED, not raised: the
+    holder is usually parked in work that has to be interrupted rather than a call that can return,
+    so it watches :attr:`lost` (or awaits :meth:`until_lost`) and decides for itself. usable across
+    spans no single ``async with`` covers (claimed in one request, released at shutdown) through
+    :meth:`release`, or as an async context manager.
+
+    loss is reported no later than the moment the entry could expire -- a timer is armed for that
+    instant and pushed back by each successful renewal -- because another pod may take the key the
+    moment it does. an entry is only ever assumed alive from the START of the renewal that extended
+    it, never from when the reply arrived.
+
+    :ivar key: the KV key held
+    :ivar lost: set once this pod is no longer the holder; never cleared -- a lease that was lost
+        stays lost, because somebody else may already be acting on it
+    """
+
+    def __init__(
+        self,
+        handle: LeaseHandle,
+        *,
+        ttl_seconds: float,
+        renew_every_seconds: float,
+        expires_at: float,
+        log_extra: Mapping[str, Any] | None = None,
+    ) -> None:
+        """start renewing ``handle`` in the background. internal: use :meth:`KVLease.hold`.
+
+        :param handle: the freshly acquired lease
+        :ptype handle: LeaseHandle
+        :param ttl_seconds: how long the entry outlives a missed renewal
+        :ptype ttl_seconds: float
+        :param renew_every_seconds: seconds between renewals; shorter than the ttl
+        :ptype renew_every_seconds: float
+        :param expires_at: the event-loop time at which the entry could first expire
+        :ptype expires_at: float
+        :param log_extra: context added to every log line about this lease
+        :ptype log_extra: Mapping[str, Any] | None
+        :return: None
+        :rtype: None
+        """
+        loop = asyncio.get_running_loop()
+        self._handle = handle
+        self.key = handle.key
+        self.lost = asyncio.Event()
+        self._ended = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._ttl = ttl_seconds
+        self._renew_every = renew_every_seconds
+        self._expires_at = expires_at
+        self._log_extra = {"key": handle.key, **dict(log_extra or {})}
+        self._released = False
+        self._expiry = loop.call_at(expires_at, self._on_expired)
+        self._renewal: asyncio.Task[None] | None = asyncio.create_task(self._renew(), name=f"kv-lease-renew:{self.key}")
+
+    @property
+    def held(self) -> bool:
+        """whether this pod may still act as the holder.
+
+        :return: ``False`` once lost or released
+        :rtype: bool
+        """
+        return not self.lost.is_set() and not self._released
+
+    async def until_lost(self) -> None:
+        """block until this pod no longer holds the lease -- lost, or released.
+
+        for racing the lease against work that would otherwise run on::
+
+            await asyncio.wait(
+                [asyncio.create_task(work()), asyncio.create_task(held.until_lost())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+        :attr:`lost` tells the two apart: a release is not a loss.
+
+        :return: None
+        :rtype: None
+        """
+        await self._ended.wait()
+
+    def _mark_lost(self, message: str, *, exc_info: bool = False) -> None:
+        """record the loss once, stop renewing, and wake every waiter.
+
+        :param message: the WARNING to log
+        :ptype message: str
+        :param exc_info: whether to attach the current exception
+        :ptype exc_info: bool
+        :return: None
+        :rtype: None
+        """
+        if self.lost.is_set() or self._released:
+            return
+        log.warning(message, extra={"extra_data": self._log_extra}, exc_info=exc_info)
+        self.lost.set()
+        self._ended.set()
+        self._stop.set()
+        self._expiry.cancel()
+
+    def _on_expired(self) -> None:
+        """the entry could have expired by now: another pod may hold the key.
+
+        :return: None
+        :rtype: None
+        """
+        self._mark_lost("KVLease: the lease went un-renewed past its TTL and is assumed lost")
+
+    async def _renew(self) -> None:
+        """renew until lost, released or cancelled.
+
+        :class:`LeaseLost` is authoritative -- another holder is on the entry -- and marks the lease
+        lost at once. anything else (an unreachable bucket, a transport fault, a renewal that hangs)
+        is not evidence of anything, so it is retried; the expiry timer decides when the lease could
+        have lapsed, and each renewal is bounded by the time left before it.
+
+        :return: None
+        :rtype: None
+        """
+        loop = asyncio.get_running_loop()
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self._renew_every)
+            except TimeoutError:
+                # NOSILENT: the timeout IS the renewal interval elapsing without a stop -- time to renew
+                pass
+            if self._stop.is_set():
+                break
+            started = loop.time()
+            remaining = self._expires_at - started
+            if remaining <= 0:
+                break  # the expiry timer has fired, or is about to
+            try:
+                async with asyncio.timeout(remaining):
+                    await self._handle.refresh()
+            except LeaseLost:
+                self._mark_lost("KVLease: another holder now owns the lease")
+                return
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a renewal can fail for any transport reason; the expiry timer decides whether that has cost us the lease
+                log.info(
+                    "KVLease: could not renew the lease, still inside its TTL",
+                    extra={"extra_data": {**self._log_extra, "error": type(exc).__name__}},
+                )
+            else:
+                self._expires_at = started + self._ttl
+                self._expiry.cancel()
+                self._expiry = loop.call_at(self._expires_at, self._on_expired)
+
+    async def release(self) -> None:
+        """stop renewing and delete the entry if this pod still holds it; idempotent.
+
+        a renewal in flight is allowed to finish rather than being cancelled mid-write (bounded by the
+        TTL), so the delete that follows is keyed on the revision the server really holds. releasing a
+        LOST lease is a no-op on the entry (the delete is fenced on the holder), so it never frees the
+        new holder's claim. best-effort: the likeliest reason a release fails is the unreachable bucket
+        that cost the lease in the first place, and a cleanup error must not replace whatever ended the
+        caller's work -- the TTL frees an entry nobody deleted.
+
+        :return: None
+        :rtype: None
+        """
+        if self._released:
+            return
+        self._released = True
+        self._ended.set()
+        self._stop.set()
+        self._expiry.cancel()
+        renewal, self._renewal = self._renewal, None
+        if renewal is not None:
+            done, _pending = await asyncio.wait([renewal], timeout=self._ttl)
+            if not done:
+                renewal.cancel()
+                await asyncio.wait([renewal])
+        try:
+            await self._handle.release()
+        except Exception:  # prawduct:allow prawduct/broad-except -- see above: the TTL frees the entry, and a cleanup failure must not replace the caller's outcome
+            log.warning(
+                "KVLease: could not release the lease; it will expire with its TTL",
+                extra={"extra_data": self._log_extra},
+                exc_info=True,
+            )
+
+    async def __aenter__(self) -> HeldLease:
+        """async-context-manager entry; the lease is already held.
+
+        :return: this held lease
+        :rtype: HeldLease
+        """
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """release on exit, whatever the body did.
+
+        :param exc_type: pending exception class or None
+        :ptype exc_type: type[BaseException] | None
+        :param exc: pending exception instance or None
+        :ptype exc: BaseException | None
+        :param tb: pending traceback or None
+        :ptype tb: TracebackType | None
+        :return: None
+        :rtype: None
+        """
+        await self.release()
+
+
+def _hold_seconds(ttl: timedelta | float, renew_every: timedelta | float) -> tuple[int, float]:
+    """validate a hold's timing: a whole-second TTL of at least one, renewed more often than it expires.
+
+    :param ttl: how long the entry outlives a missed renewal
+    :ptype ttl: timedelta | float
+    :param renew_every: seconds between renewals
+    :ptype renew_every: timedelta | float
+    :return: ``(ttl_seconds, renew_every_seconds)``
+    :rtype: tuple[int, float]
+    :raises ValueError: a sub-second or fractional TTL (the entry expresses whole seconds, and 0.5
+        would truncate to an entry stale the instant it lands), a non-positive renewal, or a
+        renewal not shorter than the TTL (the lease would lapse under its own holder)
+    """
+    ttl_s = ttl.total_seconds() if isinstance(ttl, timedelta) else float(ttl)
+    renew_s = renew_every.total_seconds() if isinstance(renew_every, timedelta) else float(renew_every)
+    if ttl_s < 1 or ttl_s != int(ttl_s):
+        raise ValueError(f"ttl {ttl} must be a whole number of seconds and at least one second")
+    if renew_s <= 0:
+        raise ValueError(f"renew_every must be positive, got {renew_every}")
+    if renew_s >= ttl_s:
+        raise ValueError(
+            f"renew_every {renew_every} must be shorter than ttl {ttl}, or the lease lapses under its holder"
+        )
+    return int(ttl_s), renew_s
 
 
 class KVLease:
@@ -443,6 +695,7 @@ class KVLease:
                 holder=self._pod_id,
                 revision=revision,
                 ttl_seconds=ttl_seconds,
+                date_expires=date_expires,
             )
         else:
             result = await self._maybe_reclaim_stale(bucket, key, ttl_seconds, now, date_expires)
@@ -498,8 +751,58 @@ class KVLease:
             holder=self._pod_id,
             revision=new_revision,
             ttl_seconds=ttl_seconds,
+            date_expires=date_expires,
         )
         return result
+
+    async def hold(
+        self,
+        key: str,
+        *,
+        ttl: timedelta | float,
+        renew_every: timedelta | float,
+        max_wait_seconds: int = 0,
+        log_extra: Mapping[str, Any] | None = None,
+    ) -> HeldLease:
+        """acquire ``key`` and keep it renewed in the background until released or lost.
+
+        the difference from :meth:`acquire` is the renewal loop and the loss signal, which every
+        caller holding a lease across real work otherwise writes for itself. fails fast by default
+        (``max_wait_seconds=0``): a caller that cannot hold the lease usually wants to say so now.
+
+        :param key: KV key to hold
+        :ptype key: str
+        :param ttl: how long the entry outlives a missed renewal; whole seconds, at least one
+        :ptype ttl: timedelta | float
+        :param renew_every: how often to renew; shorter than ``ttl`` (a third leaves room for two
+            missed renewals)
+        :ptype renew_every: timedelta | float
+        :param max_wait_seconds: how long to wait for a held key; 0 refuses at once
+        :ptype max_wait_seconds: int
+        :param log_extra: context for every log line about this lease (the key alone is often a
+            digest an operator cannot map back to anything)
+        :ptype log_extra: Mapping[str, Any] | None
+        :return: the held lease, already renewing
+        :rtype: HeldLease
+        :raises ValueError: timing that cannot hold (see :func:`_hold_seconds`)
+        :raises LeaseUnavailable: the key is held and ``max_wait_seconds`` is 0
+        :raises LeaseTimeout: the key stayed held past ``max_wait_seconds``
+        """
+        ttl_seconds, renew_seconds = _hold_seconds(ttl, renew_every)
+        loop = asyncio.get_running_loop()
+        handle = await self.acquire(key, ttl_seconds=ttl_seconds, max_wait_seconds=max_wait_seconds)
+        # the entry expires when its envelope says -- the instant other pods treat it as stale, stamped
+        # at the start of the winning attempt -- not ttl after acquire() returned, which would overstate
+        # its life by a round trip.
+        assert handle.date_expires is not None  # both acquire paths stamp it
+        expires_at = loop.time() + (handle.date_expires - datetime.now(UTC)).total_seconds()
+        return HeldLease(
+            handle,
+            ttl_seconds=ttl_seconds,
+            renew_every_seconds=renew_seconds,
+            expires_at=expires_at,
+            log_extra=log_extra,
+        )
 
     async def refresh_handle(self, handle: LeaseHandle, ttl_seconds: int | None) -> None:
         """implementation of :meth:`LeaseHandle.refresh`.

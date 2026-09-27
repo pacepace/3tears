@@ -35,7 +35,12 @@ a three-tier collection using it must add `l2_epoch` / `l2_revision` columns (co
 migration v002 does so for the coordination tables) and may no longer answer `"delete"` -- read
 "A compare-and-swap row in L3 can no longer go back to an earlier value" before upgrading. A row
 read from L3 no longer replaces a newer value in L2 on any collection (`NatsKvBucket.get_latest`);
-a hand-rolled KV test double must now answer `get_latest` and `update`.
+a hand-rolled KV test double must now answer `get_latest` and `update`. Consumer gaps, each in
+its own section below: `threetears.observe.PeriodicTask` (3tears' own background loops move onto
+it), `KVLease.hold`, container fixtures that stagger their starts under xdist, a rolling summary
+that keeps the conversation's history, usage that knows whose it is, hub-less memory-namespace
+provisioning (`NamespaceCollection.ensure_namespace`, `LocalMemoryNamespaceProvisioner`), and an
+audit persister for a deployment with no hub (`threetears.agent.audit.persist`).
 
 ### Each pod's copy of a tool keeps its own definition, and only verified publishers register
 
@@ -790,6 +795,217 @@ the key the writer just wrote, so the read can find it empty and recreate the ol
   ran can therefore be overwritten in that pod's L1 by the older row, until the next invalidation
   or `l1_max_age`. It is pod-local, not every reader; closing it means building list entities
   without writing L1, which is a change to `BaseEntity` construction.
+
+### One periodic loop instead of eight
+
+- **New (minor):** `threetears.observe.PeriodicTask(tick, *, interval, name, logger, first_delay=None,
+  failure_message=None)`.
+  It is the start/stop/interval shell every background sweeper needs:
+  - `start()` is idempotent while the loop runs;
+  - `await stop()` cancels a tick in flight and returns once the loop has ended. Concurrent
+    stops all wait, a tick may stop its own loop, and a tick that swallows its cancellation
+    cannot keep the loop alive;
+  - a failing tick is logged at WARNING with its traceback and the loop carries on, under
+    `failure_message` when given (an interval must be finite and positive);
+  - a tick may return the seconds to wait before the NEXT tick (fast retry, backoff). Anything
+    but a finite, non-negative number keeps the interval;
+  - `first_delay` sets the first sleep alone (`0` ticks at once);
+  - `run_once()` runs one isolated tick without the loop.
+- The presence sweeper, the registry health check, the MCP rbac catch-up and the write-behind
+  `PeriodicFlusher` run on it. Their public APIs and failure log messages are unchanged.
+- `CachedHubJwksProvider` runs on it too, keeping its cadence (short until the first success,
+  then steady) and its log message. A `start()` while it runs is a no-op; it used to spawn a
+  second loop. One overlapping a start in progress returns when that start has finished. A
+  `stop()` during the initial fetch wins, so no loop is built afterwards. Its intervals must be
+  finite and positive.
+- **Behaviour changes:**
+  - The presence sweeper's and the registry health subscriber's `start()` are now idempotent;
+    twice used to spawn two loops.
+  - A non-positive interval is refused with `ValueError`; it used to run as a hot loop. That
+    covers `PresenceSweeper(check_interval=)`, `HeartbeatSubscriber` (including
+    `THREETEARS_REGISTRY_HEARTBEAT_CHECK_INTERVAL=0`), `LocalGrantAuthorizer`'s
+    `catchup_interval_seconds` with an epoch listener (refused at construction, before anything
+    is primed), and `CachedHubJwksProvider`'s two intervals (refused at construction).
+  - Each loop's stop now also logs `spawn_background`'s INFO "background task cancelled".
+
+### An audit persister for a deployment without a hub
+
+- **New (minor):** `threetears.agent.audit.persist`. The hub persists `{ns}.audit.>` into its
+  own table; a hub-less deployment had to write this itself (scriob did, and dropped
+  `acting_as_principal_id`).
+  - `AUDIT_EVENTS_DDL` / `ensure_audit_events_table`: every `AuditEvent` field plus
+    `ip_address`. An existing table gains any column it lacks, so a deployment that already
+    persisted audit keeps working.
+  - `persist_audit_event`: idempotent on the envelope `id`. It is deliberately NOT idempotent
+    on `(correlation_id, event_type)`, because producers stamp a whole request's events with
+    one correlation id, and merging them loses records. Details are written through a JSON-mode
+    dump (UUIDs and datetimes are fine) as `$n::text::jsonb`.
+  - `start_audit_persister(nats, db, *, durable, storage="memory")`: the stream plus a sibling
+    dead-letter subject, and a shared durable pull consumer bound to the named stream.
+    `storage` must match every other declarer of the `audit` stream. `handle_audit_message`
+    drops a malformed event and raises on a database fault.
+  - `prune_audit_events(..., batch_size=5000)`: batched, and served by a timestamp index.
+  - `anonymize_audit_rows(db, *, actor_user_ids, batch_size=500)` implements the 0.55.0 erasure
+    rule. It keeps every row and id, rewrites `details` through `anonymize_details` under each
+    row's own event type (keeping the stored shape: an object, a string-held object, null, or
+    otherwise the marker) and `ip_address` through `anonymize_ip`, counts rows matched against
+    rows changed (the database decides "changed", so non-ASCII and float values stay
+    idempotent), and is idempotent. It never answers the hub's `hub.audit.anonymize`
+    subject. A live test runs the real anonymizers once they are present.
+
+### Also fixed on this branch
+
+- The observe logging tests restore every logger level and handler `configure_logging`
+  changes. They used to leave the root and `threetears` levels at WARNING, so later tests
+  capturing INFO saw nothing (`test_fence`, the MCP admin-logging test).
+- `UsageTracker` keeps a reference to each scheduled sink write until it finishes, and gains
+  `await drain()` to wait for pending writes at shutdown.
+
+### A held lease that says when it is lost
+
+- **New (minor):** `KVLease.hold(key, *, ttl, renew_every, max_wait_seconds=0)` returns a
+  `HeldLease` (exported from `threetears.core.coordination` and `threetears.core`) renewed on a
+  background task. The renewal is the compare-and-swap `LeaseHandle.refresh`, so a takeover
+  surfaces as loss instead of being overwritten.
+- Loss is reported, not raised, through `held.lost` / `await held.until_lost()`. `LeaseLost`
+  marks it lost at once. Otherwise a timer armed for the instant the entry could expire (the
+  envelope's own expiry, pushed back by each successful renewal) marks it lost no later than
+  another pod could take the key. Each renewal is bounded by that deadline, so a hanging one
+  cannot delay the loss.
+- `release()` is idempotent, never raises, and is fenced on the holder. It lets a renewal in
+  flight finish rather than cancelling it mid-write. `until_lost()` also returns on release,
+  with `lost` left unset. `async with held:` releases on exit.
+- `hold(..., log_extra=)` adds the caller's context to every lease log line.
+- `LeaseHandle` gains `date_expires`, the expiry written into its envelope.
+- Timing that cannot hold is refused: a fractional or sub-second TTL, or a renewal not
+  shorter than the TTL.
+- Scrape's `claim_session` now runs on it, with its public names unchanged. Its logs now read
+  "KVLease: ..." and carry the `session_id` as context.
+
+### Container fixtures stagger their starts under xdist
+
+- **New (minor):** `threetears.core.testing.stagger_container_start()`. It delays each xdist
+  worker's FIRST container start by `N x THREETEARS_TEST_CONTAINER_STAGGER_SECONDS` (default
+  2.0; `0` disables it; anything but a finite, non-negative number raises), once per process.
+  `gw0` never waits, without xdist nothing changes, and an external URL skips it along with the
+  container. `CONTAINER_STAGGER_ENV` names the setting.
+- `db_container`, `nats_container`, `s3_container` and `searxng_container` all call it. It
+  guards against a burst of simultaneous container creation that ZFS-backed Docker does not
+  survive (half-created containers, `dataset does not exist`); consumers carried a
+  `pytest_fixture_setup` hook for this and can drop it. A fixture that starts its own
+  container should call it too.
+
+### A rolling summary that keeps the history
+
+- **New (minor):** `threetears.langgraph.RollingSummaryMiddleware(model, *, store=None,
+  store_for=None, token_budget, count_tokens=..., prompt=None, summary_prefix=...,
+  on_summarized=None)`, with `SummaryState`, the `SummaryStore` Protocol and
+  `USAGE_PURPOSE_METADATA_KEY`.
+  - It takes exactly one of `store` (one conversation, built per turn) or
+    `store_for(request)` (an agent compiled once; the store is resolved per model call).
+  - It is async only.
+  - It is non-destructive:
+  - it overrides the model request only, so the checkpointer keeps every message;
+  - it folds older messages into a rolling summary once the messages since the last fold pass
+    a token budget;
+  - it folds at most once per turn;
+  - it never leaves an orphaned tool result at the head of the kept tail;
+  - its cursor is a message id, with a count fallback;
+  - the store's save is a compare-and-swap, and a losing writer uses the winner's summary;
+  - the summary call is `NOSTREAM_TAG`-ged and carries `metadata["threetears.usage.purpose"]`.
+  - A failed or empty summary stores nothing and keeps the prior summary, so a provider outage
+    can never replace it with the heuristic fallback. That turn runs over budget instead.
+  - A failing `on_summarized` is logged, never the turn's failure.
+  - A count cursor at or past the window's end reads as "everything is new".
+  - It uses `summarize_older_messages`' new `fallback=False`, which raises instead of returning
+    the heuristic.
+  `SummarizationMiddleware` is unchanged. The summary is capped at 2,000 characters (the
+  existing `summarize` cap), which cuts its newest content first.
+- **New (minor):** `threetears.conversations.ConversationSummaryStore(collection, *, agent_id,
+  conversation_id)`. It is the store over a conversations row: the summary goes in the existing
+  `summary` column and the cursor in `metadata["summary_through"]`, so no migration is needed.
+  A racing write to the row that is not a fold is retried once while the summary state is
+  unchanged, and a failed save evicts the row it dirtied in this pod's L1. The fence assumes a
+  write-through collection.
+  `dispatch_conversation_summarized` fires the existing `ConversationSummarizedEvent`. Scriob and
+  metallm each hand-rolled this, with incompatible cursors.
+
+### Usage that knows who it belongs to
+
+- **New (minor):** `threetears.models.usage_scope(**fields)` and `current_usage_scope()`.
+  - A scope attributes every usage record made inside it: customer, user, conversation, agent,
+    model id, correlation id, origin invocation ref, invocation ref, category. Values are checked:
+    a UUID field takes a UUID or its string, and anything else raises.
+  - Scopes nest (an inner scope overrides only what it names), and the scope rides a
+    `ContextVar`.
+  - Run metadata `threetears.usage.<field>` attributes one call and wins over the scope;
+    `threetears.usage.purpose` classifies it. The scope is taken when the call starts.
+  - `UsageTrackingCallback` now fills a record's tenant fields and cache read/write tokens,
+    including OpenAI's `prompt_tokens_details.cached_tokens`. Before, nothing could fill them,
+    so multi-tenant consumers kept a second metering path.
+- **New (minor):** `UsageRecord.token_source`: `"reported"`, `"estimated"` or `"unavailable"`.
+  - A call whose provider reports no usage is estimated from its text (and its prompt) and
+    marked so, instead of recording a silent 0/0.
+  - Every generation is counted, not only the first. One call's usage repeated on each choice
+    of ONE prompt (ChatOpenAI with `n > 1`) is counted once; separate prompts always count
+    separately.
+  - A tool-call-only reply is estimated from its arguments.
+  - `extract_usage(response, prompt_messages=) -> ExtractedUsage` is the shared extraction.
+- **New (minor):** `UsageAccumulator`, a callback totalling one run's calls for per-turn
+  metering (tokens, cache tokens, calls, a combined source, and `cost_usd` as `Decimal`), and
+  `attach_callbacks(model, *handlers)`. `create_chat_model`'s return is a `RunnableBinding`, where
+  `model_copy` silently drops added callbacks; `attach_callbacks` adds to it and keeps the ones
+  already bound.
+- **New (minor):** `set_default_usage_tracker(tracker)` / `default_usage_tracker()`. A
+  factory-built model without `tracker=` uses the process-wide default, so it reaches the
+  consumer's sinks. Before, each model got a fresh tracker with no sinks. It applies to models
+  built after it is set.
+- **Changed:** `UsageTrackingCallback` now runs inline (`run_inline = True`). LangChain used to
+  run it on an executor thread during async calls, where the tracker drove its sinks on a
+  throwaway event loop. A sink bound to the application's loop (an asyncpg pool) failed there,
+  swallowed at WARNING.
+- **Changed:** a call whose provider reports no usage now records ESTIMATED tokens where it used
+  to record 0. The estimates flow into the `threetears_llm_*_tokens_total` counters and into
+  `cost_usd`, and each record and span says which it is (`token_source`,
+  `llm.token_source`). A sink that must count only provider-reported tokens should filter on
+  `token_source`.
+
+### A memory namespace a hub-less deployment can provision
+
+- **New (minor):** `threetears.agent.acl.NamespaceCollection.ensure_namespace(*, namespace_id,
+  name, namespace_type, owner_agent_id, customer_id, owner_namespace=None, schema_name=None,
+  metadata=None)`, a get-or-create on a deterministic id.
+  - The write is INSERT-IF-ABSENT (`ON CONFLICT DO NOTHING`), never an upsert: a racing
+    loser is absorbed by whichever unique index it meets, instead of raising, and an existing
+    row is never overwritten. It is proven under 200 rounds of 8 racing pods.
+  - The row is read back after the insert.
+  - An existing row that disagrees on type, owner, customer, name, owner namespace or schema
+    raises `ValueError`, as does a name already taken by a row with another id.
+  - A missing owner under the `owner_namespace` foreign key, or a `CHECK` the table enforces,
+    surfaces as the backend's own error.
+  - It does not create owners: where the `owner_namespace` foreign key exists, the owner's row
+    must already be there.
+  - The hub's memory-namespace responder is moving onto it (aibots, with the 0.56.0 adoption),
+    so hub and local rows are one write.
+- **New (minor):** `threetears.agent.memory.LocalMemoryNamespaceProvisioner(namespace_collection)`,
+  the `MemoryNamespaceProvisioner` for a deployment with no hub (plug it into
+  `MemoryAuthorizerDependencies(namespace_provisioner=)`).
+  - It writes exactly the hub's row, every field from the public helpers:
+    `memory_namespace_id`, `memory_namespace_name`, `memory_namespace_schema_name` and
+    `build_agent_namespace_name` for `owner_namespace`.
+  - Like the hub, it resolves by (type, owner, customer) first, reads its row back, and refuses a
+    row for another pair. Every failure is `MemoryNamespaceUnavailableError`, which the
+    authorizer turns into a denial.
+  - It trusts the caller's customer, since there is no forwarded identity: construct it only in
+    the application that owns the control plane.
+  - Scriob wrote this row with raw SQL, leaving `owner_namespace` NULL so no agent owned it.
+    metallm stubbed it with a per-process random id.
+  - An EXISTING ownerless row is found by (type, owner, customer) and returned as it is. It is
+    not repaired, so a deployment adopting this must backfill `owner_namespace` and
+    `schema_name` on rows it wrote before.
+- `test_no_namespace_writes.py` counts `ensure_namespace` as a write and exempts exactly one
+  module, the hub-less provisioner, by resolved path. A test pins it to that one call, and a
+  second forbids any other memory module from referencing the provisioner in code.
 
 ## v0.54.0 -- 2026-09-26
 

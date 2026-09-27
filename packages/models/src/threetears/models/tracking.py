@@ -24,11 +24,15 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -38,7 +42,15 @@ from threetears.observe import get_logger
 from threetears.models.enums import ModelTier
 
 __all__ = [
+    "USAGE_METADATA_PREFIX",
     "LlmPurpose",
+    "ExtractedUsage",
+    "extract_usage",
+    "TokenSource",
+    "current_usage_scope",
+    "default_usage_tracker",
+    "set_default_usage_tracker",
+    "usage_scope",
     "UsageAuditSink",
     "UsageCounterSink",
     "UsageRecord",
@@ -198,6 +210,255 @@ class UsageRecord:
     api_calls: int = 0
     correlation_id: UUID | None = None
     origin_invocation_ref: UUID | None = None
+    #: where the token counts came from: the provider (``"reported"``), an estimate from the text
+    #: (``"estimated"``), or nowhere (``"unavailable"``). ``None`` when a record was built by hand
+    #: without saying.
+    token_source: TokenSource | None = None
+
+
+#: where a record's token counts came from.
+TokenSource = Literal["reported", "estimated", "unavailable"]
+
+#: run-metadata prefix for attribution: ``metadata["threetears.usage.user_id"] = ...`` attributes one
+#: call; ``metadata["threetears.usage.purpose"] = "summarization"`` classifies it.
+USAGE_METADATA_PREFIX = "threetears.usage."
+
+#: the attribution fields a usage scope (or run metadata) may carry, and whether each is a UUID.
+_SCOPE_FIELDS: dict[str, bool] = {
+    "agent_id": True,
+    "customer_id": True,
+    "user_id": True,
+    "conversation_id": True,
+    "model_id": True,
+    "correlation_id": True,
+    "origin_invocation_ref": True,
+    "invocation_ref": False,
+    "category": False,
+}
+
+_USAGE_SCOPE: ContextVar[Mapping[str, Any]] = ContextVar("threetears_usage_scope", default={})
+
+
+@contextmanager
+def usage_scope(**fields: Any) -> Iterator[None]:  # noqa: ANN401 -- UUID or str per field, coerced below
+    """attribute every usage record made inside the block (tenant, user, conversation, ...).
+
+    scopes nest: an inner scope overrides only the fields it names, and the outer one returns on
+    exit. a ``None`` value leaves the field as the enclosing scope set it. the scope rides a
+    ``ContextVar``, so it reaches the usage callback wherever LangChain runs it, and each task sees
+    its own. run metadata (``threetears.usage.<field>``) attributes a single call and wins over it.
+
+    :param fields: any of ``agent_id``, ``customer_id``, ``user_id``, ``conversation_id``,
+        ``model_id``, ``correlation_id``, ``origin_invocation_ref`` (UUIDs) and ``invocation_ref``,
+        ``category`` (str)
+    :ptype fields: Any
+    :return: a context manager
+    :rtype: Iterator[None]
+    :raises TypeError: a field name ``UsageRecord`` does not carry
+    :raises ValueError: a value that is not the field's type (a UUID field takes a UUID or its string)
+    """
+    unknown = sorted(set(fields) - set(_SCOPE_FIELDS))
+    if unknown:
+        raise TypeError(f"usage_scope got unknown field(s) {unknown}; known: {sorted(_SCOPE_FIELDS)}")
+    coerced: dict[str, Any] = {}
+    for name, value in fields.items():
+        if value is None:
+            continue
+        parsed = _parse_field(name, value)
+        if parsed is None:
+            kind = "a UUID" if _SCOPE_FIELDS[name] else "a string"
+            raise ValueError(f"usage_scope field {name} must be {kind}, got {value!r}")
+        coerced[name] = parsed
+    merged = {**_USAGE_SCOPE.get(), **coerced}
+    token = _USAGE_SCOPE.set(merged)
+    try:
+        yield
+    finally:
+        _USAGE_SCOPE.reset(token)
+
+
+def current_usage_scope() -> dict[str, Any]:
+    """the attribution in force here: every field the enclosing usage scopes set.
+
+    :return: field name to value
+    :rtype: dict[str, Any]
+    """
+    return dict(_USAGE_SCOPE.get())
+
+
+def _attribution_from_metadata(metadata: Mapping[str, Any] | None) -> tuple[dict[str, Any], LlmPurpose | None]:
+    """the attribution fields and purpose a call's run metadata names; malformed values are ignored.
+
+    :param metadata: the run's metadata
+    :ptype metadata: Mapping[str, Any] | None
+    :return: the fields, and the purpose when one is named
+    :rtype: tuple[dict[str, Any], LlmPurpose | None]
+    """
+    fields: dict[str, Any] = {}
+    purpose: LlmPurpose | None = None
+    for key, value in (metadata or {}).items():
+        if not isinstance(key, str) or not key.startswith(USAGE_METADATA_PREFIX):
+            continue
+        name = key[len(USAGE_METADATA_PREFIX) :]
+        if name == "purpose":
+            try:
+                purpose = LlmPurpose(str(value))
+            except ValueError:
+                logger.debug("usage metadata names an unknown purpose %r; ignored", value)
+        elif name in _SCOPE_FIELDS:
+            parsed = _parse_field(name, value)
+            if parsed is not None:
+                fields[name] = parsed
+    return fields, purpose
+
+
+def _attribution_at_start(metadata: Mapping[str, Any] | None) -> tuple[dict[str, Any], LlmPurpose | None]:
+    """a call's attribution as it starts: the scope in force, with the run's metadata over it.
+
+    :param metadata: the run's metadata
+    :ptype metadata: Mapping[str, Any] | None
+    :return: the attribution fields, and the purpose when the metadata names one
+    :rtype: tuple[dict[str, Any], LlmPurpose | None]
+    """
+    named, purpose = _attribution_from_metadata(metadata)
+    return {**current_usage_scope(), **named}, purpose
+
+
+def _parse_field(name: str, value: Any) -> Any:  # noqa: ANN401 -- UUID or str per field
+    """coerce one attribution value to its field's type; ``None`` when it cannot be.
+
+    :param name: the field
+    :ptype name: str
+    :param value: the value from metadata
+    :ptype value: Any
+    :return: the coerced value, or ``None``
+    :rtype: Any
+    """
+    result: Any = None
+    if not _SCOPE_FIELDS[name]:
+        result = value if isinstance(value, str) else None
+    elif isinstance(value, UUID):
+        result = value
+    else:
+        try:
+            result = UUID(str(value))
+        except ValueError:
+            logger.debug("usage metadata field %s is not a UUID; ignored", name)
+    return result
+
+
+@dataclass
+class ExtractedUsage:
+    """the token counts of one LLM result (:func:`extract_usage`), and where they came from."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    source: TokenSource = "unavailable"
+
+
+def _message_text(message: Any) -> str:  # noqa: ANN401 -- any LangChain message
+    """the plain text of a message's content, however it is shaped.
+
+    :param message: a message
+    :ptype message: Any
+    :return: its text
+    :rtype: str
+    """
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in content or []]
+    return "".join(str(p) for p in parts)
+
+
+def _estimate_tokens(text: str) -> int:
+    """a rough token count for ``text`` (about four characters a token).
+
+    :param text: the text
+    :ptype text: str
+    :return: at least one token for non-empty text, else zero
+    :rtype: int
+    """
+    return max(1, round(len(text) / 4)) if text else 0
+
+
+def _reply_text(message: Any) -> str:  # noqa: ANN401 -- any LangChain message
+    """what a reply emitted: its text plus any tool-call arguments.
+
+    :param message: the reply
+    :ptype message: Any
+    :return: text to estimate from
+    :rtype: str
+    """
+    calls = getattr(message, "tool_calls", None) or []
+    args = " ".join(f"{c.get('name', '')} {c.get('args', '')}" for c in calls if isinstance(c, dict))
+    return f"{_message_text(message)} {args}".strip()
+
+
+def extract_usage(response: LLMResult, *, prompt_messages: list[Any] | None = None) -> ExtractedUsage:
+    """the token counts of one LLM result, and where they came from.
+
+    the provider's own counts win. ``llm_output["token_usage"]`` (OpenAI style, with cache reads from
+    ``prompt_tokens_details.cached_tokens``) first; else the generations' ``usage_metadata`` (cache
+    reads and writes from ``input_token_details``) -- summed across generations, except that one
+    call's usage repeated on every choice (ChatOpenAI with ``n > 1``) is counted once. a generation
+    with no reported usage is estimated from what it emitted (text and tool-call arguments), and the
+    whole result is then ``"estimated"``, with the input estimated from ``prompt_messages`` when
+    nothing was reported. with nothing to count it is ``"unavailable"`` and zero -- never a silent zero
+    passed off as reported.
+
+    :param response: the LLM result
+    :ptype response: LLMResult
+    :param prompt_messages: the messages sent, for an input estimate
+    :ptype prompt_messages: list[Any] | None
+    :return: the counts and their source
+    :rtype: ExtractedUsage
+    """
+    out = ExtractedUsage()
+    llm_output = getattr(response, "llm_output", None) or {}
+    token_usage = llm_output.get("token_usage") if isinstance(llm_output, dict) else None
+    if isinstance(token_usage, dict) and any(
+        token_usage.get(k) for k in ("prompt_tokens", "completion_tokens", "input_tokens", "output_tokens")
+    ):
+        out.input_tokens = int(token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0)
+        out.output_tokens = int(token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0)
+        details = token_usage.get("prompt_tokens_details") or {}
+        out.cache_read_tokens = int(details.get("cached_tokens", 0) or 0) if isinstance(details, dict) else 0
+        out.source = "reported"
+        return out
+    usages: list[dict[str, Any]] = []
+    estimated_output = 0
+    for batch in getattr(response, "generations", None) or []:
+        batch_usages: list[dict[str, Any]] = []
+        for generation in batch:
+            message = getattr(generation, "message", None)
+            usage = getattr(message, "usage_metadata", None) if message is not None else None
+            if isinstance(usage, dict):
+                batch_usages.append(usage)
+            else:
+                emitted = _reply_text(message) if message is not None else str(getattr(generation, "text", ""))
+                estimated_output += _estimate_tokens(emitted)
+        # within ONE prompt's choices, one call's usage repeated on every choice (ChatOpenAI, n > 1) is
+        # counted once; separate prompts are separate calls, however alike their counts
+        if len(batch_usages) > 1 and all(u == batch_usages[0] for u in batch_usages[1:]):
+            batch_usages = batch_usages[:1]
+        usages.extend(batch_usages)
+    for usage in usages:
+        out.input_tokens += int(usage.get("input_tokens", 0) or 0)
+        out.output_tokens += int(usage.get("output_tokens", 0) or 0)
+        details = usage.get("input_token_details") or {}
+        out.cache_read_tokens += int(details.get("cache_read", 0) or 0)
+        out.cache_creation_tokens += int(details.get("cache_creation", 0) or 0)
+    out.output_tokens += estimated_output
+    if estimated_output:
+        out.source = "estimated"
+        if not usages and prompt_messages:
+            out.input_tokens = sum(_estimate_tokens(_message_text(m)) for m in prompt_messages)
+    elif usages:
+        out.source = "reported"
+    return out
 
 
 @runtime_checkable
@@ -536,6 +797,7 @@ class UsageTracker:
         self._tracer: Tracer | None = None
         self._otel_available = False
         self._prom = _get_prom_emitter(prom_registry)
+        self._pending_sinks: set[asyncio.Task[None]] = set()
         self._audit_sink = audit_sink
         self._counter_sink = counter_sink
         try:
@@ -571,6 +833,16 @@ class UsageTracker:
         self._dispatch_sink("audit", self._audit_sink, usage)
         self._dispatch_sink("counter", self._counter_sink, usage)
 
+    async def drain(self) -> None:
+        """wait for every sink write already scheduled -- call at shutdown so none is lost.
+
+        :return: None
+        :rtype: None
+        """
+        pending = list(self._pending_sinks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     def _dispatch_sink(
         self,
         kind: str,
@@ -600,7 +872,11 @@ class UsageTracker:
             loop = None
 
         if loop is not None:
-            loop.create_task(self._invoke_sink(kind, sink, usage))
+            # held until done: the loop keeps only a weak reference to a task, so an unreferenced sink
+            # write can be garbage-collected mid-flight.
+            task = loop.create_task(self._invoke_sink(kind, sink, usage))
+            self._pending_sinks.add(task)
+            task.add_done_callback(self._pending_sinks.discard)
             return
 
         # no running loop -- synchronous fallback for tests and scripts.
@@ -670,6 +946,9 @@ class UsageTracker:
                 span.set_attribute("llm.cache_read_tokens", usage.cache_read_tokens)
             if usage.cache_creation_tokens:
                 span.set_attribute("llm.cache_creation_tokens", usage.cache_creation_tokens)
+            # an estimated count is not a provider's count; say which this is
+            if usage.token_source is not None:
+                span.set_attribute("llm.token_source", usage.token_source)
 
             if usage.tier is not None:
                 span.set_attribute("llm.tier", str(usage.tier))
@@ -751,6 +1030,10 @@ class UsageTracker:
 class UsageTrackingCallback(BaseCallbackHandler):
     """LangChain callback that records ``UsageRecord`` on every ``on_llm_end``.
 
+    runs INLINE: LangChain would otherwise run this sync handler on an executor thread during an async
+    call, where the tracker's sinks -- a consumer's database pool, bound to the event loop -- would be
+    driven on a throwaway loop of their own and fail.
+
     captures wall-clock latency between ``on_llm_start`` (or
     ``on_chat_model_start``) and ``on_llm_end``, extracts token counts from
     the standard LangChain ``LLMResult.llm_output`` or per-generation
@@ -787,6 +1070,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
         :ptype cost_per_output_token: Decimal | None
         """
         super().__init__()
+        self.run_inline = True
         self._tracker = tracker
         self._model_name = model_name
         self._provider_name = provider_name
@@ -796,6 +1080,10 @@ class UsageTrackingCallback(BaseCallbackHandler):
         self._cost_per_output_token = cost_per_output_token
         # run_id -> monotonic start timestamp for latency calculation
         self._starts: dict[Any, float] = {}
+        # run_id -> (attribution fields, purpose) named by the run's metadata
+        self._attribution: dict[Any, tuple[dict[str, Any], LlmPurpose | None]] = {}
+        # run_id -> the prompt messages, for an input estimate when the provider reports no usage
+        self._prompts: dict[Any, list[Any]] = {}
 
     def on_llm_start(
         self,
@@ -817,10 +1105,10 @@ class UsageTrackingCallback(BaseCallbackHandler):
         :ptype kwargs: Any
         """
         _ = serialized
-        _ = prompts
-        _ = kwargs
         key = run_id if run_id is not None else id(self)
         self._starts[key] = time.monotonic()
+        self._attribution[key] = _attribution_at_start(kwargs.get("metadata"))
+        self._prompts[key] = [SimpleNamespace(content=p) for p in prompts]
 
     def on_chat_model_start(
         self,
@@ -845,10 +1133,10 @@ class UsageTrackingCallback(BaseCallbackHandler):
         :ptype kwargs: Any
         """
         _ = serialized
-        _ = messages
-        _ = kwargs
         key = run_id if run_id is not None else id(self)
         self._starts[key] = time.monotonic()
+        self._attribution[key] = _attribution_at_start(kwargs.get("metadata"))
+        self._prompts[key] = [m for batch in messages for m in batch]
 
     def on_llm_end(
         self,
@@ -870,8 +1158,11 @@ class UsageTrackingCallback(BaseCallbackHandler):
         key = run_id if run_id is not None else id(self)
         start = self._starts.pop(key, None)
         latency_ms = int((time.monotonic() - start) * 1000) if start is not None else 0
-
-        input_tokens, output_tokens = self._extract_token_counts(response)
+        # taken when the call started (scope, then the run's metadata over it); a call whose start this
+        # callback never saw is attributed by the scope in force now
+        attribution, purpose = self._attribution.pop(key, (current_usage_scope(), None))
+        extracted = extract_usage(response, prompt_messages=self._prompts.pop(key, None))
+        input_tokens, output_tokens = extracted.input_tokens, extracted.output_tokens
         total_tokens = input_tokens + output_tokens
 
         cost_usd: Decimal | None = None
@@ -883,13 +1174,17 @@ class UsageTrackingCallback(BaseCallbackHandler):
         usage = UsageRecord(
             model_name=self._model_name,
             provider_name=self._provider_name,
-            purpose=self._purpose,
+            purpose=purpose if purpose is not None else self._purpose,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
             latency_ms=latency_ms,
             tier=self._tier,
             cost_usd=cost_usd,
+            cache_read_tokens=extracted.cache_read_tokens,
+            cache_creation_tokens=extracted.cache_creation_tokens,
+            token_source=extracted.source,
+            **attribution,
         )
         self._tracker.record(usage)
 
@@ -915,43 +1210,37 @@ class UsageTrackingCallback(BaseCallbackHandler):
         _ = kwargs
         key = run_id if run_id is not None else id(self)
         self._starts.pop(key, None)
+        self._attribution.pop(key, None)
+        self._prompts.pop(key, None)
         logger.debug(
             "LLM call errored, usage record skipped: %s",
             error,
         )
 
-    def _extract_token_counts(self, response: LLMResult) -> tuple[int, int]:
-        """extracts (input, output) token counts from a LangChain ``LLMResult``.
 
-        checks ``llm_output['token_usage']`` (OpenAI-style) first, then
-        falls back to ``Generation.message.usage_metadata`` (Anthropic and
-        newer OpenAI / OpenRouter shapes).
+_DEFAULT_TRACKER: UsageTracker | None = None
 
-        :param response: LangChain LLM result
-        :ptype response: LLMResult
-        :return: tuple of (input_tokens, output_tokens)
-        :rtype: tuple[int, int]
-        """
-        input_tokens = 0
-        output_tokens = 0
 
-        llm_output = getattr(response, "llm_output", None) or {}
-        token_usage = llm_output.get("token_usage") if isinstance(llm_output, dict) else None
-        if isinstance(token_usage, dict):
-            input_tokens = int(token_usage.get("prompt_tokens", 0) or token_usage.get("input_tokens", 0))
-            output_tokens = int(token_usage.get("completion_tokens", 0) or token_usage.get("output_tokens", 0))
+def set_default_usage_tracker(tracker: UsageTracker | None) -> None:
+    """point every factory-built model without an explicit ``tracker=`` at ``tracker``.
 
-        if input_tokens == 0 and output_tokens == 0:
-            generations = getattr(response, "generations", None) or []
-            for batch in generations:
-                for gen in batch:
-                    message = getattr(gen, "message", None)
-                    usage_metadata = getattr(message, "usage_metadata", None) if message is not None else None
-                    if isinstance(usage_metadata, dict):
-                        input_tokens = int(usage_metadata.get("input_tokens", 0))
-                        output_tokens = int(usage_metadata.get("output_tokens", 0))
-                        break
-                if input_tokens or output_tokens:
-                    break
+    without it each model gets a fresh tracker with no sinks, so its records reach OTel and
+    Prometheus but never a consumer's audit store. set it once at startup with the consumer's sinks;
+    ``None`` restores the fresh-tracker default.
 
-        return input_tokens, output_tokens
+    :param tracker: the process-wide default, or ``None``
+    :ptype tracker: UsageTracker | None
+    :return: None
+    :rtype: None
+    """
+    global _DEFAULT_TRACKER  # noqa: PLW0603 -- the process-wide default IS module state
+    _DEFAULT_TRACKER = tracker
+
+
+def default_usage_tracker() -> UsageTracker:
+    """the tracker a factory-built model uses when none is passed.
+
+    :return: the process-wide default, else a fresh tracker with no sinks
+    :rtype: UsageTracker
+    """
+    return _DEFAULT_TRACKER if _DEFAULT_TRACKER is not None else UsageTracker()

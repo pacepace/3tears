@@ -728,3 +728,13 @@ class TestStopIsReversible:
             "reloaded -- stop() left the authorizer marked started"
         )
         await authz.stop()
+
+
+def test_a_non_positive_catchup_interval_is_refused_before_anything_is_primed() -> None:
+    """Refusing at construction means start() never subscribes a listener it cannot then serve."""
+    loader = AsyncMock(return_value=[])
+    client, listener, _captured, _ = _make_listener_capturing_subscribe()
+    with pytest.raises(ValueError, match="catchup_interval_seconds must be positive"):
+        LocalGrantAuthorizer(
+            grant_loader=loader, epoch_client=client, epoch_listener=listener, catchup_interval_seconds=0
+        )

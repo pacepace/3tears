@@ -12,11 +12,29 @@ domain-specific envelopes (`WorkspaceAuditEnvelope`,
 `RbacAuditEnvelope`) that produced slightly-different wire shapes per domain
 and made cross-domain audit queries require a UNION.
 
-The package is pure Python with no NATS consumer code and no Postgres code.
-It publishes events, and it asks the hub to anonymize the audit rows an agent
-published (`request_audit_anonymization`); it never persists or rewrites a row
-itself. Persistence to the audit events table, and applying the erasure rule to
-it, are the hub's.
+Publishing is the package's core: `AuditEvent` and `publish_audit` import nothing
+beyond the NATS client. On a hub deployment the HUB persists every event into its
+platform table, and the package's persistence code is never used; an agent there
+erases a person from that table by asking the hub (`request_audit_anonymization`),
+and the hub applies the erasure rule.
+
+A deployment with NO hub (one application owning its own control plane) owns its
+audit table, and `threetears.agent.audit.persist` is its persister:
+
+- `ensure_audit_events_table(db)` creates the table, with every envelope field and
+  `ip_address`, and migrates an existing one by adding any column it lacks.
+  Idempotency is on the envelope `id`.
+- `start_audit_persister(nats, db, durable=..., storage="memory")` runs a shared
+  durable pull consumer with a dead-letter subject. A malformed event is dropped;
+  a database fault is retried, then dead-lettered.
+  - `storage` must match every other declarer of the `audit` stream.
+  - `durable` must be unique per table.
+- `prune_audit_events(db, older_than=...)` is batched retention.
+- `anonymize_audit_rows(db, actor_user_ids=...)` is erasure: every row and id is
+  kept, and `details` and `ip_address` are rewritten by the platform's rule. It is
+  this deployment's own erasure and never answers the hub's anonymize subject.
+
+`db` is anything with asyncpg's `execute`/`fetch`, e.g. a pool.
 
 ## Public API
 
