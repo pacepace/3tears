@@ -180,7 +180,14 @@ async def claim_session(
     # own event, which this claim shares -- the loop that used to live here moved into core so
     # every consumer holding a lease across real work gets the same one. Fail fast: every other
     # wait would hold this caller open while a human works.
-    held = await lease.hold(session_claim_key(session_id), ttl=ttl, renew_every=refresh, max_wait_seconds=0)
+    held = await lease.hold(
+        session_claim_key(session_id),
+        ttl=ttl,
+        renew_every=refresh,
+        max_wait_seconds=0,
+        # the key is a one-way digest; the session id is what an operator can find a session by
+        log_extra={"session_id": session_id},
+    )
     claim.lost = held.lost
     try:
         yield claim

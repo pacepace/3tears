@@ -30,6 +30,7 @@ non-test code paths.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from collections.abc import Callable
@@ -72,7 +73,7 @@ def stagger_container_start(*, sleep: Callable[[float], None] = time.sleep) -> N
     :ptype sleep: Callable[[float], None]
     :return: None
     :rtype: None
-    :raises ValueError: the stagger is not a non-negative number
+    :raises ValueError: the stagger is not a finite, non-negative number
     """
     global _staggered  # noqa: PLW0603 -- the once-per-process flag IS module state
     worker = os.environ.get("PYTEST_XDIST_WORKER", "")
@@ -83,8 +84,8 @@ def stagger_container_start(*, sleep: Callable[[float], None] = time.sleep) -> N
         stagger = float(raw)
     except ValueError:
         stagger = -1.0
-    if stagger < 0:
-        raise ValueError(f"{CONTAINER_STAGGER_ENV} must be a non-negative number of seconds, got {raw!r}")
+    if not math.isfinite(stagger) or stagger < 0:
+        raise ValueError(f"{CONTAINER_STAGGER_ENV} must be a finite, non-negative number of seconds, got {raw!r}")
     _staggered = True
     delay = int(worker[2:]) * stagger
     if delay > 0:

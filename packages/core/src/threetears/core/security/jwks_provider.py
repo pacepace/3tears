@@ -76,6 +76,11 @@ class CachedHubJwksProvider:
         reactive_min_interval_seconds: float = 5.0,
     ) -> None:
         self._nc = nats_client
+        if refresh_interval_seconds <= 0 or initial_retry_interval_seconds <= 0:
+            raise ValueError(
+                "refresh_interval_seconds and initial_retry_interval_seconds must be positive, got "
+                f"{refresh_interval_seconds} and {initial_retry_interval_seconds}"
+            )
         self._refresh_interval = refresh_interval_seconds
         self._initial_retry_interval = initial_retry_interval_seconds
         self._request_timeout = request_timeout_seconds
@@ -119,18 +124,20 @@ class CachedHubJwksProvider:
         :return: nothing
         :rtype: None
         """
+        if self._loop is not None and self._loop.running:
+            return
         await self.refresh()
         # Until the first SUCCESSFUL fetch the loop retries on the short ``initial_retry_interval`` so
         # a verifier whose initial fetch raced the Hub's responder at boot warms within seconds (under
         # enforce an empty cache rejects every call); after the first success it settles to the steady
         # ``refresh_interval``. The loop is a supervisor: it must be unkillable, because a Hub re-key
-        # only self-heals while it keeps running -- PeriodicTask logs a failed pass and carries on,
-        # and only cancellation (``stop``) ends it.
+        # only self-heals while it keeps running -- _refresh_pass never raises, and only cancellation
+        # (``stop``) ends it. A second ``start`` while it runs is a no-op rather than a second loop.
         self._loop = PeriodicTask(
             self._refresh_pass,
-            # the configured interval is the SHORT retry: a pass that raises retries soon; a pass that
-            # completes returns the delay it wants (the steady interval once warmed).
-            interval=self._initial_retry_interval,
+            # a pass never raises (see _refresh_pass) and always returns the delay it wants, so the
+            # interval is only the fallback.
+            interval=self._refresh_interval,
             first_delay=self._next_delay(),
             name="hub-jwks-refresh",
             logger=log,
@@ -235,11 +242,18 @@ class CachedHubJwksProvider:
     async def _refresh_pass(self) -> float:
         """one refresh; returns the delay before the next.
 
-        :meth:`refresh` already keeps-last-good and logs the failures it models; anything else is
-        logged by ``PeriodicTask`` and retried after the short interval.
+        :meth:`refresh` already keeps-last-good and logs the failures it models. This belt-and-braces
+        guard catches anything else (a future programming error in the body) so the pass still returns
+        the cadence the provider's state calls for: short until warm, steady after.
 
         :return: seconds until the next pass
         :rtype: float
         """
-        await self.refresh()
+        try:
+            await self.refresh()
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a supervisor loop: a Hub re-key only self-heals while it keeps running
+            log.warning(
+                "hub jwks refresh loop iteration failed; loop continues",
+                extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc)}},
+            )
         return self._next_delay()

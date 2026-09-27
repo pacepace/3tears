@@ -66,7 +66,7 @@ def test_the_stagger_is_configurable_and_zero_disables_it(monkeypatch: pytest.Mo
     assert clock.slept == []
 
 
-@pytest.mark.parametrize("value", ["-1", "soon"])
+@pytest.mark.parametrize("value", ["-1", "soon", "nan", "inf"])
 def test_an_invalid_stagger_fails_loudly(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
     monkeypatch.setenv("THREETEARS_TEST_CONTAINER_STAGGER_SECONDS", value)
@@ -89,3 +89,25 @@ def test_the_shared_fixtures_stagger_before_starting_a_container() -> None:
     for name in ("db_container", "nats_container", "s3_container", "searxng_container"):
         source = inspect.getsource(getattr(fixtures, name).__wrapped__)
         assert "stagger_container_start()" in source, f"{name} starts a container without staggering"
+
+
+def test_an_external_database_skips_the_container_and_the_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CI service container (the external URL) starts no container, so it must not wait for one."""
+    from threetears.core.testing import fixtures
+
+    def must_not_wait() -> None:
+        raise AssertionError("an external URL waited on a container start that never happens")
+
+    monkeypatch.setattr(fixtures, "stagger_container_start", must_not_wait)
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw5")
+    monkeypatch.setenv("THREETEARS_TEST_POSTGRES_URL", "postgresql://ci/db")
+    gen = fixtures.db_container.__wrapped__("unused-image")
+    assert next(gen) == "postgresql://ci/db"
+    monkeypatch.setenv("THREETEARS_TEST_NATS_URL", "nats://ci:4222")
+    assert next(fixtures.nats_container.__wrapped__(True)) == "nats://ci:4222"
+
+
+def test_the_stagger_setting_name_is_exported() -> None:
+    from threetears.core.testing import CONTAINER_STAGGER_ENV
+
+    assert CONTAINER_STAGGER_ENV == "THREETEARS_TEST_CONTAINER_STAGGER_SECONDS"

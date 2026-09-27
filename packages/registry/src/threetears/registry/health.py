@@ -124,7 +124,11 @@ class HeartbeatSubscriber:
         # One sweep a period, sleeping first; a failed sweep is logged and the loop carries on -- a
         # single mis-timed sweep must not brick liveness tracking.
         self._check_loop = PeriodicTask(
-            self.run_health_check, interval=self._check_interval, name="registry-health-check", logger=log
+            self.run_health_check,
+            interval=self._check_interval,
+            name="registry-health-check",
+            logger=log,
+            failure_message="health check sweep failed",
         )
         self._known_pod_ids: set[str] = set()
 

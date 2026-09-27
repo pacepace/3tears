@@ -58,7 +58,13 @@ class PresenceSweeper:
         self._timeout = timeout
         # One sweep a period, sleeping first; a failed sweep is logged and the loop carries on -- a
         # single mis-timed sweep must not stop self-heal.
-        self._loop = PeriodicTask(self.run_sweep, interval=check_interval, name="presence-sweeper", logger=log)
+        self._loop = PeriodicTask(
+            self.run_sweep,
+            interval=check_interval,
+            name="presence-sweeper",
+            logger=log,
+            failure_message="presence sweep failed",
+        )
         self._known_connection_ids: set[str] = set()
 
     @property

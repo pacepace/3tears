@@ -8,19 +8,33 @@ packages (bumped in lock-step).
 
 ### One periodic loop instead of eight
 
-- **New (minor):** `threetears.observe.PeriodicTask(tick, *, interval, name, logger, first_delay=None)`.
+- **New (minor):** `threetears.observe.PeriodicTask(tick, *, interval, name, logger, first_delay=None,
+  failure_message=None)`.
   It is the start/stop/interval shell every background sweeper needs:
   - `start()` is idempotent while the loop runs;
-  - `await stop()` cancels a tick in flight and returns once the loop has ended;
-  - a failing tick is logged at WARNING with its traceback and the loop carries on;
-  - a tick may return the seconds to wait before the NEXT tick (fast retry, backoff);
+  - `await stop()` cancels a tick in flight and returns once the loop has ended. Concurrent
+    stops all wait, a tick may stop its own loop, and a tick that swallows its cancellation
+    cannot keep the loop alive;
+  - a failing tick is logged at WARNING with its traceback and the loop carries on, under
+    `failure_message` when given;
+  - a tick may return the seconds to wait before the NEXT tick (fast retry, backoff). Anything
+    but a finite, non-negative number keeps the interval;
   - `first_delay` sets the first sleep alone (`0` ticks at once);
   - `run_once()` runs one isolated tick without the loop.
-- The presence sweeper, the registry health check, the MCP rbac catch-up and the
-  write-behind `PeriodicFlusher` run on it, with their public APIs unchanged. The presence
-  sweeper's `start()` is now idempotent; calling it twice used to spawn a second loop.
-- `CachedHubJwksProvider` runs on it as well. A refresh pass that raises now retries after
-  the short initial interval rather than waiting a full steady interval.
+- The presence sweeper, the registry health check, the MCP rbac catch-up and the write-behind
+  `PeriodicFlusher` run on it. Their public APIs and failure log messages are unchanged.
+- `CachedHubJwksProvider` runs on it too, keeping its cadence (short until the first success,
+  then steady) and its log message. A second `start()` while it runs is now a no-op; it used
+  to spawn a second loop.
+- **Behaviour changes:**
+  - The presence sweeper's and the registry health subscriber's `start()` are now idempotent;
+    twice used to spawn two loops.
+  - A non-positive interval is refused with `ValueError`; it used to run as a hot loop. That
+    covers `PresenceSweeper(check_interval=)`, `HeartbeatSubscriber` (including
+    `THREETEARS_REGISTRY_HEARTBEAT_CHECK_INTERVAL=0`), `LocalGrantAuthorizer`'s
+    `catchup_interval_seconds` with an epoch listener (refused at construction, before anything
+    is primed), and `CachedHubJwksProvider`'s two intervals (refused at construction).
+  - Each loop's stop now also logs `spawn_background`'s INFO "background task cancelled".
 
 ### A held lease that says when it is lost
 
@@ -28,21 +42,28 @@ packages (bumped in lock-step).
   `HeldLease` (exported from `threetears.core.coordination` and `threetears.core`) renewed on a
   background task. The renewal is the compare-and-swap `LeaseHandle.refresh`, so a takeover
   surfaces as loss instead of being overwritten.
-- Loss is reported, not raised, through `held.lost` / `await held.until_lost()`:
-  - `LeaseLost` marks it lost at once;
-  - a transport failure is retried until the entry could have expired.
-- `release()` is idempotent, never raises, and is fenced on the holder. `async with held:`
-  releases on exit.
+- Loss is reported, not raised, through `held.lost` / `await held.until_lost()`. `LeaseLost`
+  marks it lost at once. Otherwise a timer armed for the instant the entry could expire (the
+  envelope's own expiry, pushed back by each successful renewal) marks it lost no later than
+  another pod could take the key. Each renewal is bounded by that deadline, so a hanging one
+  cannot delay the loss.
+- `release()` is idempotent, never raises, and is fenced on the holder. It lets a renewal in
+  flight finish rather than cancelling it mid-write. `until_lost()` also returns on release,
+  with `lost` left unset. `async with held:` releases on exit.
+- `hold(..., log_extra=)` adds the caller's context to every lease log line.
+- `LeaseHandle` gains `date_expires`, the expiry written into its envelope.
 - Timing that cannot hold is refused: a fractional or sub-second TTL, or a renewal not
   shorter than the TTL.
-- Scrape's `claim_session` now runs on it, with its public names unchanged.
+- Scrape's `claim_session` now runs on it, with its public names unchanged. Its logs now read
+  "KVLease: ..." and carry the `session_id` as context.
 
 ### Container fixtures stagger their starts under xdist
 
 - **New (minor):** `threetears.core.testing.stagger_container_start()`. It delays each xdist
   worker's FIRST container start by `N x THREETEARS_TEST_CONTAINER_STAGGER_SECONDS` (default
-  2.0; `0` disables it), once per process. `gw0` never waits, and without xdist nothing
-  changes.
+  2.0; `0` disables it; anything but a finite, non-negative number raises), once per process.
+  `gw0` never waits, without xdist nothing changes, and an external URL skips it along with the
+  container. `CONTAINER_STAGGER_ENV` names the setting.
 - `db_container`, `nats_container`, `s3_container` and `searxng_container` all call it. It
   guards against a burst of simultaneous container creation that ZFS-backed Docker does not
   survive (half-created containers, `dataset does not exist`); consumers carried a

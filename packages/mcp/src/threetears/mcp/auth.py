@@ -438,6 +438,10 @@ class LocalGrantAuthorizer:
             raise ValueError(
                 "epoch_client and epoch_listener must be provided together; passing exactly one is a usage error",
             )
+        if epoch_listener is not None and catchup_interval_seconds <= 0:
+            # refused HERE, not when the loop is built: by then start() has already primed the cache
+            # and subscribed, and a failure there would leave a registration behind with no loop.
+            raise ValueError(f"catchup_interval_seconds must be positive, got {catchup_interval_seconds}")
         self._grant_loader = grant_loader
         self._epoch_client = epoch_client
         self._epoch_listener = epoch_listener
@@ -513,6 +517,7 @@ class LocalGrantAuthorizer:
                 interval=self._catchup_interval_seconds,
                 name="mcp-rbac-catchup-loop",
                 logger=log,
+                failure_message="MCP rbac catch-up tick errored; will retry on next interval",
             )
             self._catchup_task.start()
         self._started = True

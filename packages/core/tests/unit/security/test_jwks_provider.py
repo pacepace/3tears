@@ -240,3 +240,26 @@ class TestRefreshLoopUnkillable:
         assert provider.is_warmed is True
         assert calls["n"] >= 3  # start (#1) + the raising iteration (#2) + a surviving warm (#3+)
         await provider.stop()
+
+
+class TestLoopConfiguration:
+    """The refresh loop's cadence is validated up front, and a second start adds no second loop."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"refresh_interval_seconds": 0}, {"initial_retry_interval_seconds": 0}, {"refresh_interval_seconds": -1}],
+    )
+    def test_a_non_positive_interval_is_refused_at_construction(self, kwargs: dict[str, Any]) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            _provider(_client({"keys": []}), **kwargs)
+
+    async def test_a_second_start_while_running_adds_no_loop(self) -> None:
+        nc = _client({"keys": []})
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=3600)
+        await provider.start()
+        try:
+            await provider.start()
+            loops = [t for t in asyncio.all_tasks() if t.get_name() == "hub-jwks-refresh" and not t.done()]
+            assert len(loops) == 1
+        finally:
+            await provider.stop()

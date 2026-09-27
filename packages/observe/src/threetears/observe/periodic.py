@@ -12,8 +12,10 @@ the task to end, one bad tick kills some loops and not others.
 - ``start()`` is idempotent while the loop is live; ``await stop()`` is
   idempotent and returns only once the loop has ended (a tick in flight
   is cancelled);
-- a tick that raises is logged at WARNING with ``exc_info`` and the loop
-  carries on; ``CancelledError`` always propagates;
+- a tick that raises is logged at WARNING with ``exc_info`` (under the
+  caller's ``failure_message`` when given) and the loop carries on;
+  ``CancelledError`` always propagates, and a stop is honoured even by a
+  tick that swallowed it;
 - the loop sleeps one interval before the first tick by default --
   ``first_delay`` sets that first sleep alone (``0`` ticks at once);
 - a tick may return a number of seconds to use as the NEXT delay only
@@ -27,9 +29,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 from threetears.observe.background import spawn_background
 
@@ -37,6 +41,23 @@ __all__ = ["PeriodicTask", "TickResult"]
 
 #: what a tick may return: ``None`` (keep the interval) or the seconds to wait before the next tick.
 TickResult = float | int | None
+
+
+def _as_delay(returned: object) -> TickResult:
+    """a tick's return value as a next delay: a finite, non-negative number; anything else is ``None``.
+
+    :param returned: what the tick returned
+    :ptype returned: object
+    :return: the delay in seconds, or ``None`` to keep the interval
+    :rtype: TickResult
+    """
+    valid = (
+        isinstance(returned, int | float)
+        and not isinstance(returned, bool)
+        and math.isfinite(returned)
+        and returned >= 0
+    )
+    return cast("float | int", returned) if valid else None
 
 
 def _seconds(value: float | timedelta, *, label: str, allow_zero: bool = False) -> float:
@@ -72,6 +93,10 @@ class PeriodicTask:
     :param first_delay: the sleep before the FIRST tick only; ``None`` (default) sleeps one
         interval, ``0`` ticks at once
     :ptype first_delay: float | timedelta | None
+    :param failure_message: the WARNING logged for a failed tick (default
+        ``"periodic tick failed: <name>"``) -- so a loop moved onto this keeps the message its
+        operators already alert on
+    :ptype failure_message: str | None
     """
 
     def __init__(
@@ -82,6 +107,7 @@ class PeriodicTask:
         name: str,
         logger: logging.Logger,
         first_delay: float | timedelta | None = None,
+        failure_message: str | None = None,
     ) -> None:
         self._tick = tick
         self.interval = _seconds(interval, label="interval")
@@ -90,19 +116,24 @@ class PeriodicTask:
         )
         self.name = name
         self._logger = logger
+        self._failure_message = failure_message if failure_message is not None else f"periodic tick failed: {name}"
         self._task: asyncio.Task[Any] | None = None
 
     @property
     def running(self) -> bool:
-        """whether the loop task is live.
+        """whether the loop is live and not being stopped.
 
-        :return: ``True`` while the loop runs
+        :return: ``True`` from :meth:`start` until :meth:`stop` begins
         :rtype: bool
         """
-        return self._task is not None and not self._task.done()
+        task = self._task
+        return task is not None and not task.done() and task.cancelling() == 0
 
     def start(self) -> None:
-        """start the loop; a no-op while it is already running.
+        """start the loop; a no-op while it is running.
+
+        called while a :meth:`stop` is still unwinding, it starts a fresh loop beside the one
+        ending.
 
         :return: nothing
         :rtype: None
@@ -113,15 +144,22 @@ class PeriodicTask:
     async def stop(self) -> None:
         """stop the loop and wait for it to end; a no-op when it is not running.
 
-        a tick in flight is cancelled. safe to call any number of times.
+        a tick in flight is cancelled. any number of callers may stop at once, and each returns
+        only once the loop has ended. a tick may stop its own loop: the call returns at once and the
+        loop ends when the tick does.
 
         :return: nothing
         :rtype: None
         """
-        task, self._task = self._task, None
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        task = self._task
+        if task is None or task.done():
+            return
+        task.cancel()
+        if task is asyncio.current_task():
+            return  # awaiting our own end would never return; the loop ends when this tick does
+        await asyncio.wait([task])
+        if self._task is task:
+            self._task = None
 
     async def run_once(self) -> TickResult:
         """run one tick with the loop's failure isolation, without starting the loop.
@@ -137,13 +175,14 @@ class PeriodicTask:
         except (
             Exception
         ):  # prawduct:allow prawduct/broad-except -- one bad tick must never end the loop; logged with its traceback
+            error = sys.exc_info()[1]
             self._logger.warning(
-                f"periodic tick failed: {self.name}",
-                extra={"extra_data": {"task_name": self.name}},
+                self._failure_message,
+                extra={"extra_data": {"task_name": self.name, "error": f"{type(error).__name__}: {error}"}},
                 exc_info=True,
             )
         else:
-            result = returned if isinstance(returned, int | float) and not isinstance(returned, bool) else None
+            result = _as_delay(returned)
         return result
 
     async def _loop(self) -> None:
@@ -156,4 +195,8 @@ class PeriodicTask:
         while True:
             await asyncio.sleep(delay)
             requested = await self.run_once()
-            delay = float(requested) if requested is not None and requested >= 0 else self.interval
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                # a stop landed during a tick that swallowed its CancelledError; honour it anyway
+                raise asyncio.CancelledError
+            delay = self.interval if requested is None else float(requested)

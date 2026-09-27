@@ -31,6 +31,7 @@ cheap to import from non-test code).
 from __future__ import annotations
 
 from threetears.core.testing.containers import (
+    CONTAINER_STAGGER_ENV,
     check_docker_available,
     nats_reachable,
     skip_without_docker_marker,
@@ -48,6 +49,7 @@ from threetears.core.testing.sqla_parity import (
 )
 
 __all__ = [
+    "CONTAINER_STAGGER_ENV",
     "FAKE_DATABASE_NAME",
     "assert_tables_equivalent",
     "check_docker_available",

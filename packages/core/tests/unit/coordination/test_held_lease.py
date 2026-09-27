@@ -10,6 +10,7 @@ holder identity and expiry are the genuine article.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -169,3 +170,117 @@ async def test_wait_bound_is_honoured() -> None:
 async def test_configuration_that_cannot_hold_is_refused(ttl: timedelta, renew_every: timedelta, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         await _lease(FakeNatsClient(), "pod-a").hold("job", ttl=ttl, renew_every=renew_every)
+
+
+async def test_loss_is_reported_no_later_than_the_entry_could_expire(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Another pod may take the key the moment the entry expires, so ``lost`` must be set by then --
+    not up to a renewal interval later."""
+    client = FakeNatsClient()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=timedelta(seconds=0.4))
+    try:
+        _make_unreachable(await _bucket(client), monkeypatch)["down"] = True
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        assert loop.time() - started <= _TTL.total_seconds() + 0.05
+        assert held.lost.is_set()
+    finally:
+        await held.release()
+
+
+async def test_a_hanging_renewal_does_not_delay_the_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeNatsClient()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
+
+    async def hang(*, key: str) -> tuple[bytes, int] | None:
+        await asyncio.sleep(3600)
+        return None
+
+    monkeypatch.setattr(bucket, "get_entry", hang)
+    try:
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        assert loop.time() - started <= _TTL.total_seconds() + 0.05
+    finally:
+        monkeypatch.undo()
+        await held.release()
+
+
+async def test_release_during_an_in_flight_renewal_still_frees_the_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cancelling a renewal between the server applying it and the handle recording the new revision
+    would leave the delete keyed on a stale revision -- and the entry held for a full TTL."""
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
+    real_update = bucket.update
+    in_flight = asyncio.Event()
+
+    async def slow_update(**kwargs: Any) -> int | None:
+        in_flight.set()
+        revision = await real_update(**kwargs)
+        await asyncio.sleep(0.1)  # the write has landed; the handle has not heard yet
+        return revision
+
+    monkeypatch.setattr(bucket, "update", slow_update)
+    await asyncio.wait_for(in_flight.wait(), timeout=5)
+    await held.release()
+    assert await bucket.get_entry(key="job") is None
+
+
+async def test_until_lost_returns_once_the_lease_is_released() -> None:
+    """A caller racing work against the lease must not hang after it lets the lease go."""
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    waiter = asyncio.create_task(held.until_lost())
+    await held.release()
+    await asyncio.wait_for(waiter, timeout=1)
+    assert not held.lost.is_set(), "a release is not a loss"
+    assert not held.held
+
+
+class _Records(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+async def test_the_callers_log_context_rides_every_lease_log() -> None:
+    # A handler on the lease's own logger, not caplog: another test configuring logging can stop the
+    # records propagating to the root, which made a caplog version pass alone and fail in the full run.
+    lease_log = logging.getLogger("threetears.core.coordination.lease")
+    capture = _Records()
+    lease_log.addHandler(capture)
+    previous = lease_log.level
+    lease_log.setLevel(logging.INFO)
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, log_extra={"session_id": "s-1"})
+    try:
+        await _take_over(client, "job")
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        # the held lease's own lines ("KVLease: ..."), not the factory's bucket-binding line
+        lease_logs = [r for r in capture.records if r.getMessage().startswith("KVLease:")]
+        assert lease_logs and all(getattr(r, "extra_data", {}).get("session_id") == "s-1" for r in lease_logs)
+    finally:
+        await held.release()
+        lease_log.removeHandler(capture)
+        lease_log.setLevel(previous)
+
+
+async def test_a_lease_won_after_waiting_is_not_reported_lost_on_arrival() -> None:
+    """Its life counts from the write that won it, not from when the caller started waiting."""
+    client = FakeNatsClient()
+    first = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    waiter = asyncio.create_task(_lease(client, "pod-b").hold("job", ttl=_TTL, renew_every=_RENEW, max_wait_seconds=5))
+    await asyncio.sleep(1.5)  # longer than the TTL the waiter will be granted
+    await first.release()
+    second = await asyncio.wait_for(waiter, timeout=5)
+    try:
+        await asyncio.sleep(0.2)
+        assert second.held, "a lease won after a long wait was reported lost the moment it arrived"
+    finally:
+        await second.release()
