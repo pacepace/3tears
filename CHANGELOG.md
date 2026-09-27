@@ -4,6 +4,251 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.56.0 -- 2026-09-27
+
+**The unsigned-agent registration concession now ends at 0.57.0, not 0.56.0.** 0.55.0 promised to
+refuse unsigned agent manifests in the next minor. 0.56.0 became the fix release for the Claude CLI
+regressions found in 0.55.0 and ships before any deployed agent image has been rebuilt on the SDK
+that signs its registration, so refusing them now would strip every deployed agent of its
+in-process tools when the hub rolls. `test_unsigned_agent_concession_expires.py` now fails from
+0.57.0 while `admit_copy` still admits an unverified agent-scoped copy.
+
+### One pooled Claude CLI serves every system prompt of a caller
+
+A pooled CLI's system prompt was a launch flag and part of the pool key, so every distinct
+stable prompt -- a pipeline's stages -- needed CLIs of its own. With more prompts than sessions
+the pool thrashed: seven stage prompts, three stages at once, four sessions gave 28 CLI starts and
+24 evictions in 28 calls.
+
+**Changed:** a text system prompt is no longer part of the key. A CLI launches with no system
+prompt and every prompt its key has seen defined as a named agent (`agent_name(prompt)`, a digest),
+and each checkout switches to the call's prompt with the `apply_flag_settings` control request
+(`{"agent": name}`, `null` for a call with none). Proven live before relying on it (bundled CLI
+2.1.207): through a recording proxy, a switched agent's request -- system blocks, messages, tools,
+`output_config` -- is byte-identical to that of a CLI launched with the prompt; the switch holds
+across the rewind reset, which leaves nothing of it in the next call's input; and agents are fixed
+at launch (one defined later answers 'Agent "..." not found'). So a call whose prompt no idle CLI
+has starts a CLI defining it and every earlier prompt (at most 32 per key, least recently used
+dropped), and at a cap an idle CLI lacking the prompt makes room. The same workload: 7 starts, 3
+evictions, every stage answering from its own prompt.
+
+- The JSON schema stays in the key: it is the `--json-schema` launch flag, and setting it through
+  `apply_flag_settings` changed nothing (measured).
+- A system prompt that is not text (a preset, a file) stays a launch flag in the key.
+- `ClaudeCliPool(per_key=)` now defaults to `max_sessions`, the whole cap: one key holds every prompt, and 2
+  capped an application at two pooled calls at once.
+- **New:** `threetears.models.claude_cli_pool.agent_name`; `PooledCliSession.prepare(agent=)`.
+- A CLI that refuses the agent switch or the rewind reset -- both sent through the SDK's private
+  control-request path, proven on claude-agent-sdk 0.2.116 / CLI 2.1.207 (the switch also on
+  0.2.118 / 2.1.209) -- counts toward the pool's self-disable latch: three in a row turn pooling
+  off, logged once, and calls run on CLIs of their own instead of starting pooled CLIs to discard.
+  Only a refusal counts (see "A slow reset no longer turns pooling off" below).
+- The live batch gains a test that switches one pooled CLI between two prompts and fails if a
+  call answers from another's prompt or quotes anything of the switch.
+
+### A pooled Claude CLI is reset by rewinding its conversation, never with `/clear`
+
+The Claude CLI pool reset a CLI between callers with the CLI's local `/clear`. `/clear` empties
+the conversation but leaves the command itself in it: a `<local-command-caveat>`,
+`<command-name>/clear</command-name>` and an empty `<local-command-stdout>`. The next caller's
+model read that as the person's latest input. In a metallm replay of 35 samples
+(`claude-sonnet-5`), two replies began "This is a local slash command (/clear)…" and answered it
+instead of the real message, and several returned "Nothing." for a message with work in it.
+Reproduced with a subscription token, bundled CLI 2.1.207: a reused session asked to quote its
+whole input quoted those lines back on 10 calls of 10. The first call's own words never leaked;
+the reset's did.
+
+**Fixed:** a pooled call's messages go out through `LentClient`, which gives each a uuid, and on
+return the pool sends the CLI's `rewind_conversation` control request to cut the conversation at
+the call's first message. The next call then starts on an empty conversation, with nothing of
+the reset in it: 0 of 10 reused calls showed a trace, and one CLI served all 20 calls. The CLI
+grants that rewind only while its server-side flag `tengu_rewind_first_message` is on. When it
+refuses ("no preceding assistant"), or the rewind fails any other way, the CLI is stopped rather
+than handed on, and a **spare** -- a fresh CLI with the same launch options -- is started in the
+background and parked idle, one per launch key, so the next call does not pay the start. A call
+that fails starts no spare. Nothing else resets a live CLI without a visible turn: a new input
+`session_id` keeps the conversation (measured), and `end_session` ends the process.
+
+- **Changed:** `ClaudeCliPool(clear_timeout_seconds=)` is now `reset_timeout_seconds=` (it bounds
+  the tool release and the rewind); passing the old name raises `TypeError`.
+  `PooledCliSession.clear` is replaced by `PooledCliSession.rewind`, and the constructor no longer
+  takes `reusable`. `ClaudeCliPool.checkout` yields a `LentClient` wrapping the SDK client.
+- **New:** `threetears.models.claude_cli_pool.LentClient`.
+- The live Claude CLI batch (`./scripts/test-live-claude-cli.sh`) gains a test that reuses one
+  pooled CLI three times and fails if the second call's quoted input holds `/clear` or the first
+  call's words. It fails on the code before this fix and passes after.
+
+### A structured subscription call gets the turns its schema retries need
+
+On a Claude subscription, about a third of one consumer's structured calls failed with
+`ModelProviderError: Claude subscription call failed (error_max_turns): Reached maximum number
+of turns (1)` and no answer, 19 of 54 in one replay. The schemas that failed most had an array of
+objects with enum fields.
+
+The CLI does not constrain the model's output to a `--json-schema`, as the Messages API's
+`output_config` does. It checks the model's `StructuredOutput` call against the schema, answers a
+mismatch with what did not match, and expects the model to retry in a second turn. Measured on
+the bundled CLI (2.1.207) with `claude-sonnet-5`, the model's first call regularly missed: it
+filled the tool with a placeholder, `{"$PARAMETER_VALUE": "<the answer, as a string>"}`, or
+wrapped the answer in one key too many. Every subscription call was forced to `--max-turns 1`,
+so the rejected attempt ended the call, with `error_max_turns` and no `structured_output`.
+
+This was not new in 0.55.0. At 0.54.0 the same schema failed 11 calls of 30 the same way, with
+thinking on or off; such a call came back as empty content, with no error. 0.55.0's "A failed
+subscription call raises instead of answering with the failure" made it raise, which is what
+made it visible.
+
+**Fixed:** a call that asks for a schema and gives the model no tool but the CLI's
+`StructuredOutput` -- no bound tools, `tools=[]`, no other MCP server -- now launches with
+`--max-turns 6` and `MAX_STRUCTURED_OUTPUT_RETRIES=5`, the CLI's own attempt cap, pinned. Its
+extra turns can only be schema retries, since there is no tool call a second turn could run in the
+caller's place. The same schema then answered 30 calls of 30, 12 of them after one rejected
+attempt. A call that runs out of attempts still raises, with
+`reason="error_max_structured_output_retries"`; a failed result is never returned as an answer.
+
+**New:** a correct answer the model wrapped in a placeholder is accepted. About one structured
+call in forty spent all five attempts sending the whole answer as a JSON string under a
+template placeholder the model leaks as a parameter name -- `{"$PARAMETER_VALUE": "<the answer>"}`,
+and `$PARAMETER_NAME` and `$FUNCTION_NAME` the same way -- which the CLI rejects every time. When a
+structured call fails with no answer and a rejected attempt is exactly one of those keys holding a
+string that parses as JSON and validates against the call's own schema, the most recent such
+attempt is the answer. It is logged once at WARNING (the schema's title or digest, never the
+content) and marked `structured_output_unwrapped: 1` on the result's metadata. Anything else stays
+a rejection: any other key, more than one key, a value that is not a string, text that is not JSON,
+or JSON that misses the schema. A residual rare failure still raises, with `rejected_output`
+attached.
+
+**New:** a structured call that fails on its schema says what the schema rejected.
+`ModelProviderError` (and `ModelRateLimitError`) gain `rejected_output` -- the last
+`StructuredOutput` answer the CLI rejected, exactly as the model gave it -- and `rejection`, the
+CLI's own reason ("Output does not match required schema: ..."). The reason is also in the
+error's message, and the failure's log line names it with the rejected answer's top-level keys,
+never its values. Both are `None` when nothing was rejected. Before, the CLI's reason was
+dropped, and finding which field the model kept missing needed a live replay.
+
+**Unchanged:** a call that binds tools as well as a schema, or enables Claude Code's built-in
+tools, stays at one turn, because a second turn could run those tools in the caller's place. A
+rejected `StructuredOutput` attempt in such a call still raises `error_max_turns`.
+
+A structured call with no tools now runs on its own pooled CLI: `max_turns` and the environment
+are part of the pool's launch key.
+
+**New release step:** `packages/models/tests/live/test_claude_cli_structured_output_live.py`
+makes 20 real structured calls through the real CLI, six at a time, in the three schema shapes
+the consumer reported, and passes only if every one answers in its schema. At 0.55.0 it fails,
+with 4 of 20 calls on `error_max_turns`. It is opt-in; `./scripts/test-live-claude-cli.sh` runs
+it (with `CLAUDE_CODE_OAUTH_TOKEN`) so that it cannot skip, and records the commit, version and
+result in `build/release-evidence/live-claude-cli.txt`. `docs/releasing.md` now runs it before
+tagging any release that touches `packages/models`, with that line pasted into the release PR.
+
+`create_subscription_chat`'s docstring said omitting `tools` kept Claude Code's built-in tools.
+It never did: `tools` defaults to `[]`, and `tools=None` enables the preset. The docstring now
+says so, and that the choice decides whether a structured call gets the schema retries.
+
+### Memory extraction says what it did, and an unworthy turn no longer blocks the cooldown
+
+Reported by metallm after a 56-turn live run saved no memories. Three defects in
+`threetears.agent.memory.extraction.MemoryExtractor`, all fixed here.
+
+**The cooldown was taken before worthiness.** `extract()` created the per-conversation
+rate-limit key inside `check_rate_limit`, before `check_worthiness`. So a turn the worthiness
+model rejected took the key anyway, and so did a turn cancelled by the next message. Either one
+blocked extraction for the whole cooldown. The rate limit now has two stages:
+
+- `check_rate_limit` only READS the key, before worthiness. A turn inside the cooldown is
+  skipped without paying for a worthiness call.
+- The new stage hook `claim_rate_limit` CREATES the key with an atomic KV `create`, after
+  worthiness says yes. Of two turns that race past the read, exactly one claims the key and
+  extracts. The other is skipped at the rate-limit gate.
+- A turn that claimed the key and then ends `FAILED`, or is cancelled -- by the next message,
+  during the long extraction, embedding and resolution stages -- gives the key back. The delete
+  is guarded by the revision the claim created, so it never removes a key another turn claimed
+  after this one's expired. A `STORED` turn, or one whose model found nothing, keeps it.
+
+**The cooldown lived as long as the bucket's `max_age`.** The key was written through
+`kv_bucket(name=..., ttl=cooldown)`, and that `ttl` sets the stream's `max_age`. The stream's
+creator fixes `max_age` once, so on a shared bucket the key lived for that bucket's age: live dev
+had `KV_metallm-locks` at 600 s against a 300 s cooldown. The bucket is now opened by name alone.
+The cooldown rides the key as a per-message TTL: `create(key=..., value=b"1", ttl=cooldown)`.
+
+A per-message TTL needs the stream's `allow_msg_ttl`. The extractor's open declares the bucket,
+and that reconciles `allow_msg_ttl` in place. The one handle that cannot reconcile it is a
+bind-only one that something else in the process opened first. On that handle the server refuses
+the write (`per-message TTL is disabled`, err_code 10166). `claim_rate_limit` logs that at ERROR
+naming the bucket and raises it, and the turn answers `FAILED`. It never writes a key that would
+outlive its cooldown. Any other NATS failure on either stage still fails open. A cooldown of `0`
+or less now turns the rate limit off; before, it wrote a key that never expired.
+
+**`extract()` returned `None`.** It now returns an `ExtractionResult(outcome, stored, gate,
+reason)`:
+
+- `outcome` is an `ExtractionOutcome`: `STORED`, `SKIPPED` or `FAILED`.
+- `stored` counts the memories this turn added or updated.
+- `gate` is the `ExtractionGate` that stopped a skipped turn: `HEURISTIC`, `RATE_LIMIT`,
+  `WORTHINESS` or `NOTHING_FOUND`.
+- `reason` is the human-readable detail. It is never parsed.
+
+A turn whose every resolved write raised is now `FAILED`, and so is one whose candidates could not
+be embedded. So is a turn whose extraction-model call failed, or whose reply was not the JSON list
+it was asked for, with the error as its `reason`: it read `SKIPPED` / `NOTHING_FOUND`, the same as
+a model that found nothing, so an outage looked like a quiet turn. Before, all of these were
+silent. The public `extract_candidates` hook still answers `[]` on such a failure. `extract()` still catches every failure, but it no longer
+swallows cancellation: it logs one WARNING and re-raises `asyncio.CancelledError`.
+`threetears.agent.memory.extract_memories` now returns the result, or `None` when the integration
+has no extractor. All three types are exported from `threetears.agent.memory` and
+`threetears.agent.memory.extraction`.
+
+**Upgrading a caller.** Code that ignored `extract()`'s return value keeps working. A subclass
+that overrode `check_rate_limit` to CREATE the key now runs at read time; move that logic into
+`claim_rate_limit`. metallm's `ExtractionResult` subclass can go.
+
+### A slow reset no longer turns pooling off
+
+The pool's self-disable latch counted every failed agent switch or rewind reset. The Claude Agent
+SDK raises the same bare `Exception` for a control request that timed out (told apart only by
+`__cause__` being a `TimeoutError`) as for one the CLI refused, and a transport failure landed in
+the same branch, so three slow resets on a busy host turned pooling off for the process.
+
+**Fixed:** `threetears.models.claude_cli_pool.repeats_on_every_call(exc)` decides what counts: a
+refusal (a bare `Exception` not caused by a timeout), a wrong-shaped rewind answer, or a moved SDK
+surface. A timeout or transport failure still stops that session and starts a spare; pooling
+stays on. Pinned through the real `PooledCliSession` over the SDK's real `Query`: three timed-out
+or disconnected resets leave pooling on, three refusals still turn it off.
+
+### A structured ask on OpenRouter keeps the model's provider routing
+
+`ChatOpenRouter` sends `{**params, **kwargs}`, so the structured-output directive's bound
+`provider={"require_parameters": True}` REPLACED the model's whole `provider` block. Every
+structured ask on an OpenRouter model went out without its `only` and `ignore` lists -- no
+provider restrictions at all.
+
+**Fixed:** the factory's model merges a bound `provider` block into its own routing
+(`openrouter_provider`, or `model_kwargs["provider"]`) on every path -- `invoke`, `ainvoke`,
+`stream`, `astream`. A model with `only`/`ignore` sends both lists plus `require_parameters`; a
+model with no routing sends `require_parameters` alone. Pinned at the wire, through the real
+`openrouter` SDK over a mock HTTP transport.
+
+### OpenRouter's served provider is read, and logged per call
+
+OpenRouter names the upstream that served each call (`"provider"`) on every response and stream
+chunk. The `openrouter` SDK's `ChatResult` and `ChatStreamChunk` do not declare it, so parsing
+dropped it, and nobody could tell which upstream answered.
+
+**Fixed:** `threetears.models.providers.openrouter.declare_served_provider()` (run by the factory)
+declares `provider: str | None` on both SDK models and rebuilds the stream wrapper; it is
+idempotent and raises if the classes move. It reaches `response_metadata["provider"]`
+(non-streamed) and the final chunk's `generation_info["provider"]` (streamed).
+`UsageTrackingCallback` now logs one INFO line per call, `LLM call completed`, carrying
+`served_provider` (`None` for a direct provider) with the model, tokens and latency;
+`threetears.models.tracking.served_provider(result)` reads it.
+
+- **Dependency:** `langchain-openrouter>=0.2.9` (the first to copy `provider` through; it
+  requires `openrouter>=0.9.2,<1.0`). `3tears-models` also declares `openrouter>=0.9.2,<1.0`
+  directly, because it imports and extends that SDK's models itself. 0.2.9 is younger than the 14-day supply-chain cooldown,
+  so the root `pyproject.toml` admits it by a fixed-date `exclude-newer-package` entry that stops
+  mattering once the window passes it. `langchain-core` moves to 1.6.3 with it. **A consumer with
+  the same cooldown cannot lock 3tears-models 0.56.0 before 2026-10-06 without the same entry.**
+
 ## v0.55.0 -- 2026-09-27
 
 Minor: `threetears.agent.audit` gains the erasure rule for audit records:

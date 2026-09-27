@@ -143,6 +143,7 @@ uv sync                    # install all packages in dev mode
 | `./scripts/test.sh` | Run tests. All packages, or one: `./scripts/test.sh core` |
 | `./scripts/test-sidecar.sh` | Run the nodriver sidecar's own tests |
 | `./scripts/test-integration.sh` | Run the integration tests |
+| `./scripts/test-live-claude-cli.sh` | Run the live Claude CLI batch -- structured output and the session pool -- and record the result (needs `CLAUDE_CODE_OAUTH_TOKEN`; before tagging a `packages/models` release) |
 | `./scripts/lint.sh` | ruff check plus format check. `--fix` to auto-fix |
 | `./scripts/typecheck.sh` | mypy on all packages |
 | `./scripts/check-all.sh` | lint plus typecheck plus tests |

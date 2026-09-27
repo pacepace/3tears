@@ -264,6 +264,20 @@ class TestWhatIsNotAFailure:
             invoked = await model.ainvoke([HumanMessage(content="hi")])
 
         assert invoked.content == '{"ok": true}'
+        assert invoked.response_metadata["is_error"] is False, "an answered call was reported as an error"
+        assert invoked.response_metadata["finish_reason"] == "stop"
+
+    async def test_a_streamed_structured_answer_reports_success_whatever_the_result_flag_says(self) -> None:
+        output_config = {"format": {"type": "json_schema", "schema": {"type": "object"}}}
+        with _fake_cli(_assistant("thinking"), _result(is_error=True, structured_output={"ok": True})):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN).bind(output_config=output_config)
+            merged: Any = None
+            async for chunk in model.astream([HumanMessage(content="hi")]):
+                merged = chunk if merged is None else merged + chunk
+
+        assert merged.content == '{"ok": true}'
+        assert merged.response_metadata["is_error"] is False
+        assert merged.response_metadata["finish_reason"] == "stop"
 
 
 class TestTheCircuitBreaker:
