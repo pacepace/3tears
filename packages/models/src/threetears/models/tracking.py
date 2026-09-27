@@ -431,16 +431,20 @@ def extract_usage(response: LLMResult, *, prompt_messages: list[Any] | None = No
     usages: list[dict[str, Any]] = []
     estimated_output = 0
     for batch in getattr(response, "generations", None) or []:
+        batch_usages: list[dict[str, Any]] = []
         for generation in batch:
             message = getattr(generation, "message", None)
             usage = getattr(message, "usage_metadata", None) if message is not None else None
             if isinstance(usage, dict):
-                usages.append(usage)
+                batch_usages.append(usage)
             else:
                 emitted = _reply_text(message) if message is not None else str(getattr(generation, "text", ""))
                 estimated_output += _estimate_tokens(emitted)
-    if len(usages) > 1 and all(u == usages[0] for u in usages[1:]):
-        usages = usages[:1]  # one call's usage on every choice, not one usage per choice
+        # within ONE prompt's choices, one call's usage repeated on every choice (ChatOpenAI, n > 1) is
+        # counted once; separate prompts are separate calls, however alike their counts
+        if len(batch_usages) > 1 and all(u == batch_usages[0] for u in batch_usages[1:]):
+            batch_usages = batch_usages[:1]
+        usages.extend(batch_usages)
     for usage in usages:
         out.input_tokens += int(usage.get("input_tokens", 0) or 0)
         out.output_tokens += int(usage.get("output_tokens", 0) or 0)
@@ -793,6 +797,7 @@ class UsageTracker:
         self._tracer: Tracer | None = None
         self._otel_available = False
         self._prom = _get_prom_emitter(prom_registry)
+        self._pending_sinks: set[asyncio.Task[None]] = set()
         self._audit_sink = audit_sink
         self._counter_sink = counter_sink
         try:
@@ -828,6 +833,16 @@ class UsageTracker:
         self._dispatch_sink("audit", self._audit_sink, usage)
         self._dispatch_sink("counter", self._counter_sink, usage)
 
+    async def drain(self) -> None:
+        """wait for every sink write already scheduled -- call at shutdown so none is lost.
+
+        :return: None
+        :rtype: None
+        """
+        pending = list(self._pending_sinks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     def _dispatch_sink(
         self,
         kind: str,
@@ -857,7 +872,11 @@ class UsageTracker:
             loop = None
 
         if loop is not None:
-            loop.create_task(self._invoke_sink(kind, sink, usage))
+            # held until done: the loop keeps only a weak reference to a task, so an unreferenced sink
+            # write can be garbage-collected mid-flight.
+            task = loop.create_task(self._invoke_sink(kind, sink, usage))
+            self._pending_sinks.add(task)
+            task.add_done_callback(self._pending_sinks.discard)
             return
 
         # no running loop -- synchronous fallback for tests and scripts.

@@ -16,7 +16,7 @@ packages (bumped in lock-step).
     stops all wait, a tick may stop its own loop, and a tick that swallows its cancellation
     cannot keep the loop alive;
   - a failing tick is logged at WARNING with its traceback and the loop carries on, under
-    `failure_message` when given;
+    `failure_message` when given (an interval must be finite and positive);
   - a tick may return the seconds to wait before the NEXT tick (fast retry, backoff). Anything
     but a finite, non-negative number keeps the interval;
   - `first_delay` sets the first sleep alone (`0` ticks at once);
@@ -24,8 +24,8 @@ packages (bumped in lock-step).
 - The presence sweeper, the registry health check, the MCP rbac catch-up and the write-behind
   `PeriodicFlusher` run on it. Their public APIs and failure log messages are unchanged.
 - `CachedHubJwksProvider` runs on it too, keeping its cadence (short until the first success,
-  then steady) and its log message. A second `start()` while it runs is now a no-op; it used
-  to spawn a second loop.
+  then steady) and its log message. A second `start()` while it runs, or overlapping it, is
+  now a no-op; it used to spawn a second loop.
 - **Behaviour changes:**
   - The presence sweeper's and the registry health subscriber's `start()` are now idempotent;
     twice used to spawn two loops.
@@ -35,6 +35,14 @@ packages (bumped in lock-step).
     `catchup_interval_seconds` with an epoch listener (refused at construction, before anything
     is primed), and `CachedHubJwksProvider`'s two intervals (refused at construction).
   - Each loop's stop now also logs `spawn_background`'s INFO "background task cancelled".
+
+### Also fixed on this branch
+
+- The observe logging tests restore every logger level and handler `configure_logging`
+  changes. They used to leave the root and `threetears` levels at WARNING, so later tests
+  capturing INFO saw nothing (`test_fence`, the MCP admin-logging test).
+- `UsageTracker` keeps a reference to each scheduled sink write until it finishes, and gains
+  `await drain()` to wait for pending writes at shutdown.
 
 ### A held lease that says when it is lost
 
@@ -100,7 +108,8 @@ packages (bumped in lock-step).
   conversation_id)`. It is the store over a conversations row: the summary goes in the existing
   `summary` column and the cursor in `metadata["summary_through"]`, so no migration is needed.
   A racing write to the row that is not a fold is retried once while the summary state is
-  unchanged. The fence assumes a write-through collection.
+  unchanged, and a failed save evicts the row it dirtied in this pod's L1. The fence assumes a
+  write-through collection.
   `dispatch_conversation_summarized` fires the existing `ConversationSummarizedEvent`. Scriob and
   metallm each hand-rolled this, with incompatible cursors.
 
@@ -120,8 +129,9 @@ packages (bumped in lock-step).
 - **New (minor):** `UsageRecord.token_source`: `"reported"`, `"estimated"` or `"unavailable"`.
   - A call whose provider reports no usage is estimated from its text (and its prompt) and
     marked so, instead of recording a silent 0/0.
-  - Every generation is counted, not only the first, but one call's usage repeated on each
-    choice (ChatOpenAI with `n > 1`) is counted once.
+  - Every generation is counted, not only the first. One call's usage repeated on each choice
+    of ONE prompt (ChatOpenAI with `n > 1`) is counted once; separate prompts always count
+    separately.
   - A tool-call-only reply is estimated from its arguments.
   - `extract_usage(response, prompt_messages=) -> ExtractedUsage` is the shared extraction.
 - **New (minor):** `UsageAccumulator`, a callback totalling one run's calls for per-turn
@@ -148,9 +158,14 @@ packages (bumped in lock-step).
 - **New (minor):** `threetears.agent.acl.NamespaceCollection.ensure_namespace(*, namespace_id,
   name, namespace_type, owner_agent_id, customer_id, owner_namespace=None, schema_name=None,
   metadata=None)`, a get-or-create on a deterministic id.
-  - It is idempotent and converges across pods through the collection's upsert.
-  - The row is read back after the save and refused if it cannot be.
-  - An existing row that disagrees on type, owner or customer raises.
+  - The write is INSERT-IF-ABSENT (`ON CONFLICT DO NOTHING`), never an upsert: a racing
+    loser is absorbed by whichever unique index it meets, instead of raising, and an existing
+    row is never overwritten. It is proven under 200 rounds of 8 racing pods.
+  - The row is read back after the insert.
+  - An existing row that disagrees on type, owner, customer, name, owner namespace or schema
+    raises `ValueError`, as does a name already taken by a row with another id.
+  - A missing owner under the `owner_namespace` foreign key, or a `CHECK` the table enforces,
+    surfaces as the backend's own error.
   - It does not create owners: where the `owner_namespace` foreign key exists, the owner's row
     must already be there.
   - The hub's memory-namespace responder is moving onto it (aibots, with the 0.56.0 adoption),
@@ -168,8 +183,12 @@ packages (bumped in lock-step).
     the application that owns the control plane.
   - Scriob wrote this row with raw SQL, leaving `owner_namespace` NULL so no agent owned it.
     metallm stubbed it with a per-process random id.
+  - An EXISTING ownerless row is found by (type, owner, customer) and returned as it is. It is
+    not repaired, so a deployment adopting this must backfill `owner_namespace` and
+    `schema_name` on rows it wrote before.
 - `test_no_namespace_writes.py` counts `ensure_namespace` as a write and exempts exactly one
-  module, the hub-less provisioner, pinned to that one call.
+  module, the hub-less provisioner, by resolved path. A test pins it to that one call, and a
+  second forbids any other memory module from referencing the provisioner in code.
 
 ## v0.54.0 -- 2026-09-26
 

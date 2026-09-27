@@ -263,3 +263,14 @@ class TestLoopConfiguration:
             assert len(loops) == 1
         finally:
             await provider.stop()
+
+    async def test_overlapping_starts_add_no_loop(self) -> None:
+        """Both calls used to pass the running check before either built its loop."""
+        nc = _client({"keys": []})
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=3600)
+        await asyncio.gather(provider.start(), provider.start())
+        try:
+            loops = [t for t in asyncio.all_tasks() if t.get_name() == "hub-jwks-refresh" and not t.done()]
+            assert len(loops) == 1
+        finally:
+            await provider.stop()

@@ -22,7 +22,7 @@ untrusted agents: that is what the hub is for.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
 from threetears.agent.memory.authorize import (
@@ -62,11 +62,36 @@ class _Namespaces(Protocol):
         """
         ...
 
-    async def ensure_namespace(self, **fields: object) -> NamespaceEntity:
-        """get-or-create the row these fields describe.
+    async def ensure_namespace(
+        self,
+        *,
+        namespace_id: UUID,
+        name: str,
+        namespace_type: str,
+        owner_agent_id: UUID | None,
+        customer_id: UUID | None,
+        owner_namespace: str | None = None,
+        schema_name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> NamespaceEntity:
+        """get-or-create the row these fields describe (``NamespaceCollection.ensure_namespace``).
 
-        :param fields: the ``NamespaceCollection.ensure_namespace`` keywords
-        :ptype fields: object
+        :param namespace_id: the row's id
+        :ptype namespace_id: UUID
+        :param name: unique namespace name
+        :ptype name: str
+        :param namespace_type: the type discriminator
+        :ptype namespace_type: str
+        :param owner_agent_id: owning agent
+        :ptype owner_agent_id: UUID | None
+        :param customer_id: owning customer
+        :ptype customer_id: UUID | None
+        :param owner_namespace: the owning agent's own namespace name
+        :ptype owner_namespace: str | None
+        :param schema_name: backing schema name
+        :ptype schema_name: str | None
+        :param metadata: row metadata
+        :ptype metadata: dict[str, Any] | None
         :return: the row
         :rtype: NamespaceEntity
         """

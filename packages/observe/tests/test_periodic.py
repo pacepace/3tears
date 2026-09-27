@@ -200,7 +200,7 @@ async def test_run_once_runs_one_isolated_tick(caplog: pytest.LogCaptureFixture)
     assert not periodic.running, "run_once does not start the loop"
 
 
-@pytest.mark.parametrize("interval", [0, -1, timedelta(0)])
+@pytest.mark.parametrize("interval", [0, -1, timedelta(0), float("nan"), float("inf")])
 def test_the_interval_must_be_positive(interval: float | timedelta) -> None:
     with pytest.raises(ValueError, match="interval"):
         PeriodicTask(lambda: asyncio.sleep(0), interval=interval, name="bad", logger=_LOG)

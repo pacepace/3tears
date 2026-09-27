@@ -74,7 +74,7 @@ def _seconds(value: float | timedelta, *, label: str, allow_zero: bool = False) 
     :raises ValueError: the value is negative, or zero when zero is not allowed
     """
     seconds = value.total_seconds() if isinstance(value, timedelta) else float(value)
-    if seconds < 0 or (seconds == 0 and not allow_zero):
+    if not math.isfinite(seconds) or seconds < 0 or (seconds == 0 and not allow_zero):
         raise ValueError(f"{label} must be {'non-negative' if allow_zero else 'positive'}, got {value!r}")
     return seconds
 
@@ -145,8 +145,8 @@ class PeriodicTask:
         """stop the loop and wait for it to end; a no-op when it is not running.
 
         a tick in flight is cancelled. any number of callers may stop at once, and each returns
-        only once the loop has ended. a tick may stop its own loop: the call returns at once and the
-        loop ends when the tick does.
+        only once the loop has ended. a tick may stop its own loop: the call returns at once, and the
+        tick is cancelled at its next ``await`` (or the loop ends when it returns).
 
         :return: nothing
         :rtype: None

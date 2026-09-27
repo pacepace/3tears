@@ -34,6 +34,12 @@ _WRITE_METHODS = frozenset({"save_entity", "save", "delete", "delete_entity", "c
 #: same argument this one had (Pace, 2026-09-27), not a green test.
 _HUBLESS_PROVISIONER = "local_provisioner.py"
 
+#: where the memory package may name the hub-less provisioner: its own module and the package's lazy
+#: export map. Anywhere else inside the package -- say, a "fallback when the hub is unreachable" -- would
+#: reach the exempted write from an agent process, which is exactly the regression this file guards.
+_PROVISIONER_NAME = "LocalMemoryNamespaceProvisioner"
+_MAY_NAME_PROVISIONER = frozenset({_HUBLESS_PROVISIONER, "__init__.py"})
+
 #: attribute names by which this package reaches the namespaces Collection. the
 #: bundle field, the parameter it is threaded through, and the private handle a
 #: future collaborator might store it under.
@@ -87,7 +93,7 @@ class TestMemoryPackageNeverWritesNamespaces:
         """no module under the memory package mutates the namespaces Collection."""
         violations: list[str] = []
         for path in sorted(_MEMORY_SRC.rglob("*.py")):
-            if path.name == _HUBLESS_PROVISIONER:
+            if path.resolve() == (_MEMORY_SRC / _HUBLESS_PROVISIONER).resolve():
                 continue
             violations.extend(_namespace_writes(path))
         assert violations == [], (
@@ -118,3 +124,43 @@ class TestTheHublessProvisionerWritesOnlyThroughEnsure:
         writes = _namespace_writes(_MEMORY_SRC / _HUBLESS_PROVISIONER)
         assert writes, "the exempted module no longer writes at all; remove the exemption"
         assert all(w.endswith(".ensure_namespace(...)") for w in writes), writes
+
+    def test_no_other_memory_module_constructs_the_hubless_provisioner(self) -> None:
+        """the exemption covers a module, not a way around the rule: nothing else in the package may
+        reach it (only the application that owns the control plane constructs it)."""
+        naming = [
+            path.relative_to(_MEMORY_SRC).as_posix()
+            for path in sorted(_MEMORY_SRC.rglob("*.py"))
+            if path.relative_to(_MEMORY_SRC).as_posix() not in _MAY_NAME_PROVISIONER
+            and _references(path, _PROVISIONER_NAME)
+        ]
+        assert naming == [], f"memory modules reaching the hub-less provisioner: {naming}"
+
+
+def _references(path: Path, name: str) -> bool:
+    """whether a module's CODE names ``name`` (an import, a name, an attribute) -- prose does not count.
+
+    :param path: module to scan
+    :ptype path: Path
+    :param name: the name looked for
+    :ptype name: str
+    :return: ``True`` when referenced
+    :rtype: bool
+    """
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Name) and node.id == name:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == name:
+            return True
+        if isinstance(node, ast.ImportFrom) and any(alias.name == name for alias in node.names):
+            return True
+    return False
+
+
+def test_the_reference_scan_sees_code_but_not_prose(tmp_path: Path) -> None:
+    """self-check, as for the write walker: an empty result must mean "none", not "cannot see"."""
+    code = tmp_path / "code.py"
+    code.write_text("from threetears.agent.memory import LocalMemoryNamespaceProvisioner as P\n")
+    prose = tmp_path / "prose.py"
+    prose.write_text('"""uses LocalMemoryNamespaceProvisioner on hub-less deployments."""\n')
+    assert _references(code, _PROVISIONER_NAME) and not _references(prose, _PROVISIONER_NAME)

@@ -50,6 +50,8 @@ class _ConversationRows(Protocol):
 
     async def save_entity(self, entity: Conversation) -> None: ...
 
+    def evict_from_cache_sync(self, entity_id: Any) -> bool: ...  # noqa: ANN401
+
 
 def _state_of(conversation: Conversation) -> SummaryState | None:
     """Read a row's summary state; a malformed cursor reads as none.
@@ -125,6 +127,9 @@ class ConversationSummaryStore:
             try:
                 await self._collection.save_entity(conversation)
             except ConcurrentModificationError:
+                # setting the fields wrote through to this pod's L1 row, and the save did not land: drop
+                # that dirty row so the re-check (and any later load) reads the real one, not this fold's.
+                self._collection.evict_from_cache_sync(self._key)
                 log.info("rolling summary save hit a concurrent row update; re-checking once")
             else:
                 stored = True

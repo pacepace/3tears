@@ -356,3 +356,32 @@ def test_the_extracted_usage_type_is_public() -> None:
     from threetears.models import ExtractedUsage
 
     assert isinstance(extract_usage(_result(_reply(usage=_USAGE))), ExtractedUsage)
+
+
+def test_two_prompts_with_equal_usage_are_two_calls() -> None:
+    result = LLMResult(
+        generations=[
+            [ChatGeneration(message=_reply(usage=_USAGE))],
+            [ChatGeneration(message=_reply(usage=dict(_USAGE)))],
+        ]
+    )
+    usage = extract_usage(result)
+    assert (usage.input_tokens, usage.output_tokens) == (24, 10)
+
+
+async def test_drain_waits_for_scheduled_sink_writes() -> None:
+    written: list[UsageRecord] = []
+
+    class _Slow(UsageAuditSink):
+        async def record(self, record: UsageRecord) -> None:
+            await asyncio.sleep(0.05)
+            written.append(record)
+
+    tracker = UsageTracker(audit_sink=_Slow())
+    model = GenericFakeChatModel(messages=iter([_reply(usage=_USAGE)])).with_config(
+        callbacks=[tracker.make_callback(model_name="fake", provider_name="fake")]
+    )
+    await model.ainvoke([HumanMessage(content="hi")])
+    assert written == []
+    await tracker.drain()
+    assert len(written) == 1

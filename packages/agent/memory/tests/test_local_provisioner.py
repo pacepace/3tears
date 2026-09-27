@@ -67,7 +67,7 @@ class _FakeNamespaces:
 
 
 def _provisioner(rows: _FakeNamespaces) -> LocalMemoryNamespaceProvisioner:
-    return LocalMemoryNamespaceProvisioner(rows)  # type: ignore[arg-type]
+    return LocalMemoryNamespaceProvisioner(rows)  # type: ignore[arg-type]  # a structural stand-in, deliberately partial
 
 
 async def test_it_writes_the_row_the_hub_writes() -> None:

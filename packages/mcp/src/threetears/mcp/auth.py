@@ -438,7 +438,7 @@ class LocalGrantAuthorizer:
             raise ValueError(
                 "epoch_client and epoch_listener must be provided together; passing exactly one is a usage error",
             )
-        if epoch_listener is not None and catchup_interval_seconds <= 0:
+        if epoch_listener is not None and not (0 < catchup_interval_seconds < float("inf")):
             # refused HERE, not when the loop is built: by then start() has already primed the cache
             # and subscribed, and a failure there would leave a registration behind with no loop.
             raise ValueError(f"catchup_interval_seconds must be positive, got {catchup_interval_seconds}")

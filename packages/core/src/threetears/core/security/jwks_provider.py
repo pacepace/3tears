@@ -86,6 +86,7 @@ class CachedHubJwksProvider:
         self._request_timeout = request_timeout_seconds
         self._jwks: dict[str, Any] = dict(_EMPTY_JWKS)
         self._loop: PeriodicTask | None = None
+        self._starting = False
         #: True after the first SUCCESSFUL fetch; gates the fast cold-start retry vs the steady loop
         self._warmed = False
         #: collapses concurrent reactive triggers onto a single in-flight refresh (no Hub stampede)
@@ -124,25 +125,31 @@ class CachedHubJwksProvider:
         :return: nothing
         :rtype: None
         """
-        if self._loop is not None and self._loop.running:
+        if self._starting or (self._loop is not None and self._loop.running):
             return
-        await self.refresh()
-        # Until the first SUCCESSFUL fetch the loop retries on the short ``initial_retry_interval`` so
-        # a verifier whose initial fetch raced the Hub's responder at boot warms within seconds (under
-        # enforce an empty cache rejects every call); after the first success it settles to the steady
-        # ``refresh_interval``. The loop is a supervisor: it must be unkillable, because a Hub re-key
-        # only self-heals while it keeps running -- _refresh_pass never raises, and only cancellation
-        # (``stop``) ends it. A second ``start`` while it runs is a no-op rather than a second loop.
-        self._loop = PeriodicTask(
-            self._refresh_pass,
-            # a pass never raises (see _refresh_pass) and always returns the delay it wants, so the
-            # interval is only the fallback.
-            interval=self._refresh_interval,
-            first_delay=self._next_delay(),
-            name="hub-jwks-refresh",
-            logger=log,
-        )
-        self._loop.start()
+        # claimed BEFORE the await: two overlapping start() calls would otherwise both pass the check
+        # and each build a loop, leaving one that stop() never reaches.
+        self._starting = True
+        try:
+            await self.refresh()
+            # Until the first SUCCESSFUL fetch the loop retries on the short ``initial_retry_interval`` so
+            # a verifier whose initial fetch raced the Hub's responder at boot warms within seconds (under
+            # enforce an empty cache rejects every call); after the first success it settles to the steady
+            # ``refresh_interval``. The loop is a supervisor: it must be unkillable, because a Hub re-key
+            # only self-heals while it keeps running -- _refresh_pass never raises, and only cancellation
+            # (``stop``) ends it. A second ``start`` while it runs is a no-op rather than a second loop.
+            self._loop = PeriodicTask(
+                self._refresh_pass,
+                # a pass never raises (see _refresh_pass) and always returns the delay it wants, so the
+                # interval is only the fallback.
+                interval=self._refresh_interval,
+                first_delay=self._next_delay(),
+                name="hub-jwks-refresh",
+                logger=log,
+            )
+            self._loop.start()
+        finally:
+            self._starting = False
 
     async def stop(self) -> None:
         """cancel the background refresh loop.

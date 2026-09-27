@@ -46,10 +46,15 @@ class _FakeConversations:
     def __init__(self, *rows: Conversation) -> None:
         self.rows = {(row.agent_id, row.conversation_id): row for row in rows}
         self.saved: list[Conversation] = []
+        self.evicted: list[Any] = []
         self.conflict_next = False
 
     async def get(self, key: tuple[UUID, UUID]) -> Conversation | None:
         return self.rows.get(key)
+
+    def evict_from_cache_sync(self, entity_id: Any) -> bool:
+        self.evicted.append(entity_id)
+        return True
 
     async def save_entity(self, entity: Conversation) -> None:
         if self.conflict_next:
@@ -150,3 +155,13 @@ async def test_the_summarized_event_is_skipped_outside_a_graph_run() -> None:
     from threetears.conversations import dispatch_conversation_summarized
 
     await dispatch_conversation_summarized(3, "summary")
+
+
+async def test_a_conflicted_save_drops_its_dirty_cached_row() -> None:
+    """Setting fields writes through to L1; a save that did not land must not leave this fold's
+    summary there for the next load to read as if it were stored."""
+    cid = uuid4()
+    rows = _FakeConversations(_conversation(cid))
+    rows.conflict_next = True
+    await _store(rows, cid).save(SummaryState("s", "m1", 1), expected=None)
+    assert rows.evicted == [(_AGENT, cid)]

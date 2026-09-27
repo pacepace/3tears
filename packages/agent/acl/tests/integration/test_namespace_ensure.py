@@ -143,3 +143,37 @@ async def test_ensure_refuses_a_row_that_already_means_something_else(pg_pool: a
     other_customer = uuid.uuid4()
     with pytest.raises(ValueError, match="already exists"):
         await collection.ensure_namespace(**{**_fields(customer, agent, namespace_id), "customer_id": other_customer})  # type: ignore[arg-type]
+
+
+async def test_racing_ensures_never_raise_under_load(pg_pool: asyncpg.Pool) -> None:
+    """One gather of four hid it: the loser of a real race hit the non-arbiter UNIQUE indexes."""
+    customer, agent = uuid.uuid4(), uuid.uuid4()
+    await _owner_row(pg_pool, "agent-owner", customer)
+    pods = [_collection(pg_pool) for _ in range(8)]
+    for _ in range(200):
+        fields = _fields(customer, agent, uuid.uuid4())
+        fields["name"] = f"ns-{uuid.uuid4().hex}"
+        results = await asyncio.gather(*(pod.ensure_namespace(**fields) for pod in pods), return_exceptions=True)  # type: ignore[arg-type]
+        errors = [r for r in results if isinstance(r, BaseException)]
+        assert errors == [], errors[:1]
+
+
+async def test_ensure_refuses_a_row_whose_other_fields_disagree(pg_pool: asyncpg.Pool) -> None:
+    customer, agent, namespace_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await _owner_row(pg_pool, "agent-owner", customer)
+    collection = _collection(pg_pool)
+    await collection.ensure_namespace(**{**_fields(customer, agent, namespace_id), "owner_namespace": None})  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="already exists"):
+        await collection.ensure_namespace(**_fields(customer, agent, namespace_id))  # type: ignore[arg-type]
+    row = await pg_pool.fetchrow("SELECT owner_namespace FROM namespaces WHERE namespace_id = $1", namespace_id)
+    assert row is not None and row["owner_namespace"] is None, "an existing row is never overwritten"
+
+
+async def test_a_name_taken_by_another_row_is_refused(pg_pool: asyncpg.Pool) -> None:
+    customer, agent = uuid.uuid4(), uuid.uuid4()
+    await _owner_row(pg_pool, "agent-owner", customer)
+    collection = _collection(pg_pool)
+    first = _fields(customer, agent, uuid.uuid4())
+    await collection.ensure_namespace(**first)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="name"):
+        await collection.ensure_namespace(**{**first, "namespace_id": uuid.uuid4()})  # type: ignore[arg-type]
