@@ -20,6 +20,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from threetears.models import LlmPurpose
 
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
@@ -31,6 +32,7 @@ from threetears.scrape.eval_loop import (
     run_eval_loop,
     run_eval_loop_multi_row,
 )
+from threetears.scrape.llm_retry import StructuredCallExhaustedError
 from threetears.scrape.extraction import (
     NoticeDocument,
     _CandidateStrategy,
@@ -198,6 +200,7 @@ class TestRunEvalLoopFirstRun:
 
         assert extraction.validation_status == "needs_review"
         assert extraction.extraction_recipe_id is None
+        assert extraction.field_confidences is None  # the judge answered; nothing failed
         assert await recipe_collection.get("warn_act_ca") is None
 
     async def test_judge_failure_degrades_to_needs_review_not_a_crash(self):
@@ -224,6 +227,8 @@ class TestRunEvalLoopFirstRun:
             )
 
         assert extraction.validation_status == "needs_review"
+        # Distinguishable from a judge that confirmed none: the row says it could not be asked.
+        assert extraction.field_confidences == {"judge_failure": "RuntimeError: boom"}
 
 
 class TestRunEvalLoopRecipeReuse:
@@ -1617,18 +1622,18 @@ class TestJudgeOneDocumentExtraction:
             )
         assert result is False
 
-    async def test_total_judge_failure_returns_false_not_a_crash(self):
-        """An unconfirmable record is treated the same as a rejected one -- never
-        silently kept just because the judge itself couldn't be reached."""
+    async def test_total_judge_failure_raises_never_reads_as_a_rejection(self):
+        """A judge that could not be asked has not rejected the record; the record is still
+        never kept, because the failure stops the poll rather than answering ``True``."""
         fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError),
         ):
-            result = await _judge_one_document_extraction(
+            await _judge_one_document_extraction(
                 _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
             )
-        assert result is False
 
     async def test_text_document_uses_the_given_judge_model_no_provider_override(self):
         verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="ok")
@@ -1699,14 +1704,14 @@ class TestJudgeMultiRowExtraction:
             result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
         assert result == {0}
 
-    async def test_total_judge_failure_returns_empty_set_not_a_crash(self):
+    async def test_total_judge_failure_raises_never_an_empty_confirmation(self):
         fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError),
         ):
-            result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
-        assert result == set()
+            await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
 
     async def test_empty_records_returns_empty_set_without_calling_the_model(self):
         with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
@@ -1787,3 +1792,187 @@ class TestRegexValidationRunsOffTheEventLoop:
         assert elapsed >= 0.5, "the candidate was not actually run to its limit -- this case proves nothing"
         gaps = [later - earlier for earlier, later in zip(beats, beats[1:], strict=False)]
         assert max(gaps) < 0.3, f"the event loop stalled for {max(gaps):.2f}s while validating"
+
+
+# ===========================================================================
+# A model call that failed every attempt is not an observation of the page
+# ===========================================================================
+
+
+async def _rows_for(extraction_collection: ScrapeExtractionCollection, target_id: str) -> list:
+    return [row for row in await extraction_collection.list_all() if row.target_id == target_id]
+
+
+class TestAModelOutageIsNotRecordedAsAnExtraction:
+    """The eval loop used to turn an exhausted model call into "no candidates", "no
+    confirmation" or "no record", and persist that as a page nothing could be extracted from.
+    It now raises, persists no row and moves no recipe counter."""
+
+    async def test_candidate_generation_outage_raises_and_persists_nothing(self):
+        recipe_collection, extraction_collection = _collections()
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("provider down"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
+        ):
+            await run_eval_loop(
+                "warn_outage_css",
+                _PAGE_HTML,
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+            )
+        assert exc_info.value.log_label == "scrape candidate generation"
+        assert await _rows_for(extraction_collection, "warn_outage_css") == []
+        assert await recipe_collection.get("warn_outage_css") is None
+
+    async def test_row_candidate_generation_outage_raises_and_persists_nothing(self):
+        recipe_collection, extraction_collection = _collections()
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("provider down"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            pytest.raises(StructuredCallExhaustedError),
+        ):
+            await run_eval_loop_multi_row(
+                "warn_outage_rows",
+                _ROWS_PAGE_HTML,
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+            )
+        assert await _rows_for(extraction_collection, "warn_outage_rows") == []
+        assert await recipe_collection.get("warn_outage_rows") is None
+
+    async def test_per_document_extraction_outage_fails_the_poll_after_every_document_ran(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        boom = RuntimeError("provider down")
+        seen: list[str] = []
+
+        async def fake_extract(text, schema, *, model_id, api_key):
+            seen.append(text)
+            if "Beta" in text:
+                raise StructuredCallExhaustedError(
+                    "scrape direct per-document field extraction", attempts=6, model_id=model_id, last_error=boom
+                )
+            return {"employer": "Acme Corp", "affected_count": 42}
+
+        with (
+            patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
+            pytest.raises(StructuredCallExhaustedError) as exc_info,
+        ):
+            await run_eval_loop_multi_row(
+                "warn_outage_docs",
+                _NOTICES_PAGE_HTML,
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="per_document",
+            )
+        assert exc_info.value.last_error is boom
+        assert len(seen) == 2
+        assert await _rows_for(extraction_collection, "warn_outage_docs") == []
+        assert await recipe_collection.get("warn_outage_docs") is None
+
+    async def test_per_document_judge_outage_fails_the_poll(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+
+        async def fake_extract(text, schema, *, model_id, api_key):
+            return {"employer": "Acme Corp", "affected_count": 42}
+
+        judge = AsyncMock(
+            side_effect=StructuredCallExhaustedError(
+                "scrape per-document judge", attempts=6, model_id="m", last_error=RuntimeError("down")
+            )
+        )
+        with (
+            patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", judge),
+            pytest.raises(StructuredCallExhaustedError),
+        ):
+            await run_eval_loop_multi_row(
+                "warn_outage_doc_judge",
+                _NOTICES_PAGE_HTML,
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="per_document",
+            )
+        assert await _rows_for(extraction_collection, "warn_outage_doc_judge") == []
+
+    async def test_multi_row_vision_extraction_outage_moves_no_recipe_counter(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        recipe = recipe_collection.create(
+            {
+                "target_id": "warn_outage_nv",
+                "extraction_strategy": {"strategy": "multi_row_vision"},
+                "won_at": None,
+                "last_validated_at": None,
+                "consecutive_validation_failures": 1,
+            }
+        )
+        await recipe_collection.save_entity(recipe)
+        outage = StructuredCallExhaustedError(
+            "scrape multi-row vision extraction", attempts=6, model_id="m", last_error=RuntimeError("down")
+        )
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(side_effect=outage)),
+            pytest.raises(StructuredCallExhaustedError),
+        ):
+            await run_eval_loop_multi_row(
+                "warn_outage_nv",
+                "<html><body>irrelevant</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+        assert await _rows_for(extraction_collection, "warn_outage_nv") == []
+        stored = await recipe_collection.get("warn_outage_nv")
+        assert stored is not None
+        assert stored.consecutive_validation_failures == 1
+
+    async def test_multi_row_vision_judge_outage_fails_the_poll(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        records = [{"employer": "Acme Corp", "affected_count": 42}]
+        outage = StructuredCallExhaustedError(
+            "scrape multi-row judge", attempts=6, model_id="m", last_error=RuntimeError("down")
+        )
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
+            patch.object(eval_loop_module, "_judge_multi_row_extraction", AsyncMock(side_effect=outage)),
+            pytest.raises(StructuredCallExhaustedError),
+        ):
+            await run_eval_loop_multi_row(
+                "warn_outage_nv_judge",
+                "<html><body>irrelevant</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+        assert await _rows_for(extraction_collection, "warn_outage_nv_judge") == []

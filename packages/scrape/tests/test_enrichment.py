@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from threetears.scrape.collections import ENRICHMENT_STATUSES, ScrapeExtractionCollection
+from threetears.scrape.migrations import LEGACY_EMPTY_ENRICHMENT_FAILURE
+from uuid_utils import uuid7
 from threetears.scrape.enrichment import EnrichmentFailedError, _EnrichmentResult, enrich_extraction, run_enrichment
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -57,8 +59,8 @@ async def _persisted_extraction(collection: ScrapeExtractionCollection):
     return original
 
 
-def _enrichment_errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if r.name == "threetears.scrape.enrichment" and r.levelno >= logging.ERROR]
+def _errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 class TestRunEnrichment:
@@ -104,12 +106,13 @@ class TestRunEnrichment:
             pytest.raises(EnrichmentFailedError),
         ):
             await run_enrichment(_PAGE_HTML, _STRUCTURED_FIELDS, api_key="k", attempts=2)
-        errors = _enrichment_errors(caplog)
+        # One failure, one ERROR line: the retry helper logs it where it happens, with the
+        # cause, and the enrichment pass does not log it a second time.
+        errors = _errors(caplog)
         assert len(errors) == 1
+        assert errors[0].name == "threetears.scrape.llm_retry"
+        assert "scrape enrichment" in errors[0].getMessage()
         assert "RuntimeError: provider down" in errors[0].getMessage()
-        # The retry helper does not also log a "degraded" ERROR for a call that raises: one
-        # failure, one ERROR line.
-        assert not [r for r in caplog.records if r.name == "threetears.scrape.llm_retry" and r.levelno >= logging.ERROR]
 
     async def test_cancellation_propagates_and_is_not_retried(self):
         fake_model, ainvoke_mock = _fake_structured_model(side_effect=asyncio.CancelledError())
@@ -262,3 +265,64 @@ class TestEnrichmentStatusField:
         )
         with pytest.raises(ValueError, match="partial"):
             _ = row.enrichment_status
+
+
+class TestARowWrittenBeforeTheStatusExisted:
+    """A copy of a row cached in L1 or L2 before migration v013 ran is out of the migration's
+    reach. It is read through the same constructor every tier uses, which applies v013's rules,
+    so it never reads as "never ran" beside ``{}``.
+
+    Each row goes in through the collection's own store and comes back out through ``get``,
+    the read path a cached copy takes.
+    """
+
+    @staticmethod
+    async def _read_back(raw_notes):
+        collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
+        row_id = str(uuid7())
+        await collection.save_to_store(
+            {
+                "id": row_id,
+                "target_id": "warn_act_ca",
+                "source_url": "https://edd.ca.gov/warn",
+                "enrichment_notes": raw_notes,
+            }
+        )
+        stored = await collection.get(row_id)
+        assert stored is not None
+        return stored
+
+    async def test_empty_notes_with_no_status_read_as_failed_with_the_legacy_reason(self):
+        stored = await self._read_back({})
+        assert stored.enrichment_status == "failed"
+        assert stored.enrichment_notes is None
+        assert stored.enrichment_failure == LEGACY_EMPTY_ENRICHMENT_FAILURE
+
+    async def test_empty_notes_as_json_text_read_as_failed(self):
+        stored = await self._read_back("{}")
+        assert stored.enrichment_status == "failed"
+        assert stored.enrichment_failure == LEGACY_EMPTY_ENRICHMENT_FAILURE
+
+    async def test_empty_notes_double_encoded_read_as_failed(self):
+        stored = await self._read_back('"{}"')
+        assert stored.enrichment_status == "failed"
+        assert stored.enrichment_failure == LEGACY_EMPTY_ENRICHMENT_FAILURE
+
+    async def test_notes_with_content_and_no_status_read_as_enriched(self):
+        stored = await self._read_back({"context": "q3"})
+        assert stored.enrichment_status == "enriched"
+        assert stored.enrichment_notes == {"context": "q3"}
+        assert stored.enrichment_failure is None
+
+    async def test_no_notes_and_no_status_still_reads_as_never_ran(self):
+        stored = await self._read_back(None)
+        assert stored.enrichment_status is None
+        assert stored.enrichment_notes is None
+        assert stored.enrichment_failure is None
+
+    def test_a_row_that_has_a_status_is_never_translated(self):
+        collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
+        row = collection.create({"target_id": "warn_act_ca", "enrichment_notes": {}, "enrichment_status": "enriched"})
+        assert row.enrichment_status == "enriched"
+        assert row.enrichment_notes == {}
+        assert row.enrichment_failure is None

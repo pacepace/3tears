@@ -110,8 +110,8 @@ async def run_enrichment(
 
     Same bounded retry as ``extraction.generate_candidates`` / ``eval_loop``'s judge
     call, but exhaustion raises rather than degrading: an empty dict is only ever the
-    model's own answer that there is nothing to add. The failure is logged once, here,
-    with its cause. ``asyncio.CancelledError`` is not a failure and propagates untouched.
+    model's own answer that there is nothing to add. The failure is logged once, with its
+    cause, by the retry helper where it happens. ``asyncio.CancelledError`` is not a failure and propagates untouched.
 
     :param html: the rendered page's full HTML
     :ptype html: str
@@ -145,15 +145,9 @@ async def run_enrichment(
             log_label="scrape enrichment",
         )
     except StructuredCallExhaustedError as exc:
+        # Already logged once, at ERROR with the cause, by the retry helper where it happened.
         cause = exc.last_error
-        reason = f"{type(cause).__name__}: {cause}"
-        log.error(
-            "scrape enrichment failed after %d attempts: %s",
-            exc.attempts,
-            reason,
-            extra={"extra_data": {"model_id": model_id}},
-        )
-        raise EnrichmentFailedError(reason, attempts=exc.attempts) from cause
+        raise EnrichmentFailedError(f"{type(cause).__name__}: {cause}", attempts=exc.attempts) from cause
     return result.notes
 
 

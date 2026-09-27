@@ -75,8 +75,12 @@ class TestOrRaise:
         assert exc_info.value.last_error is last
         assert exc_info.value.__cause__ is last
         assert exc_info.value.log_label == "unit call"
-        # The raising face leaves the one ERROR line to the caller that records the failure.
-        assert _errors(caplog) == []
+        # Logged once, where it happened, with the last cause; a caller that records the
+        # failure does not log it again.
+        errors = _errors(caplog)
+        assert len(errors) == 1
+        assert "unit call" in errors[0].getMessage()
+        assert "ValueError: second" in errors[0].getMessage()
 
     async def test_cancellation_is_not_an_attempt(self):
         fake_model, ainvoke_mock = _fake_structured_model(side_effect=asyncio.CancelledError())
@@ -93,7 +97,7 @@ class TestOrRaise:
 
 
 class TestDegradeToNone:
-    async def test_exhaustion_degrades_to_none_and_logs_once(self, caplog: pytest.LogCaptureFixture):
+    async def test_exhaustion_degrades_to_none_and_logs_one_error(self, caplog: pytest.LogCaptureFixture):
         fake_model, _ = _fake_structured_model(side_effect=RuntimeError("down"))
         with (
             caplog.at_level(logging.WARNING),

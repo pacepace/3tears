@@ -333,7 +333,10 @@ async def v013_extraction_enrichment_status(store: DataStore) -> None:
     never ran, ``'enriched'``, ``'failed'``) and ``enrichment_failure`` (the reason) now carry
     the outcome, and a failed pass stores ``enrichment_notes = NULL``.
 
-    Existing rows are translated here, once, and nowhere else -- nothing reads the old shape:
+    Existing L3 rows are translated here, once. A copy cached in L1 or L2 before this ran is
+    out of this migration's reach, so ``collections.ScrapeExtraction``'s constructor applies the
+    same rules to a row with notes and no status -- the one read point every tier goes through.
+    Nothing else reads the old shape:
 
     * ``enrichment_notes`` NULL -- the pass never ran. Left as it is.
     * non-empty notes -- only an answering model produces notes, so ``'enriched'``.

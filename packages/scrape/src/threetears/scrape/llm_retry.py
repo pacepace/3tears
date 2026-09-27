@@ -17,7 +17,11 @@ degrade-to-``None`` shape for callers whose honest reading of "no answer" is
 :class:`StructuredCallExhaustedError` carrying the last cause, for a caller that
 PERSISTS the outcome: ``enrichment.enrich_extraction`` stored ``{}`` for a pass
 whose every attempt failed, which a reader could not tell from "the model had
-nothing to add", and ``None`` is exactly as unable to say it failed.
+nothing to add", and ``None`` is exactly as unable to say it failed. The same
+turned out to hold for candidate generation, the judges, schema discovery and
+direct extraction, so every caller in this package uses the raising form now
+except ``challenge.classify_failed_page``, whose verdict is advisory: without it
+a failed extraction is recorded as ``"failed"``, which is what it is.
 
 Lives inside this package rather than in a new neutral top-level utilities
 package, even though one of the seven callers was an unrelated query-matching
@@ -110,10 +114,10 @@ async def bounded_retry_structured_call_or_raise[T: BaseModel](
     proved materially less reliable in practice across the providers this
     package calls -- retrying on any exception
     with linear backoff (``backoff_seconds * (attempt + 1)``). A WARNING is logged per
-    failed attempt. Exhaustion is NOT logged here: the caller that catches
-    :class:`StructuredCallExhaustedError` records the failure and logs it once, so the
-    one failure is one ERROR line. ``asyncio.CancelledError`` is not an attempt and
-    propagates untouched.
+    failed attempt, and exhaustion is logged here, once, at ERROR with the last cause --
+    where it happens -- so a caller that catches :class:`StructuredCallExhaustedError`
+    records the failure without logging it a second time. ``asyncio.CancelledError`` is
+    not an attempt and propagates untouched.
 
     :param prompt: the fully-built prompt text for this call, OR a pre-built list of
         LangChain messages (e.g. one ``HumanMessage`` with multimodal image+text
@@ -202,6 +206,14 @@ async def bounded_retry_structured_call_or_raise[T: BaseModel](
         # Reaching here means the final attempt raised: a rejected-but-parsed final result is
         # returned above, so ``last_exc`` is always set. The fallback keeps the type honest.
         failure = last_exc if last_exc is not None else RuntimeError("no attempt produced a result")
+        log.error(
+            "%s failed after %d attempts: %s: %s",
+            log_label,
+            attempts,
+            type(failure).__name__,
+            failure,
+            extra={"extra_data": {"model_id": model_id}},
+        )
         raise StructuredCallExhaustedError(
             log_label, attempts=attempts, model_id=model_id, last_error=failure
         ) from failure
@@ -226,8 +238,9 @@ async def bounded_retry_structured_call[T: BaseModel](
 ) -> T | None:
     """Invoke a structured-output LLM call, retried on transient failure; ``None`` when every attempt fails.
 
-    :func:`bounded_retry_structured_call_or_raise` with exhaustion answered as ``None``
-    and logged once at ERROR. For a caller whose honest reading of "no answer" is
+    :func:`bounded_retry_structured_call_or_raise` with exhaustion answered as ``None``;
+    the raising form has already logged the failure at ERROR, so this adds only an INFO
+    line naming the degrade. For a caller whose honest reading of "no answer" is
     "nothing here" (e.g. no candidates / no winner / no match) and that stores nothing
     on the strength of it. A caller that PERSISTS the outcome must use the raising form
     instead: ``None`` cannot say that it failed, and a stored "nothing" that was really a
@@ -254,7 +267,7 @@ async def bounded_retry_structured_call[T: BaseModel](
     :param log_label: prefix identifying this call site in WARNING/ERROR log lines
     :ptype log_label: str
     :param degraded_to: noun phrase describing the honest-empty degrade, used
-        only in the final ERROR log line (e.g. ``"no candidates"``, ``"no match"``)
+        only in the INFO line naming it (e.g. ``"no candidates"``, ``"no match"``)
     :ptype degraded_to: str
     :param is_acceptable: optional post-parse validity check, as for the raising form
     :ptype is_acceptable: Callable[[T], bool] | None
@@ -280,13 +293,11 @@ async def bounded_retry_structured_call[T: BaseModel](
             is_acceptable=is_acceptable,
             provider=provider,
         )
-    except StructuredCallExhaustedError as exc:
-        log.error(
-            "%s degraded after %d attempts -- treating as %s: %s",
+    except StructuredCallExhaustedError:
+        log.info(
+            "%s: treating the failure as %s",
             log_label,
-            attempts,
             degraded_to,
-            exc.last_error,
             extra={"extra_data": {"model_id": model_id}},
         )
     return result

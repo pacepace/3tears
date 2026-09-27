@@ -56,7 +56,12 @@ sentence" before upgrading a caller of either.
 `enrichment_status="failed"` and the reason in `enrichment_failure` instead of `enrichment_notes = {}`,
 `run_enrichment` raises `EnrichmentFailedError` instead of returning `{}`, and scrape migration v013
 adds the two columns and translates existing rows -- read "A failed enrichment is stored as failed,
-not as empty notes" before upgrading a caller or a reader of `enrichment_notes`.
+not as empty notes" before upgrading a caller or a reader of `enrichment_notes`. The same class
+across the scrape eval loop: a model call that failed every attempt now raises
+`StructuredCallExhaustedError` and persists nothing, where it was recorded as a page nothing could be
+extracted from, and `ScrapeTool` answers it as `"model_unavailable"` -- read "A model outage in the
+scrape eval loop is not recorded as an extraction" before upgrading a caller of `run_eval_loop`,
+`run_eval_loop_multi_row` or the `extraction` generators.
 Fixed: no name, key or id is cut from the head of a uuid7 any more, so two agents created
 together for one customer both get memory and conversation namespaces -- read "Two agents
 created in the same minute no longer share a namespace name"; existing rows need nothing.
@@ -1339,12 +1344,14 @@ parse fixes above: the data now carries the fact that it failed.
   exception is chained as `__cause__`.
 - **New (minor):** `threetears.scrape.llm_retry.bounded_retry_structured_call_or_raise` and
   `StructuredCallExhaustedError` (`attempts`, `model_id`, `log_label`, `last_error`): the same
-  bounded retry, raising on exhaustion, for a caller that persists the outcome.
-  `bounded_retry_structured_call` is that call with exhaustion answered as `None` and logged once,
-  unchanged for its callers, except that `attempts < 1` now raises `ValueError` where it returned
-  `None` without trying.
+  bounded retry, raising on exhaustion, for a caller that persists the outcome. Exhaustion is
+  logged once, at ERROR with the last cause, by the retry itself, so a caller that records the
+  failure does not log it again. `bounded_retry_structured_call` is that call with exhaustion
+  answered as `None`; its ERROR line now comes from the raising form (reworded, still one line)
+  and it adds an INFO line naming the degrade. `attempts < 1` now raises `ValueError` where it
+  returned `None` without trying.
 - **Changed (callers must handle it):** `run_enrichment` raises `EnrichmentFailedError` when every
-  attempt fails, instead of returning `{}`. It logs the failure once, with its cause.
+  attempt fails, instead of returning `{}`. The failure is logged once, with its cause.
   `asyncio.CancelledError` is not a failure and propagates untouched. `{}` now only ever means the
   model had nothing to add.
   - **What a caller of `run_enrichment` does:** catch `EnrichmentFailedError` and record the
@@ -1362,19 +1369,72 @@ parse fixes above: the data now carries the fact that it failed.
     `enrich_extraction` again.
 - **Migration (scrape v013, applied by `threetears.scrape.migrations.apply_migrations`):** adds the
   nullable `enrichment_status` and `enrichment_failure` columns to `scrape_extractions` and
-  translates existing rows once, in the migration and nowhere else. Notes `NULL` stays never-ran;
+  translates existing rows once. Notes `NULL` stays never-ran;
   non-empty notes become `"enriched"`; `{}` (and a double-encoded `"{}"`) is genuinely ambiguous
   and becomes `"failed"` with notes cleared and `LEGACY_EMPTY_ENRICHMENT_FAILURE` as the reason,
   which says the outcome was not recorded and that re-enriching settles it. A retry sweep
   therefore re-runs those rows once; a deployment that does not want that model spend can leave
   them, and they stay honestly marked. Each statement is its own `execute`, and every UPDATE is
   gated on `enrichment_status IS NULL`, so a replay changes nothing.
+- **Cached copies:** a row cached in L1 or L2 before v013 ran is out of the migration's reach, and
+  nothing in 3tears re-keys or wipes a collection's cache when its stored shape changes. So the
+  `ScrapeExtraction` constructor -- the one point every tier reads through -- applies v013's rules
+  to a row with notes and no status: `{}` reads as `"failed"` with `LEGACY_EMPTY_ENRICHMENT_FAILURE`,
+  anything else as `"enriched"`. A row with a status, or with no notes, is never touched, and a
+  current writer always sets both, so only a pre-0.55.0 copy is translated. Nothing to do.
 - **For scriob (scrape's consumer outside this checkout):** run `apply_migrations` before deploying
   the new code, since the pass now writes the two new columns; replace any `except`/`{}` handling
   around `run_enrichment` with `EnrichmentFailedError`; change every read of `enrichment_notes`
   that treats `{}` or `None` as "nothing to add" to branch on `enrichment_status`; and, if it
   wants failed passes retried, add the `enrichment_status = 'failed'` sweep. No reader or caller
   exists in the 14-eng-ai-bot, -agents, -agent-admin or 14-eng-ai-survey repos.
+
+### A model outage in the scrape eval loop is not recorded as an extraction
+
+The enrichment defect above had siblings. Candidate generation, both judges, schema discovery and
+direct extraction each answered a model call that failed every attempt with "nothing": no
+candidates, no confirmation, no fields, no record. The eval loop then persisted a
+`validation_status="failed"` row -- "we received the page and could not extract from it" -- and
+advanced the recipe's `consecutive_validation_failures`, so a provider outage counted against the
+target and its strategy. A per-document poll kept going without the document whose call failed and
+could store `"validated"` with that document silently missing, and a chunk that failed left its
+fields looking absent from the document.
+
+- **Changed (callers must handle it):** these raise `threetears.scrape.llm_retry.StructuredCallExhaustedError`
+  when every attempt fails, instead of answering with an empty value: `generate_candidates`,
+  `generate_row_candidates`, `generate_regex_candidates`, `generate_regex_row_candidates`,
+  `discover_candidates`, `discover_row_candidates` (no longer `validated=False`),
+  `extract_fields_directly` (return type is now `dict[str, Any]`), `extract_fields_directly_chunked`
+  (any failed chunk fails the call, after every chunk has been awaited), `extract_fields_from_images`
+  and `extract_multi_row_fields_from_images` (`None` now only means there were no images). An empty
+  answer is only ever the model's own.
+- **Changed (callers must handle it):** `run_eval_loop` and `run_eval_loop_multi_row` let it
+  propagate when a call the poll depends on fails: candidate generation, per-document extraction or
+  judging (after every document has run), and multi-row vision extraction or judging. Nothing is
+  persisted and no recipe counter moves, because the model never answered and nothing about the page
+  was observed; the next poll tries again.
+  - **What a caller does:** catch `StructuredCallExhaustedError` (already logged once, with its
+    cause), store nothing, count nothing against the target or its recipe, and poll again later.
+- **Changed:** a judge that could not be asked over structurally valid candidates still leaves them
+  `needs_review` -- which is true -- and now says so: `field_confidences["judge_failure"]` holds the
+  reason, and a judge that answered leaves `field_confidences` `None` as before, so "the judge
+  confirmed none" and "the judge could not be asked" are distinguishable on the row.
+- **New (minor):** `threetears.scrape.tool.MODEL_UNAVAILABLE_STATUS` (`"model_unavailable"`).
+  `ScrapeTool` answers the outage with `success=False`, that `validation_status` in its content and
+  metadata, and an `error` naming the failed call and its cause. Like `"backoff"` it is a payload
+  value and never stored. The fetch circuit records the target as reachable: the page was fetched.
+- **Changed:** `find_target_page`'s coercion failure note carries the cause
+  (`"... failed every attempt (<Type>: <message>)"`); its result was already an explicit failure.
+- **Unchanged:** `challenge.classify_failed_page` still answers a failed call with `None`. Its verdict
+  is advisory: without one, a failed extraction is recorded as `"failed"`, which is what happened.
+- **Not changed, still open:** a per-document or multi-row vision call that hangs past the eval
+  loop's own outer deadline is still treated as "no record" (a document skipped, or a failed
+  multi-row poll). Treating a hang like an exhausted call would reverse the documented choice to
+  isolate one stuck document, so it is left for a decision rather than folded in here.
+- **For scriob:** catch `StructuredCallExhaustedError` around `run_eval_loop` /
+  `run_eval_loop_multi_row` and any direct call to the functions above; handle `"model_unavailable"`
+  from `ScrapeTool`; and treat `field_confidences["judge_failure"]` on a `needs_review` row as "not
+  judged", not as "judged wrong".
 
 ### `with_structured_output` works on the name-translating chat models
 

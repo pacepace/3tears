@@ -14,7 +14,7 @@ import logging
 import socket
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import textwrap
 
@@ -27,7 +27,7 @@ from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeReci
 from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.robots import RobotsGate
 from threetears.scrape.driver import NavStep, RenderedPage
-from threetears.scrape.tool import ScrapeTool, _derive_target_id, _ssrf_block_reason
+from threetears.scrape.tool import MODEL_UNAVAILABLE_STATUS, ScrapeTool, _derive_target_id, _ssrf_block_reason
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
@@ -1946,3 +1946,59 @@ class TestSsrfGuard:
         # Reached the fetch/extract path (recipe reuse, no network) rather than being SSRF-refused.
         assert result.success is True
         assert result.metadata["validation_status"] == "validated"
+
+
+class TestScrapeToolModelOutage:
+    """A model call the eval loop depended on failed every attempt.
+
+    The page was fetched, so the fetch circuit hears a reachable target. The extraction was
+    never attempted in any meaningful sense, so nothing is persisted and the caller is told
+    so in ``error``, under its own status rather than as ``"failed"``.
+    """
+
+    async def test_an_outage_is_answered_as_model_unavailable_and_persists_nothing(self):
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/model-down"
+        schema = {"employer": "str", "affected_count": "int"}
+        target_id = _derive_target_id(url, schema)
+        circuit = TargetCircuit(health_collection, policy=BackoffPolicy(failure_threshold=5))
+        # One earlier failed fetch, so the health row exists and has something to clear.
+        await circuit.record_blocked(target_id)
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            circuit=circuit,
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML, final_url=url)},
+            api_key="k",
+        )
+
+        def _down(*_args, **_kwargs):
+            async def _ainvoke(_prompt):
+                raise RuntimeError("provider down")
+
+            return SimpleNamespace(with_structured_output=lambda _schema, **_kw: SimpleNamespace(ainvoke=_ainvoke))
+
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", side_effect=_down),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await tool.execute(url=url, field_schema=schema)
+
+        assert not result.success
+        assert json.loads(result.content) == {
+            "target_id": target_id,
+            "validation_status": MODEL_UNAVAILABLE_STATUS,
+            "records": [],
+        }
+        assert result.metadata["validation_status"] == MODEL_UNAVAILABLE_STATUS
+        assert result.error is not None
+        assert result.error.startswith(f"{MODEL_UNAVAILABLE_STATUS}: scrape candidate generation failed")
+        assert "RuntimeError: provider down" in result.error
+        assert await extraction_collection.list_all() == []
+        assert await recipe_collection.get(target_id) is None
+        health = await health_collection.get(target_id)
+        assert health is not None
+        assert health.circuit_state == "closed", "a fetched page is a reachable target, whatever the model did"
+        assert health.consecutive_fetch_failures == 0
