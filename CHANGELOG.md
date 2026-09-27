@@ -4,6 +4,50 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.55.1 -- 2026-09-27
+
+### A structured subscription call gets the turns its schema retries need
+
+On a Claude subscription, about a third of one consumer's structured calls failed with
+`ModelProviderError: Claude subscription call failed (error_max_turns): Reached maximum number
+of turns (1)` and no answer, 19 of 54 in one replay. The schemas that failed most had an array of
+objects with enum fields.
+
+The CLI does not constrain the model's output to a `--json-schema`, as the Messages API's
+`output_config` does. It checks the model's `StructuredOutput` call against the schema, answers a
+mismatch with what did not match, and expects the model to retry in a second turn. Measured on
+the bundled CLI (2.1.207) with `claude-sonnet-5`, the model's first call regularly missed: it
+filled the tool with a placeholder, `{"$PARAMETER_VALUE": "<the answer, as a string>"}`, or
+wrapped the answer in one key too many. Every subscription call was forced to `--max-turns 1`,
+so the rejected attempt ended the call, with `error_max_turns` and no `structured_output`.
+
+This was not new in 0.55.0. At 0.54.0 the same schema failed 11 calls of 30 the same way, with
+thinking on or off; such a call came back as empty content, with no error. 0.55.0's "A failed
+subscription call raises instead of answering with the failure" made it raise, which is what
+made it visible.
+
+**Fixed:** a call that asks for a schema and gives the model no tool but the CLI's
+`StructuredOutput` -- no bound tools, `tools=[]`, no other MCP server -- now launches with
+`--max-turns 6` and `MAX_STRUCTURED_OUTPUT_RETRIES=5`, the CLI's own attempt cap, pinned. Its
+extra turns can only be schema retries, since there is no tool call a second turn could run in the
+caller's place. The same schema then answered 30 calls of 30, 12 of them after one rejected
+attempt. A call that runs out of attempts still raises, with
+`reason="error_max_structured_output_retries"`; a failed result is never returned as an answer.
+
+**Unchanged:** a call that binds tools as well as a schema, or enables Claude Code's built-in
+tools, stays at one turn, because a second turn could run those tools in the caller's place. A
+rejected `StructuredOutput` attempt in such a call still raises `error_max_turns`.
+
+A structured call with no tools now runs on its own pooled CLI: `max_turns` and the environment
+are part of the pool's launch key.
+
+**New release step:** `packages/models/tests/live/test_claude_cli_structured_output_live.py`
+makes 20 real structured calls through the real CLI, six at a time, in the three schema shapes
+the consumer reported, and passes only if every one answers in its schema. It is opt-in
+(`THREETEARS_LIVE_CLAUDE_CLI=1` and `CLAUDE_CODE_OAUTH_TOKEN`), and `docs/releasing.md` now runs it
+before tagging any release that touches `packages/models`. At 0.55.0 it fails, with 4 of 20 calls
+on `error_max_turns`.
+
 ## v0.55.0 -- 2026-09-27
 
 Minor: `threetears.agent.audit` gains the erasure rule for audit records:
