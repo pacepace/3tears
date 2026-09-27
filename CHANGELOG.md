@@ -58,7 +58,7 @@ sentence" before upgrading a caller of either.
 adds the two columns and translates existing rows -- read "A failed enrichment is stored as failed,
 not as empty notes" before upgrading a caller or a reader of `enrichment_notes`. The same class
 across the scrape eval loop: a model call that failed every attempt now raises
-`StructuredCallExhaustedError` and persists nothing, where it was recorded as a page nothing could be
+`StructuredCallFailedError` and persists nothing, where it was recorded as a page nothing could be
 extracted from, and `ScrapeTool` answers it as `"model_unavailable"` -- read "A model outage in the
 scrape eval loop is not recorded as an extraction" before upgrading a caller of `run_eval_loop`,
 `run_eval_loop_multi_row` or the `extraction` generators.
@@ -1408,30 +1408,40 @@ fields looking absent from the document.
   (any failed chunk fails the call, after every chunk has been awaited), `extract_fields_from_images`
   and `extract_multi_row_fields_from_images` (`None` now only means there were no images). An empty
   answer is only ever the model's own.
-- **Changed (callers must handle it):** `run_eval_loop` and `run_eval_loop_multi_row` let it
-  propagate when a call the poll depends on fails: candidate generation, per-document extraction or
-  judging (after every document has run), and multi-row vision extraction or judging. Nothing is
+- **New (minor):** `threetears.scrape.llm_retry.StructuredCallFailedError`, the base of
+  `StructuredCallExhaustedError` and of the new `StructuredCallTimeoutError(log_label, *,
+  deadline_seconds, model_id, last_error)`, raised when a call is still running at the eval loop's
+  own `asyncio.wait_for` deadline (`last_error` is the `TimeoutError`). All three carry `log_label`,
+  `model_id` and `last_error`.
+- **Changed (callers must handle it):** `run_eval_loop` and `run_eval_loop_multi_row` raise
+  `StructuredCallFailedError` when a call the poll depends on fails: candidate generation,
+  per-document extraction or judging, and multi-row vision extraction or judging. Nothing is
   persisted and no recipe counter moves, because the model never answered and nothing about the page
   was observed; the next poll tries again.
-  - **What a caller does:** catch `StructuredCallExhaustedError` (already logged once, with its
-    cause), store nothing, count nothing against the target or its recipe, and poll again later.
+- **Changed:** a call that hangs past that outer deadline (`_PER_DOCUMENT_TIMEOUT_SECONDS` per
+  document, `_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS` for a multi-row read) is a failed call, handled
+  exactly as an exhausted one. It used to be "no record": the document was skipped, so a poll could
+  store `"validated"` without it, and a hung multi-row read stored `"failed"` and advanced the recipe
+  counter. Isolation is kept: one stuck document never stops the others, which all run to
+  completion under their own deadlines, and the failure is raised once the batch has run. Logged
+  once at ERROR, naming the call and the deadline. A `CancelledError` that did not come from that
+  deadline propagates untranslated.
+  - **What a caller does:** catch `StructuredCallFailedError` (already logged once, with its cause),
+    store nothing, count nothing against the target or its recipe, and poll again later.
 - **Changed:** a judge that could not be asked over structurally valid candidates still leaves them
   `needs_review` -- which is true -- and now says so: `field_confidences["judge_failure"]` holds the
   reason, and a judge that answered leaves `field_confidences` `None` as before, so "the judge
   confirmed none" and "the judge could not be asked" are distinguishable on the row.
 - **New (minor):** `threetears.scrape.tool.MODEL_UNAVAILABLE_STATUS` (`"model_unavailable"`).
-  `ScrapeTool` answers the outage with `success=False`, that `validation_status` in its content and
-  metadata, and an `error` naming the failed call and its cause. Like `"backoff"` it is a payload
+  `ScrapeTool` answers the outage, or a hang past the deadline, with `success=False`, that
+  `validation_status` in its content and metadata, and an `error` naming the failed call and its
+  cause or deadline. Like `"backoff"` it is a payload
   value and never stored. The fetch circuit records the target as reachable: the page was fetched.
 - **Changed:** `find_target_page`'s coercion failure note carries the cause
   (`"... failed every attempt (<Type>: <message>)"`); its result was already an explicit failure.
 - **Unchanged:** `challenge.classify_failed_page` still answers a failed call with `None`. Its verdict
   is advisory: without one, a failed extraction is recorded as `"failed"`, which is what happened.
-- **Not changed, still open:** a per-document or multi-row vision call that hangs past the eval
-  loop's own outer deadline is still treated as "no record" (a document skipped, or a failed
-  multi-row poll). Treating a hang like an exhausted call would reverse the documented choice to
-  isolate one stuck document, so it is left for a decision rather than folded in here.
-- **For scriob:** catch `StructuredCallExhaustedError` around `run_eval_loop` /
+- **For scriob:** catch `StructuredCallFailedError` around `run_eval_loop` /
   `run_eval_loop_multi_row` and any direct call to the functions above; handle `"model_unavailable"`
   from `ScrapeTool`; and treat `field_confidences["judge_failure"]` on a `needs_review` row as "not
   judged", not as "judged wrong".

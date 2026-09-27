@@ -47,12 +47,57 @@ from pydantic import BaseModel
 from threetears.models import LlmPurpose, create_chat_model
 from threetears.observe import get_logger
 
-__all__ = ["StructuredCallExhaustedError", "bounded_retry_structured_call", "bounded_retry_structured_call_or_raise"]
+__all__ = [
+    "StructuredCallExhaustedError",
+    "StructuredCallFailedError",
+    "StructuredCallTimeoutError",
+    "bounded_retry_structured_call",
+    "bounded_retry_structured_call_or_raise",
+]
 
 log = get_logger(__name__)
 
 
-class StructuredCallExhaustedError(RuntimeError):
+class StructuredCallFailedError(RuntimeError):
+    """A structured-output model call did not produce an answer.
+
+    The one thing a caller that must not record "nothing" in place of an answer catches.
+    Its two forms say how the call failed: :class:`StructuredCallExhaustedError` (every
+    attempt raised) and :class:`StructuredCallTimeoutError` (the call outlived a caller's
+    own deadline). The underlying exception is :attr:`last_error`, also chained as
+    ``__cause__``.
+
+    :param log_label: the call site's label, e.g. ``"scrape per-document judge"``
+    :ptype log_label: str
+    :param model_id: the model that was invoked
+    :ptype model_id: str
+    :param last_error: the exception that ended the call
+    :ptype last_error: BaseException
+    :param message: the human-readable description
+    :ptype message: str
+    """
+
+    def __init__(self, log_label: str, *, model_id: str, last_error: BaseException, message: str) -> None:
+        """Record which call failed and what ended it.
+
+        :param log_label: the call site's label
+        :ptype log_label: str
+        :param model_id: the model that was invoked
+        :ptype model_id: str
+        :param last_error: the exception that ended the call
+        :ptype last_error: BaseException
+        :param message: the human-readable description
+        :ptype message: str
+        :return: nothing
+        :rtype: None
+        """
+        self.log_label = log_label
+        self.model_id = model_id
+        self.last_error = last_error
+        super().__init__(message)
+
+
+class StructuredCallExhaustedError(StructuredCallFailedError):
     """Every attempt of a bounded structured-output call failed.
 
     Raised by :func:`bounded_retry_structured_call_or_raise` for a caller that has to
@@ -83,12 +128,53 @@ class StructuredCallExhaustedError(RuntimeError):
         :return: nothing
         :rtype: None
         """
-        self.log_label = log_label
         self.attempts = attempts
-        self.model_id = model_id
-        self.last_error = last_error
         super().__init__(
-            f"{log_label}: all {attempts} attempts failed; last: {type(last_error).__name__}: {last_error}"
+            log_label,
+            model_id=model_id,
+            last_error=last_error,
+            message=f"{log_label}: all {attempts} attempts failed; last: {type(last_error).__name__}: {last_error}",
+        )
+
+
+class StructuredCallTimeoutError(StructuredCallFailedError):
+    """A structured-output call was still running at its caller's own deadline.
+
+    The retry's per-attempt timeout is the client's; a client can hang past it with no
+    further activity, so a caller that must not wait forever bounds the whole call with
+    ``asyncio.wait_for``. When that deadline fires the call has not answered, which is a
+    failure and never "no record". :attr:`last_error` is the ``TimeoutError``.
+
+    :param log_label: the call site's label, e.g. ``"scrape per-document judge"``
+    :ptype log_label: str
+    :param deadline_seconds: the caller's deadline the call outlived
+    :ptype deadline_seconds: float
+    :param model_id: the model that was invoked
+    :ptype model_id: str
+    :param last_error: the ``TimeoutError`` the deadline raised
+    :ptype last_error: TimeoutError
+    """
+
+    def __init__(self, log_label: str, *, deadline_seconds: float, model_id: str, last_error: TimeoutError) -> None:
+        """Record which call hung and the deadline it outlived.
+
+        :param log_label: the call site's label
+        :ptype log_label: str
+        :param deadline_seconds: the caller's deadline the call outlived
+        :ptype deadline_seconds: float
+        :param model_id: the model that was invoked
+        :ptype model_id: str
+        :param last_error: the ``TimeoutError`` the deadline raised
+        :ptype last_error: TimeoutError
+        :return: nothing
+        :rtype: None
+        """
+        self.deadline_seconds = deadline_seconds
+        super().__init__(
+            log_label,
+            model_id=model_id,
+            last_error=last_error,
+            message=f"{log_label}: no answer within the {deadline_seconds}s deadline",
         )
 
 

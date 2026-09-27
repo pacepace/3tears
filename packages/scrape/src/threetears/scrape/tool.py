@@ -58,7 +58,7 @@ from .driver import NavStep, RenderedPage, ScrapeDriver
 from .eval_loop import StrategyType, run_eval_loop, run_eval_loop_multi_row
 from .extraction import FieldSchema
 from .health import ScrapeTargetHealthCollection, clear_robots_block, record_robots_block
-from .llm_retry import StructuredCallExhaustedError
+from .llm_retry import StructuredCallFailedError
 
 __all__ = ["MODEL_UNAVAILABLE_STATUS", "ScrapeTool"]
 
@@ -1056,7 +1056,7 @@ class ScrapeTool(TearsTool):
             eval_loop_fn = run_eval_loop_multi_row if multi_row else run_eval_loop
             try:
                 extraction: ScrapeExtraction | None = None
-                model_failure: StructuredCallExhaustedError | None = None
+                model_failure: StructuredCallFailedError | None = None
                 try:
                     extraction = await eval_loop_fn(
                         target_id,
@@ -1072,7 +1072,7 @@ class ScrapeTool(TearsTool):
                         # classifier guessing about evidence we are holding.
                         page_status=page.status,
                     )
-                except StructuredCallExhaustedError as exc:
+                except StructuredCallFailedError as exc:
                     # A model call the eval loop depended on failed every attempt (logged once
                     # where it happened). The loop persisted nothing, because the model never
                     # answered; this answers the caller with that, as its own outcome, rather
@@ -1134,10 +1134,9 @@ class ScrapeTool(TearsTool):
                 )
             elif model_failure is not None:
                 error_text = (
-                    f"{MODEL_UNAVAILABLE_STATUS}: {model_failure.log_label} failed after "
-                    f"{model_failure.attempts} attempts ({type(model_failure.last_error).__name__}: "
-                    f"{model_failure.last_error}). The page was fetched, but the model never answered, "
-                    "so nothing was extracted and nothing was recorded; the next poll tries again."
+                    f"{MODEL_UNAVAILABLE_STATUS}: {model_failure}. The page was fetched, but the model "
+                    "never answered, so nothing was extracted and nothing was recorded; the next poll "
+                    "tries again."
                 )
             result = ToolResult(
                 success=validation_status == "validated",

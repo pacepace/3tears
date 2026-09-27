@@ -27,6 +27,7 @@ from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeReci
 from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.robots import RobotsGate
 from threetears.scrape.driver import NavStep, RenderedPage
+from threetears.scrape.llm_retry import StructuredCallTimeoutError
 from threetears.scrape.tool import MODEL_UNAVAILABLE_STATUS, ScrapeTool, _derive_target_id, _ssrf_block_reason
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -1994,7 +1995,9 @@ class TestScrapeToolModelOutage:
         }
         assert result.metadata["validation_status"] == MODEL_UNAVAILABLE_STATUS
         assert result.error is not None
-        assert result.error.startswith(f"{MODEL_UNAVAILABLE_STATUS}: scrape candidate generation failed")
+        assert result.error.startswith(
+            f"{MODEL_UNAVAILABLE_STATUS}: scrape candidate generation: all 6 attempts failed"
+        )
         assert "RuntimeError: provider down" in result.error
         assert await extraction_collection.list_all() == []
         assert await recipe_collection.get(target_id) is None
@@ -2002,3 +2005,24 @@ class TestScrapeToolModelOutage:
         assert health is not None
         assert health.circuit_state == "closed", "a fetched page is a reachable target, whatever the model did"
         assert health.consecutive_fetch_failures == 0
+
+    async def test_a_call_that_outlived_the_loops_deadline_is_answered_the_same_way(self):
+        recipe_collection, extraction_collection = _collections()
+        url = "https://example.gov/model-hung"
+        schema = {"employer": "str", "affected_count": "int"}
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML, final_url=url)},
+            api_key="k",
+        )
+        hung = StructuredCallTimeoutError(
+            "scrape multi-row judge", deadline_seconds=120.0, model_id="m", last_error=TimeoutError()
+        )
+        with patch("threetears.scrape.tool.run_eval_loop", AsyncMock(side_effect=hung)):
+            result = await tool.execute(url=url, field_schema=schema)
+
+        assert not result.success
+        assert result.metadata["validation_status"] == MODEL_UNAVAILABLE_STATUS
+        assert result.error is not None
+        assert "scrape multi-row judge: no answer within the 120.0s deadline" in result.error
