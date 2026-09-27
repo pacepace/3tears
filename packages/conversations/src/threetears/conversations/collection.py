@@ -427,18 +427,9 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             data.pop("rank", None)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            pk = (data["agent_id"], data["conversation_id"])
-            # Populate L2 only, not L1. Search results are derived
-            # (caller's intent is "find conversations matching X",
-            # not "warm the L1 row cache"), and the typical follow-up
-            # is the user clicking through to one specific result --
-            # a single L1 miss + L2 pull-through is the right cost
-            # profile for that access pattern. Filling L1 with every
-            # search result would evict actively-used rows for cold
-            # data the user may never revisit. Callers that need an
-            # L1-hot row for one specific result do ``get(pk)`` after
-            # picking from the search hits, which warms L1 lazily.
-            await self._save_to_l2(pk, data)
+            # Search hits are not written to L2. A row read here can be older than a write that
+            # landed after the query, and an unfenced put would serve it to every reader; the
+            # click-through ``get(pk)`` seeds L2 at the key's revision, so it cannot.
             entities.append(entity)
         return entities
 
@@ -451,7 +442,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         """fetch every conversation owned by the given user under one agent.
 
         results come from L3 (the source of truth for historical rows)
-        and are promoted into L2 so subsequent reads hit the cache
+        and are NOT promoted into L2 (see ``search``); a later ``get`` seeds the cache
         tier. ordering is newest-first. ``agent_id`` is the partition
         column on the ``conversations`` table; the caller supplies it
         explicitly so the lookup stays inside one agent's data slice
@@ -486,8 +477,6 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            pk = (data["agent_id"], data["conversation_id"])
-            await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities
 
@@ -506,7 +495,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         the ``conversations`` table; the caller supplies it explicitly
         so the lookup stays inside one agent's slice and the partition
         predicate is enforced at the SQL boundary. results come from L3
-        (the source of truth), are promoted into L2 like
+        (the source of truth), are not promoted into L2, like
         :meth:`find_by_user`, and are ordered newest-first.
 
         :param agent_id: agent partition the conversations belong to
@@ -527,8 +516,6 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            pk = (data["agent_id"], data["conversation_id"])
-            await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities
 
@@ -606,7 +593,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         binding -- e.g. a scriob object chat keys ``conversation_ref`` to its story object so
         every session on that object lists together. the partition column ``agent_id`` keeps the
         lookup inside one agent's slice; ``channel_type`` scopes it to one surface. results come
-        from L3 (the source of truth), are promoted into L2 like :meth:`find_by_user`, and are
+        from L3 (the source of truth), are not promoted into L2, like :meth:`find_by_user`, and are
         ordered newest-first. this is the ref-grouped peer of :meth:`find_by_user` (owner-scoped)
         and :meth:`search` (FTS) so callers never reach into row coercion themselves.
 
@@ -632,8 +619,6 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            pk = (data["agent_id"], data["conversation_id"])
-            await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities
 
@@ -651,7 +636,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         EVERY chat in the story across all objects (a chat-manager / inbox query), including refs
         whose object no longer exists. ``left(...) = $3`` is an exact, escaping-free prefix match (no
         LIKE wildcards to sanitise). partition (``agent_id``) + ``channel_type`` scope it as in
-        :meth:`find_by_ref`; results come from L3, are promoted into L2, newest-first.
+        :meth:`find_by_ref`; results come from L3, are not promoted into L2, newest-first.
 
         :param agent_id: agent partition the conversations belong to
         :ptype agent_id: UUID
@@ -675,7 +660,5 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            pk = (data["agent_id"], data["conversation_id"])
-            await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities

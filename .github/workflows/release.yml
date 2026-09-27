@@ -16,17 +16,17 @@ name: Release
 # publish to PyPI, and report every job green -- while `github-release` shows
 # `skipped` and no tag is ever created. That is a real incident, not a
 # hypothetical: 0.22.5 shipped to PyPI on 2026-08-01 with no tag and no release,
-# because the dispatch command was lifted out of the republish runbook in
-# CLAUDE.md and used to cut a new release. The repair was to push the tag
+# because the dispatch command was lifted out of the republish runbook (now
+# docs/releasing.md) and used to cut a new release. The repair was to push the tag
 # afterwards, which is safe (`skip-existing`) but leaves the ordering backwards.
 #
 # A GREEN RUN DOES NOT MEAN A RELEASE EXISTS. Check `github-release` did not
 # skip, and check `git ls-remote --tags origin`. `tag-on-main` does NOT create a
 # tag despite its name -- it VERIFIES the ref is on main.
 #
-# Full procedure: CLAUDE.md, "Releases:" (bump -> PR into develop -> PR develop
-# into main -> tag from main). The republish variant is the section immediately
-# below it, and its steps apply ONLY to a version that is already tagged.
+# Full procedure: docs/releasing.md, "Cutting a release" (bump -> PR into develop
+# -> PR develop into main -> tag from main). The republish variant is the section
+# immediately below it, and its steps apply ONLY to a version that is already tagged.
 # ---------------------------------------------------------------------------
 
 on:
@@ -68,7 +68,7 @@ jobs:
   # was left at 0.17.7 for days while PyPI served 0.17.8. Nothing in the
   # pipeline objected, because every other check (lockstep verify, lint,
   # typecheck, tests) passes just as happily on develop as on main. The
-  # documented order in CLAUDE.md (bump -> PR into develop -> PR develop
+  # documented order in docs/releasing.md (bump -> PR into develop -> PR develop
   # into main -> tag FROM main) was the only thing standing between the
   # repo and that state, and prose does not fail a build.
   #
@@ -342,7 +342,7 @@ jobs:
 
       # The tag on a release, the dispatched version on a republish. `github.ref_name` is
       # the tag for a push and the BRANCH NAME for a workflow_dispatch, so using it alone
-      # would tag an image `:main` on exactly the path CLAUDE.md documents for republishing
+      # would tag an image `:main` on exactly the path docs/releasing.md documents for republishing
       # a version whose artifacts went missing.
       - name: Resolve the version to tag the image with
         id: version

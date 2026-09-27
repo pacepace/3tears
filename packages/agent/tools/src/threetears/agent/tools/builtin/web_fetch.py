@@ -44,7 +44,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from langchain_core.tools import StructuredTool
-from pydantic import Field
 
 from threetears.agent.tools.text_window import WindowedInput, window_text
 
@@ -68,7 +67,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_MAX_CHARS",
-    "WebFetchInput",
     "WebFetchTool",
     "create_web_fetch_tool",
 ]
@@ -81,26 +79,6 @@ DEFAULT_MAX_CHARS: Final[int] = 15000
 #: what the provenance of a directly-fetched page names as its source. Not a
 #: search provider -- nothing searched -- so it names the tool that asked.
 _FETCH_PROVIDER_INSTANCE: Final[str] = "threetears.web_fetch"
-
-
-class WebFetchInput(WindowedInput):
-    """Input for the web fetch tool."""
-
-    url: str = Field(description="The address of the page to read.")
-    etag: str | None = Field(
-        default=None,
-        description=(
-            "The ETag from an earlier fetch of this page. If the page has not changed, the "
-            "result says so instead of returning the page again."
-        ),
-    )
-    last_modified: str | None = Field(
-        default=None,
-        description=(
-            "The Last-Modified value from an earlier fetch of this page, exactly as it was "
-            "given. Works like etag, with it or instead of it."
-        ),
-    )
 
 
 def create_web_fetch_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -138,7 +116,6 @@ def create_web_fetch_tool(config: dict[str, Any], description: str) -> Structure
             transport=config.get("transport"),
         ),
         description=description,
-        args_schema=WebFetchInput,
     )
 
 
@@ -172,8 +149,8 @@ class WebFetchTool(TearsTool):
                     "verbatim. Used with or instead of etag to make the fetch conditional."
                 ),
             },
-            # One wording for the argument, from the shared input model, so the
-            # MCP definition and the LangChain schema cannot drift apart.
+            # One wording for the argument, from the shared input model, so every
+            # windowed tool describes its offset the same way.
             "offset": {
                 "type": "integer",
                 "minimum": 0,

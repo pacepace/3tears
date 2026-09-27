@@ -325,7 +325,12 @@ class BackgroundDispatch:
         outcome: _Outcome | None = None
         try:
             try:
-                async with nats_distributed_lock(self._nats_client, in_flight_lock_key(trigger.kind)):
+                # cancel_on_loss=False: the in-flight lock only saves duplicate work across pods
+                # (see the KvError branch below); interrupting a fire that is already running
+                # because the lock was lost would fail work that is correct to finish.
+                async with nats_distributed_lock(
+                    self._nats_client, in_flight_lock_key(trigger.kind), cancel_on_loss=False
+                ):
                     outcome = await self._run_body(callback, trigger, fire_id)
             except LockHeld:
                 _log_skip(trigger, fire_id, _SKIPPED_ELSEWHERE)

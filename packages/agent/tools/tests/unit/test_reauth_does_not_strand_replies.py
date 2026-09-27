@@ -43,8 +43,8 @@ from threetears.nats import (
 )
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
-from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
-from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
+from packages.agent.tools.tests.unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
+from packages.agent.tools.tests.unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 _POD = "pod-under-test"
 

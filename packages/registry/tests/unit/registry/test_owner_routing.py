@@ -29,10 +29,12 @@ from threetears.agent.tools.server import CallResponse, RegistrationManifest, To
 
 from threetears.core.security import PLATFORM_CUSTOMER_SENTINEL
 from threetears.nats import IncomingMessage, RequestError, Subjects, set_default_namespace
-from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.discovery import DiscoverRequest, DiscoverToolEntry, DiscoveryHandler
 from threetears.registry.proxy import CallProxy, ProxyCallResponse
 from threetears.registry.registration import RegistrationHandler
+
+from ._copies import uniform_entry
 
 from ._dispatch_auth import make_authed_request, make_proxy
 
@@ -109,7 +111,7 @@ async def _add(catalog: ToolCatalog, tool_name: str, *endpoints: ToolEndpoint) -
     :ptype endpoints: ToolEndpoint
     """
     await catalog.register(
-        CatalogEntry(
+        uniform_entry(
             tool_name=tool_name,
             tool_version=_VERSION,
             full_name=f"{tool_name}@{_VERSION}",
@@ -250,7 +252,14 @@ class TestToolPodToolsServeEveryone:
             assert _forwarded(nc) == [_TOOL_POD]
 
     @pytest.mark.asyncio
-    async def test_beside_an_in_process_endpoint_a_peer_gets_the_tool_pod_and_the_owner_gets_both(self) -> None:
+    async def test_beside_an_in_process_endpoint_a_peer_gets_the_tool_pod_and_the_owner_gets_its_own(self) -> None:
+        """the owner is served from its own copy only; the shared copy serves everyone else.
+
+        this used to assert the owner reached BOTH copies. an agent's own in-process copy is now
+        its tier whenever it is available -- it answers from that agent's own state, and the
+        definition the agent is shown is its own copy's -- so the shared copy is the owner's
+        fallback, not a peer it load-balances with.
+        """
         a1 = _inproc(_AGENT_A, "inst-1")
         catalog = await _catalog(_endpoint(_TOOL_POD), _endpoint(a1))
 
@@ -262,7 +271,7 @@ class TestToolPodToolsServeEveryone:
         proxy_a, nc_a = await _proxy(catalog)
         for _ in range(_CALLS):
             await _call(proxy_a, nc_a, _AGENT_A)
-        assert set(_forwarded(nc_a)) == {_TOOL_POD, a1}
+        assert set(_forwarded(nc_a)) == {a1}
 
 
 class TestFailoverStaysWithTheOwner:

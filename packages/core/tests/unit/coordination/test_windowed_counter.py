@@ -31,6 +31,7 @@ from unittest import mock
 import pytest
 
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination import WindowedCounter
 from threetears.core.coordination.tables import CoordinationCountersCollection, coordination_collection
@@ -63,6 +64,16 @@ class _Store:
         del table, kwargs
         self.rows[(data["purpose"], data["key"])] = dict(data)
         return 1
+
+    async def upsert_ordered(self, table: str, data: dict[str, Any], *, conn: Any = None) -> int:
+        # the conditional write the SQL backend generates: land only over an older stored order.
+        del conn
+        stored = self.rows.get((data["purpose"], data["key"]))
+        stored_order = None if stored is None else l2_order_of(stored)
+        incoming = l2_order_of(data)
+        if stored_order is not None and incoming is not None and stored_order >= incoming:
+            return 0
+        return await self.upsert(table, data)
 
     async def delete(self, table: str, pk: dict[str, Any], *, conn: Any = None) -> None:
         del table, conn
@@ -328,6 +339,23 @@ class TestWindowedCounter:
         assert await counter.count("k") == 0
         failing = _counter(_registry(_FailingNats()))  # type: ignore[arg-type]
         await failing.clear("k")  # fail-open regardless of posture: never turns a login into an error
+
+    @pytest.mark.asyncio
+    async def test_a_clear_is_not_undone_by_another_replicas_later_flush(self) -> None:
+        # the "authentication succeeded" reset, racing an attempt another replica recorded before
+        # it and has not yet flushed. A clear that deleted the row would be resurrected by that
+        # flush, and with L2 cleared too the next attempt would seed from it: the reset undone.
+        nats, store = _Nats(), _Store()
+        first_registry, second_registry = _registry(nats, store), _registry(nats, store)
+        first, second = _counter(first_registry), _counter(second_registry)
+        assert await first.record_attempt("k") == 1
+        assert await first.record_attempt("k") == 2
+        await second.clear("k")
+        await _counters(second_registry).aclose()  # the clear's own flush
+        await _counters(first_registry).aclose()  # the older attempts land after it
+        assert await second.count("k") == 0, "a cleared counter was resurrected by an older flush"
+        (await nats.kv_bucket(name="collections")).wipe()
+        assert await second.record_attempt("k") == 1, "the next attempt seeded from a resurrected count"
 
     @pytest.mark.asyncio
     async def test_concurrent_attempts_on_same_key_all_counted(self) -> None:

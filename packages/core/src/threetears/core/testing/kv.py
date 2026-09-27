@@ -16,21 +16,30 @@ use:
   ``None`` on CAS conflict (key already present).
 - :meth:`FakeKvBucket.get` returns ``bytes | None``.
 - :meth:`FakeKvBucket.get_entry` returns ``(bytes, revision) | None``.
+- :meth:`FakeKvBucket.get_latest` returns ``(bytes | None, revision)``: the
+  key's latest message, a deletion marker included, with revision ``0`` for
+  a key that has none.
 - :meth:`FakeKvBucket.update` returns the new revision on success or
-  ``None`` on CAS conflict (revision mismatch or key absent).
+  ``None`` on CAS conflict: it lands only when the key's latest message --
+  live value, deletion marker, or none at all for revision ``0`` -- is at the
+  expected revision, as the server's expected-last-subject-sequence does.
+- :meth:`FakeKvBucket.delete` leaves a marker with its own revision, as a
+  real delete publishes one; :meth:`FakeKvBucket.create` lands over it.
 - :meth:`FakeKvBucket.delete` accepts an optional ``revision`` and
   returns ``True`` on success or absent key, ``False`` on CAS mismatch.
 - :meth:`FakeKvBucket.date_created` reports when the bucket was created, and
-  :meth:`FakeKvBucket.wipe` empties it and moves that time forward, which is
-  what a broker restart does to a memory-backed bucket once something has
-  recreated it; :meth:`FakeKvBucket.vanish` leaves it absent until the next
-  operation recreates it, as the real wrapper's self-heal does.
+  :meth:`FakeKvBucket.wipe` empties it, moves that time forward and restarts
+  its revisions at 1, which is what a broker restart does to a memory-backed
+  bucket once something has recreated it; :meth:`FakeKvBucket.vanish` leaves
+  it absent until the next operation recreates it, as the real wrapper's
+  self-heal does.
 - :meth:`FakeNatsClient.add_reconnect_callback` registers a hook and
   :meth:`FakeNatsClient.reconnect` runs every hook, as a real reconnect does.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
-is bucket-local and monotonic per bucket.
+is bucket-local and monotonic per incarnation: a wiped or vanished bucket
+starts again at 1, as a recreated stream's sequence does.
 """
 
 from __future__ import annotations
@@ -106,6 +115,8 @@ class FakeKvBucket:
         self._ttl = ttl
         self._storage = storage
         self._entries: dict[str, _Entry] = {}
+        # the revision of each deleted key's marker: its latest message once its value is gone.
+        self._markers: dict[str, int] = {}
         self._revision = 0
         self._date_created = datetime.now(UTC)
         # set by vanish(): the stream is gone until the next operation recreates it.
@@ -128,6 +139,8 @@ class FakeKvBucket:
         if self._vanished:
             self._vanished = False
             self._date_created = datetime.now(UTC)
+            self._revision = 0
+            self._markers.clear()
 
     def advance_clock(self, delta: timedelta) -> None:
         """move this bucket's clock forward, lapsing any per-entry TTL it passes.
@@ -152,9 +165,39 @@ class FakeKvBucket:
         """
         entry = self._entries.get(key)
         if entry is not None and entry.expires_at is not None and self._elapsed >= entry.expires_at:
+            # the server removes a lapsed entry's message, leaving no marker behind.
             del self._entries[key]
             entry = None
         return entry
+
+    def _latest_revision(self, key: str) -> int:
+        """the revision of the key's latest message: its live value, its deletion marker, or 0.
+
+        :param key: key to look up
+        :ptype key: str
+        :return: the revision an expected-last-subject-sequence write must name
+        :rtype: int
+        """
+        entry = self._live(key)
+        return entry.revision if entry is not None else self._markers.get(key, 0)
+
+    def _write(self, key: str, value: bytes, ttl: timedelta | None) -> int:
+        """append one message for ``key`` and return its revision.
+
+        :param key: key to write
+        :ptype key: str
+        :param value: bytes payload
+        :ptype value: bytes
+        :param ttl: per-entry lifetime, or ``None``
+        :ptype ttl: timedelta | None
+        :return: the new revision
+        :rtype: int
+        """
+        expires_at = self._expiry(ttl)
+        self._revision += 1
+        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=expires_at)
+        self._markers.pop(key, None)
+        return self._revision
 
     def _expiry(self, ttl: timedelta | None) -> timedelta | None:
         """the bucket-clock removal time for an entry written now with ``ttl``.
@@ -192,7 +235,7 @@ class FakeKvBucket:
         return tuple(key for key in tuple(self._entries) if self._live(key) is not None)
 
     def wipe(self, *, date_created: datetime | None = None) -> None:
-        """empty the bucket and give it a new creation time, as a broker restart does.
+        """empty the bucket, give it a new creation time and restart its revisions, as a broker restart does.
 
         Every handle a test holds keeps working afterwards and silently sees the empty
         bucket -- the same property the real wrapper has, and the one a wipe-detecting
@@ -207,8 +250,11 @@ class FakeKvBucket:
         if date_created is not None and date_created.tzinfo is None:
             raise ValueError("FakeKvBucket.wipe requires a timezone-aware date_created")
         self._entries.clear()
+        self._markers.clear()
         self._date_created = date_created if date_created is not None else datetime.now(UTC)
         self._vanished = False
+        # the revision is the stream sequence, and a recreated stream starts it again.
+        self._revision = 0
 
     def vanish(self) -> None:
         """lose the bucket the way a broker restart does, leaving it absent until next used.
@@ -223,6 +269,7 @@ class FakeKvBucket:
         :rtype: None
         """
         self._entries.clear()
+        self._markers.clear()
         self._vanished = True
 
     @property
@@ -267,9 +314,7 @@ class FakeKvBucket:
         await self._arrive()
         if self._live(key) is not None:
             return None
-        self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
-        return self._revision
+        return self._write(key, value, ttl)
 
     async def get(self, *, key: str) -> bytes | None:
         """get value bytes for key. returns ``None`` on miss.
@@ -299,6 +344,21 @@ class FakeKvBucket:
             return None
         return (entry.value, entry.revision)
 
+    async def get_latest(self, *, key: str) -> tuple[bytes | None, int]:
+        """the key's latest message: its value, and its revision even when it is a deletion.
+
+        :param key: key to read
+        :ptype key: str
+        :return: ``(value, revision)`` for a live value, ``(None, marker revision)`` for a deleted
+            key, ``(None, 0)`` for a key with no message
+        :rtype: tuple[bytes | None, int]
+        """
+        await self._arrive()
+        entry = self._live(key)
+        if entry is None:
+            return (None, self._markers.get(key, 0))
+        return (entry.value, entry.revision)
+
     async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
         """CAS update. returns new revision or ``None`` on mismatch.
 
@@ -310,16 +370,13 @@ class FakeKvBucket:
         :ptype revision: int
         :param ttl: per-entry lifetime for the new entry on this bucket's clock, or ``None``
         :ptype ttl: timedelta | None
-        :return: new revision, or ``None`` on conflict / missing key
+        :return: new revision, or ``None`` when the key's latest message is not at ``revision``
         :rtype: int | None
         """
         await self._arrive()
-        entry = self._live(key)
-        if entry is None or entry.revision != revision:
+        if self._latest_revision(key) != revision:
             return None
-        self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
-        return self._revision
+        return self._write(key, value, ttl)
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:
         """delete a key, optionally guarded by a CAS revision.
@@ -338,11 +395,18 @@ class FakeKvBucket:
             # A revision-guarded delete of a key that is no longer there LOST the race -- it
             # cannot have been the caller whose revision matched. Returning True here made
             # every concurrent redemption look like a winner, which is how a non-atomic claim
-            # passed a concurrency test.
+            # passed a concurrency test. An unguarded one still publishes a marker, as the real
+            # server does: a delete is a message whether or not the key held anything.
+            if revision is None:
+                self._revision += 1
+                self._markers[key] = self._revision
             return revision is None
         if revision is not None and entry.revision != revision:
             return False
         del self._entries[key]
+        # a real delete publishes a marker, which is the key's latest message from now on.
+        self._revision += 1
+        self._markers[key] = self._revision
         return True
 
     async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
@@ -359,9 +423,7 @@ class FakeKvBucket:
         :rtype: int
         """
         await self._arrive()
-        self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=self._expiry(ttl))
-        return self._revision
+        return self._write(key, value, ttl)
 
 
 # parity-with: threetears.nats.kv.KvCapable

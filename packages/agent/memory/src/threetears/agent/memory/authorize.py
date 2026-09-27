@@ -51,7 +51,7 @@ evaluator can answer subsequent questions from cache.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from threetears.agent.acl import (
@@ -63,6 +63,7 @@ from threetears.agent.acl import (
     RoleAssignmentCollection,
     RoleCollection,
     authorize_on_entity,
+    evict_after_rbac_write,
     row_scope_for_customer,
 )
 from threetears.agent.memory.namespace_client import (
@@ -76,6 +77,9 @@ from threetears.core.namespaces import (
     build_namespace_name,
 )
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from threetears.agent.acl.invalidation_bus import AclInvalidationPublisher
 
 __all__ = [
     "ACTION_MEMORY_EXTRACT",
@@ -142,16 +146,28 @@ class MemoryAccessDenied(AccessDenied):
 
 
 def memory_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
-    """build the canonical memory namespace name for an (agent, customer) pair.
+    """build the canonical memory namespace name for a NEW (agent, customer) row.
 
-    shape: ``memories.<agent_id_hex[:8]>.<customer_id_hex[:8]>`` per
-    the canonical plural-prefix + dot-separator form pinned by
-    :func:`threetears.core.namespaces.build_namespace_name`. uses the
-    first 8 hex chars of each UUID per the task shard convention; the
-    uniqueness is carried by the full
-    (namespace_type, owner_agent_id, customer_id) tuple on the row
-    itself, so the short prefix is a human-readable display handle
-    and not a uniqueness key.
+    shape: ``memories.<agent_id hex>.<customer_id hex>`` -- both ids in full, per the
+    canonical plural-prefix + dot-separator form pinned by
+    :func:`threetears.core.namespaces.build_namespace_name`. 74 characters, inside the
+    column's 255.
+
+    **the whole hex, because the name is unique.** ``namespaces.name`` carries a UNIQUE
+    index, so this name is a uniqueness key whether or not anything looks a row up by it.
+    it used to be the first eight hex characters of each id, and a uuid7's first eight
+    hex characters are the top of its millisecond timestamp: every agent minted in the
+    same ~65 seconds shared them, so two agents created for one customer together asked
+    for ONE name and the second one's namespace could never be written. the full hex is
+    injective over the pair, so two pairs cannot share a name at all.
+
+    **a row already written keeps the name it was written with.** nothing recomputes this
+    name to find a row: rows are resolved by ``(namespace_type, owner_agent_id,
+    customer_id)``, their grants address them by id, and the authorizer judges a resolved
+    row by the name it STORES. a row named by the earlier eight-character rule is
+    therefore found, granted and evaluated exactly as before; only rows created from now
+    on carry this shape. the one caller that has no row to read -- the owner path, which
+    resolves in-process -- names the namespace by this rule.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -160,22 +176,24 @@ def memory_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
     :return: canonical namespace name
     :rtype: str
     """
-    return build_namespace_name(
-        PLURAL_PREFIX_MEMORY,
-        agent_id.hex[:8],
-        customer_id.hex[:8],
-    )
+    return build_namespace_name(PLURAL_PREFIX_MEMORY, agent_id.hex, customer_id.hex)
 
 
 def memory_namespace_schema_name(agent_id: UUID, customer_id: UUID) -> str:
-    """build the schema_name persisted on the hub's ``namespaces`` rows.
+    """build the schema_name persisted on a NEW memory row in the hub's ``namespaces``.
 
-    memory rows route through the shared agent database schema rather
-    than a per-namespace Postgres schema; the row carries a stable
-    synthetic schema string so SELECT queries joining namespaces on
-    ``schema_name`` still match. shape mirrors
-    :func:`memory_namespace_name` with a ``memory__`` prefix to keep
-    the schema namespace disjoint from the display-name namespace.
+    memory rows route through the shared agent database schema rather than a
+    per-namespace Postgres schema, so no schema of this name exists and nothing binds it
+    into a ``search_path``; the row carries a stable synthetic string so SELECT queries
+    joining namespaces on ``schema_name`` still match.
+
+    shape: ``memory__<memory_namespace_id hex>`` -- the row's own deterministic id, so
+    it is unique exactly when the row is. ``schema_name`` is UNIQUE across non-workspace
+    rows, which is why the earlier ``memory__<agent hex[:8]>__<customer hex[:8]>`` shape
+    collided the same way :func:`memory_namespace_name` did. the id rather than both ids
+    in full keeps it at 40 characters, inside Postgres's 63-character identifier limit,
+    so it stays a legal schema name if anything ever treats it as one. rows already
+    written keep the value they were written with; nothing recomputes it.
 
     :param agent_id: owning agent UUID
     :ptype agent_id: UUID
@@ -184,7 +202,7 @@ def memory_namespace_schema_name(agent_id: UUID, customer_id: UUID) -> str:
     :return: schema name string
     :rtype: str
     """
-    return f"memory__{agent_id.hex[:8]}__{customer_id.hex[:8]}"
+    return f"memory__{memory_namespace_id(agent_id, customer_id).hex}"
 
 
 def memory_namespace_id(agent_id: UUID, customer_id: UUID) -> UUID:
@@ -224,7 +242,8 @@ def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> MemoryNamespac
     (``agent_<hex>``), which has no ``namespaces`` table, so a Collection access
     there fails ``relation "namespaces" does not exist``. the evaluator's owner
     short-circuit allows the action from these five fields alone; no row need
-    exist.
+    exist. with no row to read, the ``name`` is the one :func:`memory_namespace_name`
+    derives.
 
     :param agent_id: owning agent UUID (also the caller on this path)
     :ptype agent_id: UUID
@@ -239,6 +258,7 @@ def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> MemoryNamespac
         owner_agent_id=agent_id,
         namespace_type=MEMORY_NAMESPACE_TYPE,
         owner_namespace=build_agent_namespace_name(agent_id),
+        name=memory_namespace_name(agent_id, customer_id),
     )
 
 
@@ -283,13 +303,20 @@ class MemoryAuthorizerDependencies:
         ``RoleAssignmentCollection`` used by
         :func:`ensure_memory_owner_assignment` via
         :meth:`ensure_group_role_assignment`
-    :ivar namespace_provisioner: hub-backed
+    :ivar namespace_provisioner: the
         :class:`~threetears.agent.memory.namespace_client.MemoryNamespaceProvisioner`
-        asked to materialize a missing memory namespace row. optional, and
+        asked to materialize a missing memory namespace row -- ``HubMemoryNamespaceProvisioner`` on a
+        hub deployment, ``LocalMemoryNamespaceProvisioner`` where the application owns its control
+        plane. optional, and
         ``None`` is a real configuration rather than an omission: the hub's own
         process resolves memory namespaces against a Collection that reaches
         the ``namespaces`` table directly and has nobody to ask. a process that
         DOES need one and lacks it gets a denial, never a local write
+    :ivar invalidation_publisher: the rbac invalidation-bus publisher
+        :func:`ensure_memory_owner_assignment` broadcasts on after it writes
+        a membership or assignment, so every OTHER pod drops the entries the
+        write made stale. optional: ``None`` evicts only this process's
+        :attr:`acl_cache`, and other processes fall back to ttl expiry
     """
 
     __slots__ = (
@@ -300,6 +327,7 @@ class MemoryAuthorizerDependencies:
         "role_collection",
         "role_assignment_collection",
         "namespace_provisioner",
+        "invalidation_publisher",
     )
 
     def __init__(
@@ -312,6 +340,7 @@ class MemoryAuthorizerDependencies:
         role_collection: RoleCollection,
         role_assignment_collection: RoleAssignmentCollection,
         namespace_provisioner: MemoryNamespaceProvisioner | None = None,
+        invalidation_publisher: AclInvalidationPublisher | None = None,
     ) -> None:
         """initialize the dependency bundle.
 
@@ -329,9 +358,12 @@ class MemoryAuthorizerDependencies:
         :param role_assignment_collection: three-tier
             ``RoleAssignmentCollection``
         :ptype role_assignment_collection: RoleAssignmentCollection
-        :param namespace_provisioner: hub-backed provisioner for a missing
-            memory namespace row, or ``None``
+        :param namespace_provisioner: the provisioner for a missing memory namespace row (the hub's,
+            or the local one for a hub-less deployment), or ``None``
         :ptype namespace_provisioner: MemoryNamespaceProvisioner | None
+        :param invalidation_publisher: rbac invalidation-bus publisher for
+            cross-pod eviction after an ensure writes, or ``None``
+        :ptype invalidation_publisher: AclInvalidationPublisher | None
         """
         self.acl_cache = acl_cache
         self.namespace_collection = namespace_collection
@@ -340,6 +372,7 @@ class MemoryAuthorizerDependencies:
         self.role_collection = role_collection
         self.role_assignment_collection = role_assignment_collection
         self.namespace_provisioner = namespace_provisioner
+        self.invalidation_publisher = invalidation_publisher
 
 
 async def _resolve_or_create_memory_namespace(
@@ -353,8 +386,9 @@ async def _resolve_or_create_memory_namespace(
 
     looks the triple ``(memory, agent_id, customer_id)`` up first via
     :meth:`NamespaceCollection.get_by_owner_and_customer`, which is a READ and
-    stays here. when no row matches, the row is materialized by the HUB through
-    ``namespace_provisioner`` and this process writes nothing: an agent that
+    stays here. when no row matches, the row is materialized through ``namespace_provisioner`` --
+    by the HUB on a hub deployment, or by the application that owns the control plane where there is
+    no hub -- and this module writes nothing: an agent that
     could insert into the hub's ``namespaces`` table chooses what the control plane
     says about itself, which is why the broker's platform-write carve-out for
     ``namespace_type='memory'`` existed and why removing this writer is what
@@ -462,13 +496,16 @@ async def authorize_memory_access(
             namespace_provisioner=deps.namespace_provisioner,
         )
     try:
+        # no ``namespace_name``: the evaluator reads the entity's own name, which for a
+        # resolved row is the name the row STORES. recomputing it here judged a row written
+        # under an earlier name rule by a name it does not carry, and a subtree grant --
+        # the one thing that reads a namespace's name -- stopped covering it.
         await authorize_on_entity(
             ns_entity=ns_entity,
             action=action,
             user_id=caller_user_id,
             agent_id=caller_agent_id,
             cache=deps.acl_cache,
-            namespace_name=memory_namespace_name(agent_id, customer_id),
         )
     except AccessDenied as exc:
         raise MemoryAccessDenied(
@@ -510,6 +547,18 @@ async def ensure_memory_owner_assignment(
     ensure_group_role_assignment helper is SELECT-then-INSERT by
     ``(group, role, scope)`` tuple.
 
+    evicts what it wrote. the caller's memberships and its group's
+    per-namespace contribution are already in ``deps.acl_cache`` from the
+    authorization that preceded the write, and they say "no grant" -- so
+    without an eviction the user's NEXT request on this pod is denied from
+    cache for up to the cache ttl, immediately after being granted. a new
+    membership evicts the user's membership entry; a new assignment (or a
+    new group) evicts the group's assignment entries; both are broadcast
+    through ``deps.invalidation_publisher`` when one is wired, so every
+    other pod evicts them too. an ensure that found every row already
+    present wrote nothing and evicts nothing, which is what keeps running
+    it on every user write free.
+
     :param user_id: user UUID asked to be bound to the MemoryOwner
         grant
     :ptype user_id: UUID
@@ -549,7 +598,8 @@ async def ensure_memory_owner_assignment(
     # read it off one function rather than restating the string here.
     group_pk = (row_scope_for_customer(customer_id), group_id)
     existing_group = await deps.group_collection.get(group_pk)
-    if existing_group is None:
+    group_created = existing_group is None
+    if group_created:
         group_entity = deps.group_collection.entity_class(
             {
                 "group_id": group_id,
@@ -572,7 +622,8 @@ async def ensure_memory_owner_assignment(
     # column, so per-group listing reads stay co-located -- and the group is the
     # one just resolved above.
     existing_member = await deps.group_member_collection.get((group_id, membership_id))
-    if existing_member is None:
+    membership_created = existing_member is None
+    if membership_created:
         member_entity = deps.group_member_collection.entity_class(
             {
                 "id": membership_id,
@@ -587,12 +638,16 @@ async def ensure_memory_owner_assignment(
         )
         await deps.group_member_collection.save_entity(member_entity)
 
-    await deps.role_assignment_collection.ensure_group_role_assignment(
+    _assignment_id, assignment_created = await deps.role_assignment_collection.ensure_group_role_assignment(
         group_id=group_id,
         role_id=owner_role_id,
         scope_type="namespace",
         scope_id=namespace.id,
     )
-    # ensure_group_role_assignment returns the assignment id; callers
-    # don't need it (ensure is fire-and-forget idempotency).
+    await evict_after_rbac_write(
+        deps.acl_cache,
+        deps.invalidation_publisher,
+        member_actors=[("user", user_id)] if membership_created else [],
+        group_ids=[group_id] if group_created or assignment_created else [],
+    )
     return None

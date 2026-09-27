@@ -4,6 +4,10 @@ Supports PDF, DOCX, XLSX, CSV, TXT, Markdown, and LaTeX formats.
 Single entry point ``parse_document()`` dispatches by MIME type.
 All sync parsers run via ``asyncio.to_thread()`` for non-blocking I/O.
 
+A document that cannot be read raises :class:`DocumentParseError`. It is never
+answered with a result whose text describes the failure: a caller cannot tell
+such text from the document's own, and had to string-match it.
+
 Optional dependencies:
 - ``pdf``: PyMuPDF (fitz) for PDF parsing
 - ``docx``: python-docx for DOCX parsing
@@ -20,7 +24,7 @@ import io
 import mimetypes
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import Field
@@ -31,6 +35,8 @@ from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolR
 from threetears.observe import get_logger, traced
 
 __all__ = [
+    "DocumentParseError",
+    "DocumentParseFailure",
     "DocumentResult",
     "DocumentSection",
     "OcrConfig",
@@ -94,6 +100,33 @@ class DocumentResult:
     sections: list[DocumentSection] = field(default_factory=list)
 
 
+#: Why a document could not be read: no parser reads its type, or its parser failed.
+DocumentParseFailure = Literal["unsupported_type", "parse_failed"]
+
+
+class DocumentParseError(RuntimeError):
+    """a document could not be turned into text.
+
+    raised in place of a :class:`DocumentResult`, so a failure never reaches a
+    caller as the document's text. the parser's own exception is chained as
+    ``__cause__``; an unsupported type has none.
+
+    :param reason: ``"unsupported_type"`` when no parser reads the document's
+        type, ``"parse_failed"`` when its parser raised
+    :ptype reason: DocumentParseFailure
+    :param detail: what went wrong, in words
+    :ptype detail: str
+    :param filename: the document's filename, when the caller gave one
+    :ptype filename: str | None
+    """
+
+    def __init__(self, reason: DocumentParseFailure, detail: str, *, filename: str | None) -> None:
+        self.reason = reason
+        self.detail = detail
+        self.filename = filename
+        super().__init__(f"{filename or 'document'} could not be read ({reason}): {detail}")
+
+
 # -- MIME type dispatch -------------------------------------------------------
 
 _MIME_PARSERS: dict[str, str] = {
@@ -138,11 +171,23 @@ async def parse_document(
     Dispatches to format-specific parsers based on MIME type.
     Falls back to filename extension detection if MIME type is unknown.
 
+    :param data: the document's raw bytes
+    :ptype data: bytes
+    :param mime_type: the document's declared MIME type
+    :ptype mime_type: str
+    :param filename: the document's filename, used for extension detection
+    :ptype filename: str | None
+    :param ocr_config: OCR fallback for scanned PDF pages
+    :ptype ocr_config: OcrConfig | None
     :param merge_wrapped_table_rows: for PDFs only, opt in to
         :func:`_merge_wrapped_table_rows`'s continuation-row stitching -- see
         :func:`_extract_pdf_tables`'s own *merge_wrapped_rows* docstring for why
         this defaults off. No-op for every other document format.
     :ptype merge_wrapped_table_rows: bool
+    :return: the document as markdown
+    :rtype: DocumentResult
+    :raises DocumentParseError: no parser reads the document's type, or its parser failed
+        (the parser's exception chained as ``__cause__``)
     """
     parser_key = _MIME_PARSERS.get(mime_type)
 
@@ -153,13 +198,11 @@ async def parse_document(
             parser_key = _MIME_PARSERS.get(detected)
 
     if parser_key is None:
-        return DocumentResult(
-            text=f"[Unsupported document type: {mime_type}]",
-            title=filename,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
+        log.warning(
+            "document type not supported; nothing parsed",
+            extra={"extra_data": {"mime_type": mime_type, "filename": filename}},
         )
+        raise DocumentParseError("unsupported_type", f"no parser reads {mime_type!r}", filename=filename)
 
     parsers = {
         "pdf": _parse_pdf,
@@ -257,15 +300,10 @@ def _parse_pdf(
     except Exception as exc:
         log.error(
             "PDF parsing failed",
-            extra={"extra_data": {"error": str(exc)}},
+            extra={"extra_data": {"filename": filename, "error": str(exc)}},
+            exc_info=True,
         )
-        return DocumentResult(
-            text=f"[Parsing failed: {exc}]",
-            title=filename,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
-        )
+        raise DocumentParseError("parse_failed", f"PDF parsing failed: {exc}", filename=filename) from exc
 
 
 def _merge_wrapped_table_rows(rows: list[list[Any]]) -> list[list[Any]]:
@@ -651,15 +689,10 @@ def _parse_docx(
     except Exception as exc:
         log.error(
             "DOCX parsing failed",
-            extra={"extra_data": {"error": str(exc)}},
+            extra={"extra_data": {"filename": filename, "error": str(exc)}},
+            exc_info=True,
         )
-        return DocumentResult(
-            text=f"[Parsing failed: {exc}]",
-            title=filename,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
-        )
+        raise DocumentParseError("parse_failed", f"DOCX parsing failed: {exc}", filename=filename) from exc
 
 
 def _docx_para_to_markdown(para: Any) -> str:
@@ -779,15 +812,10 @@ def _parse_xlsx(
     except Exception as exc:
         log.error(
             "XLSX parsing failed",
-            extra={"extra_data": {"error": str(exc)}},
+            extra={"extra_data": {"filename": filename, "error": str(exc)}},
+            exc_info=True,
         )
-        return DocumentResult(
-            text=f"[Parsing failed: {exc}]",
-            title=filename,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
-        )
+        raise DocumentParseError("parse_failed", f"XLSX parsing failed: {exc}", filename=filename) from exc
 
 
 # -- CSV parser ---------------------------------------------------------------
@@ -860,15 +888,10 @@ def _parse_csv(
     except Exception as exc:
         log.error(
             "CSV parsing failed",
-            extra={"extra_data": {"error": str(exc)}},
+            extra={"extra_data": {"filename": filename, "error": str(exc)}},
+            exc_info=True,
         )
-        return DocumentResult(
-            text=f"[Parsing failed: {exc}]",
-            title=filename,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
-        )
+        raise DocumentParseError("parse_failed", f"CSV parsing failed: {exc}", filename=filename) from exc
 
 
 # -- TXT parser ---------------------------------------------------------------
@@ -907,13 +930,12 @@ def _parse_txt(
         )
 
     except Exception as exc:
-        return DocumentResult(
-            text=f"[Parsing failed: {exc}]",
-            title=filename,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
+        log.error(
+            "TXT parsing failed",
+            extra={"extra_data": {"filename": filename, "error": str(exc)}},
+            exc_info=True,
         )
+        raise DocumentParseError("parse_failed", f"TXT parsing failed: {exc}", filename=filename) from exc
 
 
 # -- Markdown parser ----------------------------------------------------------
@@ -983,13 +1005,12 @@ def _parse_markdown(
         )
 
     except Exception as exc:
-        return DocumentResult(
-            text=f"[Parsing failed: {exc}]",
-            title=filename,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
+        log.error(
+            "Markdown parsing failed",
+            extra={"extra_data": {"filename": filename, "error": str(exc)}},
+            exc_info=True,
         )
+        raise DocumentParseError("parse_failed", f"Markdown parsing failed: {exc}", filename=filename) from exc
 
 
 # -- LaTeX parser -------------------------------------------------------------
@@ -1108,13 +1129,12 @@ def _parse_latex(
         )
 
     except Exception as exc:
-        return DocumentResult(
-            text=f"[Parsing failed: {exc}]",
-            title=filename,
-            page_count=None,
-            word_count=0,
-            was_ocr=False,
+        log.error(
+            "LaTeX parsing failed",
+            extra={"extra_data": {"filename": filename, "error": str(exc)}},
+            exc_info=True,
         )
+        raise DocumentParseError("parse_failed", f"LaTeX parsing failed: {exc}", filename=filename) from exc
 
 
 # -- parse_document tool factory ----------------------------------------------

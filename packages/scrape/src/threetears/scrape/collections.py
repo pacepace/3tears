@@ -45,9 +45,12 @@ from uuid_utils import uuid7
 
 from .driver import NavStep
 from .extraction import FieldSchema
+from .migrations import LEGACY_EMPTY_ENRICHMENT_FAILURE
 
 __all__ = [
+    "ENRICHMENT_STATUSES",
     "VALIDATION_STATUSES",
+    "EnrichmentStatus",
     "ScrapeExtraction",
     "ScrapeExtractionCollection",
     "ScrapeRecipe",
@@ -423,8 +426,10 @@ class ScrapeRecipe(BaseEntity):
 #: or retries. Its sibling vocabularies (``challenge.PageVerdictKind``,
 #: ``eval_loop.StrategyType``) are both Literals for the same reason.
 #:
-#: One value a consumer can see under this key is deliberately NOT here: ``ScrapeTool``'s
-#: JSON payload reports ``"backoff"`` for a poll its fetch circuit suppressed. That is not a
+#: Two values a consumer can see under this key are deliberately NOT here. ``ScrapeTool``'s
+#: JSON payload reports ``"model_unavailable"`` (``tool.MODEL_UNAVAILABLE_STATUS``) when a model
+#: call the eval loop depended on failed every attempt, and the loop persists nothing for it.
+#: It also reports ``"backoff"`` for a poll its fetch circuit suppressed. That is not a
 #: validation outcome and is never stored -- a suppressed poll persists nothing at all,
 #: because it observed nothing -- so admitting it to this Literal would declare a storable
 #: value that can never be stored. Every one of the four above describes a page we did or
@@ -434,6 +439,61 @@ ValidationStatus = Literal["validated", "needs_review", "failed", "blocked"]
 #: Every value :data:`ValidationStatus` permits, derived from the Literal rather than
 #: restated, so a new status cannot be added without this following it.
 VALIDATION_STATUSES: frozenset[str] = frozenset(get_args(ValidationStatus))
+
+#: The outcome of the enrichment pass, as stored on :attr:`ScrapeExtraction.enrichment_status`.
+#:
+#: ``"enriched"`` -- the model answered. :attr:`ScrapeExtraction.enrichment_notes` holds its
+#: notes, and ``{}`` there means it genuinely had nothing to add.
+#: ``"failed"`` -- every attempt failed. :attr:`ScrapeExtraction.enrichment_notes` is ``None``
+#: and :attr:`ScrapeExtraction.enrichment_failure` says why. The row is eligible for another
+#: :func:`~threetears.scrape.enrichment.enrich_extraction` run.
+#:
+#: A stored ``NULL`` (read as ``None``) means the pass never ran on this row. That is a third
+#: state, not a value of this Literal, for the same reason ``enrichment_notes`` is ``None``
+#: rather than ``{}`` then: nothing ran, so there is no outcome to name.
+#:
+#: Exists because the pass used to store ``{}`` for a total failure, which a reader could not
+#: tell apart from "the model had nothing to add". The data now says which one happened.
+EnrichmentStatus = Literal["enriched", "failed"]
+
+#: Every value :data:`EnrichmentStatus` permits, derived from the Literal rather than restated.
+ENRICHMENT_STATUSES: frozenset[str] = frozenset(get_args(EnrichmentStatus))
+
+
+def _legacy_enrichment_translation(row: dict[str, Any]) -> dict[str, Any]:
+    """The enrichment fields a pre-0.55.0 row must read as, or ``{}`` when it needs none.
+
+    The read-side half of ``migrations.v013_extraction_enrichment_status``, with the same
+    rules. v013 translates L3 once. A copy of a row cached in L1 or L2 before v013 ran is
+    not in L3, so v013 cannot reach it, and nothing in 3tears re-keys or wipes a
+    collection's cache when its stored shape changes. Such a copy carries notes and no
+    status, and read as-is it says "never ran" beside ``{}`` -- the ambiguity v013 removes.
+    Every tier builds its entity through :class:`ScrapeExtraction`'s constructor, so this
+    runs at that one point and a cached copy reads exactly as its L3 row now does.
+
+    A row that has a status is never touched, and neither is one with no notes (the pass
+    never ran). A current writer always sets the status beside the notes, so only a row
+    written before 0.55.0 reaches the translation.
+
+    :param row: the raw row, after defaults
+    :ptype row: dict[str, Any]
+    :return: the fields to overwrite, or ``{}``
+    :rtype: dict[str, Any]
+    """
+    translation: dict[str, Any] = {}
+    raw_notes = row.get("enrichment_notes")
+    if row.get("enrichment_status") is None and raw_notes is not None:
+        notes = _decode_json_field(raw_notes, None)
+        # ``"{}"`` is the empty object double-encoded as a JSON string, which v013 matches too.
+        if notes == {} or notes == "{}":
+            translation = {
+                "enrichment_status": "failed",
+                "enrichment_notes": None,
+                "enrichment_failure": LEGACY_EMPTY_ENRICHMENT_FAILURE,
+            }
+        else:
+            translation = {"enrichment_status": "enriched"}
+    return translation
 
 
 class ScrapeExtraction(BaseEntity):
@@ -472,6 +532,9 @@ class ScrapeExtraction(BaseEntity):
         normalized.setdefault("extraction_recipe_id", None)
         normalized.setdefault("field_confidences", None)
         normalized.setdefault("enrichment_notes", None)
+        normalized.setdefault("enrichment_status", None)
+        normalized.setdefault("enrichment_failure", None)
+        normalized.update(_legacy_enrichment_translation(normalized))
         normalized.setdefault("validation_status", "needs_review")
         super().__init__(normalized, is_new=is_new, collection=collection)
 
@@ -524,8 +587,50 @@ class ScrapeExtraction(BaseEntity):
 
     @property
     def enrichment_notes(self) -> dict[str, Any] | None:
-        """The secondary LLM pass's free-form findings; ``None`` when enrichment never ran."""
+        """The secondary LLM pass's free-form findings, meaningful only beside :attr:`enrichment_status`.
+
+        ``None`` when the pass never ran or when it failed; read :attr:`enrichment_status`
+        to know which. ``{}`` only ever means the pass ran and the model had nothing to add:
+        a failed pass is never stored as ``{}``.
+
+        :return: the notes, or ``None`` when there are none to read
+        :rtype: dict[str, Any] | None
+        """
         result: dict[str, Any] | None = _decode_json_field(self._get_raw("enrichment_notes"), None)
+        return result
+
+    @property
+    def enrichment_status(self) -> EnrichmentStatus | None:
+        """One of :data:`EnrichmentStatus`, or ``None`` when the pass never ran on this row.
+
+        ``"failed"`` rows are the ones to retry: pass them to
+        :func:`~threetears.scrape.enrichment.enrich_extraction` again.
+
+        :return: the stored outcome of the enrichment pass
+        :rtype: EnrichmentStatus | None
+        :raises ValueError: if the stored value is not one :data:`EnrichmentStatus` permits --
+            an unknown outcome is refused rather than read as either known one
+        """
+        raw = self._get_raw("enrichment_status")
+        if raw is not None and raw not in ENRICHMENT_STATUSES:
+            raise ValueError(
+                f"scrape_extractions row {self.id}: enrichment_status {raw!r} is not one of "
+                f"{sorted(ENRICHMENT_STATUSES)}"
+            )
+        return cast("EnrichmentStatus | None", raw)
+
+    @property
+    def enrichment_failure(self) -> str | None:
+        """Why the enrichment pass failed; set only when :attr:`enrichment_status` is ``"failed"``.
+
+        The last attempt's exception as ``"<ExceptionType>: <message>"``, or, on a row written
+        before 0.55.0 as ``{}`` (translated by migration v013, or at construction for a cached
+        copy), :data:`~threetears.scrape.migrations.LEGACY_EMPTY_ENRICHMENT_FAILURE`.
+
+        :return: the failure reason, or ``None`` when the pass did not fail
+        :rtype: str | None
+        """
+        result: str | None = self._get_raw("enrichment_failure")
         return result
 
     @property

@@ -347,7 +347,7 @@ class _SelectiveGrantLoader:
         return {
             gid: Group(
                 id=gid,
-                name=f"group-{gid.hex[:8]}",
+                name=f"group-{gid.hex}",
                 customer_id=None,
             )
             for gid in group_ids

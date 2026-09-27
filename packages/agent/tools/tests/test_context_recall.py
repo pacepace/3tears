@@ -28,7 +28,7 @@ from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.tools.context import ToolContextManager
 from threetears.agent.tools.context_envelope import CallContext
 
-from testing_utils import FakePool, make_context_metadata, make_nats_mock
+from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock
 
 
 @pytest.fixture()

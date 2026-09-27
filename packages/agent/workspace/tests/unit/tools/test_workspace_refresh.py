@@ -19,8 +19,13 @@ from uuid import UUID, uuid4, uuid7
 import pytest
 
 from threetears.agent.workspace.tools.workspace_refresh import WorkspaceRefreshTool
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
-from _helpers.workspace_shims import (
+from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+    FakeAsyncpgAcquireCM,
+    FakeAsyncpgConnection,
+    FakeAsyncpgPool,
+    FakeAsyncpgTransaction,
+)
+from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,

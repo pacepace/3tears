@@ -10,9 +10,11 @@ from typing import Any
 import pytest
 
 from threetears.agent.tools.document import (
+    DocumentParseError,
     DocumentResult,
     OcrConfig,
     ParseDocumentInput,
+    ParseDocumentTool,
     _extract_pdf_tables,
     _merge_wrapped_table_rows,
     _ocr_page,
@@ -332,15 +334,43 @@ Hello world.
 
 
 class TestUnsupported:
-    async def test_unsupported_mime(self):
-        result = await parse_document(b"data", "application/octet-stream")
-        assert "Unsupported" in result.text
-        assert result.word_count == 0
+    async def test_unsupported_mime_raises_instead_of_answering_with_text(self):
+        """An unsupported type is a failure, never a result whose text says so."""
+        with pytest.raises(DocumentParseError) as caught:
+            await parse_document(b"data", "application/octet-stream")
+        assert caught.value.reason == "unsupported_type"
+        assert caught.value.__cause__ is None
 
     async def test_unsupported_with_filename_fallback(self):
         result = await parse_document(b"hello", "application/octet-stream", "test.txt")
         # Should fall back to filename detection and parse as text
         assert "hello" in result.text
+
+
+# -- parse_document: a parser that fails ---------------------------------------
+
+
+class TestParseFailure:
+    """A document its parser cannot read raises; its text is never a placeholder saying so."""
+
+    @pytest.mark.parametrize(
+        ("mime_type", "filename"),
+        [
+            ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "warn.xlsx"),
+            ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "notice.docx"),
+            ("application/pdf", "notice.pdf"),
+        ],
+    )
+    async def test_a_corrupt_document_raises_a_typed_failure_chained_to_its_cause(
+        self, mime_type: str, filename: str
+    ) -> None:
+        returned: object = None
+        with pytest.raises(DocumentParseError) as caught:
+            returned = await parse_document(b"this is not a real document", mime_type, filename)
+        assert returned is None
+        assert caught.value.reason == "parse_failed"
+        assert caught.value.filename == filename
+        assert caught.value.__cause__ is not None
 
 
 # -- create_parse_document_tool -----------------------------------------------
@@ -376,6 +406,19 @@ class TestParseDocumentTool:
         result = await tool.ainvoke({"content_base64": content, "filename": "file.xyz123nope"})
         assert "[TOOL ERROR]" in result
         assert "format" in result.lower()
+
+    async def test_a_corrupt_document_is_a_tool_error_not_a_document(self):
+        tool = self._create()
+        content = base64.b64encode(b"this is not a real document").decode()
+        result = await tool.ainvoke({"content_base64": content, "filename": "warn.xlsx"})
+        assert result.startswith("[TOOL ERROR]")
+        assert "parse" in result
+
+    async def test_the_tears_tool_reports_a_corrupt_document_as_a_failure(self):
+        content = base64.b64encode(b"this is not a real document").decode()
+        result = await ParseDocumentTool().execute(content_base64=content, filename="warn.xlsx")
+        assert result.success is False
+        assert result.error is not None and result.error.startswith("[TOOL ERROR]")
 
     async def test_a_document_past_the_bound_comes_back_as_a_part(self):
         """Windowed, not cut: the note names the call that returns the next part."""

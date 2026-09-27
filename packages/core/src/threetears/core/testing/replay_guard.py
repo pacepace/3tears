@@ -32,6 +32,10 @@ class FakeReplayGuard:
     :param bind_error: raised by :meth:`bind` after it is counted, to drive a verifier's startup
         failure path. ``None`` binds
     :ptype bind_error: BaseException | None
+    :param record_error: raised by :meth:`record_unique` after it is counted -- the ``KvError`` a
+        real guard raises when its bucket cannot be reached, which its verifier must treat as a
+        failed check. ``None`` answers the verdict
+    :ptype record_error: BaseException | None
     :param events: a log shared with the test's other doubles; ``"bind"`` and ``"record"`` are
         appended as they happen, so a test can assert the order a verifier calls them in
     :ptype events: list[str] | None
@@ -47,6 +51,7 @@ class FakeReplayGuard:
         *,
         fresh: bool | None = None,
         bind_error: BaseException | None = None,
+        record_error: BaseException | None = None,
         events: list[str] | None = None,
         bucket_name: str = "fake_nonces",
         verifier_future_tolerance: timedelta = timedelta.max,
@@ -57,6 +62,8 @@ class FakeReplayGuard:
         :ptype fresh: bool | None
         :param bind_error: what :meth:`bind` raises, or ``None``
         :ptype bind_error: BaseException | None
+        :param record_error: what :meth:`record_unique` raises, or ``None``
+        :ptype record_error: BaseException | None
         :param events: a shared ordered log, or ``None``
         :ptype events: list[str] | None
         :param bucket_name: the reported bucket name
@@ -68,6 +75,7 @@ class FakeReplayGuard:
         """
         self._fresh = fresh
         self._bind_error = bind_error
+        self._record_error = record_error
         self._bucket_name = bucket_name
         self._verifier_future_tolerance = verifier_future_tolerance
         self.events: list[str] = events if events is not None else []
@@ -130,6 +138,7 @@ class FakeReplayGuard:
         :return: the verdict
         :rtype: bool
         :raises ValueError: when ``issued_at`` is timezone-naive, as the real guard refuses it
+        :raises BaseException: the ``record_error`` given at construction, after the call is counted
         """
         if issued_at.tzinfo is None:
             raise ValueError("FakeReplayGuard.record_unique requires a timezone-aware issued_at")
@@ -137,4 +146,6 @@ class FakeReplayGuard:
         self.events.append("record")
         self.seen.append(nonce)
         self.issued_at.append(issued_at)
+        if self._record_error is not None:
+            raise self._record_error
         return first_sighting if self._fresh is None else self._fresh

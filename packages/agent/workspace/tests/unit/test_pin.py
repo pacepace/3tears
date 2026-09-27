@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import sys
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -22,14 +20,8 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
-# share the agent-tools test utilities (FakePool, make_context_metadata, make_nats_mock).
-# this file lives at packages/agent/workspace/tests/unit/test_pin.py; parents[4] is the
-# packages/ directory, so packages/agent/tools/tests is the agent-tools tests tree.
-_AGENT_TOOLS_TESTS = Path(__file__).resolve().parents[4] / "agent" / "tools" / "tests"
-if str(_AGENT_TOOLS_TESTS) not in sys.path:
-    sys.path.insert(0, str(_AGENT_TOOLS_TESTS))
-
-from testing_utils import FakePool, make_context_metadata, make_nats_mock  # noqa: E402
+# the agent-tools test utilities, shared, named from the repo root like every test module.
+from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock
 
 
 # ---------------------------------------------------------------------------

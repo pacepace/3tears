@@ -26,7 +26,7 @@ from uuid import UUID
 
 from threetears.observe import get_logger
 
-from threetears.agent.tools.call_scope import current_scope
+from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 
 if TYPE_CHECKING:
     from threetears.media.contracts import ObjectHandle, ObjectStore
@@ -76,10 +76,7 @@ def _scoped_store_for(s3_key: str) -> "ObjectStore":
     """
     scope = current_scope()
     if scope is None:
-        raise ConsumeObjectError(
-            "object consume helper called outside a ToolServer call scope; a "
-            "consuming tool runs inside enter_call_scope"
-        )
+        raise ConsumeObjectError(no_call_scope_message("object consume helper"))
     store = scope.object_store
     if store is None:
         raise ConsumeObjectError(
@@ -190,10 +187,7 @@ async def resolve_object(object_id: UUID) -> "ObjectHandle":
     """
     scope = current_scope()
     if scope is None:
-        raise ConsumeObjectError(
-            "object consume helper called outside a ToolServer call scope; a "
-            "consuming tool runs inside enter_call_scope"
-        )
+        raise ConsumeObjectError(no_call_scope_message("object consume helper"))
     resolver = scope.object_resolver
     if resolver is None:
         raise ConsumeObjectError(

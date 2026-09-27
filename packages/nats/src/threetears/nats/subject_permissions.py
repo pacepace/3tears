@@ -779,6 +779,11 @@ def _agent_pod(
         # because no agent process writes the hub's ``namespaces`` table any more -- the hub verifies
         # the forwarded identity token and refuses a request naming a pair that is not the token's.
         str(Subjects.hub_memory_namespace_ensure()),
+        # person erasure: the agent asks the hub to anonymize the audit rows IT published about the
+        # people it names. Same forwarded-token auth: the hub derives the agent from the verified
+        # token and touches only rows whose agent is that caller, so this subject buys no reach into
+        # another agent's audit trail.
+        str(Subjects.hub_audit_anonymize()),
         # engagement selection, READ ONLY: the runtime resolves the conversation channel's default
         # engagement at the tool-call stamp seam. Without this the publish is refused at the
         # connection, the resolve soft-fails to "unbound", and a scan that should have authorized
@@ -1252,6 +1257,8 @@ def _hub(
         str(Subjects.hub_approval_resolve()),
         # memory bootstrap: responds to an agent's memory-namespace ensure
         str(Subjects.hub_memory_namespace_ensure()),
+        # person erasure: responds to an agent's request to anonymize the audit rows it published
+        str(Subjects.hub_audit_anonymize()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),

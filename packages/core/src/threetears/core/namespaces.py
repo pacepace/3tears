@@ -606,12 +606,14 @@ def build_hitl_namespace_name(tool_namespace_name: str, customer_id: UUID) -> st
     already makes: the digest goes in the subject, the raw identity
     rides the envelope.
 
-    the customer is spelled as its FULL hex, unlike the eight-character
-    forms ``memories.`` and ``intentions.`` names use. those rows are
-    resolved by an (owner agent, customer) pair and their names are
-    display handles; this one is resolved BY NAME, so a truncated hex
-    is a real chance of two tenants sharing one row, which is the
-    exposure the name exists to prevent.
+    the customer is spelled as its FULL hex. this row is resolved BY
+    NAME, so a truncated hex is a real chance of two customers sharing
+    one row, which is the exposure the name exists to prevent. (the
+    ``memories.`` / ``conversations.`` / ``intentions.`` names once took
+    eight hex characters of each id on the theory that rows resolved by
+    an owner pair need no unique name; ``namespaces.name`` is UNIQUE
+    regardless, and a uuid7's leading hex is its timestamp, so they now
+    spell both ids in full too.)
 
     two sessions share a name exactly when they share both the tool
     namespace name and the customer. the mcp name behind it no longer

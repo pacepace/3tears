@@ -23,7 +23,7 @@ from threetears.agent.tools.server import CallResponse, RegistrationManifest, To
 from threetears.core.security import PLATFORM_CUSTOMER_SENTINEL
 from threetears.nats import IncomingMessage, Subjects
 
-from unit.tools._pod_auth import (
+from packages.agent.tools.tests.unit.tools._pod_auth import (
     RecordingNatsClient,
     jwks_provider,
     recording_tool_server,

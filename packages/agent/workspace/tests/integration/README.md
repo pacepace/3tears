@@ -47,15 +47,13 @@ drift from production SQL fails loudly rather than silently no-opping.
    IMPLEMENTED. The end-to-end audit pipeline (real testcontainers NATS
    + Postgres, real `threetears.agent.audit.publish_audit`, real
    `UnifiedAuditConsumer`, real `AuditEventCollection`, real
-   migrations 012 partial unique index + 017 uniform columns) has
-   coverage in the aibots repo at
-   `tests/integration/test_workspace_audit_e2e.py`. That file
-   proves: (a) a `workspace.doc_set` envelope lands as one row in
-   `platform_audit.audit_events`; (b) duplicate envelopes with the
-   same `(correlation_id, event_type)` collapse to one row while a
-   second envelope carrying a different `event_type` under the same
-   `correlation_id` survives; (c) the real `FsWriteTool` publish path
-   lands a row end-to-end.
+   migrations) has coverage in the aibots repo under
+   `tests/integration/hub/`: `test_audit_events_that_share_a_correlation_id.py`
+   proves that events sharing a `(correlation_id, event_type)` pair each
+   land as their own row while a redelivery (the same envelope `id`)
+   collapses to one, and `test_audit_stream_replay.py` replays the
+   stream into the table. `correlation_id` ties a request's events
+   together; it is not a deduplication key.
 
 ## Graduation path
 

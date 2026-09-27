@@ -18,6 +18,7 @@ from typing import Any
 import asyncpg
 import pytest
 from sqlalchemy import Column, DateTime, Float, MetaData, String, Table, Text
+from threetears.core.testing.kv import FakeKvBucket
 
 
 @pytest.fixture(scope="session")
@@ -235,35 +236,17 @@ async def make_pool(url: str, schema: str) -> asyncpg.Pool:
     return pool
 
 
-class InMemoryKvBucket:
-    """typed-wrapper KV bucket stand-in matching ``NatsKvBucket``."""
-
-    def __init__(self) -> None:
-        self.kv: dict[str, bytes] = {}
-
-    async def get(self, *, key: str) -> bytes | None:
-        return self.kv.get(key)
-
-    async def put(self, *, key: str, value: bytes) -> int:
-        self.kv[key] = value
-        return len(self.kv)
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
-        existed = key in self.kv
-        self.kv.pop(key, None)
-        return existed or revision is None
-
-
 class InMemoryNatsBus:
-    """typed-wrapper NATS stand-in with KV bucket + typed pub/sub."""
+    """typed-wrapper NATS stand-in with KV bucket + typed pub/sub.
+
+    the bucket is the shared :class:`~threetears.core.testing.kv.FakeKvBucket`, which
+    mirrors the whole ``NatsKvBucket`` surface, so a collection path that reads a key's
+    latest revision here meets the same method it meets in production.
+    """
 
     def __init__(self) -> None:
-        self._bucket = InMemoryKvBucket()
+        self._bucket = FakeKvBucket("intentions-test")
         self._subs: dict[str, list[tuple[Any, Any]]] = {}
-
-    @property
-    def kv(self) -> dict[str, bytes]:
-        return self._bucket.kv
 
     async def kv_bucket(
         self,
@@ -273,7 +256,7 @@ class InMemoryNatsBus:
         storage: str = "file",  # noqa: ARG002
         create_if_missing: bool = True,  # noqa: ARG002
         history: int = 1,  # noqa: ARG002
-    ) -> InMemoryKvBucket:
+    ) -> FakeKvBucket:
         return self._bucket
 
     async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002

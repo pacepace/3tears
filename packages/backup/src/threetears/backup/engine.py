@@ -76,9 +76,20 @@ class BackupEngine:
         )
 
     def _key_for(self, when: datetime) -> str:
+        """The object key a new backup taken at ``when`` is written under.
+
+        The stamp leads so a listing sorts by time and :func:`_created_at_from_key` can read it; the
+        WHOLE uuid7 follows so two backups never share a key. It used to be the uuid7's first eight
+        hex characters, which are its millisecond timestamp, so two backups taken in one millisecond
+        named one object and the second overwrote the first. Keys already written are read back as
+        listed, never recomputed, so they stay valid.
+
+        :param when: the backup's timestamp
+        :return: the object key
+        """
         stamp = when.strftime("%Y%m%dT%H%M%SZ")
         suffix = "dump" if self._driver.compressed else "dump.gz"
-        return f"{self._config.prefix}/{when:%Y/%m/%d}/{stamp}-{uuid7().hex[:8]}.{self._driver.name}.{suffix}.enc"
+        return f"{self._config.prefix}/{when:%Y/%m/%d}/{stamp}-{uuid7().hex}.{self._driver.name}.{suffix}.enc"
 
     async def create_backup(self, source_dsn: str, *, when: datetime | None = None) -> BackupRecord:
         """Dump ``source_dsn``, compress+encrypt it, and store it.

@@ -13,8 +13,9 @@ on (``docs/channels-task-03-authz-typed-frames-resume.md``):
   ``resume`` cursor) or out (on a broadcast op frame); ordering is the
   op-log's job (design T3-D4), never this envelope's.
 - the injected-seam **protocols** (:class:`NsResolver` / :class:`OpHandler`
-  / :class:`ReplaySource`) + the supporting :class:`OpResult` and the
-  structural :class:`NsEntity` — the scriob→channels boundary seams
+  / :class:`ReplaySource` / :class:`RoomPolicy`) + the supporting
+  :class:`OpResult`, :class:`RoomAccessRequest` and the structural
+  :class:`NsEntity` — the scriob→channels boundary seams
   (T3-D1/D3/D4). channels depends only on these shapes, so it composes the
   policy (the ACL namespace resolver), the durable append (the op-log
   handler), and the replay tail (the op-log replay) scriob injects without
@@ -39,6 +40,8 @@ __all__ = [
     "OpRejected",
     "OpResult",
     "ReplaySource",
+    "RoomAccessRequest",
+    "RoomPolicy",
 ]
 
 
@@ -234,6 +237,54 @@ class ReplaySource(Protocol):
         :ptype from_seq: int
         :return: async iterator of wire-ready frame payloads, in seq order
         :rtype: AsyncIterator[str]
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class RoomAccessRequest:
+    """one question a :class:`RoomPolicy` answers: may this person do this in this room.
+
+    the namespace gate (``acl_cache`` + ``ns_resolver``) can only see the
+    namespace a room resolves to, and many rooms can share one namespace --
+    every user with read on it passes. whether THIS person may be in THIS
+    room (a private draft, a room shared with named people) is the app's
+    rule, and this is what the handler hands it.
+
+    :ivar room_id: the room being entered or acted in
+    :ivar user_id: the authenticated principal, as the auth payload carried it
+    :ivar customer_id: the principal's customer, as the auth payload carried it
+    :ivar action: the canonical action being gated -- the handler's
+        ``join_action`` for ``join`` and ``resume`` (reading a room's
+        content is what joining it grants), its ``write_action`` for
+        ``editor.op`` and the transient ``cursor`` / ``typing`` /
+        ``presence`` frames, and ``join_action`` again when
+        :meth:`~threetears.channels.websocket.WebSocketHandler.reevaluate_room`
+        re-checks a current member
+    """
+
+    room_id: str
+    user_id: str
+    customer_id: str
+    action: str
+
+
+@runtime_checkable
+class RoomPolicy(Protocol):
+    """injected seam: the app's per-room access rule, consulted after the namespace gate.
+
+    both must allow: the namespace gate first (when wired), then this. only
+    a literal ``True`` allows -- any other return value, and any exception,
+    refuses, so a policy bug fails closed rather than open.
+    """
+
+    async def __call__(self, request: RoomAccessRequest) -> bool:
+        """decide whether ``request`` is allowed.
+
+        :param request: who is asking to do what, in which room
+        :ptype request: RoomAccessRequest
+        :return: ``True`` to allow; anything else refuses
+        :rtype: bool
         """
         ...
 

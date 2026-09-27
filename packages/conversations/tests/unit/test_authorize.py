@@ -9,7 +9,7 @@ the owner short-circuit, and the reader / owner assignment paths.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
 import pytest
 
@@ -33,6 +33,7 @@ from threetears.conversations import (
     authorize_conversation_access,
     conversation_namespace_name,
 )
+from threetears.conversations.authorize import conversation_namespace_schema_name
 
 
 class _StubNamespaceEntity:
@@ -52,6 +53,7 @@ class _StubNamespaceEntity:
         owner_agent_id: UUID | None = None,
         customer_id: UUID | None = None,
         owner_namespace: str | None = None,
+        name: str | None = None,
         is_new: bool = False,
         collection: Any = None,
     ) -> None:
@@ -69,6 +71,8 @@ class _StubNamespaceEntity:
         :ptype customer_id: UUID | None
         :param owner_namespace: canonical name of the owning namespace
         :ptype owner_namespace: str | None
+        :param name: the name the row STORES, which is what a subtree grant is judged against
+        :ptype name: str | None
         :param is_new: whether entity is new (unused)
         :ptype is_new: bool
         :param collection: parent collection (unused)
@@ -82,6 +86,8 @@ class _StubNamespaceEntity:
             self.owner_agent_id = data["owner_agent_id"]
             self.customer_id = data["customer_id"]
             self.owner_namespace = data.get("owner_namespace")
+            self.name = data.get("name")
+            self.schema_name = data.get("schema_name")
         else:
             assert id is not None
             assert namespace_type is not None
@@ -98,6 +104,8 @@ class _StubNamespaceEntity:
             self.owner_namespace = (
                 owner_namespace if owner_namespace is not None else build_agent_namespace_name(owner_agent_id)
             )
+            self.name = name
+            self.schema_name = None
 
 
 class _NamespaceCollectionFake:
@@ -337,12 +345,109 @@ def _build_deps(
     )
 
 
+#: two agent ids a uuid7 generator could mint in ONE millisecond: identical leading 48 bits
+#: (the timestamp), different random tails.
+_AGENT_A = UUID("019470a8-b5c3-7def-8123-456789abcdef")
+_AGENT_B = UUID("019470a8-b5c3-7a01-9fed-cba987654321")
+_CUSTOMER = UUID("019470a8-b5c4-7000-8000-000000000001")
+
+
 class TestConversationNamespaceName:
     def test_shape(self) -> None:
+        """the name spells both ids in full; the schema name is the row id's hex."""
         agent_id = UUID("019470a8-b5c3-7def-8123-456789abcdef")
         customer_id = UUID("11112222-3333-4444-5555-666677778888")
-        name = conversation_namespace_name(agent_id, customer_id)
-        assert name == "conversations.019470a8.11112222"
+        assert conversation_namespace_name(agent_id, customer_id) == (
+            "conversations.019470a8b5c37def8123456789abcdef.11112222333344445555666677778888"
+        )
+        namespace_id = uuid5(NAMESPACE_DNS, f"threetears.namespaces.conversation.{agent_id.hex}.{customer_id.hex}")
+        assert conversation_namespace_schema_name(agent_id, customer_id) == f"conversation__{namespace_id.hex}"
+
+    def test_two_agents_minted_in_one_millisecond_get_distinct_names(self) -> None:
+        """``platform.namespaces`` is UNIQUE on name and on schema_name, so a shared value is a failed create."""
+        assert _AGENT_A.int >> 80 == _AGENT_B.int >> 80, "the fixture must share the uuid7 timestamp"
+        assert conversation_namespace_name(_AGENT_A, _CUSTOMER) != conversation_namespace_name(_AGENT_B, _CUSTOMER)
+        assert conversation_namespace_schema_name(_AGENT_A, _CUSTOMER) != conversation_namespace_schema_name(
+            _AGENT_B, _CUSTOMER
+        )
+
+    def test_both_fit_the_columns_and_the_schema_name_fits_an_identifier(self) -> None:
+        """``name`` is varchar(255), ``schema_name`` varchar(100) and named like a Postgres schema (63)."""
+        assert len(conversation_namespace_name(_AGENT_A, _CUSTOMER)) <= 255
+        assert len(conversation_namespace_schema_name(_AGENT_A, _CUSTOMER)) <= 63
+
+
+class TestAnExistingRowIsJudgedByTheNameItStores:
+    """a row written under the eight-character rule keeps its name and is judged by it.
+
+    rows are resolved by ``(type, owner agent, customer)``; the one reader of the NAME is a
+    subtree grant, so the evaluator must see the name the row carries, not a recomputed one.
+    """
+
+    async def test_a_legacy_named_row_keeps_its_subtree_grant(self) -> None:
+        legacy_name = "conversations.019470a8.019470a8"
+        user_id = uuid4()
+        group_id = uuid4()
+        role = _reader_role()
+        ns = _StubNamespaceEntity(
+            id=uuid4(),
+            namespace_type="conversation",
+            owner_agent_id=_AGENT_A,
+            customer_id=_CUSTOMER,
+            name=legacy_name,
+        )
+        namespace_collection = _NamespaceCollectionFake(ns)
+        deps = _build_deps(
+            namespace_collection=namespace_collection,
+            memberships_for_user=(
+                GroupMembership(
+                    group_id=group_id, member_type=MemberType.USER, member_id=user_id, customer_id=_CUSTOMER
+                ),
+            ),
+            assignments=(
+                RoleAssignment(
+                    id=uuid4(),
+                    role_id=role.id,
+                    group_id=group_id,
+                    scope_type=ScopeType.SUBTREE,
+                    scope_namespace_id=None,
+                    scope_namespace_type=None,
+                    scope_customer_id=None,
+                    scope_namespace_name=legacy_name,
+                ),
+            ),
+            roles={role.id: role},
+            groups={group_id: Group(id=group_id, name="subtree-readers", customer_id=_CUSTOMER)},
+        )
+
+        result = await authorize_conversation_access(
+            action=ACTION_CONVERSATION_READ,
+            agent_id=_AGENT_A,
+            customer_id=_CUSTOMER,
+            caller_user_id=user_id,
+            caller_agent_id=None,
+            deps=deps,
+        )
+
+        assert result is ns
+        assert namespace_collection.save_calls == [], "an existing row is resolved, never rewritten"
+
+    async def test_a_missing_row_is_created_under_the_current_rule(self) -> None:
+        namespace_collection = _NamespaceCollectionFake(None)
+        deps = _build_deps(namespace_collection=namespace_collection)
+
+        await authorize_conversation_access(
+            action=ACTION_CONVERSATION_WRITE,
+            agent_id=_AGENT_B,
+            customer_id=_CUSTOMER,
+            caller_user_id=None,
+            caller_agent_id=_AGENT_B,
+            deps=deps,
+        )
+
+        [saved] = namespace_collection.save_calls
+        assert saved.name == conversation_namespace_name(_AGENT_B, _CUSTOMER)
+        assert saved.schema_name == conversation_namespace_schema_name(_AGENT_B, _CUSTOMER)
 
 
 class TestAuthorizeConversationAccess:

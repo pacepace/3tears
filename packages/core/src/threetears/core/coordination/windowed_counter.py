@@ -247,18 +247,35 @@ class WindowedCounter:
         return WindowState(count=int(row["count"]), window_start=window_start)
 
     async def clear(self, key: str) -> None:
-        """drop ``key``'s counter entirely -- the "authentication succeeded" reset.
+        """reset ``key``'s counter to nothing -- the "authentication succeeded" reset.
 
         Always fails open, whatever the configured posture: failing to clear leaves a counter that
         can only ever deny too much, and raising here would turn a successful login into an error.
+
+        **A clear closes the window rather than deleting the row.** The row is compare-and-swapped
+        to an expiry of now, which every tier reads as absent, and it keeps the L2 order that swap
+        won. A delete would leave L3 nothing to order against: an attempt another replica recorded
+        just before, still in its write buffer, would flush afterwards and bring the count back --
+        and the next attempt would continue from it. The closed row is removed by the expiry sweep
+        like any other.
 
         :param key: the identifier to reset
         :ptype key: str
         :return: nothing
         :rtype: None
         """
+        closed_at = datetime.now(UTC)
+
+        def _close(
+            current: dict[str, Any] | None,
+        ) -> tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]:
+            # an absent or already-closed window has nothing to clear.
+            if current is None:
+                return "noop", None
+            return "upsert", {**current, "count": 0, "expires_at": closed_at}
+
         try:
-            await self._collection.delete(self._row_id(key))
+            await self._collection.l2_cas_mutate(self._row_id(key), _close, max_retries=_MAX_CAS_ATTEMPTS)
         except _DEGRADABLE_FAILURES as exc:
             log.warning(
                 "windowed counter could not clear a counter; it expires with its window",

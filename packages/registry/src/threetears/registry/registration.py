@@ -1,8 +1,13 @@
 """registration handler for tool pod manifests.
 
 subscribes to NATS registration subject, validates incoming
-manifests, authenticates pods, and registers tools with
-additive endpoint merging for multi-pod horizontal scaling.
+manifests, verifies WHO published each one from its credential --
+never from the pod id or anything else the manifest claims --
+admits each offered tool copy by copy
+(:func:`~threetears.registry.ownership.admit_copy`), and registers
+the admitted copies, each keeping its own definition. every refusal
+is named in the reply. multiple pods may serve one tool for
+horizontal scaling.
 freshly registered endpoints are parked in the 'pending'
 state until an end-to-end reachability probe round-trips;
 only then are they promoted to 'available' and exposed to
@@ -19,7 +24,12 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from threetears.agent.tools.server import RegistrationManifest, RegistrationResponse
+from threetears.agent.tools.server import (
+    RefusedTool,
+    RegistrationManifest,
+    RegistrationResponse,
+    ToolManifestEntry,
+)
 from threetears.core.namespaces import (
     build_agent_namespace_name,
     build_tool_provider_node_name,
@@ -27,15 +37,24 @@ from threetears.core.namespaces import (
 from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
-from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.ownership import tool_is_registrable
+from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolDefinition, ToolEndpoint
+from threetears.registry.ownership import (
+    PublisherStanding,
+    RefusalCode,
+    admit_copy,
+    audience_of,
+)
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
     "ProbeRequest",
     "ProbeResponse",
+    # RE-EXPORTED beside ``RegistrationResponse``, for the same reason.
+    "RefusedTool",
     "RegistrationHandler",
     # RE-EXPORTED, not defined here. It lives beside ``RegistrationManifest`` in
     # ``threetears.agent.tools.server`` because the POD is what parses it, and this
@@ -115,33 +134,120 @@ def _provider_node_names(nodes: "Iterable[str]", pod_id: str) -> tuple[str, ...]
     return tuple(names)
 
 
+#: prose for each refusal code, completed with the tool name where one applies. ``code`` is
+#: what a pod branches on; this is for the person reading the pod's log.
+_REFUSAL_REASONS: dict[RefusalCode, str] = {
+    RefusalCode.OWNED_ELSEWHERE: (
+        "a provider node this publisher does not own contains the name; only that node's owner may register it"
+    ),
+    RefusalCode.NOT_PLATFORM_SHARED: (
+        "no provider node contains the name, and a copy serving every caller under no provider node may be "
+        "published only by the platform (the shared built-in pod, or a pod the host runs itself)"
+    ),
+    RefusalCode.UNVERIFIED_PUBLISHER: (
+        "the publisher's identity was not verified, and an unverified publisher may serve no caller but its own agent"
+    ),
+    RefusalCode.POD_ID_MISMATCH: "the verified publisher registered under a pod id that is not its own",
+    RefusalCode.INVALID_TOOL_NAME: (
+        "the name composes no namespace node; offer the bare mcp name, never one rooted at `tools.`"
+    ),
+    RefusalCode.OWNERSHIP_GRAPH_UNAVAILABLE: (
+        "the ownership graph could not be read; nothing is admitted unfiltered, and the next heartbeat retries"
+    ),
+    RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE: (
+        "the registry could not read the store it verifies publishers against, so nothing was decided about "
+        "this publisher; the next heartbeat retries"
+    ),
+    RefusalCode.CATALOG_UNAVAILABLE: (
+        "the registry admitted the tool but could not record it in its catalog; the next heartbeat retries"
+    ),
+}
+
+
+#: the per-tool ADMISSION verdicts, which say this publisher may not hold this copy. only these
+#: withdraw a verified publisher's prior copy; a refusal for a transient reason -- the ownership
+#: graph could not be read -- says nothing about the copy, which keeps serving until the retry.
+_WITHDRAWING_CODES = frozenset(
+    {
+        RefusalCode.OWNED_ELSEWHERE.value,
+        RefusalCode.NOT_PLATFORM_SHARED.value,
+        RefusalCode.INVALID_TOOL_NAME.value,
+    }
+)
+
+
+def _refused(tools: "Iterable[ToolManifestEntry]", code: RefusalCode, reason: str | None = None) -> list[RefusedTool]:
+    """one :class:`RefusedTool` per offered tool, all for the same reason.
+
+    :param tools: the tools refused
+    :ptype tools: Iterable[ToolManifestEntry]
+    :param code: why
+    :ptype code: RefusalCode
+    :param reason: prose overriding the code's standard reason, when the refusal has more to say
+    :ptype reason: str | None
+    :return: the refusals, in manifest order
+    :rtype: list[RefusedTool]
+    """
+    text = reason if reason is not None else _REFUSAL_REASONS[code]
+    return [RefusedTool(name=tool.name, version=tool.version, code=code.value, reason=text) for tool in tools]
+
+
 @dataclass(frozen=True, slots=True)
-class _AuthOutcome:
-    """what authentication decided, and the self-identity it resolved on the way.
+class _Publisher:
+    """who published a manifest, as far as the registry could verify, or why it could not.
 
-    Two values rather than one because they are answered by the SAME lookup and must not be
-    answered by two: ``verify_pod`` is a network round trip against the pod's row, and
-    calling it twice to learn a second thing about one registration is both slower and a
-    place for the two answers to disagree.
-
-    :param error: the refusal to send back, or ``None`` when the pod is admitted
+    :param standing: what was verified, for :func:`~threetears.registry.ownership.admit_copy`
+    :ptype standing: PublisherStanding
+    :param self_identity: the namespaces the pod owns, returned on the reply
+    :ptype self_identity: tuple[str, ...]
+    :param name: the publisher's display name, for the log
+    :ptype name: str
+    :param error: the whole-manifest refusal, or ``None`` when the publisher may proceed
     :ptype error: str | None
-    :param owned_namespaces: canonical names of the namespaces this pod owns, empty when
-        none could be resolved
-    :ptype owned_namespaces: tuple[str, ...]
+    :param error_code: the refusal's code, ``None`` when the publisher may proceed
+    :ptype error_code: RefusalCode | None
     """
 
-    error: str | None
+    standing: PublisherStanding
+    self_identity: tuple[str, ...]
+    name: str
+    error: str | None = None
+    error_code: RefusalCode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Verdict:
+    """what one manifest is allowed to register.
+
+    :param standing: the publisher's verified standing
+    :ptype standing: PublisherStanding
+    :param admitted: the tools admitted
+    :ptype admitted: list[ToolManifestEntry]
+    :param refused: every tool refused, with its code
+    :ptype refused: list[RefusedTool]
+    :param owned_namespaces: the self-identity returned on a successful reply
+    :ptype owned_namespaces: tuple[str, ...]
+    :param error: the whole-manifest refusal, or ``None`` when at least one tool was admitted
+    :ptype error: str | None
+    :param error_code: the refusal's code
+    :ptype error_code: RefusalCode | None
+    """
+
+    standing: PublisherStanding
+    admitted: list[ToolManifestEntry]
+    refused: list[RefusedTool]
     owned_namespaces: tuple[str, ...]
+    error: str | None = None
+    error_code: RefusalCode | None = None
 
 
 class RegistrationHandler:
     """handles tool registration requests from tool pods.
 
-    subscribes to registration subject, validates manifests,
-    and registers tools in catalog. multiple pods can register
-    the same tool -- endpoints are merged additively by the
-    catalog for horizontal scaling.
+    subscribes to registration subject, validates manifests, verifies
+    WHO published each one, admits each tool copy by copy, and registers
+    the admitted ones in the catalog. multiple pods can register the same
+    tool -- each pod's copy keeps its own definition in the catalog.
     """
 
     def __init__(
@@ -157,21 +263,39 @@ class RegistrationHandler:
         :ptype catalog: ToolCatalog
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
-        :param authenticator: optional tool pod authenticator for token verification
+        :param authenticator: the host's publisher verifier; ``None`` is OPEN MODE, in which no
+            identity or ownership is enforced and the handler says so once at :meth:`start`
         :ptype authenticator: ToolPodAuthenticator | None
         :param probe_timeout: seconds to wait for reachability probe reply before
             leaving endpoint pending. sourced from THREETEARS_REGISTRY_PROBE_TIMEOUT
             env var if not provided.
         :ptype probe_timeout: float | None
+        :raises TypeError: when ``authenticator`` does not implement the whole
+            :class:`~threetears.registry.auth.ToolPodAuthenticator` protocol -- caught where it is
+            wired, rather than on the first registration that needs the missing method
         """
         from threetears.registry.config import get_probe_timeout
 
+        missing = [
+            name
+            for name in ("verify_pod", "verify_agent", "provider_nodes")
+            if authenticator is not None and not callable(getattr(authenticator, name, None))
+        ]
+        if missing:
+            raise TypeError(
+                f"{type(authenticator).__name__} does not implement ToolPodAuthenticator; missing {missing}. "
+                "an authenticator verifies Tool Pods (verify_pod), agents' in-process servers (verify_agent) "
+                "and reads the ownership graph (provider_nodes)"
+            )
         self._catalog = catalog
         self._namespace = namespace
         self._authenticator = authenticator
         self._probe_timeout = probe_timeout if probe_timeout is not None else get_probe_timeout()
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
+        # agent pod ids already warned about for registering unsigned, so the rollout's progress
+        # reads as one line per not-yet-rebuilt agent process rather than one per heartbeat.
+        self._unsigned_agent_pods_warned: set[str] = set()
 
     @property
     def subscription_active(self) -> bool:
@@ -205,9 +329,15 @@ class RegistrationHandler:
         self._nc = nc
         subject = Subjects.tools_register()
         self._sub = await nc.subscribe(subject=subject, cb=self.handle_registration)
+        if self._authenticator is None:
+            log.warning(
+                "registration handler running in open mode: no authenticator is wired, so no publisher "
+                "identity and no tool ownership is enforced; any pod may register any tool for every caller",
+                extra={"extra_data": {"subject": subject.path}},
+            )
         log.info(
             "registration handler started",
-            extra={"extra_data": {"subject": subject.path}},
+            extra={"extra_data": {"subject": subject.path, "open_mode": self._authenticator is None}},
         )
 
     async def stop(self) -> None:
@@ -216,6 +346,19 @@ class RegistrationHandler:
             await self._nc.unsubscribe(self._sub)
             self._sub = None
         log.info("registration handler stopped")
+
+    async def _reply(self, msg: IncomingMessage, response: RegistrationResponse) -> None:
+        """publish ``response`` to the manifest's reply subject, when it has one.
+
+        :param msg: the incoming manifest message
+        :ptype msg: IncomingMessage
+        :param response: the reply
+        :ptype response: RegistrationResponse
+        :return: nothing
+        :rtype: None
+        """
+        if msg.reply_subject is not None and self._nc is not None:
+            await self._nc.publish_reply(reply_subject=msg.reply_subject, message=response)
 
     async def handle_registration(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler for incoming registration manifest.
@@ -228,9 +371,11 @@ class RegistrationHandler:
         -- subclasses and test doubles may rely on the name, the single
         ``msg`` parameter, and the absence of return value.
 
-        validates manifest, authenticates pod, and registers
-        tools with additive endpoint merging. replies with
-        success or error response via :meth:`NatsClient.publish_reply`.
+        validates the manifest, verifies its publisher, admits each tool
+        copy by copy, registers the admitted ones, withdraws a verified
+        publisher's prior copy of any tool it was refused, and replies --
+        naming every refused tool whether or not the registration as a
+        whole succeeded.
 
         :param msg: incoming wrapper envelope containing registration manifest
         :ptype msg: IncomingMessage
@@ -243,231 +388,539 @@ class RegistrationHandler:
         except Exception as exc:
             log.error(
                 "registration rejected: malformed manifest",
-                extra={"extra_data": {"error": str(exc)}},
+                extra={"extra_data": {"error": str(exc), "error_code": RefusalCode.INVALID_MANIFEST.value}},
             )
-            response = RegistrationResponse(
-                success=False,
-                pod_id="unknown",
-                error=f"malformed manifest: {exc}",
+            await self._reply(
+                msg,
+                RegistrationResponse(
+                    success=False,
+                    pod_id="unknown",
+                    error=f"malformed manifest: {exc}",
+                    error_code=RefusalCode.INVALID_MANIFEST.value,
+                ),
             )
-            if msg.reply_subject is not None:
-                await self._nc.publish_reply(
-                    reply_subject=msg.reply_subject,
-                    message=response,
-                )
             return
 
         validation_error = self._validate_manifest(manifest)
         if validation_error is not None:
             log.warning(
                 "registration rejected: validation failed",
-                extra={"extra_data": {"pod_id": manifest.pod_id, "error": validation_error}},
+                extra={
+                    "extra_data": {
+                        "pod_id": manifest.pod_id,
+                        "error": validation_error,
+                        "error_code": RefusalCode.INVALID_MANIFEST.value,
+                    }
+                },
             )
-            response = RegistrationResponse(
-                success=False,
-                pod_id=manifest.pod_id,
-                error=validation_error,
+            await self._reply(
+                msg,
+                RegistrationResponse(
+                    success=False,
+                    pod_id=manifest.pod_id,
+                    error=validation_error,
+                    error_code=RefusalCode.INVALID_MANIFEST.value,
+                ),
             )
-            if msg.reply_subject is not None:
-                await self._nc.publish_reply(
-                    reply_subject=msg.reply_subject,
-                    message=response,
-                )
             return
 
-        outcome = await self._authenticate_and_filter(manifest)
-        if outcome.error is not None:
+        verdict = await self._judge(manifest)
+        try:
+            await self._withdraw_refused_copies(manifest.pod_id, verdict)
+        except Exception as exc:  # noqa: BLE001 -- a catalog failure is answered, never left as a dropped reply
+            await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
+            return
+        if verdict.error is not None:
+            error_code = verdict.error_code.value if verdict.error_code is not None else None
             log.warning(
                 "registration rejected: auth failed",
-                extra={"extra_data": {"pod_id": manifest.pod_id, "error": outcome.error}},
+                extra={
+                    "extra_data": {
+                        "pod_id": manifest.pod_id,
+                        "error": verdict.error,
+                        "error_code": error_code,
+                        "refused_tools": [f"{tool.name}@{tool.version} {tool.code}" for tool in verdict.refused],
+                    }
+                },
             )
-            # a refusal names NOTHING. handing a rejected pod its self-identity as a
-            # consolation would leak which nodes exist to a caller that just failed to
-            # prove it holds any of them.
-            response = RegistrationResponse(
-                success=False,
-                pod_id=manifest.pod_id,
-                error=outcome.error,
+            # a refusal names no namespace. handing a rejected pod its self-identity as a
+            # consolation would leak which nodes exist to a caller that just failed to prove it
+            # holds any of them. it DOES name the pod's own refused tools, which it offered.
+            await self._reply(
+                msg,
+                RegistrationResponse(
+                    success=False,
+                    pod_id=manifest.pod_id,
+                    refused_tools=verdict.refused,
+                    error=verdict.error,
+                    error_code=error_code,
+                ),
             )
-            if msg.reply_subject is not None:
-                await self._nc.publish_reply(
-                    reply_subject=msg.reply_subject,
-                    message=response,
-                )
             return
 
-        registered = await self._register_tools(manifest)
+        try:
+            registered = await self._register_tools(manifest.pod_id, verdict.admitted, verdict.standing)
+        except Exception as exc:  # noqa: BLE001 -- a catalog failure is answered, never left as a dropped reply
+            await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
+            return
 
-        response = RegistrationResponse(
-            success=True,
-            pod_id=manifest.pod_id,
-            registered_tools=registered,
-            # SELF-IDENTITY. The pod's subject grants were minted at connect from the row
-            # this handler just read, and the pod never sees that row -- so without this it
-            # holds only tool LEAVES and derives its human-in-the-loop family from a value
-            # no grant was keyed on. Derived from the verified auth context, never from the
-            # manifest, so a pod cannot name a namespace it does not own.
-            owned_namespaces=list(outcome.owned_namespaces),
+        await self._reply(
+            msg,
+            RegistrationResponse(
+                success=True,
+                pod_id=manifest.pod_id,
+                registered_tools=registered,
+                # SELF-IDENTITY. The pod's subject grants were minted at connect from the row
+                # this handler just read, and the pod never sees that row -- so without this it
+                # holds only tool LEAVES and derives its human-in-the-loop family from a value
+                # no grant was keyed on. Derived from the verified auth context, never from the
+                # manifest, so a pod cannot name a namespace it does not own.
+                owned_namespaces=list(verdict.owned_namespaces),
+                refused_tools=verdict.refused,
+            ),
         )
-        if msg.reply_subject is not None:
-            await self._nc.publish_reply(
-                reply_subject=msg.reply_subject,
-                message=response,
-            )
         log.info(
             "registration completed",
             extra={
                 "extra_data": {
                     "pod_id": manifest.pod_id,
                     "tools_count": len(registered),
+                    "tools_refused": len(verdict.refused),
+                    "publisher_verified": verdict.standing.verified,
                 }
             },
         )
 
-    async def _authenticate_and_filter(self, manifest: RegistrationManifest) -> _AuthOutcome:
-        """authenticate the pod, filter its tools by OWNERSHIP, and resolve its self-identity.
+    async def _judge(self, manifest: RegistrationManifest) -> _Verdict:
+        """verify the publisher, then admit or refuse each tool copy by copy.
 
-        **One rule, on every path.** This used to answer three different questions.
-        A pod carrying a token had its tools prefix-filtered against a text column
-        naming what it was permitted to register; a TOKENLESS pod -- every agent's
-        in-process ``ToolServer``, not a rare in-hub case -- returned here before
-        any filtering ran; and a handler built with no authenticator returned
-        before that. All three now go through
-        :func:`~threetears.registry.ownership.tool_is_registrable`, which asks the
-        namespace GRAPH who owns the most specific provider node containing the
-        offered name. See that module for the rule and for why an empty graph
-        enforces nothing.
-
-        Authentication itself is unchanged and still gated on token PRESENCE:
-
-        * a manifest carrying a token is a PLATFORM tool pod under per-key identity.
-          The RAW token goes to :meth:`ToolPodAuthenticator.verify_pod`, which
-          verifies it against the pod's stored key; failure REJECTS.
-        * a TOKENLESS manifest carries no per-key identity. The missing token does
-          not say who owns the pod: the pod-id does
-          (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`). When that
-          names an agent, the pod is that agent's in-process server, registering
-          over the agent's own NATS connection, which the auth-callout already
-          authenticated per-key as that AGENT; it holds no row in the host's
-          tool-pod store and could never present a token. It is still ADMITTED as
-          a principal, but never as an owner of any provider node.
-
-        **Two different tuples, deliberately not merged.** ``owned_nodes`` is what
-        the filter compares against: the PROVIDER nodes this pod owns, empty for
-        an agent-owned pod because an agent owns none. ``self_identity`` is what
-        travels back on the reply so the pod can key its human-in-the-loop
-        subscriptions on the same node its grants were minted from -- for an
-        agent-owned pod that is ``agents.<uuid>``, which is an ownership edge
-        rather than a name-containment one and must never be handed to the filter.
-
-        :param manifest: registration manifest to authenticate and filter
+        :param manifest: the validated manifest
         :ptype manifest: RegistrationManifest
-        :return: the refusal, if any, and the namespaces this pod owns
-        :rtype: _AuthOutcome
+        :return: what the manifest may register
+        :rtype: _Verdict
         """
-        owned_nodes: tuple[str, ...] = ()
-        self_identity: tuple[str, ...] = ()
-        pod_name = manifest.pod_id
-
-        if self._authenticator is not None and manifest.bootstrap_token is not None:
-            pod_auth: ToolPodAuth | None = await self._authenticator.verify_pod(manifest.bootstrap_token)
-            if pod_auth is None:
-                log.warning(
-                    "tool pod registration rejected: invalid token",
-                    extra={"extra_data": {"pod_id": manifest.pod_id}},
-                )
-                return _AuthOutcome(error="invalid bootstrap token", owned_namespaces=())
-            owned_nodes = _provider_node_names(pod_auth.owned_namespaces, manifest.pod_id)
-            self_identity = owned_nodes
-            pod_name = pod_auth.name
-        else:
-            # agent-owned / tokenless registration, or a handler with no authenticator
-            # at all. Authenticated at the NATS layer in the first case and not
-            # authenticated at all in the second; either way it owns no provider node
-            # and is filtered against what other pods own.
-            self_identity = self._agent_owned_namespaces(manifest)
+        publisher = await self._verify_publisher(manifest)
+        if publisher.error is not None:
+            code = publisher.error_code if publisher.error_code is not None else RefusalCode.UNVERIFIED_PUBLISHER
+            return _Verdict(
+                standing=publisher.standing,
+                admitted=[],
+                refused=_refused(manifest.tools, code, reason=publisher.error),
+                owned_namespaces=(),
+                error=publisher.error,
+                error_code=code,
+            )
 
         directory = await self._provider_node_directory(manifest.pod_id)
         if directory is None:
-            return _AuthOutcome(
+            return _Verdict(
+                standing=publisher.standing,
+                admitted=[],
+                refused=_refused(manifest.tools, RefusalCode.OWNERSHIP_GRAPH_UNAVAILABLE),
+                owned_namespaces=(),
                 error=(
                     "ownership graph unavailable; registration refused rather than admitted "
                     "unfiltered. this is retried on the pod's next heartbeat"
                 ),
-                owned_namespaces=(),
+                error_code=RefusalCode.OWNERSHIP_GRAPH_UNAVAILABLE,
             )
 
-        allowed_tools = []
-        rejected_tools = []
+        audience = audience_of(manifest.pod_id)
+        admitted: list[ToolManifestEntry] = []
+        refused: list[RefusedTool] = []
         for tool in manifest.tools:
-            if tool_is_registrable(tool_name=tool.name, owned_nodes=owned_nodes, provider_nodes=directory):
-                allowed_tools.append(tool)
+            verdict = admit_copy(
+                tool_name=tool.name,
+                audience=audience,
+                standing=publisher.standing,
+                provider_nodes=directory,
+            )
+            if verdict is None:
+                admitted.append(tool)
             else:
-                rejected_tools.append(tool.name)
+                refused.extend(_refused([tool], verdict))
 
-        if rejected_tools:
+        owned_nodes = list(publisher.standing.owned_nodes)
+        if refused:
             log.warning(
                 "tool pod tools rejected (a provider node this pod does not own contains the name)",
                 extra={
                     "extra_data": {
                         "pod_id": manifest.pod_id,
-                        "pod_name": pod_name,
-                        "rejected": rejected_tools,
-                        "owned_nodes": list(owned_nodes),
+                        "pod_name": publisher.name,
+                        "rejected": [tool.name for tool in refused],
+                        "owned_nodes": owned_nodes,
+                        "refusal_codes": {f"{tool.name}@{tool.version}": tool.code for tool in refused},
+                        "audience": audience.value,
+                        "publisher_verified": publisher.standing.verified,
+                        "platform_shared": publisher.standing.platform_shared,
                     }
                 },
             )
 
-        if not allowed_tools:
-            # NAME both sides of the comparison that failed. A bare "no tools
-            # authorized" is true and unactionable: it arrives AFTER the pod
-            # authenticated, so it reads as a missing RBAC grant when the usual
-            # causes are an ownership entry that can never match anything -- a node
-            # written with a trailing separator (`evd.`) or as a glob (`evd.*`) --
-            # or a name that lands inside a provider node somebody else owns.
+        if not admitted:
+            # NAME both sides of the comparison that failed. A bare "no tools authorized" is
+            # true and unactionable: it arrives AFTER the pod authenticated, so it reads as a
+            # missing RBAC grant when the usual causes are an ownership entry that can never
+            # match anything -- a node written with a trailing separator (`evd.`) or as a glob
+            # (`evd.*`) -- or a name that lands inside a provider node somebody else owns.
             owns = sorted(owned_nodes) if owned_nodes else "no provider namespace"
-            return _AuthOutcome(
+            return _Verdict(
+                standing=publisher.standing,
+                admitted=[],
+                refused=refused,
+                owned_namespaces=(),
                 error=(
-                    f"no tools authorized: offered {sorted(rejected_tools)}, "
+                    f"no tools authorized: offered {sorted(tool.name for tool in refused)}, "
                     f"this pod owns {owns}. a tool name is placed under the MOST SPECIFIC "
                     "`tools.` provider node that contains it, and only that node's owner may "
-                    "register it; a name under no provider node at all may be registered only "
-                    "by a pod that owns none. a node is compared on a segment boundary and is "
-                    "written WITHOUT a trailing separator and WITHOUT a glob "
-                    "(`evd`, never `evd.` or `evd.*`)"
+                    "register it; a name under no provider node at all may be served to every caller "
+                    "only by the platform, and by an agent's in-process server only to that agent. a "
+                    "node is compared on a segment boundary and is written WITHOUT a trailing separator "
+                    "and WITHOUT a glob (`evd`, never `evd.` or `evd.*`). refusal codes: "
+                    f"{sorted({tool.code for tool in refused})}"
                 ),
-                owned_namespaces=(),
+                error_code=RefusalCode.NO_TOOLS_ADMITTED,
             )
-
-        manifest.tools = allowed_tools
 
         log.info(
             "tool pod registration authorized",
             extra={
                 "extra_data": {
                     "pod_id": manifest.pod_id,
-                    "pod_name": pod_name,
-                    "tools_accepted": len(allowed_tools),
-                    "tools_rejected": len(rejected_tools),
+                    "pod_name": publisher.name,
+                    "tools_accepted": len(admitted),
+                    "tools_rejected": len(refused),
+                    "publisher_verified": publisher.standing.verified,
+                    "platform_shared": publisher.standing.platform_shared,
                 }
             },
         )
-        return _AuthOutcome(error=None, owned_namespaces=self_identity)
+        return _Verdict(
+            standing=publisher.standing,
+            admitted=admitted,
+            refused=refused,
+            owned_namespaces=publisher.self_identity,
+        )
+
+    async def _verify_publisher(self, manifest: RegistrationManifest) -> _Publisher:
+        """decide who published ``manifest``, from verified identity and never from its body.
+
+        The pod id says which KIND of publisher is claimed, and so which verifier is asked; the
+        credential then has to prove it:
+
+        * **open mode** (no authenticator): nothing is verified and nothing enforced;
+        * **a dotted pod id** is an agent's in-process server. A token must verify as the agent
+          the pod id names (:meth:`ToolPodAuthenticator.verify_agent`), or the whole manifest is
+          refused -- a failed signature is never downgraded to an unsigned one. With no token the
+          manifest is UNSIGNED: agents built on an older SDK register this way, and in this
+          release they keep their own agent-scoped copies (see
+          :func:`~threetears.registry.ownership.admit_copy`), warned once per pod id, and 0.56.0
+          refuses them -- ``test_unsigned_agent_concession_expires.py`` fails until it does. A pod id
+          that has ever registered verified is refused unsigned, so the concession cannot be used
+          to rewrite a signed agent's copy;
+        * **a single-token pod id** is a Tool Pod's, whose copies serve every caller. It must
+          carry a token, the token must verify (:meth:`ToolPodAuthenticator.verify_pod`), and the
+          verified pod must BE the pod the manifest names.
+
+        :param manifest: the validated manifest
+        :ptype manifest: RegistrationManifest
+        :return: the publisher, or why it is refused
+        :rtype: _Publisher
+        """
+        pod_id = manifest.pod_id
+        owner = Subjects.agent_inprocess_owner_id(pod_id)
+        agent_identity: tuple[str, ...] = (build_agent_namespace_name(owner),) if owner is not None else ()
+        unverified = PublisherStanding(verified=False, platform_shared=False, owned_nodes=())
+        token = manifest.bootstrap_token
+        result: _Publisher
+        if self._authenticator is None:
+            result = _Publisher(standing=PublisherStanding.unenforced(), self_identity=agent_identity, name=pod_id)
+        elif owner is not None and token is not None:
+            result = await self._verified_agent(pod_id, owner, token, agent_identity)
+        elif owner is not None:
+            result = self._unsigned_agent_publisher(pod_id, agent_identity)
+        elif token is None:
+            result = _Publisher(
+                standing=unverified,
+                self_identity=(),
+                name=pod_id,
+                error=(
+                    "tool pod manifest carries no identity token; a copy that serves every caller must "
+                    "come from a verified publisher"
+                ),
+                error_code=RefusalCode.UNVERIFIED_PUBLISHER,
+            )
+        else:
+            result = await self._verified_tool_pod(pod_id, token, unverified)
+        return result
+
+    async def _verified_agent(
+        self, pod_id: str, owner: UUID, token: str, agent_identity: tuple[str, ...]
+    ) -> _Publisher:
+        """verify an agent's in-process manifest by the agent's own token, naming the agent its pod id names.
+
+        :param pod_id: the manifest's pod id
+        :ptype pod_id: str
+        :param owner: the agent the pod id names
+        :ptype owner: UUID
+        :param token: the agent's raw identity token
+        :ptype token: str
+        :param agent_identity: the agent's namespace, returned on the reply
+        :ptype agent_identity: tuple[str, ...]
+        :return: the verified publisher, or why it is refused
+        :rtype: _Publisher
+        """
+        assert self._authenticator is not None  # guarded by the caller
+        unverified = PublisherStanding(verified=False, platform_shared=False, owned_nodes=())
+        result: _Publisher
+        try:
+            verified_agent = await self._authenticator.verify_agent(token)
+        except Exception as exc:  # noqa: BLE001 -- the host's store failing is a refusal, never a dropped reply
+            result = self._verification_unavailable(pod_id, "agent", exc)
+        else:
+            if verified_agent is None:
+                result = _Publisher(
+                    standing=unverified,
+                    self_identity=(),
+                    name=pod_id,
+                    error="agent identity token did not verify",
+                    error_code=RefusalCode.UNVERIFIED_PUBLISHER,
+                )
+            elif verified_agent != owner:
+                result = _Publisher(
+                    standing=unverified,
+                    self_identity=(),
+                    name=pod_id,
+                    error=(
+                        f"agent {verified_agent} registered under pod id {pod_id!r}, which belongs to agent "
+                        f"{owner}; an agent's in-process server registers under its own agent id"
+                    ),
+                    error_code=RefusalCode.POD_ID_MISMATCH,
+                )
+            else:
+                result = _Publisher(
+                    standing=PublisherStanding(verified=True, platform_shared=False, owned_nodes=()),
+                    self_identity=agent_identity,
+                    name=f"agent {owner}",
+                )
+        return result
+
+    def _unsigned_agent_publisher(self, pod_id: str, agent_identity: tuple[str, ...]) -> _Publisher:
+        """the standing of an agent's UNSIGNED manifest in this release.
+
+        :param pod_id: the agent in-process pod id
+        :ptype pod_id: str
+        :param agent_identity: the agent's namespace, returned on the reply
+        :ptype agent_identity: tuple[str, ...]
+        :return: an unverified publisher, or a refusal when the pod id has registered verified
+        :rtype: _Publisher
+        """
+        unverified = PublisherStanding(verified=False, platform_shared=False, owned_nodes=())
+        result: _Publisher
+        if self._catalog.pod_has_verified_copy(pod_id):
+            result = _Publisher(
+                standing=unverified,
+                self_identity=(),
+                name=pod_id,
+                error=(
+                    f"pod id {pod_id!r} has registered with a verified agent identity; an unsigned manifest "
+                    "under it cannot be told apart from another agent impersonating it, and is refused"
+                ),
+                error_code=RefusalCode.UNVERIFIED_PUBLISHER,
+            )
+        else:
+            if pod_id not in self._unsigned_agent_pods_warned:
+                self._unsigned_agent_pods_warned.add(pod_id)
+                log.warning(
+                    "agent in-process server registered unsigned; its copies are admitted for its own agent "
+                    "only. an agent SDK that signs its registration with the agent's own identity removes "
+                    "this line; 0.56.0 refuses unsigned registrations",
+                    extra={"extra_data": {"pod_id": pod_id}},
+                )
+            result = _Publisher(standing=unverified, self_identity=agent_identity, name=pod_id)
+        return result
+
+    async def _verified_tool_pod(self, pod_id: str, token: str, unverified: PublisherStanding) -> _Publisher:
+        """verify a Tool Pod's token and that it names the pod the manifest names.
+
+        :param pod_id: the manifest's pod id
+        :ptype pod_id: str
+        :param token: the pod's raw token
+        :ptype token: str
+        :param unverified: the standing reported on a refusal
+        :ptype unverified: PublisherStanding
+        :return: the verified publisher, or why it is refused
+        :rtype: _Publisher
+        """
+        assert self._authenticator is not None  # guarded by the caller
+        result: _Publisher
+        pod_auth: ToolPodAuth | None = None
+        failure: Exception | None = None
+        try:
+            pod_auth = await self._authenticator.verify_pod(token)
+        except Exception as exc:  # noqa: BLE001 -- the host's store failing is a refusal, never a dropped reply
+            failure = exc
+        if failure is not None:
+            result = self._verification_unavailable(pod_id, "tool pod", failure)
+        elif pod_auth is None:
+            log.warning(
+                "tool pod registration rejected: invalid token",
+                extra={"extra_data": {"pod_id": pod_id}},
+            )
+            result = _Publisher(
+                standing=unverified,
+                self_identity=(),
+                name=pod_id,
+                error="invalid bootstrap token",
+                error_code=RefusalCode.UNVERIFIED_PUBLISHER,
+            )
+        elif pod_auth.pod_entity_id != pod_id:
+            result = _Publisher(
+                standing=unverified,
+                self_identity=(),
+                name=pod_auth.name,
+                error=(
+                    f"tool pod {pod_auth.pod_entity_id} ({pod_auth.name}) registered under pod id {pod_id!r}; "
+                    "a verified pod registers under its own id"
+                ),
+                error_code=RefusalCode.POD_ID_MISMATCH,
+            )
+        else:
+            owned_nodes = _provider_node_names(pod_auth.owned_namespaces, pod_id)
+            result = _Publisher(
+                standing=PublisherStanding(
+                    verified=True,
+                    platform_shared=pod_auth.platform_shared,
+                    owned_nodes=owned_nodes,
+                ),
+                self_identity=owned_nodes,
+                name=pod_auth.name,
+            )
+        return result
+
+    @staticmethod
+    def _verification_unavailable(pod_id: str, kind: str, exc: Exception) -> _Publisher:
+        """the refusal for a publisher the host could not verify because its store failed.
+
+        The authenticator's contract is to answer ``None`` for every verification FAILURE; raising
+        means the check never ran -- a store read the host's broker refused, a database outage.
+        Left to escape, the exception killed the subscription callback before any reply, and the
+        publisher saw only its own request time out. This is the one ERROR line naming the cause.
+
+        :param pod_id: the manifest's pod id
+        :ptype pod_id: str
+        :param kind: which verifier failed (``"agent"`` or ``"tool pod"``), for the log
+        :ptype kind: str
+        :param exc: what the authenticator raised
+        :ptype exc: Exception
+        :return: an unverified publisher refused with ``PUBLISHER_VERIFICATION_UNAVAILABLE``
+        :rtype: _Publisher
+        """
+        log.error(
+            "tool registration refused: the host could not verify the publisher, because reading the store "
+            "it verifies against failed. the pod is told the refusal is temporary and retries on its heartbeat",
+            extra={
+                "extra_data": {
+                    "pod_id": pod_id,
+                    "publisher_kind": kind,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "error_code": RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE.value,
+                }
+            },
+        )
+        return _Publisher(
+            standing=PublisherStanding(verified=False, platform_shared=False, owned_nodes=()),
+            self_identity=(),
+            name=pod_id,
+            error=(f"{_REFUSAL_REASONS[RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE]} ({type(exc).__name__}: {exc})"),
+            error_code=RefusalCode.PUBLISHER_VERIFICATION_UNAVAILABLE,
+        )
+
+    async def _answer_catalog_unavailable(
+        self,
+        msg: IncomingMessage,
+        manifest: RegistrationManifest,
+        verdict: _Verdict,
+        exc: Exception,
+    ) -> None:
+        """answer a manifest whose verdict the catalog could not record.
+
+        Every tool the verdict admitted is refused with ``CATALOG_UNAVAILABLE``; every tool it
+        refused keeps its own code, so a final refusal stays final to the pod. Registration is
+        idempotent, so the pod's next heartbeat re-offering the manifest completes whatever part of
+        the write did not land.
+
+        :param msg: the incoming manifest message
+        :ptype msg: IncomingMessage
+        :param manifest: the manifest
+        :ptype manifest: RegistrationManifest
+        :param verdict: what the manifest was judged to be allowed
+        :ptype verdict: _Verdict
+        :param exc: what the catalog raised
+        :ptype exc: Exception
+        :return: nothing
+        :rtype: None
+        """
+        code = RefusalCode.CATALOG_UNAVAILABLE
+        log.error(
+            "tool registration could not be recorded: the catalog write failed. the pod is told the refusal "
+            "is temporary and retries on its heartbeat",
+            extra={
+                "extra_data": {
+                    "pod_id": manifest.pod_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "error_code": code.value,
+                }
+            },
+        )
+        await self._reply(
+            msg,
+            RegistrationResponse(
+                success=False,
+                pod_id=manifest.pod_id,
+                refused_tools=[*verdict.refused, *_refused(verdict.admitted, code)],
+                error=f"{_REFUSAL_REASONS[code]} ({type(exc).__name__}: {exc})",
+                error_code=code.value,
+            ),
+        )
+
+    async def _withdraw_refused_copies(self, pod_id: str, verdict: _Verdict) -> None:
+        """remove a VERIFIED publisher's prior copy of every tool it was just refused.
+
+        Re-registration goes through admission every time, so a pod that no longer owns a node,
+        or is no longer the platform, is refused tools it held a copy of. That copy goes; every
+        other pod's copy of the same tool stays. An unverified manifest withdraws nothing: it has
+        not proved it IS the pod whose copy it would take. Nor does a refusal for a transient
+        reason (:data:`_WITHDRAWING_CODES` lists the ones that withdraw).
+
+        :param pod_id: the publishing pod
+        :ptype pod_id: str
+        :param verdict: the manifest's verdict
+        :ptype verdict: _Verdict
+        :return: nothing
+        :rtype: None
+        """
+        if not verdict.standing.verified:
+            return
+        for tool in verdict.refused:
+            if tool.code in _WITHDRAWING_CODES:
+                await self._catalog.remove_copy(f"{tool.name}@{tool.version}", pod_id)
 
     async def _provider_node_directory(self, pod_id: str) -> tuple[str, ...] | None:
         """every provider node the host's graph holds, or ``None`` when it cannot be read.
 
         A handler with no authenticator has no host to ask, and answers with an
-        EMPTY inventory rather than a failure: there is no ownership data in that
-        deployment, so no node contains anything and an unbound pod is admitted --
-        which is exactly what open mode did before this filter existed.
+        EMPTY inventory rather than a failure: open mode enforces nothing.
 
         A read that FAILS is a different thing and is not allowed to look like the
-        first one. An empty inventory silently widens every unbound pod to
-        everything, so a host that raises gets the registration REFUSED. That is
-        the recoverable direction: a pod re-announces on its heartbeat, so a
-        transient failure costs one interval, while admitting the manifest would
-        write catalog entries nobody can take back.
+        first one. An empty inventory silently widens every pod, so a host that
+        raises gets the registration REFUSED. That is the recoverable direction: a
+        pod re-announces on its heartbeat, so a transient failure costs one
+        interval, while admitting the manifest would write catalog entries nobody
+        can take back.
 
         :param pod_id: the registering pod, for the diagnostic
         :ptype pod_id: str
@@ -486,34 +939,6 @@ class RegistrationHandler:
                 )
                 result = None
         return result
-
-    @staticmethod
-    def _agent_owned_namespaces(manifest: RegistrationManifest) -> tuple[str, ...]:
-        """the namespace an AGENT-OWNED in-process pod owns, or nothing.
-
-        A pod that presents no token and registers under an agent's composite pod-id is that
-        agent's own in-process tool server: it is not a row in ``tool_pods``, so it owns no
-        provider node. What it owns is ``agents.<uuid>``.
-
-        The owner is read from the POD-ID, the one source every other reader of ownership uses
-        -- routing, discovery, the serving pod's own refusal. It is proof rather than a claim:
-        only the agent it names is granted the probe that makes the endpoint callable. The
-        manifest's ``owner_agent_id`` is not consulted; it chooses which namespace rows the
-        pod's tools are written to, and a pod whose id names no agent is told nothing here
-        whatever it claims. Nothing in this reply is a credential either way.
-
-        ``_validate_manifest`` has already refused a pod-id that names no agent, so the read
-        here cannot raise.
-
-        :param manifest: the registering pod's manifest
-        :ptype manifest: RegistrationManifest
-        :return: the agent's namespace name, or an empty tuple when the pod-id names no agent
-        :rtype: tuple[str, ...]
-        """
-        owner = Subjects.agent_inprocess_owner_id(manifest.pod_id)
-        if owner is None:
-            return ()
-        return (build_agent_namespace_name(owner),)
 
     def _validate_manifest(self, manifest: RegistrationManifest) -> str | None:
         """validate registration manifest fields.
@@ -542,56 +967,70 @@ class RegistrationHandler:
 
     async def _register_tools(
         self,
-        manifest: RegistrationManifest,
+        pod_id: str,
+        tools: list[ToolManifestEntry],
+        standing: PublisherStanding,
     ) -> list[str]:
-        """register all tools from manifest with pending endpoint for this pod.
+        """register each admitted tool as this pod's copy, carrying the definition it announced.
 
         creates catalog entry for each tool with a single endpoint
-        for the registering pod, parked in the 'pending' state.
-        catalog.register() handles merging with existing entries
-        for multi-pod support. after all tools are written, issues
+        for the registering pod. catalog.register() folds it into
+        that pod's copy and no other. a brand-new copy is parked in
+        the 'pending' state; after all tools are written, issues
         a reachability probe to the pod; on successful round-trip
         promotes every pending endpoint for the pod to 'available'
         via ``catalog.mark_ready``. on probe failure, endpoints
         remain pending so routing refuses to forward until the
         next heartbeat can retry promotion.
 
-        :param manifest: validated manifest containing tools to register
-        :ptype manifest: RegistrationManifest
+        :param pod_id: the registering pod
+        :ptype pod_id: str
+        :param tools: the admitted tools
+        :ptype tools: list[ToolManifestEntry]
+        :param standing: the publisher's verified standing, recorded on each copy
+        :ptype standing: PublisherStanding
         :return: list of full_name values registered
         :rtype: list[str]
         """
         registered: list[str] = []
         needs_probe = False
         now = datetime.now(UTC)
-        for tool in manifest.tools:
+        for tool in tools:
             full_name = f"{tool.name}@{tool.version}"
             existing_entry = self._catalog.get(full_name)
-            existing_endpoint = existing_entry.get_endpoint(manifest.pod_id) if existing_entry is not None else None
+            existing_endpoint = existing_entry.get_endpoint(pod_id) if existing_entry is not None else None
             # Preserve status for endpoints the pod has previously registered
             # so heartbeat-driven re-publication does not regress an already
             # 'available' endpoint back to 'pending' (which would trigger a
             # needless re-probe on every heartbeat). A brand-new endpoint
-            # enters 'pending' and drives exactly one probe round-trip.
+            # enters 'pending' and drives exactly one probe round-trip. The
+            # re-registration itself passed admission like any other.
             if existing_endpoint is None:
                 endpoint_status = "pending"
                 needs_probe = True
             else:
                 endpoint_status = existing_endpoint.status
             endpoint = ToolEndpoint(
-                pod_id=manifest.pod_id,
+                pod_id=pod_id,
                 status=endpoint_status,
-                in_flight=existing_endpoint.in_flight if existing_endpoint else 0,
                 date_last_heartbeat=now,
+                verified_publisher=standing.verified,
+            )
+            # output_schema is not carried on the manifest today, so every copy announces none.
+            endpoint.announce(
+                ToolDefinition(
+                    description=tool.description,
+                    input_schema=tool.input_schema,
+                    output_schema=None,
+                    timeout_seconds=tool.timeout_seconds,
+                    requires_confirmation=tool.requires_confirmation,
+                ),
+                now,
             )
             entry = CatalogEntry(
                 tool_name=tool.name,
                 tool_version=tool.version,
                 full_name=full_name,
-                description=tool.description,
-                input_schema=tool.input_schema,
-                timeout_seconds=tool.timeout_seconds,
-                requires_confirmation=tool.requires_confirmation,
                 endpoints=[endpoint],
                 date_registered=now,
             )
@@ -599,7 +1038,7 @@ class RegistrationHandler:
             registered.append(full_name)
 
         if needs_probe:
-            await self._probe_and_promote(manifest.pod_id)
+            await self._probe_and_promote(pod_id)
 
         result = registered
         return result

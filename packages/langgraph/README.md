@@ -54,6 +54,21 @@ saver = ThreeTierCheckpointSaver(
 
 Adopting a real customer *later* is a data change rather than a code change: existing rows live under a bare thread id and a scoped saver will not find them, so they must be re-keyed (`UPDATE checkpoints SET thread_id = $customer || '/' || thread_id`, likewise `checkpoint_writes`, plus L2 invalidation). No re-key script ships here and none can — which customer owns which thread lives in the host's own tables, which this library has never seen.
 
+### Person erasure: anonymize, never delete
+
+```python
+result = await saver.aanonymize_threads(conversation_ids)
+```
+
+Rewrites every stored checkpoint and pending write of those threads in place: a human
+message's `name` (the sender's display name) and every value under
+`IDENTIFYING_METADATA_KEYS` (`external_user_name`, `external_user_id`) become
+`ANONYMIZED_MARKER`. Message text, every id, and the blob format are unchanged, so the
+graph still loads and resumes. Idempotent, paged by `batch_size`, and it evicts the
+threads' L1 and shared L2 bundles, raising if an eviction fails. An unknown metadata key
+is kept: the `metadata` channel is working state the graph reads on resume. Run it on
+threads that are not in a live turn.
+
 ## Middleware
 
 The package ships platform-level [`AgentMiddleware`](https://docs.langchain.com/oss/python/langchain/middleware) for `langchain.agents.create_agent` — the framework-aligned successor to the old hand-rolled `AgentNodeHook` / `ToolNodeHook` protocols. Consumer-specific policy lives in each consumer as its own middleware; only the reusable platform seams live here:
@@ -61,6 +76,9 @@ The package ships platform-level [`AgentMiddleware`](https://docs.langchain.com/
 - `PromptCachingMiddleware` (`wrap_model_call`) — annotates a leading bare-string system message with Anthropic `cache_control={"type": "ephemeral"}` when the model supports it, then normalizes cache-hit/creation counters onto `usage_metadata["cache_usage"]`. Non-Anthropic adapters degrade silently to bare-string system messages.
 - `ToolResultOffloadMiddleware` (`wrap_tool_call`) — when a `ToolResultOffloader` is injected on `config["configurable"]` and a tool result exceeds `offload_threshold_chars`, stores the full content out-of-band and shows the model `"<summary>\n\n[ctx:<handle>]"` (the structured `artifact` is preserved). Opt-in: no offloader ⇒ byte-for-byte no-op.
 - `ObjectCatalogMiddleware` (`wrap_tool_call`) — when a tool returns an `ObjectHandle` in its result artifact and an `ObjectCataloger` is injected, persists a catalog record under the verified call identity. Soft-fail side-effect: a catalog error never breaks the tool result.
+- Two summarizers. Choose by whether the conversation's history must survive:
+  - `SummarizationMiddleware` (`before_model`) — once the message COUNT passes `trigger_messages`, rewrites the checkpointed `messages` channel to `[summary, *last keep_messages]`. The older messages are gone from the checkpoint.
+  - `RollingSummaryMiddleware` (`awrap_model_call`, async only) — NON-destructive. Give it `store` (built per turn) or `store_for(request)` (an agent compiled once). The checkpointer keeps every message, and only the model's input is trimmed, once the messages since the last fold pass a TOKEN budget. The rolling summary and a cursor (the last folded message's id) live behind a `SummaryStore`, whose save is a compare-and-swap. It folds at most once per turn, never stores a failed or empty summary over the prior one, never leaves an orphaned tool result at the head of the kept tail, and marks its summary call `NOSTREAM_TAG` plus `metadata["threetears.usage.purpose"] = "summarization"`. `threetears.conversations.ConversationSummaryStore` is the store over a conversations row, and `dispatch_conversation_summarized` is its `on_summarized`.
 
 ```python
 from langchain.agents import create_agent

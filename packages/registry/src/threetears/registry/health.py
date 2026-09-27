@@ -23,14 +23,13 @@ into two focused classes:
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from threetears.agent.tools.server import HeartbeatMessage
 from threetears.nats import Subjects
-from threetears.observe import get_logger
+from threetears.observe import PeriodicTask, get_logger
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.entities import HeartbeatEntity
 from threetears.registry.heartbeat_collection import HeartbeatCollection
@@ -122,8 +121,15 @@ class HeartbeatSubscriber:
         )
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
-        self._check_task: asyncio.Task[None] | None = None
-        self._running = False
+        # One sweep a period, sleeping first; a failed sweep is logged and the loop carries on -- a
+        # single mis-timed sweep must not brick liveness tracking.
+        self._check_loop = PeriodicTask(
+            self.run_health_check,
+            interval=self._check_interval,
+            name="registry-health-check",
+            logger=log,
+            failure_message="health check sweep failed",
+        )
         self._known_pod_ids: set[str] = set()
 
     @property
@@ -134,7 +140,7 @@ class HeartbeatSubscriber:
             before :meth:`stop` cancels it; ``False`` otherwise
         :rtype: bool
         """
-        return self._check_task is not None
+        return self._check_loop.running
 
     @property
     def known_pod_ids(self) -> set[str]:
@@ -192,10 +198,9 @@ class HeartbeatSubscriber:
         :rtype: None
         """
         self._nc = nc
-        self._running = True
         subject = Subjects.tools_heartbeat_wildcard()
         self._sub = await nc.subscribe(subject=subject, cb=self.handle_heartbeat)
-        self._check_task = asyncio.create_task(self._health_check_loop())
+        self._check_loop.start()
         log.info(
             "heartbeat subscriber started",
             extra={
@@ -218,15 +223,7 @@ class HeartbeatSubscriber:
         :return: nothing
         :rtype: None
         """
-        self._running = False
-        if self._check_task is not None:
-            self._check_task.cancel()
-            try:
-                await self._check_task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
-            self._check_task = None
+        await self._check_loop.stop()
         if self._sub is not None and self._nc is not None:
             await self._nc.unsubscribe(self._sub)
             self._sub = None
@@ -297,29 +294,6 @@ class HeartbeatSubscriber:
             entity.consecutive_misses = 0
         await self._collection.save_entity(entity)
         self._known_pod_ids.add(pod_id)
-
-    async def _health_check_loop(self) -> None:
-        """run the periodic health-check sweep until :meth:`stop`.
-
-        sleeps for ``check_interval`` seconds between sweeps and
-        surfaces any sweep exception to the logger without stopping
-        the loop; a single mis-timed sweep must not brick liveness
-        tracking.
-
-        :return: nothing
-        :rtype: None
-        """
-        while self._running:
-            await asyncio.sleep(self._check_interval)
-            if not self._running:
-                break
-            try:
-                await self.run_health_check()
-            except Exception as exc:
-                log.warning(
-                    "health check sweep failed",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
 
     async def run_health_check(self) -> None:
         """execute one health-check sweep across known pods.

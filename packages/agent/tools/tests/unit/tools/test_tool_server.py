@@ -30,12 +30,12 @@ from threetears.core.security.identity_token import (
 from threetears.media.contracts import ObjectHandle
 from threetears.nats import IncomingMessage
 
-from unit.tools._pod_auth import RecordingNatsClient
+from packages.agent.tools.tests.unit.tools._pod_auth import RecordingNatsClient
 from threetears.core.testing.replay_guard import FakeReplayGuard
-from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
-from unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
-from unit.tools._pod_auth import recording_tool_server as _recording_tool_server
-from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
+from packages.agent.tools.tests.unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
+from packages.agent.tools.tests.unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
+from packages.agent.tools.tests.unit.tools._pod_auth import recording_tool_server as _recording_tool_server
+from packages.agent.tools.tests.unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 
 # -- helpers --
@@ -1124,7 +1124,7 @@ class TestToolServerProbe:
 
     @pytest.mark.asyncio
     async def test_wait_until_ready_unblocks_when_discovery_reports_available(self) -> None:
-        """wait_until_ready returns True once discovery reports every tool available."""
+        """wait_until_ready returns True once discovery reports this pod's OWN copy of every tool available."""
         from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool
 
         class _FakeTool(TearsTool):
@@ -1159,7 +1159,9 @@ class TestToolServerProbe:
         discovery_response = DiscoveryProbeResponse(
             agent_id="wait-pod",
             tools=[
-                DiscoveryProbeResultEntry(name="test.probe", version="1.0.0", status="available"),
+                DiscoveryProbeResultEntry(
+                    name="test.probe", version="1.0.0", status="available", requester_copy_status="available"
+                ),
             ],
         )
 

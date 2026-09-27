@@ -8,9 +8,6 @@ double every consumer needed could only be had by a path hack.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
 
@@ -30,17 +27,12 @@ def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "3tears")
 
 
-# expose ``_helpers.asyncpg_shims`` (and any future shared test-infra
-# packages) to every workspace test by adding this ``tests`` directory
-# to ``sys.path``. import sites use::
+# shared test-infra lives under ``tests/_helpers/`` and is imported by its repo-root name::
 #
-#     from _helpers.asyncpg_shims import FakeAsyncpgConnection
+#     from packages.agent.workspace.tests._helpers.asyncpg_shims import FakeAsyncpgConnection
 #
-# centralised test fakes live under ``tests/_helpers/`` so the
-# fake-protocol-parity walker has a single canonical class per shell
-# type to subclass against (each per-test ``_FakePool`` /
-# ``_FakeConnection`` etc. inherits the matching shell to declare
-# parity).
-_WORKSPACE_TESTS_ROOT = Path(__file__).resolve().parent
-if str(_WORKSPACE_TESTS_ROOT) not in sys.path:
-    sys.path.insert(0, str(_WORKSPACE_TESTS_ROOT))
+# so the fake-protocol-parity walker has a single canonical class per shell type to subclass
+# against. this directory is deliberately NOT put on ``sys.path``: its ``unit`` /
+# ``integration`` / ``enforcement`` packages would then be importable as top-level names that
+# the agent-tools suite also owns, and a combined run would resolve one suite's imports into
+# the other's directory.

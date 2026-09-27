@@ -46,6 +46,7 @@ _CONFIG = CodebaseConventionsConfig(
         # print that appears in a walker or a config still fails.
         f"packages/enforcement/src/threetears/enforcement/{domain}/runner.py": "emits the enforcement report to stderr"
         for domain in (
+            "audit_details",
             "cache",
             "codebase_conventions",
             "coercion_coverage",

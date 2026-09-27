@@ -36,7 +36,7 @@ import threading
 import time
 from typing import Any, Final, Literal
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 __all__ = ["bounded_matches"]
 
@@ -83,19 +83,37 @@ for line in sys.stdin:
 # One worker per process, used by one caller at a time: the lock covers a whole exchange, so
 # concurrent threads (asyncio.to_thread callers included) take turns on the pipe.
 _lock = threading.Lock()
-_worker: subprocess.Popen[bytes] | None = None
+
+
+def _worker_alive(worker: subprocess.Popen[bytes]) -> bool:
+    """Whether *worker* is still running, so it may be handed out again.
+
+    :param worker: the stored worker
+    :ptype worker: subprocess.Popen[bytes]
+    :return: ``True`` while it has not exited
+    :rtype: bool
+    """
+    return worker.poll() is None
+
+
+#: The live worker, started on first use and restarted when the last one died.
+_worker: BuildOnce[str, subprocess.Popen[bytes]] = BuildOnce(is_current=_worker_alive)
+
+#: The one key :data:`_worker` holds.
+_ONLY = "only"
 
 
 def _reset_after_fork() -> None:
     """In a forked child: a fresh lock and no worker, so the child starts its own.
 
-    The child inherits the parent's lock (possibly held by a thread that does not exist in the
+    The child inherits the parent's locks (possibly held by a thread that does not exist in the
     child) and the parent's worker pipes. It closes its copies of the pipes -- unbuffered raw
     files, so no buffer lock is involved -- and never signals the worker, which is the parent's.
     """
     global _lock, _worker  # noqa: PLW0603 - per-process state, reset for the new process
     _lock = threading.Lock()
-    inherited, _worker = _worker, None
+    inherited = _worker.peek(_ONLY)
+    _worker = BuildOnce(is_current=_worker_alive)
     if inherited is not None:
         for stream in (inherited.stdin, inherited.stdout):
             if stream is not None:
@@ -172,20 +190,27 @@ def bounded_matches(
 
 def _running_worker() -> subprocess.Popen[bytes]:
     """The live worker, started if there is none (or the last one died)."""
-    global _worker  # noqa: PLW0603 - one worker per process, guarded by _lock
-    if _worker is None or _worker.poll() is not None:
-        _worker = subprocess.Popen(  # noqa: S603 - our own interpreter running our own constant source
-            [sys.executable, "-I", "-S", "-c", _WORKER_SOURCE],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=0,
-        )
-        # Non-blocking sends: a write only ever takes what the pipe has room for, so the
-        # deadline in _write_by holds even if the worker stops reading partway through a request.
-        assert _worker.stdin is not None  # noqa: S101 - Popen was given stdin=PIPE
-        os.set_blocking(_worker.stdin.fileno(), False)
-    return _worker
+    return _worker.get(_ONLY, _start_worker)
+
+
+def _start_worker() -> subprocess.Popen[bytes]:
+    """Start a worker process with a non-blocking request pipe.
+
+    :return: the new worker
+    :rtype: subprocess.Popen[bytes]
+    """
+    worker = subprocess.Popen(  # noqa: S603 - our own interpreter running our own constant source
+        [sys.executable, "-I", "-S", "-c", _WORKER_SOURCE],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=0,
+    )
+    # Non-blocking sends: a write only ever takes what the pipe has room for, so the
+    # deadline in _write_by holds even if the worker stops reading partway through a request.
+    assert worker.stdin is not None  # noqa: S101 - Popen was given stdin=PIPE
+    os.set_blocking(worker.stdin.fileno(), False)
+    return worker
 
 
 def _write_by(worker: subprocess.Popen[bytes], payload: bytes, deadline: float) -> None:
@@ -225,12 +250,12 @@ def _read_line_by(worker: subprocess.Popen[bytes], deadline: float) -> str:
 
 def _discard_worker(worker: subprocess.Popen[bytes]) -> None:
     """Kill *worker* and release its pipes; the next call starts a fresh worker."""
-    global _worker  # noqa: PLW0603 - one worker per process, guarded by _lock
     worker.kill()
     worker.wait()
     for stream in (worker.stdin, worker.stdout):
         if stream is not None:
             stream.close()
-    if _worker is worker:
-        _worker = None
+    # Under _lock, like every exchange, so nothing replaced the worker between the check and the pop.
+    if _worker.peek(_ONLY) is worker:
+        _worker.pop(_ONLY)
     log.warning("scrape: regex worker discarded (timed out, interrupted or broken)")

@@ -153,7 +153,7 @@ class FolderCollection(SchemaBackedCollection[Folder]):
         """fetch every folder owned by the given user under one agent.
 
         results come from L3 (the source of truth for historical rows)
-        and are promoted into L2 so subsequent reads hit the cache
+        and are NOT promoted into L2 -- not written to L2: a row read from L3 can be older than a write that landed after the query, and an unfenced put would serve that older row to every reader -- the next single-row read seeds L2 at the key's revision instead --
         tier. ordering is by ``name`` ascending -- a stable, generic
         default; consumers that present folders in a custom order (e.g.
         a ``sort_order`` carried in ``metadata``) re-sort the returned
@@ -180,7 +180,5 @@ class FolderCollection(SchemaBackedCollection[Folder]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            pk = (data["agent_id"], data["folder_id"])
-            await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities

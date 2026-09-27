@@ -19,6 +19,11 @@ incrementing op-log seqs, an ``AclCache``-backed authorizer over the REAL
   live frame, in order.
 - **disconnect cleanup:** dropping the socket leaves the room (presence
   gone on **both** pods) and unregisters the local handle.
+- **room policy:** a join the ``room_policy`` refuses writes no presence
+  row on either pod, even when the namespace gate allows it; and a member
+  the policy refuses once the room is closed to them is taken out by
+  ``reevaluate_room`` and stops receiving the room's frames from the other
+  pod.
 
 A checkout without docker skips cleanly via the ``nats_container`` gate.
 """
@@ -45,7 +50,7 @@ from threetears.agent.acl import (
     RoleAssignment,
     ScopeType,
 )
-from threetears.channels.frames import Frame, OpResult
+from threetears.channels.frames import Frame, OpResult, RoomAccessRequest, RoomPolicy
 from threetears.channels.presence.collection import PresenceCollection
 from threetears.channels.presence.fanout import RoomFanout
 from threetears.channels.presence.l1_cache import create_presence_l1_backend
@@ -229,6 +234,7 @@ class _PodHandler:
         ns: _StubNs,
         op_start: int = 100,
         replay_source: object | None = None,
+        room_policy: RoomPolicy | None = None,
     ) -> WebSocketHandler:
         op = _IncrementingOpHandler(op_start)
 
@@ -244,6 +250,7 @@ class _PodHandler:
             ns_resolver=_resolver,  # type: ignore[arg-type]
             op_handler=op,  # type: ignore[arg-type]
             replay_source=replay_source,  # type: ignore[arg-type]
+            room_policy=room_policy,
         )
 
 
@@ -525,3 +532,136 @@ async def test_disconnect_leaves_room_on_both_pods_and_unregisters(
 async def _members_nonempty(pod: _PodHandler, room: str) -> bool:
     members = await pod.state.members(room)
     return len(members) > 0
+
+
+# ============================================================
+# room policy
+# ============================================================
+
+
+class _QueueWebSocket:
+    """WebSocketProtocol mock fed frame by frame while it stays live.
+
+    not a ``Fake<Name>``: it implements the four protocol methods. unlike
+    ``_BlockingMockWebSocket`` the test can hand it a frame at any point, which
+    is what "the owner speaks again after the colleague was taken out" needs.
+    """
+
+    _HANG_UP = "\x00hang-up"
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.query_params: dict[str, str] = {"token": "valid-token"}
+        self._inbox: asyncio.Queue[str] = asyncio.Queue()
+
+    async def accept(self) -> None:
+        return None
+
+    async def receive_text(self) -> str:
+        item = await self._inbox.get()
+        if item == self._HANG_UP:
+            raise ConnectionError("client hung up")
+        return item
+
+    async def send_text(self, data: str) -> None:
+        self.sent.append(data)
+
+    async def close(self, code: int = 1000) -> None:
+        return None
+
+    def push(self, frame: dict[str, object]) -> None:
+        self._inbox.put_nowait(json.dumps(frame))
+
+    def hang_up(self) -> None:
+        self._inbox.put_nowait(self._HANG_UP)
+
+    def typed(self, frame_type: str) -> list[dict[str, object]]:
+        return [f for f in (json.loads(s) for s in self.sent) if f.get("type") == frame_type]
+
+
+async def test_a_join_the_room_policy_refuses_writes_no_presence_on_either_pod(
+    two_handlers: tuple[_PodHandler, _PodHandler],
+    room_key: Callable[[UUID, str], str],
+) -> None:
+    """the namespace grants the join; the room's own rule refuses it, and that is final."""
+    pod_a, pod_b = two_handlers
+    customer = uuid4()
+    colleague = uuid4()
+    room = room_key(customer, "private-draft.md")
+    cache, ns = _allowing_cache(colleague, customer)
+
+    async def _owner_only(request: RoomAccessRequest) -> bool:
+        return False
+
+    handler = pod_a.handler(
+        auth_validator=await _auth_for(colleague, customer), acl_cache=cache, ns=ns, room_policy=_owner_only
+    )
+    ws = _QueueWebSocket()
+    ws.push({"type": "join", "room": room})
+    task = asyncio.create_task(handler.handle_connection(ws))
+
+    assert await _await_until(lambda: ws.typed("error")), "a refused join did not produce an error frame"
+    await asyncio.sleep(0.2)
+
+    assert await pod_a.state.members(room) == []
+    assert await pod_b.state.members(room) == []
+
+    ws.hang_up()
+    await asyncio.wait_for(task, timeout=5)
+
+
+async def test_a_member_taken_out_of_a_room_stops_receiving_it_from_the_other_pod(
+    two_handlers: tuple[_PodHandler, _PodHandler],
+    room_key: Callable[[UUID, str], str],
+) -> None:
+    """the room is closed to the colleague after they joined; re-deciding its members takes them out."""
+    pod_a, pod_b = two_handlers
+    customer = uuid4()
+    owner, colleague = uuid4(), uuid4()
+    room = room_key(customer, "private-draft.md")
+    cache_owner, ns = _allowing_cache(owner, customer)
+    cache_colleague, _ = _allowing_cache(colleague, customer)
+    closed_to_colleague = asyncio.Event()
+
+    async def _policy(request: RoomAccessRequest) -> bool:
+        return not (closed_to_colleague.is_set() and request.user_id == str(colleague))
+
+    handler_b = pod_b.handler(
+        auth_validator=await _auth_for(colleague, customer), acl_cache=cache_colleague, ns=ns, room_policy=_policy
+    )
+    ws_b = _QueueWebSocket()
+    ws_b.push({"type": "join", "room": room})
+    task_b = asyncio.create_task(handler_b.handle_connection(ws_b))
+    assert await _await_until(lambda: _members_nonempty(pod_a, room)), "the colleague's join never reached pod A"
+    await asyncio.sleep(0.3)  # let pod B's room subscription settle on the broker
+
+    handler_a = pod_a.handler(
+        auth_validator=await _auth_for(owner, customer), acl_cache=cache_owner, ns=ns, room_policy=_policy
+    )
+    ws_a = _QueueWebSocket()
+    ws_a.push({"type": "join", "room": room})
+    task_a = asyncio.create_task(handler_a.handle_connection(ws_a))
+
+    async def _two_members() -> bool:
+        return len(await pod_b.state.members(room)) == 2
+
+    assert await _await_until(_two_members), "the owner's join never reached pod B"
+    ws_a.push({"type": "typing", "room": room, "payload": "before"})
+    assert await _await_until(lambda: ws_b.typed("typing")), "the colleague never received the owner's frame"
+
+    closed_to_colleague.set()
+    assert await handler_b.reevaluate_room(room) == 1
+
+    async def _owner_alone() -> bool:
+        return [m.user_id for m in await pod_a.state.members(room)] == [str(owner)]
+
+    assert await _await_until(_owner_alone), "the colleague's membership was still visible on pod A"
+    ws_a.push({"type": "typing", "room": room, "payload": "after the room went private"})
+    await asyncio.sleep(0.5)
+
+    assert [f["payload"] for f in ws_b.typed("typing")] == ["before"]
+    assert {"type": "error", "message": "access revoked", "room": room} in ws_b.typed("error")
+
+    for ws, task in ((ws_a, task_a), (ws_b, task_b)):
+        ws.hang_up()
+        await asyncio.wait_for(task, timeout=5)

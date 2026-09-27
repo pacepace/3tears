@@ -43,8 +43,10 @@ class TestThePromptShape:
             [_structured_system("## Persona\nBe terse.", "## Memory\nLikes tea."), HumanMessage(content="hi")]
         )
         assert system == "## Persona\nBe terse."
-        assert query.startswith("## Memory\nLikes tea."), "the changing context did not reach the query"
-        assert query.endswith("Human: hi")
+        assert "<prompt-context>\n## Memory\nLikes tea.\n</prompt-context>" in query, (
+            "the changing context did not reach the query"
+        )
+        assert query.endswith("<prompt-current-message>\nhi\n</prompt-current-message>")
 
     def test_the_system_prompt_is_text_not_a_python_repr(self) -> None:
         """Found live: the CLI received ``[{'type': 'text', ...}]`` as the agent's persona."""
@@ -68,7 +70,7 @@ class TestThePromptShape:
         model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
         query, system = model._convert_messages([SystemMessage(content="plain persona"), HumanMessage(content="hi")])  # noqa: SLF001
         assert system == "plain persona"
-        assert query == "Human: hi"
+        assert query == "The person's current message:\n<prompt-current-message>\nhi\n</prompt-current-message>"
 
     def test_list_content_everywhere_is_read_as_text(self) -> None:
         model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
@@ -81,10 +83,9 @@ class TestThePromptShape:
                 ToolMessage(content=[{"type": "text", "text": "42"}], tool_call_id="c", name="calc"),
             ]
         )
-        assert "Human: look" in query
-        assert "[image_url content omitted]" in query
-        assert "Assistant: seen" in query
-        assert "Tool (calc): 42" in query
+        assert "<prompt-current-message>\nlook\n\n[image_url content omitted]\n</prompt-current-message>" in query
+        assert '<prompt-turn role="assistant">\nseen\n</prompt-turn>' in query
+        assert '<prompt-turn role="tool" name="calc">\n42\n</prompt-turn>' in query
         assert "{'type'" not in query
 
 
@@ -258,8 +259,9 @@ class TestTheModelIsWiredToThePool:
         result = await model.ainvoke([_structured_system("persona", "memory"), HumanMessage(content="hi")])
         assert serving_pool["checkouts"] == 1
         assert "pooled answer" in str(result.content)
-        assert serving_pool["system_prompt"] == "persona"
-        assert serving_pool["client"].queries[0].startswith("memory")
+        # A blank line first: the CLI's own identity line comes before it (see test_claude_cli_api_parity).
+        assert serving_pool["system_prompt"] == "\n\npersona"
+        assert "<prompt-context>\nmemory\n</prompt-context>" in serving_pool["client"].queries[0]
 
     async def test_a_streaming_call_runs_on_a_pooled_cli(self, serving_pool: dict[str, Any]) -> None:
         model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)

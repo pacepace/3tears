@@ -48,17 +48,21 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, AsyncIterator, Callable
+from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable
+from uuid import UUID
 
 from threetears.media.contracts import ObjectStore
 
 from threetears.agent.tools.context_envelope import CallContext
 
 __all__ = [
+    "ContextFactory",
     "ToolCallScope",
+    "build_call_scope",
     "current_scope",
     "enter_call_scope",
     "get_current_context",
+    "no_call_scope_message",
     "register_call_cleanup",
     "tool_context_provider",
 ]
@@ -140,6 +144,82 @@ class ToolCallScope:
     cleanup_hooks: list[Callable[[], None]] = field(default_factory=list)
 
 
+#: resolves the per-conversation :class:`ToolContextManager` for ``(conversation_id, user_id)``.
+#: a pod-level dependency: the ToolServer takes one at construction, and so does a tool wrapped for
+#: LangGraph by :func:`~threetears.agent.tools.langchain_adapter.to_langchain_tool`.
+ContextFactory = Callable[[UUID, UUID], "Awaitable[ToolContextManager]"]
+
+
+async def build_call_scope(
+    context: CallContext | None,
+    *,
+    principal_is_tool_pod: bool,
+    context_factory: ContextFactory | None = None,
+    object_store: ObjectStore | None = None,
+    object_resolver: "ObjectResolver | None" = None,
+    engagement_resolver: "EngagementScopeResolver | None" = None,
+) -> ToolCallScope:
+    """the scope one tool call runs in: its identity, and the pod-level resources tools reach through it.
+
+    The ONE construction, shared by the ToolServer (``context`` from the call's NATS envelope) and
+    by a tool wrapped for LangGraph (``context`` from the graph config's ``call_context``), so a tool
+    sees the same scope on either path. The conversation's :class:`ToolContextManager` is resolved
+    through ``context_factory`` when the context names both a conversation and a user; otherwise the
+    scope carries none, and a tool that needs one says so at first use.
+
+    Exceptions from ``context_factory`` propagate: a call whose conversation could not be resolved
+    fails, rather than running as if it had none.
+
+    :param context: the call's identity; ``None`` builds a scope with an empty :class:`CallContext`,
+        for a stateless call
+    :ptype context: CallContext | None
+    :param principal_is_tool_pod: whether the verified caller is a tool pod. REQUIRED rather than
+        defaulted: it is an authorization input a tool reads to admit a caller with no user
+    :ptype principal_is_tool_pod: bool
+    :param context_factory: resolves the conversation's context manager
+    :ptype context_factory: ContextFactory | None
+    :param object_store: the pod's streaming object store
+    :ptype object_store: ObjectStore | None
+    :param object_resolver: the pod's object-id resolver
+    :ptype object_resolver: ObjectResolver | None
+    :param engagement_resolver: the pod's engagement-scope resolver
+    :ptype engagement_resolver: EngagementScopeResolver | None
+    :return: the scope
+    :rtype: ToolCallScope
+    """
+    identity = context if context is not None else CallContext()
+    context_manager: "ToolContextManager | None" = None
+    if context_factory is not None and identity.conversation_id is not None and identity.user_id is not None:
+        context_manager = await context_factory(identity.conversation_id, identity.user_id)
+    return ToolCallScope(
+        context=identity,
+        context_manager=context_manager,
+        object_store=object_store,
+        object_resolver=object_resolver,
+        engagement_resolver=engagement_resolver,
+        principal_is_tool_pod=principal_is_tool_pod,
+    )
+
+
+def no_call_scope_message(caller: str) -> str:
+    """what a tool that needs its call's scope says when none is installed.
+
+    One wording, naming both ways a scope is installed, so the reader is told what to supply
+    whichever path they are on.
+
+    :param caller: the tool or helper that needed the scope
+    :ptype caller: str
+    :return: the message
+    :rtype: str
+    """
+    return (
+        f"{caller} called outside a ToolServer call scope: no ToolCallScope is installed, so this call "
+        "has no conversation, user or customer. The ToolServer installs one around every call it "
+        "dispatches (enter_call_scope); in a LangGraph graph, a tool wrapped by to_langchain_tool "
+        "installs one from config['configurable']['call_context'], which this call's config did not carry."
+    )
+
+
 _current_scope: ContextVar[ToolCallScope | None] = ContextVar(
     "threetears_tool_call_scope",
     default=None,
@@ -201,10 +281,7 @@ def register_call_cleanup(hook: Callable[[], None]) -> None:
     """
     scope = _current_scope.get()
     if scope is None:
-        raise RuntimeError(
-            "register_call_cleanup called outside a ToolServer call scope; "
-            "enter_call_scope must wrap every tool.run() dispatch"
-        )
+        raise RuntimeError(no_call_scope_message("register_call_cleanup"))
     scope.cleanup_hooks.append(hook)
 
 
@@ -225,10 +302,7 @@ def get_current_context() -> ToolContextManager:
     """
     scope = _current_scope.get()
     if scope is None:
-        raise RuntimeError(
-            "tool_context_provider called outside a ToolServer call scope; "
-            "enter_call_scope must wrap every tool.run() dispatch"
-        )
+        raise RuntimeError(no_call_scope_message("tool_context_provider"))
     if scope.context_manager is None:
         raise RuntimeError(
             "tool_context_provider invoked but the current call scope "

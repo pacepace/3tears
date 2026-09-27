@@ -15,6 +15,8 @@ import os
 from threetears.observe import get_logger
 
 __all__ = [
+    "OWNER_POLL_INTERVAL_ENV",
+    "SHUTDOWN_TIMEOUT_ENV",
     "get_connect_retry_backoff_cap",
     "get_connect_retry_budget",
     "get_deliver_timeout",
@@ -22,10 +24,12 @@ __all__ = [
     "get_jwks_request_timeout",
     "get_namespace_discovery_request_timeout",
     "get_object_resolve_request_timeout",
+    "get_owner_poll_interval",
     "get_ready_poll_interval",
     "get_ready_timeout",
     "get_report_timeout",
     "get_serve_ready_timeout",
+    "get_shutdown_timeout",
 ]
 
 log = get_logger(__name__)
@@ -48,6 +52,18 @@ _PLATFORM_DEFAULT_REPORT_TIMEOUT = 120.0
 # wait it out rather than depend on start ordering.
 _PLATFORM_DEFAULT_CONNECT_RETRY_BUDGET = 180.0
 _PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP = 15.0
+# how long a tool pod's shutdown -- the server's drain, then the bootstrap's teardown -- may take before
+# the pod gives up on it and exits non-zero. inside k8s' default 30s termination grace, so the pod
+# leaves on its own terms rather than being SIGKILLed mid-teardown.
+_PLATFORM_DEFAULT_SHUTDOWN_TIMEOUT = 20.0
+# how often a tool pod with an owner process checks that the owner still exists. one ``kill(pid, 0)``
+# syscall per interval, so a short interval costs nothing measurable.
+_PLATFORM_DEFAULT_OWNER_POLL_INTERVAL = 1.0
+
+#: environment variable bounding a tool pod's shutdown, in seconds (positive)
+SHUTDOWN_TIMEOUT_ENV = "THREETEARS_TOOL_POD_SHUTDOWN_TIMEOUT_SECONDS"
+#: environment variable setting how often a tool pod checks its owner process, in seconds (positive)
+OWNER_POLL_INTERVAL_ENV = "THREETEARS_TOOL_POD_OWNER_POLL_INTERVAL_SECONDS"
 
 
 def _env_float(name: str, fallback: float) -> float:
@@ -224,3 +240,21 @@ def get_connect_retry_backoff_cap() -> float:
         "THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP",
         _PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP,
     )
+
+
+def get_shutdown_timeout() -> float:
+    """return how long a tool pod's shutdown may take before the pod exits without it.
+
+    :return: positive seconds from THREETEARS_TOOL_POD_SHUTDOWN_TIMEOUT_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_positive_float(SHUTDOWN_TIMEOUT_ENV, _PLATFORM_DEFAULT_SHUTDOWN_TIMEOUT)
+
+
+def get_owner_poll_interval() -> float:
+    """return how often a tool pod checks that its owner process still exists.
+
+    :return: positive seconds from THREETEARS_TOOL_POD_OWNER_POLL_INTERVAL_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_positive_float(OWNER_POLL_INTERVAL_ENV, _PLATFORM_DEFAULT_OWNER_POLL_INTERVAL)

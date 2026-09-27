@@ -55,7 +55,7 @@ from threetears.search.contracts import (
     SearchResultsMetadata,
 )
 
-from .llm_retry import bounded_retry_structured_call
+from .llm_retry import StructuredCallExhaustedError, bounded_retry_structured_call_or_raise
 
 __all__ = [
     "DEFAULT_PAGE_FINDER_MODEL_ID",
@@ -585,27 +585,32 @@ async def find_target_page(
         f"The following is a research agent's free-text conclusion about which page answers "
         f'"{query}". Extract the structured fields from it:\n\n{loop_result.output}'
     )
-    candidate = await bounded_retry_structured_call(
-        coercion_prompt,
-        _CandidatePage,
-        model_id=model_id,
-        api_key=api_key,
-        purpose=LlmPurpose.EXTRACTION,
-        temperature=0.0,
-        timeout=_COERCION_TIMEOUT_SECONDS,
-        attempts=_COERCION_ATTEMPTS,
-        backoff_seconds=_COERCION_BACKOFF_SECONDS,
-        log_label="page-finder candidate coercion",
-        degraded_to="no resolvable candidate",
-        is_acceptable=lambda c: bool(c.url) and c.url.startswith(("http://", "https://")),
-    )
-    if candidate is None:
+    try:
+        candidate = await bounded_retry_structured_call_or_raise(
+            coercion_prompt,
+            _CandidatePage,
+            model_id=model_id,
+            api_key=api_key,
+            purpose=LlmPurpose.EXTRACTION,
+            temperature=0.0,
+            timeout=_COERCION_TIMEOUT_SECONDS,
+            attempts=_COERCION_ATTEMPTS,
+            backoff_seconds=_COERCION_BACKOFF_SECONDS,
+            log_label="page-finder candidate coercion",
+            is_acceptable=lambda c: bool(c.url) and c.url.startswith(("http://", "https://")),
+        )
+    except StructuredCallExhaustedError as exc:
+        # Already an explicit failure result (no URL, unverified), not an empty answer; the
+        # note carries the cause so it is not mistaken for "the agent named no page".
         return PageFinderResult(
             url="",
             driver_backend="nodriver",
             wait_for=None,
             verified=False,
-            verification_note="could not coerce the search loop's answer into a URL",
+            verification_note=(
+                "could not coerce the search loop's answer into a URL: the coercion model call "
+                f"failed every attempt ({type(exc.last_error).__name__}: {exc.last_error})"
+            ),
             reasoning=loop_result.output,
             turns_used=loop_result.rounds_used,
             search_queries_tried=queries_tried,

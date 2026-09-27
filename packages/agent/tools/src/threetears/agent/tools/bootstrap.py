@@ -1,12 +1,12 @@
 """``ToolServerBootstrap`` -- shared lifecycle for tool-pod entrypoints.
 
-every tool-pod ``main`` function used to repeat the same scaffolding:
+every tool-pod ``main`` function -- ``threetears.agent.tools.serve``, the
+admin tool pod's ``serve.py``, the agent SDK's
+``runtime/tool_server_bootstrap.py`` -- needs the same scaffolding:
 configure logging, instantiate ``ToolServer``, register tools, install
 SIGTERM/SIGINT handlers that schedule ``server.shutdown()`` via
-``spawn_background``, await ``server.serve()``, log start/stop. three
-copies (admin's ``serve.py``, agent SDK's
-``devx/schema/tool_server_entry.py``, and ``threetears.agent.tools.serve``)
-drifted on small details: signal-handler implementation, log message
+``spawn_background``, await ``server.serve()``, log start/stop. copies of
+it drift on small details: signal-handler implementation, log message
 format, exception handling around ``serve()``.
 
 this module owns the canonical lifecycle. host applications subclass
@@ -48,6 +48,7 @@ is refused as a :class:`ToolPodConfigError`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 from collections.abc import Awaitable, Callable
@@ -69,6 +70,7 @@ from threetears.observe import (
     spawn_background,
 )
 
+from threetears.agent.tools.config import get_owner_poll_interval, get_shutdown_timeout
 from threetears.agent.tools.l1_cache import TOOL_POD_L1_DB_NAME, create_tool_pod_l1_backend
 from threetears.agent.tools.object_resolution_collection import ObjectResolutionCollection
 
@@ -78,9 +80,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EX_CONFIG",
+    "EX_SOFTWARE",
+    "OWNER_PID_ENV",
     "ToolPodConfigError",
+    "ToolPodShutdownError",
     "ToolServerBootstrap",
     "build_tool_pod_collection_stack",
+    "resolve_owner_pid",
 ]
 
 log = get_logger(__name__)
@@ -103,6 +109,18 @@ log = get_logger(__name__)
 #: exit-code alert, and an operator reading ``docker inspect`` all classify it with
 #: no agreement needed between them and this module.
 EX_CONFIG = 78
+
+#: exit status for a pod whose shutdown failed or overran its bound: ``EX_SOFTWARE`` from BSD
+#: ``sysexits.h``. Distinct from :data:`EX_CONFIG` on purpose -- a supervisor SHOULD restart this
+#: one -- and from ``0``, because the process left without the drain it owed, and an exit that
+#: reads as clean would hide that.
+EX_SOFTWARE = 70
+
+#: the environment variable naming the process that OWNS this tool pod. Opt-in: when it is set, the
+#: pod shuts itself down once that process no longer exists. Written by whatever spawns tool pods as
+#: its own children (the aibots SDK's in-process launcher does), because a pod outliving its owner is
+#: a pod nobody will ever stop. See :func:`resolve_owner_pid` for what is accepted.
+OWNER_PID_ENV = "THREETEARS_TOOL_POD_OWNER_PID"
 
 
 class ToolPodConfigError(ValueError):
@@ -144,6 +162,82 @@ class ToolPodConfigError(ValueError):
         """
         super().__init__(message)
         self.variable = variable
+
+
+class ToolPodShutdownError(RuntimeError):
+    """a tool pod's shutdown failed or overran its bound; the pod left ``serve`` anyway.
+
+    raised by :meth:`ToolServerBootstrap.run_async` once teardown is done, chaining what failed --
+    the exception the server's shutdown raised, or the :class:`TimeoutError` of the bound. A caller
+    that drives ``run_async`` itself decides what that means; :meth:`ToolServerBootstrap.run` exits
+    :data:`EX_SOFTWARE`. The failure was already logged once at ERROR, where it happened.
+
+    :param message: what failed, for a person
+    :ptype message: str
+    """
+
+
+def resolve_owner_pid() -> int | None:
+    """read and validate :data:`OWNER_PID_ENV`.
+
+    Unset means no owner is watched. Set, it must name a process that can actually be watched: a
+    decimal integer greater than 1 (``0`` and negatives name process GROUPS to ``kill``, and pid 1
+    is init, which never exits and which an orphan is reparented to) and not this process itself,
+    which exists for as long as anything could check. A blank value is refused rather than read as
+    unset: a spawner that meant to set it and rendered nothing should hear about it at startup.
+
+    :return: the owner's pid, or ``None`` when the variable is unset
+    :rtype: int | None
+    :raises ToolPodConfigError: when the variable is set to anything that cannot name an owner
+    """
+    raw = os.environ.get(OWNER_PID_ENV)
+    result: int | None = None
+    if raw is not None:
+        value = raw.strip()
+        if not value.isdecimal():
+            raise ToolPodConfigError(
+                f"{OWNER_PID_ENV}={raw!r} is not a process id; set it to the owner's pid (an integer "
+                f"greater than 1), or unset it to run without an owner",
+                variable=OWNER_PID_ENV,
+            )
+        pid = int(value)
+        if pid <= 1:
+            raise ToolPodConfigError(
+                f"{OWNER_PID_ENV}={pid} cannot name an owner process: 0 names a process group and 1 is "
+                f"init, which never exits",
+                variable=OWNER_PID_ENV,
+            )
+        if pid == os.getpid():
+            raise ToolPodConfigError(
+                f"{OWNER_PID_ENV}={pid} is this tool pod's own pid; a pod cannot outlive itself, so "
+                f"the watch would never fire. set it to the pid of the process that spawned the pod",
+                variable=OWNER_PID_ENV,
+            )
+        result = pid
+    return result
+
+
+def _process_exists(pid: int) -> bool:
+    """whether a process with ``pid`` exists, without signalling it.
+
+    ``kill(pid, 0)`` performs the existence and permission checks and delivers nothing, on macOS
+    and Linux alike. ``PermissionError`` means the process exists and belongs to someone else.
+    An exited child that its parent has not yet reaped still exists; the owner watch covers that
+    case separately, through the parent pid (see :meth:`ToolServerBootstrap.watch_owner`).
+
+    :param pid: the process id
+    :ptype pid: int
+    :return: ``True`` while the process exists
+    :rtype: bool
+    """
+    result = True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        result = False
+    except PermissionError:
+        result = True
+    return result
 
 
 def _is_tool_pod_id(pod_id: str) -> bool:
@@ -320,6 +414,12 @@ class ToolServerBootstrap:
         self._collection_tables = collection_tables
         self._collection_registry: CollectionRegistry | None = None
         self._object_resolutions: ObjectResolutionCollection | None = None
+        # the serve loop, as a task, so a shutdown that fails can still end it. set by run_async.
+        self._serve_task: asyncio.Task[None] | None = None
+        # one shutdown per process: a second signal, or the owner going as well, joins the first.
+        self._shutdown_requested = False
+        # what ended this pod's shutdown badly, if anything; run_async raises it once torn down.
+        self._shutdown_failure: BaseException | None = None
         if health_port is not None:
             self._health_port = health_port
         else:
@@ -468,10 +568,14 @@ class ToolServerBootstrap:
         ``run_async`` on its own loop owns its own failure policy and must be
         free to handle the error rather than have the library exit under it.
 
+        a :class:`ToolPodShutdownError` terminates here too, with
+        :data:`EX_SOFTWARE`: the pod left ``serve`` without the shutdown it
+        owed, which is neither a clean exit nor a configuration fault.
+
         :return: None
         :rtype: None
         :raises SystemExit: with :data:`EX_CONFIG` when startup config is
-            permanently wrong
+            permanently wrong, or :data:`EX_SOFTWARE` when shutdown failed
         """
         configure_logging(level=self._log_level)
         try:
@@ -494,6 +598,10 @@ class ToolServerBootstrap:
                 },
             )
             raise SystemExit(EX_CONFIG) from None
+        except ToolPodShutdownError:
+            # already logged once at ERROR where it happened, naming the cause. The status is the
+            # one thing left to say, and a traceback here would only repeat the record.
+            raise SystemExit(EX_SOFTWARE) from None
 
     async def run_async(self) -> None:
         """async driver: build server, register tools, install signals, serve.
@@ -507,13 +615,24 @@ class ToolServerBootstrap:
         + connected to NATS without a custom per-pod health
         endpoint.
 
+        **serving ends even when shutdown fails.** The serve loop runs as a task that
+        :meth:`shutdown_server` cancels when the server's own shutdown raises or overruns
+        :func:`~threetears.agent.tools.config.get_shutdown_timeout`. It used to be awaited
+        directly, and ``ToolServer.shutdown`` raising before it released ``serve`` left two tool
+        pods alive for two days after SIGTERM. The teardown after serving gets the same bound.
+
+        when :data:`OWNER_PID_ENV` is set the pod also watches that process
+        (:meth:`watch_owner`) and shuts down through the same path once it is gone.
+
         :return: None
         :rtype: None
+        :raises ToolPodConfigError: when :data:`OWNER_PID_ENV` is set to something that names no owner
+        :raises ToolPodShutdownError: once torn down, when the shutdown failed or overran its bound
         """
+        owner_pid = resolve_owner_pid()
         server = await self.build_server()
         await self.register_tools(server)
         self.install_collection_stack(server)
-        self.install_signal_handlers(server)
 
         health_server = await self._start_health_server(server)
 
@@ -523,34 +642,190 @@ class ToolServerBootstrap:
                 "extra_data": {
                     "service": self._service_name,
                     "tools_count": server.tools_count,
+                    "owner_pid": owner_pid,
                 }
             },
         )
+        serve_task = asyncio.create_task(self.run_serve(server), name=f"{self._service_name}-serve")
+        self._serve_task = serve_task
+        # AFTER the serve task exists and before it first runs (nothing has awaited since it was
+        # created), so no signal can arrive to a shutdown path that has no serve loop to end.
+        self.install_signal_handlers(server)
+        owner_watch: asyncio.Task[None] | None = None
+        if owner_pid is not None:
+            owner_watch = asyncio.create_task(
+                self.watch_owner(server, owner_pid), name=f"{self._service_name}-owner-watch"
+            )
         try:
-            await self.run_serve(server)
+            await self._await_serve(serve_task)
         finally:
-            registry = self._collection_registry
-            if registry is not None:
-                # ``coll-task-01``'s teardown half. It does not raise on a draining connection
-                # (``NatsClient.unsubscribe`` absorbs the transport failures a shutdown produces),
-                # so it runs FIRST in this block: a listener left bound holds a subscription on a
-                # client the process no longer owns.
-                await registry.stop_invalidation_listener()
-                # and whatever a collection itself started: a write-behind coordination
-                # collection's flusher owes one last flush before the loop closes.
-                await registry.close_collections()
-            if health_server is not None:
-                try:
-                    await health_server.stop()
-                except Exception as exc:
-                    log.warning(
-                        "health server stop failed",
-                        extra={"extra_data": {"error": str(exc)}},
-                    )
+            if owner_watch is not None:
+                owner_watch.cancel()
+                # NOSILENT: the only thing suppressed is the cancellation sent on the line above.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await owner_watch
+            await self._bounded_teardown(health_server)
             log.info(
                 f"{self._service_name} stopped",
                 extra={"extra_data": {"service": self._service_name}},
             )
+        if self._shutdown_failure is not None:
+            raise ToolPodShutdownError(
+                f"{self._service_name} left serve without completing its shutdown"
+            ) from self._shutdown_failure
+
+    async def _await_serve(self, serve_task: "asyncio.Task[None]") -> None:
+        """await the serve loop, treating ITS cancellation by a failed shutdown as the loop ending.
+
+        :param serve_task: the running serve loop
+        :ptype serve_task: asyncio.Task[None]
+        :return: nothing
+        :rtype: None
+        :raises asyncio.CancelledError: when this coroutine itself is cancelled, or the serve loop
+            was cancelled by anything other than a failed shutdown
+        """
+        try:
+            await serve_task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            forced = self._shutdown_failure is not None and serve_task.cancelled()
+            if not forced or (current is not None and current.cancelling() > 0):
+                raise
+
+    async def _bounded_teardown(self, health_server: "HealthServer | None") -> None:
+        """release what serving held, within the shutdown bound.
+
+        :param health_server: the health listener, or ``None`` when it never bound
+        :ptype health_server: HealthServer | None
+        :return: nothing
+        :rtype: None
+        """
+        timeout = get_shutdown_timeout()
+        try:
+            await asyncio.wait_for(self._teardown(health_server), timeout=timeout)
+        except TimeoutError as exc:
+            log.error(
+                f"{self._service_name} teardown overran its bound; exiting without it",
+                extra={
+                    "extra_data": {
+                        "service": self._service_name,
+                        "timeout_seconds": timeout,
+                        "error_type": type(exc).__name__,
+                    }
+                },
+            )
+            if self._shutdown_failure is None:
+                self._shutdown_failure = exc
+
+    async def _teardown(self, health_server: "HealthServer | None") -> None:
+        """stop the collection stack and the health listener.
+
+        :param health_server: the health listener, or ``None`` when it never bound
+        :ptype health_server: HealthServer | None
+        :return: nothing
+        :rtype: None
+        """
+        registry = self._collection_registry
+        if registry is not None:
+            # ``coll-task-01``'s teardown half. It does not raise on a draining connection
+            # (``NatsClient.unsubscribe`` absorbs the transport failures a shutdown produces),
+            # so it runs FIRST in this block: a listener left bound holds a subscription on a
+            # client the process no longer owns.
+            await registry.stop_invalidation_listener()
+            # and whatever a collection itself started: a write-behind coordination
+            # collection's flusher owes one last flush before the loop closes.
+            await registry.close_collections()
+        if health_server is not None:
+            try:
+                await health_server.stop()
+            except Exception as exc:
+                log.warning(
+                    "health server stop failed",
+                    extra={"extra_data": {"error": str(exc)}},
+                )
+
+    async def shutdown_server(self, server: "ToolServer", *, reason: str) -> None:
+        """shut ``server`` down, and make sure serving ends whether or not that succeeds.
+
+        The one shutdown path: both signal handlers and the owner watch call it. Only the first
+        call acts; a later one (SIGTERM then SIGINT, or the owner going during a shutdown) is
+        logged and returns.
+
+        ``server.shutdown()`` is given :func:`~threetears.agent.tools.config.get_shutdown_timeout`
+        seconds. If it raises or overruns, the failure is logged ONCE at ERROR with its cause and
+        recorded for :meth:`run_async` to raise, and the serve loop is cancelled so the process
+        leaves. If it succeeds but the serve loop does not return within the same bound, that is
+        the same failure.
+
+        :param server: the tool server to shut down
+        :ptype server: ToolServer
+        :param reason: what asked for the shutdown (``"sigterm"``, ``"sigint"``, ``"owner-gone"``)
+        :ptype reason: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._shutdown_requested:
+            log.info(
+                f"{self._service_name} shutdown already in progress; ignoring a second request",
+                extra={"extra_data": {"service": self._service_name, "reason": reason}},
+            )
+            return
+        self._shutdown_requested = True
+        timeout = get_shutdown_timeout()
+        failure: BaseException | None = None
+        try:
+            await asyncio.wait_for(server.shutdown(), timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 -- recorded and raised by run_async; logged once here
+            failure = exc
+        serve_task = self._serve_task
+        if failure is None and serve_task is not None:
+            done, _pending = await asyncio.wait({serve_task}, timeout=timeout)
+            if not done:
+                failure = TimeoutError(f"serve did not return within {timeout}s of a completed shutdown")
+        if failure is not None:
+            self._shutdown_failure = failure
+            log.error(
+                f"{self._service_name} shutdown failed; leaving serve and exiting non-zero",
+                extra={
+                    "extra_data": {
+                        "service": self._service_name,
+                        "reason": reason,
+                        "timeout_seconds": timeout,
+                        "error_type": type(failure).__name__,
+                        "error": str(failure),
+                    }
+                },
+            )
+            if serve_task is not None and not serve_task.done():
+                serve_task.cancel()
+
+    async def watch_owner(self, server: "ToolServer", owner_pid: int) -> None:
+        """shut the pod down once the process that owns it no longer exists.
+
+        Polled every :func:`~threetears.agent.tools.config.get_owner_poll_interval` seconds with
+        ``kill(pid, 0)``, which is portable across macOS and Linux and signals nothing. When the
+        owner is this pod's PARENT, a change of parent pid counts as gone too: a parent that exited
+        without being reaped still answers ``kill(pid, 0)``, but its children are reparented the
+        moment it exits.
+
+        :param server: the tool server to shut down
+        :ptype server: ToolServer
+        :param owner_pid: the owner's pid, from :func:`resolve_owner_pid`
+        :ptype owner_pid: int
+        :return: nothing
+        :rtype: None
+        """
+        interval = get_owner_poll_interval()
+        owner_is_parent = os.getppid() == owner_pid
+        while _process_exists(owner_pid) and (not owner_is_parent or os.getppid() == owner_pid):
+            await asyncio.sleep(interval)
+        log.warning(
+            "owner process %d of %s is gone; shutting the tool pod down",
+            owner_pid,
+            self._service_name,
+            extra={"extra_data": {"service": self._service_name, "owner_pid": owner_pid}},
+        )
+        await self.shutdown_server(server, reason="owner-gone")
 
     async def _start_health_server(self, server: "ToolServer") -> "HealthServer | None":
         """start the canonical /healthz listener on port 8000.
@@ -669,9 +944,10 @@ class ToolServerBootstrap:
     def install_signal_handlers(self, server: "ToolServer") -> None:
         """install SIGTERM and SIGINT handlers that schedule shutdown.
 
-        each handler spawns ``server.shutdown()`` via ``spawn_background``
+        each handler spawns :meth:`shutdown_server` via ``spawn_background``
         so the coroutine outcome lands in the structured logger rather
-        than the default loop's exception printer.
+        than the default loop's exception printer, and so a shutdown that
+        fails still ends the serve loop.
 
         :param server: tool server whose ``shutdown`` coroutine is scheduled
         :ptype server: ToolServer
@@ -700,6 +976,6 @@ class ToolServerBootstrap:
         task_name = f"{self._service_name}-shutdown-{sig_label}"
 
         def _handler() -> None:
-            spawn_background(server.shutdown(), name=task_name, logger=log)
+            spawn_background(self.shutdown_server(server, reason=sig_label), name=task_name, logger=log)
 
         return _handler

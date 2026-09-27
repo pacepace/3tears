@@ -138,15 +138,13 @@ def workspace_audit_identity(workspace: Workspace) -> WorkspaceAuditIdentity:
         enrich), or when ``scope.context`` lacks user_id / agent_id /
         customer_id
     """
-    from threetears.agent.tools.call_scope import current_scope
+    from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 
     scope = current_scope()
     if scope is None:
         raise RuntimeError(
-            "workspace_audit_identity called outside a ToolCallScope; "
-            "every tool dispatch must run under enter_call_scope so the "
-            "invoking user / calling agent / customer identities are "
-            "available to the audit envelope."
+            no_call_scope_message("workspace_audit_identity")
+            + " The audit envelope needs the invoking user, calling agent and customer it carries."
         )
     ctx = scope.context
     if ctx.user_id is None:
@@ -330,17 +328,13 @@ async def authorize_workspace(
     """
     # local imports keep this module cheap when tools only need
     # _resolve_workspace or _write_file_atomic.
-    from threetears.agent.tools.call_scope import current_scope
+    from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 
     from threetears.agent.workspace.authorize import authorize_workspace_access
 
     scope = current_scope()
     if scope is None:
-        raise RuntimeError(
-            "authorize_workspace called outside a ToolCallScope; every tool "
-            "dispatch must enter_call_scope before executing. tests should "
-            "wrap the tool invocation in enter_call_scope(ToolCallScope(...))."
-        )
+        raise RuntimeError(no_call_scope_message("authorize_workspace"))
     if db_pool is not None:
         await enrich_workspace_identity(workspace, db_pool)
     await authorize_workspace_access(
@@ -398,7 +392,7 @@ async def authorize_workspace_file(
     :raises WorkspaceAccessDenied: on any denial path (missing
         customer, cross-customer, no matching glob)
     """
-    from threetears.agent.tools.call_scope import current_scope
+    from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 
     from threetears.agent.workspace.authorize import (
         authorize_workspace_file_access,
@@ -406,12 +400,7 @@ async def authorize_workspace_file(
 
     scope = current_scope()
     if scope is None:
-        raise RuntimeError(
-            "authorize_workspace_file called outside a ToolCallScope; every "
-            "tool dispatch must enter_call_scope before executing. tests "
-            "should wrap the tool invocation in "
-            "enter_call_scope(ToolCallScope(...)).",
-        )
+        raise RuntimeError(no_call_scope_message("authorize_workspace_file"))
     if db_pool is not None:
         await enrich_workspace_identity(workspace, db_pool)
     await authorize_workspace_file_access(

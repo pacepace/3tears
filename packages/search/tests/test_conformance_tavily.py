@@ -17,7 +17,7 @@ from __future__ import annotations
 from threetears.search.adapters.tavily import TavilyAdapter
 from threetears.search.contracts import Criterion, SearchProvider, SearchTransport
 from threetears.search.testing import ProviderConformanceCase, ProviderConformanceSuite
-from _tavily_payloads import MALFORMED_BODY, TWO_RESULTS_BODY, ZERO_RESULTS_BODY
+from packages.search.tests._tavily_payloads import MALFORMED_BODY, TWO_RESULTS_BODY, ZERO_RESULTS_BODY
 
 _API_KEY = "tvly-conformance-key"
 

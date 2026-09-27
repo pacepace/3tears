@@ -38,7 +38,9 @@ from threetears.agent.memory.authorize import (
     MemoryAccessDenied,
     MemoryAuthorizerDependencies,
     authorize_memory_access,
+    memory_namespace_id,
     memory_namespace_name,
+    memory_namespace_schema_name,
 )
 from threetears.agent.memory.namespace_client import (
     MemoryNamespaceRef,
@@ -71,6 +73,7 @@ class _StubNamespaceEntity:
         namespace_type: str | None = None,
         owner_agent_id: UUID | None = None,
         customer_id: UUID | None = None,
+        name: str | None = None,
         is_new: bool = False,
         collection: Any = None,
     ) -> None:
@@ -86,6 +89,8 @@ class _StubNamespaceEntity:
         :ptype owner_agent_id: UUID | None
         :param customer_id: owning customer UUID
         :ptype customer_id: UUID | None
+        :param name: the name the row STORES, which is what a subtree grant is judged against
+        :ptype name: str | None
         :param is_new: whether entity is newly created (unused)
         :ptype is_new: bool
         :param collection: parent collection (unused)
@@ -100,6 +105,7 @@ class _StubNamespaceEntity:
             self.namespace_type = data["namespace_type"]
             self.owner_agent_id = data["owner_agent_id"]
             self.customer_id = data["customer_id"]
+            self.name = data.get("name")
         else:
             assert id is not None
             assert namespace_type is not None
@@ -109,6 +115,7 @@ class _StubNamespaceEntity:
             self.namespace_type = namespace_type
             self.owner_agent_id = owner_agent_id
             self.customer_id = customer_id
+            self.name = name
 
 
 class _NamespaceCollectionFake:
@@ -472,12 +479,51 @@ def _build_deps(
     )
 
 
+#: two agent ids a uuid7 generator could mint in ONE millisecond: the leading 48 bits (the
+#: timestamp) are identical, only the random tail differs. this is what a cluster apply
+#: creating several agents at once produces.
+_AGENT_A = UUID("019470a8-b5c3-7def-8123-456789abcdef")
+_AGENT_B = UUID("019470a8-b5c3-7a01-9fed-cba987654321")
+_CUSTOMER = UUID("019470a8-b5c4-7000-8000-000000000001")
+
+
 class TestMemoryNamespaceName:
     def test_shape(self) -> None:
+        """the name spells both ids in full; the schema name is the row id's hex."""
         agent_id = UUID("019470a8-b5c3-7def-8123-456789abcdef")
         customer_id = UUID("11112222-3333-4444-5555-666677778888")
-        name = memory_namespace_name(agent_id, customer_id)
-        assert name == "memories.019470a8.11112222"
+        assert memory_namespace_name(agent_id, customer_id) == (
+            "memories.019470a8b5c37def8123456789abcdef.11112222333344445555666677778888"
+        )
+        assert memory_namespace_schema_name(agent_id, customer_id) == (
+            f"memory__{memory_namespace_id(agent_id, customer_id).hex}"
+        )
+
+    def test_two_agents_minted_in_one_millisecond_get_distinct_names(self) -> None:
+        """``platform.namespaces`` is UNIQUE on name and on schema_name, so a shared value is a failed create.
+
+        a uuid7 leads with its timestamp; a name cut from that head is the same for every
+        agent minted in the same moment, and the second agent's memory namespace could never
+        be created.
+        """
+        assert _AGENT_A.int >> 80 == _AGENT_B.int >> 80, "the fixture must share the uuid7 timestamp"
+        assert _AGENT_A != _AGENT_B
+        assert memory_namespace_name(_AGENT_A, _CUSTOMER) != memory_namespace_name(_AGENT_B, _CUSTOMER)
+        assert memory_namespace_schema_name(_AGENT_A, _CUSTOMER) != memory_namespace_schema_name(_AGENT_B, _CUSTOMER)
+
+    def test_one_agent_in_two_customers_minted_together_gets_distinct_names(self) -> None:
+        """the customer side of the pair is a uuid7 too, and collides the same way."""
+        other_customer = UUID("019470a8-b5c4-7fff-bfff-fffffffffffe")
+        assert _CUSTOMER.int >> 80 == other_customer.int >> 80
+        assert memory_namespace_name(_AGENT_A, _CUSTOMER) != memory_namespace_name(_AGENT_A, other_customer)
+        assert memory_namespace_schema_name(_AGENT_A, _CUSTOMER) != memory_namespace_schema_name(
+            _AGENT_A, other_customer
+        )
+
+    def test_both_fit_the_columns_and_the_schema_name_fits_an_identifier(self) -> None:
+        """``name`` is varchar(255), ``schema_name`` varchar(100) and named like a Postgres schema (63)."""
+        assert len(memory_namespace_name(_AGENT_A, _CUSTOMER)) <= 255
+        assert len(memory_namespace_schema_name(_AGENT_A, _CUSTOMER)) <= 63
 
 
 class TestAuthorizeMemoryAccess:
@@ -853,3 +899,125 @@ class TestAuthorizeMemoryAccess:
             deps=deps,
         )
         assert result is ns
+
+
+def _subtree_reader(*, root: str, user_id: UUID, customer_id: UUID) -> dict[str, Any]:
+    """the acl fixture for one user holding a reader grant on the subtree rooted at ``root``.
+
+    :param root: subtree root, a namespace name
+    :ptype root: str
+    :param user_id: the user holding the grant
+    :ptype user_id: UUID
+    :param customer_id: the user's customer
+    :ptype customer_id: UUID
+    :return: keyword arguments for :func:`_build_deps`
+    :rtype: dict[str, Any]
+    """
+    group_id = uuid4()
+    role = _reader_role()
+    return {
+        "memberships_for_user": (
+            GroupMembership(group_id=group_id, member_type=MemberType.USER, member_id=user_id, customer_id=customer_id),
+        ),
+        "assignments": (
+            RoleAssignment(
+                id=uuid4(),
+                role_id=role.id,
+                group_id=group_id,
+                scope_type=ScopeType.SUBTREE,
+                scope_namespace_id=None,
+                scope_namespace_type=None,
+                scope_customer_id=None,
+                scope_namespace_name=root,
+            ),
+        ),
+        "roles": {role.id: role},
+        "groups": {group_id: Group(id=group_id, name="subtree-readers", customer_id=customer_id)},
+    }
+
+
+class TestAnExistingRowIsJudgedByTheNameItStores:
+    """rows written before the name rule changed keep their name, and are judged by it.
+
+    the name is a unique column, not a key anything recomputes to find a row: the row is
+    resolved by ``(type, owner agent, customer)`` and its grants address it by id. the
+    one thing that reads the NAME is a subtree grant, so the evaluator must be handed the
+    name the row actually carries -- recomputing it would judge a pre-existing row by a
+    name it does not have.
+    """
+
+    #: the name an existing row carries: the eight-character rule that preceded this one.
+    _LEGACY_NAME = "memories.019470a8.019470a8"
+
+    async def test_a_legacy_named_row_is_resolved_and_its_subtree_grant_still_holds(self) -> None:
+        user_id = uuid4()
+        ns = _StubNamespaceEntity(
+            id=memory_namespace_id(_AGENT_A, _CUSTOMER),
+            namespace_type="memory",
+            owner_agent_id=_AGENT_A,
+            customer_id=_CUSTOMER,
+            name=self._LEGACY_NAME,
+        )
+        namespace_collection = _NamespaceCollectionFake(ns)
+        provisioner = _ProvisionerFake(ref=_hub_ref(agent_id=_AGENT_A, customer_id=_CUSTOMER))
+        deps = _build_deps(
+            namespace_collection=namespace_collection,
+            namespace_provisioner=provisioner,
+            **_subtree_reader(root=self._LEGACY_NAME, user_id=user_id, customer_id=_CUSTOMER),
+        )
+
+        result = await authorize_memory_access(
+            action=ACTION_MEMORY_READ,
+            agent_id=_AGENT_A,
+            customer_id=_CUSTOMER,
+            caller_user_id=user_id,
+            caller_agent_id=None,
+            deps=deps,
+        )
+
+        assert result is ns
+        assert provisioner.calls == [], "an existing row is resolved, never re-provisioned"
+        assert namespace_collection.save_calls == []
+
+    async def test_the_hub_provisioned_row_is_judged_by_the_name_the_hub_wrote(self) -> None:
+        user_id = uuid4()
+        hub_name = "memories.written-by-the-hub"
+        ref = MemoryNamespaceRef(
+            id=uuid4(),
+            customer_id=_CUSTOMER,
+            owner_agent_id=_AGENT_A,
+            namespace_type="memory",
+            owner_namespace=f"agents.{_AGENT_A}",
+            name=hub_name,
+        )
+        deps = _build_deps(
+            namespace_collection=_NamespaceCollectionFake(None),
+            namespace_provisioner=_ProvisionerFake(ref=ref),
+            **_subtree_reader(root=hub_name, user_id=user_id, customer_id=_CUSTOMER),
+        )
+
+        result = await authorize_memory_access(
+            action=ACTION_MEMORY_READ,
+            agent_id=_AGENT_A,
+            customer_id=_CUSTOMER,
+            caller_user_id=user_id,
+            caller_agent_id=None,
+            deps=deps,
+        )
+
+        assert result is ref
+
+    async def test_the_owner_path_names_the_namespace_by_the_current_rule(self) -> None:
+        """the owner path reads no row, so the only name it can carry is the one the rule derives."""
+        deps = _build_deps(namespace_collection=_NamespaceCollectionUnavailableFake())
+
+        result = await authorize_memory_access(
+            action=ACTION_MEMORY_WRITE,
+            agent_id=_AGENT_A,
+            customer_id=_CUSTOMER,
+            caller_user_id=None,
+            caller_agent_id=_AGENT_A,
+            deps=deps,
+        )
+
+        assert result.name == memory_namespace_name(_AGENT_A, _CUSTOMER)

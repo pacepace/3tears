@@ -63,7 +63,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
     "CallbackTransaction",
@@ -282,8 +282,10 @@ def _check_otel_metrics() -> bool:
 
 # instrument cache so we don't recreate Histogram / Counter objects on
 # every call. keyed by ``(driver_type, metric_name)``. populated lazily
-# the first time a metric fires for a given driver type.
-_instrument_cache: dict[tuple[str, str], Any] = {}
+# the first time a metric fires for a given driver type, through
+# ``BuildOnce``: the getters are sync and reachable from any thread, and
+# two threads first firing one metric would otherwise each create it.
+_instrument_cache: BuildOnce[tuple[str, str], Any] = BuildOnce()
 
 
 def _get_query_duration_histogram(driver_type: str) -> Any:
@@ -297,8 +299,14 @@ def _get_query_duration_histogram(driver_type: str) -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = (driver_type, "datasource.driver.query.duration")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -307,8 +315,9 @@ def _get_query_duration_histogram(driver_type: str) -> Any:
                 description="datasource driver query duration in seconds",
                 unit="s",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 
@@ -323,8 +332,14 @@ def _get_error_counter(driver_type: str) -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = (driver_type, "datasource.driver.error")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -332,8 +347,9 @@ def _get_error_counter(driver_type: str) -> Any:
                 name="datasource.driver.error",
                 description="datasource driver error count by error kind",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 

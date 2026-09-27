@@ -37,6 +37,7 @@ This replaces a previous pattern in which the same enforcement test files were v
 
 | Module | Invariant enforced |
 |---|---|
+| `audit_details` | Every audit `details` key a producer publishes is classified (safe, family-safe, or personal) under `threetears.agent.audit`'s erasure rule, and every `details` argument is statically readable. Wrapper helpers are refused until declared in `forwarders`, then read at their call sites. Classification is injected, the predicate included: pass `safe_keys_for=safe_detail_keys_for, is_classified=is_classified_detail_key`. Family keys are credited only for statically resolved event types (literal, module constant local or imported, imported-module attribute, conditional over both branches, helper parameter through every caller, a forwarder's own inner construction when its call site names none), and only when safe for every resolved value. No exemptions file. |
 | `cache` | Every stateful data surface routes through `BaseCollection`; no bespoke SQLiteBackend wrappers; no direct pool access to Collection-backed tables; every migration-defined table has a Collection class. |
 | `underscore_access` | Underscore prefix is a stability contract: no cross-module private import, no cross-class protected access, modules with public names have `__all__`, no subclass shadowing of base private attributes, no `__all__` listing private names. |
 | `codebase_conventions` | No bare `print()`, no stdlib `logging.getLogger` (use `threetears.observe`), `from __future__ import annotations` required, return type annotations required. |

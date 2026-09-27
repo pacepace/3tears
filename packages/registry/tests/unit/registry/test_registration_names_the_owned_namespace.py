@@ -139,6 +139,7 @@ def _authenticator(*nodes: str) -> AsyncMock:
     auth.verify_pod = AsyncMock(
         return_value=ToolPodAuth(pod_entity_id="pod-001", name="a pod", owned_namespaces=list(nodes)),
     )
+    auth.verify_agent = AsyncMock(return_value=None)
     auth.provider_nodes = AsyncMock(return_value=tuple(rooted))
     return auth
 
@@ -280,6 +281,9 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
     async def test_a_manifest_owner_claim_is_not_proof_of_ownership(self) -> None:
         """a one-token pod claiming an agent is told nothing: only a pod-id proves an owner.
 
+        it is now refused outright as well -- a tokenless single-token pod would serve every
+        caller, which needs a verified publisher -- and the refusal names no namespace either.
+
         :return: none
         :rtype: None
         """
@@ -287,7 +291,8 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
         await handler.start(nc)
         reply = await _register(handler, nc, _manifest(owner=_AGENT, tool="myagent.summarize"))
-        assert reply.success is True
+        assert reply.success is False
+        assert reply.error_code == "UNVERIFIED_PUBLISHER"
         assert reply.owned_namespaces == []
 
     async def test_a_claim_naming_another_agent_does_not_move_the_answer(self) -> None:
@@ -305,6 +310,9 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
     async def test_a_tokenless_pod_with_no_owner_is_told_nothing(self) -> None:
         """no row and no agent is no self-identity, said as an empty list rather than a guess.
 
+        such a pod is also refused now: with no token and no agent in its pod id it can only be a
+        Tool Pod, whose copies serve every caller and must come from a verified publisher.
+
         :return: none
         :rtype: None
         """
@@ -312,7 +320,8 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
         await handler.start(nc)
         reply = await _register(handler, nc, _manifest(tool="myagent.summarize"))
-        assert reply.success is True
+        assert reply.success is False
+        assert reply.error_code == "UNVERIFIED_PUBLISHER"
         assert reply.owned_namespaces == []
 
 
@@ -328,6 +337,7 @@ class TestARefusedRegistrationNamesNothing:
         nc = _nc()
         auth = AsyncMock()
         auth.verify_pod = AsyncMock(return_value=None)
+        auth.verify_agent = AsyncMock(return_value=None)
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=auth)
         await handler.start(nc)
         reply = await _register(handler, nc, _manifest(token="a-bad-token"))

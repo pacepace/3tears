@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination import (
     IdempotencyConflict,
@@ -59,6 +60,16 @@ class _Store:
         del table, kwargs
         self.rows[(data["purpose"], data["key"])] = dict(data)
         return 1
+
+    async def upsert_ordered(self, table: str, data: dict[str, Any], *, conn: Any = None) -> int:
+        # the conditional write the SQL backend generates: land only over an older stored order.
+        del conn
+        stored = self.rows.get((data["purpose"], data["key"]))
+        stored_order = None if stored is None else l2_order_of(stored)
+        incoming = l2_order_of(data)
+        if stored_order is not None and incoming is not None and stored_order >= incoming:
+            return 0
+        return await self.upsert(table, data)
 
     async def delete(self, table: str, pk: dict[str, Any], *, conn: Any = None) -> None:
         del table, conn

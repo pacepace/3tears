@@ -149,7 +149,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         date_deleted are excluded so list-style consumers (e.g. the
         ``threetears.workspace.list`` tool) never surface soft-deleted
         rows. pass ``include_deleted=True`` for admin or recovery flows
-        that need the full set. promotes hits to L2 so peer pods see
+        that need the full set. hits are NOT promoted to L2 (not written to L2: a row read from L3 can be older than a write that landed after the query, and an unfenced put would serve that older row to every reader -- the next single-row read seeds L2 at the key's revision instead); peer pods see
         fresh rows on next miss; hydrated entities bind to this
         collection so subsequent mutations route through the same cache
         stack.
@@ -170,7 +170,6 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         for row in rows:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["workspace_id"], data)
             entities.append(entity)
         return entities
 
@@ -211,7 +210,6 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         if row is not None:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["workspace_id"], data)
             result = entity
         return result
 
@@ -242,7 +240,6 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         if row is not None:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["workspace_id"], data)
             result = entity
         return result
 
@@ -255,7 +252,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         is a low-level lookup used by callers (e.g. delete tool, history
         queries) that may need to find a soft-deleted workspace; callers
         that want only live workspaces must check date_deleted on the
-        returned entity. hit promotes to L2 so a peer pod warm-loads on
+        returned entity. the hit is NOT promoted to L2 (not written to L2: a row read from L3 can be older than a write that landed after the query, and an unfenced put would serve that older row to every reader -- the next single-row read seeds L2 at the key's revision instead); a peer pod loads on
         next miss.
 
         :param agent_id: identifier of owning agent
@@ -274,7 +271,6 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         if row is not None:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["workspace_id"], data)
             result = entity
         return result
 
@@ -397,7 +393,6 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
         if row is not None:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["file_id"], data)
             result = entity
         return result
 
@@ -407,7 +402,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
 
         used by lifecycle composers (create-from-workspace, reset, diff)
         that need the current file set without going through the journal.
-        promotes each row to L2 so peer pods warm on next miss; hydrated
+        rows are NOT promoted to L2 (not written to L2: a row read from L3 can be older than a write that landed after the query, and an unfenced put would serve that older row to every reader -- the next single-row read seeds L2 at the key's revision instead); peer pods load on next miss; hydrated
         entities bind to this collection so subsequent mutations route
         through the same cache stack.
 
@@ -424,7 +419,6 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
         for row in rows:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["file_id"], data)
             entities.append(entity)
         return entities
 

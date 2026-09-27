@@ -31,6 +31,7 @@ from uuid import UUID
 __all__ = [
     "DurableStore",
     "L3Backend",
+    "OrderedDurableStore",
     "parse_rowcount",
 ]
 
@@ -158,6 +159,35 @@ class DurableStore(Protocol):
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return every row matching the equality ``filters`` (all rows when ``None``/empty)."""
+        ...
+
+
+@runtime_checkable
+class OrderedDurableStore(Protocol):
+    """A durable store that can write a row only over one holding an older compare-and-swap order.
+
+    Separate from :class:`DurableStore` so a backend that cannot express the conditional write --
+    a git working tree, today -- still satisfies the structured seam and simply is not offered
+    compare-and-swap persistence: ``BaseCollection.l2_cas_mutate`` refuses such a collection
+    before touching L2 rather than persisting unfenced. ``SqlL3Backend`` conforms.
+    """
+
+    async def upsert_ordered(self, table: str, row: Mapping[str, Any], *, conn: Any = None) -> int:
+        """Insert ``row``, or update the stored row only when its order is strictly older.
+
+        The order is the row's ``l2_epoch`` / ``l2_revision`` pair
+        (:mod:`threetears.core.collections.l2_order`), compared as a pair; a stored row whose
+        pair holds a ``NULL`` is older than every order.
+
+        :param table: the table, whose schema the backend knows
+        :ptype table: str
+        :param row: the row, order columns included
+        :ptype row: Mapping[str, Any]
+        :param conn: optional backend-specific transaction handle the write binds to
+        :ptype conn: Any
+        :return: ``1`` when written, ``0`` when the stored order is newer or equal
+        :rtype: int
+        """
         ...
 
 

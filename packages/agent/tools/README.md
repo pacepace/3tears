@@ -6,7 +6,7 @@ Part of the [3tears](https://github.com/pacepace/3tears) framework.
 
 ## ToolServer baseline audit
 
-`ToolServer.handle_call` stamps every dispatch with a unified `AuditEvent` envelope (`event_type='tool.call'`) via `threetears.agent.audit.publish_audit`. The baseline emission fires in a `finally` block so success, failure (tool returned `success=False`), and error (tool raised) outcomes all produce a row. Identity axes carry from the active `ToolCallScope` (`actor_user_id`, `calling_agent_id`, `owner_agent_id`, `customer_id`, `correlation_id`); `resource_namespace_id` / `resource_namespace_type` stay `None` at the baseline layer since the tool resolves its target inside `execute`. Per-tool additive events (e.g. `workspace.fs_write`) still publish via `publish_audit` and ride alongside the baseline row under the same `correlation_id`. The `(correlation_id, event_type)` partial unique index on `platform_audit.audit_events` keeps them distinct. Emission is fire-and-forget: NATS publish failures log WARN and never taint the tool's response.
+`ToolServer.handle_call` stamps every dispatch with a unified `AuditEvent` envelope (`event_type='tool.call'`) via `threetears.agent.audit.publish_audit`. The baseline emission fires in a `finally` block so success, failure (tool returned `success=False`), and error (tool raised) outcomes all produce a row. Identity axes carry from the active `ToolCallScope` (`actor_user_id`, `calling_agent_id`, `owner_agent_id`, `customer_id`, `correlation_id`); `resource_namespace_id` / `resource_namespace_type` stay `None` at the baseline layer since the tool resolves its target inside `execute`. Per-tool additive events (e.g. `workspace.fs_write`) still publish via `publish_audit` and ride alongside the baseline row under the same `correlation_id`, which ties a request's events together and is not a deduplication key: every `tool.call` in a turn shares it, and each is its own row. Each envelope's `id` is its identity, so a JetStream redelivery (which repeats the `id`) collapses to one row. Emission is fire-and-forget: NATS publish failures log WARN and never taint the tool's response.
 
 ## Tool-as-namespace emission
 
@@ -17,6 +17,19 @@ Agent-spun ToolServers stamp `agent_id` + `customer_id` on the `RegistrationMani
 The canonical `name` shape is `tools.<sanitized-mcp>.<sanitized-version>` (per `build_namespace_name`); `metadata` carries the pre-sanitized natural-identity fields `mcp_name` / `mcp_version` / `pod_id` so downstream pattern matching (platform access materializer agent.yaml `access.tools` patterns + registry authorizer canonical-name lookup) does not need to reverse the sanitization rules. Deterministic `uuid5` derived from `(mcp_name, version, owner_agent_id_hex)` keeps concurrent emitters race-safe via `ON CONFLICT (id) DO UPDATE`.
 
 `ToolServer` holds no `NamespaceCollection` and has no constructor parameter to take one: `register_tool` / `deregister_tool` publish the manifest and nothing else. The pod-side emitter that once wrote and deleted these rows is deleted -- its write could not land (the agent's L3 proxy resolves platform-scoped writes to the per-agent `agent_<hex>` schema, which has no `namespaces` table) and its delete raised on every call (it passed a bare `UUID` to a Collection keyed on the composite `(row_scope, namespace_id)`). `packages/agent/tools/tests/enforcement/test_no_agent_side_namespace_writes.py` fails a build that brings any of it back.
+
+## Tool pod lifecycle: shutdown and owner process
+
+`ToolServerBootstrap` runs every tool pod's lifecycle. Two guarantees about how a pod stops:
+
+- **SIGTERM always ends the process.** SIGTERM and SIGINT run one shutdown path, `ToolServerBootstrap.shutdown_server`. If the server's own shutdown raises (a NATS drain against a reconnecting server raised `ConnectionResetError` in production) or overruns its bound, the failure is logged once at ERROR with its cause, the serve loop is ended anyway, and `run()` exits `EX_SOFTWARE` (70). A caller driving `run_async()` itself receives `ToolPodShutdownError`, chaining the cause. `ToolServer.shutdown` also releases `serve()` in a `finally`, so a pod not run by the bootstrap does not hang either.
+- **A pod can follow the process that owns it.** Set `THREETEARS_TOOL_POD_OWNER_PID` to the pid of the process that spawned the pod, and the pod shuts itself down through the same path once that process no longer exists (a WARNING names the pid). Opt-in; unset watches nothing. The check is `kill(pid, 0)`, portable across macOS and Linux; when the owner is the pod's parent, being reparented counts as the owner gone too. The value must be a decimal integer greater than 1 and not the pod's own pid -- `0`, negatives, `1`, blank and non-integers are refused at startup as a `ToolPodConfigError`, and `run()` exits `EX_CONFIG` (78).
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `THREETEARS_TOOL_POD_OWNER_PID` | unset | pid of the owning process; the pod exits when it is gone |
+| `THREETEARS_TOOL_POD_OWNER_POLL_INTERVAL_SECONDS` | `1.0` | how often the owner is checked (positive) |
+| `THREETEARS_TOOL_POD_SHUTDOWN_TIMEOUT_SECONDS` | `20.0` | bound on the server's shutdown, and separately on the teardown after it (positive) |
 
 ## Installation
 
@@ -137,12 +150,18 @@ from threetears.agent.tools import (
 Parse PDF, DOCX, XLSX, and plain text with optional OCR:
 
 ```python
-from threetears.agent.tools import parse_document, OcrConfig
+from threetears.agent.tools import DocumentParseError, OcrConfig, parse_document
 
-result = await parse_document(
-    file_bytes=data,
-    filename="report.pdf",
-    ocr_config=OcrConfig(enabled=True),
-)
-# result.sections -- list of DocumentSection with title, content, page numbers
+try:
+    result = await parse_document(
+        data,
+        "application/pdf",
+        "report.pdf",
+        ocr_config=OcrConfig(enabled=True),
+    )
+except DocumentParseError as exc:
+    ...  # exc.reason is "unsupported_type" or "parse_failed"; the parser's error is exc.__cause__
+# result.sections -- list of DocumentSection with heading, content, page numbers
 ```
+
+A document that cannot be read raises `DocumentParseError`; its failure is never returned as the document's text.

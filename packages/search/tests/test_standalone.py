@@ -45,7 +45,7 @@ from threetears.search.standalone import (
     StandaloneTransport,
 )
 from threetears.search.testing import LocalHttpServer, Reply
-from _searxng_payloads import TWO_RESULTS_BODY
+from packages.search.tests._searxng_payloads import TWO_RESULTS_BODY
 
 #: backoff small enough that a retry pin costs milliseconds rather than seconds.
 FAST_BACKOFF = {"initial_backoff": 0.001, "max_backoff": 0.002}

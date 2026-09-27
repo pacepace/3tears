@@ -38,6 +38,7 @@ __all__ = [
     "build_fetch_sql",
     "build_insert_params",
     "build_insert_sql",
+    "build_ordered_upsert_sql",
     "build_select_column_list",
     "build_where_pk",
     "cas_mutable_columns_for_data",
@@ -705,6 +706,67 @@ def build_cas_upsert_sql(schema: TableSchema, data: dict[str, Any] | None = None
         f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders}) "
         f"ON CONFLICT ({pk_cols}) DO UPDATE SET {set_clause} "
         f"WHERE {target}.{schema.cas_column} IS NOT DISTINCT FROM ${cas_idx}"
+    )
+
+
+#: the compare-and-swap order columns, mirrored from ``threetears.core.collections.l2_order`` for
+#: the same reason the type tags are: importing it would import ``collections``, a cycle.
+_L2_EPOCH_COLUMN = "l2_epoch"
+_L2_REVISION_COLUMN = "l2_revision"
+
+
+def build_ordered_upsert_sql(schema: TableSchema, data: dict[str, Any] | None = None) -> str:
+    """build the upsert that lands only over a row holding an older compare-and-swap order::
+
+        INSERT INTO t (...) VALUES (...)
+        ON CONFLICT (pk) DO UPDATE SET <mutable> = EXCLUDED.<mutable>
+        WHERE (COALESCE(t.l2_epoch, '-infinity'), COALESCE(t.l2_revision, -1))
+            < (EXCLUDED.l2_epoch, EXCLUDED.l2_revision)
+
+    * **no conflicting row**: the INSERT applies and one row is affected.
+    * **stored order strictly older**: ``DO UPDATE`` applies and one row is affected.
+    * **stored order newer or equal**: ``DO UPDATE`` is skipped and ZERO rows are affected --
+      the stored row came from a later compare-and-swap, which built on this one.
+
+    The ``COALESCE`` puts a row holding no order (written before the columns existed, or by a
+    path that won no swap) below every order, since a row comparison with a ``NULL`` in it is
+    neither true nor false and would otherwise refuse every swap forever. Parameters are the
+    INSERT's own, in declared column order (:func:`build_insert_params`).
+
+    :param schema: table schema declaring the ``l2_epoch`` / ``l2_revision`` columns
+    :ptype schema: TableSchema
+    :param data: the row, order columns included. ``None`` is treated as an empty dict
+    :ptype data: dict[str, Any] | None
+    :return: parameterized INSERT ... ON CONFLICT ... WHERE SQL
+    :rtype: str
+    :raises RuntimeError: when the schema does not declare both order columns as mutable, or
+        the row carries no order -- either would make the fence compare against nothing
+    """
+    row = data or {}
+    cols = insert_columns_for_data(schema, row)
+    mutable = {c.name for c in schema.mutable_columns()}
+    for name in (_L2_EPOCH_COLUMN, _L2_REVISION_COLUMN):
+        if name not in mutable:
+            raise RuntimeError(
+                f"TableSchema(name={schema.name!r}): an ordered upsert needs {name!r} declared as a mutable column",
+            )
+        if row.get(name) is None:
+            raise RuntimeError(
+                f"TableSchema(name={schema.name!r}): an ordered upsert needs the row to carry {name!r}; "
+                f"without it the fence compares against nothing",
+            )
+    emitted = {c.name for c in cols}
+    col_names = ", ".join(c.name for c in cols)
+    placeholders = ", ".join(render_param(c, i + 1) for i, c in enumerate(cols))
+    pk_cols = ", ".join(schema.pk_columns)
+    set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in schema.mutable_columns() if c.name in emitted)
+    target = _conflict_target_ref(schema)
+    return (
+        f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({pk_cols}) DO UPDATE SET {set_clause} "
+        f"WHERE (COALESCE({target}.{_L2_EPOCH_COLUMN}, '-infinity'::timestamptz), "
+        f"COALESCE({target}.{_L2_REVISION_COLUMN}, -1)) "
+        f"< (EXCLUDED.{_L2_EPOCH_COLUMN}, EXCLUDED.{_L2_REVISION_COLUMN})"
     )
 
 

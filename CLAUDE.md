@@ -35,13 +35,9 @@ A bare `"3tears-observe"` in a `dependencies` list is a bug, not a shorthand.
 
 `tests/enforcement/test_intra_family_version_bounds.py` enforces this. When you bump the family version, that test tells you which bounds to move. Do not hand-edit one package and leave the rest.
 
-**This is a hard rule, not a style preference.** Unbounded siblings let pip resolve a mixed family. That produces two failure modes, both brutal to diagnose.
+**This is a hard rule, not a style preference.** Unbounded siblings let pip resolve a mixed family: an install that builds clean and breaks at runtime, or a resolution failure that names the wrong package. Both real incidents are in [docs/releasing.md](docs/releasing.md).
 
-**A mixed install that builds clean and breaks at runtime.** pip paired `3tears-object-store` 0.18.0 with an otherwise-0.19.0 family in the hub image. 0.18.0 predates `build_object_key`'s `path=` parameter. Nothing failed at build time.
-
-**A resolution failure that names the wrong package.** With about 17 published versions across about 25 mutually-unbounded packages, pip backtracks the cross-product and dies with `ResolutionImpossible` or `resolution-too-deep` against whatever node it was holding. One real failure reported `no matching distributions available for your environment: 3tears-agent-tools`. The actual cause was a stale `protobuf` pin in a consumer's constraints file, three levels away. That message cost most of a day. It sends you hunting registry access, private indexes, and extras, none of which were the problem.
-
-Bounding makes a mixed family unresolvable rather than merely unlikely. It also collapses the search space, so pip blames the package that actually conflicts.
+An intra-family API addition ships in a MINOR bump (`tests/enforcement/test_api_growth_requires_a_minor_bump.py`).
 
 **Consumers pin the whole family to one exact version too.** See the matching warning in `14-eng-ai-bot/CLAUDE.md`.
 
@@ -90,33 +86,9 @@ Squashing collapses commit history and can silently drop or corrupt file content
 
 **Feature-branch all medium+ work.** Merge order respects PR stacking.
 
-### Cutting a release
+### Releasing
 
-1. Bump the version.
-2. PR into `develop`.
-3. PR `develop` into `main`, with no version bump on that second PR.
-4. Tag from `main`.
-
-Do not cut a release tag on a plain develop-to-main sync that is not meant to ship.
-
-**"Tag from main" means push a tag.** Run `git tag -a vX.Y.Z <commit on main>` then `git push origin vX.Y.Z`. The tag push is the trigger. It is the only path that creates the GitHub Release.
-
-**Do not run `gh workflow run release.yml` to cut a release.** That is the republish command below. It deliberately creates no release. Using it to cut a new one publishes to PyPI while leaving no tag and no release behind, with every job green. That happened on 2026-08-01 with 0.22.5.
-
-**A green release run does not mean a release exists.** Confirm with `git ls-remote --tags origin`, and check that `github-release` did not report `skipped`. `tag-on-main` verifies the ref is on main and creates nothing, whatever its name suggests.
-
-### Republishing an already-tagged version
-
-Use this when a package missed the upload, or a partial publish needs completing. Do not move the tag. Do not bump the version to carry one artifact.
-
-1. **Land the fix on `main` via a hotfix branch.** A release is cut from `main`, and `develop` usually holds unreleased work that must not ship.
-2. **Merge it to `develop` before dispatching.** GitHub only offers `workflow_dispatch` for a workflow whose file is on the repo's default branch, which here is `develop`. Land it on `main` alone and `gh workflow run` returns 422 with the trigger apparently missing. This is a hotfix, so it goes to both branches anyway. The ordering is what matters.
-3. Run `gh workflow run release.yml --ref main -f version=X.Y.Z`. The `--ref` decides which version of the workflow file runs and which tree is built, so it must carry both the fix and the version being published. Do not dispatch against the old tag: that tree predates the fix.
-4. Approve the `pypi` environment gate.
-
-`skip-existing` means everything already on PyPI is skipped. The only possible effect is that a genuinely absent artifact uploads.
-
-This is written here rather than only in `release.yml` because v0.18.0 shipped 26 of 27 packages while the instruction that would have prevented it sat in a comment inside the step it was telling you to delete.
+A release is: bump the version, PR into `develop`, PR `develop` into `main` with no bump, then **push a tag** from `main` (`git tag -a vX.Y.Z <commit>` then `git push origin vX.Y.Z`) -- the tag push is the only thing that creates the GitHub Release. **Never run `gh workflow run release.yml` to cut a release**: that is the republish command, and it publishes to PyPI with no tag and no release. A green release run does not mean a release exists; confirm with `git ls-remote --tags origin`. The full procedure, and republishing an already-tagged version: [docs/releasing.md](docs/releasing.md).
 
 ---
 
@@ -177,24 +149,12 @@ uv sync                    # install all packages in dev mode
 
 Extra args pass through: `./scripts/test.sh core -v -x`
 
-**Why the sidecar is separate.** nodriver is AGPL-3.0 and never enters the workspace venv, so `test.sh` carries `--ignore` for the sidecar and cannot run these. Separate but not optional: `check-all.sh` runs it. Until it existed, a ruff autofix wrote a syntax error into `hitl.py` that passed lint, mypy, and the entire workspace suite.
+`test-sidecar.sh` and `test-integration.sh` sit outside `test.sh` on purpose (an AGPL dependency, and Docker). Neither is optional:
 
-**Why integration tests are separate.** `test.sh` excludes them with `-m "not integration"`. `check-all.sh` does not run them either: they spin real NATS and Postgres containers and need Docker, so folding them into the default gate would break it wherever Docker is absent. **CI cannot run them at all — GitHub Actions has no Docker — so nothing but you, locally, ever executes them.**
+- **Run the integration suite before any PR, as `./scripts/test-integration.sh -rs`, and account for every skip.** CI has no Docker, so nothing but you ever runs it, and a skip reads exactly like a pass. When reporting, give the pass count AND each remaining skip with its reason.
+- **Build the sidecar image first, for the Docker host's own architecture**, or its tests skip (or fail under emulation).
 
-**Run them before any PR.** Cross-pod behaviour lives entirely there, and a green `check-all.sh` says nothing about it. `project-state.yaml` lists this as the third declared test command, so recorded evidence that omits it covers two suites out of three.
-
-**A skip is not a pass.** The suite exits 0 with tests skipped, so a skipped test reads exactly like a passing one in the summary line. Run it as `./scripts/test-integration.sh -rs` and account for every skip. This is not hypothetical: `test_a_real_display_is_driven_through_the_pipe` was unpassable on every machine for three weeks after the 2026-08-18 change that defaulted the sidecar's `BIND_HOST` to loopback (correct for the shipping Kubernetes shape, wrong for a testcontainer with its own network namespace). Nobody saw it, because the test skips when the sidecar image is absent and CI never runs the suite at all — the skip that hid the breakage was also the reason nobody noticed. It surfaced only when a release stopped to ask why 35 tests were skipping.
-
-**Build the sidecar image first**, or its integration tests skip:
-
-```bash
-docker buildx bake --file docker-bake.hcl nodriver-sidecar \
-  --set nodriver-sidecar.platform=linux/amd64 --load
-```
-
-The bake target is multi-platform and the local `docker` driver refuses that ("Multi-platform build is not supported for the docker driver"), hence `--set ... platform` and `--load`. A bare `docker buildx bake nodriver-sidecar` exits non-zero having built nothing — and piping it through `tee` masks that exit code, which is how it looked like it had worked.
-
-**Legitimate skips on a dev box** (they need credentials or tools this repo does not ship): the Redshift live tests (`OTS_REDSHIFT_PASSWORD`), the backup suites (`pg_dump`/`pg_restore`/`psql` on PATH), and one deliberate manual microbenchmark. Anything else is a test you have turned off by accident. When reporting results, state the pass count AND the remaining skips with their reasons — "integration green" on its own is not a report.
+The command, the incident behind each rule, and the list of legitimate dev-box skips: [docs/testing.md](docs/testing.md).
 
 ## Conventions
 
@@ -206,16 +166,4 @@ The bake target is multi-platform and the local `docker` driver refuses that ("M
 
 ## Test fakes
 
-A test fake is any class named `Fake<Name>` or `_Fake<Name>` under a `tests/` directory. Every one declares what production protocol it stands in for. Three routes, in order of preference:
-
-1. **Subclass it.** `class _FakeKv(KvBucketLike):`. The walker accepts any non-`object` base and checks nothing further, on the theory that a type checker covers it. **In this repo it does not:** mypy runs over `packages/*/src` only, so a subclassed fake's surface is unverified by anything. Prefer it anyway for a real Protocol, because the base documents intent and an IDE follows it. Reach for route 2 when you want the surface actually compared.
-2. **`# parity-with: <fully.qualified.name>`** on the line above the class. The walker imports the target and compares method surfaces. This is the only route that verifies anything.
-3. **`# parity-exempt: <rationale>`** on the line above the class, for a hand-rolled subset stub with no single production protocol to name. The rationale must be at least 30 characters and must not be a blanket phrase like "tests need this" or "temporary". **Keep it on one line, however long.** The walker reads the first non-blank line above the class and stops, so a wrapped rationale exempts nothing.
-
-Workspace tests centralise their asyncpg and workspace-entity shells under `packages/agent/workspace/tests/_helpers/`, so per-test inline fakes need only a one-line subclass declaration.
-
-**Exempt in place, not in `tests/enforcement/_fake_parity_exemptions.txt`.** That file still parses and is deliberately empty. Its entries are keyed `path:LINE:symbol`, so one added import shifts every fake below it and the gate fails with `no_declaration` for a fake nobody touched. A marker on the class moves with the class.
-
-`tests/enforcement/test_fake_protocol_parity.py` enforces this. It is a thin shell over the canonical walker in `packages/enforcement/src/threetears/enforcement/fake_parity/`. `FAKE_PARITY_ENFORCEMENT_MODE` defaults to `strict`.
-
-This catches the drift class where production protocols evolve while test fakes rot silently, until some downstream test happens to call the missing method.
+A test fake is any class named `Fake<Name>` or `_Fake<Name>` under a `tests/` directory, and every one declares what production protocol it stands in for, ON the class: subclass it, or `# parity-with: <fully.qualified.name>` (the only route that verifies the surface), or a one-line `# parity-exempt: <rationale>` of at least 30 characters. Never in `tests/enforcement/_fake_parity_exemptions.txt`, which is deliberately empty. `tests/enforcement/test_fake_protocol_parity.py` enforces it; the three routes in full: [docs/testing.md](docs/testing.md#test-fakes).

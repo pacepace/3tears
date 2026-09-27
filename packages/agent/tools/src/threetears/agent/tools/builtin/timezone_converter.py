@@ -7,13 +7,11 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 __all__ = [
-    "TimezoneConverterInput",
     "TimezoneConverterTool",
     "create_timezone_converter_tool",
 ]
@@ -34,20 +32,6 @@ _TIME_FORMATS = [
 # datetime -- the current time is data the tool must carry, never a value an
 # LLM caller infers (which it cannot do reliably).
 _NOW_TOKENS = frozenset({"", "now", "current", "current time", "right now"})
-
-
-class TimezoneConverterInput(BaseModel):
-    """Input for the timezone converter tool."""
-
-    time_str: str = Field(
-        description=(
-            "Time to convert. Pass 'now' for the current time and the tool resolves "
-            "it -- do not compute the current time yourself. Otherwise an explicit "
-            "time, e.g. '2024-01-15 14:30' or '3:00 PM'."
-        )
-    )
-    from_timezone: str = Field(description="Source IANA timezone (e.g. 'America/New_York')")
-    to_timezone: str = Field(description="Target IANA timezone (e.g. 'Europe/London')")
 
 
 def _convert_timezone(time_str: str, from_timezone: str, to_timezone: str) -> str:
@@ -107,7 +91,6 @@ def create_timezone_converter_tool(config: dict[str, Any], description: str) -> 
     return to_langchain_tool(
         TimezoneConverterTool(),
         description=description,
-        args_schema=TimezoneConverterInput,
     )
 
 
@@ -124,8 +107,9 @@ class TimezoneConverterTool(TearsTool):
             "time_str": {
                 "type": "string",
                 "description": (
-                    "Pass 'now' for the current time (resolved by the tool); "
-                    "otherwise an explicit time e.g. '2024-01-15 14:30' or '3:00 PM'."
+                    "Pass 'now' for the current time (resolved by the tool) -- do not compute "
+                    "the current time yourself; otherwise an explicit time e.g. '2024-01-15 14:30' "
+                    "or '3:00 PM'."
                 ),
             },
             "from_timezone": {

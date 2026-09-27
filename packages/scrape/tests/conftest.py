@@ -18,22 +18,17 @@ given.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-# Expose this suite's shared test infrastructure, matching how the workspace suite exposes its
-# own (`packages/agent/workspace/tests/conftest.py`). Import sites read::
+# This suite's shared test infrastructure is imported by its repo-root name::
 #
-#     from _driver_log_helpers import driver_warnings
+#     from packages.scrape.tests._driver_log_helpers import driver_warnings
 #
 # A sibling module rather than `from conftest import ...`: a root-level `conftest.py` exists and
-# shadows this one, so that import resolves to the wrong file entirely.
-_SCRAPE_TESTS_ROOT = Path(__file__).resolve().parent
-if str(_SCRAPE_TESTS_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SCRAPE_TESTS_ROOT))
+# shadows this one. The directory is not put on `sys.path`, so none of its names can shadow, or
+# be shadowed by, another suite's.
 
 
 @pytest.fixture(autouse=True)

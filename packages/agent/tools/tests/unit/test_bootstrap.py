@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import subprocess
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -12,7 +15,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import Column, MetaData, String, Table
 
-from threetears.agent.tools.bootstrap import EX_CONFIG, ToolPodConfigError, ToolServerBootstrap
+from threetears.agent.tools.bootstrap import (
+    EX_CONFIG,
+    EX_SOFTWARE,
+    OWNER_PID_ENV,
+    ToolPodConfigError,
+    ToolPodShutdownError,
+    ToolServerBootstrap,
+    resolve_owner_pid,
+)
+from threetears.agent.tools.config import OWNER_POLL_INTERVAL_ENV, SHUTDOWN_TIMEOUT_ENV
 from threetears.agent.tools.object_resolution_collection import (
     OBJECT_RESOLUTIONS_TABLE,
     ObjectResolutionCollection,
@@ -611,3 +623,271 @@ def test_signal_handler_uses_service_name_in_task_name() -> None:
     handler = bootstrap.make_signal_handler(server, "sigterm")
     # closure captured the service name in the task name template
     assert callable(handler)
+
+
+class _FailingShutdownServer(_FakeToolServer):
+    """a server whose shutdown raises the way a reconnecting NATS client's drain did.
+
+    Its ``shutdown`` does NOT release ``serve`` -- exactly the real failure: ``ToolServer.shutdown``
+    raised before it set the event ``serve`` waits on, so ``serve`` never returned and two tool
+    pods stayed alive for two days after SIGTERM.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_serve: Any = None
+
+    async def serve(self) -> None:
+        self.serve_called = True
+        if self.on_serve is not None:
+            self.on_serve()
+        await self.serve_event.wait()
+
+    async def shutdown(self) -> None:
+        self.shutdown_called = True
+        raise ConnectionResetError("NATS drain failed; connection reset by peer")
+
+
+class _FailingShutdownBootstrap(ToolServerBootstrap):
+    """drives ``run`` with a server whose shutdown raises, signalled from inside ``serve``."""
+
+    def __init__(self, server: _FailingShutdownServer) -> None:
+        super().__init__("failing-shutdown-pod", health_port=0)
+        self.server = server
+        as_server: Any = server
+        server.on_serve = lambda: self.make_signal_handler(as_server, "sigterm")()
+
+    async def build_server(self) -> Any:
+        return self.server
+
+    async def register_tools(self, server: Any) -> None:
+        pass
+
+
+class TestAFailedShutdownStillExits:
+    """SIGTERM ends the process even when the server's own shutdown raises."""
+
+    async def test_serve_is_left_and_the_failure_is_raised(self, caplog: pytest.LogCaptureFixture) -> None:
+        """``run_async`` returns control -- by raising the typed failure -- instead of waiting forever.
+
+        :param caplog: the log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        server = _FailingShutdownServer()
+        bootstrap = _FailingShutdownBootstrap(server)
+
+        with caplog.at_level(logging.ERROR), pytest.raises(ToolPodShutdownError) as raised:
+            await asyncio.wait_for(bootstrap.run_async(), timeout=5.0)
+
+        assert server.shutdown_called is True
+        assert isinstance(raised.value.__cause__, ConnectionResetError)
+        errors = _error_records(caplog)
+        assert len(errors) == 1, [r.getMessage() for r in errors]
+        extra = getattr(errors[0], "extra_data", {})
+        assert extra.get("error_type") == "ConnectionResetError"
+        assert "connection reset by peer" in extra.get("error", "")
+        assert extra.get("reason") == "sigterm"
+
+    def test_the_process_exits_non_zero(self) -> None:
+        """``run`` owns the exit status: a shutdown that failed is not a clean exit.
+
+        :return: nothing
+        :rtype: None
+        """
+        bootstrap = _FailingShutdownBootstrap(_FailingShutdownServer())
+
+        with pytest.raises(SystemExit) as exit_info:
+            bootstrap.run()
+
+        assert exit_info.value.code == EX_SOFTWARE
+        assert EX_SOFTWARE not in (0, EX_CONFIG)
+
+    async def test_a_shutdown_that_hangs_is_cut_off_at_the_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a drain that never returns is the same failure as one that raises, once the bound passes.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(SHUTDOWN_TIMEOUT_ENV, "0.1")
+        server = _FailingShutdownServer()
+
+        async def _hang() -> None:
+            server.shutdown_called = True
+            await asyncio.Event().wait()
+
+        server.shutdown = _hang  # type: ignore[method-assign]
+        bootstrap = _FailingShutdownBootstrap(server)
+
+        with pytest.raises(ToolPodShutdownError) as raised:
+            await asyncio.wait_for(bootstrap.run_async(), timeout=5.0)
+
+        assert isinstance(raised.value.__cause__, TimeoutError)
+
+    async def test_a_second_signal_does_not_start_a_second_shutdown(self) -> None:
+        """SIGTERM then SIGINT (or the owner going too) drives one shutdown, not two.
+
+        :return: nothing
+        :rtype: None
+        """
+        server = _FakeToolServer()
+        calls: list[int] = []
+        original = server.shutdown
+
+        async def _counted() -> None:
+            calls.append(1)
+            await original()
+
+        server.shutdown = _counted  # type: ignore[method-assign]
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0.01)
+        as_server: Any = server
+        await asyncio.gather(
+            bootstrap.shutdown_server(as_server, reason="sigterm"),
+            bootstrap.shutdown_server(as_server, reason="sigint"),
+        )
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+        assert calls == [1]
+
+
+class TestTheOwnerPidIsValidatedAtStartup:
+    """``THREETEARS_TOOL_POD_OWNER_PID`` is refused at startup unless it can name a real owner."""
+
+    @pytest.mark.parametrize("value", ["0", "-5", "1", "abc", "", "12.5"])
+    def test_an_invalid_value_is_a_config_fault(self, value: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """each is refused with the variable named, and the process exits ``EX_CONFIG``.
+
+        :param value: the invalid value
+        :ptype value: str
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(OWNER_PID_ENV, value)
+        server = _FakeToolServer()
+        server.serve_event.set()
+
+        with pytest.raises(SystemExit) as exit_info:
+            _SucceedingBootstrap(server).run()
+
+        assert exit_info.value.code == EX_CONFIG
+        assert server.serve_called is False
+
+    def test_the_pods_own_pid_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a pod watching itself would never notice anything.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(OWNER_PID_ENV, str(os.getpid()))
+        with pytest.raises(ToolPodConfigError) as raised:
+            resolve_owner_pid()
+        assert raised.value.variable == OWNER_PID_ENV
+
+    def test_unset_watches_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """opt-in: no variable, no watch.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.delenv(OWNER_PID_ENV, raising=False)
+        assert resolve_owner_pid() is None
+
+    def test_a_live_pid_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the parent of this test process is a real, live owner.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(OWNER_PID_ENV, f" {os.getppid()} ")
+        assert resolve_owner_pid() == os.getppid()
+
+
+class TestAToolPodExitsWhenItsOwnerIsGone:
+    """the owner watch, against a real process that really exits."""
+
+    async def test_the_pod_shuts_down_when_the_owner_exits(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a short-lived owner subprocess exits; the pod shuts down through the normal path.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :param caplog: the log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.3)"])  # noqa: S603
+        monkeypatch.setenv(OWNER_PID_ENV, str(owner.pid))
+        monkeypatch.setenv(OWNER_POLL_INTERVAL_ENV, "0.05")
+        server = _FakeToolServer()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        with caplog.at_level(logging.WARNING):
+            run_task = asyncio.create_task(bootstrap.run_async())
+            await asyncio.sleep(0.1)
+            assert not run_task.done(), "the pod must keep serving while its owner lives"
+            # reap the owner, as its own parent would; an unreaped child still answers kill(pid, 0).
+            await asyncio.to_thread(owner.wait)
+            await asyncio.wait_for(run_task, timeout=5.0)
+
+        assert server.shutdown_called is True
+        gone = [r for r in caplog.records if r.levelno == logging.WARNING and str(owner.pid) in r.getMessage()]
+        assert len(gone) == 1
+
+    async def test_a_pod_whose_owner_lives_keeps_serving(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the negative control: a live owner is polled and nothing happens.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])  # noqa: S603
+        try:
+            monkeypatch.setenv(OWNER_PID_ENV, str(owner.pid))
+            monkeypatch.setenv(OWNER_POLL_INTERVAL_ENV, "0.02")
+            server = _FakeToolServer()
+            bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+            run_task = asyncio.create_task(bootstrap.run_async())
+            await asyncio.sleep(0.3)
+
+            assert not run_task.done()
+            assert server.shutdown_called is False
+            await server.shutdown()
+            await asyncio.wait_for(run_task, timeout=2.0)
+        finally:
+            owner.kill()
+            owner.wait()
+
+    async def test_an_owner_gone_with_a_failing_shutdown_still_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """item 5's guarantee holds on this path too: the owner is gone and the drain raises.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        owner = subprocess.Popen([sys.executable, "-c", "pass"])  # noqa: S603
+        owner.wait()
+        monkeypatch.setenv(OWNER_PID_ENV, str(owner.pid))
+        monkeypatch.setenv(OWNER_POLL_INTERVAL_ENV, "0.05")
+        server = _FailingShutdownServer()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        with pytest.raises(ToolPodShutdownError):
+            await asyncio.wait_for(bootstrap.run_async(), timeout=5.0)
+        assert server.shutdown_called is True

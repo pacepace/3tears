@@ -144,6 +144,7 @@ What an LLM agent is made of: what it can do, what it remembers, what it is allo
 | Package | Import | Description |
 |---|---|---|
 | [`3tears-agent-tools`](packages/agent/tools/) | `threetears.agent.tools` | Tool framework. `TearsTool` base, `ToolServer` for NATS registration plus dispatch plus audit, context management, built-in tools, and tool-group aliases |
+| [`3tears-tool-schema`](packages/tool-schema/) | `threetears.tool_schema` | Dependency-free helpers for a tool's argument schema. `self_contained_input_schema` inlines every `$ref` and collapses optional unions so a model or validator sees nested models as objects; `declared_type` reads the one type a property declares |
 | [`3tears-agent-memory`](packages/agent/memory/) | `threetears.agent.memory` | Memory extraction, retrieval, hybrid search, and MMR reranking for LLM agents |
 | [`3tears-agent-knowledge`](packages/agent/knowledge/) | `threetears.agent.knowledge` | Governed-knowledge retrieval and injection. Concepts, playbook entries, three-scope shadow merge, and `before_model` middleware |
 | [`3tears-agent-skills`](packages/agent/skills/) | `threetears.agent.skills` | Procedural memory. Skill definitions and invocation history |
@@ -238,6 +239,7 @@ graph LR
         CORE[core]
         NATS[nats]
         MEDIA[media-contracts]
+        TSCHEMA[tool-schema]
     end
 
     subgraph "Tiers"
@@ -256,6 +258,8 @@ graph LR
     TOOLS --> AUDIT
     TOOLS --> LG
     TOOLS --> MEDIA
+    TOOLS --> TSCHEMA
+    MODELS --> TSCHEMA
     KNOW --> MEM
     MEM --> ACL
     IDENT --> ACL

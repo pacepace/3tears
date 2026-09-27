@@ -19,7 +19,9 @@ The dump subprocess is the only thing faked. Both modules that launch one are pa
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
@@ -317,3 +319,33 @@ class TestAMissingIdIsNotAnId:
 
         database_dump = next(argv for argv in dump_argv if "--dbname" in argv and "--globals-only" not in argv)
         assert not any(arg.startswith("--snapshot") for arg in database_dump)
+
+
+class TestTwoSetsInOneMillisecondAreTwoSets:
+    async def test_their_dumps_do_not_share_a_key(
+        self, tmp_path: Any, dump_argv: list[list[str]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set root cut from the head of its uuid7 is the backup's millisecond.
+
+        Two cluster backups started in one millisecond wrote their dumps under one root, and the
+        second set's dumps replaced the first's while the first manifest still pointed at them.
+        """
+        same_millisecond = iter(
+            [UUID("019470a8-b5c3-7def-8123-456789abcdef"), UUID("019470a8-b5c3-7a01-9fed-cba987654321")]
+        )
+        monkeypatch.setattr(cluster_module, "uuid7", lambda: next(same_millisecond))
+        when = datetime(2026, 7, 1, 3, 0, tzinfo=UTC)
+
+        async def connect(_dsn: str) -> _RecordingConnection:
+            return _RecordingConnection()
+
+        config = BackupConfig(
+            passphrase=SecretStr("test-passphrase-not-a-real-one"), prefix="utest", encryption_work_factor=2**4
+        )
+        backup = ClusterBackup(config, FilesystemObjectStore(str(tmp_path)), connect)
+        first = await backup.create_backup("postgresql://u@h/postgres", when=when)
+        second = await backup.create_backup("postgresql://u@h/postgres", when=when)
+
+        first_keys = {d.key for d in first.databases} | {first.globals_key}
+        second_keys = {d.key for d in second.databases} | {second.globals_key}
+        assert first_keys.isdisjoint(second_keys)

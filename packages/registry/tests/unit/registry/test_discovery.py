@@ -15,6 +15,8 @@ from threetears.registry.discovery import (
     DiscoveryHandler,
 )
 
+from ._copies import uniform_entry
+
 
 @pytest.fixture(autouse=True)
 def _bind_namespace() -> None:
@@ -45,7 +47,7 @@ def _make_entry(
     :rtype: CatalogEntry
     """
     endpoint = ToolEndpoint(pod_id=pod_id, status=status)
-    result = CatalogEntry(
+    result = uniform_entry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
@@ -259,7 +261,7 @@ class TestDiscoveryMultiEndpoint:
     async def test_returns_correct_endpoint_count_for_multi_pod_tool(self) -> None:
         """discovery returns endpoint_count matching number of registered endpoints."""
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",
@@ -293,7 +295,7 @@ class TestDiscoveryMultiEndpoint:
     async def test_discover_all_returns_tools_once_with_multiple_endpoints(self) -> None:
         """discover-all returns each tool once with correct endpoint_count."""
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",

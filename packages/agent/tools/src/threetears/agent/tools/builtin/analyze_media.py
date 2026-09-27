@@ -28,7 +28,6 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.protocols import (
@@ -45,7 +44,6 @@ from threetears.observe import get_logger
 __all__ = [
     "AnalyzeMediaTool",
     "AnalyzerConfig",
-    "MediaAnalysisInput",
     "OnAnalysisCallback",
     "create_analyze_media_tool",
 ]
@@ -85,27 +83,6 @@ OnAnalysisCallback = Callable[[str, str, str], Awaitable[None]]
 
 def _tool_error(step: str, detail: str) -> str:
     return f"[analyze_media/{step}] Error: {detail}"
-
-
-class MediaAnalysisInput(BaseModel):
-    """structured-args schema for the analyze_media tool.
-
-    promoted to module level so the StructuredTool factory and any
-    test fixture can reference it without going through the factory.
-    """
-
-    media_ids: list[str] = Field(
-        description="The ids of the files to look at.",
-    )
-    question: str = Field(
-        description="What to ask about them, e.g. 'Describe this image' or 'What is said in this audio?'",
-    )
-    analyzer: str = Field(
-        description=(
-            "The analyzer to use, by its name in the list. Pick one that reads images for "
-            "images and documents, and one that transcribes for audio and video."
-        ),
-    )
 
 
 def create_analyze_media_tool(
@@ -181,7 +158,6 @@ def create_analyze_media_tool(
     return to_langchain_tool(
         tool,
         description=full_description,
-        args_schema=MediaAnalysisInput,
     )
 
 
@@ -230,7 +206,10 @@ class AnalyzeMediaTool(TearsTool):
             },
             "analyzer": {
                 "type": "string",
-                "description": "display name of analysis model to use",
+                "description": (
+                    "display name of analysis model to use. Pick one that reads images for images "
+                    "and documents, and one that transcribes for audio and video."
+                ),
             },
         },
         "required": ["media_ids", "question", "analyzer"],

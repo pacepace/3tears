@@ -19,6 +19,9 @@ separation of concerns:
 - :func:`skip_without_docker_marker` /
   :func:`skip_without_nats_marker` build ``pytest.mark.skipif``
   marks the test author can apply at file or class level.
+- :func:`stagger_container_start` spreads the first container start
+  of each xdist worker out in time. every shared container fixture
+  calls it; a fixture that starts its own container should too.
 
 all heavy imports (``testcontainers``, ``docker``, ``nats``) happen
 inside the function bodies so this module stays cheap to import from
@@ -27,20 +30,72 @@ non-test code paths.
 
 from __future__ import annotations
 
+import math
+import os
+import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 
+from threetears.observe import BuildOnce
+
 __all__ = [
+    "CONTAINER_STAGGER_ENV",
     "check_docker_available",
     "nats_reachable",
     "skip_without_docker_marker",
     "skip_without_nats_marker",
+    "stagger_container_start",
 ]
 
 
-_DOCKER_AVAILABLE: bool | None = None
-_NATS_REACHABLE: dict[str, bool] = {}
+#: probe verdicts, memoised through ``BuildOnce`` so concurrent first callers probe once: docker
+#: under :data:`_DOCKER`, each NATS ``host:port`` under its own (a colon never appears in the former).
+_PROBES: BuildOnce[str, bool] = BuildOnce()
+
+#: the :data:`_PROBES` key the docker verdict is held under.
+_DOCKER = "docker"
+
+#: seconds between xdist workers' first container starts; ``0`` disables the stagger.
+CONTAINER_STAGGER_ENV = "THREETEARS_TEST_CONTAINER_STAGGER_SECONDS"
+_DEFAULT_STAGGER_SECONDS = 2.0
+#: once per process: a worker waits before its FIRST container only.
+_staggered = False
+
+
+def stagger_container_start(*, sleep: Callable[[float], None] = time.sleep) -> None:
+    """delay this xdist worker's first container start by its index times the stagger.
+
+    several workers starting their first container in the same instant is a burst the Docker
+    daemon does not always survive -- on ZFS-backed storage it leaves half-created containers
+    (``zfs destroy ... dataset does not exist``) and the session fixture errors. worker ``gwN``
+    therefore waits ``N * stagger`` seconds before its first start, once per process: ``gw0``
+    never waits, a worker that never starts a container pays nothing, and without xdist nothing
+    changes. the stagger is ``THREETEARS_TEST_CONTAINER_STAGGER_SECONDS`` (default 2.0; ``0``
+    disables it).
+
+    :param sleep: the blocking sleep (injected by tests)
+    :ptype sleep: Callable[[float], None]
+    :return: None
+    :rtype: None
+    :raises ValueError: the stagger is not a finite, non-negative number
+    """
+    global _staggered  # noqa: PLW0603 -- the once-per-process flag IS module state
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+    if _staggered or not worker.startswith("gw") or not worker[2:].isdigit():
+        return
+    raw = os.environ.get(CONTAINER_STAGGER_ENV, str(_DEFAULT_STAGGER_SECONDS))
+    try:
+        stagger = float(raw)
+    except ValueError:
+        stagger = -1.0
+    if not math.isfinite(stagger) or stagger < 0:
+        raise ValueError(f"{CONTAINER_STAGGER_ENV} must be a finite, non-negative number of seconds, got {raw!r}")
+    _staggered = True
+    delay = int(worker[2:]) * stagger
+    if delay > 0:
+        sleep(delay)
 
 
 def check_docker_available() -> bool:
@@ -54,18 +109,23 @@ def check_docker_available() -> bool:
     :return: True when docker is reachable, False otherwise
     :rtype: bool
     """
-    global _DOCKER_AVAILABLE  # noqa: PLW0603
-    result = _DOCKER_AVAILABLE
-    if result is None:
-        try:
-            import docker  # noqa: PLC0415
+    return _PROBES.get(_DOCKER, _ping_docker)
 
-            client = docker.from_env()  # type: ignore[attr-defined]
-            client.ping()
-            result = True
-        except Exception:
-            result = False
-        _DOCKER_AVAILABLE = result
+
+def _ping_docker() -> bool:
+    """ping the docker daemon once.
+
+    :return: True when docker is reachable, False otherwise
+    :rtype: bool
+    """
+    try:
+        import docker  # noqa: PLC0415
+
+        client = docker.from_env()  # type: ignore[attr-defined]
+        client.ping()
+        result = True
+    except Exception:
+        result = False
     return result
 
 
@@ -99,17 +159,21 @@ def nats_reachable(
     """
     import socket  # noqa: PLC0415
 
-    cache_key = f"{host}:{port}"
-    if cache_key in _NATS_REACHABLE:
-        return _NATS_REACHABLE[cache_key]
+    def _connect() -> bool:
+        """
+        opens and closes one TCP connection to host:port.
 
-    try:
-        with socket.create_connection((host, port), timeout=timeout_seconds):
-            verdict = True
-    except OSError:
-        verdict = False
-    _NATS_REACHABLE[cache_key] = verdict
-    return verdict
+        :return: True when it connected
+        :rtype: bool
+        """
+        try:
+            with socket.create_connection((host, port), timeout=timeout_seconds):
+                verdict = True
+        except OSError:
+            verdict = False
+        return verdict
+
+    return _PROBES.get(f"{host}:{port}", _connect)
 
 
 def skip_without_docker_marker() -> Any:
