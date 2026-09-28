@@ -109,6 +109,7 @@ async def test_start_ensures_a_memory_stream_by_default_with_the_dead_letter_and
     try:
         [stream] = nats.streams
         assert stream["name"] == AUDIT_STREAM_NAME and stream["storage"] == "memory"
+        assert stream["max_age_seconds"] is None, "no age limit unless one is asked for"
         assert Subjects.audit_deadletter().path in stream["subjects"]
         [sub] = nats.subscriptions
         assert sub["durable"] == "app-audit-persist"
@@ -117,6 +118,19 @@ async def test_start_ensures_a_memory_stream_by_default_with_the_dead_letter_and
     finally:
         await handle.stop()
     assert nats.consumer.stopped
+
+
+async def test_the_age_limit_reaches_the_stream_declaration() -> None:
+    from threetears.nats import set_default_namespace
+
+    set_default_namespace("unitaudit")
+    nats = _Nats()
+    handle = await start_audit_persister(nats, _Db(), durable="app-audit-persist", max_age_seconds=86_400.0)
+    try:
+        [stream] = nats.streams
+        assert stream["max_age_seconds"] == 86_400.0
+    finally:
+        await handle.stop()
 
 
 async def test_stop_cancels_the_task_even_when_the_consumer_stop_fails() -> None:

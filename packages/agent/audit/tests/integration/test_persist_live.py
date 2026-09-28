@@ -260,3 +260,58 @@ async def test_a_published_event_reaches_the_table_through_nats(db: asyncpg.Pool
             assert await db.fetchval("SELECT count(*) FROM audit_events WHERE id = $1", event.id) == 1
         finally:
             await handle.stop()
+
+
+async def _audit_stream_max_age(nats: Any) -> float | None:
+    """the live ``audit`` stream's ``max_age`` in seconds, as the broker reports it (0 or None: unlimited).
+
+    :param nats: the connected client
+    :ptype nats: NatsClient
+    :return: the stream's age limit
+    :rtype: float | None
+    """
+    from threetears.agent.audit.persist import AUDIT_STREAM_NAME
+
+    info = await nats.jetstream_context().stream_info(f"{nats.namespace}-{AUDIT_STREAM_NAME}")
+    return info.config.max_age
+
+
+async def test_the_age_limit_reaches_the_live_stream_and_a_changed_one_updates_it(
+    db: asyncpg.Pool, nats_container: str
+) -> None:
+    """Every start re-declares the stream, so the value a start passes is the value the stream carries:
+    set, changed on an existing stream, and cleared by ``None``."""
+    from threetears.agent.audit.persist import start_audit_persister
+    from threetears.nats import NatsClient, set_default_namespace
+
+    namespace = f"auditage{uuid.uuid4().hex[:6]}"
+    set_default_namespace(namespace)
+    async with await NatsClient.connect(
+        nats_url=nats_container, nats_subject_namespace=namespace, client_name="audit"
+    ) as nats:
+        for max_age, expected in ((86_400.0, 86_400.0), (3_600.0, 3_600.0), (None, None)):
+            handle = await start_audit_persister(nats, db, durable="age-audit-persist", max_age_seconds=max_age)
+            try:
+                live = await _audit_stream_max_age(nats)
+                if expected is None:
+                    assert not live, f"None clears the age limit, got {live}"
+                else:
+                    assert live == expected
+            finally:
+                await handle.stop()
+
+
+async def test_no_age_limit_leaves_the_live_stream_unlimited(db: asyncpg.Pool, nats_container: str) -> None:
+    from threetears.agent.audit.persist import start_audit_persister
+    from threetears.nats import NatsClient, set_default_namespace
+
+    namespace = f"auditnoage{uuid.uuid4().hex[:6]}"
+    set_default_namespace(namespace)
+    async with await NatsClient.connect(
+        nats_url=nats_container, nats_subject_namespace=namespace, client_name="audit"
+    ) as nats:
+        handle = await start_audit_persister(nats, db, durable="noage-audit-persist", storage="file")
+        try:
+            assert not await _audit_stream_max_age(nats)
+        finally:
+            await handle.stop()
