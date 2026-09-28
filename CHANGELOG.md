@@ -4,6 +4,28 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.56.2 -- 2026-09-28
+
+Nothing to do on upgrade; a caller that passes nothing new gets exactly the stream it got before.
+
+### `start_audit_persister` can set the audit stream's retention
+
+The persister ensures the `audit` stream with limits retention and no age limit, so the stream kept
+every event forever, including every event already written to `audit_events`. Setting an age by
+hand did not last: every start re-declares the stream, and the update reset anything set with
+`nats stream edit`.
+
+**Added:** `start_audit_persister(..., max_age_seconds=None)`, passed to
+`ensure_jetstream_stream`. The stream then discards an event that long after it was published,
+persisted or not.
+
+- `None`, the default, sets no age limit, as before.
+- A changed value updates the existing stream in place on the next start. `None` clears a limit set
+  earlier.
+- Every declarer of the `audit` stream re-applies its own value when it starts, so every declarer in
+  a deployment must pass the same one.
+- An age shorter than the persister can fall behind discards events the table never received.
+
 ## v0.56.1 -- 2026-09-27
 
 Fixes found running metallm on 0.56.0. Nothing to do on upgrade; no API changes.
