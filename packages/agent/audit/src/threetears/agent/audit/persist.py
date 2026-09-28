@@ -16,9 +16,11 @@ dropped ``acting_as_principal_id`` on the way). This is it, once:
 - :func:`start_audit_persister`: ensures the ``audit`` stream with its sibling dead-letter subject and runs
   a shared durable PULL consumer, so every replica may run it and each event is persisted once. The
   stream's storage must match every other declarer of that stream name in the deployment (a mismatch
-  crashes the second declarer); it defaults to memory, as the NATS client does. The durable name must be
-  unique per table: two apps sharing a namespace and a durable would split the events between them. A malformed event is acked and dropped; a database fault raises, so
-  the consumer retries and finally dead-letters it rather than losing the record.
+  crashes the second declarer); it defaults to memory, as the NATS client does. It sets no age limit
+  on the stream unless given ``max_age_seconds``, and every declarer must give the same one. The durable
+  name must be unique per table: two apps sharing a namespace and a durable would split the events
+  between them. A malformed event is acked and dropped; a database fault raises, so the consumer
+  retries and finally dead-letters it rather than losing the record.
 - :func:`prune_audit_events`: an age-based retention delete, in batches.
 - :func:`anonymize_audit_rows`: erasure under THE platform rule and no other. Every row and every id
   survives; only ``details`` (through :func:`~threetears.agent.audit.anonymize_details`, under each row's
@@ -266,6 +268,7 @@ async def start_audit_persister(
     *,
     durable: str,
     storage: str = "memory",
+    max_age_seconds: float | None = None,
     max_deliver: int = AUDIT_MAX_DELIVER,
 ) -> AuditPersisterHandle:
     """ensure the audit stream and run a shared durable pull consumer persisting every event.
@@ -281,6 +284,15 @@ async def start_audit_persister(
     :param storage: the stream's storage (``memory`` or ``file``); must match every other declarer of the
         ``audit`` stream in this deployment
     :ptype storage: str
+    :param max_age_seconds: how long the stream keeps an event after it was published, persisted or not.
+        ``None`` (the default) sets no age limit: the stream keeps every event until another limit bites.
+        every start re-declares the stream with this value, and a changed value UPDATES the existing
+        stream in place rather than being refused. ``None`` therefore also clears an age limit set
+        earlier, whether by a previous start or by hand. the stream's other declarers re-apply their own
+        value when they start, so every declarer of the ``audit`` stream in a deployment must pass the
+        same value. an age shorter than the persister can fall behind -- an outage longer than it --
+        discards events the table never received
+    :ptype max_age_seconds: float | None
     :param max_deliver: attempts before an event is dead-lettered
     :ptype max_deliver: int
     :return: the running persister
@@ -290,6 +302,7 @@ async def start_audit_persister(
         name=AUDIT_STREAM_NAME,
         subjects=[Subjects.audit_wildcard().path, Subjects.audit_deadletter().path],
         storage=storage,
+        max_age_seconds=max_age_seconds,
     )
 
     async def _on_message(msg: Any) -> None:  # noqa: ANN401
@@ -307,7 +320,10 @@ async def start_audit_persister(
         stream=stream,
     )
     task = spawn_background(consumer.run(), name=f"audit-persister:{durable}", logger=log)
-    log.info("audit persister started", extra={"extra_data": {"durable": durable, "storage": storage}})
+    log.info(
+        "audit persister started",
+        extra={"extra_data": {"durable": durable, "storage": storage, "max_age_seconds": max_age_seconds}},
+    )
     return AuditPersisterHandle(consumer, task)
 
 
