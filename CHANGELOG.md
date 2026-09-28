@@ -4,6 +4,32 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.56.3 -- 2026-09-28
+
+Nothing to do on upgrade; no API changes. A consumer that strips this syntax itself can delete its
+copy.
+
+### A Claude subscription answer comes back without its `StructuredOutput` call's syntax
+
+Asked for a schema, the Claude CLI route answers through its `StructuredOutput` tool call, and that
+call's syntax leaked into the answer's string values. Measured in metallm on `claude-sonnet-5`: a
+trailing `</note>\n</invoke>` on 3 of 30 answers, and the whole value JSON-encoded as
+`{"note": "..."}` inside the string on 6 of 60.
+
+**Fixed:** the subscription chat model cuts both from a structured answer, invoked or streamed,
+before returning it:
+
+- A string loses a trailing run of closing tags, each named after the string's own key (`</note>` on
+  `note`; a list's items take the list's key) or `parameter`, `invoke` or `function_calls`, and the
+  whitespace between them.
+- A string that is, whole, a JSON object with the string's own key as its one key and a string as
+  its value becomes that string.
+- Nothing else changes: a tag inside the text, an opening tag, a closing tag of any other name, and
+  JSON the text only contains all stay.
+- Each cut is logged at INFO with the schema's name and what was cut.
+
+Only the Claude CLI route is changed. The API route and every other provider are untouched.
+
 ## v0.56.2 -- 2026-09-28
 
 Nothing to do on upgrade; a caller that passes nothing new gets exactly the stream it got before.
