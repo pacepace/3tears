@@ -41,7 +41,11 @@ from langchain_core.tools import tool  # noqa: E402
 
 from threetears.models import DEFAULT_CHAT_MODEL, claude_cli_pool  # noqa: E402
 from threetears.models.errors import ModelProviderError  # noqa: E402
-from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: E402
+from threetears.models.providers._claude_cli import (  # noqa: E402
+    _settle,
+    _StructuredAttempts,
+    create_subscription_chat,
+)
 from threetears.models.providers.structured_output import structured_output_kwargs  # noqa: E402
 
 TOKEN = "sk-ant-oat01-faketokenfortest"
@@ -538,3 +542,177 @@ class TestAPlaceholderWrappedAnswerIsUnwrapped:
             model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
             with pytest.raises(ModelProviderError):
                 await model.ainvoke([HumanMessage(content="hi")])
+
+
+#: A schema shaped like the one the leak was measured on: a long own-words string and a list of strings.
+_NOTE_SCHEMA: dict[str, Any] = {
+    "title": "note",
+    "type": "object",
+    "properties": {"note": {"type": "string"}, "facts": {"type": "array", "items": {"type": "string"}}},
+    "required": ["note", "facts"],
+}
+
+
+def _answered(structured_output: Any) -> ResultMessage:
+    """a call the CLI answered with ``structured_output``.
+
+    :param structured_output: the answer on the result
+    :ptype structured_output: Any
+    :return: the result message
+    :rtype: ResultMessage
+    """
+    return ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="s",
+        stop_reason="tool_use",
+        structured_output=structured_output,
+    )
+
+
+def _settled(structured_output: Any, output_format: Any = None) -> Any:
+    """the answer :func:`_settle` makes of a result carrying ``structured_output``.
+
+    :param structured_output: the answer on the result
+    :ptype structured_output: Any
+    :param output_format: the call's ``output_format``; the note schema when not given
+    :ptype output_format: Any
+    :return: the settled answer
+    :rtype: Any
+    """
+    fmt = {"type": "json_schema", "schema": _NOTE_SCHEMA} if output_format is None else output_format
+    answer, _info = _settle(_answered(structured_output), fmt, [], "", _StructuredAttempts())
+    return answer
+
+
+class TestTheCallsClosingTagsAreCut:
+    """The CLI answers a schema through its ``StructuredOutput`` call, and the model can close a long
+    string with the call's syntax too: ``</note>\\n</invoke>`` on 3 answers of 30 measured in one
+    consumer (2026-09-28). Those tags, at the end of a string, are the call's and go; any other markup
+    stays for the caller's own check to see."""
+
+    @pytest.mark.parametrize(
+        ("said", "kept"),
+        [
+            pytest.param("Heat is on.</note>\n</invoke>", "Heat is on.", id="production"),
+            pytest.param("Heat is on.</parameter>\n</invoke>  ", "Heat is on.", id="parameter"),
+            pytest.param("Heat is on.\n</function_calls>", "Heat is on.", id="function-calls"),
+            pytest.param("Heat is on.", "Heat is on.", id="nothing-to-cut"),
+            pytest.param("Heat is on.  ", "Heat is on.  ", id="nothing-cut-keeps-its-whitespace"),
+            pytest.param("Heat is on.</b>", "Heat is on.</b>", id="another-tag-stays"),
+            pytest.param("Heat is on.</b></invoke>", "Heat is on.</b>", id="the-run-stops-at-another-tag"),
+            pytest.param("Heat </note> is on.", "Heat </note> is on.", id="inside-the-text-stays"),
+            pytest.param('<parameter name="note">Heat is on.', '<parameter name="note">Heat is on.', id="opener"),
+            pytest.param("Heat is on.</facts>", "Heat is on.</facts>", id="another-keys-tag-stays"),
+            pytest.param("x -> y>", "x -> y>", id="a-bare-angle-stays"),
+        ],
+    )
+    def test_only_the_calls_closers_at_the_end_go(self, said: str, kept: str) -> None:
+        answer = _settled({"note": said, "facts": ["20.0°C</facts>\n</invoke>", "16.1°C"]})
+
+        assert answer == {"note": kept, "facts": ["20.0°C", "16.1°C"]}
+
+    def test_the_cut_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("INFO"):
+            _settled({"note": "Heat is on.</note>\n</invoke>", "facts": []})
+
+        [record] = [r for r in caplog.records if "closing tags" in r.getMessage()]
+        assert record.__dict__["extra_data"] == {"schema": "note", "cut": ["</invoke>", "</note>"]}
+
+    def test_an_answer_with_nothing_to_cut_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("INFO"):
+            _settled({"note": "Heat is on.", "facts": ["16.1°C"]})
+
+        assert not [r for r in caplog.records if "StructuredOutput call's" in r.getMessage()]
+
+    def test_a_top_level_string_loses_only_the_calls_own_closers(self) -> None:
+        schema = {"type": "string"}
+        fmt = {"type": "json_schema", "schema": schema}
+
+        assert _settled("Heat is on.</invoke>", fmt) == "Heat is on."
+        assert _settled("Heat is on.</note>", fmt) == "Heat is on.</note>", "a top-level string has no key"
+
+
+class TestTheCallsJsonWrapperIsUnwrapped:
+    """The same leak in JSON form: a string can come back as the call's whole input,
+    ``{"note": "..."}``, written into itself -- 6 answers of 60 measured in one consumer
+    (2026-09-28). Only a string that is, whole, a JSON object keyed by its own key alone, holding a
+    string, is unwrapped; a ``"}`` the text contains stays."""
+
+    @pytest.mark.parametrize(
+        ("said", "kept"),
+        [
+            pytest.param('{"note": "Heat is on."}', "Heat is on.", id="replayed"),
+            pytest.param('{"note":"Heat is \\"on\\"."}', 'Heat is "on".', id="compact-with-quotes"),
+            pytest.param(' {"note": "Heat is on.</note>"}\n</invoke>', "Heat is on.", id="with-the-closers"),
+            pytest.param('He typed {"a": "b"} and left.', 'He typed {"a": "b"} and left.', id="inside-the-text-stays"),
+            pytest.param('He sent {"note": "x"}', 'He sent {"note": "x"}', id="a-tail-alone-stays"),
+            pytest.param('{"facts": "Heat is on."}', '{"facts": "Heat is on."}', id="another-key-stays"),
+            pytest.param('{"note": "a", "x": "b"}', '{"note": "a", "x": "b"}', id="more-keys-stay"),
+            pytest.param('{"note": 3}', '{"note": 3}', id="not-a-string-stays"),
+            pytest.param('{"note": "Heat', '{"note": "Heat', id="not-json-stays"),
+        ],
+    )
+    def test_only_a_whole_wrapper_of_its_own_key_goes(self, said: str, kept: str) -> None:
+        answer = _settled({"note": said, "facts": []})
+
+        assert answer == {"note": kept, "facts": []}
+
+    def test_a_list_item_is_unwrapped_on_the_lists_key(self) -> None:
+        answer = _settled({"note": "n", "facts": ['{"facts": "16.1°C"}', '{"note": "20.0°C"}']})
+
+        assert answer == {"note": "n", "facts": ["16.1°C", '{"note": "20.0°C"}']}
+
+    def test_the_unwrap_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("INFO"):
+            _settled({"note": '{"note": "Heat is on."}', "facts": []})
+
+        [record] = [r for r in caplog.records if "JSON form" in r.getMessage()]
+        assert record.__dict__["extra_data"] == {"schema": "note", "unwrapped": ["note"]}
+
+
+class TestTheCallsSyntaxOnTheRealPath:
+    """The cut is made where the CLI model returns a structured answer, invoked or streamed."""
+
+    _LEAKED: dict[str, Any] = {"note": '{"note": "Heat is on.</note>"}\n</invoke>', "facts": ["16.1°C</facts>"]}
+
+    def _script(self) -> tuple[Any, ...]:
+        """the CLI answering with an accepted attempt that leaked the call's syntax.
+
+        :return: the messages the CLI sends
+        :rtype: tuple[Any, ...]
+        """
+        return (
+            _structured_call("toolu_1", self._LEAKED),
+            _tool_result("toolu_1", "Structured output provided successfully", is_error=None),
+            _answered(self._LEAKED),
+        )
+
+    async def test_an_invoked_call_answers_without_the_calls_syntax(self) -> None:
+        with _fake_cli(*self._script()):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            bound = model.bind(**structured_output_kwargs("anthropic", _NOTE_SCHEMA))
+            message = await bound.ainvoke([HumanMessage(content="write the note")])
+
+        assert json.loads(message.content) == {"note": "Heat is on.", "facts": ["16.1°C"]}
+
+    async def test_a_streamed_call_answers_without_the_calls_syntax(self) -> None:
+        with _fake_cli(*self._script()):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            bound = model.bind(**structured_output_kwargs("anthropic", _NOTE_SCHEMA))
+            merged: Any = None
+            async for chunk in bound.astream([HumanMessage(content="write the note")]):
+                merged = chunk if merged is None else merged + chunk
+
+        assert json.loads(merged.content) == {"note": "Heat is on.", "facts": ["16.1°C"]}
+
+    async def test_a_call_with_no_schema_is_never_cut(self) -> None:
+        leaked = "Heat is on.</invoke>"
+        with _fake_cli(AssistantMessage(content=[TextBlock(text=leaked)], model=DEFAULT_CHAT_MODEL), _answered(None)):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            message = await model.ainvoke([HumanMessage(content="hi")])
+
+        assert message.content == leaked
