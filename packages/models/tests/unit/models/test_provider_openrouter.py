@@ -576,6 +576,9 @@ class TestNameTranslatingChatOpenRouter:
             "deepseek/deepseek-chat-v3-0324",
             "sk-test",
         )
+        # the provider's own ``_agenerate`` runs only when no deadline is set; with one the
+        # answer comes from the stream (``test_agenerate_under_a_deadline_drops_junk_names_too``)
+        model.request_timeout = None
 
         original_agenerate = ChatOpenRouter._agenerate
         try:
@@ -588,6 +591,33 @@ class TestNameTranslatingChatOpenRouter:
         assert len(kept) == 1
         assert kept[0]["name"] == "threetears_calculator"
         assert all(call["name"] != junk_name for call in kept)
+
+    @pytest.mark.asyncio
+    async def test_agenerate_under_a_deadline_drops_junk_names_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """with a deadline ``_agenerate`` collects the stream; the junk filter still applies."""
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        junk_name = 'memory_recall" name="memory_recall'
+
+        async def _streams_two_bad_calls(self: Any, *args: Any, **kwargs: Any):
+            del self, args, kwargs
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {"name": junk_name, "args": "not json", "id": "call_junk", "index": 0},
+                        {"name": "threetears_calculator", "args": "not json", "id": "call_ok", "index": 1},
+                    ],
+                ),
+            )
+
+        monkeypatch.setattr(ChatOpenRouter, "_astream", _streams_two_bad_calls)
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        assert model.call_deadline_s() == 120
+        result = await model.ainvoke("hi")
+
+        assert [call["name"] for call in result.invalid_tool_calls] == ["threetears_calculator"]
 
     def test_reverse_translate_message_noop_when_no_tools_bound(self) -> None:
         """Without any prior ``bind_tools`` call the reverse map is
@@ -1170,6 +1200,9 @@ class TestOpenRouterForwardTranslation:
             ),
         ]
 
+        # the provider's own ``_agenerate`` runs only when no deadline is set
+        model.request_timeout = None
+
         original = ChatOpenRouter._agenerate
         try:
             ChatOpenRouter._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
@@ -1181,16 +1214,44 @@ class TestOpenRouterForwardTranslation:
         assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
         assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
 
+    @pytest.mark.asyncio
+    async def test_agenerate_under_a_deadline_forward_translates_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """with a deadline ``_agenerate`` sends through the stream, names mangled the same way."""
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_super_astream(self: Any, messages: Any, *args: Any, **kwargs: Any):
+            del self, args, kwargs
+            captured["messages"] = messages
+            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+
+        monkeypatch.setattr(ChatOpenRouter, "_astream", _fake_super_astream)
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        outbound = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+            ),
+        ]
+        result = await model._agenerate(outbound)
+
+        assert result.generations[0].message.content == "ok"
+        assert captured["messages"][0].tool_calls[0]["name"] == "threetears_web_search"
+        assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+
 
 from threetears.models.errors import ModelCallTimeout, is_provider_error  # noqa: E402
 
 
-class TestTheTimeoutIsTheWholeCall:
+class TestTheTimeoutHolds:
     """The deadline lives on the shared mixin; OpenRouter sets it from its timeout.
 
     The SDK applies the timeout to each read, and OpenRouter keeps a call open with
     keep-alives, so a stalled upstream ran as long as it liked: one call took 218 s
-    against a 120 s timeout (metallm, 2026-09-26). Here the timeout holds."""
+    against a 120 s timeout (metallm, 2026-09-26). Here the timeout holds, on silence:
+    a non-streamed call collects the stream too (``test_openrouter_deadline_is_on_silence``)."""
 
     @staticmethod
     def _model(timeout_ms: int | None) -> Any:
@@ -1206,8 +1267,9 @@ class TestTheTimeoutIsTheWholeCall:
 
         async def _stalls(self: Any, *args: Any, **kwargs: Any) -> Any:
             await asyncio.sleep(5)
+            yield AIMessageChunk(content="late")
 
-        monkeypatch.setattr(ChatOpenRouter, "_agenerate", _stalls)
+        monkeypatch.setattr(ChatOpenRouter, "_astream", _stalls)
         with pytest.raises(ModelCallTimeout):
             await self._model(50).ainvoke([HumanMessage(content="hi")])
 

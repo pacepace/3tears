@@ -307,6 +307,8 @@ packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForw
 packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#2:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
 packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#3:_agenerate
+# rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; with a call deadline the wrapper's _agenerate collects the answer from _astream, so the test calls it directly with ChatOpenRouter._astream replaced to prove that path still forward-translates dotted tool names without a real HTTP call.
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_under_a_deadline_forward_translates_too#0:_agenerate
 
 # rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test (OTel 1.39+ guards set_tracer_provider behind this once-flag; resetting _done is the only documented escape). Mirrors the matching exemption in observe/setup.py.
 packages/models/tests/unit/models/test_tracking.py:TestUsageTracker.setup_class#0:_TRACER_PROVIDER_SET_ONCE
