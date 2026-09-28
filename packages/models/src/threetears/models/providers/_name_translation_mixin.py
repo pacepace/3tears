@@ -253,6 +253,15 @@ class NameTranslatingChatMixin:
     ) -> ChatResult:
         """non-streaming generate with tool-call names translated both ways.
 
+        With a :meth:`call_deadline_s`, the answer is collected from :meth:`_astream` and merged by
+        LangChain's own ``agenerate_from_stream``, so the deadline limits silence, as it does for a
+        streamed call, rather than the whole call. As a whole-call limit it cut off every plain
+        ``ainvoke`` at 120 s while the model was still writing: a reasoning model's memory
+        extraction runs 14 to 64 s and a resolution longer, and it fell back to storing every
+        candidate as new. A call that sends nothing for the deadline still ends at it (the 218 s
+        stall :meth:`call_deadline_s` was added for). Without a deadline the provider's own
+        ``_agenerate`` runs, as before.
+
         :param messages: chat messages
         :ptype messages: list[BaseMessage]
         :param stop: optional stop sequences
@@ -263,17 +272,22 @@ class NameTranslatingChatMixin:
         :ptype kwargs: Any
         :return: chat result with translated tool-call names
         :rtype: ChatResult
+        :raises ModelCallTimeout: when no chunk arrives within the deadline
         """
-        try:
-            async with asyncio.timeout(self.call_deadline_s()):
-                result = await super()._agenerate(  # type: ignore[misc]
-                    forward_translate_input(messages),
-                    stop=stop,
-                    run_manager=run_manager,
-                    **kwargs,
-                )
-        except TimeoutError as exc:
-            raise ModelCallTimeout(f"no answer within {self.call_deadline_s()} s") from exc
+        wire = forward_translate_input(messages)
+        if self.call_deadline_s() is None:
+            result = await super()._agenerate(  # type: ignore[misc]
+                wire,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
+            )
+        else:
+            from langchain_core.language_models.chat_models import agenerate_from_stream
+
+            result = await agenerate_from_stream(
+                self._astream(wire, stop=stop, run_manager=run_manager, **kwargs),
+            )
         for generation in result.generations:
             reverse_translate_message(generation.message, self._name_reverse_map)
             drop_junk_invalid_tool_calls(generation.message)

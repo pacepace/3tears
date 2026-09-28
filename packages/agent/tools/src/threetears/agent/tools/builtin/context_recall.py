@@ -37,22 +37,41 @@ def create_context_recall_tool(config: dict[str, Any], description: str) -> Stru
     delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
     so the in-process StructuredTool path and the NATS-dispatched
     ToolServer path share one execution body
-    (:meth:`ContextRecallTool.execute`). ``config`` is unused (the tool
-    resolves its context manager per-call from the call scope), kept in
-    the signature for :func:`register_builtins` factory-shape parity.
+    (:meth:`ContextRecallTool.execute`).
 
-    :param config: per-agent config dict (unused; resolution is per-call)
+    the tool reads the conversation's context manager from the call scope,
+    and on this path the scope gets one only from a ``context_factory``.
+    without it every recall answered "no context manager in scope", even
+    with the turn's ``call_context`` in the graph config.
+
+    Expected ``config`` keys:
+
+    - ``context_factory`` -- ``async (conversation_id, user_id) ->``
+      :class:`~threetears.agent.tools.context.ToolContextManager`, the
+      :data:`~threetears.agent.tools.call_scope.ContextFactory` a
+      ToolServer takes; resolves the manager the graph writes offloaded
+      results through. without it the tool can recall nothing.
+
+    :param config: per-agent config dict
     :ptype config: dict[str, Any]
     :param description: tool description surfaced to the LLM
     :ptype description: str
     :return: a LangChain ``StructuredTool`` wrapping the recall tool
     :rtype: StructuredTool
+    :raises TypeError: if ``context_factory`` is given and is not callable
     """
     from threetears.agent.tools.langchain_adapter import to_langchain_tool
 
+    context_factory = config.get("context_factory")
+    if context_factory is not None and not callable(context_factory):
+        raise TypeError(
+            "create_context_recall_tool: config['context_factory'] must be an async "
+            f"(conversation_id, user_id) -> ToolContextManager callable, not {type(context_factory).__name__}"
+        )
     return to_langchain_tool(
         ContextRecallTool(),
         description=description,
+        context_factory=context_factory,
     )
 
 

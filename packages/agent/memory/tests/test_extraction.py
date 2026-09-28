@@ -1207,6 +1207,118 @@ class TestSummaryCallback:
         )
 
 
+class _InFlight:
+    """counts how many awaited calls are running at once."""
+
+    def __init__(self) -> None:
+        self.now = 0
+        self.most = 0
+
+    async def hold(self, seconds: float) -> None:
+        self.now += 1
+        self.most = max(self.most, self.now)
+        try:
+            await asyncio.sleep(seconds)
+        finally:
+            self.now -= 1
+
+
+class _SlowEmbedding(StubEmbeddingProvider):
+    """an embedding call that takes a while, counted by ``in_flight``."""
+
+    def __init__(self, in_flight: _InFlight) -> None:
+        super().__init__()
+        self._in_flight = in_flight
+
+    async def aembed_query(self, text: str) -> list[float]:
+        await self._in_flight.hold(0.05)
+        return await super().aembed_query(text)
+
+
+class TestTheSlowStepsRunAtOnce:
+    """a dev run (metallm, DeepSeek V4 Pro) spent 41 s in the three stages and then 120 s in one
+    summary callback, which ran inline, before the push, one memory after another. the callbacks
+    and the per-candidate embeddings depend on nothing but their own memory."""
+
+    _THREE = json.dumps(
+        [
+            {"type": "fact", "content": "Lives in Seattle"},
+            {"type": "preference", "content": "Takes coffee black"},
+            {"type": "fact", "content": "Plays the fiddle"},
+        ]
+    )
+
+    def _factory(self) -> StubChatModelFactory:
+        return StubChatModelFactory(worthiness_content=json.dumps({"worthy": True}), extraction_content=self._THREE)
+
+    async def test_summaries_run_together_after_every_push(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        in_flight = _InFlight()
+        events: list[str] = []
+
+        async def _summary(memory_id: str, content: str) -> None:
+            _ = memory_id
+            events.append(f"summary starts: {content}")
+            await in_flight.hold(0.05)
+
+        async def _push(entity: Any) -> None:
+            events.append(f"push: {entity.content}")
+
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            factory=self._factory(),
+            summary_callback=_summary,
+            on_memory_created=_push,
+        )
+        result = await _extract_turn(ext, uuid.uuid7())
+
+        assert result.stored == 3
+        assert in_flight.most == 3
+        assert [e.split(":")[0] for e in events] == ["push"] * 3 + ["summary starts"] * 3
+
+    async def test_a_failing_summary_leaves_its_memory_counted_and_the_others_summarised(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        done: list[str] = []
+
+        async def _summary(memory_id: str, content: str) -> None:
+            _ = memory_id
+            if content == "Takes coffee black":
+                raise RuntimeError("no answer within 120.0 s")
+            done.append(content)
+
+        ext = _make_extractor(permissive_memory_authorizer, factory=self._factory(), summary_callback=_summary)
+        with caplog.at_level(logging.WARNING):
+            result = await _extract_turn(ext, uuid.uuid7())
+
+        assert result.outcome is ExtractionOutcome.STORED
+        assert result.stored == 3
+        assert "failed=0" in result.reason
+        assert sorted(done) == ["Lives in Seattle", "Plays the fiddle"]
+        assert [r.getMessage() for r in caplog.records if "summary callback failed" in r.getMessage()] == [
+            "summary callback failed"
+        ]
+
+    async def test_candidates_are_embedded_at_once(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        in_flight = _InFlight()
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            factory=self._factory(),
+            embedding=_SlowEmbedding(in_flight),
+        )
+        result = await _extract_turn(ext, uuid.uuid7())
+
+        assert result.stored == 3
+        assert in_flight.most == 3
+
+
 # -- on_memory_created callback tests ----------------------------------------
 
 

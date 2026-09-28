@@ -4,6 +4,87 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.56.1 -- 2026-09-27
+
+Fixes found running metallm on 0.56.0. Nothing to do on upgrade; no API changes.
+
+### A non-streamed OpenRouter call is limited by silence, not by length
+
+0.56.0 meant the OpenRouter call deadline (`request_timeout`, 120 s by default) to end a call that
+goes quiet -- the 218 s stall behind keep-alives -- and applied it that way to a streamed call. A
+plain `ainvoke` got it as a whole-call limit instead, "no answer within 120.0 s", and every
+`ainvoke` caller was cut off while the model was still writing: memory worthiness, extraction and
+resolution, dream, and a consumer's memory summary.
+
+Measured live on DeepSeek V4 Pro through OpenRouter (US providers only; DigitalOcean served every
+call), the memory jobs run past 120 s while never going quiet:
+
+| job | total | chunks | longest gap between chunks |
+|---|---|---|---|
+| memory extraction | 64.2 s | 2,561 (2,404 reasoning) | 0.87 s (the first) |
+| memory summary | 154.1 s | 6,529 (6,499 reasoning) | 0.68 s |
+| a long planning answer | 469.3 s | 20,257 | 2.15 s |
+
+**Fixed:** with a deadline set, `_agenerate` collects its answer from `_astream` through
+LangChain's `agenerate_from_stream`, so the deadline is the longest wait for the next chunk, as
+it is for a streamed call. A call that sends nothing for the deadline still raises
+`ModelCallTimeout`. Content, tool calls, usage, the served `provider`, the finish reason and the
+rest of `response_metadata` come back as the JSON path returned them; the exceptions are
+`object`, which names the wire record (`chat.completion.chunk`), and a `logprobs` of `None`
+that only the JSON response carried. Without a deadline the provider's own `_agenerate` runs as
+before. No call has an overall limit any more; a model that keeps writing is bounded by its
+`max_tokens`.
+
+### `on_memory_created` gets the memory, not "badly formed hexadecimal UUID string"
+
+In a metallm run the memory push failed twice with `ValueError: badly formed hexadecimal UUID
+string`; the memory was stored and the push was lost. The extractor handed the callback the
+entity it built before the summary callback, and that callback waited 120 s on a model. The
+entity reads its fields from L1 only. In that window the next turn's retrieval surfaced the new
+memory, `bump_salience` invalidated its row, and every field of the held entity read `None`.
+`_as_uuid(None)` then parsed the string `"None"`.
+
+**Fixed:** `on_memory_created` receives a detached snapshot of the row as written. Its fields do
+not depend on the cache, and setting one does not write it back.
+
+**Fixed:** every entity UUID coercer that promises a `UUID` (identity, intention, memory,
+conversations, folders, skills, workspace; wake and scheduled-jobs already did) raises
+"a non-nullable UUID field read empty" for `None` instead of the parse error.
+`tests/enforcement/test_uuid_coercers_name_an_empty_field.py` requires it.
+
+### Memory extraction pushes before it summarises
+
+The same run spent 41 s in the extractor's own stages (worthiness 2.9 s, extraction 38.3 s,
+embedding 0.1 s) and then 120 s in one summary callback, which ran inline before the push and one
+memory after another. With the stage latencies measured there replayed against the extractor:
+
+| turn | push before | push after | done before | done after |
+|---|---|---|---|---|
+| 1 memory, summary times out | 162 s | 42 s | 162 s | 162 s |
+| 3 memories, every summary times out | 163 / 285 / 405 s | 42 s | 407 s | 162 s |
+| 3 memories, 5.1 s summaries | 50 / 55 / 60 s | 42 s | 60 s | 47 s |
+
+- **Changed:** `on_memory_created` fires as each memory is saved. The summary callbacks run
+  together after every action, and a failing one is logged (`summary callback failed`) instead of
+  counting its already-written memory as a failed action; a turn's reason read `added=3 ...
+  failed=1` for three memories stored.
+- **Changed:** each candidate's embedding and dedup search run at once.
+- The model stages stay one after another: each needs the one before. Their time is the model's
+  reasoning output: the run's five extraction calls on DeepSeek V4 Pro wrote 866 to 3,451 tokens
+  in 14 to 64 s.
+
+### The registry-built `context_recall` can recall
+
+`register_builtins` builds `threetears.context_recall` through a factory that passed no
+`context_factory` to `to_langchain_tool`, so its call scope carried no context manager and every
+recall answered "no context manager in scope", even with the turn's `call_context` in the graph
+config. **Fixed:** the factory takes the consumer's `ContextFactory` as `config["context_factory"]`,
+the config route every builtin factory documents:
+
+    registry.create("context_recall", {"context_factory": get_manager}, description)
+
+A value that is not callable raises `TypeError`.
+
 ## v0.56.0 -- 2026-09-27
 
 **The unsigned-agent registration concession now ends at 0.57.0, not 0.56.0.** 0.55.0 promised to
