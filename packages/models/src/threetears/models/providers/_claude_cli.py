@@ -1165,8 +1165,8 @@ def _unwrapped_answer(result: Any, output_format: Any, attempts: _StructuredAtte
     :return: the recovered answer, or ``None``
     :rtype: Any | None
     """
-    schema = output_format.get("schema") if isinstance(output_format, dict) else None
-    if not isinstance(schema, dict):
+    schema = _schema_of(output_format)
+    if schema is None:
         return None
     answer = next(
         (
@@ -1181,14 +1181,129 @@ def _unwrapped_answer(result: Any, output_format: Any, attempts: _StructuredAtte
             "A structured answer the model wrapped in a placeholder parameter was unwrapped",
             extra={
                 "extra_data": {
-                    "schema": schema.get("title")
-                    or hashlib.sha256(json.dumps(schema, sort_keys=True).encode("utf-8")).hexdigest()[:12],
+                    "schema": _schema_name(schema),
                     "reason": result.subtype,
                     "rejected_attempts": len(attempts.rejected),
                 }
             },
         )
     return answer
+
+
+def _schema_of(output_format: Any) -> dict[str, Any] | None:
+    """The JSON schema a call's ``output_format`` carries.
+
+    :param output_format: the call's ``output_format``, ``None`` for a call with no schema
+    :ptype output_format: Any
+    :return: the schema, or ``None`` when the call asked for none
+    :rtype: dict[str, Any] | None
+    """
+    schema = output_format.get("schema") if isinstance(output_format, dict) else None
+    return schema if isinstance(schema, dict) else None
+
+
+def _schema_name(schema: dict[str, Any]) -> Any:
+    """A schema's name for a log line: its title, or a short hash of it when it has none.
+
+    :param schema: the JSON schema a call asked for
+    :ptype schema: dict[str, Any]
+    :return: the name
+    :rtype: Any
+    """
+    return schema.get("title") or hashlib.sha256(json.dumps(schema, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+
+
+#: Closing tags of the ``StructuredOutput`` call itself. The model can end a long string argument
+#: with the call's syntax as well as the string: measured in one consumer (2026-09-28,
+#: ``claude-sonnet-5``), 3 answers of 30 ended ``</note>\n</invoke>``. Nothing a caller sends carries
+#: these tags; they are the call's. A closing tag named after the string's own key is cut too.
+_CALL_CLOSERS = frozenset({"parameter", "invoke", "function_calls"})
+
+
+def _own_key_wrapped(text: str, key: str | None) -> str | None:
+    """The string inside ``text`` when ``text`` is, whole, the JSON object ``{key: "..."}``.
+
+    The call's syntax in JSON form: a string can come back as the call's input written into itself.
+    Measured in one consumer (2026-09-28, ``claude-sonnet-5``), 6 answers of 60 were
+    ``{"note": "..."}`` on ``note``. Only the whole object is read, with the string's own key as its
+    one key and a string as its value; JSON the text merely contains is never reached.
+
+    :param text: one string of the answer
+    :ptype text: str
+    :param key: the key the string is the value of, ``None`` at the top level
+    :ptype key: str | None
+    :return: the wrapped string, or ``None`` when ``text`` is not that wrapper
+    :rtype: str | None
+    """
+    body = text.strip()
+    if not key or not (body.startswith("{") and body.endswith("}")):
+        return None
+    try:
+        inner = json.loads(body)
+    except json.JSONDecodeError:
+        # NOSILENT: text that only looks like an object is the model's own words, kept as they are.
+        return None
+    if not isinstance(inner, dict) or list(inner) != [key]:
+        return None
+    value = inner[key]
+    return value if isinstance(value, str) else None
+
+
+def _without_call_syntax(answer: Any, schema: dict[str, Any]) -> Any:
+    """``answer`` with the ``StructuredOutput`` call's own syntax cut from each string in it.
+
+    A string loses a trailing run of closing tags, each named after the string's own key (``</note>``
+    on ``note``; a list's items take the list's key) or one of :data:`_CALL_CLOSERS`, and the
+    whitespace between them. A string that is, whole, ``{key: "..."}`` on its own key becomes the
+    string inside (:func:`_own_key_wrapped`). Nothing else is touched: a tag inside the text, an
+    opening tag, a closing tag of any other name, and JSON the text merely contains all stay, so a
+    caller's own check still sees markup the model added. Each cut is logged at INFO.
+
+    :param answer: the structured answer
+    :ptype answer: Any
+    :param schema: the JSON schema the call asked for, named in the log line
+    :ptype schema: dict[str, Any]
+    :return: the answer, the call's syntax cut
+    :rtype: Any
+    """
+    cut: list[str] = []
+    unwrapped: list[str] = []
+
+    def _clean(item: Any, key: str | None) -> Any:
+        if isinstance(item, dict):
+            return {k: _clean(v, k) for k, v in item.items()}
+        if isinstance(item, list):
+            return [_clean(v, key) for v in item]
+        if not isinstance(item, str):
+            return item
+        closers = _CALL_CLOSERS | ({key} if key else set())
+        text = item
+        while True:
+            while (stripped := text.rstrip()).endswith(">"):
+                opened = stripped.rfind("</")
+                if opened < 0 or stripped[opened + 2 : -1] not in closers:
+                    break
+                cut.append(stripped[opened:])
+                text = stripped[:opened]
+            inner = _own_key_wrapped(text, key)
+            if inner is None:
+                break
+            unwrapped.append(str(key))
+            text = inner
+        return text.rstrip() if text is not item else item
+
+    cleaned = _clean(answer, None)
+    if cut:
+        _logger.info(
+            "A structured answer ended in its StructuredOutput call's closing tags; they were cut",
+            extra={"extra_data": {"schema": _schema_name(schema), "cut": cut}},
+        )
+    if unwrapped:
+        _logger.info(
+            "A structured answer carried its StructuredOutput call's input in JSON form; the string inside was kept",
+            extra={"extra_data": {"schema": _schema_name(schema), "unwrapped": unwrapped}},
+        )
+    return cleaned
 
 
 def _cli_failure(
@@ -1278,7 +1393,8 @@ def _settle(
 
     The one place a CLI result's outcome is decided, for the streamed and the invoked call alike.
     The answer is the result's ``structured_output`` or, when the call ended in error without one, a
-    placeholder-wrapped attempt that validates (:func:`_unwrapped_answer`). A call did NOT fail when
+    placeholder-wrapped attempt that validates (:func:`_unwrapped_answer`), with the call's own syntax
+    cut from its strings (:func:`_without_call_syntax`). A call did NOT fail when
     it answered -- whatever the result's own ``is_error`` says -- or when it stopped to hand tool
     calls back (:func:`_ended_for_tools`). Otherwise an ``is_error`` result raises.
 
@@ -1305,6 +1421,8 @@ def _settle(
         said = result.result or "; ".join(result.errors or []) or text
         reason = None if result.subtype == "success" else result.subtype
         raise _cli_failure(said, reason=reason, status=result.api_error_status, attempts=attempts)
+    if answer is not None and (schema := _schema_of(output_format)) is not None:
+        answer = _without_call_syntax(answer, schema)
     return answer, _generation_info(result, tool_calls, unwrapped=unwrapped)
 
 
