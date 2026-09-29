@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, NoReturn
 
@@ -25,13 +26,26 @@ from threetears.observe import get_logger
 
 from threetears.core.security.identity_token import IdentityTokenError, jwk_thumbprint
 
-__all__ = ["access_token_hash", "make_pop_proof", "verify_pop_proof"]
+__all__ = ["VerifiedPopProof", "access_token_hash", "make_pop_proof", "verify_pop_proof"]
 
 _ALG = "EdDSA"
 _TYP = "pop+jwt"
 _REQUIRED = ["ath", "bh", "jti", "iat"]
 
 log = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedPopProof:
+    """what a verified proof-of-possession lets its caller enforce.
+
+    :ivar jti: the single-use nonce to record in a replay guard
+    :ivar issued_at: the proof's signed ``iat``, timezone-aware UTC, for the replay guard's
+        creation-time check
+    """
+
+    jti: str
+    issued_at: datetime
 
 
 def _reject(reason: str) -> NoReturn:
@@ -117,14 +131,14 @@ def verify_pop_proof(
     access_token_hash: str,
     body_hash: str,
     leeway_seconds: int = 60,
-) -> str:
+) -> VerifiedPopProof:
     """verify a proof-of-possession against the token's holder-key thumbprint + the call binding.
 
     Fail-closed checks, in order: EdDSA pin; the inline ``jwk`` thumbprint == ``expected_jkt`` (the
     token's ``cnf``); the signature under that inline key; ``ath`` == ``access_token_hash``; ``bh``
-    == ``body_hash``; ``iat`` within ``leeway_seconds`` of now. Returns the proof's ``jti`` nonce so
-    the caller can enforce single-use against its replay cache. Any failure raises
-    :class:`IdentityTokenError`.
+    == ``body_hash``; ``iat`` within ``leeway_seconds`` of now. Returns the proof's ``jti`` nonce and
+    signed issue time so the caller can enforce single-use against its replay guard. Any failure
+    raises :class:`IdentityTokenError`.
 
     :param proof: the compact JWS proof from the caller
     :ptype proof: str
@@ -136,8 +150,8 @@ def verify_pop_proof(
     :ptype body_hash: str
     :param leeway_seconds: clock-skew tolerance for the ``iat`` freshness window
     :ptype leeway_seconds: int
-    :return: the proof nonce (``jti``) for single-use enforcement
-    :rtype: str
+    :return: the proof nonce (``jti``) and signed issue time, for single-use enforcement
+    :rtype: VerifiedPopProof
     :raises IdentityTokenError: on any verification failure
     """
     try:
@@ -181,7 +195,7 @@ def verify_pop_proof(
     jti = payload.get("jti")
     if not isinstance(jti, str) or not jti:
         _reject("pop jti must be a non-empty string.")
-    return jti
+    return VerifiedPopProof(jti=jti, issued_at=datetime.fromtimestamp(iat, UTC))
 
 
 def _holder_key_from_header(header: dict[str, Any]) -> Ed25519PublicKey:

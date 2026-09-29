@@ -1,11 +1,11 @@
 """The tool-pod runtime's first two-tier collection, and the cache it replaces.
 
-``ObjectResolutionCollection`` is L1+L2 with no L3, in the shipped shape: the pool is
+``ObjectResolutionCollection`` is L1+L2 by design, in the shipped shape: the pool is
 forced to ``None`` and the three store methods raise rather than silently no-op. The
-raise is the point. A tool pod cannot reach L3 at all yet -- the broker reads the
-principal off a hub-minted token and a tool pod holds none -- so a collection that
-quietly accepted a durable write would report success for a row nobody stored, which
-is the defect shape this whole line of work keeps finding.
+hub is the system of record for an object mapping, so this collection deliberately
+has no L3 tier of its own, and a collection that quietly accepted a durable write
+would report success for a row nobody stored, which is the defect shape this whole
+line of work keeps finding.
 
 The second half of the file is the payload: ``HubObjectResolver`` kept a hand-rolled
 ``dict`` with FIFO eviction, pod-local, so every replica paid its own hub round trip
@@ -56,6 +56,11 @@ class _InMemoryKvBucket:
 
     async def get(self, *, key: str) -> bytes | None:
         return self.store.get(key)
+
+    async def get_latest(self, *, key: str) -> tuple[bytes | None, int]:
+        # revisions are not modelled: this collection has no L3, so nothing ever seeds L2 at one.
+        value = self.store.get(key)
+        return (value, 0 if value is None else 1)
 
     async def put(self, *, key: str, value: bytes) -> int:
         self.store[key] = value

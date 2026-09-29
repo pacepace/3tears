@@ -17,6 +17,7 @@ not a ``test_*`` module, so pytest does not collect it; the tools test package
 
 from __future__ import annotations
 
+
 import base64
 import time
 from typing import Any
@@ -25,6 +26,7 @@ from uuid import UUID, uuid4
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 
+from threetears.agent.tools.server import ToolServer
 from threetears.core.security import ProxyAssertionSigner, canonical_call_hash
 from threetears.core.security.identity_token import (
     IdentityClaims,
@@ -33,21 +35,62 @@ from threetears.core.security.identity_token import (
     sign_identity_token,
 )
 
-__all__ = ["StubReplayGuard", "jwks_provider", "mint_user_assertion", "signed_call_payload"]
+__all__ = [
+    "RecordingNatsClient",
+    "jwks_provider",
+    "mint_user_assertion",
+    "recording_tool_server",
+    "signed_call_payload",
+]
 
 
-class StubReplayGuard:
-    """records each proxy-assertion nonce + returns a fixed freshness verdict so the pod's MANDATORY
-    replay-guard wiring runs without a live NATS-KV (the real guard's compare-and-set is covered by
-    its own coordination tests). default ``fresh=True`` -> every first-seen assertion is accepted."""
+# parity-exempt: subset stand-in for NatsClient recording only what a ToolServer's handlers publish
+class RecordingNatsClient:
+    """records what a :class:`ToolServer` driven without :meth:`~ToolServer.serve` publishes.
 
-    def __init__(self, *, fresh: bool = True) -> None:
-        self._fresh = fresh
-        self.seen: list[str] = []
+    handed to the server through its public ``nats_client=`` argument, never installed on its
+    private connection slot: the server then answers on it exactly as it answers on a caller-owned
+    connection in production, and a rename of that slot cannot silently orphan the test.
 
-    async def record_unique(self, nonce: str) -> bool:
-        self.seen.append(nonce)
-        return self._fresh
+    ``replies`` holds each ``(reply_subject, message)`` a handler answered with; ``published`` holds
+    each ``(subject, payload)`` sent on a durable subject -- the baseline ``tool.call`` audit rides
+    there -- and each ``(subject, message)`` sent by plain publish, such as a registration manifest.
+    """
+
+    def __init__(self) -> None:
+        self.replies: list[tuple[str, Any]] = []
+        self.published: list[tuple[Any, Any]] = []
+
+    async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
+        """record a handler's answer."""
+        self.replies.append((reply_subject, message))
+
+    async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None:
+        """record a durable publish, as the audit envelope makes."""
+        self.published.append((subject, payload))
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+        """record a plain publish, as a registration manifest makes."""
+        del reply_to
+        self.published.append((subject, message))
+
+    @property
+    def last_reply(self) -> tuple[str, Any]:
+        """the most recent ``(reply_subject, message)`` a handler answered with."""
+        return self.replies[-1]
+
+
+def recording_tool_server(**kwargs: Any) -> tuple[ToolServer, RecordingNatsClient]:
+    """a :class:`ToolServer` over a fresh :class:`RecordingNatsClient`, ready to drive by hand.
+
+    :param kwargs: every other :class:`ToolServer` argument; ``nats_client`` is supplied here
+    :ptype kwargs: Any
+    :return: the server and the client it answers on
+    :rtype: tuple[ToolServer, RecordingNatsClient]
+    """
+    rec = RecordingNatsClient()
+    server = ToolServer(nats_client=rec, **kwargs)  # type: ignore[arg-type]
+    return server, rec
 
 
 # one Hub identity keypair + one proxy-assertion signer, merged into a single JWKS under distinct
@@ -67,7 +110,7 @@ def jwks_provider() -> dict[str, Any]:
 def _hub_token(
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID | None,
     exp_delta: int = 600,
     conversation_id: UUID | None = None,
@@ -96,7 +139,7 @@ def _hub_token(
 def mint_user_assertion(
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID | None,
     exp_delta: int = 3600,
     conversation_id: UUID | None = None,
@@ -123,7 +166,7 @@ def signed_call_payload(
     arguments: dict[str, Any] | None = None,
     correlation_id: str | None = None,
     agent_id: UUID | None = None,
-    customer_id: UUID | None = None,
+    customer_id: UUID | str | None = None,
     conversation_id: UUID | None = None,
     user_id: UUID | None = None,
     user_assertion: str | None = None,
@@ -150,6 +193,10 @@ def signed_call_payload(
     the server under test MUST be constructed with ``pod_id=<pod_id>`` and ``jwks_provider`` (so the
     proxy assertion's ``aud`` matches and both gates verify). the handshake agent/customer are NOT
     put on the envelope context; the pod overwrites them from the verified token regardless.
+
+    ``customer_id`` may be the platform customer sentinel (a ``str``) to build the call a TOOL POD
+    makes on its own identity: the handshake token then names no customer, and the proxy assertion
+    carries the same claim verbatim as the registry re-mints it.
     """
     args = arguments if arguments is not None else {}
     corr = correlation_id if correlation_id is not None else str(uuid4())
@@ -170,8 +217,8 @@ def signed_call_payload(
     body_hash = canonical_call_hash(tool_name, args, corr)
     proxy_assertion = _SIGNER.mint(
         pod_id=pod_id,
-        agent_id=str(uuid4()),
-        customer_id=str(uuid4()),
+        agent_id=str(effective_agent_id),
+        customer_id=str(effective_customer_id),
         body_hash=body_hash,
         nonce=str(uuid4()),
         now=int(time.time()),

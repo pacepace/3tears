@@ -240,3 +240,84 @@ class TestRefreshLoopUnkillable:
         assert provider.is_warmed is True
         assert calls["n"] >= 3  # start (#1) + the raising iteration (#2) + a surviving warm (#3+)
         await provider.stop()
+
+
+class TestLoopConfiguration:
+    """The refresh loop's cadence is validated up front, and a second start adds no second loop."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"refresh_interval_seconds": 0}, {"initial_retry_interval_seconds": 0}, {"refresh_interval_seconds": -1}],
+    )
+    def test_a_non_positive_interval_is_refused_at_construction(self, kwargs: dict[str, Any]) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            _provider(_client({"keys": []}), **kwargs)
+
+    async def test_a_second_start_while_running_adds_no_loop(self) -> None:
+        nc = _client({"keys": []})
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=3600)
+        await provider.start()
+        try:
+            await provider.start()
+            loops = [t for t in asyncio.all_tasks() if t.get_name() == "hub-jwks-refresh" and not t.done()]
+            assert len(loops) == 1
+        finally:
+            await provider.stop()
+
+    async def test_overlapping_starts_add_no_loop(self) -> None:
+        """Both calls used to pass the running check before either built its loop."""
+        nc = _client({"keys": []})
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=3600)
+        await asyncio.gather(provider.start(), provider.start())
+        try:
+            loops = [t for t in asyncio.all_tasks() if t.get_name() == "hub-jwks-refresh" and not t.done()]
+            assert len(loops) == 1
+        finally:
+            await provider.stop()
+
+    async def test_a_stop_during_the_initial_fetch_leaves_no_loop(self) -> None:
+        """Shutdown while a slow Hub holds the boot fetch must not leave a loop stop() never reached."""
+        nc = _client({"keys": []})
+        release = asyncio.Event()
+        real = nc.request_raw
+
+        async def slow(*args: Any, **kwargs: Any) -> Any:
+            await release.wait()
+            return await real(*args, **kwargs)
+
+        nc.request_raw = slow
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=3600)
+        starting = asyncio.create_task(provider.start())
+        await asyncio.sleep(0.01)
+        await provider.stop()
+        release.set()
+        await starting
+        loops = [t for t in asyncio.all_tasks() if t.get_name() == "hub-jwks-refresh" and not t.done()]
+        assert loops == []
+
+    async def test_an_overlapping_start_returns_once_the_first_is_warm(self) -> None:
+        nc = _client(_JWKS)
+        release = asyncio.Event()
+        real = nc.request_raw
+
+        async def slow(*args: Any, **kwargs: Any) -> Any:
+            await release.wait()
+            return await real(*args, **kwargs)
+
+        nc.request_raw = slow
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=3600)
+        first = asyncio.create_task(provider.start())
+        await asyncio.sleep(0.01)
+        second = asyncio.create_task(provider.start())
+        await asyncio.sleep(0.01)
+        assert not second.done(), "the overlapping start must not report started before the fetch"
+        release.set()
+        await asyncio.gather(first, second)
+        try:
+            assert provider()["keys"], "both callers see a warm cache"
+        finally:
+            await provider.stop()
+
+    def test_a_nan_interval_is_refused_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            _provider(_client({"keys": []}), refresh_interval_seconds=float("nan"))

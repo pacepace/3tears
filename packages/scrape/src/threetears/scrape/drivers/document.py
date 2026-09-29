@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 import httpx
 from threetears.agent.tools.document import (
+    DocumentParseError,
     DocumentSection,
     OcrConfig,
     detect_mime_from_filename,
@@ -165,11 +166,12 @@ async def parse_document_bytes_to_html(
     :raises DocumentDriverError: the parser couldn't handle this document
     """
     mime_type = content_type or (detect_mime_from_filename(filename) or "")
-    result = await parse_document(
-        data, mime_type, filename, ocr_config=ocr_config, merge_wrapped_table_rows=merge_wrapped_table_rows
-    )
-    if result.text.startswith("[Unsupported document type:") or result.text.startswith("[Parsing failed:"):
-        raise DocumentDriverError("parse_failed", result.text)
+    try:
+        result = await parse_document(
+            data, mime_type, filename, ocr_config=ocr_config, merge_wrapped_table_rows=merge_wrapped_table_rows
+        )
+    except DocumentParseError as exc:
+        raise DocumentDriverError("parse_failed", str(exc)) from exc
     html = document_text_to_html(result.text, result.sections)
     if result.was_ocr or force_images:
         html = html.replace("</body></html>", _embed_ocr_page_images(data) + "</body></html>")

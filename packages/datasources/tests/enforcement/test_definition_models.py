@@ -48,6 +48,11 @@ _DEFINITION_DIR = _PACKAGE_ROOT / "src" / "threetears" / "datasources" / "defini
 _EXPECTED_RUNTIME_DEPENDENCIES = {
     "3tears",
     "3tears-observe",
+    # the datasource query client (query_client.py) publishes on a Subjects-composed subject and
+    # parses typed replies over the canonical NatsClient, so the package gained a runtime dep on
+    # 3tears-nats. it is the subject grammar + typed client, imported WITHOUT the nats-py [client]
+    # extra, and 3tears-nats does not depend back on 3tears-datasources, so no cycle. deliberate.
+    "3tears-nats",
     "pydantic",
     "asyncpg",
     "pyyaml",

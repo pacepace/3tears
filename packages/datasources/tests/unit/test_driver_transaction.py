@@ -45,6 +45,9 @@ from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
 from ._helpers.driver_shims import (
+    REDSHIFT_TEST_PASSWORD,
+    REDSHIFT_TEST_PASSWORD_ENV,
+    REDSHIFT_TEST_PASSWORD_REF,
     build_mock_redshift_connection,
     build_transaction_capable_pool,
     log_after_first_caller_statement,
@@ -53,6 +56,18 @@ from ._helpers.driver_shims import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _redshift_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """make :data:`REDSHIFT_TEST_PASSWORD_REF` resolvable for every test in this module.
+
+    :param monkeypatch: pytest's environment patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: None
+    :rtype: None
+    """
+    monkeypatch.setenv(REDSHIFT_TEST_PASSWORD_ENV, REDSHIFT_TEST_PASSWORD)
 
 
 def _make_redshift_config() -> RedshiftConnectionConfig:
@@ -67,7 +82,7 @@ def _make_redshift_config() -> RedshiftConnectionConfig:
         port=5439,
         database="analytics",
         username="rs_user",
-        password_ref=None,
+        password_ref=REDSHIFT_TEST_PASSWORD_REF,
         executor_max_workers=2,
         connection_cache_size=2,
         query_timeout_seconds=300,
@@ -876,6 +891,19 @@ class _RecordingTransactionDriver(Driver):
         :rtype: list[ColumnRow]
         """
         return []
+
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> Any:
+        """stub fingerprint; the ABC requires the method.
+
+        :param relation: the relation to fingerprint
+        :ptype relation: str
+        :param key: the ordering columns
+        :ptype key: list[str]
+        :return: never returns
+        :rtype: Any
+        :raises NotImplementedError: this double has no relation to fingerprint
+        """
+        raise NotImplementedError("this driver double has no relation to fingerprint")
 
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """unused on this recorder.

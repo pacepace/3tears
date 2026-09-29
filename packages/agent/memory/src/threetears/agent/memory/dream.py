@@ -44,6 +44,7 @@ from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.messages import HumanMessage, SystemMessage
+from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
 from uuid_utils import uuid7
 
 from threetears.agent.memory.collections import (
@@ -525,19 +526,25 @@ class DreamService:
             empty gist (fail-safe: skip the cluster)
         :rtype: tuple[str, str | None] | None
         """
-        sources_section = "\n".join(f"- [{m['type_memory']}] {m['content']}" for m in members)
+        # Stored memories: what they say came from conversations and tools, so
+        # they are read as material, fenced, and the call is told so.
+        sources_section = untrusted_fence(
+            mint_nonce(), "\n".join(f"- [{m['type_memory']}] {m['content']}" for m in members)
+        )
         prompt = self._prompts.consolidation.format(sources_section=sources_section)
         try:
             model = await self._chat_model_factory.create_chat_model(
                 purpose="consolidation",
             )
             response = await model.ainvoke(
-                [
-                    SystemMessage(
-                        content="You consolidate related memories into a single dense memory. Return only valid JSON.",
-                    ),
-                    HumanMessage(content=prompt),
-                ],
+                with_fence_rules(
+                    [
+                        SystemMessage(
+                            content="You consolidate related memories into a single dense memory. Return only valid JSON.",
+                        ),
+                        HumanMessage(content=prompt),
+                    ]
+                ),
                 **_identity_kwargs(user_id, conversation_id),
             )
             raw = response.content if hasattr(response, "content") else str(response)

@@ -66,6 +66,9 @@ dev-dependencies = [
     # ``starlette.testclient.TestClient`` against a real route.
     "fastapi>=0.110",
     "httpx>=0.27",
+    # starlette.testclient runs on httpx2 from starlette 1.x; with plain httpx
+    # every suite that imports it warns that the fallback is deprecated.
+    "httpx2",
     # testcontainers used by the migration runner integration tests to
     # exercise real Postgres (rollback semantics cannot be verified
     # against the in-memory FakeDataStore).
@@ -157,6 +160,11 @@ dev-dependencies = [
 "3tears-scheduled-jobs" = "PT0S"
 "3tears-scrape" = "PT0S"
 "3tears-search" = "PT0S"
+"3tears-tool-schema" = "PT0S"
+# A fixed date, not a span: it admits langchain-openrouter 0.2.9 (published 2026-09-22T04:15Z),
+# the first release that surfaces OpenRouter's served `provider` in response_metadata, and admits
+# nothing newer. It stops mattering on its own once the 14-day window passes that date.
+"langchain-openrouter" = "2026-09-22T05:00:00Z"
 
 [tool.ruff]
 line-length = 120
@@ -422,41 +430,18 @@ consider_namespace_packages = true
 # now that this line -- not their presence -- is what anchors the module
 # name for them.
 #
-# TWELVE ARE STILL LOAD-BEARING, and this is the rule that says which:
-# an ``__init__.py`` still decides the module name wherever a conftest
-# puts a TEST DIRECTORY on ``sys.path``. Five do
-# (``packages/agent/tools``, ``packages/agent/workspace``,
-# ``packages/scrape`` and ``packages/search`` insert their own tests
-# dir; ``packages/conversations/tests/conftest.py`` inserts
-# ``packages/core/tests/unit/coordination``). Once a test dir is on
-# ``sys.path``, pytest's ``resolve_pkg_root_and_module_name`` finds the
-# INNERMOST candidate importable -- ``test_challenge``,
-# ``unit.test_bind`` -- and stops there, because it walks outward from
-# the deepest package root and takes the first name that imports. The
-# ``__init__.py`` is what moves that starting point up to
-# ``packages/<pkg>``, so the walk never offers the bare candidate and
-# the repo-root name wins.
-#
-# Deleting them is not cosmetic: it renamed
-# ``packages.agent.workspace.tests.unit.test_bind`` to
-# ``unit.test_bind``, and it broke ``packages/scrape`` and
-# ``packages/search`` outright -- a module with no package cannot do
-# ``from ._searxng_payloads import ...``, so both trees failed to
-# collect at all. Measured by diffing every collected module's
-# ``__name__`` before and after; the 68 that were deleted are exactly
-# the ones whose name did not move.
-#
-# ``packages/agent/tools`` is the exception that proves the rule and is
-# NOT fixed here: its tests dir is on ``sys.path`` and it has no
-# ``tests/__init__.py``, so its modules were ALREADY named
-# ``unit.test_x`` / ``enforcement.test_y`` on ``develop``. Its nested
-# ``__init__.py`` files changed nothing and are gone with the other 67.
-#
-# The last two survivors are not test-tree packages at all:
-# ``packages/agent/workspace/tests/_helpers`` is an importable helper
-# package that ``tests/conftest.py`` puts on ``sys.path`` on purpose,
-# and ``packages/scrape/sidecar/tests`` belongs to the separate sidecar
-# deployable this config ``--ignore``s outright.
+# The twelve that remain were load-bearing because conftests put TEST
+# DIRECTORIES on ``sys.path`` (agent-tools, agent-workspace, scrape, search,
+# and conversations -> core's coordination tests). Nothing does any more:
+# every helper is imported by its repo-root name
+# (``from packages.agent.tools.tests.unit.tools._pod_auth import ...``),
+# and ``tests/enforcement/test_no_test_dir_on_sys_path.py`` refuses a new
+# insert. The inserts were also the collision: agent-tools' tests dir made
+# ``unit`` / ``integration`` / ``enforcement`` top-level names that the
+# workspace suite owned too, so running workspace before tools in one
+# process failed to collect ``from unit.tools._pod_auth import ...``. The
+# ``__init__.py`` files are left in place; whether any still moves a module
+# name was not re-measured when the inserts went.
 pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
@@ -471,6 +456,7 @@ markers = [
     # subject IS the guard. Without the opt-out the guard's live socket.getaddrinfo runs in a
     # network-isolated unit runner and hangs; neutralized by default, exercised only here.
     "real_ssrf_guard: exercise the real ScrapeTool SSRF guard rather than the neutralized stub",
+    "enforcement: a structural rule over the source tree rather than a behaviour",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level
@@ -523,6 +509,7 @@ mypy_path = [
     "packages/scheduled-jobs/src",
     "packages/scrape/src",
     "packages/search/src",
+    "packages/tool-schema/src",
     "packages/geo/src",
     "packages/iam/src",
 ]
@@ -559,6 +546,7 @@ files = [
     "packages/scheduled-jobs/src",
     "packages/scrape/src",
     "packages/search/src",
+    "packages/tool-schema/src",
 ]
 exclude = [
     "^packages/[^/]+/tests/",

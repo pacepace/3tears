@@ -230,6 +230,9 @@ class RegistryRbacStack:
         # L1 reset below, so no handler can be mid-evict against a backend being torn
         # out from under it.
         await self.registry.stop_invalidation_listener()
+        # before the L1 reset for the same reason: a collection's own background work must be
+        # stopped while the backend it writes to is still there.
+        await self.registry.close_collections()
         self.l1_backend.reset()
         log.info("registry rbac stack closed")
 

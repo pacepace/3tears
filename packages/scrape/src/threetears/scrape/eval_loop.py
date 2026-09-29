@@ -52,6 +52,7 @@ from .collections import (
 )
 from .health import (
     ScrapeTargetHealthCollection,
+    clear_classification,
     content_fingerprint,
     record_classification,
     record_validated_fetch,
@@ -81,7 +82,11 @@ from .extraction import (
     ValidationResult,
     validate_row_candidate,
 )
-from .llm_retry import bounded_retry_structured_call
+from .llm_retry import (
+    StructuredCallFailedError,
+    StructuredCallTimeoutError,
+    bounded_retry_structured_call_or_raise,
+)
 
 __all__ = ["DEFAULT_JUDGE_MODEL_ID", "StrategyType", "run_eval_loop", "run_eval_loop_multi_row"]
 
@@ -190,9 +195,12 @@ async def _judge(
     attempts: int = _JUDGE_ATTEMPTS,
     backoff_seconds: float = _JUDGE_BACKOFF_SECONDS,
     log_label: str,
-) -> T | None:
+) -> T:
     """The one shared judge call every judge use in this module funnels through --
-    structured-output response, retried on transient failure, never raises. Callers
+    structured-output response, retried on transient failure, raising
+    :class:`~threetears.scrape.llm_retry.StructuredCallExhaustedError` when every attempt
+    fails. A judge that could not be asked has not rejected anything, so no caller may
+    read the failure as a verdict. Callers
     vary in how *prompt_or_messages* was built (a plain text prompt for css/regex
     candidate comparison against real page HTML; a multimodal message list for a
     vision-grounded per_document/multi_row confirmation against real page images --
@@ -208,7 +216,7 @@ async def _judge(
     with near-identical arguments; the per-document grounding check made that
     duplication worth closing rather than adding a third copy of it.
     """
-    return await bounded_retry_structured_call(
+    return await bounded_retry_structured_call_or_raise(
         prompt_or_messages,
         response_model,
         model_id=model_id,
@@ -220,7 +228,6 @@ async def _judge(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label=log_label,
-        degraded_to="no winner",
     )
 
 
@@ -233,13 +240,12 @@ async def _judge_candidates(
     api_key: str,
     attempts: int = _JUDGE_ATTEMPTS,
     backoff_seconds: float = _JUDGE_BACKOFF_SECONDS,
-) -> _JudgeVerdict | None:
+) -> _JudgeVerdict:
     """Structured-output judge call comparing several candidates, retried on transient failure.
 
-    Same bounded-retry shape as ``extraction.generate_candidates`` /
-    ``query_agent/matching.py``'s ``_invoke_match_disambiguation`` -- via the
-    shared :func:`_judge`. Never raises; returns ``None`` only after every
-    attempt fails.
+    Via the shared :func:`_judge`, so it raises
+    :class:`~threetears.scrape.llm_retry.StructuredCallExhaustedError` when every attempt
+    fails; a verdict naming no winner is the judge's own answer.
     """
     prompt = _build_judge_prompt(html, survivors, schema)
     return await _judge(
@@ -420,7 +426,7 @@ class _StrategyShape:
     #: Read a stored ``extraction_strategy`` back into a candidate. Inverse of *as_strategy*.
     from_strategy: Callable[[dict[str, Any]], Any]
     #: Compare candidates against the real page. Single-record and row shapes ask differently.
-    judge: Callable[..., Awaitable[_JudgeVerdict | None]]
+    judge: Callable[..., Awaitable[_JudgeVerdict]]
     #: Shape each survivor's records into what *judge* expects for this strategy.
     judge_payload: Callable[[list[dict[str, Any]]], Any]
 
@@ -698,12 +704,24 @@ async def _regenerate(
     """No healthy recipe exists: generate fresh candidates and consult the LLM judge.
 
     One body for all four strategy shapes. What varies is declared on *shape*.
+
+    A candidate-generation call whose every attempt failed raises
+    :class:`~threetears.scrape.llm_retry.StructuredCallExhaustedError` out of here and
+    persists nothing: the model never answered, so there is no observation of the page to
+    record, and an empty candidate list would otherwise be stored as a page nothing could be
+    extracted from. A judge that could not be asked leaves the survivors ``needs_review``,
+    as a judge that confirmed none of them does, with the failure recorded in
+    ``field_confidences["judge_failure"]`` so the two stay distinguishable.
     """
     source = shape.source(html)
     candidates = await shape.generate(source, schema, n=candidate_count, model_id=extraction_model_id, api_key=api_key)
+    # Validation runs off the event loop: a regex candidate's matching can take up to
+    # REGEX_TIMEOUT_SECONDS (in bounded_regex's worker process), and CSS parsing of a large page is
+    # slow too. The calling thread only waits meanwhile, so the loop keeps serving other tasks.
+    validations = [await asyncio.to_thread(shape.validate, source, candidate, schema) for candidate in candidates]
     survivors = [
         (candidate, validation)
-        for candidate, validation in ((c, shape.validate(source, c, schema)) for c in candidates)
+        for candidate, validation in zip(candidates, validations, strict=True)
         if validation.valid
     ]
 
@@ -722,13 +740,21 @@ async def _regenerate(
             page_status=page_status,
         )
 
-    verdict = await shape.judge(
-        html,
-        [shape.judge_payload(shape.records(validation)) for _, validation in survivors],
-        schema,
-        model_id=judge_model_id,
-        api_key=api_key,
-    )
+    verdict: _JudgeVerdict | None = None
+    judge_failure: str | None = None
+    try:
+        verdict = await shape.judge(
+            html,
+            [shape.judge_payload(shape.records(validation)) for _, validation in survivors],
+            schema,
+            model_id=judge_model_id,
+            api_key=api_key,
+        )
+    except StructuredCallFailedError as exc:
+        # Logged once by the retry helper. Recorded on the row below: "the judge could not be
+        # asked" and "the judge confirmed none" both leave the survivors unconfirmed, but a
+        # human reviewing them needs to know which one happened.
+        judge_failure = f"{type(exc.last_error).__name__}: {exc.last_error}"
     if (
         verdict is None
         or verdict.winning_candidate_index is None
@@ -753,6 +779,7 @@ async def _regenerate(
             structured_fields={"records": shape.records(best_validation)},
             validation_status="needs_review",
             extraction_recipe_id=None,
+            field_confidences=None if judge_failure is None else {"judge_failure": judge_failure},
         )
 
     winning_candidate, winning_validation = survivors[verdict.winning_candidate_index]
@@ -801,7 +828,9 @@ async def _run_reuse_cycle(
 
     - **blocked**: we never received the content. The recipe is untouched.
     - **changed, newly**: the page really is different, so waiting two more polls to act on
-      evidence we already have is pure latency. Regenerate now.
+      evidence we already have is pure latency. Regenerate now. If the regeneration cannot run
+      because a model call failed, the cached verdict is withdrawn before the failure
+      propagates, so the next poll regenerates instead of reading it as already acted on.
     - **changed, but read from the cache**: we already regenerated against this exact page
       and it did not stick. Regenerating again would spend a candidate round on every poll
       for a page we have demonstrably failed to learn -- strictly worse than the three-poll
@@ -810,7 +839,7 @@ async def _run_reuse_cycle(
       failure and let the threshold decide, which is the right response to "our selectors
       are wrong" and the safe response to "we could not tell".
     """
-    check = _check_reuse(shape, existing_recipe, html, schema, target_id)
+    check = await asyncio.to_thread(_check_reuse, shape, existing_recipe, html, schema, target_id)
     if check.valid:
         return await _commit_reuse(
             existing_recipe,
@@ -840,7 +869,15 @@ async def _run_reuse_cycle(
                 verdict.evidence,
                 extra={"extra_data": {"target_id": target_id}},
             )
-            return await regenerate()
+            try:
+                return await regenerate()
+            except StructuredCallFailedError:
+                # The verdict was cached before regenerating, and a cached "changed" reads as
+                # "regenerated against this page already and it did not stick" -- untrue when the
+                # model was unavailable, and the next poll would record a failed row for a page
+                # it knows changed. Withdrawn, so the next poll asks again and regenerates.
+                await _withdraw_verdict(html, target_id, health_collection=health_collection)
+                raise
 
     return await _commit_reuse(
         existing_recipe,
@@ -850,6 +887,38 @@ async def _run_reuse_cycle(
         recipe_collection=recipe_collection,
         extraction_collection=extraction_collection,
     )
+
+
+async def _withdraw_verdict(
+    html: str,
+    target_id: str,
+    *,
+    health_collection: ScrapeTargetHealthCollection | None,
+) -> None:
+    """Take back the verdict cached for *html* because the action it called for never happened.
+
+    Called while a model failure is on its way out, so a failure here is logged and swallowed:
+    it must not replace the error the caller is about to receive. What is lost is only the
+    withdrawal, and the next poll then counts one failure where it should have regenerated --
+    the behaviour this exists to prevent, but no worse than before it.
+
+    :param html: the page the verdict was about
+    :ptype html: str
+    :param target_id: the target whose verdict is withdrawn
+    :ptype target_id: str
+    :param health_collection: the health store, or ``None`` for a caller that has not opted in
+    :ptype health_collection: ScrapeTargetHealthCollection | None
+    """
+    if health_collection is None:
+        return
+    try:
+        await clear_classification(health_collection, target_id=target_id, fingerprint=content_fingerprint(html))
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- runs while a model failure propagates; it must not mask that error, and it is logged with its traceback below
+        log.exception(
+            "scrape health: could not withdraw the page verdict for target %s; the next poll may count a failure",
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
 
 
 async def _persist_no_survivors(
@@ -974,6 +1043,13 @@ async def run_eval_loop(
         holds a single-element list -- the same shape :func:`run_eval_loop_multi_row`
         uses, just always exactly one record)
     :rtype: ScrapeExtraction
+    :raises StructuredCallFailedError: if a model call this poll depended on failed every
+        attempt (:class:`~threetears.scrape.llm_retry.StructuredCallExhaustedError`) or outlived
+        this loop's own deadline (:class:`~threetears.scrape.llm_retry.StructuredCallTimeoutError`).
+        Nothing is persisted and no recipe counter moves, because the model never answered and
+        so nothing about the page was observed; the next poll tries again. A judge that could
+        not be asked over structurally valid candidates is the exception: that row is
+        ``needs_review`` with ``field_confidences["judge_failure"]``
     """
     shape = _REGEX_SHAPE if strategy_type == "regex" else _CSS_SHAPE
 
@@ -1055,7 +1131,7 @@ async def _judge_row_candidates(
     api_key: str,
     attempts: int = _JUDGE_ATTEMPTS,
     backoff_seconds: float = _JUDGE_BACKOFF_SECONDS,
-) -> _JudgeVerdict | None:
+) -> _JudgeVerdict:
     """Structured-output judge call for row-set candidates, retried on transient failure.
 
     Shares :func:`_judge_candidates`'s retry/logging shape via the shared
@@ -1063,9 +1139,9 @@ async def _judge_row_candidates(
     was first written as a deliberate copy of the single-record one rather
     than a shared abstraction -- two callers did not justify the indirection.
     A third judge use (per-document grounding) is what tipped it: at that
-    point the same retry/backoff/degrade-to-``None`` policy was being
-    maintained in three places. Never raises; returns ``None`` only after
-    every attempt fails.
+    point the same retry/backoff policy was being maintained in three places.
+    Raises :class:`~threetears.scrape.llm_retry.StructuredCallExhaustedError` when every
+    attempt fails, as :func:`_judge` does.
     """
     prompt = _build_row_judge_prompt(html, survivors, schema)
     return await _judge(
@@ -1232,9 +1308,11 @@ async def _judge_one_document_extraction(
         always uses the vision model instead -- see above)
     :ptype judge_model_id: str
     :return: ``True`` only if the judge explicitly confirmed the record (``winning_
-        candidate_index == 0``); ``False`` on rejection OR total judge failure -- an
-        unconfirmable record is treated the same as a rejected one, never silently kept
+        candidate_index == 0``); ``False`` when it rejected it
     :rtype: bool
+    :raises StructuredCallExhaustedError: if every judge attempt failed -- a judge that
+        could not be asked has not rejected the record, and reading its failure as a
+        rejection would drop a record for a reason that says nothing about it
     """
     prompt_or_messages: str | list[Any]
     if document.was_ocr:
@@ -1256,7 +1334,7 @@ async def _judge_one_document_extraction(
         provider=provider,
         log_label="scrape per-document judge",
     )
-    return verdict is not None and verdict.winning_candidate_index == 0
+    return verdict.winning_candidate_index == 0
 
 
 class _MultiRowJudgeVerdict(BaseModel):
@@ -1342,10 +1420,11 @@ async def _judge_multi_row_extraction(
     :ptype schema: FieldSchema
     :param api_key: OpenRouter API key
     :ptype api_key: str
-    :return: the 0-based indices of *records* the judge explicitly confirmed -- empty on
-        total judge failure (fail-closed: an unconfirmable record is dropped, never kept
-        just because judging itself failed)
+    :return: the 0-based indices of *records* the judge explicitly confirmed
     :rtype: set[int]
+    :raises StructuredCallExhaustedError: if every judge attempt failed. Still fail-closed --
+        no unconfirmed record is ever kept -- but the poll is not recorded as a table with
+        nothing confirmable in it, which is what an empty set would have persisted
     """
     if not records:
         return set()
@@ -1360,9 +1439,39 @@ async def _judge_multi_row_extraction(
         provider=_VISION_PROVIDER,
         log_label="scrape multi-row judge",
     )
-    if verdict is None:
-        return set()
     return {i for i in verdict.confirmed_record_indices if 0 <= i < len(records)}
+
+
+def _deadline_failure(
+    log_label: str, *, deadline_seconds: float, model_id: str, cause: TimeoutError, target_id: str
+) -> StructuredCallTimeoutError:
+    """Log, once, that a model call outlived the eval loop's own deadline, and build its error.
+
+    The outer ``asyncio.wait_for`` deadline exists because a chat client can hang well past its
+    own per-attempt timeout with no further activity. When it fires, the call has not answered:
+    that is a failed call, handled exactly as an exhausted one, and never "no record".
+
+    :param log_label: which call hung, e.g. ``"scrape per-document judge"``
+    :ptype log_label: str
+    :param deadline_seconds: the deadline it outlived
+    :ptype deadline_seconds: float
+    :param model_id: the model it was calling
+    :ptype model_id: str
+    :param cause: the ``TimeoutError`` the deadline raised
+    :ptype cause: TimeoutError
+    :param target_id: the target being polled, for the log line
+    :ptype target_id: str
+    :return: the error for the caller to raise, chained to *cause*
+    :rtype: StructuredCallTimeoutError
+    """
+    log.error(
+        "%s: no answer within the %ss deadline for target %s",
+        log_label,
+        deadline_seconds,
+        target_id,
+        extra={"extra_data": {"target_id": target_id, "model_id": model_id}},
+    )
+    return StructuredCallTimeoutError(log_label, deadline_seconds=deadline_seconds, model_id=model_id, last_error=cause)
 
 
 async def _run_per_document_extraction(
@@ -1404,7 +1513,10 @@ async def _run_per_document_extraction(
     needs, and gets: one stuck document must never hang an entire poll of N
     documents forever, the same "isolate one bad unit's failure" philosophy
     :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` already
-    applies to one document's FETCH failing.
+    applies to one document's FETCH failing. Isolation bounds the wait, not the
+    outcome: every other document still runs to completion, and the stuck one is then
+    a failed call (:class:`~threetears.scrape.llm_retry.StructuredCallTimeoutError`),
+    raised once the batch has run, never a document with nothing in it.
 
     Documents run concurrently (``asyncio.gather``), not one at a time -- each is a
     fully independent extraction (no shared cache/state), and
@@ -1447,13 +1559,18 @@ async def _run_per_document_extraction(
         )
         try:
             extracted = await asyncio.wait_for(extraction_call, timeout=_PER_DOCUMENT_TIMEOUT_SECONDS)
-        except TimeoutError:
-            log.warning(
-                "scrape per-document extraction: one document hung past %ss, skipping",
-                _PER_DOCUMENT_TIMEOUT_SECONDS,
-                extra={"extra_data": {"target_id": target_id}},
-            )
-            return None
+        except TimeoutError as exc:
+            # Only this document's call is abandoned; the others keep running under their own
+            # deadlines, and the failure is raised once the whole batch has run.
+            raise _deadline_failure(
+                "scrape vision per-document field extraction"
+                if document.was_ocr
+                else "scrape direct per-document field extraction",
+                deadline_seconds=_PER_DOCUMENT_TIMEOUT_SECONDS,
+                model_id=DEFAULT_VISION_MODEL_ID if document.was_ocr else extraction_model_id,
+                cause=exc,
+                target_id=target_id,
+            ) from exc
         # All-or-nothing-per-record, matching every other strategy's own philosophy
         # (validate_row_candidate / validate_regex_row_candidate): a record only
         # counts if EVERY schema field was found and coerced, never a partial one --
@@ -1467,20 +1584,28 @@ async def _run_per_document_extraction(
                 ),
                 timeout=_PER_DOCUMENT_TIMEOUT_SECONDS,
             )
-        except TimeoutError:
-            log.warning(
-                "scrape per-document extraction: judge hung past %ss, treating as unconfirmed",
-                _PER_DOCUMENT_TIMEOUT_SECONDS,
-                extra={"extra_data": {"target_id": target_id}},
-            )
-            return None
+        except TimeoutError as exc:
+            raise _deadline_failure(
+                "scrape per-document judge",
+                deadline_seconds=_PER_DOCUMENT_TIMEOUT_SECONDS,
+                model_id=DEFAULT_VISION_MODEL_ID if document.was_ocr else judge_model_id,
+                cause=exc,
+                target_id=target_id,
+            ) from exc
         return extracted if confirmed else None
 
-    records = [
-        extracted
-        for extracted in await asyncio.gather(*(_extract_one(document) for document in documents))
-        if extracted is not None
-    ]
+    # Every document is awaited before a model failure is raised, so none is left running
+    # unobserved and one stuck document never stops the others. A document whose extraction or
+    # judge call failed every attempt, or outlived its deadline, fails the poll: every document is extracted afresh on every poll, so nothing durable is lost, and
+    # the alternatives both record something false -- a "validated" row silently missing that
+    # document, or a "failed" row for a page that was never read.
+    outcomes = await asyncio.gather(*(_extract_one(document) for document in documents), return_exceptions=True)
+    records: list[dict[str, Any]] = []
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if outcome is not None:
+            records.append(outcome)
 
     now = datetime.now(UTC)
     existing_recipe = await recipe_collection.get(target_id)
@@ -1575,14 +1700,14 @@ async def _run_multi_row_vision_extraction(
             extract_multi_row_fields_from_images(images, schema, api_key=api_key),
             timeout=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
         )
-    except TimeoutError:
-        log.warning(
-            "scrape multi-row vision extraction: extraction hung past %ss for target %s",
-            _MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
-        )
-        extracted_records = None
+    except TimeoutError as exc:
+        raise _deadline_failure(
+            "scrape multi-row vision extraction",
+            deadline_seconds=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+            model_id=DEFAULT_VISION_MODEL_ID,
+            cause=exc,
+            target_id=target_id,
+        ) from exc
 
     # All-or-nothing-per-record, same philosophy as every other strategy: a record
     # only counts if EVERY schema field was found and coerced.
@@ -1615,14 +1740,14 @@ async def _run_multi_row_vision_extraction(
             _judge_multi_row_extraction(images, complete_records, schema, api_key=api_key),
             timeout=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
         )
-    except TimeoutError:
-        log.warning(
-            "scrape multi-row vision extraction: judge hung past %ss for target %s, treating all as unconfirmed",
-            _MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
-            target_id,
-            extra={"extra_data": {"target_id": target_id}},
-        )
-        confirmed_indices = set()
+    except TimeoutError as exc:
+        raise _deadline_failure(
+            "scrape multi-row judge",
+            deadline_seconds=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+            model_id=DEFAULT_VISION_MODEL_ID,
+            cause=exc,
+            target_id=target_id,
+        ) from exc
 
     confirmed_records = [record for i, record in enumerate(complete_records) if i in confirmed_indices]
 
@@ -1738,6 +1863,13 @@ async def run_eval_loop_multi_row(
     :ptype page_status: int | None
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]`` holds every record)
     :rtype: ScrapeExtraction
+    :raises StructuredCallFailedError: if a model call this poll depended on failed every
+        attempt (:class:`~threetears.scrape.llm_retry.StructuredCallExhaustedError`) or outlived
+        this loop's own deadline (:class:`~threetears.scrape.llm_retry.StructuredCallTimeoutError`).
+        Nothing is persisted and no recipe counter moves, because the model never answered and
+        so nothing about the page was observed; the next poll tries again. A judge that could
+        not be asked over structurally valid candidates is the exception: that row is
+        ``needs_review`` with ``field_confidences["judge_failure"]``
     """
     # One exit, deliberately. These two strategies used to `return` here, which put them
     # past the fingerprint stamp below even though both can persist a validated

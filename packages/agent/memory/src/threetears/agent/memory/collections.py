@@ -51,6 +51,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.backends.schema_sql import decode_vector
 from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.config import CoreConfig
+from threetears.core.data.gin import gin_filter
 from threetears.observe import get_logger
 
 from threetears.agent.memory.authorize import (
@@ -92,6 +93,14 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the keyword-match predicate every memory FTS query filters on. ``websearch_to_tsquery``
+#: turns an "or" or a leading "-" in the text into OR / NOT, which YugabyteDB's GIN index
+#: refuses outright, so the predicate filters the scoped rows instead of scanning the index
+#: (:func:`threetears.core.data.gin.gin_filter`). ranking still uses the same tsquery.
+_MEMORY_FTS_MATCH = gin_filter("search_vector @@ websearch_to_tsquery('english', $1)")
+#: the same predicate for the ``mc``-aliased chunk and media-content queries.
+_CHUNK_FTS_MATCH = gin_filter("mc.search_vector @@ websearch_to_tsquery('english', $1)")
 
 
 def _as_pk_uuid(value: object) -> UUID:
@@ -721,13 +730,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 "customer_id",
                 "user_id",
             ),
-            # v0.8.1: GIN over the trigger-maintained ``search_vector``
-            # column drives FTS path on memories.
-            SchemaIndex(
-                "idx_memories_search_vector",
-                "search_vector",
-                using="gin",
-            ),
+            # no GIN over ``search_vector``: v027 dropped it. the keyword
+            # predicate goes through ``gin_filter`` (ybgin refuses a
+            # multi-entry scan), so the index had no reader.
             # v0.8.1: HNSW vector-similarity index with the
             # ``vector_cosine_ops`` opclass; ``m`` / ``ef_construction``
             # parameters mirror prod (upstream alembic). these are
@@ -878,9 +883,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = (data["agent_id"], data["memory_id"])
-            # Promote to L2
-            await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
 
@@ -961,8 +963,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = (data["agent_id"], data["memory_id"])
-            await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
 
@@ -1363,7 +1363,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 FROM memories
                 {fts_where}
                   AND embedding IS NOT NULL
-                  AND search_vector @@ websearch_to_tsquery('english', $1){fts_date_clause}
+                  AND {_MEMORY_FTS_MATCH}{fts_date_clause}
                   AND (superseded_by IS NULL OR NOT EXISTS (
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
@@ -1637,7 +1637,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         conditions = [
             "agent_id = $2",
             "user_id = $3",
-            "search_vector @@ websearch_to_tsquery('english', $1)",
+            _MEMORY_FTS_MATCH,
         ]
         params: list[Any] = [fts_text, agent_id, user_id]
         idx = 4
@@ -1792,8 +1792,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = (data["agent_id"], data["memory_id"])
-            await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
 
@@ -2285,13 +2283,9 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                 "agent_id",
                 "user_id",
             ),
-            # v0.8.1: GIN over the trigger-maintained ``search_vector``
-            # column drives the FTS half of the hybrid-search path.
-            SchemaIndex(
-                "idx_media_content_search_vector",
-                "search_vector",
-                using="gin",
-            ),
+            # no GIN over ``search_vector``: v027 dropped it. the keyword
+            # predicate goes through ``gin_filter`` (ybgin refuses a
+            # multi-entry scan), so the index had no reader.
             # v0.8.1: HNSW vector-similarity index with the
             # ``vector_cosine_ops`` opclass. Prod does NOT carry a
             # ``WITH`` clause here (the index was built before the
@@ -2441,7 +2435,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                   ON mc.agent_id = med.agent_id
                  AND mc.media_id = med.media_id
                 WHERE {fts_scope_conditions} AND mc.embedding IS NOT NULL
-                  AND mc.search_vector @@ websearch_to_tsquery('english', $1)
+                  AND {_CHUNK_FTS_MATCH}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,
@@ -2667,7 +2661,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             return []
         # cache-bypass: FTS rank query joining media_content -> media.
         rows = await self.l3_pool.fetch(
-            """
+            f"""
             SELECT mc.content_id, mc.content, mc.content_type,
                    mc.media_id, med.media_category, med.metadata_json,
                    med.date_created,
@@ -2679,7 +2673,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
-              AND mc.search_vector @@ websearch_to_tsquery('english', $1)
+              AND {_CHUNK_FTS_MATCH}
             ORDER BY fts_rank DESC
             LIMIT $4
             """,
@@ -2830,13 +2824,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 "agent_id",
                 "user_id",
             ),
-            # v0.8.1: GIN over the trigger-maintained ``search_vector``
-            # column drives the FTS half of chunks hybrid search.
-            SchemaIndex(
-                "idx_memory_chunks_search_vector",
-                "search_vector",
-                using="gin",
-            ),
+            # no GIN over ``search_vector``: v027 dropped it. the keyword
+            # predicate goes through ``gin_filter`` (ybgin refuses a
+            # multi-entry scan), so the index had no reader.
             # v0.8.1: HNSW vector-similarity index with
             # ``vector_cosine_ops``. Prod does NOT carry a ``WITH``
             # clause here (mirror of ``ix_media_content_embedding``).
@@ -3025,7 +3015,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                  AND mc.memory_id = med.memory_id
                 WHERE {fts_scope_conditions}
                   AND mc.embedding IS NOT NULL
-                  AND mc.search_vector @@ websearch_to_tsquery('english', $1)
+                  AND {_CHUNK_FTS_MATCH}
                   {fts_cursor_clause}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
@@ -3578,7 +3568,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                  AND mc.memory_id = med.memory_id
                 WHERE {fts_scope_conditions}
                   AND mc.memory_id = {fts_memory_id_param}
-                  AND mc.search_vector @@ websearch_to_tsquery('english', $1)
+                  AND {_CHUNK_FTS_MATCH}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,
@@ -3745,7 +3735,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         SQL into a Collection method. multi-row scan is not primary-
         key-addressable: the query touches every row sharing the
         ``conversation_id`` prefix of the composite pk, so L1 row-level
-        cache does not apply. each hit is promoted into L2 so other
+        cache does not apply. hits are NOT promoted into L2 (not written to L2: a row read from L3 can be older than a write that landed after the query, and an unfenced put would serve that older row to every reader -- the next single-row read seeds L2 at the key's revision instead), so other
         pods starting cold can resolve the row without an L3 round-
         trip.
 
@@ -3776,8 +3766,6 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         for row in rows:
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
-            entity_id = (data["conversation_id"], data["item_id"])
-            await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
 

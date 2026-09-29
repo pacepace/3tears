@@ -56,9 +56,9 @@ __all__ = [
 #: (``ToolServer.drain_before_reauth``), and that deferral is bounded -- waiting past the JWT's real
 #: deadline trades a lost reply for a dead connection, which is strictly worse. This is that bound, so
 #: a call the caller CHOSE to run synchronously always fits inside the window the responder is willing
-#: to hold the connection open for. It must stay <= the re-auth drain grace
-#: (``threetears.agent.tools.nats_reauth.REAUTH_BUFFER_SECONDS``); an enforcement test in the
-#: agent-tools package holds the two in that relation, since they are set in different packages and
+#: to hold the connection open for. It must stay <= the renewal drain grace
+#: (:data:`threetears.nats.credential_renewal.REAUTH_BUFFER_SECONDS`); a test in the agent-tools
+#: package holds the two in that relation, since the drain that depends on it lives there and
 #: nothing else relates them.
 SYNC_REPLY_BUDGET_SECONDS = 30.0
 

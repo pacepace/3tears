@@ -4,18 +4,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import subprocess
+import sys
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import Column, MetaData, String, Table
 
-from threetears.agent.tools.bootstrap import EX_CONFIG, ToolPodConfigError, ToolServerBootstrap
+from threetears.agent.tools.bootstrap import (
+    EX_CONFIG,
+    EX_SOFTWARE,
+    OWNER_PID_ENV,
+    ToolPodConfigError,
+    ToolPodShutdownError,
+    ToolServerBootstrap,
+    resolve_owner_pid,
+)
+from threetears.agent.tools.config import OWNER_POLL_INTERVAL_ENV, SHUTDOWN_TIMEOUT_ENV
 from threetears.agent.tools.object_resolution_collection import (
     OBJECT_RESOLUTIONS_TABLE,
     ObjectResolutionCollection,
 )
-from threetears.nats import Principal, kv_key_scope_for
+from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
+from threetears.core.testing.kv import FakeNatsClient
+from threetears.nats import Principal, Subjects, kv_key_scope_for
 from threetears.observe import HealthTier
 
 
@@ -61,12 +77,16 @@ class _FakeToolServer:
         self.pod_id = pod_id
         self.connected_callbacks: list[Any] = []
         self.object_resolution_cache: Any = None
+        self.assertion_replay_anchor: Any = None
 
     def add_connected_callback(self, callback: Any) -> None:
         self.connected_callbacks.append(callback)
 
     def attach_object_resolution_cache(self, cache: Any) -> None:
         self.object_resolution_cache = cache
+
+    def attach_assertion_replay_anchor(self, anchor: Any) -> None:
+        self.assertion_replay_anchor = anchor
 
     async def serve(self) -> None:
         self.serve_called = True
@@ -143,22 +163,102 @@ class TestTheCollectionStackRidesTheLifecycle:
     discoverable while its own collections are still unwired.
     """
 
-    async def test_no_tables_means_no_stack_and_no_callback(self) -> None:
-        """a pod that declares no Collection tables pays for nothing.
+    async def test_a_pod_that_declares_no_tables_still_gets_the_runtime_stack(self) -> None:
+        """the runtime's own collections do not wait for the host to declare one of its own.
 
-        The opt-in is the tables, not a flag: there is no such thing as a collection stack with
-        nothing in it, and building one would bind the shared bucket for a pod that never reads it.
+        Every pod reads the shared bucket whether it declared tables or not: its proxy-assertion
+        guard's replay anchor lives there. Gating the stack on host tables left every pod that
+        declared none -- every SDK tool pod, and the built-in tool server -- with no anchor, so
+        the first proxied call after each cold start was refused as a replay that never happened.
         """
         server = _FakeToolServer()
         server.serve_event.set()
         bootstrap = _ConcreteBootstrap(server=server, register_log=[])
 
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(server.connected_callbacks) == 1
+        await server.connected_callbacks[0](_stack_nats_client())
+        registry = bootstrap.collection_registry
+        await run_task
+
+        assert registry is not None
+        assert isinstance(server.assertion_replay_anchor, CollectionReplayAnchor)
+        assert isinstance(server.object_resolution_cache, ObjectResolutionCollection)
+
+    async def test_a_bare_pods_anchor_answers_over_the_real_collection_path(self) -> None:
+        """the anchor a pod with no tables is handed actually records and re-reads a birth time.
+
+        Driven through the real collection over an in-memory KV rather than a mock, because the
+        wiring existed for a release without ever running: no pod reached it, and the only test
+        over it asserted the anchor's TYPE. The shared bucket is declared first, as the hub
+        declares it -- a pod only ever binds it.
+        """
+        nats = FakeNatsClient()
+        nats.ensure_kv_bucket = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
+        nats.subscribe_typed = AsyncMock(return_value=MagicMock())  # type: ignore[attr-defined]
+        nats.unsubscribe = AsyncMock()  # type: ignore[method-assign]
+        await nats.kv_bucket(name="collections", create_if_missing=True)
+        server = _FakeToolServer(pod_id=str(uuid.uuid4()))
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await server.connected_callbacks[0](nats)
+        anchor = server.assertion_replay_anchor
+        first = datetime.now(UTC)
+        recorded = await anchor.first_existed("proxy_assertion_nonces", now=first)
+        later = await anchor.first_existed("proxy_assertion_nonces", now=first + timedelta(minutes=5))
+        await run_task
+
+        assert recorded == first
+        assert later == first, "a later reader must get the ledger's birth time, not its own clock"
+
+    async def test_an_in_process_pod_gets_no_tool_pod_stack(self) -> None:
+        """a pod running inside an agent process is not a tool-pod principal.
+
+        It rides the agent's injected connection, authenticated as the AGENT, and its pod id
+        is ``{agent_id}.{instance}`` rather than a ``tool_pods.id``. No tool-pod key scope can
+        be derived from that id, and the connection's grant carries the agent's scope, not
+        ``tool_pod-<hex>``. Building the stack for it raised inside the connected callback on
+        every start, which exited the process and fed a supervisor restart loop.
+        """
+        server = _FakeToolServer(pod_id=Subjects.agent_inprocess_pod_id(uuid.uuid4(), uuid.uuid4()))
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
         await bootstrap.run_async()
 
+        assert server.serve_called is True
         assert server.connected_callbacks == []
         assert bootstrap.collection_registry is None
         assert bootstrap.object_resolutions is None
-        assert server.object_resolution_cache is None
+        assert server.assertion_replay_anchor is None
+
+    async def test_an_in_process_pod_that_declares_tables_is_refused_before_it_serves(self) -> None:
+        """declared tables need a tool-pod identity to scope them, and this pod has none.
+
+        Refused at wiring with the terminal config type, so ``run`` exits ``EX_CONFIG`` once
+        instead of the connected callback raising on every restart.
+        """
+        server = _FakeToolServer(pod_id=Subjects.agent_inprocess_pod_id(uuid.uuid4(), uuid.uuid4()))
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+
+        with pytest.raises(ToolPodConfigError) as caught:
+            await bootstrap.run_async()
+
+        assert caught.value.variable == "collection_tables"
+        assert server.pod_id in str(caught.value)
+        assert server.serve_called is False
+        assert server.connected_callbacks == []
 
     async def test_the_runtime_collection_is_built_and_handed_to_the_server(self) -> None:
         """the stack carries a payload: the resolver's cache is wired without the host asking.
@@ -253,6 +353,36 @@ class TestTheCollectionStackRidesTheLifecycle:
         await run_task
 
         client.unsubscribe.assert_awaited_once()
+
+    async def test_the_replay_anchor_is_wired_without_the_host_asking(self) -> None:
+        """the proxy-assertion guard's durable first-existence record, wired here or nowhere.
+
+        Without an anchor the guard cannot tell a bucket it never had from one it lost, so
+        it applies its creation-time watermark to both -- and `proxy_assertion_nonces` is
+        memory-backed, so it dies with the broker. Every cold start then refused its first
+        proxied call, naming a replay that had not happened.
+
+        A pod CANNOT do this for itself: an anchor reads through the collection registry,
+        which needs a connected NATS client, and the thing that connects is the very
+        ToolServer the pod has finished constructing by then. So it is wired from the
+        connected callback, which runs before `serve` builds the guard. An anchor a host
+        had to remember to build is one a host will forget to build.
+        """
+        server = _FakeToolServer()
+        server.serve_event.set()
+        bootstrap = _ConcreteBootstrap(
+            server=server,
+            register_log=[],
+            collection_tables=_collection_tables(),
+        )
+
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await server.connected_callbacks[0](_stack_nats_client())
+        await run_task
+
+        assert isinstance(server.assertion_replay_anchor, CollectionReplayAnchor)
 
 
 class TestUnoverriddenHooks:
@@ -493,3 +623,271 @@ def test_signal_handler_uses_service_name_in_task_name() -> None:
     handler = bootstrap.make_signal_handler(server, "sigterm")
     # closure captured the service name in the task name template
     assert callable(handler)
+
+
+class _FailingShutdownServer(_FakeToolServer):
+    """a server whose shutdown raises the way a reconnecting NATS client's drain did.
+
+    Its ``shutdown`` does NOT release ``serve`` -- exactly the real failure: ``ToolServer.shutdown``
+    raised before it set the event ``serve`` waits on, so ``serve`` never returned and two tool
+    pods stayed alive for two days after SIGTERM.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_serve: Any = None
+
+    async def serve(self) -> None:
+        self.serve_called = True
+        if self.on_serve is not None:
+            self.on_serve()
+        await self.serve_event.wait()
+
+    async def shutdown(self) -> None:
+        self.shutdown_called = True
+        raise ConnectionResetError("NATS drain failed; connection reset by peer")
+
+
+class _FailingShutdownBootstrap(ToolServerBootstrap):
+    """drives ``run`` with a server whose shutdown raises, signalled from inside ``serve``."""
+
+    def __init__(self, server: _FailingShutdownServer) -> None:
+        super().__init__("failing-shutdown-pod", health_port=0)
+        self.server = server
+        as_server: Any = server
+        server.on_serve = lambda: self.make_signal_handler(as_server, "sigterm")()
+
+    async def build_server(self) -> Any:
+        return self.server
+
+    async def register_tools(self, server: Any) -> None:
+        pass
+
+
+class TestAFailedShutdownStillExits:
+    """SIGTERM ends the process even when the server's own shutdown raises."""
+
+    async def test_serve_is_left_and_the_failure_is_raised(self, caplog: pytest.LogCaptureFixture) -> None:
+        """``run_async`` returns control -- by raising the typed failure -- instead of waiting forever.
+
+        :param caplog: the log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        server = _FailingShutdownServer()
+        bootstrap = _FailingShutdownBootstrap(server)
+
+        with caplog.at_level(logging.ERROR), pytest.raises(ToolPodShutdownError) as raised:
+            await asyncio.wait_for(bootstrap.run_async(), timeout=5.0)
+
+        assert server.shutdown_called is True
+        assert isinstance(raised.value.__cause__, ConnectionResetError)
+        errors = _error_records(caplog)
+        assert len(errors) == 1, [r.getMessage() for r in errors]
+        extra = getattr(errors[0], "extra_data", {})
+        assert extra.get("error_type") == "ConnectionResetError"
+        assert "connection reset by peer" in extra.get("error", "")
+        assert extra.get("reason") == "sigterm"
+
+    def test_the_process_exits_non_zero(self) -> None:
+        """``run`` owns the exit status: a shutdown that failed is not a clean exit.
+
+        :return: nothing
+        :rtype: None
+        """
+        bootstrap = _FailingShutdownBootstrap(_FailingShutdownServer())
+
+        with pytest.raises(SystemExit) as exit_info:
+            bootstrap.run()
+
+        assert exit_info.value.code == EX_SOFTWARE
+        assert EX_SOFTWARE not in (0, EX_CONFIG)
+
+    async def test_a_shutdown_that_hangs_is_cut_off_at_the_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a drain that never returns is the same failure as one that raises, once the bound passes.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(SHUTDOWN_TIMEOUT_ENV, "0.1")
+        server = _FailingShutdownServer()
+
+        async def _hang() -> None:
+            server.shutdown_called = True
+            await asyncio.Event().wait()
+
+        server.shutdown = _hang  # type: ignore[method-assign]
+        bootstrap = _FailingShutdownBootstrap(server)
+
+        with pytest.raises(ToolPodShutdownError) as raised:
+            await asyncio.wait_for(bootstrap.run_async(), timeout=5.0)
+
+        assert isinstance(raised.value.__cause__, TimeoutError)
+
+    async def test_a_second_signal_does_not_start_a_second_shutdown(self) -> None:
+        """SIGTERM then SIGINT (or the owner going too) drives one shutdown, not two.
+
+        :return: nothing
+        :rtype: None
+        """
+        server = _FakeToolServer()
+        calls: list[int] = []
+        original = server.shutdown
+
+        async def _counted() -> None:
+            calls.append(1)
+            await original()
+
+        server.shutdown = _counted  # type: ignore[method-assign]
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+        run_task = asyncio.create_task(bootstrap.run_async())
+        await asyncio.sleep(0.01)
+        as_server: Any = server
+        await asyncio.gather(
+            bootstrap.shutdown_server(as_server, reason="sigterm"),
+            bootstrap.shutdown_server(as_server, reason="sigint"),
+        )
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+        assert calls == [1]
+
+
+class TestTheOwnerPidIsValidatedAtStartup:
+    """``THREETEARS_TOOL_POD_OWNER_PID`` is refused at startup unless it can name a real owner."""
+
+    @pytest.mark.parametrize("value", ["0", "-5", "1", "abc", "", "12.5"])
+    def test_an_invalid_value_is_a_config_fault(self, value: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """each is refused with the variable named, and the process exits ``EX_CONFIG``.
+
+        :param value: the invalid value
+        :ptype value: str
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(OWNER_PID_ENV, value)
+        server = _FakeToolServer()
+        server.serve_event.set()
+
+        with pytest.raises(SystemExit) as exit_info:
+            _SucceedingBootstrap(server).run()
+
+        assert exit_info.value.code == EX_CONFIG
+        assert server.serve_called is False
+
+    def test_the_pods_own_pid_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a pod watching itself would never notice anything.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(OWNER_PID_ENV, str(os.getpid()))
+        with pytest.raises(ToolPodConfigError) as raised:
+            resolve_owner_pid()
+        assert raised.value.variable == OWNER_PID_ENV
+
+    def test_unset_watches_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """opt-in: no variable, no watch.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.delenv(OWNER_PID_ENV, raising=False)
+        assert resolve_owner_pid() is None
+
+    def test_a_live_pid_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the parent of this test process is a real, live owner.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        monkeypatch.setenv(OWNER_PID_ENV, f" {os.getppid()} ")
+        assert resolve_owner_pid() == os.getppid()
+
+
+class TestAToolPodExitsWhenItsOwnerIsGone:
+    """the owner watch, against a real process that really exits."""
+
+    async def test_the_pod_shuts_down_when_the_owner_exits(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a short-lived owner subprocess exits; the pod shuts down through the normal path.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :param caplog: the log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.3)"])  # noqa: S603
+        monkeypatch.setenv(OWNER_PID_ENV, str(owner.pid))
+        monkeypatch.setenv(OWNER_POLL_INTERVAL_ENV, "0.05")
+        server = _FakeToolServer()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        with caplog.at_level(logging.WARNING):
+            run_task = asyncio.create_task(bootstrap.run_async())
+            await asyncio.sleep(0.1)
+            assert not run_task.done(), "the pod must keep serving while its owner lives"
+            # reap the owner, as its own parent would; an unreaped child still answers kill(pid, 0).
+            await asyncio.to_thread(owner.wait)
+            await asyncio.wait_for(run_task, timeout=5.0)
+
+        assert server.shutdown_called is True
+        gone = [r for r in caplog.records if r.levelno == logging.WARNING and str(owner.pid) in r.getMessage()]
+        assert len(gone) == 1
+
+    async def test_a_pod_whose_owner_lives_keeps_serving(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the negative control: a live owner is polled and nothing happens.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])  # noqa: S603
+        try:
+            monkeypatch.setenv(OWNER_PID_ENV, str(owner.pid))
+            monkeypatch.setenv(OWNER_POLL_INTERVAL_ENV, "0.02")
+            server = _FakeToolServer()
+            bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+            run_task = asyncio.create_task(bootstrap.run_async())
+            await asyncio.sleep(0.3)
+
+            assert not run_task.done()
+            assert server.shutdown_called is False
+            await server.shutdown()
+            await asyncio.wait_for(run_task, timeout=2.0)
+        finally:
+            owner.kill()
+            owner.wait()
+
+    async def test_an_owner_gone_with_a_failing_shutdown_still_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """item 5's guarantee holds on this path too: the owner is gone and the drain raises.
+
+        :param monkeypatch: the test's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        owner = subprocess.Popen([sys.executable, "-c", "pass"])  # noqa: S603
+        owner.wait()
+        monkeypatch.setenv(OWNER_PID_ENV, str(owner.pid))
+        monkeypatch.setenv(OWNER_POLL_INTERVAL_ENV, "0.05")
+        server = _FailingShutdownServer()
+        bootstrap = _ConcreteBootstrap(server=server, register_log=[])
+
+        with pytest.raises(ToolPodShutdownError):
+            await asyncio.wait_for(bootstrap.run_async(), timeout=5.0)
+        assert server.shutdown_called is True

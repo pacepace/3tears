@@ -32,6 +32,7 @@ response so junk tool names never reach downstream dispatch.
 from __future__ import annotations
 
 from threetears.models.cache import ModelCache
+from threetears.models.claude_cli_isolation import ClaudeCliIsolation, claude_cli_isolation
 from threetears.models.capabilities import (
     CapabilityOverride,
     ModelCapabilities,
@@ -62,7 +63,14 @@ from threetears.models.circuit_breaker import (
     CircuitState,
 )
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
-from threetears.models.errors import friendly_api_error, identify_provider
+from threetears.models.errors import (
+    ModelCallTimeout,
+    ModelProviderError,
+    ModelRateLimitError,
+    friendly_api_error,
+    identify_provider,
+    is_provider_error,
+)
 from threetears.models.factory import create_chat_model, create_embedding_model
 from threetears.models.preprocessing import (
     OBJECT_REFERENCE_BLOCK_TYPE,
@@ -100,13 +108,22 @@ from threetears.models.tool_name_validation import (
     validate_tool_name,
 )
 from threetears.models.tracking import (
+    USAGE_METADATA_PREFIX,
+    ExtractedUsage,
     LlmPurpose,
+    TokenSource,
     UsageAuditSink,
     UsageCounterSink,
     UsageRecord,
     UsageTracker,
     UsageTrackingCallback,
+    current_usage_scope,
+    default_usage_tracker,
+    extract_usage,
+    set_default_usage_tracker,
+    usage_scope,
 )
+from threetears.models.usage import UsageAccumulator, attach_callbacks
 
 # Eager-import builtin provider modules so their import-time
 # `register_capabilities()` calls populate the shared registry. The
@@ -122,6 +139,16 @@ from threetears.models.providers import (  # noqa: E402, F401
 )
 
 __all__ = [
+    "USAGE_METADATA_PREFIX",
+    "ExtractedUsage",
+    "TokenSource",
+    "UsageAccumulator",
+    "attach_callbacks",
+    "current_usage_scope",
+    "default_usage_tracker",
+    "extract_usage",
+    "set_default_usage_tracker",
+    "usage_scope",
     "BUILTIN_PROVIDERS",
     "CURRENT_ANTHROPIC_CHAT_MODELS",
     "CURRENT_VOYAGEAI_EMBEDDING_MODELS",
@@ -131,6 +158,7 @@ __all__ = [
     "DEFAULT_LARGE_MODEL",
     "DEFAULT_MAX_TOKENS",
     "CapabilityOverride",
+    "ClaudeCliIsolation",
     "ChunkParsed",
     "CircuitBreaker",
     "CircuitBreakerCallback",
@@ -160,6 +188,7 @@ __all__ = [
     "UsageTracker",
     "UsageTrackingCallback",
     "clear_capability_overrides",
+    "claude_cli_isolation",
     "create_chat_model",
     "create_embedding_model",
     "default_price_sources",
@@ -171,6 +200,10 @@ __all__ = [
     "format_vision_content",
     "format_vision_reference_content",
     "friendly_api_error",
+    "is_provider_error",
+    "ModelCallTimeout",
+    "ModelProviderError",
+    "ModelRateLimitError",
     "get_capabilities",
     "get_capability_override",
     "identify_provider",

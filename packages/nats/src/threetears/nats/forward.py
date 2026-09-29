@@ -261,6 +261,10 @@ async def serve_owner(
             async with serve_owner(nats, key, handler):
                 ...  # serve while we own the key
 
+    losing the lock cancels that body, so ``serve_owner`` exits and
+    unsubscribes, and the ``async with`` raises
+    :class:`~threetears.nats.LockLost`.
+
     :param nats: connected canonical :class:`threetears.nats.NatsClient`
     :ptype nats: NatsClient
     :param key: ownership key; mapped deterministically to a forward

@@ -779,6 +779,11 @@ def _agent_pod(
         # because no agent process writes the hub's ``namespaces`` table any more -- the hub verifies
         # the forwarded identity token and refuses a request naming a pair that is not the token's.
         str(Subjects.hub_memory_namespace_ensure()),
+        # person erasure: the agent asks the hub to anonymize the audit rows IT published about the
+        # people it names. Same forwarded-token auth: the hub derives the agent from the verified
+        # token and touches only rows whose agent is that caller, so this subject buys no reach into
+        # another agent's audit trail.
+        str(Subjects.hub_audit_anonymize()),
         # engagement selection, READ ONLY: the runtime resolves the conversation channel's default
         # engagement at the tool-call stamp seam. Without this the publish is refused at the
         # connection, the resolve soft-fails to "unbound", and a scan that should have authorized
@@ -991,6 +996,23 @@ def _tool_pod(
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
         f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops, as the agent pod holds it
+        # a datasource, reached the same way: the hub answers ``{ns}.datasource.{name}.query``
+        # for every datasource it serves, verifies the forwarded hub-minted token at the
+        # door, and evaluates the pod's own grant on that datasource's namespace. The request
+        # names no principal, so this subject buys reach and never authority -- which is what
+        # makes a wildcard over the NAME segment safe to hold: the pod may ask about any
+        # datasource, and the hub refuses every one it was not granted. A pattern rather
+        # than per-name literals because these grants are minted at connect, before the pod
+        # knows which datasources an operator will declare for it.
+        str(Subjects.datasource_query_wildcard()),
+        # a platform tool -- the dataset verbs above all -- reached the same way: the registry
+        # answers ``{ns}.tools.call``, verifies the forwarded hub-minted token and the per-call
+        # proof of possession at the door, and evaluates the pod's OWN ``tool.call`` grant on
+        # the tool's namespace, because a tool pod forwards no user assertion. The request
+        # names no principal, so this subject buys reach and never authority: the pod may ask
+        # for any tool, and the registry refuses every one the pod's row was not granted. The
+        # same subject the agent pod holds, for the same call shape.
+        str(Subjects.tools_call()),
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify proxy assertions
         str(Subjects.audit_event("tool.call")),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
@@ -1235,6 +1257,8 @@ def _hub(
         str(Subjects.hub_approval_resolve()),
         # memory bootstrap: responds to an agent's memory-namespace ensure
         str(Subjects.hub_memory_namespace_ensure()),
+        # person erasure: responds to an agent's request to anonymize the audit rows it published
+        str(Subjects.hub_audit_anonymize()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),
@@ -1243,7 +1267,7 @@ def _hub(
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
         f"{ns}.l3.tx.*",
-        f"{ns}.datasource.*.query",
+        str(Subjects.datasource_query_wildcard()),  # answers every datasource's query subject
         str(Subjects.tools_register()),  # materializes tool namespace rows
         str(Subjects.workspaces_create()),
         str(Subjects.knowledge_draft()),

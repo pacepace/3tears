@@ -7,40 +7,42 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-08-26T23:32:12.019304Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-3tears-agent-identity = { timestamp = "2026-09-09T23:32:12.01932Z", span = "PT0S" }
-3tears-agent-workspace = { timestamp = "2026-09-09T23:32:12.019321Z", span = "PT0S" }
-3tears-nats = { timestamp = "2026-09-09T23:32:12.019324Z", span = "PT0S" }
-3tears-models = { timestamp = "2026-09-09T23:32:12.019324Z", span = "PT0S" }
-3tears-agent-tools = { timestamp = "2026-09-09T23:32:12.019321Z", span = "PT0S" }
-3tears-object-store = { timestamp = "2026-09-09T23:32:12.019324Z", span = "PT0S" }
-3tears-conversations = { timestamp = "2026-09-09T23:32:12.019322Z", span = "PT0S" }
-3tears-registry = { timestamp = "2026-09-09T23:32:12.019325Z", span = "PT0S" }
-3tears-search = { timestamp = "2026-09-09T23:32:12.019325Z", span = "PT0S" }
-3tears-mcp = { timestamp = "2026-09-09T23:32:12.019323Z", span = "PT0S" }
-3tears = { timestamp = "2026-09-09T23:32:12.019314Z", span = "PT0S" }
-3tears-agent-wake = { timestamp = "2026-09-09T23:32:12.019321Z", span = "PT0S" }
-3tears-agent-skills = { timestamp = "2026-09-09T23:32:12.019321Z", span = "PT0S" }
-3tears-channels = { timestamp = "2026-09-09T23:32:12.019322Z", span = "PT0S" }
-3tears-enforcement = { timestamp = "2026-09-09T23:32:12.019322Z", span = "PT0S" }
-3tears-epoch = { timestamp = "2026-09-09T23:32:12.019323Z", span = "PT0S" }
-3tears-agent-acl = { timestamp = "2026-09-09T23:32:12.019319Z", span = "PT0S" }
-3tears-geo = { timestamp = "2026-09-09T23:32:12.019323Z", span = "PT0S" }
-3tears-agent-intention = { timestamp = "2026-09-09T23:32:12.01932Z", span = "PT0S" }
-3tears-iam = { timestamp = "2026-09-09T23:32:12.019323Z", span = "PT0S" }
-3tears-scheduled-jobs = { timestamp = "2026-09-09T23:32:12.019325Z", span = "PT0S" }
-3tears-observe = { timestamp = "2026-09-09T23:32:12.019324Z", span = "PT0S" }
-3tears-langgraph = { timestamp = "2026-09-09T23:32:12.019323Z", span = "PT0S" }
-3tears-agent-knowledge = { timestamp = "2026-09-09T23:32:12.01932Z", span = "PT0S" }
-3tears-backup = { timestamp = "2026-09-09T23:32:12.019321Z", span = "PT0S" }
-3tears-media-contracts = { timestamp = "2026-09-09T23:32:12.019324Z", span = "PT0S" }
-3tears-scrape = { timestamp = "2026-09-09T23:32:12.019325Z", span = "PT0S" }
-3tears-datasources = { timestamp = "2026-09-09T23:32:12.019322Z", span = "PT0S" }
-3tears-agent-audit = { timestamp = "2026-09-09T23:32:12.01932Z", span = "PT0S" }
-3tears-agent-memory = { timestamp = "2026-09-09T23:32:12.01932Z", span = "PT0S" }
+3tears-agent-identity = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-workspace = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-nats = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+langchain-openrouter = "2026-09-22T05:00:00Z"
+3tears-models = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-tools = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-object-store = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-registry = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-search = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-tool-schema = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-skills = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-channels = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-enforcement = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-epoch = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-geo = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-intention = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-iam = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-observe = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-scheduled-jobs = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-langgraph = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-knowledge = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-backup = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-media-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-scrape = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 
 [manifest]
 members = [
@@ -74,6 +76,7 @@ members = [
     "3tears-scheduled-jobs",
     "3tears-scrape",
     "3tears-search",
+    "3tears-tool-schema",
 ]
 constraints = [{ name = "lxml", specifier = ">=6.1.0,<7" }]
 
@@ -88,6 +91,7 @@ dev = [
     { name = "freezegun", specifier = ">=1.5" },
     { name = "google-cloud-bigquery", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "httpx2" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "langchain-anthropic", specifier = ">=1.4" },
     { name = "langchain-claude-code", specifier = ">=0.1.0" },
@@ -119,7 +123,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "3tears-nats" },
@@ -179,7 +183,7 @@ provides-extras = ["nats", "tracing", "socks", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
@@ -203,7 +207,7 @@ provides-extras = ["bus"]
 
 [[package]]
 name = "3tears-agent-audit"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/audit" }
 dependencies = [
     { name = "3tears-nats", extra = ["client"] },
@@ -220,7 +224,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-identity"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/identity" }
 dependencies = [
     { name = "3tears" },
@@ -245,7 +249,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-intention"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/intention" }
 dependencies = [
     { name = "3tears" },
@@ -272,7 +276,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-knowledge"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/knowledge" }
 dependencies = [
     { name = "3tears" },
@@ -299,7 +303,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/memory" }
 dependencies = [
     { name = "3tears" },
@@ -326,7 +330,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-skills"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/skills" }
 dependencies = [
     { name = "3tears" },
@@ -347,7 +351,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/tools" }
 dependencies = [
     { name = "3tears" },
@@ -358,6 +362,7 @@ dependencies = [
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "3tears-search", extra = ["standalone"] },
+    { name = "3tears-tool-schema" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "prometheus-client" },
@@ -418,6 +423,7 @@ requires-dist = [
     { name = "3tears-search", extras = ["extract"], marker = "extra == 'all'", editable = "packages/search" },
     { name = "3tears-search", extras = ["extract"], marker = "extra == 'fetch'", editable = "packages/search" },
     { name = "3tears-search", extras = ["standalone"], editable = "packages/search" },
+    { name = "3tears-tool-schema", editable = "packages/tool-schema" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "openpyxl", marker = "extra == 'all'" },
@@ -445,7 +451,7 @@ provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "visio
 
 [[package]]
 name = "3tears-agent-wake"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/wake" }
 dependencies = [
     { name = "3tears" },
@@ -481,7 +487,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-agent-workspace"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/agent/workspace" }
 dependencies = [
     { name = "3tears" },
@@ -512,7 +518,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-backup"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/backup" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -529,7 +535,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-channels"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/channels" }
 dependencies = [
     { name = "3tears" },
@@ -573,7 +579,7 @@ provides-extras = ["slack", "discord", "websocket", "webhook"]
 
 [[package]]
 name = "3tears-conversations"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/conversations" }
 dependencies = [
     { name = "3tears" },
@@ -592,10 +598,11 @@ requires-dist = [
 
 [[package]]
 name = "3tears-datasources"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/datasources" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "asyncpg" },
     { name = "pydantic" },
@@ -622,8 +629,9 @@ snowflake = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
-    { name = "asyncpg", specifier = ">=0.29" },
+    { name = "asyncpg", specifier = ">=0.30" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -638,7 +646,7 @@ provides-extras = ["redshift", "snowflake", "bigquery", "dev"]
 
 [[package]]
 name = "3tears-enforcement"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/enforcement" }
 dependencies = [
     { name = "3tears" },
@@ -660,7 +668,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "3tears-epoch"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/epoch" }
 dependencies = [
     { name = "3tears" },
@@ -681,7 +689,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-geo"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/geo" }
 dependencies = [
     { name = "3tears" },
@@ -702,7 +710,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-iam"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/iam" }
 dependencies = [
     { name = "3tears" },
@@ -750,7 +758,7 @@ provides-extras = ["saml", "webauthn"]
 
 [[package]]
 name = "3tears-langgraph"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/langgraph" }
 dependencies = [
     { name = "3tears" },
@@ -779,7 +787,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-mcp"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/mcp" }
 dependencies = [
     { name = "3tears" },
@@ -810,28 +818,32 @@ requires-dist = [
 
 [[package]]
 name = "3tears-media-contracts"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/media-contracts" }
 
 [[package]]
 name = "3tears-models"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/models" }
 dependencies = [
     { name = "3tears-media-contracts" },
     { name = "3tears-observe" },
+    { name = "3tears-tool-schema" },
     { name = "anthropic" },
     { name = "jsonschema" },
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "langchain-openrouter" },
+    { name = "openrouter" },
     { name = "pydantic" },
+    { name = "uuid-utils" },
 ]
 
 [package.optional-dependencies]
 claude-cli = [
     { name = "3tears-langgraph" },
+    { name = "claude-agent-sdk" },
     { name = "langchain-claude-code" },
 ]
 image = [
@@ -852,7 +864,9 @@ requires-dist = [
     { name = "3tears-langgraph", marker = "extra == 'claude-cli'", editable = "packages/langgraph" },
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "3tears-tool-schema", editable = "packages/tool-schema" },
     { name = "anthropic", specifier = ">=0.116" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude-cli'", specifier = ">=0.2.116,<0.3" },
     { name = "httpx", marker = "extra == 'image'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'whisper'", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.26" },
@@ -860,16 +874,18 @@ requires-dist = [
     { name = "langchain-claude-code", marker = "extra == 'claude-cli'", specifier = ">=0.1.0" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "langchain-openai", specifier = ">=1.1" },
-    { name = "langchain-openrouter", specifier = ">=0.1" },
+    { name = "langchain-openrouter", specifier = ">=0.2.9" },
     { name = "langchain-voyageai", marker = "extra == 'voyageai'", specifier = ">=0.3" },
+    { name = "openrouter", specifier = ">=0.9.2,<1.0" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "uuid-utils" },
 ]
 provides-extras = ["claude-cli", "voyageai", "whisper", "image", "prometheus"]
 
 [[package]]
 name = "3tears-nats"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/nats" }
 dependencies = [
     { name = "3tears-observe" },
@@ -893,7 +909,7 @@ provides-extras = ["client"]
 
 [[package]]
 name = "3tears-object-store"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/object-store" }
 dependencies = [
     { name = "3tears" },
@@ -912,7 +928,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-observe"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/observe" }
 
 [package.optional-dependencies]
@@ -936,7 +952,7 @@ provides-extras = ["otel", "asgi"]
 
 [[package]]
 name = "3tears-registry"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/registry" }
 dependencies = [
     { name = "3tears" },
@@ -961,7 +977,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-scheduled-jobs"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/scheduled-jobs" }
 dependencies = [
     { name = "3tears" },
@@ -989,7 +1005,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-scrape"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/scrape" }
 dependencies = [
     { name = "3tears" },
@@ -1039,7 +1055,7 @@ provides-extras = ["reprobe", "hitl"]
 
 [[package]]
 name = "3tears-search"
-version = "0.37.0"
+version = "0.56.3"
 source = { editable = "packages/search" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -1064,6 +1080,11 @@ requires-dist = [
     { name = "trafilatura", marker = "extra == 'extract'", specifier = ">=2.0.0" },
 ]
 provides-extras = ["standalone", "extract"]
+
+[[package]]
+name = "3tears-tool-schema"
+version = "0.56.3"
+source = { editable = "packages/tool-schema" }
 
 [[package]]
 name = "aioboto3"
@@ -2299,6 +2320,19 @@ wheels = [
 ]
 
 [[package]]
+name = "httpcore2"
+version = "2.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h11" },
+    { name = "truststore" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/be/ad/f4f0e57345f1870f3e8cb624e058d7eca6e5a27d33bcc3311d9b618734cd/httpcore2-2.12.0.tar.gz", hash = "sha256:9293522bba0aa7c4c8e9e3f040c16575bd8868e155a77fa30c7a9085a5eae648", size = 67548, upload-time = "2026-08-18T13:22:08.211Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/74/d370e55600d9bcfa0d9794b0166126d49291a3d2b20c268fc98c453a4948/httpcore2-2.12.0-py3-none-any.whl", hash = "sha256:7e04258ce01013d7d615e5b910a3b27fac937d7a95038227e79652b4ba3b4ceb", size = 83074, upload-time = "2026-08-18T13:22:05.854Z" },
+]
+
+[[package]]
 name = "httpx"
 version = "0.28.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2325,6 +2359,31 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0f/4c/751061ffa58615a32c31b2d82e8482be8dd4a89154f003147acee90f2be9/httpx_sse-0.4.3.tar.gz", hash = "sha256:9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d", size = 15943, upload-time = "2025-10-10T21:48:22.271Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl", hash = "sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc", size = 8960, upload-time = "2025-10-10T21:48:21.158Z" },
+]
+
+[[package]]
+name = "httpx2"
+version = "2.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio", marker = "sys_platform != 'emscripten'" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
+    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten'" },
+    { name = "idna" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7f/f8/579a8b51e42e38ee32647df9f08aa25643ae788e275cc625b199829c4671/httpx2-2.12.0.tar.gz", hash = "sha256:7631fe9887a8a2275f4a2540e053aa670fcc50742864a9ae7c66e609fdcf12cf", size = 100040, upload-time = "2026-08-18T13:22:09.086Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/95/411ba65569158e862368917aaf56597f3e5fa3b91b0502919638465a08f3/httpx2-2.12.0-py3-none-any.whl", hash = "sha256:cc8b6eecb8661c146b8f89a60e97456ee086e91a784ed31ac450c3a9e613dd36", size = 95427, upload-time = "2026-08-18T13:22:06.834Z" },
+]
+
+[[package]]
+name = "httpx2-jsfetch"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/c4/0e5636363151a2a1795e0a77617168b9ca438e1748ec05fc9b5687f93d64/httpx2_jsfetch-1.0.tar.gz", hash = "sha256:70a0e3eabfef7cce5ad9c629f7d01ca05e418f586646f4ddf14782e4c1454c60", size = 6872, upload-time = "2026-08-07T00:13:07.492Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/43/832f631d32e4f1211caa2ba368317739fe71f0b8530e4c9d15dc454bac2a/httpx2_jsfetch-1.0-py3-none-any.whl", hash = "sha256:cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32", size = 6382, upload-time = "2026-08-07T00:13:06.567Z" },
 ]
 
 [[package]]
@@ -2590,9 +2649,10 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.4.9"
+version = "1.6.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "httpx" },
     { name = "jsonpatch" },
     { name = "langchain-protocol" },
     { name = "langsmith" },
@@ -2603,9 +2663,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2a/b9/e937d0a90b26540bff07e7a7c64349f3b29c2dcc36257cd1cd3fdce17f2a/langchain_core-1.4.9.tar.gz", hash = "sha256:f8078901145bed0466755277500a5a22822a7b628808c4c0a28d4fc88895fcf2", size = 967294, upload-time = "2026-07-08T20:06:54.191Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/d7/1482670ccebc863166852516a08a1956fc50da40fbe2fe7dd218abfef4a1/langchain_core-1.6.3.tar.gz", hash = "sha256:88b430944fbd4d40fa98135d6c873581d497b6f33515d01962337548e918df2f", size = 1006228, upload-time = "2026-09-11T17:37:45.614Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/70/ade2fada52772798ef815b6352b59e71b116aa0c32c3aef5be3dc2cbed12/langchain_core-1.4.9-py3-none-any.whl", hash = "sha256:28e3909e2a10cc81504952d795ac0a9e014c0018121ef89d48dd396fa09ec624", size = 558293, upload-time = "2026-07-08T20:06:52.382Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/18/cf18cfec118b02e003f35300b54d6a1173dc6e4905cffdf5ea49e390a7f9/langchain_core-1.6.3-py3-none-any.whl", hash = "sha256:114fe1868c9ed60606662b9dd0074bf3152cc6b0b1522ba37cbd6b04f55ca77d", size = 571753, upload-time = "2026-09-11T17:37:43.875Z" },
 ]
 
 [[package]]
@@ -2624,15 +2684,15 @@ wheels = [
 
 [[package]]
 name = "langchain-openrouter"
-version = "0.2.6"
+version = "0.2.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "openrouter" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/25/38/9e83b0b0c2127d286e3a02b5e043a155a53bbf6f99ebc2525f444142d46c/langchain_openrouter-0.2.6.tar.gz", hash = "sha256:dc77927cd70d837adea977b1253cf7cebc3055724c419169ac1321d936281ba8", size = 182409, upload-time = "2026-07-05T20:57:08.732Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/ad/c908cc9161858fe0c720e8e0d32d64462c5a09bf64e463e1709d679919bc/langchain_openrouter-0.2.9.tar.gz", hash = "sha256:e3c130bfc58a517811044b6cb56e13b2e7d1ee219c38e025f4522aa0400f9c8e", size = 183837, upload-time = "2026-09-22T04:15:59.13Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/1b/ce511f21221cf6bff2ecc72f7d318277742a8e9244a49f3c110a1f497c66/langchain_openrouter-0.2.6-py3-none-any.whl", hash = "sha256:267127e34f921450298ab82fbbef8dd0d4bb2b440040769df0af203ce13048f4", size = 29329, upload-time = "2026-07-05T20:57:07.67Z" },
+    { url = "https://files.pythonhosted.org/packages/65/ad/7a0f0f39b92d0b93123d6e11e4bf35a560a07cbf59bfee7ab0c6052d251f/langchain_openrouter-0.2.9-py3-none-any.whl", hash = "sha256:375a79a4a849069d2254627185210b2f2b9fe84c69326e10d71c3d48f8b41f06", size = 30170, upload-time = "2026-09-22T04:15:57.853Z" },
 ]
 
 [[package]]
@@ -4469,6 +4529,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e8/19/24833e905df2d80e3bb67424f95febcc17709a1f61a522120bc438afca70/trafilatura-2.1.0.tar.gz", hash = "sha256:f689e2116fc89c7bc0b9a296d01dcfe2eb0b5455f8c371a77dc0db1f06a05643", size = 263876, upload-time = "2026-06-07T17:43:31.829Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0e/78/4ad99d79aee2784f49f20fd0a29058ce4c032fe4439047924c43521cd211/trafilatura-2.1.0-py3-none-any.whl", hash = "sha256:0eded5207a806445ddebbe36eae30b9035fe6a2f233c36f6fe82663fca8b9d30", size = 134600, upload-time = "2026-06-07T17:43:28.404Z" },
+]
+
+[[package]]
+name = "truststore"
+version = "0.10.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e8102c22482f6060c7a6ea0322b63e026372e6dcefcfd6/truststore-0.10.4.tar.gz", hash = "sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301", size = 26169, upload-time = "2025-08-12T18:49:02.73Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl", hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z" },
 ]
 
 [[package]]

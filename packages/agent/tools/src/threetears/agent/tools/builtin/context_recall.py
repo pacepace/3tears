@@ -21,27 +21,14 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.call_scope import current_scope
+from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 
 __all__ = [
-    "ContextRecallInput",
     "ContextRecallTool",
     "create_context_recall_tool",
 ]
-
-
-class ContextRecallInput(BaseModel):
-    """Input for the context_recall tool."""
-
-    context_id: str = Field(
-        description=(
-            "The context id to recall, as shown in a tool result's "
-            "'[ctx:<id>]' handle. Either '<id>' or 'ctx:<id>' is accepted."
-        ),
-    )
 
 
 def create_context_recall_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -50,23 +37,41 @@ def create_context_recall_tool(config: dict[str, Any], description: str) -> Stru
     delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
     so the in-process StructuredTool path and the NATS-dispatched
     ToolServer path share one execution body
-    (:meth:`ContextRecallTool.execute`). ``config`` is unused (the tool
-    resolves its context manager per-call from the call scope), kept in
-    the signature for :func:`register_builtins` factory-shape parity.
+    (:meth:`ContextRecallTool.execute`).
 
-    :param config: per-agent config dict (unused; resolution is per-call)
+    the tool reads the conversation's context manager from the call scope,
+    and on this path the scope gets one only from a ``context_factory``.
+    without it every recall answered "no context manager in scope", even
+    with the turn's ``call_context`` in the graph config.
+
+    Expected ``config`` keys:
+
+    - ``context_factory`` -- ``async (conversation_id, user_id) ->``
+      :class:`~threetears.agent.tools.context.ToolContextManager`, the
+      :data:`~threetears.agent.tools.call_scope.ContextFactory` a
+      ToolServer takes; resolves the manager the graph writes offloaded
+      results through. without it the tool can recall nothing.
+
+    :param config: per-agent config dict
     :ptype config: dict[str, Any]
     :param description: tool description surfaced to the LLM
     :ptype description: str
     :return: a LangChain ``StructuredTool`` wrapping the recall tool
     :rtype: StructuredTool
+    :raises TypeError: if ``context_factory`` is given and is not callable
     """
     from threetears.agent.tools.langchain_adapter import to_langchain_tool
 
+    context_factory = config.get("context_factory")
+    if context_factory is not None and not callable(context_factory):
+        raise TypeError(
+            "create_context_recall_tool: config['context_factory'] must be an async "
+            f"(conversation_id, user_id) -> ToolContextManager callable, not {type(context_factory).__name__}"
+        )
     return to_langchain_tool(
         ContextRecallTool(),
         description=description,
-        args_schema=ContextRecallInput,
+        context_factory=context_factory,
     )
 
 
@@ -82,10 +87,7 @@ class ContextRecallTool(TearsTool):
         "properties": {
             "context_id": {
                 "type": "string",
-                "description": (
-                    "The context id to recall, as shown in a tool result's "
-                    "'[ctx:<id>]' handle. Either '<id>' or 'ctx:<id>' is accepted."
-                ),
+                "description": "The id in a [ctx:<id>] mark, with or without the ctx: part.",
             },
         },
         "required": ["context_id"],
@@ -97,7 +99,9 @@ class ContextRecallTool(TearsTool):
         resolution order, all degrading to a clear non-success result:
 
         1. empty ``context_id`` -> "requires a context_id".
-        2. no call scope / no context manager in scope -> "unavailable".
+        2. no call scope / no context manager in scope -> "unavailable"; with
+           no scope at all the error names what the caller must supply
+           (:func:`~threetears.agent.tools.call_scope.no_call_scope_message`).
         3. unknown id -> "not found".
         4. found -> success with the full stored content.
 
@@ -113,21 +117,23 @@ class ContextRecallTool(TearsTool):
         if not context_id:
             result = ToolResult(
                 success=False,
-                content="context_recall requires a non-empty context_id.",
+                content="Give context_recall the context_id from a [ctx:<id>] mark.",
                 error="missing context_id",
             )
         elif manager is None:
+            # no scope at all is a caller that installed none -- named, so it can supply one; a
+            # scope with no manager is a call that genuinely belongs to no conversation.
             result = ToolResult(
                 success=False,
-                content="context recall unavailable: no conversation context in this call scope.",
-                error="no context manager in scope",
+                content="Saved results are unavailable here: this call is not part of a conversation.",
+                error=no_call_scope_message("context_recall") if scope is None else "no context manager in scope",
             )
         else:
             item = await manager.get_context_item(context_id)
             if item is None:
                 result = ToolResult(
                     success=False,
-                    content=f"context item not found for id: {context_id}",
+                    content=f"Saved result '{context_id}' not found in this conversation.",
                     error="not found",
                 )
             else:

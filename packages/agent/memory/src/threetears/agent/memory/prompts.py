@@ -64,42 +64,40 @@ User message: {user_message}
 
 Assistant response: {assistant_response}"""
 
-DEFAULT_WORTHINESS_PROMPT = """Does this turn reveal a durable fact that would be useful in a completely different conversation? This includes facts about the user, but also system/infrastructure decisions, technical constraints, or established norms.
+DEFAULT_WORTHINESS_PROMPT = """Does this turn hold a lasting fact worth knowing in a different conversation? It can be about the person, about the assistant and its work, or about a decision, a system or a rule that was agreed.
 
-YES: proper names, biographical details, specific preferences with reasons, concrete project details, relationships, decisions with rationale, system configuration changes, infrastructure decisions and their reasoning, discovered technical constraints
+Yes: names, life details, preferences with their reasons, project details, relationships, decisions and why they were made, changes to systems or setup, limits that were found.
 
-NO: debugging/troubleshooting steps, session-specific technical details, generic questions, tool usage, greetings, small talk, things the user is asking about (LLM knowledge, not user info), media descriptions (stored separately)
+No: debugging steps, details that only matter in this session, general questions, tool use, greetings, small talk, general knowledge the person asked about, descriptions of media (those are kept elsewhere).
 
-If the answer is only "maybe", return false. Bias toward rejection.
+If it is only a maybe, answer false.
 
 User message: {user_message}
 
-Assistant response (first 500 chars): {assistant_response_preview}
+The assistant's reply (its first 500 characters): {assistant_response_preview}
 
 Return JSON: {{"worthy": true, "reason": "..."}} or {{"worthy": false}}"""
 
-DEFAULT_RESOLUTION_PROMPT = """You are a memory manager. First check candidates against EACH OTHER for thematic overlap, then compare against existing memories.
+DEFAULT_RESOLUTION_PROMPT = """Decide what to do with each candidate memory. Compare the candidates with each other first, then with the existing memories.
 
-One conversation should not produce multiple memories about the same theme. If two candidates cover the same topic, NOOP the weaker one.
+One conversation gives one memory per topic. If two candidates cover the same topic, NOOP the one that says less.
 
 Actions:
-- "ADD": Genuinely new information not in any existing memory or other candidate.
-- "UPDATE": Refines or corrects an existing memory. Provide memory_id and updated content. Updated content must stay 1-2 sentences — do not merge into a paragraph.
-- "DELETE": New info makes an existing memory factually wrong. Provide memory_id.
-- "NOOP": Already captured by an existing memory OR overlaps with another candidate being ADDed. Skip it.
+- "ADD": it says something no existing memory and no other candidate says.
+- "UPDATE": it corrects or adds to an existing memory. Give memory_id and the new content, 1-2 sentences, not a paragraph. Write the new content in the existing memory's voice: if it says "I", keep "I"; keep names as names.
+- "DELETE": it shows an existing memory is wrong. Give memory_id.
+- "NOOP": an existing memory or another candidate already says it.
+
+When an existing memory needs a correction, UPDATE it. Do not ADD a new one and DELETE the old one.
 
 Return a JSON array with one decision per candidate:
-- "index": candidate index (0-based)
+- "index": the candidate's number, from 0
 - "action": one of "ADD", "UPDATE", "DELETE", "NOOP"
-- "memory_id": (required for UPDATE and DELETE) existing memory ID
-- "content": (required for UPDATE) new merged content (1-2 sentences max)
-- "type": (required for UPDATE) memory type
+- "memory_id": (UPDATE and DELETE) the existing memory's id
+- "content": (UPDATE) the new content, 1-2 sentences
+- "type": (UPDATE) the memory type
 
-Rules:
-- Prefer NOOP over ADD when the information is essentially already known
-- Prefer UPDATE over ADD+DELETE when a memory just needs refinement
-- Only use DELETE when new information makes an old memory factually wrong
-- Return ONLY the JSON array, no other text
+Return ONLY the JSON array, no other text.
 
 {candidates_section}"""
 

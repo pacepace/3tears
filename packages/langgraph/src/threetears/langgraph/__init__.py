@@ -19,6 +19,19 @@ try:
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
+from threetears.langgraph.anonymize import (
+    IDENTIFYING_METADATA_KEYS,
+    KEPT_METADATA_KEYS,
+    METADATA_CHANNEL,
+    CheckpointAnonymization,
+    MetadataKeyClassification,
+    UnreadableCheckpointBlob,
+    anonymize_checkpoint_value,
+    declare_identifying_metadata_keys,
+    declare_kept_metadata_keys,
+    metadata_key_classification,
+    unclassified_metadata_keys,
+)
 from threetears.langgraph.caching import (
     ChatModelCapabilities,
     annotate_system_prompt,
@@ -58,6 +71,13 @@ from threetears.langgraph.middleware_context import (
 )
 from threetears.langgraph.middleware_offload import ToolResultOffloadMiddleware
 from threetears.langgraph.middleware_schema import SchemaPrimingMiddleware
+from threetears.langgraph.middleware_rolling_summary import (
+    DEFAULT_ROLLING_SUMMARY_PREFIX,
+    USAGE_PURPOSE_METADATA_KEY,
+    RollingSummaryMiddleware,
+    SummaryState,
+    SummaryStore,
+)
 from threetears.langgraph.middleware_summarize import SummarizationMiddleware
 from threetears.langgraph.offload import (
     DEFAULT_OFFLOAD_THRESHOLD_CHARS,
@@ -108,6 +128,7 @@ from threetears.langgraph.tool_structure import (
 )
 from threetears.langgraph.summarize import (
     DEFAULT_SUMMARIZATION_PROMPT,
+    SummarizationFailedError,
     summarize_older_messages,
 )
 from threetears.langgraph.util import summarize_args
@@ -116,6 +137,7 @@ __all__ = [
     "AsyncQueryExecutor",
     "AsyncpgPoolAdapter",
     "ChatModelCapabilities",
+    "CheckpointAnonymization",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
@@ -129,6 +151,10 @@ __all__ = [
     "FlushCallback",
     "FrameworkEvent",
     "FrameworkEventRegistry",
+    "IDENTIFYING_METADATA_KEYS",
+    "KEPT_METADATA_KEYS",
+    "METADATA_CHANNEL",
+    "MetadataKeyClassification",
     "ImageGeneratedEvent",
     "NEVER_OFFLOAD_TOOLS",
     "NOSTREAM_TAG",
@@ -158,7 +184,13 @@ __all__ = [
     "StreamingResponse",
     "StreamingResponseError",
     "StructuredToolResultFields",
+    "SummarizationFailedError",
     "SummarizationMiddleware",
+    "RollingSummaryMiddleware",
+    "SummaryState",
+    "SummaryStore",
+    "DEFAULT_ROLLING_SUMMARY_PREFIX",
+    "USAGE_PURPOSE_METADATA_KEY",
     "ThreeTierCheckpointSaver",
     "ToolCallEndEvent",
     "ToolCallProgressEvent",
@@ -169,10 +201,16 @@ __all__ = [
     "ToolResultOffloader",
     "ToolStartedEvent",
     "UUIDSafeSerializer",
+    "UnreadableCheckpointBlob",
     "WorkflowCompletedEvent",
     "WorkflowStartedEvent",
     "WorkflowStepCompletedEvent",
     "annotate_system_prompt",
+    "anonymize_checkpoint_value",
+    "declare_identifying_metadata_keys",
+    "declare_kept_metadata_keys",
+    "metadata_key_classification",
+    "unclassified_metadata_keys",
     "compute_tool_key",
     "default_registry",
     "detect_capabilities",

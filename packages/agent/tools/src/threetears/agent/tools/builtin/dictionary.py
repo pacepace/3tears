@@ -6,24 +6,18 @@ from typing import Any
 
 import httpx
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+
+from threetears.agent.tools.text_window import window_text
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 __all__ = [
-    "DictionaryInput",
     "DictionaryTool",
     "create_dictionary_tool",
 ]
 
 _MAX_CHARS = 3000
-
-
-class DictionaryInput(BaseModel):
-    """Input for the dictionary tool."""
-
-    word: str = Field(description="Word to look up")
 
 
 def _format_entry(data: list[dict[str, Any]]) -> str:
@@ -62,10 +56,9 @@ def _format_entry(data: list[dict[str, Any]]) -> str:
 
         parts.append("")
 
-    result = "\n".join(parts).strip()
-    if len(result) > _MAX_CHARS:
-        result = result[: _MAX_CHARS - 12] + "\n[Truncated]"
-    return result
+    # One entry rarely reaches the bound, but when it does it is windowed like
+    # every other long result rather than cut with a phrase of its own.
+    return window_text("\n".join(parts).strip(), max_chars=_MAX_CHARS).rendered(tool="dictionary")
 
 
 def _create_lookup_fn(language: str) -> Any:
@@ -103,7 +96,6 @@ def create_dictionary_tool(config: dict[str, Any], description: str) -> Structur
     return to_langchain_tool(
         DictionaryTool(language=language),
         description=description,
-        args_schema=DictionaryInput,
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from threetears.core.data.collection_factory import create_dynamic_collection
+from threetears.core.data.gin import gin_filter
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.data.schema import ColumnDef, ForeignKeyDef, IndexDef, TableDef
 from threetears.core.data.sql_builder import build_create_index_sql, build_create_table_sql
@@ -18,4 +19,5 @@ __all__ = [
     "build_create_index_sql",
     "build_create_table_sql",
     "create_dynamic_collection",
+    "gin_filter",
 ]

@@ -17,7 +17,7 @@ from threetears.iam.oauth_state import (
 )
 from threetears.iam.stores.memory import MemoryStateStore
 
-_SECRET = "test-signing-secret-not-a-real-one"
+_SECRET = "test-signing-secret-not-a-real-one-and-long-enough-for-hs512-signing"
 _ISSUER = "test-issuer"
 _AUDIENCE = "test-issuer:oauth-state"
 
@@ -48,7 +48,7 @@ def test_each_mint_carries_a_distinct_nonce() -> None:
 
 def test_a_wrong_secret_is_refused() -> None:
     with pytest.raises(OAuthStateError):
-        _verify(_mint(), secret="a-different-secret")
+        _verify(_mint(), secret="a-different-secret-also-long-enough-for-hs256")
 
 
 def test_a_wrong_audience_is_refused() -> None:
@@ -142,7 +142,13 @@ async def test_an_unrecorded_state_is_a_replay() -> None:
 async def test_recording_refuses_a_state_that_does_not_verify() -> None:
     store = MemoryStateStore()
     with pytest.raises(OAuthStateError):
-        await record_state_nonce(store, _mint(secret="wrong"), secret=_SECRET, issuer=_ISSUER, audience=_AUDIENCE)
+        await record_state_nonce(
+            store,
+            _mint(secret="the-wrong-secret-long-enough-for-hs256"),
+            secret=_SECRET,
+            issuer=_ISSUER,
+            audience=_AUDIENCE,
+        )
 
 
 def test_a_state_minted_on_a_slightly_fast_clock_still_verifies() -> None:

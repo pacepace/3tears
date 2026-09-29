@@ -25,13 +25,14 @@ exactly once and we want to keep it that way.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterator
 
 import os
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
+from threetears.core.testing.containers import check_docker_available, stagger_container_start
 
 __all__ = [
     "db_container",
@@ -150,6 +151,7 @@ def db_container(db_image: str) -> Iterator[str]:
 
     if not check_docker_available():
         pytest.skip("Docker not available")
+    stagger_container_start()
 
     from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
@@ -191,6 +193,7 @@ def nats_container(nats_jetstream: bool) -> Iterator[str]:
 
     if not check_docker_available():
         pytest.skip("Docker not available")
+    stagger_container_start()
 
     from testcontainers.nats import NatsContainer  # noqa: PLC0415
 
@@ -240,6 +243,7 @@ def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
     """
     if not check_docker_available():
         pytest.skip("Docker not available")
+    stagger_container_start()
 
     import time  # noqa: PLC0415
     import urllib.error  # noqa: PLC0415
@@ -251,7 +255,10 @@ def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
     access_key, secret_key = s3_credentials
     bucket = "threetears-test-objects"
 
-    with DockerContainer("motoserver/moto:latest").with_exposed_ports(5000) as container:
+    with (
+        DockerContainer("motoserver/moto:latest").with_exposed_ports(5000) as container,
+        _direct_to(container.get_container_host_ip()),
+    ):
         host = container.get_container_host_ip()
         port = container.get_exposed_port(5000)
         endpoint = f"http://{host}:{port}"
@@ -291,6 +298,64 @@ def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
         yield endpoint, bucket
 
 
+@contextlib.contextmanager
+def _direct_to(host: str) -> Iterator[None]:
+    """Reach ``host`` without the environment's HTTP proxy while the block runs.
+
+    A test talks to its own container, never through an egress proxy: behind one
+    (a dev container with ``HTTP_PROXY`` set), urllib, boto3 and aiobotocore all
+    sent the request for the S3 container's bridge address to the proxy, which
+    cannot reach it, and the fixture failed with "never answered". Adding the
+    host to ``NO_PROXY`` is what every one of those clients honours.
+
+    :param host: the container's host address
+    :ptype host: str
+    :yield: nothing
+    :rtype: Iterator[None]
+    """
+    saved = {name: os.environ.get(name) for name in ("NO_PROXY", "no_proxy")}
+    for name, value in saved.items():
+        os.environ[name] = f"{value},{host}" if value else host
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _outbound_proxy_by_ip() -> str | None:
+    """The environment's HTTPS proxy with its host replaced by an IP, or ``None``.
+
+    A container on a nested daemon cannot resolve the proxy's name, so it has to
+    be handed an address it can dial.
+
+    :return: e.g. ``http://172.23.0.2:3128``, or ``None`` when no proxy is set or
+        its name does not resolve here either
+    :rtype: str | None
+    """
+    import os  # noqa: PLC0415
+    import socket  # noqa: PLC0415
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    url = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if not url:
+        return None
+    parts = urlsplit(url)
+    if not parts.hostname:
+        return None
+    try:
+        address = socket.gethostbyname(parts.hostname)
+    except OSError:
+        # NOSILENT: an unresolvable proxy name means this host cannot hand the container a
+        # dialable proxy; returning None starts it without one, and the readiness poll then
+        # fails loudly naming the URL if that matters.
+        return None
+    return url.replace(parts.hostname, address, 1)
+
+
 @pytest.fixture(scope="session")
 def searxng_container() -> Iterator[str]:
     """session-scoped SearXNG testcontainer, yielding its base URL.
@@ -322,6 +387,7 @@ def searxng_container() -> Iterator[str]:
     """
     if not check_docker_available():
         pytest.skip("Docker not available")
+    stagger_container_start()
 
     import tempfile  # noqa: PLC0415
     import time  # noqa: PLC0415
@@ -350,6 +416,15 @@ def searxng_container() -> Iterator[str]:
             .with_exposed_ports(8080)
             .with_volume_mapping(str(path), "/etc/searxng/settings.yml", "ro")
         )
+        # Behind an egress proxy the container's engines have no route out, and
+        # a nested daemon's bridge cannot resolve the proxy's name, so it is
+        # handed the proxy by IP -- the same thing metallm's ``dev-up.sh --proxy``
+        # does for its own searxng. On a host with a route of its own no proxy
+        # is set and nothing is added.
+        outbound_proxy = _outbound_proxy_by_ip()
+        if outbound_proxy:
+            for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                container = container.with_env(name, outbound_proxy)
         with container:
             host = container.get_container_host_ip()
             port = container.get_exposed_port(8080)
@@ -362,9 +437,13 @@ def searxng_container() -> Iterator[str]:
             # half its engines suspended still scores correctly, which is the
             # only thing a caller of this fixture is asking it.
             deadline = time.monotonic() + 180
+            # Straight to the container, never via the environment's proxy: the
+            # container is on this host's bridge, which a forward proxy cannot
+            # reach -- it answers 503 and the fixture waited out its deadline.
+            direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             while True:
                 try:
-                    with urllib.request.urlopen(  # noqa: S310
+                    with direct.open(  # noqa: S310
                         f"{base_url}/search?q=ready&format=json", timeout=10
                     ) as probe:
                         if probe.status == 200:

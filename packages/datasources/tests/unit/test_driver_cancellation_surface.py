@@ -211,8 +211,8 @@ class TestBackendCancellationSurface:
         naming them explicitly documents what the alternative option
         would have had to reach for, and fails if the names move.
         """
-        assert hasattr(asyncpg.Connection, "_cancel")
-        assert hasattr(asyncpg.Connection, "_cancel_current_command")
+        assert callable(asyncpg.Connection._cancel)  # noqa: SLF001 -- asyncpg's private verb IS the subject
+        assert callable(asyncpg.Connection._cancel_current_command)  # noqa: SLF001 -- likewise
 
     def test_asyncpg_cancels_on_its_own_when_the_waiter_is_cancelled(self) -> None:
         """asyncpg's protocol re-requests cancellation itself; the driver need not.

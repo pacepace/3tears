@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-conversations"
-version = "0.37.0"
+version = "0.56.3"
 description = "Conversation entity, three-tier collection, and per-agent schema migrations shared by memory and tool packages"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -21,10 +21,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.37.0,<0.38.0",
-    "3tears-agent-acl>=0.37.0,<0.38.0",
-    "3tears-langgraph>=0.37.0,<0.38.0",
-    "3tears-observe>=0.37.0,<0.38.0",
+    "3tears>=0.56.0,<0.57.0",
+    "3tears-agent-acl>=0.56.0,<0.57.0",
+    "3tears-langgraph>=0.56.0,<0.57.0",
+    "3tears-observe>=0.56.0,<0.57.0",
 ]
 
 [project.urls]
@@ -46,5 +46,8 @@ packages = ["threetears.conversations"]
 explicit_package_bases = true
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
+# no [tool.pytest.ini_options] block: pytest roots a run at the closest
+# pyproject that has one, so a per-package block makes `scripts/test.sh <pkg>`
+# drop the workspace configuration (import mode, pythonpath, markers) and the
+# tests' relative helper imports fail to collect. inherit from the workspace
+# instead; tests/enforcement/test_one_pytest_config.py holds this.

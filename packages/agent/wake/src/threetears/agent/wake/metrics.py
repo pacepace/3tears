@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry
@@ -401,7 +401,11 @@ class WakeMetricsEmitter:
 # on the same registry raises in prometheus_client, so we cache per
 # ``id(registry)``. Sentinel key ``0`` indexes the default global
 # registry path.
-_EMITTERS: dict[int, WakeMetricsEmitter] = {}
+#: the per-registry emitters. a consumer may reach the getter from several threads at
+#: once, and a second emitter's registration on one registry raises ``Duplicated
+#: timeseries in CollectorRegistry``, so each is built through
+#: :class:`~threetears.observe.build_once.BuildOnce`.
+_EMITTERS: BuildOnce[int, WakeMetricsEmitter] = BuildOnce()
 
 
 def get_wake_emitter(
@@ -421,11 +425,7 @@ def get_wake_emitter(
     :rtype: WakeMetricsEmitter
     """
     key = 0 if registry is None else id(registry)
-    emitter = _EMITTERS.get(key)
-    if emitter is None:
-        emitter = WakeMetricsEmitter(registry=registry)
-        _EMITTERS[key] = emitter
-    return emitter
+    return _EMITTERS.get(key, lambda: WakeMetricsEmitter(registry=registry))
 
 
 def reset_wake_emitter_for_testing() -> None:
@@ -441,6 +441,4 @@ def reset_wake_emitter_for_testing() -> None:
     the next emitter's ``_initialise`` would raise ``ValueError:
     Duplicated timeseries``.
     """
-    for emitter in _EMITTERS.values():
-        emitter.unregister_from_registry()
-    _EMITTERS.clear()
+    _EMITTERS.clear(dispose=lambda emitter: emitter.unregister_from_registry())

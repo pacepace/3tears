@@ -27,6 +27,14 @@ design:
 - migration precedence: ``ALTER TABLE ... ALTER COLUMN ... TYPE T``
   supersedes the original ``CREATE TABLE`` declaration. when multiple
   migrations touch the same column, the highest-versioned one wins.
+- rendered migrations: a migration may build its DDL from the same
+  ``TableSchema`` the collection reads (``table_def_for``) instead of
+  repeating the columns as a SQL literal. Such a table has one
+  declaration and cannot drift, but it leaves no literal for the
+  regexes to read, so the check moves onto the renderer's type map,
+  which must send ``DATETIMETZ_TYPE`` to ``TIMESTAMPTZ``. A renderer
+  with a wrong or missing map fails, and so does every table it
+  renders.
 - exemptions: tables tracked only via inline raw SQL (no Column
   declaration anywhere) live in ``_column_type_alignment_exemptions.txt``
   with a ``# rationale: ...`` line per entry, matching the underscore-
@@ -52,23 +60,28 @@ __all__: list[str] = []
 # packages/core/tests/enforcement/, four levels under the repo root.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 
-# package source roots to walk for TableSchema declarations.
-_PACKAGE_SRC_ROOTS: list[Path] = [
-    _REPO_ROOT / "packages" / "core" / "src",
-    _REPO_ROOT / "packages" / "agent-tools" / "src",
-    _REPO_ROOT / "packages" / "agent-workspace" / "src",
-    _REPO_ROOT / "packages" / "agent-memory" / "src",
-    _REPO_ROOT / "packages" / "conversations" / "src",
-]
+# package source roots to walk for TableSchema declarations, DERIVED rather than listed.
+#
+# A hand-written list was wrong twice over. Three of its five entries were spelled
+# ``packages/agent-tools`` against a tree that has ``packages/agent/tools``, so they matched no
+# directory and were skipped in silence while the gate read green. And five was never the number:
+# eleven packages declare a ``TableSchema``, so six were unwalked by construction -- among them
+# ``agent/acl``, ``agent/knowledge`` and ``datasources``, which all declare ``DATETIMETZ_TYPE``
+# columns. A gate whose coverage is a list drifts from the tree the moment the tree grows.
+#
+# Both globs are required: flat packages live at ``packages/<name>/src`` and the agent family at
+# ``packages/agent/<name>/src``. ``test_every_derived_root_exists`` fails when either matches
+# nothing, which is the false-green this derivation exists to prevent -- the same shape
+# ``threetears.enforcement.memory_only_kv`` and ``test_negative_cache_write_paths.py`` use.
+_PACKAGE_SRC_ROOTS: list[Path] = sorted(path for path in _REPO_ROOT.glob("packages/*/src") if path.is_dir()) + sorted(
+    path for path in _REPO_ROOT.glob("packages/*/*/src") if path.is_dir()
+)
 
-# package migration roots to walk for SQL declarations.
-_PACKAGE_MIGRATION_ROOTS: list[Path] = [
-    _REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core" / "data" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "agent-tools" / "src" / "threetears" / "agent" / "tools" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "agent-workspace" / "src" / "threetears" / "agent" / "workspace" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "agent-memory" / "src" / "threetears" / "agent" / "memory" / "migrations",  # noqa: E501
-    _REPO_ROOT / "packages" / "conversations" / "src" / "threetears" / "conversations" / "migrations",  # noqa: E501
-]
+# package migration roots to walk for SQL declarations: every ``migrations`` package beneath a
+# source root, so a package that grows one is covered the day it does.
+_PACKAGE_MIGRATION_ROOTS: list[Path] = sorted(
+    {path for root in _PACKAGE_SRC_ROOTS for path in root.glob("**/migrations") if path.is_dir()}
+)
 
 _DATETIME_TYPE_NAMES = frozenset({"DATETIMETZ_TYPE"})
 
@@ -247,6 +260,18 @@ _ALTER_TYPE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# regex for ``ALTER TABLE [schema.]<table> RENAME COLUMN <old> TO <new>``.
+#
+# A rename carries the column's type to its new name, and without this the renamed column reads
+# as declared-but-never-migrated: `conversation_memory_refs.date_created` arrives this way (v013
+# converted `date_added` to TIMESTAMPTZ, v014 renamed it), and the gate reported it missing the
+# moment its package root was spelled correctly.
+_ALTER_RENAME_RE = re.compile(
+    r"ALTER\s+TABLE\s+(?:[a-zA-Z_]\w*\.)?([a-zA-Z_]\w*)\s+"
+    r"RENAME\s+COLUMN\s+([a-zA-Z_]\w*)\s+TO\s+([a-zA-Z_]\w*)\b",
+    re.IGNORECASE,
+)
+
 # regex for ``ALTER TABLE [schema.]<table> ADD COLUMN [IF NOT EXISTS] <col> <type>``.
 _ALTER_ADD_RE = re.compile(
     r"ALTER\s+TABLE\s+(?:[a-zA-Z_]\w*\.)?([a-zA-Z_]\w*)\s+"
@@ -359,6 +384,45 @@ def _collect_sql_types_from_literal(
     return out
 
 
+def _apply_renames(
+    literal: str,
+    latest: dict[tuple[str, str], SqlColumnType],
+    source: Path,
+    lineno: int,
+) -> None:
+    """carry a renamed column's type to its new name.
+
+    ``ALTER TABLE t RENAME COLUMN old TO new`` changes no type, so the type the chain established
+    for ``old`` is the type of ``new``. Without this the renamed column looks declared but never
+    migrated, which is how `conversation_memory_refs.date_created` read as a violation.
+
+    :param literal: SQL string literal
+    :ptype literal: str
+    :param latest: the resolved-so-far map, mutated in place
+    :ptype latest: dict[tuple[str, str], SqlColumnType]
+    :param source: the migration file, for the report
+    :ptype source: Path
+    :param lineno: line number of the literal
+    :ptype lineno: int
+    :return: nothing
+    :rtype: None
+    """
+    for m in _ALTER_RENAME_RE.finditer(literal):
+        table = m.group(1).lower()
+        old_column = m.group(2).lower()
+        new_column = m.group(3).lower()
+        carried = latest.pop((table, old_column), None)
+        if carried is None:
+            continue
+        latest[(table, new_column)] = SqlColumnType(
+            table=table,
+            column=new_column,
+            sql_type=carried.sql_type,
+            source=source,
+            lineno=lineno,
+        )
+
+
 def _extract_version(path: Path) -> int:
     """parse the migration version from ``vNNN_*.py`` filename.
 
@@ -404,7 +468,9 @@ def _collect_sql_column_types(
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 literal = node.value
-                if "TIMESTAMP" not in literal.upper() and "TIMESTAMPTZ" not in literal.upper():
+                # a RENAME carries a type without naming one, so it passes this filter too.
+                upper = literal.upper()
+                if "TIMESTAMP" not in upper and "RENAME COLUMN" not in upper:
                     continue
                 for hit in _collect_sql_types_from_literal(
                     literal,
@@ -412,6 +478,7 @@ def _collect_sql_column_types(
                     node.lineno,
                 ):
                     latest[(hit.table, hit.column)] = hit
+                _apply_renames(literal, latest, path, node.lineno)
             elif isinstance(node, ast.JoinedStr):
                 # join f-string fragments into a best-effort literal so
                 # f"ALTER TABLE x ADD COLUMN {colname} TIMESTAMP" is not
@@ -423,7 +490,9 @@ def _collect_sql_column_types(
                     else:
                         parts.append("__PLACEHOLDER__")
                 literal = "".join(parts)
-                if "TIMESTAMP" not in literal.upper() and "TIMESTAMPTZ" not in literal.upper():
+                # a RENAME carries a type without naming one, so it passes this filter too.
+                upper = literal.upper()
+                if "TIMESTAMP" not in upper and "RENAME COLUMN" not in upper:
                     continue
                 for hit in _collect_sql_types_from_literal(
                     literal,
@@ -431,6 +500,7 @@ def _collect_sql_column_types(
                     node.lineno,
                 ):
                     latest[(hit.table, hit.column)] = hit
+                _apply_renames(literal, latest, path, node.lineno)
     return latest
 
 
@@ -507,6 +577,207 @@ def parse_column_exemptions(path: Path) -> list[ColumnExemption]:
 
 _EXEMPTION_FILE = Path(__file__).resolve().parent / "_column_type_alignment_exemptions.txt"
 
+# the renderer seam: a migration may build its DDL from the same TableSchema the collection reads,
+# instead of repeating the columns as a SQL literal. Such a table cannot drift -- there is one
+# declaration -- but it also has no literal for the regexes above to read. The check does not go
+# away: it moves onto the renderer's own type map, which must send DATETIMETZ_TYPE to TIMESTAMPTZ
+# for every table it renders. Anything else (a renderer that maps it to TIMESTAMP, or a rendered
+# table whose renderer declares no map) is a violation, same as a mismatched literal.
+_RENDERER_FUNCTION = "table_def_for"
+_RENDERER_TYPE_MAP = "_DDL_TYPES"
+
+
+def _rendered_schema_sets(migration_roots: list[Path]) -> set[str]:
+    """the names of the schema collections a migration actually renders.
+
+    Keyed on the render CALL SITE, not on module co-location: a migration that renders
+    ``for schema in COORDINATION_TABLE_SCHEMAS: ... table_def_for(schema)`` names that
+    collection, and only the tables inside it are covered by the renderer's type map. A fifth
+    table declared in the same module but left out of the rendered set is then still checked
+    against a SQL literal, which is the drift this gate exists for.
+
+    :param migration_roots: package migration roots to walk
+    :ptype migration_roots: list[Path]
+    :return: the module-level names iterated at a render call site
+    :rtype: set[str]
+    """
+    rendered: set[str] = set()
+    for root in migration_roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except OSError, SyntaxError:
+                continue
+            for loop in ast.walk(tree):
+                if not isinstance(loop, ast.For):
+                    continue
+                if not isinstance(loop.target, ast.Name) or not isinstance(loop.iter, ast.Name):
+                    continue
+                renders_the_loop_variable = any(
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == _RENDERER_FUNCTION
+                    and any(isinstance(arg, ast.Name) and arg.id == loop.target.id for arg in call.args)
+                    for call in ast.walk(loop)
+                )
+                if renders_the_loop_variable:
+                    rendered.add(loop.iter.id)
+    return rendered
+
+
+def _renderer_maps_datetimetz_correctly(module: ast.Module) -> bool:
+    """whether a renderer module's type map sends ``DATETIMETZ_TYPE`` to a timestamptz column.
+
+    :param module: parsed renderer module
+    :ptype module: ast.Module
+    :return: ``True`` when the map is present and correct
+    :rtype: bool
+    """
+    for node in ast.walk(module):
+        if not isinstance(node, ast.AnnAssign | ast.Assign):
+            continue
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else list(node.targets)
+        if not any(isinstance(t, ast.Name) and t.id == _RENDERER_TYPE_MAP for t in targets):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Dict):
+            continue
+        for key, mapped in zip(value.keys, value.values, strict=False):
+            if isinstance(key, ast.Name) and key.id == "DATETIMETZ_TYPE":
+                return (
+                    isinstance(mapped, ast.Constant)
+                    and isinstance(mapped.value, str)
+                    and mapped.value.upper() == _EXPECTED_SQL_TYPE["DATETIMETZ_TYPE"]
+                )
+    return False
+
+
+def _class_table_names(tree: ast.Module) -> dict[str, str]:
+    """map each class that declares ``schema = TableSchema(name=...)`` to that table name.
+
+    :param tree: parsed module
+    :ptype tree: ast.Module
+    :return: class name -> table name
+    :rtype: dict[str, str]
+    """
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.Assign | ast.AnnAssign):
+                continue
+            targets = [statement.target] if isinstance(statement, ast.AnnAssign) else list(statement.targets)
+            if not any(isinstance(t, ast.Name) and t.id == "schema" for t in targets):
+                continue
+            value = statement.value
+            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "TableSchema":
+                table = _extract_table_name_from_schema(value)
+                if table is not None:
+                    out[node.name] = table.lower()
+    return out
+
+
+def _tables_in_rendered_sets(tree: ast.Module, rendered_sets: set[str]) -> set[str]:
+    """the tables named by a module's rendered schema collections.
+
+    Resolves ``NAME = (SomeCollection.schema, OtherCollection.schema)`` against the classes
+    declared in the same module, so the exempt set is exactly what the migration renders.
+
+    :param tree: parsed module
+    :ptype tree: ast.Module
+    :param rendered_sets: the collection names a migration renders
+    :ptype rendered_sets: set[str]
+    :return: the table names those collections cover
+    :rtype: set[str]
+    """
+    by_class = _class_table_names(tree)
+    tables: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AnnAssign | ast.Assign):
+            continue
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else list(node.targets)
+        if not any(isinstance(t, ast.Name) and t.id in rendered_sets for t in targets):
+            continue
+        for element in ast.walk(node):
+            if (
+                isinstance(element, ast.Attribute)
+                and element.attr == "schema"
+                and isinstance(element.value, ast.Name)
+                and element.value.id in by_class
+            ):
+                tables.add(by_class[element.value.id])
+    return tables
+
+
+def _rendered_tables(src_roots: list[Path], migration_roots: list[Path]) -> tuple[set[str], list[str]]:
+    """tables whose DDL a migration renders from their own schema, and any renderer violations.
+
+    A rendered table's columns are checked through the renderer's type map rather than through a
+    SQL literal, so a renderer with a wrong or missing map fails here instead of silently
+    exempting every table it renders.
+
+    :param src_roots: package source roots to walk
+    :ptype src_roots: list[Path]
+    :param migration_roots: package migration roots to walk
+    :ptype migration_roots: list[Path]
+    :return: rendered table names, and violation messages for bad renderers
+    :rtype: tuple[set[str], list[str]]
+    """
+    rendered: set[str] = set()
+    violations: list[str] = []
+    rendered_sets = _rendered_schema_sets(migration_roots)
+    if not rendered_sets:
+        return (rendered, violations)
+    for src_root in src_roots:
+        if not src_root.exists():
+            continue
+        for path in src_root.rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except OSError, SyntaxError:
+                continue
+            tables = _tables_in_rendered_sets(tree, rendered_sets)
+            if not tables:
+                continue
+            if not _renderer_maps_datetimetz_correctly(tree):
+                violations.append(
+                    f"{path}: declares {len(tables)} table(s) a migration renders "
+                    f"({', '.join(sorted(tables))}), but its {_RENDERER_TYPE_MAP} does not map "
+                    f"DATETIMETZ_TYPE to {_EXPECTED_SQL_TYPE['DATETIMETZ_TYPE']}"
+                )
+                continue
+            rendered |= tables
+    return (rendered, violations)
+
+
+def test_every_derived_root_exists() -> None:
+    """the roots are derived, so the failure to guard against is a glob that matched nothing.
+
+    A list of roots drifted from the tree twice: three entries were spelled
+    ``packages/agent-tools`` against a tree that has ``packages/agent/tools`` and matched nothing,
+    and six packages declaring a ``TableSchema`` were never listed at all. Deriving the roots
+    fixes both, and moves the failure mode: a glob that stops matching (a layout change, a
+    relocated repo root) would silently walk nothing and read green. So assert the globs found
+    something, and that everything they found is real.
+
+    :return: nothing
+    :rtype: None
+    :raises AssertionError: when a glob matched nothing, or a derived root does not exist
+    """
+    assert _PACKAGE_SRC_ROOTS, (
+        f"no package source roots under {_REPO_ROOT}/packages -- the walker would check nothing "
+        f"and this gate would read green"
+    )
+    assert _PACKAGE_MIGRATION_ROOTS, (
+        "no migration roots beneath any package source root -- no SQL column type would be "
+        "discovered and every declaration would read as unmigrated"
+    )
+    missing = [str(root) for root in (*_PACKAGE_SRC_ROOTS, *_PACKAGE_MIGRATION_ROOTS) if not root.exists()]
+    assert not missing, "derived roots that do not exist (so nothing in them is checked):\n  " + "\n  ".join(missing)
+
 
 def test_column_type_alignment() -> None:
     """every datetime Column matches its migration-defined SQL type.
@@ -520,6 +791,7 @@ def test_column_type_alignment() -> None:
     :rtype: None
     :raises AssertionError: on any unexempted mismatch
     """
+    violations: list[str] = []
     column_decls: list[ColumnDecl] = []
     for src_root in _PACKAGE_SRC_ROOTS:
         column_decls.extend(_collect_column_decls(src_root))
@@ -530,11 +802,15 @@ def test_column_type_alignment() -> None:
             sql_types[k] = v
 
     exemptions = {(e.table, e.column) for e in parse_column_exemptions(_EXEMPTION_FILE)}
+    rendered, violations = _rendered_tables(_PACKAGE_SRC_ROOTS, _PACKAGE_MIGRATION_ROOTS)
 
-    violations: list[str] = []
     for decl in column_decls:
         key = (decl.table, decl.column)
         if key in exemptions:
+            continue
+        if decl.table in rendered:
+            # its migration renders this column from this same declaration, and the renderer's
+            # type map was checked above; there is no second place for it to drift from.
             continue
         sql = sql_types.get(key)
         if sql is None:

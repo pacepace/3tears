@@ -231,8 +231,8 @@ class TestContextSaveNode:
         mock_cm.save_tool_result.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_truncates_long_content(self) -> None:
-        """Long tool results are truncated before saving."""
+    async def test_a_long_result_is_saved_as_a_window_that_says_where_the_rest_is(self) -> None:
+        """The copy kept here is a part, and says so: the whole result is chunked beside it."""
         mock_cm = AsyncMock()
         mock_cm.save_tool_result = AsyncMock(return_value="ctx-789")
 
@@ -249,8 +249,10 @@ class TestContextSaveNode:
         await node(state)
         call_kwargs = mock_cm.save_tool_result.call_args
         saved_result = call_kwargs.kwargs.get("result") or call_kwargs[1].get("result")
-        assert len(saved_result) <= 120  # 100 + truncation notice
-        assert "[Content truncated]" in saved_result
+        body, _, note = saved_result.partition("\n\n[characters ")
+        assert len(body) == 100
+        assert "of 200" in note and "search them for the rest" in note
+        assert "offset=" not in note, "nobody can ask this node for the next part"
 
     @pytest.mark.asyncio
     async def test_empty_messages_returns_empty(self) -> None:

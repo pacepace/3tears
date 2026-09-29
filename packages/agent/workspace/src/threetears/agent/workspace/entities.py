@@ -28,6 +28,15 @@ def _as_uuid(value: object) -> UUID:
     :rtype: UUID
     :raises ValueError: if value cannot be parsed as UUID
     """
+    if value is None:
+        # a non-nullable UUID field read empty, almost always a row the
+        # cache no longer holds; say so rather than let UUID("None")
+        # report it as a malformed UUID.
+        raise ValueError(
+            "expected a UUID-shaped value but got None -- a non-nullable "
+            "UUID field read empty (likely a cache-coherence miss, not a "
+            "malformed UUID)"
+        )
     if isinstance(value, UUID):
         result: UUID = value
         return result

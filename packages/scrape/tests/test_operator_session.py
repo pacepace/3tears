@@ -16,7 +16,7 @@ import logging
 from datetime import timedelta
 
 import pytest
-from _kv_shims import FakeNatsClient
+from packages.scrape.tests._kv_shims import FakeNatsClient
 from threetears.core.coordination import KVLease, LeaseUnavailable
 from threetears.scrape.operator_session import (
     SESSION_CLAIM_REFRESH,

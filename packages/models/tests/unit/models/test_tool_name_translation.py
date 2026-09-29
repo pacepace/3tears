@@ -1,23 +1,24 @@
 """Tests for :mod:`threetears.models.tool_name_translation`'s ``NameMangledToolProxy``.
 
-Scoped to the ``canonical_name`` public accessor added alongside the claude-cli dotted-tool-name
-permission fix (see ``test_claude_cli_tool_events.py``), and to the ``config``-propagation bug
-found live the same day: every REAL 3tears builtin tool (a ``StructuredTool`` built by
-:func:`~threetears.agent.tools.langchain_adapter.to_langchain_tool`, whose own ``_arun``/``_run``
-REQUIRE a ``RunnableConfig``) raised ``TypeError: ... missing 1 required keyword-only argument:
-'config'`` the instant it was actually invoked through this proxy -- on ANY provider that uses it,
-not just one. See the module docstring's "config propagation bug" section for the full root cause.
-The module's other primitives are already exercised indirectly via the ``anthropic``/``openrouter``
-provider test files.
+Scoped to the ``canonical_name`` public accessor, and to the proxy answering every call exactly as
+its delegate does: a real 3tears builtin (a ``StructuredTool`` built by
+:func:`~threetears.agent.tools.langchain_adapter.to_langchain_tool`, whose ``_arun``/``_run``
+require a ``RunnableConfig``) reached through the proxy by ``invoke``, ``ainvoke``, ``run`` or
+``arun`` gets its config, keeps a failure's artifact and fires only its own callbacks. The module's
+other primitives are exercised via the ``anthropic``/``openrouter`` provider test files.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.tools import BaseTool
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import BaseTool, StructuredTool, ToolException
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.builtin.calculator import create_calculator_tool
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation, mangle_tool_name
 
 
@@ -55,15 +56,17 @@ class TestConfigPropagationToDelegate:
         [wire_tool], _reverse_map = build_name_translation([real_calculator])
 
         assert isinstance(wire_tool, NameMangledToolProxy)
-        content, _artifact = await wire_tool.ainvoke({"expression": "47 * 89"})
+        content = await wire_tool.ainvoke({"expression": "47 * 89"})
         assert content == "4183"
+        assert content == await real_calculator.ainvoke({"expression": "47 * 89"})
 
     def test_real_builtin_tool_executes_successfully_through_the_proxy_sync(self) -> None:
         real_calculator = create_calculator_tool({}, "Evaluate a math expression.")
         [wire_tool], _reverse_map = build_name_translation([real_calculator])
 
-        content, _artifact = wire_tool.invoke({"expression": "47 * 89"})
+        content = wire_tool.invoke({"expression": "47 * 89"})
         assert content == "4183"
+        assert content == real_calculator.invoke({"expression": "47 * 89"})
 
     async def test_delegate_that_does_not_want_config_is_unaffected(self) -> None:
         """A plain custom BaseTool (like the tests above this class use) never declared a
@@ -74,3 +77,291 @@ class TestConfigPropagationToDelegate:
 
         result = await proxy.ainvoke({})
         assert result == "r"
+
+
+def _plan(**kwargs: Any) -> tuple[str, dict[str, Any]]:
+    return f"planned {sorted(kwargs)}", {"kwargs": kwargs}
+
+
+def _refuse(**_: Any) -> str:
+    raise ToolException("the plan was refused")
+
+
+_PLAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"shots": {"type": "array", "items": {"$ref": "#/$defs/Shot"}}},
+    "required": ["shots"],
+    "$defs": {"Shot": {"type": "object", "properties": {"prompt": {"type": "string"}}}},
+}
+
+
+class TestTheProxyIsTheSameToolUnderAnotherName:
+    """A proxy changes the name the provider sees and nothing else. It copied only the name,
+    description and a pydantic ``args_schema``, so a tool carrying its schema as a JSON Schema dict
+    could not be proxied at all, a tool returning ``(content, artifact)`` came back through the proxy
+    as a bare tuple, and a tool that handles its own ``ToolException`` raised through the proxy."""
+
+    def _dict_schema_tool(self) -> StructuredTool:
+        return StructuredTool.from_function(
+            func=_plan,
+            name="studio.plan",
+            description="plans shots",
+            args_schema=_PLAN_SCHEMA,
+            response_format="content_and_artifact",
+        )
+
+    def test_a_json_schema_tool_is_proxied_with_its_schema_unchanged(self) -> None:
+        [wire_tool], _reverse_map = build_name_translation([self._dict_schema_tool()])
+
+        assert wire_tool.name == "studio_plan"
+        assert wire_tool.tool_call_schema == self._dict_schema_tool().tool_call_schema
+
+    async def test_a_tool_call_through_the_proxy_answers_as_the_tool_itself_does(self) -> None:
+        tool = self._dict_schema_tool()
+        [wire_tool], _reverse_map = build_name_translation([tool])
+        call = {"type": "tool_call", "id": "c1", "name": "studio.plan", "args": {"shots": [{"prompt": "dawn"}]}}
+
+        direct = await tool.ainvoke(call)
+        proxied = await wire_tool.ainvoke(call)
+
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.content == direct.content == "planned ['shots']"
+        assert proxied.artifact == direct.artifact == {"kwargs": {"shots": [{"prompt": "dawn"}]}}
+
+    async def test_a_tool_that_handles_its_own_errors_still_does_through_the_proxy(self) -> None:
+        tool = StructuredTool.from_function(
+            func=_refuse, name="studio.refuse", description="refuses", handle_tool_error=True
+        )
+        [wire_tool], _reverse_map = build_name_translation([tool])
+
+        message = await wire_tool.ainvoke({"type": "tool_call", "id": "c2", "name": "studio.refuse", "args": {}})
+
+        assert isinstance(message, ToolMessage)
+        assert message.status == "error"
+        assert message.content == "the plan was refused"
+
+
+class _Refusing(TearsTool):
+    """a TearsTool that fails with a typed record in its metadata."""
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """fail, naming why in prose and in structure.
+
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: the failure
+        :rtype: ToolResult
+        """
+        return ToolResult(success=False, content="", error="the upstream refused", metadata={"failure": "upstream"})
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """the tool's definition.
+
+        :return: an empty-object schema
+        :rtype: MCPToolDefinition
+        """
+        return MCPToolDefinition(
+            name="studio.refusing",
+            version="1.0",
+            description="refuses",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+    def mcp_name(self) -> str:
+        """the canonical dotted name.
+
+        :return: the name
+        :rtype: str
+        """
+        return "studio.refusing"
+
+    def mcp_version(self) -> str:
+        """the version.
+
+        :return: the version
+        :rtype: str
+        """
+        return "1.0"
+
+
+class _GatedRefusing(_Refusing):
+    """the same tool, gated behind a person's approval."""
+
+    requires_confirmation = True
+
+
+class TestAProxiedTearsToolKeepsWhatItCarries:
+    """the proxy is the tool under another name: its confirmation gate and a failure's artifact
+    must come through it as they come from the tool."""
+
+    async def test_a_failure_through_the_proxy_keeps_its_artifact(self) -> None:
+        """the proxy called the tool's ``_arun`` directly, below the point the tool answers a call
+        with its own failed ToolMessage, so the typed failure record was lost on the proxied path.
+
+        :return: none
+        :rtype: None
+        """
+        tool = to_langchain_tool(_Refusing())
+        [wire_tool], _reverse_map = build_name_translation([tool])
+        call = {"type": "tool_call", "id": "c3", "name": "studio_refusing", "args": {}}
+
+        direct = await tool.ainvoke(call)
+        proxied = await wire_tool.ainvoke(call)
+
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.status == direct.status == "error"
+        assert proxied.content == direct.content == "the upstream refused"
+        assert proxied.artifact == direct.artifact == {"failure": "upstream"}
+
+    def test_a_sync_failure_through_the_proxy_keeps_its_artifact(self) -> None:
+        """the same on the sync path.
+
+        :return: none
+        :rtype: None
+        """
+        [wire_tool], _reverse_map = build_name_translation([to_langchain_tool(_Refusing())])
+        proxied = wire_tool.invoke({"type": "tool_call", "id": "c4", "name": "studio_refusing", "args": {}})
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.artifact == {"failure": "upstream"}
+
+    def test_the_confirmation_gate_survives_the_proxy(self) -> None:
+        """a gate reading the bound tool list sees the flag on the proxy.
+
+        :return: none
+        :rtype: None
+        """
+        [gated], _ = build_name_translation([to_langchain_tool(_GatedRefusing())])
+        [ungated], _ = build_name_translation([to_langchain_tool(_Refusing())])
+        assert getattr(gated, "requires_confirmation", False) is True
+        assert getattr(ungated, "requires_confirmation", None) is False
+
+
+class TestAProxiedTearsToolRunsInTheCallsScope:
+    """through the proxy, the graph config's call context still reaches the tool."""
+
+    async def test_the_callers_timezone_reaches_a_proxied_tool(self) -> None:
+        """a proxied current_date reads the timezone the call context carries.
+
+        :return: none
+        :rtype: None
+        """
+        from threetears.agent.tools.builtin.current_date import CurrentDateTool
+        from threetears.agent.tools.context_envelope import CallContext
+
+        [wire_tool], _reverse_map = build_name_translation([to_langchain_tool(CurrentDateTool())])
+        config = {"configurable": {"call_context": CallContext(user_timezone="Asia/Tokyo")}}
+
+        via_invoke = await wire_tool.ainvoke(
+            {"type": "tool_call", "id": "t1", "name": "threetears_current_date", "args": {}}, config
+        )
+        via_arun = await wire_tool.arun({}, config=config)
+
+        assert "Asia/Tokyo" in via_invoke.content
+        assert "Asia/Tokyo" in via_arun
+
+
+class TestASchemaBoundAsATool:
+    """``bind_tools`` takes a pydantic model, a TypedDict or a function as well as a tool.
+
+    ``with_structured_output`` binds its schema that way. The translation read ``.name`` off every
+    entry, which a pydantic model class does not have, so every structured call on a
+    name-translating provider raised ``AttributeError: name`` before reaching the wire. A class or a
+    function is named by a Python identifier, which never holds a dot: it passes through as given.
+    """
+
+    def test_a_schema_a_typed_dict_and_a_function_pass_through_unchanged(self) -> None:
+        from typing import TypedDict
+
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            name: str
+
+        class Reply(TypedDict):
+            text: str
+
+        def lookup(term: str) -> str:
+            """looks a term up."""
+            return term
+
+        wire, reverse = build_name_translation([Answer, Reply, lookup])
+
+        assert wire == [Answer, Reply, lookup]
+        assert reverse == {}
+
+    def test_a_dotted_tool_beside_them_is_still_translated(self) -> None:
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            text: str
+
+        wire, reverse = build_name_translation([Answer, _DottedTool()])
+
+        assert wire[0] is Answer
+        assert isinstance(wire[1], NameMangledToolProxy)
+        assert reverse == {mangle_tool_name(_DottedTool().name): _DottedTool().name}
+
+
+class _ToolStarts(BaseCallbackHandler):
+    """records the name of every tool whose run a callback saw start."""
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+
+    def on_tool_start(self, serialized: dict[str, Any], input_str: str, **kwargs: Any) -> None:
+        """record the tool's name.
+
+        :param serialized: the tool's serialized description
+        :ptype serialized: dict[str, Any]
+        :param input_str: the tool's input
+        :ptype input_str: str
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: nothing
+        :rtype: None
+        """
+        self.started.append(str(serialized.get("name")))
+
+
+class TestRunAndArunAnswerAsInvokeDoes:
+    """``run`` / ``arun`` are the route LangChain's classic AgentExecutor takes, and they answer as
+    ``invoke`` / ``ainvoke`` do: through the delegate's own entry point, so a failed TearsTool keeps
+    its artifact and only the delegate's callbacks fire."""
+
+    async def test_a_failure_through_arun_keeps_its_artifact(self) -> None:
+        tool = to_langchain_tool(_Refusing())
+        [wire_tool], _reverse_map = build_name_translation([tool])
+
+        direct = await tool.arun({}, tool_call_id="c5")
+        proxied = await wire_tool.arun({}, tool_call_id="c5")
+
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.status == direct.status == "error"
+        assert proxied.artifact == direct.artifact == {"failure": "upstream"}
+
+    def test_a_failure_through_run_keeps_its_artifact(self) -> None:
+        tool = to_langchain_tool(_Refusing())
+        [wire_tool], _reverse_map = build_name_translation([tool])
+
+        proxied = wire_tool.run({}, tool_call_id="c6")
+
+        assert isinstance(proxied, ToolMessage)
+        assert proxied.artifact == {"failure": "upstream"}
+
+    async def test_only_the_delegates_callbacks_fire_through_arun(self) -> None:
+        handler = _ToolStarts()
+        [wire_tool], _reverse_map = build_name_translation([create_calculator_tool({}, "Evaluate.")])
+
+        content = await wire_tool.arun({"expression": "6 * 7"}, callbacks=[handler])
+
+        assert content == "42"
+        assert handler.started == ["threetears.calculator"]
+
+    def test_only_the_delegates_callbacks_fire_through_run(self) -> None:
+        handler = _ToolStarts()
+        [wire_tool], _reverse_map = build_name_translation([create_calculator_tool({}, "Evaluate.")])
+
+        content = wire_tool.run({"expression": "6 * 7"}, callbacks=[handler])
+
+        assert content == "42"
+        assert handler.started == ["threetears.calculator"]

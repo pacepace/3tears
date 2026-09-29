@@ -15,8 +15,10 @@ evaluator-interaction branches:
 - platform tool path: ``owner_agent_id=None`` + ``customer_id=None``
   row is reachable only via an explicit assignment (no implicit
   ownership short-circuit)
-- user_id absent: dispatch without user identity denied (defense in
-  depth)
+- user_id absent: an AGENT's dispatch without user identity denied
+  (defense in depth)
+- tool pod: a principal the proxy marked as a tool pod, with no user,
+  is admitted on its own grant alone and refused without one
 - unresolvable tool name: Collection returns ``None`` (tool
   registered race) -> denied
 """
@@ -346,6 +348,7 @@ class TestRbacEvaluatorAuthorizer:
             str(user_id),
             "3tears.calc",
             "1.0",
+            principal_is_tool_pod=False,
         )
         assert result is True
 
@@ -418,6 +421,7 @@ class TestRbacEvaluatorAuthorizer:
             str(user_id),
             "3tears.calc",
             "1.0",
+            principal_is_tool_pod=False,
         )
         assert result is False  # cross-customer wall denies despite a valid same-customer grant
 
@@ -446,6 +450,7 @@ class TestRbacEvaluatorAuthorizer:
             str(user_id),
             "3tears.calc",
             "1.0",
+            principal_is_tool_pod=False,
         )
         assert result is False
 
@@ -473,6 +478,7 @@ class TestRbacEvaluatorAuthorizer:
             None,
             "3tears.calc",
             "1.0",
+            principal_is_tool_pod=False,
         )
         assert result is False
 
@@ -492,6 +498,7 @@ class TestRbacEvaluatorAuthorizer:
             str(user_id),
             "3tears.unknown",
             "1.0",
+            principal_is_tool_pod=False,
         )
         assert result is False
 
@@ -520,6 +527,7 @@ class TestRbacEvaluatorAuthorizer:
             str(user_id),
             "platform.time.now",
             "1.0",
+            principal_is_tool_pod=False,
         )
         assert result is False
 
@@ -593,7 +601,12 @@ class TestRbacEvaluatorAuthorizer:
                 ),
             ),
         )
-        assert await owned.is_authorized(str(agent_id), str(user_id), "example.own_tool", "1.0") is True
+        assert (
+            await owned.is_authorized(
+                str(agent_id), str(user_id), "example.own_tool", "1.0", principal_is_tool_pod=False
+            )
+            is True
+        )
 
     @pytest.mark.asyncio
     async def test_the_same_call_denies_when_the_agent_does_not_own_the_row(self) -> None:
@@ -654,7 +667,12 @@ class TestRbacEvaluatorAuthorizer:
                 ),
             ),
         )
-        assert await peer.is_authorized(str(agent_id), str(user_id), "example.own_tool", "1.0") is False
+        assert (
+            await peer.is_authorized(
+                str(agent_id), str(user_id), "example.own_tool", "1.0", principal_is_tool_pod=False
+            )
+            is False
+        )
 
     @pytest.mark.asyncio
     async def test_invalid_agent_id_denied(self) -> None:
@@ -680,6 +698,7 @@ class TestRbacEvaluatorAuthorizer:
             str(user_id),
             "3tears.calc",
             "1.0",
+            principal_is_tool_pod=False,
         )
         assert result is False
 
@@ -718,6 +737,7 @@ class TestRbacEvaluatorAuthorizer:
             str(user_id),
             "3tears.admin.customer_management",
             "1.0",
+            principal_is_tool_pod=False,
         )
 
         assert ns_coll.last_get_by_name == build_tool_namespace_name(
@@ -725,6 +745,128 @@ class TestRbacEvaluatorAuthorizer:
             "1.0",
         )
         assert ns_coll.last_get_by_name == "tools.3tears.admin.customer_management.1-0"
+
+
+class TestAToolPodIsEvaluatedOnItsOwnGrant:
+    """the one principal admitted with no user, and the A/B that makes it about the mark.
+
+    a tool pod acts on nobody's behalf and never carries a user; the proxy marks
+    it off the token it verified. with the mark, the evaluation runs on the agent
+    side alone against the pod's own group; without it, the identical call is the
+    agent-with-no-user case and stays refused. a marked pod holding no grant is
+    refused too, so the mark buys evaluation and never authority.
+    """
+
+    @staticmethod
+    def _pod_grant(pod_id: UUID, namespace_id: UUID) -> tuple[Any, Any]:
+        """loaders holding ONE ``ToolCaller`` assignment for the pod's platform group.
+
+        :param pod_id: the tool pod, enrolled as the agent-typed member of its group
+        :ptype pod_id: UUID
+        :param namespace_id: the tool namespace the assignment is scoped to
+        :ptype namespace_id: UUID
+        :return: membership and grant loaders
+        :rtype: tuple[Any, Any]
+        """
+        group_id = uuid4()
+        role_id = uuid4()
+        group = Group(id=group_id, name="tool-pod-access:pod", customer_id=None)
+        role = Role(
+            id=role_id,
+            name="ToolCaller",
+            permissions={"tool": frozenset({"tool.call"})},
+            is_built_in=True,
+        )
+        membership = GroupMembership(
+            group_id=group_id,
+            member_id=pod_id,
+            member_type=MemberType.AGENT,
+            customer_id=None,
+        )
+        assignment = RoleAssignment(
+            id=uuid4(),
+            group_id=group_id,
+            role_id=role_id,
+            scope_type=ScopeType.NAMESPACE,
+            scope_namespace_id=namespace_id,
+            scope_namespace_type=None,
+            scope_customer_id=None,
+        )
+        return (
+            _FakeMembershipLoader(agents={pod_id: (membership,)}),
+            _FakeGrantLoader(assignments={group_id: (assignment,)}, roles={role_id: role}, groups={group_id: group}),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_marked_pod_with_a_grant_is_admitted_with_no_user(self) -> None:
+        pod_id = uuid4()
+        namespace_id = uuid4()
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(*self._pod_grant(pod_id, namespace_id)),
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(id=namespace_id, namespace_type="tool", owner_agent_id=None, customer_id=None),
+            ),
+        )
+
+        result = await authorizer.is_authorized(
+            str(pod_id), None, "ripple.audience_build", "1.0", principal_is_tool_pod=True
+        )
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_the_same_call_without_the_mark_is_refused(self) -> None:
+        """the A/B: identical grant, identical absence of a user, only the mark differs."""
+        pod_id = uuid4()
+        namespace_id = uuid4()
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(*self._pod_grant(pod_id, namespace_id)),
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(id=namespace_id, namespace_type="tool", owner_agent_id=None, customer_id=None),
+            ),
+        )
+
+        result = await authorizer.is_authorized(
+            str(pod_id), None, "ripple.audience_build", "1.0", principal_is_tool_pod=False
+        )
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_a_marked_pod_with_no_grant_is_refused(self) -> None:
+        pod_id = uuid4()
+        namespace_id = uuid4()
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(id=namespace_id, namespace_type="tool", owner_agent_id=None, customer_id=None),
+            ),
+        )
+
+        result = await authorizer.is_authorized(
+            str(pod_id), None, "ripple.audience_build", "1.0", principal_is_tool_pod=True
+        )
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_a_marked_pod_is_refused_a_tool_its_grant_does_not_cover(self) -> None:
+        """the grant is per namespace: a pod granted one tool row is not granted another."""
+        pod_id = uuid4()
+        granted_namespace_id = uuid4()
+        other_namespace_id = uuid4()
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(*self._pod_grant(pod_id, granted_namespace_id)),
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(id=other_namespace_id, namespace_type="tool", owner_agent_id=None, customer_id=None),
+            ),
+        )
+
+        result = await authorizer.is_authorized(
+            str(pod_id), None, "ripple.audience_publish", "1.0", principal_is_tool_pod=True
+        )
+
+        assert result is False
 
 
 class TestAMalformedToolNameDeniesRatherThanRaises:
@@ -753,7 +895,9 @@ class TestAMalformedToolNameDeniesRatherThanRaises:
             namespace_collection=ns_coll,
         )
 
-        result = await authorizer.is_authorized(str(uuid4()), str(uuid4()), tool_name, "1.0")
+        result = await authorizer.is_authorized(
+            str(uuid4()), str(uuid4()), tool_name, "1.0", principal_is_tool_pod=False
+        )
 
         assert result is False
 
@@ -766,7 +910,7 @@ class TestAMalformedToolNameDeniesRatherThanRaises:
             namespace_collection=ns_coll,
         )
 
-        await authorizer.is_authorized(str(uuid4()), str(uuid4()), "a..b", "1.0")
+        await authorizer.is_authorized(str(uuid4()), str(uuid4()), "a..b", "1.0", principal_is_tool_pod=False)
 
         assert ns_coll.last_get_by_name is None
 
@@ -778,6 +922,8 @@ class TestAMalformedToolNameDeniesRatherThanRaises:
             namespace_collection=ns_coll,
         )
 
-        result = await authorizer.is_authorized(str(uuid4()), str(uuid4()), "pentest.sqlmap", "")
+        result = await authorizer.is_authorized(
+            str(uuid4()), str(uuid4()), "pentest.sqlmap", "", principal_is_tool_pod=False
+        )
 
         assert result is False

@@ -30,7 +30,7 @@ signal that has no business being durable.
 ## Reuse: do not build a counter, adopt `DistributedCounter`
 
 `packages/core/src/threetears/core/coordination/distributed_counter.py` is already
-"atomic increment/decrement counter over NATS JetStream KV". `_ensure_bucket` (`:262-268`)
+"atomic increment/decrement counter over NATS JetStream KV". `DistributedCounter._ensure_bucket`
 opens with `storage="memory", create_if_missing=True, history=1` -- exactly the substrate
 this task specifies. `increment(key)` returns the new **per-key** value through a bounded
 CAS loop.

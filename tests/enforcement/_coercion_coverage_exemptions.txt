@@ -1,0 +1,13 @@
+# Exemptions for tests/enforcement/test_coercion_coverage.py.
+#
+# The gate reads a base as Tool-ish by its name's suffix, so LangChain's BaseTool and
+# StructuredTool qualify. The classes below subclass those, not TearsTool: their `run` is
+# LangChain's entry point, and the TearsTool.run that holds the input coercion is still
+# reached, unchanged, beneath it. Each entry is keyed by class (`*`), so it moves with the
+# class.
+
+# rationale: a LangChain StructuredTool wrapping a TearsTool, not a TearsTool; its run only records the answered call's id and calls StructuredTool.run, which reaches TearsTool.run and its coercion unchanged
+packages/agent/tools/src/threetears/agent/tools/langchain_adapter.py:*:_TearsStructuredTool
+
+# rationale: a LangChain BaseTool proxy renaming a tool for the wire, not a TearsTool; its run hands the call unchanged to the delegate's own run, so a TearsTool delegate's coercion runs exactly as it does unproxied
+packages/models/src/threetears/models/tool_name_translation.py:*:NameMangledToolProxy

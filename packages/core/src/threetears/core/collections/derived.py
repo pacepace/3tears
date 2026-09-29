@@ -219,10 +219,14 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
         """hold the cross-pod build lock, then derive and persist."""
         lock_key = self.build_lock_key(key)
         try:
+            # cancel_on_loss=False: the build lock only stops a stampede of identical
+            # derivations; losing it mid-build costs one duplicate compute, and interrupting
+            # the build would fail the read that is waiting on it.
             async with nats_distributed_lock(
                 self._nats_client,
                 lock_key,
                 bucket_name=self.build_lock_bucket,
+                cancel_on_loss=False,
             ):
                 # a peer POD may have derived it while we queued.
                 existing = await self.load_derived(key)

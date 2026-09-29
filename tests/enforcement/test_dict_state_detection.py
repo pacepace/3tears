@@ -78,6 +78,19 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/utils/yugabyte_pool_recycler.py",
+        class_name="YugabytePoolRecycler",
+        attr_name="_expired_at_by_trigger",
+        rationale=(
+            "each trigger's last expiry of ONE process's asyncpg pool, as time.monotonic() "
+            "readings: the pool exists only in this process and a monotonic reading means "
+            "nothing in any other, so a shared or durable copy would describe a pool and a "
+            "clock no other pod has. keyed by the recycler's fixed trigger set, so it never "
+            "grows past the triggers it was built with, and a restart correctly starts with "
+            "no expiry on record for a pool that is itself new"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/derived.py",
         class_name="DerivedCollection",
         attr_name="_inflight",
@@ -179,6 +192,17 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/agent/tools/src/threetears/agent/tools/relevance.py",
+        class_name="ToolRelevanceIndex",
+        attr_name="_inflight",
+        rationale=(
+            "the asyncio tasks embedding a tool set right now, keyed by content hash and removed "
+            "when each finishes. Live task handles, non-serializable, meaningful only on the event "
+            "loop that owns them; they exist so the latency ceiling cancels a caller's wait rather "
+            "than the embedding, and so concurrent turns share one call. Nothing survives a task"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeKvBucket",
         attr_name="_entries",
@@ -192,12 +216,35 @@ _ALLOWLIST = (
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
+        attr_name="_markers",
+        rationale=(
+            "the revision of each deleted key's marker -- the other half of the double's storage "
+            "beside _entries, since a real delete publishes a message whose revision a fenced "
+            "write depends on. Same test-double rationale as FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeNatsClient",
         attr_name="_buckets",
         rationale=(
             "the double's bucket registry, mirroring NatsClient's own internal bucket cache so "
             "repeat kv_bucket calls return the same instance -- same test-double rationale as "
             "FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeNatsClient",
+        attr_name="_subscribers",
+        rationale=(
+            "the double's subject to callback map, standing in for the real client's "
+            "subscriptions so a test can run a real invalidation listener against it. The values "
+            "are live coroutine functions, which no backend can serialise or hand to another "
+            "process, and the whole point of the double is that a test needs no bus at all -- "
+            "same test-double rationale as FakeKvBucket._entries above, and it lives for one "
+            "test's client instance"
         ),
     ),
     DictStateAllowlistEntry(
@@ -219,6 +266,17 @@ _ALLOWLIST = (
             "the live ToolServer registrations so deregister_spec can unregister exactly what it "
             "registered; ephemeral pod-local, no cross-instance coherence, rebuilt from "
             "load_specs on restart"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/agent/tools/src/threetears/agent/tools/dynamic_pod.py",
+        class_name="DynamicToolPod",
+        attr_name="_spec_locks",
+        rationale=(
+            "spec_key -> asyncio.Lock serializing register_spec / deregister_spec for one spec in "
+            "this process, so two overlapping rebuilds cannot overwrite each other's bookkeeping; "
+            "a lock is an in-process synchronisation primitive, not state -- it cannot be serialized "
+            "into an L1/L2/L3 backend, and it guards the pod-local _resources / _tool_names above"
         ),
     ),
     DictStateAllowlistEntry(

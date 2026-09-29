@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-audit"
-version = "0.37.0"
-description = "unified audit envelope + fire-and-forget publish helper for the 3tears platform"
+version = "0.56.3"
+description = "unified audit envelope, fire-and-forget publish helper, and the audit erasure rule and hub anonymization request for the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
@@ -25,8 +25,8 @@ classifiers = [
 dependencies = [
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
-    "3tears-nats[client]>=0.37.0,<0.38.0",
-    "3tears-observe>=0.37.0,<0.38.0",
+    "3tears-nats[client]>=0.56.0,<0.57.0",
+    "3tears-observe>=0.56.0,<0.57.0",
     "pydantic>=2.0",
 ]
 
@@ -47,8 +47,8 @@ packages = ["threetears.agent.audit"]
 explicit_package_bases = true
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-markers = [
-    "integration: integration tests requiring docker or real infra",
-]
+# no [tool.pytest.ini_options] block: pytest roots a run at the closest
+# pyproject that has one, so a per-package block makes `scripts/test.sh <pkg>`
+# drop the workspace configuration (import mode, pythonpath, markers) and the
+# tests' relative helper imports fail to collect. inherit from the workspace
+# instead; tests/enforcement/test_one_pytest_config.py holds this.

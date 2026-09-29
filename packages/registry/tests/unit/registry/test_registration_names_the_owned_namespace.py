@@ -32,12 +32,14 @@ from uuid import UUID
 import pytest
 
 from threetears.agent.tools.server import RegistrationManifest, RegistrationResponse, ToolManifestEntry
-from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.registration import RegistrationHandler
 
 _AGENT = UUID("019470a8-b5c3-7def-8123-0000000000a7")
+_OTHER_AGENT = UUID("019470a8-b5c3-7def-8123-0000000000b7")
+_INPROCESS_POD = Subjects.agent_inprocess_pod_id(_AGENT, "inst-1")
 
 
 @pytest.fixture(autouse=True)
@@ -137,6 +139,7 @@ def _authenticator(*nodes: str) -> AsyncMock:
     auth.verify_pod = AsyncMock(
         return_value=ToolPodAuth(pod_entity_id="pod-001", name="a pod", owned_namespaces=list(nodes)),
     )
+    auth.verify_agent = AsyncMock(return_value=None)
     auth.provider_nodes = AsyncMock(return_value=tuple(rooted))
     return auth
 
@@ -232,16 +235,17 @@ class TestAVerifiedPodLearnsTheNodeItOwns:
 
 
 class TestAnAgentOwnedPodLearnsItsAgentNamespace:
-    """the in-process pod: no ``tool_pods`` row, no token, and an agent it belongs to."""
+    """the in-process pod: no ``tool_pods`` row, no token, and an agent its pod-id names."""
 
     async def test_a_tokenless_pod_is_told_its_owning_agents_namespace(self) -> None:
         """its identity was settled at the NATS layer, and its namespace IS its agent's.
 
-        a tokenless manifest is the agent-owned in-process tool server, admitted here
-        because the auth callout already authenticated it per-key as an AGENT. It is not a
-        row in ``tool_pods``, so it owns no provider node -- what it owns is
-        ``agents.<uuid>``, which is exactly the ``owner_namespace`` its own tool-namespace
-        rows are stamped with.
+        a tokenless manifest under an agent's composite pod-id is that agent's in-process
+        tool server, admitted here because the auth callout already authenticated it per-key
+        as an AGENT. It is not a row in ``tool_pods``, so it owns no provider node -- what it
+        owns is ``agents.<uuid>``. The owner is read from the pod-id, as routing reads it;
+        the manifest here claims no owner at all, which is the shape the SDK's in-process
+        servers register in.
 
         The tool it offers sits under no provider node anybody owns, which is the
         ordinary case for an agent's own tools -- and it is offered explicitly here
@@ -254,7 +258,7 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
         nc = _nc()
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
         await handler.start(nc)
-        reply = await _register(handler, nc, _manifest(owner=_AGENT, tool="myagent.summarize"))
+        reply = await _register(handler, nc, _manifest(pod_id=_INPROCESS_POD, tool="myagent.summarize"))
         assert reply.success is True
         assert reply.owned_namespaces == [f"agents.{_AGENT}"]
 
@@ -270,12 +274,44 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
         nc = _nc()
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
         await handler.start(nc)
-        reply = await _register(handler, nc, _manifest(owner=_AGENT, tool="pentest.sqlmap"))
+        reply = await _register(handler, nc, _manifest(pod_id=_INPROCESS_POD, tool="pentest.sqlmap"))
         assert reply.success is False
         assert reply.owned_namespaces == []
 
+    async def test_a_manifest_owner_claim_is_not_proof_of_ownership(self) -> None:
+        """a one-token pod claiming an agent is told nothing: only a pod-id proves an owner.
+
+        it is now refused outright as well -- a tokenless single-token pod would serve every
+        caller, which needs a verified publisher -- and the refusal names no namespace either.
+
+        :return: none
+        :rtype: None
+        """
+        nc = _nc()
+        handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
+        await handler.start(nc)
+        reply = await _register(handler, nc, _manifest(owner=_AGENT, tool="myagent.summarize"))
+        assert reply.success is False
+        assert reply.error_code == "UNVERIFIED_PUBLISHER"
+        assert reply.owned_namespaces == []
+
+    async def test_a_claim_naming_another_agent_does_not_move_the_answer(self) -> None:
+        """the pod-id's agent is the answer whatever the manifest claims.
+
+        :return: none
+        :rtype: None
+        """
+        nc = _nc()
+        handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
+        await handler.start(nc)
+        reply = await _register(handler, nc, _manifest(pod_id=_INPROCESS_POD, owner=_OTHER_AGENT, tool="myagent.x"))
+        assert reply.owned_namespaces == [f"agents.{_AGENT}"]
+
     async def test_a_tokenless_pod_with_no_owner_is_told_nothing(self) -> None:
         """no row and no agent is no self-identity, said as an empty list rather than a guess.
+
+        such a pod is also refused now: with no token and no agent in its pod id it can only be a
+        Tool Pod, whose copies serve every caller and must come from a verified publisher.
 
         :return: none
         :rtype: None
@@ -284,7 +320,8 @@ class TestAnAgentOwnedPodLearnsItsAgentNamespace:
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=_authenticator("pentest"))
         await handler.start(nc)
         reply = await _register(handler, nc, _manifest(tool="myagent.summarize"))
-        assert reply.success is True
+        assert reply.success is False
+        assert reply.error_code == "UNVERIFIED_PUBLISHER"
         assert reply.owned_namespaces == []
 
 
@@ -300,6 +337,7 @@ class TestARefusedRegistrationNamesNothing:
         nc = _nc()
         auth = AsyncMock()
         auth.verify_pod = AsyncMock(return_value=None)
+        auth.verify_agent = AsyncMock(return_value=None)
         handler = RegistrationHandler(catalog=ToolCatalog(), authenticator=auth)
         await handler.start(nc)
         reply = await _register(handler, nc, _manifest(token="a-bad-token"))

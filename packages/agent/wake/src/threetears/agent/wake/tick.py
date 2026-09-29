@@ -495,9 +495,13 @@ async def wake_tick_job(
     it against the single ``"agent_wake"`` kind, and delegates to
     :func:`threetears.scheduled_jobs.scheduled_tick_job` under the
     preserved ``"agent_wake_tick"`` cross-pod lock. The callback is awaited
-    inline; long-running callback bodies (e.g. LLM round-trips) are expected to
-    ``asyncio.create_task`` internally so the tick returns as soon as the row
-    is staged -- not when the LLM response is complete.
+    inline, and the fire row is finalized from what it returns: a callback that
+    starts its work with ``asyncio.create_task`` and returns early records the
+    fire as finished before that work has run, and nothing records how the work
+    really ended. Return only when the work is done. (The generic engine's
+    :class:`~threetears.scheduled_jobs.background.BackgroundDispatch` is the
+    supported way to run long fires off the tick; it needs the pump's fire
+    store, which this wrapper builds internally.)
 
     ``pool`` is typed ``Any`` to keep ``asyncpg`` an optional runtime dep on the
     wake package's interface (consumers' pool objects quack-type cleanly; the

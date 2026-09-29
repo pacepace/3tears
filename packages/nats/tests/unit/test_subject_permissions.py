@@ -309,7 +309,18 @@ class TestBootCompleteness:
             # hub.object.resolve is boot-critical for the Path-2 consume path: a
             # consuming tool that cannot publish it fails closed at the bus and
             # the whole resolve->stream capability goes silently inert.
-            (Principal.TOOL_POD, [f"{_NS}.tools.register", f"{_NS}.hub.jwks", f"{_NS}.hub.object.resolve"]),
+            (
+                Principal.TOOL_POD,
+                [
+                    f"{_NS}.tools.register",
+                    f"{_NS}.hub.jwks",
+                    f"{_NS}.hub.object.resolve",
+                    # a pod granted a datasource reaches it over this subject and nothing
+                    # else; without it the grant is materialized and the query is refused
+                    # at the connection.
+                    f"{_NS}.datasource.*.query",
+                ],
+            ),
             (
                 # the router forward grant is ``tools.internal.>`` (not ``.*``) so it spans BOTH
                 # single-token tool pods and two-token agent in-process pods.
@@ -359,14 +370,53 @@ class TestBootCompleteness:
         perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert any(p.endswith(".l3.tx.*") for p in perm.publish)
 
-    def test_tool_pod_may_handshake_for_a_token_of_its_own(self) -> None:
-        """a tool pod writing its OWN state has no inbound token to forward.
+    def test_tool_pod_may_query_a_datasource(self) -> None:
+        """a tool pod granted a datasource reaches it the way it reaches L3.
 
-        acting on a call, it forwards that call's identity token and needs
-        nothing of its own. writing its own durable state is the case with no
-        caller to act on behalf of, so it presents its provisioned key and
-        receives a short-lived hub-minted token, the same handshake an agent
-        pod performs. without this grant a tool pod cannot reach L3 at all.
+        the hub answers ``{ns}.datasource.{name}.query`` for every datasource it
+        serves, verifies the forwarded hub-minted token at the door, and evaluates
+        the pod's own grant on the datasource namespace. the request names no
+        principal, so holding the subject buys reach and never authority -- which
+        is what makes a wildcard over the NAME segment safe: the pod can ask about
+        any datasource, and the hub refuses every one it was not granted.
+
+        publish only. the hub subscribes; a pod never answers a datasource query.
+
+        :return: none
+        :rtype: None
+        """
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert f"{_NS}.datasource.*.query" in pod.publish
+        assert f"{_NS}.datasource.*.query" not in pod.subscribe
+        assert f"{_NS}.datasource.*.query" in _build(Principal.HUB).subscribe
+
+    def test_tool_pod_may_call_a_tool(self) -> None:
+        """a tool pod granted a platform tool reaches it the way an agent does.
+
+        the registry answers ``{ns}.tools.call``, verifies the forwarded hub-minted
+        token and the per-call proof of possession at the door, and evaluates the
+        pod's OWN ``tool.call`` grant on the tool's namespace. the request names no
+        principal, so holding the subject buys reach and never authority: the pod
+        may ask for any tool, and the registry refuses every one it was not granted.
+
+        publish only. the registry subscribes; a pod never answers a tool call on
+        this subject -- it answers proxied calls on its own internal subject.
+
+        :return: none
+        :rtype: None
+        """
+        pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert str(Subjects.tools_call()) in pod.publish
+        assert str(Subjects.tools_call()) not in pod.subscribe
+        assert str(Subjects.tools_call()) in _build(Principal.REGISTRY).subscribe
+
+    def test_tool_pod_may_handshake_for_a_token_of_its_own(self) -> None:
+        """a tool pod writes its OWN state on a hub-minted token from this handshake.
+
+        acting on a call, it forwards that call's identity token. writing its
+        own durable state, it presents its provisioned key and receives a
+        short-lived hub-minted token, the same handshake an agent pod performs.
+        this grant is what carries a tool pod's L3 access.
 
         :return: none
         :rtype: None
@@ -405,6 +455,20 @@ class TestBootCompleteness:
         assert f"{_NS}.namespace.discover" in _build(Principal.HUB).subscribe
         # read-only for the pod: it asks, it never answers.
         assert f"{_NS}.namespace.discover" not in pod.subscribe
+
+    def test_audit_anonymize_is_agent_publish_hub_subscribe(self) -> None:
+        # erasure of an agent's own audit rows: the AGENT pod asks, forwarding its identity
+        # token; the hub answers, touching only rows whose agent is the verified caller. the
+        # subject sits under ``hub.`` and never under ``audit.``, because the durable audit
+        # stream captures ``{ns}.audit.>`` and would persist a request there as an event.
+        agent = _build(Principal.AGENT_POD)
+        hub = _build(Principal.HUB)
+        assert f"{_NS}.hub.audit.anonymize" in agent.publish
+        assert f"{_NS}.hub.audit.anonymize" in hub.subscribe
+        assert f"{_NS}.hub.audit.anonymize" not in agent.subscribe
+        # a tool pod runs on a caller's behalf and has no audit rows of its own to erase.
+        tool_pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        assert f"{_NS}.hub.audit.anonymize" not in tool_pod.publish
 
     def test_engagement_scope_resolve_grant_is_pod_publish_hub_subscribe(self) -> None:
         # engagement scope (consumer A of the §2 keystone): the consuming tool pod

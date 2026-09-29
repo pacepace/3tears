@@ -16,12 +16,11 @@ exactly onto what the data is:
   what the dict could never be: ``tool_pods.id`` is configured once per DEPLOYMENT, so
   every replica resolves to one scope and reads one key. A resolution one replica paid
   for serves all of them.
-- **L3 is absent and its methods RAISE.** A tool pod cannot reach L3 at all today -- the
-  broker reads the principal off a hub-minted identity token, and a tool pod holds none
-  until the handshake reaches it. A collection that quietly accepted a durable write
-  would report success for a row nobody stored. Refusing loudly is the only honest
-  behaviour until that lands, and it costs nothing here: the hub is the system of
-  record for the mapping, so a total cache miss is one request, not lost data.
+- **The hub is the system of record for the mapping**, so this collection has no L3 tier
+  of its own and its store methods RAISE. A tool pod that needs durable state of its own
+  uses provider storage; this mapping is not that. A collection that quietly accepted a
+  durable write would report success for a row nobody stored, and refusing costs nothing
+  here: a total cache miss is one request to the hub, not lost data.
 
 **Why the mapping is safe to share and safe to lose.** A committed object's id -> key
 mapping is immutable, so a cached value can go stale only by being deleted upstream, and
@@ -178,7 +177,7 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
         :ptype entity_id: Any
         :return: never returns
         :rtype: dict[str, Any] | None
-        :raises RuntimeError: always; a tool pod has no L3 to read
+        :raises RuntimeError: always; the hub holds this mapping durably, not this collection
         """
         raise RuntimeError(
             f"{type(self).__name__} is L1+L2 only; fetch_from_store must never be "
@@ -205,7 +204,7 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
         :ptype conn: Any
         :return: never returns
         :rtype: int
-        :raises RuntimeError: always; a tool pod has no L3 to write
+        :raises RuntimeError: always; the hub holds this mapping durably, not this collection
         """
         raise RuntimeError(
             f"{type(self).__name__} is L1+L2 only; save_to_store must never be reached "
@@ -219,7 +218,7 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
         :ptype entity_id: Any
         :return: never returns
         :rtype: None
-        :raises RuntimeError: always; a tool pod has no L3 to delete from
+        :raises RuntimeError: always; the hub holds this mapping durably, not this collection
         """
         raise RuntimeError(
             f"{type(self).__name__} is L1+L2 only; delete_from_store must never be "

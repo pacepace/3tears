@@ -84,8 +84,8 @@ def test_the_lease_bucket_a_tool_pod_is_granted_is_the_one_kvlease_opens() -> No
     """
     from threetears.core.coordination.lease import KVLease
 
-    # Read through the PUBLIC property rather than the private derivation. An inline
-    # ``# noqa: SLF001`` would have bypassed this repo's exemption ledger entirely, and that
+    # Read through the PUBLIC property rather than the private derivation. An inline SLF001
+    # noqa waiver would have bypassed this repo's exemption ledger entirely, and that
     # channel has already silently lost entries here; not needing the waiver is better than
     # recording one.
     suffix = KVLease(nats_client=object(), pod_id="probe").bucket_name  # type: ignore[arg-type]

@@ -984,6 +984,89 @@ class TestWebSocketHandlerMessageSizeEnforcement:
         assert handler.max_message_size == 1024
 
 
+class _CountingEchoRouter:
+    """router that echoes content back and records every message it was handed."""
+
+    def __init__(self) -> None:
+        self.routed: list[ChannelMessage] = []
+
+    async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
+        self.routed.append(message)
+        return ChannelResponse(content=f"echo: {message.content}")
+
+
+async def _serve(frames: list[dict[str, Any]], router: _CountingEchoRouter) -> list[dict[str, Any]]:
+    """run one authenticated connection over ``frames`` then a well-formed follow-up.
+
+    :param frames: the chat frames under test, sent first
+    :ptype frames: list[dict[str, Any]]
+    :param router: router recording what reached it
+    :ptype router: _CountingEchoRouter
+    :return: every frame the handler sent after ``connected``
+    :rtype: list[dict[str, Any]]
+    """
+    from threetears.channels.websocket import WebSocketHandler
+
+    handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+    follow_up = {"type": "message", "content": "still here", "metadata": {}}
+    ws = MockWebSocket(
+        messages=[json.dumps(frame) for frame in [*frames, follow_up]],
+        query_params={"token": "valid-token"},
+    )
+    await handler.handle_connection(ws)
+    sent = [json.loads(m) for m in ws.sent]
+    assert sent[0]["type"] == "connected"
+    return sent[1:]
+
+
+class TestAChatMessageTheAgentCannotUseIsRefused:
+    """a chat frame with nothing to route answers an error frame and is never dispatched.
+
+    The REST chat route refuses an empty message (``min_length=1``); the socket sent
+    the same message to the agent, spending a model call on nothing. A chat frame whose
+    ``metadata`` was not an object failed before the per-message safety net and closed
+    the socket with 1011. Each now answers one error frame, reaches no router, and the
+    connection keeps serving: never a silent drop, never a dead connection.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            pytest.param({"type": "message", "content": "", "metadata": {}}, id="empty-content"),
+            pytest.param({"type": "message", "metadata": {}}, id="no-content"),
+        ],
+    )
+    async def test_an_empty_message_is_refused_and_the_socket_keeps_serving(self, frame: dict[str, Any]) -> None:
+        router = _CountingEchoRouter()
+
+        sent = await _serve([frame], router)
+
+        assert sent[0] == {"type": "error", "message": "empty message"}
+        assert sent[1] == {"type": "response", "content": "echo: still here", "metadata": {}}
+        assert [message.content for message in router.routed] == ["still here"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            pytest.param({"type": "message", "content": 42, "metadata": {}}, id="content-a-number"),
+            pytest.param({"type": "message", "content": None, "metadata": {}}, id="content-null"),
+            pytest.param({"type": "message", "content": ["hi"], "metadata": {}}, id="content-a-list"),
+            pytest.param({"type": "message", "content": "hi", "metadata": "tz"}, id="metadata-a-string"),
+            pytest.param({"type": "message", "content": "hi", "metadata": ["tz"]}, id="metadata-a-list"),
+        ],
+    )
+    async def test_a_malformed_chat_frame_is_refused_and_the_socket_keeps_serving(self, frame: dict[str, Any]) -> None:
+        router = _CountingEchoRouter()
+
+        sent = await _serve([frame], router)
+
+        assert sent[0] == {"type": "error", "message": "invalid message"}
+        assert sent[1] == {"type": "response", "content": "echo: still here", "metadata": {}}
+        assert [message.content for message in router.routed] == ["still here"]
+
+
 class TestWebSocketHandlerRateLimiting:
     """tests for rate limiting in message loop."""
 

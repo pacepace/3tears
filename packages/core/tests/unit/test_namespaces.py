@@ -6,6 +6,7 @@ namespace-name shape under namespace-task-01 phase 9.5.
 
 from __future__ import annotations
 
+import os
 from dataclasses import FrozenInstanceError
 from uuid import UUID
 
@@ -164,7 +165,7 @@ class TestBuildHitlNamespaceName:
     def test_carries_the_full_customer_hex(self) -> None:
         # the two constants share their first eight hex characters, so
         # a truncated spelling would put both tenants on one row.
-        assert CUSTOMER_X.hex[:8] == CUSTOMER_Z.hex[:8]
+        assert len(os.path.commonprefix([CUSTOMER_X.hex, CUSTOMER_Z.hex])) >= 8
         assert build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X).endswith(f".{CUSTOMER_X.hex}")
 
     def test_a_dot_in_a_tool_name_cannot_add_a_component(self) -> None:

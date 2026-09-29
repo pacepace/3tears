@@ -380,6 +380,46 @@ class TestFkAwareRetryPolicy:
         assert flushed == 0
         assert buf.pending_count() == 0  # permanently dropped
 
+    @pytest.mark.parametrize(
+        ("retries", "fk", "level"),
+        [
+            (0, True, logging.WARNING),
+            (1, True, logging.DEBUG),
+            (_FK_RETRY_LIMIT - 3, True, logging.DEBUG),
+            (0, False, logging.WARNING),
+            (1, False, logging.WARNING),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_an_fk_deferral_warns_once_and_repeats_quietly(
+        self, monkeypatch: pytest.MonkeyPatch, retries: int, fk: bool, level: int
+    ) -> None:
+        """A row whose parent was deleted re-deferred once per drain, each at
+        WARNING, up to ``_FK_RETRY_LIMIT`` lines for one row. The first deferral
+        is the event; its repeats are DEBUG. Any other failure still warns every time."""
+        from threetears.core.collections import flush as flush_module
+
+        spy = MagicMock(spec=logging.Logger)
+        monkeypatch.setattr(flush_module, "log", spy)
+        buf = WriteBuffer()
+        await buf.add("messages", "m1", {"id": "m1"}, retries=retries)
+        registry = CollectionRegistry()
+        mock_coll = MagicMock()
+        mock_coll.table_name = "messages"
+        error = (
+            asyncpg.exceptions.ForeignKeyViolationError("violates foreign key constraint")
+            if fk
+            else RuntimeError("db connection lost")
+        )
+        mock_coll.persist_to_store = AsyncMock(side_effect=error)
+        registry.register(mock_coll)
+
+        await flush_pending(buf, registry)
+
+        deferred = [c for c in spy.log.call_args_list if "re-adding to buffer" in str(c.args[1])]
+        assert [c.args[0] for c in deferred] == [level]
+        assert buf.pending_count() == 1, "still retried: only the log line changed"
+
     @pytest.mark.asyncio
     async def test_non_fk_violation_keeps_general_retry_budget(self) -> None:
         """A non-FK exception (e.g. connection lost) drops at the

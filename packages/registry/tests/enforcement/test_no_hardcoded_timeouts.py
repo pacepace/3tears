@@ -26,7 +26,7 @@ _PACKAGES_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 _SCAN_DIRS: list[tuple[str, Path]] = [
     ("registry", _PACKAGES_ROOT / "registry" / "src"),
-    ("agent-tools", _PACKAGES_ROOT / "agent-tools" / "src"),
+    ("agent-tools", _PACKAGES_ROOT / "agent" / "tools" / "src"),
     ("core", _PACKAGES_ROOT / "core" / "src"),
     ("observe", _PACKAGES_ROOT / "observe" / "src"),
 ]
@@ -46,9 +46,15 @@ _ALLOWED_DEFAULT_FILES: set[str] = {
     "threetears/core/testing/containers.py",
 }
 
-# Specific (file_relative, param_name, line) tuples for narrow exceptions.
-# Each must include a comment explaining why the exception exists.
-_ALLOWED_EXCEPTIONS: set[tuple[str, str]] = set()
+# Specific (file_relative, name) pairs for narrow exceptions, consulted by the
+# constants check. Each must include a comment explaining why the exception exists.
+_ALLOWED_EXCEPTIONS: set[tuple[str, str]] = {
+    # the slack a CALLER keeps above the registry's forward budget so a slow tool
+    # comes back as the registry's typed timeout rather than the caller's transport
+    # fault. it is not a timeout of anything; the budget it sits above is taken from
+    # the config layer, and the margin is the one number the config cannot own.
+    ("threetears/registry/client.py", "CALL_TIMEOUT_MARGIN_SECONDS"),
+}
 
 
 def _collect_src_files() -> list[tuple[str, Path, Path]]:
@@ -189,7 +195,13 @@ class TestNoHardcodedTimeouts:
         src_root: Path,
         src_file: Path,
     ) -> None:
-        """Module-level constants matching *TIMEOUT* must not be numeric literals."""
+        """Module-level constants matching *TIMEOUT* must not be numeric literals.
+
+        Both spellings of a module constant are walked: a plain assignment and
+        an ANNOTATED one (``X_TIMEOUT: float = 30.0``). The annotated shape used
+        to pass the gate whose stated purpose is to refuse exactly this, so the
+        gate read green while enforcing nothing on it.
+        """
         file_relative = str(src_file.relative_to(src_root))
         if _is_allowed(file_relative):
             return
@@ -198,20 +210,45 @@ class TestNoHardcodedTimeouts:
         violations: list[str] = []
 
         for node in ast.iter_child_nodes(tree):
-            if not isinstance(node, ast.Assign):
-                continue
-            for target in node.targets:
-                if not isinstance(target, ast.Name):
+            for target, value in _module_constant_bindings(node):
+                if not _is_timeout_name(target.id):
                     continue
-                if _is_timeout_name(target.id):
-                    val = _get_numeric_value(node.value)
-                    if val is not None:
-                        violations.append(
-                            f"  line {node.lineno}: {target.id} = {val} -- "
-                            f"hardcoded timeout constant. "
-                            f"Source from config instead."
-                        )
+                if (file_relative, target.id) in _ALLOWED_EXCEPTIONS:
+                    continue
+                val = _get_numeric_value(value)
+                if val is not None:
+                    violations.append(
+                        f"  line {node.lineno}: {target.id} = {val} -- "
+                        f"hardcoded timeout constant. "
+                        f"Source from config instead."
+                    )
 
         if violations:
             detail = "\n".join(violations)
             pytest.fail(f"{pkg_name}:{file_relative} has hardcoded timeout constants:\n{detail}")
+
+    def test_the_constants_walker_sees_an_annotated_assignment(self) -> None:
+        """non-vacuous: the annotated spelling is what the gate used to miss."""
+        tree = ast.parse("A_TIMEOUT: float = 30.0\nB_TIMEOUT = 5\nC: int = 1\n")
+        bound = [
+            (target.id, _get_numeric_value(value))
+            for node in tree.body
+            for target, value in _module_constant_bindings(node)
+        ]
+        assert bound == [("A_TIMEOUT", 30.0), ("B_TIMEOUT", 5.0), ("C", 1.0)]
+
+
+def _module_constant_bindings(node: ast.AST) -> list[tuple[ast.Name, ast.expr]]:
+    """the ``(name, value)`` pairs a module-level statement binds, for both assignment spellings.
+
+    :param node: one top-level statement
+    :ptype node: ast.AST
+    :return: the name targets bound and the expression each is bound to
+    :rtype: list[tuple[ast.Name, ast.expr]]
+    """
+    bindings: list[tuple[ast.Name, ast.expr]] = []
+    if isinstance(node, ast.Assign):
+        bindings.extend((target, node.value) for target in node.targets if isinstance(target, ast.Name))
+    elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+        bindings.append((node.target, node.value))
+    return bindings

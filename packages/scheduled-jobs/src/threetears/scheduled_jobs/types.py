@@ -166,9 +166,17 @@ class JobFireResult:
     :ivar output: optional captured output payload (opaque JSON)
     :ivar latency_ms: optional end-to-end fire latency in milliseconds
     :ivar error: optional error string (set when ``status='failed'``)
+    :ivar handed_off: ``True`` when the callback has handed the fire to an
+        owner that will finalize it later -- the tick then leaves the row
+        ``'dispatching'`` and writes nothing, and the reaper records it as
+        failed if that owner is lost. The other fields are ignored.
+        :class:`~threetears.scheduled_jobs.background.BackgroundDispatch`
+        sets it; a callback that finishes its work before returning leaves
+        it ``False``.
     """
 
     status: str = "succeeded"
     output: dict[str, Any] | None = None
     latency_ms: int | None = None
     error: str | None = None
+    handed_off: bool = False

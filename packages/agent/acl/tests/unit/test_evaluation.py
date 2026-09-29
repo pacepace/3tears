@@ -1630,3 +1630,160 @@ class TestGroupInGroupMembership:
             m for m in store.memberships if not (m.member_type is MemberType.GROUP and m.member_id == org.id)
         ]
         assert (await evaluate_with_trail(ctx, cache=cache)).decision is False
+
+
+def _nested_org(
+    *,
+    customer: UUID,
+    state_customer: UUID | None = None,
+    edge_customer: UUID | None = None,
+    role_customer: UUID | None = None,
+) -> tuple[FakeStore, Namespace, Group, Group]:
+    """an org group nested in a state group, the grant on the state group.
+
+    :param customer: the namespace's customer, and the org group's
+    :ptype customer: UUID
+    :param state_customer: the state group's customer; defaults to ``customer``
+    :ptype state_customer: UUID | None
+    :param edge_customer: the nesting edge's customer; defaults to ``customer``
+    :ptype edge_customer: UUID | None
+    :param role_customer: the granted role's owner; ``None`` is platform-owned
+    :ptype role_customer: UUID | None
+    :return: the store, the granted namespace, the org group and the state group
+    :rtype: tuple[FakeStore, Namespace, Group, Group]
+    """
+    namespace = _ns(customer_id=customer, owner_agent_id=None)
+    reader = Role(
+        id=uuid4(),
+        name="Reader",
+        permissions={"workspace": frozenset({"read"})},
+        is_built_in=role_customer is None,
+        customer_id=role_customer,
+    )
+    org = _group(name="org", customer_id=customer)
+    state = _group(name="state", customer_id=state_customer or customer)
+    store = FakeStore()
+    store.add_role(reader)
+    store.add_group(org)
+    store.add_group(state)
+    store.add_membership(
+        GroupMembership(
+            group_id=state.id,
+            member_type=MemberType.GROUP,
+            member_id=org.id,
+            customer_id=edge_customer or customer,
+        )
+    )
+    store.add_assignment(
+        _assignment(role=reader, group=state, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
+    )
+    return store, namespace, org, state
+
+
+class TestAGroupMemberEvaluation:
+    """``group_id`` answers what a direct member of a group reaches, by the user side's own walk.
+
+    a caller recording what nesting a group changed -- a membership audit --
+    asks this instead of re-deriving the walk and its walls, so its answer
+    cannot drift from the decision the evaluator makes for the group's people.
+    """
+
+    async def test_a_member_reaches_the_grant_of_the_group_above(self) -> None:
+        customer = uuid4()
+        store, namespace, org, _state = _nested_org(customer=customer)
+
+        ctx = EvaluationContext(namespace=namespace, action="read", group_id=org.id)
+        result = await evaluate_with_trail(ctx, cache=make_cache(store))
+
+        assert result.decision is True
+        assert result.effective_actions == frozenset({"read"})
+
+    async def test_a_member_reaches_the_groups_own_grant(self) -> None:
+        customer = uuid4()
+        store, namespace, org, _state = _nested_org(customer=customer)
+        writer = _role(name="Writer", permissions={"workspace": ["write"]})
+        store.add_role(writer)
+        store.add_assignment(
+            _assignment(role=writer, group=org, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
+        )
+
+        ctx = EvaluationContext(namespace=namespace, action="read", group_id=org.id)
+        result = await evaluate_with_trail(ctx, cache=make_cache(store))
+
+        assert result.effective_actions == frozenset({"read", "write"})
+
+    async def test_the_depth_cap_stops_the_walk_where_it_stops_a_user(self) -> None:
+        """a member of A reaches A and B; C is one hop further than a user would get."""
+        customer = uuid4()
+        namespace = _ns(customer_id=customer, owner_agent_id=None)
+        reader = _role(name="Reader", permissions={"workspace": ["read"]})
+        group_a = _group(name="A", customer_id=customer)
+        group_b = _group(name="B", customer_id=customer)
+        group_c = _group(name="C", customer_id=customer)
+        store = FakeStore()
+        store.add_role(reader)
+        for g in (group_a, group_b, group_c):
+            store.add_group(g)
+        for parent, child in ((group_b, group_a), (group_c, group_b)):
+            store.add_membership(
+                GroupMembership(
+                    group_id=parent.id, member_type=MemberType.GROUP, member_id=child.id, customer_id=customer
+                )
+            )
+        store.add_assignment(
+            _assignment(role=reader, group=group_c, scope_type=ScopeType.NAMESPACE, scope_namespace_id=namespace.id)
+        )
+        cache = make_cache(store)
+
+        of_a = EvaluationContext(namespace=namespace, action="read", group_id=group_a.id)
+        of_b = EvaluationContext(namespace=namespace, action="read", group_id=group_b.id)
+
+        assert (await evaluate_with_trail(of_a, cache=cache)).decision is False
+        assert (await evaluate_with_trail(of_b, cache=cache)).decision is True
+
+    @pytest.mark.parametrize(
+        "wall",
+        [
+            pytest.param("edge", id="membership-edge-wall"),
+            pytest.param("group", id="parent-group-wall"),
+            pytest.param("role", id="role-owner-wall"),
+        ],
+    )
+    async def test_each_cross_customer_wall_holds(self, wall: str) -> None:
+        """one wall stands between the member and the other customer's grant in each case."""
+        customer = uuid4()
+        other = uuid4()
+        store, namespace, org, _state = _nested_org(
+            customer=customer,
+            edge_customer=other if wall == "edge" else None,
+            state_customer=other if wall == "group" else None,
+            role_customer=other if wall == "role" else None,
+        )
+
+        ctx = EvaluationContext(namespace=namespace, action="read", group_id=org.id)
+        result = await evaluate_with_trail(ctx, cache=make_cache(store))
+
+        assert result.decision is False
+        assert result.effective_actions == frozenset()
+
+    @pytest.mark.parametrize("actor", ["user_id", "agent_id"])
+    async def test_a_group_member_is_answered_alone(self, actor: str) -> None:
+        customer = uuid4()
+        store, namespace, org, _state = _nested_org(customer=customer)
+        ctx = EvaluationContext(namespace=namespace, action="read", group_id=org.id, **{actor: uuid4()})
+
+        with pytest.raises(ValueError, match="group member alone"):
+            await evaluate_with_trail(ctx, cache=make_cache(store))
+
+    async def test_a_changed_parent_set_is_seen_once_the_group_key_is_dropped(self) -> None:
+        """the parent walk reads the group-keyed layer, so nesting and un-nesting invalidate one key."""
+        customer = uuid4()
+        store, namespace, org, _state = _nested_org(customer=customer)
+        cache = make_cache(store)
+        ctx = EvaluationContext(namespace=namespace, action="read", group_id=org.id)
+        assert (await evaluate_with_trail(ctx, cache=cache)).decision is True
+
+        store.memberships = [m for m in store.memberships if m.member_id != org.id]
+        cache.invalidate_membership(ActorMembershipKey(actor_kind="group", actor_id=org.id))
+
+        assert (await evaluate_with_trail(ctx, cache=cache)).decision is False

@@ -55,7 +55,8 @@ one implementation with no parallel path.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
+from dataclasses import replace
 from typing import Any, cast
 from uuid import UUID
 
@@ -72,6 +73,13 @@ from langgraph.checkpoint.base import (
     get_checkpoint_metadata,
 )
 
+from threetears.langgraph.anonymize import (
+    METADATA_CHANNEL,
+    CheckpointAnonymization,
+    UnreadableCheckpointBlob,
+    anonymize_checkpoint_value,
+    unclassified_metadata_keys,
+)
 from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import (
     AsyncQueryExecutor,
@@ -102,6 +110,12 @@ _CUSTOMER_SEPARATOR = "/"
 #: arithmetic error naming both halves, rather than as a driver error or (on a
 #: database that truncates rather than rejects) as two customers sharing a row.
 _MAX_THREAD_ID_LENGTH = 255
+
+#: rows read per page when anonymizing a thread's checkpoints or pending writes.
+_DEFAULT_ANONYMIZE_BATCH = 200
+
+#: below every ``checkpoint_writes.idx``, control channels' negative ones included.
+_MIN_WRITE_IDX = -(2**31)
 
 
 class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
@@ -1653,6 +1667,440 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "L1 cache deletes one thread at a time and cannot enumerate a customer's threads; "
                 "this customer's cached checkpoint bundles survive the purge until they are evicted.",
             )
+
+    async def aanonymize_threads(
+        self,
+        thread_ids: Iterable[str],
+        *,
+        customer: UUID | None = None,
+        batch_size: int = _DEFAULT_ANONYMIZE_BATCH,
+    ) -> CheckpointAnonymization:
+        """anonymize every stored checkpoint and pending write of the named threads, in place.
+
+        The erasure counterpart of :meth:`adelete_thread`: nothing is deleted. Every row
+        keeps its keys (thread, namespace, checkpoint and task ids), every message keeps
+        its id and content, and every blob keeps its serialization format, so the graph
+        still loads and resumes. What changes is each field
+        :func:`~threetears.langgraph.anonymize.anonymize_checkpoint_value` names as
+        identifying -- a human message's display name and the sender metadata keys --
+        which takes the platform's erasure marker.
+
+        **Thread ids, not a predicate.** The caller names the threads: an erasure knows its
+        subject's conversations from its own tables (the same mapping a re-key needs), and
+        a content predicate would have to decode every checkpoint in the table to find
+        them. Every sender in a named thread is anonymized, not only the subject: a
+        checkpoint cannot attribute an older message to a sender id (the ``metadata``
+        channel holds only the latest turn's), and matching on the display name alone
+        would miss a renamed or differently cased one -- a missed match leaks, an extra
+        one costs only a display name.
+
+        **Batching and idempotence.** Rows are read ``batch_size`` at a time in key
+        order, and only a row whose decoded value actually changes is written, so a
+        second run reads everything and writes nothing. There is no transaction over a
+        thread (the executor protocol declares none).
+
+        **Failures.** Two kinds, handled differently because rerunning cures only one:
+
+        - a blob that cannot be decoded (or whose re-encoding would change its
+          serialization type) fails the same way on every run. It is logged at ERROR
+          naming the thread, table, column and row keys, reported in the result's
+          ``unreadable``, and SKIPPED -- every other row and thread is still rewritten.
+          Failing the run on it would stop the erasure at that row forever, leaving every
+          row after it holding the person's data; reporting it leaves exactly that one
+          row for an operator, named. The erasure is complete only when ``unreadable`` is
+          empty.
+        - anything else (the executor, a cache eviction) is logged at ERROR naming the
+          thread and the stage it failed in -- and the row, for a failed write -- and
+          re-raised with that context noted on the exception. A run that fails part-way
+          this way is completed by running it again.
+
+        **Keys no rule classifies.** A turn-metadata key that
+        :func:`~threetears.langgraph.anonymize.metadata_key_classification` does not name --
+        neither the built-in sets nor a declaration made IN THIS PROCESS through
+        :func:`~threetears.langgraph.anonymize.declare_identifying_metadata_keys` or
+        :func:`~threetears.langgraph.anonymize.declare_kept_metadata_keys` -- is kept
+        (masking state the graph reloads could change what it does), but it is never passed
+        over silently: every such key is reported on the result's
+        ``unclassified_metadata_keys`` and logged at WARNING. The erasure is complete only
+        when ``unreadable`` AND ``unclassified_metadata_keys`` are both empty; a key a
+        producer added that identifies a person stays stored until it is classified and the
+        run repeated.
+
+        **Caches.** After a thread's rows are rewritten its cached bundles are evicted:
+        this pod's L1 across every namespace, and the shared L2 -- the root-namespace key
+        exactly, every namespaced key by prefix sweep when the cache can. L2 is the only
+        tier other pods share, so its eviction is what reaches them. Unlike the
+        opportunistic cache paths, a failed eviction RAISES: a cache still serving the
+        name is the failure erasure exists to prevent. Another pod's own L1 cannot be
+        reached from here (the protocol has no broadcast); no deployment wires one today.
+
+        **Concurrency.** Run it on threads that are not in a live turn. A turn in flight
+        holds the old state in memory and writes it back in its next checkpoint, and a
+        read racing the rewrite can re-warm L2 with the old bundle; a second run after the
+        turn settles repairs both.
+
+        :param thread_ids: the threads, as the caller knows them
+        :ptype thread_ids: Iterable[str]
+        :param customer: whose threads these are; required under a config-resolved
+            scope, refused when it contradicts any other scope
+        :ptype customer: UUID | None
+        :param batch_size: rows read per page
+        :ptype batch_size: int
+        :return: what was rewritten, every blob that could not be, and every metadata key
+            no rule classifies
+        :rtype: CheckpointAnonymization
+        :raises TypeError: when thread_ids is a bare string, or customer is neither None nor a UUID
+        :raises ValueError: when the customer cannot be reconciled with the scope, or when
+            ``batch_size`` is below 1
+        :raises Exception: whatever the executor or a cache eviction raises, noted with the
+            thread and stage
+        """
+        if isinstance(thread_ids, str):
+            raise TypeError(f"thread_ids must be a collection of thread ids, not the bare string {thread_ids!r}")
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be at least 1; received {batch_size}")
+        resolved = self._scope.customer_for_operation(customer, operation="aanonymize_threads")
+        threads = checkpoints = writes = 0
+        swept_all: bool | None = None if self._l2 is None else True
+        unreadable: list[UnreadableCheckpointBlob] = []
+        unclassified: set[str] = set()
+        for thread_id in thread_ids:
+            storage_thread_id = self.storage_thread_id(thread_id, customer=resolved)
+            stage = "checkpoints"
+            try:
+                thread_checkpoints = await self._anonymize_checkpoint_rows(
+                    thread_id, storage_thread_id, batch_size, unreadable, unclassified
+                )
+                stage = "writes"
+                thread_writes = await self._anonymize_write_rows(
+                    thread_id, storage_thread_id, batch_size, unreadable, unclassified
+                )
+                stage = "eviction"
+                swept = await self._evict_anonymized(thread_id, storage_thread_id, customer=resolved)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- boundary: names the thread and stage, then re-raises unchanged in type
+                log.error(
+                    "checkpoint anonymization failed; rerun it once the cause is fixed",
+                    extra={"thread_id": thread_id, "stage": stage, "error_type": type(exc).__name__},
+                )
+                exc.add_note(f"while anonymizing checkpoint thread {thread_id!r} ({stage})")
+                raise
+            checkpoints += thread_checkpoints
+            writes += thread_writes
+            if swept_all is not None:
+                swept_all = swept_all and swept
+            threads += 1
+            log.debug(
+                "checkpoint thread anonymized",
+                extra={
+                    "thread_id": thread_id,
+                    "checkpoints_rewritten": thread_checkpoints,
+                    "writes_rewritten": thread_writes,
+                },
+            )
+        if swept_all is False:
+            log.warning(
+                "L2 cache cannot sweep by prefix; namespaced bundles of anonymized threads stay cached "
+                "until rewritten or expired. Give the cache a delete_prefix (CheckpointL2PrefixCache).",
+                extra={"l2_bucket": self._l2_bucket},
+            )
+        unclassified_keys = tuple(sorted(unclassified))
+        if unclassified_keys:
+            log.warning(
+                "checkpoint anonymization kept turn-metadata keys no rule classifies; if any identifies a person "
+                "the erasure is incomplete. Classify each in the process that runs this anonymization "
+                "(threetears.langgraph declare_identifying_metadata_keys or declare_kept_metadata_keys) "
+                "and run it again.",
+                extra={"unclassified_metadata_keys": list(unclassified_keys)},
+            )
+        log.info(
+            "checkpoint threads anonymized",
+            extra={
+                "threads": threads,
+                "checkpoints_rewritten": checkpoints,
+                "writes_rewritten": writes,
+                "unreadable_blobs": len(unreadable),
+                "unclassified_metadata_keys": list(unclassified_keys),
+            },
+        )
+        return CheckpointAnonymization(
+            threads=threads,
+            checkpoints_rewritten=checkpoints,
+            writes_rewritten=writes,
+            l2_prefix_swept=swept_all,
+            unreadable=tuple(unreadable),
+            unclassified_metadata_keys=unclassified_keys,
+        )
+
+    def _rewritten_blob(
+        self,
+        type_tag: str,
+        blob: bytes,
+        unclassified: set[str],
+        *,
+        is_metadata: bool,
+    ) -> bytes | None:
+        """the anonymized re-encoding of one stored blob, or None when nothing identifying is in it.
+
+        :param type_tag: the stored serde type tag
+        :ptype type_tag: str
+        :param blob: the stored bytes
+        :ptype blob: bytes
+        :param unclassified: the run's unclassified metadata keys, added to from this blob
+        :ptype unclassified: set[str]
+        :param is_metadata: whether the blob is a write to the metadata channel, so its whole
+            value is turn metadata
+        :ptype is_metadata: bool
+        :return: the new bytes, or None when the decoded value is unchanged
+        :rtype: bytes | None
+        :raises ValueError: when the re-encoding would change the serde type
+        """
+        decoded = self.serde.loads_typed((type_tag, blob))
+        unclassified |= unclassified_metadata_keys(decoded, is_metadata=is_metadata)
+        rewritten = anonymize_checkpoint_value(decoded)
+        if rewritten is decoded:
+            return None
+        new_type, new_blob = self.serde.dumps_typed(rewritten)
+        if new_type != type_tag:
+            raise ValueError(
+                f"anonymizing a checkpoint blob would change its serde type from {type_tag!r} to "
+                f"{new_type!r}; the stored format must be preserved"
+            )
+        return new_blob
+
+    def _rewritten_or_reported(
+        self,
+        type_tag: str,
+        blob: bytes,
+        where: UnreadableCheckpointBlob,
+        unreadable: list[UnreadableCheckpointBlob],
+        unclassified: set[str],
+        *,
+        is_metadata: bool = False,
+    ) -> bytes | None:
+        """:meth:`_rewritten_blob`, with a blob the rule cannot be applied to reported instead of raised.
+
+        :param type_tag: the stored serde type tag
+        :ptype type_tag: str
+        :param blob: the stored bytes
+        :ptype blob: bytes
+        :param where: the blob's location, its ``error_type`` filled in on failure
+        :ptype where: UnreadableCheckpointBlob
+        :param unreadable: the run's report, appended to on failure
+        :ptype unreadable: list[UnreadableCheckpointBlob]
+        :param unclassified: the run's unclassified metadata keys, added to from this blob
+        :ptype unclassified: set[str]
+        :param is_metadata: whether the blob is a write to the metadata channel
+        :ptype is_metadata: bool
+        :return: the new bytes, or None when unchanged or unreadable
+        :rtype: bytes | None
+        """
+        try:
+            return self._rewritten_blob(type_tag, blob, unclassified, is_metadata=is_metadata)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a serializer raises what it raises on bytes it cannot read; every failure here is one row reported, never silent
+            reported = replace(where, error_type=type(exc).__name__)
+            unreadable.append(reported)
+            log.error(
+                "a stored checkpoint blob cannot be anonymized and is left as it is; the erasure is incomplete "
+                "for this row until it is repaired or removed",
+                extra={
+                    "thread_id": reported.thread_id,
+                    "table": reported.table,
+                    "column": reported.column,
+                    "checkpoint_ns": reported.checkpoint_ns,
+                    "checkpoint_id": reported.checkpoint_id,
+                    "task_id": reported.task_id,
+                    "idx": reported.idx,
+                    "error_type": reported.error_type,
+                },
+            )
+            return None
+
+    async def _anonymize_checkpoint_rows(
+        self,
+        thread_id: str,
+        storage_thread_id: str,
+        batch_size: int,
+        unreadable: list[UnreadableCheckpointBlob],
+        unclassified: set[str],
+    ) -> int:
+        """rewrite one thread's checkpoint rows, a page at a time.
+
+        :param thread_id: the thread as the caller named it, for the report
+        :ptype thread_id: str
+        :param storage_thread_id: the thread's stored id
+        :ptype storage_thread_id: str
+        :param batch_size: rows per page
+        :ptype batch_size: int
+        :param unreadable: the run's report of blobs the rule could not be applied to
+        :ptype unreadable: list[UnreadableCheckpointBlob]
+        :param unclassified: the run's report of metadata keys no rule classifies
+        :ptype unclassified: set[str]
+        :return: rows rewritten
+        :rtype: int
+        """
+        rewritten = 0
+        cursor: tuple[str, str] = ("", "")
+        while True:
+            rows = await self._exec.fetch(
+                "SELECT checkpoint_ns, checkpoint_id, type, checkpoint, metadata_ "
+                "FROM checkpoints WHERE thread_id = $1 "
+                "AND (checkpoint_ns > $2 OR (checkpoint_ns = $2 AND checkpoint_id > $3)) "
+                "ORDER BY checkpoint_ns, checkpoint_id LIMIT $4",
+                storage_thread_id,
+                cursor[0],
+                cursor[1],
+                batch_size,
+            )
+            for row in rows:
+                type_tag = row["type"] or "msgpack"
+                checkpoint_blob = bytes(row["checkpoint"])
+                metadata_blob = bytes(row["metadata_"]) if row["metadata_"] is not None else b""
+                where = UnreadableCheckpointBlob(
+                    thread_id=thread_id,
+                    table="checkpoints",
+                    column="checkpoint",
+                    checkpoint_ns=row["checkpoint_ns"],
+                    checkpoint_id=row["checkpoint_id"],
+                    task_id=None,
+                    idx=None,
+                    error_type="",
+                )
+                new_checkpoint = self._rewritten_or_reported(type_tag, checkpoint_blob, where, unreadable, unclassified)
+                has_metadata = bool(metadata_blob) and metadata_blob != b"\x00"
+                new_metadata = (
+                    self._rewritten_or_reported(
+                        type_tag, metadata_blob, replace(where, column="metadata_"), unreadable, unclassified
+                    )
+                    if has_metadata
+                    else None
+                )
+                if new_checkpoint is not None or new_metadata is not None:
+                    try:
+                        await self._exec.execute(
+                            "UPDATE checkpoints SET checkpoint = $1, metadata_ = $2 "
+                            "WHERE thread_id = $3 AND checkpoint_ns = $4 AND checkpoint_id = $5",
+                            new_checkpoint if new_checkpoint is not None else checkpoint_blob,
+                            new_metadata if new_metadata is not None else row["metadata_"],
+                            storage_thread_id,
+                            row["checkpoint_ns"],
+                            row["checkpoint_id"],
+                        )
+                    except (
+                        Exception
+                    ) as exc:  # prawduct:allow prawduct/broad-except -- names the row, then re-raises unchanged in type
+                        exc.add_note(f"writing checkpoint ns={row['checkpoint_ns']!r} id={row['checkpoint_id']!r}")
+                        raise
+                    rewritten += 1
+            if len(rows) < batch_size:
+                break
+            cursor = (rows[-1]["checkpoint_ns"], rows[-1]["checkpoint_id"])
+        return rewritten
+
+    async def _anonymize_write_rows(
+        self,
+        thread_id: str,
+        storage_thread_id: str,
+        batch_size: int,
+        unreadable: list[UnreadableCheckpointBlob],
+        unclassified: set[str],
+    ) -> int:
+        """rewrite one thread's pending-write rows, a page at a time.
+
+        :param thread_id: the thread as the caller named it, for the report
+        :ptype thread_id: str
+        :param storage_thread_id: the thread's stored id
+        :ptype storage_thread_id: str
+        :param batch_size: rows per page
+        :ptype batch_size: int
+        :param unreadable: the run's report of blobs the rule could not be applied to
+        :ptype unreadable: list[UnreadableCheckpointBlob]
+        :param unclassified: the run's report of metadata keys no rule classifies
+        :ptype unclassified: set[str]
+        :return: rows rewritten
+        :rtype: int
+        """
+        rewritten = 0
+        cursor: tuple[str, str, str, int] = ("", "", "", _MIN_WRITE_IDX)
+        while True:
+            rows = await self._exec.fetch(
+                "SELECT checkpoint_ns, checkpoint_id, task_id, idx, channel, type, blob "
+                "FROM checkpoint_writes WHERE thread_id = $1 "
+                "AND (checkpoint_ns > $2 OR (checkpoint_ns = $2 AND (checkpoint_id > $3 "
+                "OR (checkpoint_id = $3 AND (task_id > $4 OR (task_id = $4 AND idx > $5)))))) "
+                "ORDER BY checkpoint_ns, checkpoint_id, task_id, idx LIMIT $6",
+                storage_thread_id,
+                *cursor,
+                batch_size,
+            )
+            for row in rows:
+                where = UnreadableCheckpointBlob(
+                    thread_id=thread_id,
+                    table="checkpoint_writes",
+                    column="blob",
+                    checkpoint_ns=row["checkpoint_ns"],
+                    checkpoint_id=row["checkpoint_id"],
+                    task_id=row["task_id"],
+                    idx=row["idx"],
+                    error_type="",
+                )
+                new_blob = self._rewritten_or_reported(
+                    row["type"] or "msgpack",
+                    bytes(row["blob"]),
+                    where,
+                    unreadable,
+                    unclassified,
+                    is_metadata=row["channel"] == METADATA_CHANNEL,
+                )
+                if new_blob is not None:
+                    try:
+                        await self._exec.execute(
+                            "UPDATE checkpoint_writes SET blob = $1 WHERE thread_id = $2 AND checkpoint_ns = $3 "
+                            "AND checkpoint_id = $4 AND task_id = $5 AND idx = $6",
+                            new_blob,
+                            storage_thread_id,
+                            row["checkpoint_ns"],
+                            row["checkpoint_id"],
+                            row["task_id"],
+                            row["idx"],
+                        )
+                    except (
+                        Exception
+                    ) as exc:  # prawduct:allow prawduct/broad-except -- names the row, then re-raises unchanged in type
+                        exc.add_note(
+                            f"writing pending write ns={row['checkpoint_ns']!r} id={row['checkpoint_id']!r} "
+                            f"task={row['task_id']!r} idx={row['idx']!r}"
+                        )
+                        raise
+                    rewritten += 1
+            if len(rows) < batch_size:
+                break
+            last = rows[-1]
+            cursor = (last["checkpoint_ns"], last["checkpoint_id"], last["task_id"], last["idx"])
+        return rewritten
+
+    async def _evict_anonymized(self, thread_id: str, storage_thread_id: str, *, customer: UUID | None) -> bool:
+        """evict an anonymized thread's cached bundles, RAISING on failure.
+
+        :param thread_id: the thread as the caller knows it
+        :ptype thread_id: str
+        :param storage_thread_id: its stored id
+        :ptype storage_thread_id: str
+        :param customer: the resolved customer
+        :ptype customer: UUID | None
+        :return: whether every namespaced L2 bundle was swept (True when there is no L2)
+        :rtype: bool
+        :raises Exception: whatever a cache raises
+        """
+        swept = True
+        if self._l1 is not None:
+            await self._l1.delete(storage_thread_id)
+        if self._l2 is not None:
+            await self._l2.delete(self._l2_bucket, self.l2_key(thread_id, "", customer=customer))
+            if isinstance(self._l2, CheckpointL2PrefixCache):
+                await self._l2.delete_prefix(self._l2_bucket, f"{storage_thread_id}.")
+            else:
+                swept = False
+        return swept
 
     # ------------------------------------------------------------------
     # Sync methods -- not supported (async-only application)

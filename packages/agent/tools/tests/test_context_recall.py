@@ -28,7 +28,7 @@ from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.tools.context import ToolContextManager
 from threetears.agent.tools.context_envelope import CallContext
 
-from testing_utils import FakePool, make_context_metadata, make_nats_mock
+from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock
 
 
 @pytest.fixture()
@@ -248,3 +248,44 @@ async def test_offload_recall_round_trips_across_registries() -> None:
         shutdown()
         backend_a.reset()
         backend_b.reset()
+
+
+class TestContextRecallFromTheRegistry:
+    """the builtin as a consumer builds it: ``register_builtins``, then ``create`` with a config.
+
+    the factory passed no ``context_factory`` to ``to_langchain_tool``, so the scope built from the
+    graph config's ``call_context`` carried no manager and every recall failed "no context manager
+    in scope". a consumer supplies its manager as ``config["context_factory"]``."""
+
+    @pytest.mark.asyncio
+    async def test_a_registry_built_tool_recalls_through_the_supplied_factory(
+        self, manager: ToolContextManager
+    ) -> None:
+        from threetears.agent.tools.builtin import register_builtins
+        from threetears.agent.tools.registry import ToolRegistry
+
+        conversation, user = uuid.uuid7(), uuid.uuid7()
+        asked: list[tuple[uuid.UUID, uuid.UUID]] = []
+
+        async def _factory(conversation_id: uuid.UUID, user_id: uuid.UUID) -> ToolContextManager:
+            asked.append((conversation_id, user_id))
+            return manager
+
+        full = "nmap scan output " * 500
+        cid = await manager.save_tool_result("nmap", full)
+        reg = ToolRegistry()
+        register_builtins(reg)
+        tool = reg.create("context_recall", {"context_factory": _factory}, "recall stored content")
+
+        message = await tool.ainvoke(
+            {"type": "tool_call", "id": "call-1", "name": tool.name, "args": {"context_id": f"ctx:{cid}"}},
+            config={"configurable": {"call_context": CallContext(conversation_id=conversation, user_id=user)}},
+        )
+
+        assert message.status == "success", message.content
+        assert message.content == full
+        assert asked == [(conversation, user)]
+
+    def test_a_factory_that_is_not_callable_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="context_factory"):
+            create_context_recall_tool({"context_factory": "not a function"}, "recall")

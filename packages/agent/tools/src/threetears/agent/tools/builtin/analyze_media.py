@@ -12,8 +12,10 @@ Config keys (passed via the tool registry ``config`` dict):
                       from a media_id string (e.g. for inline image hints)
     on_analysis       async callable(media_id_str, content_type, text)
                       — optional callback after any analysis result is stored
+    markdown          bool — ask for and label results in markdown (default: True)
     response_suffix   str | None — appended to prompts sent to providers
-                      (default: "Respond using markdown formatting.")
+                      (default: the markdown ask, or plain sentences when
+                      markdown is off)
     doc_max_chars     int — max chars of extracted text sent for document QA
                       (default: 12000)
     transcript_max_chars  int — max transcript chars returned (default: 10000)
@@ -26,7 +28,6 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.protocols import (
@@ -37,19 +38,25 @@ from threetears.agent.tools.protocols import (
     TranscriptionProvider,
     VisionProvider,
 )
+from threetears.agent.tools.text_window import window_text
+from threetears.langgraph.fence import explained_fence, mint_nonce
 from threetears.observe import get_logger
 
 __all__ = [
     "AnalyzeMediaTool",
     "AnalyzerConfig",
-    "MediaAnalysisInput",
     "OnAnalysisCallback",
     "create_analyze_media_tool",
 ]
 
 _log = get_logger(__name__)
 
+#: The default ask: markdown, for a host that renders it.
 _DEFAULT_RESPONSE_SUFFIX = "Respond using markdown formatting."
+#: The ask when a host turns markdown off: the answer goes back to a model that
+#: speaks to a person, and headings and bold in what it reads come back out in
+#: what it says.
+_PLAIN_RESPONSE_SUFFIX = "Answer in plain sentences."
 _DEFAULT_DOC_MAX_CHARS = 12_000
 _DEFAULT_TRANSCRIPT_MAX_CHARS = 10_000
 
@@ -77,28 +84,6 @@ OnAnalysisCallback = Callable[[str, str, str], Awaitable[None]]
 
 def _tool_error(step: str, detail: str) -> str:
     return f"[analyze_media/{step}] Error: {detail}"
-
-
-class MediaAnalysisInput(BaseModel):
-    """structured-args schema for the analyze_media tool.
-
-    promoted to module level so the StructuredTool factory and any
-    test fixture can reference it without going through the factory.
-    """
-
-    media_ids: list[str] = Field(
-        description="List of media UUID strings to analyze",
-    )
-    question: str = Field(
-        description=("What to ask about the media, e.g. 'Describe this image' or 'What is said in this audio?'"),
-    )
-    analyzer: str = Field(
-        description=(
-            "Display name of the analysis model to use. "
-            "Use a vision model for images/documents, "
-            "or an STT model for audio/video transcription."
-        ),
-    )
 
 
 def create_analyze_media_tool(
@@ -130,7 +115,8 @@ def create_analyze_media_tool(
     - ``media_url_fn`` — ``(str) -> str | None``, builds display URL from media_id
     - ``on_analysis`` — ``async (str, str, str) -> None`` callback
       called as ``(media_id_str, content_type, text)`` after any result is stored
-    - ``response_suffix`` — appended to provider prompts (default: markdown instruction)
+    - ``markdown`` — ``bool``, markdown in the ask and the result labels (default: True)
+    - ``response_suffix`` — appended to provider prompts (default: follows ``markdown``)
     - ``doc_max_chars`` — max extracted text chars for document QA (default: 12000)
     - ``transcript_max_chars`` — max transcript chars in response (default: 10000)
 
@@ -156,7 +142,8 @@ def create_analyze_media_tool(
         user_id=config.get("user_id"),
         media_url_fn=config.get("media_url_fn"),
         on_analysis=config.get("on_analysis"),
-        response_suffix=config.get("response_suffix", _DEFAULT_RESPONSE_SUFFIX),
+        markdown=config.get("markdown", True),
+        response_suffix=config.get("response_suffix"),
         doc_max_chars=config.get("doc_max_chars", _DEFAULT_DOC_MAX_CHARS),
         transcript_max_chars=config.get(
             "transcript_max_chars",
@@ -172,7 +159,6 @@ def create_analyze_media_tool(
     return to_langchain_tool(
         tool,
         description=full_description,
-        args_schema=MediaAnalysisInput,
     )
 
 
@@ -221,7 +207,10 @@ class AnalyzeMediaTool(TearsTool):
             },
             "analyzer": {
                 "type": "string",
-                "description": "display name of analysis model to use",
+                "description": (
+                    "display name of analysis model to use. Pick one that reads images for images "
+                    "and documents, and one that transcribes for audio and video."
+                ),
             },
         },
         "required": ["media_ids", "question", "analyzer"],
@@ -234,9 +223,10 @@ class AnalyzeMediaTool(TearsTool):
         user_id: UUID | None = None,
         media_url_fn: Callable[[str], str | None] | None = None,
         on_analysis: OnAnalysisCallback | None = None,
-        response_suffix: str = _DEFAULT_RESPONSE_SUFFIX,
+        response_suffix: str | None = None,
         doc_max_chars: int = _DEFAULT_DOC_MAX_CHARS,
         transcript_max_chars: int = _DEFAULT_TRANSCRIPT_MAX_CHARS,
+        markdown: bool = True,
     ) -> None:
         """initialize analyze media tool with provider dependencies.
 
@@ -250,18 +240,24 @@ class AnalyzeMediaTool(TearsTool):
         :ptype media_url_fn: Callable[[str], str | None] | None
         :param on_analysis: optional async callback after analysis
         :ptype on_analysis: OnAnalysisCallback | None
-        :param response_suffix: suffix appended to provider prompts
-        :ptype response_suffix: str
+        :param response_suffix: suffix appended to provider prompts; ``None``
+            asks for markdown, or for plain sentences when ``markdown`` is off
+        :ptype response_suffix: str | None
         :param doc_max_chars: max chars for document QA
         :ptype doc_max_chars: int
         :param transcript_max_chars: max transcript chars returned
         :ptype transcript_max_chars: int
+        :param markdown: markdown in the ask and in the result's labels
+        :ptype markdown: bool
         """
         self._storage = storage
         self._analyzers = analyzers or {}
         self._user_id = user_id
         self._media_url_fn = media_url_fn
         self._on_analysis = on_analysis
+        self._markdown = markdown
+        if response_suffix is None:
+            response_suffix = _DEFAULT_RESPONSE_SUFFIX if markdown else _PLAIN_RESPONSE_SUFFIX
         self._response_suffix = response_suffix
         self._doc_max_chars = doc_max_chars
         self._transcript_max_chars = transcript_max_chars
@@ -432,11 +428,7 @@ class AnalyzeMediaTool(TearsTool):
         :rtype: str
         """
         if info.extraction_status == "pending":
-            return (
-                "This document is still being processed "
-                "(text extraction in progress). Please wait a moment "
-                "and try again, or respond based on what you already know."
-            )
+            return "This document is still being processed and cannot be read yet. Try again in a minute."
 
         extracted = await self._storage.get_content(mid, "extracted_text")
         if not extracted:
@@ -455,13 +447,17 @@ class AnalyzeMediaTool(TearsTool):
                 f"Analyzer '{acfg.name}' has no text QA capability.",
             )
 
-        truncated = extracted[: self._doc_max_chars]
+        # The analyser reads a window of the document, and the answer says which
+        # part it read: an analysis of the first pages, presented as an analysis
+        # of the whole document, is the failure this note exists to prevent.
+        window = window_text(extracted, max_chars=self._doc_max_chars)
         suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
+        window_note = window.note(how="this analysis covers that part of the document only")
+        # The document's words are material; a document can carry an instruction.
+        # One call reads it, so nothing is cached and the nonce is minted for it.
         doc_prompt = (
-            f"{question}\n\n"
-            f"--- DOCUMENT TEXT ---\n{truncated}"
-            f"{' [truncated]' if len(extracted) > self._doc_max_chars else ''}"
-            f"{suffix}"
+            f"{question}\n\nThe document:\n{explained_fence(window.text, nonce=mint_nonce())}"
+            f"{chr(10) + window_note if window_note else ''}{suffix}"
         )
 
         try:
@@ -500,10 +496,9 @@ class AnalyzeMediaTool(TearsTool):
 
             await self._fire_callback(mid_str, "description", result_text)
 
-        return result_text or _tool_error(
-            "document analysis",
-            "Model returned empty response.",
-        )
+        if not result_text:
+            return _tool_error("document analysis", "Model returned empty response.")
+        return f"{result_text}\n\n{window_note}" if window_note else result_text
 
     async def _handle_audio_video(
         self,
@@ -590,11 +585,17 @@ class AnalyzeMediaTool(TearsTool):
         # Fetch any existing description
         description = await self._storage.get_content(mid, "description")
 
+        spoken = window_text(transcript, max_chars=self._transcript_max_chars)
         parts = [
-            f"**Transcript** ({info.media_category}):\n{transcript[: self._transcript_max_chars]}",
+            (
+                f"**Transcript** ({info.media_category}):\n"
+                if self._markdown
+                else f"Transcript ({info.media_category}):\n"
+            )
+            + spoken.rendered(how="the whole transcript is stored with the media"),
         ]
         if description:
-            parts.append(f"\n\n**Analysis:**\n{description}")
+            parts.append(f"\n\n**Analysis:**\n{description}" if self._markdown else f"\n\nDescription:\n{description}")
 
         return "\n".join(parts)
 
@@ -769,7 +770,7 @@ class AnalyzeMediaTool(TearsTool):
         if len(media_ids) == 1 and self._media_url_fn:
             url = self._media_url_fn(media_ids[0])
             if url:
-                result = f"{result_text}\n\nTo display this image in your response, use: ![description]({url})"
+                result = f"{result_text}\n\nTo show this image in your reply, write ![description]({url})"
         return result
 
     async def execute(self, **kwargs: Any) -> ToolResult:
@@ -812,7 +813,7 @@ class AnalyzeMediaTool(TearsTool):
         :return: namespaced tool name
         :rtype: str
         """
-        return "threetears.analyze_media"
+        return "threetears.media_analyze"
 
     def mcp_version(self) -> str:
         """return tool version.

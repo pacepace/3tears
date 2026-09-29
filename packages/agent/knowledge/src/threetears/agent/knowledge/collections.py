@@ -70,7 +70,7 @@ def _scan_cache_for(collection: Any) -> Any:
     :return: the registry's scan cache, or ``None``
     :rtype: Any
     """
-    registry = getattr(collection, "_registry", None)
+    registry = collection.registry
     return None if registry is None else registry.scan_cache
 
 

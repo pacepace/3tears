@@ -1,15 +1,31 @@
-"""cross-pod coordination primitives backed by NATS JetStream KV.
+"""cross-pod coordination primitives.
+
+Two backings, chosen by what a broker restart must cost:
+
+- **NATS JetStream KV** for state whose whole life is shorter than the next restart matters --
+  leases, single-use nonces, token buckets, in-flight counters. Losing it costs a retry.
+- **L3 through a collection**, with L1 and L2 in front, for state a restart must not lose:
+  attempt counters, idempotency claims, standing revocations and single-use redemptions. Those
+  take a registry rather than a NATS client, and their tables live in
+  :mod:`threetears.core.coordination.tables`.
 
 public surface:
 
 - :class:`KVLease` — distributed mutex factory with TTL and ownership tokens
+- :class:`HeldLease` — a lease renewed in the background that reports when it is lost
 - :class:`LeaseHandle` — per-acquire handle with refresh/release/async-with
 - :class:`LeaseUnavailable` — raised by fail-fast acquire when key is held
 - :class:`LeaseTimeout` — raised when acquire deadline elapses
 - :class:`LeaseLost` — raised when ownership changes mid-operation
-- :class:`ReplayGuard` — single-use nonce guard (shared, fail-closed) for replay protection
-- :class:`RevocationGuard` — timestamped revocation entries (shared, fail-closed), for the
+- :class:`ReplayGuard` -- single-use nonce guard (shared, fail-closed) for replay protection, for
+  the seconds an artifact is acceptable; memory-backed, and a wipe fails closed
+- :class:`ReplayAnchor` / :class:`CollectionReplayAnchor` -- the durable record of when a
+  ledger first existed, which is what lets a guard tell a wipe from a first run instead of
+  paying the wipe's refusal window on both
+- :class:`RevocationGuard` -- timestamped revocation entries in L3 (fail-closed), for the
   "denylist everything that started before this moment" shape a bare presence test can't express
+- :class:`RedemptionLedger` -- a durable single-use ledger in L3 (fail-closed), for an artifact
+  whose lifetime is far longer than a nonce's: one sighting is legitimate, a second is reuse
 - :class:`WindowedCounter` — generic windowed attempt counter/rate-limiter (fail-open or
   fail-closed, caller's choice), for the "how many times in the last N seconds" shape a bare
   presence test can't express
@@ -39,13 +55,16 @@ from threetears.core.coordination.idempotency import (
     IdempotencyRecord,
 )
 from threetears.core.coordination.lease import (
+    HeldLease,
     KVLease,
     LeaseHandle,
     LeaseLost,
     LeaseTimeout,
     LeaseUnavailable,
 )
-from threetears.core.coordination.replay_guard import ReplayGuard, RevocationGuard
+from threetears.core.coordination.replay_anchor import CollectionReplayAnchor, ReplayAnchor
+from threetears.core.coordination.replay_guard import ReplayGuard
+from threetears.core.coordination.revocation import RedemptionLedger, RevocationGuard
 from threetears.core.coordination.token_bucket import (
     TokenBucket,
     TokenBucketConflict,
@@ -61,11 +80,15 @@ __all__ = [
     "IdempotencyKeyNotFound",
     "IdempotencyKeyStore",
     "IdempotencyRecord",
+    "HeldLease",
     "KVLease",
     "LeaseHandle",
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",
+    "CollectionReplayAnchor",
+    "RedemptionLedger",
+    "ReplayAnchor",
     "ReplayGuard",
     "RevocationGuard",
     "TokenBucket",

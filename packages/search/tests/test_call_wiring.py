@@ -16,7 +16,6 @@ the provider. That sequence is the D4/D8 ordering claim, stated once.
 
 from __future__ import annotations
 
-import asyncio
 from decimal import Decimal
 from typing import ClassVar
 
@@ -45,7 +44,7 @@ from threetears.search.contracts import (
 from threetears.search.adapters.searxng import SearxngAdapter
 from threetears.search.limiter import InProcessRateLimiter
 from threetears.search.testing import FakeBudgetPort, FakeRateLimiterPort, ScriptedTransport, TransportScript
-from _searxng_payloads import TWO_RESULTS_BODY
+from packages.search.tests._searxng_payloads import TWO_RESULTS_BODY
 
 _DECLARATION = ProviderCapabilities(
     provider="wiring",
@@ -160,21 +159,42 @@ class _JournallingLimiter(FakeRateLimiterPort):
         )
 
 
-class _SlowLimiter(FakeRateLimiterPort):
-    """A limiter that grants only after pacing the caller for a real interval.
+class _ManualClock:
+    """A monotonic clock the test moves by hand, so elapsed time is exact."""
+
+    def __init__(self) -> None:
+        """Start at an arbitrary non-zero instant, as a real monotonic clock does."""
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        """Read the clock.
+
+        :return: the current instant
+        :rtype: float
+        """
+        return self.now
+
+
+class _PacingLimiter(FakeRateLimiterPort):
+    """A limiter that grants only after pacing the caller for a fixed interval.
 
     The witness answers instantly, which cannot show that a pacing wait is
-    taken out of the caller's bound rather than added to it. This one sleeps
-    before granting, which is what a real limiter with room to wait does.
+    taken out of the caller's bound rather than added to it. This one spends
+    the interval before granting, which is what a real limiter with room to
+    wait does -- on the injected clock, so the wait is exact and no scheduling
+    delay can leak into what the call measures.
     """
 
-    def __init__(self, *, wait_seconds: float) -> None:
-        """Fix how long every acquisition takes.
+    def __init__(self, clock: _ManualClock, *, wait_seconds: float) -> None:
+        """Fix how long every acquisition takes, on ``clock``.
 
+        :param clock: the clock the call under test reads
+        :ptype clock: _ManualClock
         :param wait_seconds: seconds to pace before granting
         :ptype wait_seconds: float
         """
         super().__init__(RateLimitDecision(acquired=True))
+        self._clock = clock
         self._wait_seconds = wait_seconds
 
     async def acquire(
@@ -198,7 +218,7 @@ class _SlowLimiter(FakeRateLimiterPort):
         :return: a grant, after the wait
         :rtype: RateLimitDecision
         """
-        await asyncio.sleep(self._wait_seconds)
+        self._clock.now += self._wait_seconds
         return await super().acquire(
             provider_instance=provider_instance,
             egress=egress,
@@ -448,15 +468,26 @@ async def test_the_callers_bound_is_what_the_limiter_may_wait() -> None:
 
 
 async def test_a_pacing_wait_comes_out_of_the_bound_rather_than_on_top_of_it() -> None:
-    """The bound the caller stated bounds the whole call, pacing included."""
+    """The bound the caller stated bounds the whole call, pacing included.
+
+    Measured on an injected clock, so the arithmetic is exact: a 0.25s wait
+    out of a 1.0s bound leaves the provider exactly 0.75s. A real-time wait
+    could only be asserted inside a window, and a loaded loop's scheduling
+    delay lands in the measured wait and moves it out of any window narrow
+    enough to mean something.
+    """
+    clock = _ManualClock()
     provider = _WiringProvider()
-    await search(
-        SearchRequest(query="capybara"), provider=provider, limiter=_SlowLimiter(wait_seconds=0.05), timeout_seconds=1.0
+    result = await search(
+        SearchRequest(query="capybara"),
+        provider=provider,
+        limiter=_PacingLimiter(clock, wait_seconds=0.25),
+        timeout_seconds=1.0,
+        clock=clock,
     )
 
-    passed_down = provider.timeouts[0]
-    assert passed_down is not None
-    assert 0.9 < passed_down < 1.0, "the provider gets what pacing left, not the whole bound again"
+    assert provider.timeouts == [0.75], "the provider gets what pacing left, not the whole bound again"
+    assert result.spend.wall_clock_seconds == 0.25, "the call's wall-clock is the pacing it waited"
 
 
 async def test_a_denial_the_caller_will_not_wait_out_is_a_typed_rate_limit() -> None:

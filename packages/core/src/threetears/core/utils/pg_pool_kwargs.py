@@ -90,15 +90,10 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
+from threetears.core.config import DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
-
-
-#: default startup timeout in seconds for :func:`create_pool_with_startup_timeout`.
-#: mirrors :data:`threetears.nats.DEFAULT_STARTUP_TIMEOUT` so both dependencies are
-#: bounded by the same wall clock.
-DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS: float = 30.0
 
 #: platform default for asyncpg ``max_inactive_connection_lifetime``.
 #:

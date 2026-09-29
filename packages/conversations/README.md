@@ -22,8 +22,9 @@ Exports (see `src/threetears/conversations/__init__.py`):
 from threetears.conversations import Conversation, ConversationsCollection, register
 from threetears.core.data.migrations import MigrationRunner
 
-# 1. register the package's migrations on the runner
-runner = MigrationRunner(store)
+# 1. register the package's migrations on the runner; run_migrations pins one
+#    pooled connection and holds the database-wide DDL lock for the whole run
+runner = MigrationRunner()
 register(runner)
 await store.run_migrations(runner)
 

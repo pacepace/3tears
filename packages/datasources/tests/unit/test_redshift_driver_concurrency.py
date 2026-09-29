@@ -33,6 +33,25 @@ from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
+from ._helpers.driver_shims import (
+    REDSHIFT_TEST_PASSWORD,
+    REDSHIFT_TEST_PASSWORD_ENV,
+    REDSHIFT_TEST_PASSWORD_REF,
+)
+
+
+@pytest.fixture(autouse=True)
+def _redshift_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """make :data:`REDSHIFT_TEST_PASSWORD_REF` resolvable for every test in this module.
+
+    :param monkeypatch: pytest's environment patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: None
+    :rtype: None
+    """
+    monkeypatch.setenv(REDSHIFT_TEST_PASSWORD_ENV, REDSHIFT_TEST_PASSWORD)
+
+
 #: more concurrent calls than any pool below, so every bound is stressed.
 _CONCURRENT_CALLS = 12
 #: per-open / per-query holds long enough that concurrent work overlaps in
@@ -134,7 +153,7 @@ def _config(*, max_workers: int, cache_size: int) -> RedshiftConnectionConfig:
         port=5439,
         database="analytics",
         username="rs_user",
-        password_ref=None,
+        password_ref=REDSHIFT_TEST_PASSWORD_REF,
         executor_max_workers=max_workers,
         connection_cache_size=cache_size,
         query_timeout_seconds=60,

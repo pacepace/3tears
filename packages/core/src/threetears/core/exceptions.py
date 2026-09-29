@@ -8,10 +8,21 @@ __all__ = [
     "ConcurrentModificationError",
     "CorruptCacheEntry",
     "DataLayerUnavailableError",
+    "GenerationUnavailableError",
     "InvalidL2ScopeError",
+    "L2EpochRegressedError",
     "L2ScopeError",
     "L2ScopeNotConfiguredError",
 ]
+
+
+class GenerationUnavailableError(Exception):
+    """Raised when a table's write generation cannot be read or advanced.
+
+    A reader treats it as "cannot trust a cached absence": it neither serves a negative-cache
+    marker nor records one, and asks L3. A writer surfaces it, because a generation it failed to
+    advance leaves older markers valid over the write it just committed.
+    """
 
 
 class ConcurrentModificationError(Exception):
@@ -31,6 +42,34 @@ class DataLayerUnavailableError(Exception):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class L2EpochRegressedError(RuntimeError):
+    """Raised when L3 holds a row ordered after anything the current L2 bucket can write.
+
+    A compare-and-swap write is stored in L3 with the creation time of the L2 stream it won in,
+    and L3 refuses any write ordered at or before what it holds. A stream created EARLIER than an
+    order L3 already holds -- the broker's clock moved backwards across a restart -- would have
+    every write it accepts refused in L3 as superseded while the caller was told it succeeded.
+    :meth:`BaseCollection.l2_cas_mutate` raises this instead, before touching L2, so the loss is
+    loud rather than silent.
+
+    :ivar table_name: the collection's table
+    :ivar entity_id: the row whose stored order is ahead
+    :ivar stored_epoch: the epoch L3 holds
+    :ivar bucket_epoch: the current bucket's creation time
+    """
+
+    def __init__(self, table_name: str, entity_id: Any, stored_epoch: Any, bucket_epoch: Any) -> None:
+        self.table_name = table_name
+        self.entity_id = entity_id
+        self.stored_epoch = stored_epoch
+        self.bucket_epoch = bucket_epoch
+        super().__init__(
+            f"{table_name}:{entity_id} is stored in L3 under L2 epoch {stored_epoch}, later than the current "
+            f"bucket's creation time {bucket_epoch}; every write would be refused as superseded. The broker's "
+            f"clock moved backwards across a restart -- correct it, or recreate the bucket once it is ahead"
+        )
 
 
 class L2ScopeError(RuntimeError):

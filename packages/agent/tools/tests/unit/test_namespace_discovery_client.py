@@ -14,6 +14,7 @@ envelopes, error envelopes, malformed bytes, transport failures) into
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -179,6 +180,44 @@ async def test_discover_parses_summaries_from_success_envelope() -> None:
 
     assert [item.name for item in items] == ["workspace.alpha", "memory.beta"]
     assert [item.namespace_type for item in items] == ["workspace", "memory"]
+
+
+@pytest.mark.asyncio
+async def test_a_platform_row_with_no_customer_does_not_sink_the_whole_answer() -> None:
+    """a platform tool namespace has NULL ``customer_id``, and it parses beside customer rows.
+
+    built from raw wire bytes, the shape the broker actually sends, not from the model -- a model
+    that refused the NULL could not build the fixture either. before, one such row failed the
+    whole reply's validation, so the caller learned nothing about any namespace at all.
+    """
+    customer_id, agent_id = uuid4(), uuid4()
+    platform_row, workspace_row = uuid4(), uuid4()
+    wire = json.dumps(
+        {
+            "success": True,
+            "items": [
+                {
+                    "id": str(platform_row),
+                    "name": "tools.aibots.knowledge_drafts.1-0",
+                    "namespace_type": "tool",
+                    "owner_agent_id": None,
+                    "customer_id": None,
+                },
+                {
+                    "id": str(workspace_row),
+                    "name": "workspace.alpha",
+                    "namespace_type": "workspace",
+                    "owner_agent_id": str(agent_id),
+                    "customer_id": str(customer_id),
+                },
+            ],
+        }
+    ).encode("utf-8")
+    client = NamespaceDiscoveryClient(nats_client=_FakeNatsClient(reply_bytes=wire), namespace="ns")
+
+    items = await client.discover(correlation_id=uuid4(), identity_token="agent.token")
+
+    assert [(item.id, item.customer_id) for item in items] == [(platform_row, None), (workspace_row, customer_id)]
 
 
 @pytest.mark.asyncio

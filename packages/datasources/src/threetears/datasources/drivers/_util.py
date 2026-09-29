@@ -19,10 +19,12 @@ target styles:
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import Literal
 
 __all__ = [
     "PlaceholderStyle",
+    "build_relation_key_expression",
     "build_reset_statement_timeout_sql",
     "build_search_path_value",
     "build_set_local_statement_timeout_sql",
@@ -331,3 +333,32 @@ def _translate_placeholders(sql: str, target_style: PlaceholderStyle) -> str:
         else:
             out.append(_translate_non_literal_segment(segment, target_style))
     return "".join(out)
+
+
+def build_relation_key_expression(key: Sequence[str]) -> str:
+    """render the ordering key of one row as a single text value, NULLs distinguished.
+
+    The dialect-independent half of a relation fingerprint. Every admitted engine
+    spells ``CAST(... AS VARCHAR)``, ``CHR`` and ``||`` the same way, so the part
+    that differs between them is only the hash-to-number step around this.
+
+    **A NULL is not an empty string here.** Coalescing both to ``''`` would make a
+    row with a NULL key indistinguishable from one with an empty one, so a swap
+    between them would leave the fingerprint unchanged -- exactly the blindness a
+    fingerprint replaces a count to remove. ``CHR(30)``, the ASCII record
+    separator, stands in for NULL; ``CHR(31)``, the unit separator, joins the
+    columns. Neither occurs in warehouse key data in practice, and a value that
+    did contain one would still be separated from its neighbours by the other.
+
+    :param key: the ordering columns, TRUSTED identifiers
+    :ptype key: Sequence[str]
+    :return: a SQL expression producing one text value per row
+    :rtype: str
+    :raises ValueError: when ``key`` is empty, which would render a constant and
+        fingerprint every relation of the same size identically
+    """
+    columns = list(key)
+    if not columns:
+        raise ValueError("a relation fingerprint needs at least one ordering column")
+    rendered = [f"CASE WHEN {column} IS NULL THEN CHR(30) ELSE CAST({column} AS VARCHAR) END" for column in columns]
+    return " || CHR(31) || ".join(rendered)

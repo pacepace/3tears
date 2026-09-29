@@ -57,7 +57,7 @@ Everything else follows from that:
   discipline, and the pins are written so a static reader can audit them.
 - **Fail closed by default, and without a side channel.** A malformed stored hash is an
   authentication failure, not a 500. The one place a caller may choose otherwise is
-  `NatsKvAttemptLimiter`'s `fail_open`, which exists for a cheap throttle sitting in front
+  `CollectionAttemptLimiter`'s `fail_open`, which exists for a cheap throttle sitting in front
   of an authoritative check -- it defaults to closed, and a counter with nothing behind it
   must leave it that way. A rejected password never says *which*
   rule it broke when saying so would build an oracle. Errors carry structural
@@ -94,7 +94,7 @@ from threetears.iam.stores.nats_kv import state_store, ticket_store
 - **Second factors** (`.totp`, `.webauthn`) -- TOTP enrolment and verification, backup codes, and
   (extra: `webauthn`) passkey registration/assertion helpers.
 - **Anti-automation** (`.stores`, `.clientip`) -- the `AttemptLimiter` Protocol and its
-  `NatsKvAttemptLimiter` implementation over `threetears.core.coordination.WindowedCounter`,
+  `CollectionAttemptLimiter` implementation over `threetears.core.coordination.WindowedCounter`,
   plus `resolve_client_ip` for trusted-proxy-aware rate-limit keying.
 - **Auth-method descriptors** (`.connection_types`) -- `ConnectionTypeDescriptor`,
   `ConnectionFieldDescriptor`, `ConnectionFieldKind`, `ConnectionScope`: what configuring one

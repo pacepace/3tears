@@ -13,7 +13,9 @@ import os
 from threetears.observe import get_logger
 
 __all__ = [
+    "PLATFORM_DEFAULT_CALL_TIMEOUT",
     "get_call_timeout",
+    "get_definition_ttl",
     "get_heartbeat_check_interval",
     "get_heartbeat_max_misses",
     "get_heartbeat_timeout",
@@ -27,8 +29,11 @@ __all__ = [
 
 log = get_logger(__name__)
 
-# platform default for tool call timeout (seconds)
-_PLATFORM_DEFAULT_CALL_TIMEOUT = 120.0
+#: platform default for the tool call forward budget (seconds). PUBLIC because a
+#: caller's own deadline has to sit ABOVE this budget so a slow tool comes back as
+#: the registry's typed timeout rather than the caller's transport fault, and a
+#: caller that restates the number is a caller that drifts.
+PLATFORM_DEFAULT_CALL_TIMEOUT = 120.0
 # platform default for heartbeat liveness timeout (seconds)
 _PLATFORM_DEFAULT_HEARTBEAT_TIMEOUT = 45.0
 # platform default for heartbeat check sweep interval (seconds)
@@ -43,6 +48,11 @@ _PLATFORM_DEFAULT_HEARTBEAT_MAX_MISSES = 3
 _PLATFORM_DEFAULT_PROBE_TIMEOUT = 3.0
 # platform default for the Hub JWKS fetch request/reply timeout (seconds)
 _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT = 5.0
+# platform default for how long one pod's announced tool definition stays live without being
+# re-announced (seconds). three ToolServer heartbeats at the 15s default: one lost manifest does
+# not drop a copy, and a replica that stopped announcing a definition mid-rollout stops being
+# shown within a minute.
+_PLATFORM_DEFAULT_DEFINITION_TTL = 45.0
 
 
 def get_call_timeout() -> float:
@@ -61,9 +71,9 @@ def get_call_timeout() -> float:
             log.warning(
                 "invalid THREETEARS_REGISTRY_CALL_TIMEOUT=%r, using default %.1f",
                 raw,
-                _PLATFORM_DEFAULT_CALL_TIMEOUT,
+                PLATFORM_DEFAULT_CALL_TIMEOUT,
             )
-    return _PLATFORM_DEFAULT_CALL_TIMEOUT
+    return PLATFORM_DEFAULT_CALL_TIMEOUT
 
 
 def get_heartbeat_timeout() -> float:
@@ -175,9 +185,9 @@ def get_mcp_timeout() -> float:
             log.warning(
                 "invalid THREETEARS_MCP_TIMEOUT=%r, using default %.1f",
                 raw,
-                _PLATFORM_DEFAULT_CALL_TIMEOUT,
+                PLATFORM_DEFAULT_CALL_TIMEOUT,
             )
-    return _PLATFORM_DEFAULT_CALL_TIMEOUT
+    return PLATFORM_DEFAULT_CALL_TIMEOUT
 
 
 def get_nats_proxy_timeout_ms() -> int:
@@ -266,3 +276,35 @@ def get_jwks_request_timeout() -> float:
                 _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT,
             )
     return _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT
+
+
+def get_definition_ttl() -> float:
+    """read how long an announced tool definition stays live without re-announcement.
+
+    env var: THREETEARS_REGISTRY_DEFINITION_TTL
+
+    every pod re-publishes its manifest on each heartbeat, so a definition a pod still serves is
+    re-announced well inside this window. one it stopped announcing -- a replica rolled onto a new
+    version, a schema changed in place -- is no longer shown or routed to once the window passes.
+    a value that is not a positive number falls back to the default, because a zero or negative
+    window would make every definition dead the moment it was announced.
+
+    :return: definition time-to-live in seconds
+    :rtype: float
+    """
+    raw = os.environ.get("THREETEARS_REGISTRY_DEFINITION_TTL")
+    result = _PLATFORM_DEFAULT_DEFINITION_TTL
+    if raw is not None:
+        try:
+            parsed = float(raw)
+        except ValueError:
+            parsed = -1.0
+        if parsed > 0:
+            result = parsed
+        else:
+            log.warning(
+                "invalid THREETEARS_REGISTRY_DEFINITION_TTL=%r, using default %.1f",
+                raw,
+                _PLATFORM_DEFAULT_DEFINITION_TTL,
+            )
+    return result

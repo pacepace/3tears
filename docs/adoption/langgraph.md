@@ -17,6 +17,39 @@ infrastructure to get right on its own.
   the same tiering `core` uses for entities.
 - `ContextMergeMiddleware` for merging context across graph steps.
 - Offload and catalog middleware for large tool outputs, strictly opt-in.
+- `threetears.langgraph.fence` -- the fence around material in a prompt (below).
+
+## The fence around material
+
+A model reads everything in its prompt the same way, so a stored memory, a
+document or a tool's preview that says "ignore your instructions" can be
+followed. `untrusted_fence(nonce, text)` wraps material in
+`<untrusted nonce=X>` ... `</untrusted nonce=X>` and disarms any fence tag
+inside it, so planted text cannot close its own fence; the nonce therefore need
+not be secret. `untrusted_rule(nonce)` says what the fence means.
+
+- **Put the rule where the messages go to the model.** `with_fence_rules(messages)`
+  adds the rule for every fence the call carries to its system prompt;
+  `rules_missing(texts, explained=prompt)` does the same for a prompt handed over as
+  a string. A site then only fences.
+- **A block placed in a prompt someone else assembles carries its own rule:**
+  `explained_fence(text)`. Its nonce is derived from the text (`nonce_for`), so an
+  unchanged block renders byte-identical and a cached system prompt stays cached.
+
+What the platform fences itself: the memory block (`MemoryRetriever.retrieve`'s
+`RetrievalResult.context`: memories, media excerpts, chunk headlines), the memory
+ledger and tool-result previews (`ToolContextManager`), the stored memories the
+dream and extraction's resolution step read, and a document under
+`media_analyze`.
+
+What it does not:
+
+- **A tool's return** reaches the model through the consumer's tool loop, which
+  should fence it there. The platform's own agent path does not yet.
+- **Text a model wrote** -- an extracted memory, a conversation variable, a
+  summary -- is passed on as that model's words. It was written from fenced
+  material, and fencing it would tell the next model to distrust its own
+  pipeline. This is metallm's owner ruling of 2026-09-23, adopted here.
 
 ## Design philosophy
 

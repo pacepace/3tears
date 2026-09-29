@@ -180,5 +180,5 @@ async def test_tool_server_wires_injected_engagement_resolver_into_scope() -> No
         arguments={},
         context=CallContext(customer_id=_CUSTOMER, engagement_id=_ENGAGEMENT),
     )
-    scope = await server._build_call_scope(request)  # noqa: SLF001 -- wiring seam: server propagates its resolver to the per-call scope
+    scope = await server._build_call_scope(request, principal_is_tool_pod=False)  # noqa: SLF001 -- wiring seam: server propagates its resolver to the per-call scope
     assert scope.engagement_resolver is resolver

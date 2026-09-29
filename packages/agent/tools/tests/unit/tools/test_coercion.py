@@ -205,3 +205,53 @@ def test_normalize_kwargs_malformed_json_does_not_crash():
     )
     assert result["datasource_ids"] == "[broken json"
     assert result["config"] == "{also broken"
+
+
+# ---------------------------------------------------------------------------
+# the declared type is read through the shapes a pydantic schema takes
+# ---------------------------------------------------------------------------
+#
+# only a property's own ``type`` was read. pydantic writes no ``type`` on an
+# optional field (``anyOf: [X, {"type": "null"}]``) or on a nested model
+# (``{"$ref": "#/$defs/Scene"}``), so exactly the fields a tool built from a
+# pydantic model declares were never coerced: an optional list sent as
+# ``"[]"`` reached ``execute`` as the string.
+
+_SCENE = {"type": "object", "properties": {"location": {"type": "string"}}}
+
+
+def _pydantic_shaped(properties: dict) -> dict:
+    return {"type": "object", "properties": properties, "$defs": {"Scene": _SCENE}}
+
+
+def test_normalize_kwargs_coerces_an_optional_array():
+    schema = _pydantic_shaped({"ids": {"anyOf": [{"type": "array"}, {"type": "null"}], "default": None}})
+    assert normalize_kwargs({"ids": "[]"}, schema) == {"ids": []}
+    assert normalize_kwargs({"ids": '["a"]'}, schema) == {"ids": ["a"]}
+    assert normalize_kwargs({"ids": ""}, schema) == {"ids": []}
+
+
+def test_normalize_kwargs_coerces_a_nullable_type_list():
+    schema = _schema({"ids": {"type": ["array", "null"]}})
+    assert normalize_kwargs({"ids": '["a"]'}, schema) == {"ids": ["a"]}
+
+
+def test_normalize_kwargs_coerces_a_nested_model():
+    schema = _pydantic_shaped({"scene": {"$ref": "#/$defs/Scene", "description": "the scene"}})
+    assert normalize_kwargs({"scene": '{"location": "dock"}'}, schema) == {"scene": {"location": "dock"}}
+
+
+def test_normalize_kwargs_coerces_an_optional_nested_model():
+    schema = _pydantic_shaped({"scene": {"anyOf": [{"$ref": "#/$defs/Scene"}, {"type": "null"}], "default": None}})
+    assert normalize_kwargs({"scene": '{"location": "dock"}'}, schema) == {"scene": {"location": "dock"}}
+
+
+def test_normalize_kwargs_leaves_a_union_of_real_types_alone():
+    """``str | list[str]`` accepts the string as it stands; decoding it would pick a member."""
+    schema = _schema({"target": {"anyOf": [{"type": "string"}, {"type": "array"}]}})
+    assert normalize_kwargs({"target": '["a"]'}, schema) == {"target": '["a"]'}
+
+
+def test_normalize_kwargs_leaves_a_reference_it_cannot_resolve_alone():
+    schema = _schema({"scene": {"$ref": "#/$defs/Missing"}})
+    assert normalize_kwargs({"scene": '{"location": "dock"}'}, schema) == {"scene": '{"location": "dock"}'}

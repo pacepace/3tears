@@ -18,7 +18,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from _pacer_fakes import _FakeDelayPacer
+from packages.scrape.tests._pacer_fakes import _FakeDelayPacer
 from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
 
 _ROBOTS_DISALLOW = "User-agent: *\nDisallow: /private\n"
@@ -521,7 +521,7 @@ async def test_the_default_fetcher_leaves_by_the_configured_exit() -> None:
     transport = captured["transport"]
     assert transport is not None, "the robots read went out on the container's own route"
     pool = transport._pool
-    assert "9050" in str(getattr(pool, "_proxy_url", "")), "the robots read left by the wrong exit"
+    assert "9050" in str(pool._proxy_url), "the robots read left by the wrong exit"
 
 
 @pytest.mark.real_robots_fetch

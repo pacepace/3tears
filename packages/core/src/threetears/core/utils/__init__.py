@@ -1,7 +1,7 @@
 """threetears.core.utils — general-purpose helpers shared across packages.
 
-contains stdlib-only utilities that every package can rely on without
-pulling additional dependencies into core.
+helpers every package can rely on without pulling dependencies into core
+beyond the ones core already declares (asyncpg, 3tears-observe).
 """
 
 from threetears.core.utils.atomic_write import atomic_write, atomic_write_sync
@@ -15,16 +15,36 @@ from threetears.core.utils.pg_pool_kwargs import (
     log_pool_created,
     redact_dsn,
 )
+from threetears.core.utils.yugabyte_pool_recycler import (
+    DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES,
+    YUGABYTE_POOL_TRIGGERS,
+    YUGABYTE_RPC_TIMEOUT,
+    YUGABYTE_RPC_TIMEOUT_MESSAGE_PREFIX,
+    YUGABYTE_STALE_TABLE_SHAPE,
+    PoolExpiryTrigger,
+    YugabytePoolRecycler,
+    is_yugabyte_rpc_timeout,
+    is_yugabyte_stale_table_shape,
+)
 
 __all__ = [
     "DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS",
+    "DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES",
     "DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS",
     "ENV_MAX_INACTIVE_LIFETIME",
+    "YUGABYTE_POOL_TRIGGERS",
+    "YUGABYTE_RPC_TIMEOUT",
+    "YUGABYTE_RPC_TIMEOUT_MESSAGE_PREFIX",
+    "YUGABYTE_STALE_TABLE_SHAPE",
+    "PoolExpiryTrigger",
     "PoolStartupTimeoutError",
+    "YugabytePoolRecycler",
     "atomic_write",
     "atomic_write_sync",
     "create_pool_with_startup_timeout",
     "get_pg_pool_kwargs",
+    "is_yugabyte_rpc_timeout",
+    "is_yugabyte_stale_table_shape",
     "log_pool_created",
     "redact_dsn",
 ]

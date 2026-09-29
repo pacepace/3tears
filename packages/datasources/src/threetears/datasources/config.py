@@ -129,10 +129,24 @@ _VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite", "build", "publish
 #: with the file on disk still reading 14400.
 #:
 #: refusal (rather than the tolerate-and-report policy the relations wire
-#: uses) is right here because this config is read by the process that OWNS
-#: it: the driver is constructed from the same checkout that declares these
-#: fields, so there is no older reader to be tolerant for. an unrecognised
-#: key is an authoring slip, always.
+#: uses) is right here because tolerating a key it does not know would let a
+#: reader run without a setting someone chose -- the same silent revert, one
+#: release apart.
+#:
+#: an older reader does exist: a consumer that stores a config and is rolled
+#: back to an earlier release reads what the newer one wrote. so STORE ONLY
+#: THE FIELDS THAT WERE SET -- ``model_dump_json(exclude_unset=True)`` -- never
+#: the full dump, which writes every default, including fields the earlier
+#: release does not declare, and makes every row it touched unreadable after a
+#: rollback. stored that way, an earlier release refuses only a config that
+#: deliberately uses a setting it cannot honour. ``exclude_defaults`` is not a
+#: substitute: it drops an explicit choice that happens to equal today's
+#: default, so that choice moves silently when the default does -- and on a
+#: Redshift config it can change the value at once: an explicit
+#: ``connection_cache_size`` equal to its default is dropped, then re-derived
+#: from ``executor_max_workers`` on read, a different value whenever the
+#: worker count is not its own default. a value a validator derives counts as
+#: set and is stored.
 _CONNECTION_CONFIG = ConfigDict(populate_by_name=True, extra="forbid")
 
 
@@ -330,6 +344,10 @@ class RedshiftConnectionConfig(BaseModel):
         as the connection-level ceiling. per-statement overrides are
         passed to ``fetch`` / ``execute`` as ``timeout_seconds=`` and sit
         below it. trade-off: same as ``command_timeout_seconds`` above
+    :param connect_timeout_seconds: bound on each network wait during a login
+        (not a total deadline; DNS is outside it). logins with one credential
+        wait their turn, so an unbounded hung login would stall the rest;
+        lifted from the socket once the connection is open
     """
 
     model_config = _CONNECTION_CONFIG
@@ -385,6 +403,17 @@ class RedshiftConnectionConfig(BaseModel):
         "kills a query whose caller has gone away. a build datasource inverts that -- no caller "
         "waits on it and the pod does not stop an abandoned call -- so it carries a ceiling "
         "sized to the longest legitimate statement instead",
+    )
+    connect_timeout_seconds: int = Field(
+        default=30,
+        gt=0,
+        description="seconds any one network wait during a login -- the TCP connect, the TLS "
+        "handshake, each authentication exchange -- may take before the login fails. a bound on "
+        "each wait, not a total deadline, and it does not cover DNS resolution. every login with "
+        "one credential waits its turn behind the one in flight, so a login that hung with no "
+        "bound would stall every other login with that credential in the process. applied to the "
+        "login only: the driver lifts it from the socket once the connection is open, so a "
+        "statement may still run as long as query_timeout_seconds allows",
     )
     tcp_keepalive: bool = Field(
         default=True,

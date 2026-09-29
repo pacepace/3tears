@@ -10,17 +10,18 @@ import asyncio
 import os
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import TearsTool, ToolResult
 from threetears.agent.tools.call_scope import (
     ToolCallScope,
+    build_call_scope,
     enter_call_scope,
 )
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
@@ -40,16 +41,12 @@ from threetears.agent.tools.config import (
     get_ready_timeout as _get_ready_timeout,
 )
 from threetears.agent.tools.config import (
-    get_nats_user_jwt_ttl_seconds,
-)
-from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
 from threetears.agent.tools.config import (
     get_connect_retry_backoff_cap,
     get_connect_retry_budget,
 )
-from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
@@ -61,10 +58,13 @@ from threetears.core.security.identity_token import (
     IdentityKeyNotFoundError,
     IdentityTokenError,
     canonical_call_hash,
+    principal_from_claims,
     verify_identity_token,
 )
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
+    REAUTH_BUFFER_SECONDS,
+    SYNC_REPLY_BUDGET_SECONDS,
     IncomingMessage,
     NatsClient,
     Principal,
@@ -72,6 +72,7 @@ from threetears.nats import (
     Subjects,
     TokenCallback,
     inbox_prefix_for,
+    nats_user_jwt_ttl_seconds,
     result_subject_is_owned_by_pod,
     result_subject_prefix_for_pod,
     set_default_namespace,
@@ -87,14 +88,19 @@ __all__ = [
     "DiscoveryProbeResponse",
     "DiscoveryProbeResultEntry",
     "DiscoveryProbeToolEntry",
+    "FINAL_REFUSAL_CODES",
     "HeartbeatMessage",
     "ProbeAck",
+    "RefusedTool",
     "RegistrationManifest",
     "RegistrationResponse",
     "ToolCallFailure",
     "ToolManifestEntry",
+    "ToolRegistrationRefused",
     "ToolServer",
     "nats_connect",
+    "refusal_is_final",
+    "refusals_in_reply",
     "tool_namespace_id",
     "tool_namespace_name",
 ]
@@ -183,6 +189,8 @@ _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
 _UNHEALTHY_EXIT_THRESHOLD: int = 3
 
 if TYPE_CHECKING:
+    from threetears.core.coordination.replay_anchor import ReplayAnchor
+
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
     from threetears.media.contracts import ObjectStore
@@ -198,6 +206,10 @@ _IDENTITY_LEEWAY_SECONDS = 60
 # how long a proxy-assertion nonce is remembered for single-use enforcement; a TTL (not a timeout),
 # sized to the assertion's short accept window (its exp + clock skew).
 _ASSERTION_NONCE_TTL_SECONDS = 60
+# how far past the pod's clock a proxy assertion's iat and exp may fall. zero: the registry mints
+# and the pod verifies on NTP-synchronised hosts, and the assertion lives only 30s. the assertion
+# replay guard is sized for exactly this future tolerance, so the one value feeds both.
+_ASSERTION_LEEWAY_SECONDS = 0
 # how many times a durable result publish is retried before the answer is declared lost. the tool has
 # already run by then, so a transport blip must not cost the work; but the caller has a deadline, so
 # the retrying cannot be unbounded either.
@@ -205,6 +217,11 @@ _RESULT_DELIVERY_ATTEMPTS = 3
 # pace between those attempts -- long enough for a reconnect to complete, short enough to fit several
 # tries inside any caller's timeout.
 _RESULT_DELIVERY_RETRY_SECONDS = 2.0
+#: how long a credential renewal waits for the replies the pod still owes. the renewal is scheduled
+#: REAUTH_BUFFER_SECONDS before the point the reconnect must start to beat expiry, so that buffer is
+#: exactly the slack a drain may spend; the renewal loop credits the same value to the window a
+#: synchronous call has, so the wait and the safety judgement cannot disagree.
+DRAIN_BEFORE_RENEWAL_SECONDS: Final[float] = float(REAUTH_BUFFER_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +404,10 @@ class RegistrationManifest(BaseModel):
         ``None`` in open mode (no registry authenticator wired) or a static dev token.
     :ptype bootstrap_token: str | None
     :param owner_agent_id: owning-agent UUID for agent-spun pods;
-        ``None`` for platform-built-in pods
+        ``None`` for platform-built-in pods. it scopes the ``namespaces``
+        rows and is a CLAIM: it is not who serves the endpoint. that is read
+        from ``pod_id`` (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`),
+        which the registry routes on and a claim here cannot override
     :ptype owner_agent_id: UUID | None
     :param customer_id: owning-customer UUID for agent-spun pods;
         ``None`` for platform-built-in pods
@@ -401,6 +421,28 @@ class RegistrationManifest(BaseModel):
     customer_id: UUID | None = None
 
 
+class RefusedTool(BaseModel):
+    """one tool the registry refused to admit from a manifest, and why.
+
+    :param name: the tool's mcp name as the manifest offered it
+    :ptype name: str
+    :param version: the tool's version as the manifest offered it
+    :ptype version: str
+    :param code: the machine-readable refusal code a pod branches on --
+        ``OWNED_ELSEWHERE``, ``NOT_PLATFORM_SHARED``, ``UNVERIFIED_PUBLISHER``,
+        ``POD_ID_MISMATCH``, ``INVALID_TOOL_NAME`` or ``OWNERSHIP_GRAPH_UNAVAILABLE``
+        (see ``threetears.registry.ownership.RefusalCode``)
+    :ptype code: str
+    :param reason: prose for the operator reading the pod's log; never parsed
+    :ptype reason: str
+    """
+
+    name: str
+    version: str
+    code: str
+    reason: str
+
+
 class RegistrationResponse(BaseModel):
     """the registry's reply to one registration manifest.
 
@@ -411,7 +453,7 @@ class RegistrationResponse(BaseModel):
     ``threetears.registry.registration`` re-exports it, so
     ``from threetears.registry import RegistrationResponse`` is unchanged.
 
-    :param success: whether registration succeeded
+    :param success: whether registration succeeded -- at least one tool was admitted
     :ptype success: bool
     :param pod_id: identifier of pod that attempted registration
     :ptype pod_id: str
@@ -426,15 +468,125 @@ class RegistrationResponse(BaseModel):
         verified auth context, never read off the manifest, so a pod cannot claim a
         namespace it does not own. Empty when there is nothing to name.
     :ptype owned_namespaces: list[str]
+    :param refused_tools: every tool the registry refused, with its code and reason. Filled
+        whether or not the registration as a whole succeeded: a pod that registered nine tools
+        and had the tenth refused is told about the tenth
+    :ptype refused_tools: list[RefusedTool]
     :param error: error message if registration failed
     :ptype error: str | None
+    :param error_code: machine-readable code for a failed registration, ``None`` on success
+    :ptype error_code: str | None
     """
 
     success: bool
     pod_id: str
     registered_tools: list[str] = []
     owned_namespaces: list[str] = []
+    refused_tools: list[RefusedTool] = []
     error: str | None = None
+    error_code: str | None = None
+
+
+class ToolRegistrationRefused(Exception):
+    """the registry refused one or more of this pod's own tools.
+
+    Raised by :meth:`ToolServer.wait_until_ready` the moment a refusal is known, rather than
+    after its timeout, and by :meth:`ToolServer.register_tool` for the tool it just added. The
+    message names every refused tool with its code and reason; :attr:`refused` carries them typed.
+
+    :param refused: the refused tools
+    :ptype refused: tuple[RefusedTool, ...]
+    :param pod_id: the pod whose tools were refused
+    :ptype pod_id: str
+    """
+
+    def __init__(self, refused: tuple[RefusedTool, ...], *, pod_id: str) -> None:
+        """record the refusals and build a message naming each one.
+
+        :param refused: the refused tools
+        :ptype refused: tuple[RefusedTool, ...]
+        :param pod_id: the pod whose tools were refused
+        :ptype pod_id: str
+        :return: nothing
+        :rtype: None
+        """
+        self.refused = refused
+        self.pod_id = pod_id
+        named = "; ".join(f"{tool.name}@{tool.version} {tool.code}: {tool.reason}" for tool in refused)
+        super().__init__(f"the registry refused {len(refused)} tool(s) of pod {pod_id}: {named}")
+
+
+#: the registry's refusal codes that no retry changes -- the ONE place a pod decides which refusals
+#: end readiness. Every other refusal is temporary and is waited out while the heartbeat re-offers
+#: the manifest; that includes a code this pod does not know and a failed reply carrying no code
+#: at all, which is what a registry older than this pod sends while a deploy is mid-roll.
+#:
+#: Final, because the registry's answer depends only on what the pod offered and on the ownership
+#: graph an operator edits, never on timing: ``OWNED_ELSEWHERE`` and ``NOT_PLATFORM_SHARED``
+#: (ownership), ``POD_ID_MISMATCH`` (a verified publisher under a pod id not its own),
+#: ``INVALID_TOOL_NAME`` and ``INVALID_MANIFEST`` (what the pod sent), and ``NO_TOOLS_ADMITTED``
+#: (the reply-level summary of per-tool verdicts, each of which carries its own code and decides
+#: first).
+#:
+#: Temporary: ``OWNERSHIP_GRAPH_UNAVAILABLE`` -- the registry could not read its graph and says the
+#: next heartbeat retries -- and ``UNVERIFIED_PUBLISHER``. The registry's authenticator answers
+#: every verification failure with that one code (``ToolPodAuthenticator``: "any failure answers
+#: ``None``"), and some failures pass: a hub signing key rotated before the registry's key cache
+#: refreshed, a pod's rotated key read before the new one is stored, a lookup the broker could not
+#: serve during a roll. The pod mints a fresh token for every manifest, so the next heartbeat is a
+#: real retry. A pod that is genuinely unverifiable is not raised at once; its readiness wait runs
+#: out and answers ``False``, with the refusal logged at WARNING naming the code.
+#:
+#: Also temporary: ``PUBLISHER_VERIFICATION_UNAVAILABLE`` (the registry's authenticator could not
+#: read the store it verifies against, so nothing was decided) and ``CATALOG_UNAVAILABLE`` (the
+#: verdict was reached but the catalog could not record it). Both used to be a dropped reply, which
+#: this pod saw only as its own request timing out.
+FINAL_REFUSAL_CODES: Final[frozenset[str]] = frozenset(
+    {
+        "OWNED_ELSEWHERE",
+        "NOT_PLATFORM_SHARED",
+        "POD_ID_MISMATCH",
+        "INVALID_TOOL_NAME",
+        "INVALID_MANIFEST",
+        "NO_TOOLS_ADMITTED",
+    }
+)
+
+
+def refusal_is_final(code: str | None) -> bool:
+    """whether a refusal carrying ``code`` is one no retry changes.
+
+    :param code: a refusal code, or ``None`` when the registry sent none
+    :ptype code: str | None
+    :return: true only for a code in :data:`FINAL_REFUSAL_CODES`
+    :rtype: bool
+    """
+    return code is not None and code in FINAL_REFUSAL_CODES
+
+
+def refusals_in_reply(reply: RegistrationResponse, offered: Iterable[tuple[str, str]]) -> tuple[RefusedTool, ...]:
+    """every refusal a registration reply makes of the ``(name, version)`` tools in ``offered``.
+
+    The tools the reply names, and -- when the reply refused the manifest as a whole, with a code
+    and no tool named (``INVALID_MANIFEST``) -- every offered tool under that code. A failed reply
+    with no code names nothing: there is no verdict in it to act on.
+
+    :param reply: the registration reply
+    :ptype reply: RegistrationResponse
+    :param offered: the ``(name, version)`` of each tool the caller cares about
+    :ptype offered: Iterable[tuple[str, str]]
+    :return: the refusals of those tools
+    :rtype: tuple[RefusedTool, ...]
+    """
+    wanted = set(offered)
+    refused = tuple(refusal for refusal in reply.refused_tools if (refusal.name, refusal.version) in wanted)
+    if not reply.success and not reply.refused_tools and reply.error_code is not None:
+        reason = reply.error or reply.error_code
+        refused = tuple(
+            RefusedTool(name=name, version=version, code=reply.error_code, reason=reason)
+            for name, version in sorted(wanted)
+        )
+    return refused
 
 
 #: how long a pod waits for the registration reply that names what it owns.
@@ -599,6 +751,11 @@ class CallResponse(BaseModel):
     :ptype metadata: dict[str, Any] | None
     :param error: error message if execution failed
     :ptype error: str | None
+    :param error_code: machine-readable code for a refusal the pod names, read by the registry
+        straight into :attr:`threetears.registry.proxy.ProxyCallResponse.error_code`. ``None`` for
+        a success and for every failure the pod does not name -- a tool that raised, a gate that
+        reports only a reason
+    :ptype error_code: str | None
     :param context: unified identity + trace envelope echoed from the
         inbound :class:`CallRequest`; ``None`` when the inbound request
         carried no context
@@ -609,6 +766,7 @@ class CallResponse(BaseModel):
     content: str
     metadata: dict[str, Any] | None = None
     error: str | None = None
+    error_code: str | None = None
     context: CallContext | None = None
 
 
@@ -690,14 +848,35 @@ class DiscoveryProbeRequest(BaseModel):
     the pod can poll the registry without importing from the registry
     package (which would create a circular dependency).
 
+    ``pod_id`` is OMITTED from the serialized form when ``None``, so it never crosses the wire as
+    an explicit ``null``.
+
     :param agent_id: pod identifier standing in for agent_id in the wire
     :ptype agent_id: str
     :param tool_manifest: list of pinned tools to resolve
     :ptype tool_manifest: list[DiscoveryProbeToolEntry]
+    :param pod_id: the polling pod's own id, so the registry reports the state of THIS pod's copy
+        of each tool as ``requester_copy_status``
+    :ptype pod_id: str | None
     """
 
     agent_id: str
     tool_manifest: list[DiscoveryProbeToolEntry]
+    pod_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_pod_id(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """drop ``pod_id`` from the serialized form when it is ``None``.
+
+        :param handler: pydantic's default serializer
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized fields
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        if data.get("pod_id") is None:
+            data.pop("pod_id", None)
+        return data
 
 
 class DiscoveryProbeResultEntry(BaseModel):
@@ -712,11 +891,17 @@ class DiscoveryProbeResultEntry(BaseModel):
     :ptype version: str
     :param status: availability status reported by registry
     :ptype status: str
+    :param requester_copy_status: the state of the POLLING pod's own copy -- ``available``,
+        ``pending``, ``unavailable`` or ``absent`` -- or ``None`` when the request named no pod.
+        Readiness waits on this, not on ``status``: another pod's copy being available says
+        nothing about whether this pod's was admitted
+    :ptype requester_copy_status: str | None
     """
 
     name: str
     version: str
     status: str
+    requester_copy_status: str | None = None
 
 
 class DiscoveryProbeResponse(BaseModel):
@@ -831,6 +1016,7 @@ class ToolServer:
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
         jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         assertion_replay_guard: "ReplayGuard | None" = None,
+        assertion_replay_anchor: "ReplayAnchor | None" = None,
         object_store: "ObjectStore | None" = None,
         object_resolver: "ObjectResolver | None" = None,
         engagement_resolver: "EngagementScopeResolver | None" = None,
@@ -861,7 +1047,11 @@ class ToolServer:
         :ptype nats_user: str | None
         :param nats_password: NATS static password paired with ``nats_user``
         :ptype nats_password: str | None
-        :param pod_id: unique pod identifier (generated if not provided)
+        :param pod_id: unique pod identifier (generated if not provided). a single token makes
+            this a Tool Pod's server, which serves every caller; an agent's in-process server is
+            given :meth:`~threetears.nats.Subjects.agent_inprocess_pod_id`, and then serves ONLY
+            the agent that id names -- any other verified caller is refused
+            ``TOOL_CALLER_NOT_OWNER``
         :ptype pod_id: str | None
         :param heartbeat_interval: seconds between heartbeat publishes
         :ptype heartbeat_interval: float
@@ -902,15 +1092,21 @@ class ToolServer:
             ignored and the server will not disconnect the client on
             shutdown
         :ptype nats_client: NatsClient | None
-        :param agent_id: owning-agent UUID for this pod. stamped on
-            the ``owner_agent_id`` axis of every baseline ``tool.call``
-            audit envelope emitted from :meth:`handle_call`, and carried
-            on the registration manifest so the HUB-side
-            ``ToolNamespaceEmitter`` can scope the ``namespaces`` rows
-            it writes. ``None`` in platform-spun ToolServers (platform
-            built-in tool pods have no owning agent); each namespace row
-            then lands with ``owner_agent_id=NULL`` matching the
-            ``shared``-type namespace shape.
+        :param agent_id: owning-agent UUID for a pod whose ``pod_id`` cannot say
+            who owns it -- a single-token pod an agent spun. an agent's
+            in-process server does not need it: its composite ``pod_id``
+            names the owner (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`),
+            which is the one source, and a supplied ``agent_id`` that
+            disagrees raises ``ValueError``. the resolved owner is stamped on
+            the ``owner_agent_id`` axis of every baseline ``tool.call`` audit
+            envelope. the registration manifest carries ONLY what was supplied
+            here, never the pod-id's owner, because on the manifest it means
+            something else: which of the hub's ``namespaces`` rows the pod's
+            tools are written to. ``None`` there keeps an in-process server's
+            tools on the platform's one shared row per tool name (``owner_agent_id``
+            NULL, the ``shared``-type shape), which is where they live; a
+            per-agent owner would ask the hub for a second row under a tool
+            name the platform row already holds.
         :ptype agent_id: UUID | None
         :param customer_id: owning-customer UUID carried on the
             registration manifest beside ``agent_id``: agent-spun pods
@@ -969,9 +1165,25 @@ class ToolServer:
             tool that raises its OWN ``TimeoutError`` within the ceiling is
             unaffected -- that stays an ordinary tool failure. Must be > 0.
         :ptype max_call_seconds: float | None
+        :param assertion_replay_anchor: the durable first-existence record for the
+            self-provisioned assertion replay guard, so it can tell a first run from a wiped
+            bucket. ``None`` for a pod with nowhere to record one, which leaves that guard
+            refusing every assertion issued within the clock-drift allowance of its bucket's
+            creation -- five seconds after every NATS restart, reported as replay
+        :ptype assertion_replay_anchor: ReplayAnchor | None
+        :param assertion_replay_guard: the single-use guard for inbound proxy-assertion nonces, or
+            ``None`` to self-provision one in :meth:`serve` over the pod's connection. REQUIRED at
+            verify time either way: a pod with no guard refuses every call rather than skipping
+            single-use enforcement. An injected guard must be sized for this pod's assertion
+            leeway
+        :ptype assertion_replay_guard: ReplayGuard | None
         :raises ValueError: when neither ``nats_url`` nor
-            ``nats_client`` carries a usable value, or ``max_concurrent_calls`` /
-            ``max_call_seconds`` is set to a non-positive value
+            ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
+            ``max_call_seconds`` is set to a non-positive value, an injected
+            ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
+            pod's assertion leeway, ``pod_id`` is dotted -- an agent's shape -- but names no
+            agent (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`), or ``agent_id``
+            names a different agent than the one ``pod_id`` names
         """
         if not nats_url and nats_client is None:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
@@ -990,12 +1202,48 @@ class ToolServer:
         self._nats_user = nats_user
         self._nats_password = nats_password
         self._pod_id = pod_id or str(uuid7())
+        # OWNERSHIP -- whose process this is -- has one source: the pod-id, read the way the
+        # registry reads it. A dotted id names the agent whose in-process server this is (and one
+        # naming no agent raises here: no agent's grant could ever carry its probe); a single token
+        # is a Tool Pod's, whose owner, if any, only ``agent_id`` can say. Not to be confused with
+        # the SELF-IDENTITY below, which is a different question answered by the registry.
+        inprocess_owner = Subjects.agent_inprocess_owner_id(self._pod_id)
+        if inprocess_owner is not None and agent_id is not None and agent_id != inprocess_owner:
+            raise ValueError(
+                f"agent_id {agent_id} disagrees with pod_id {self._pod_id!r}, which names agent "
+                f"{inprocess_owner}; an in-process server's owner is its pod-id's, so pass no agent_id "
+                "or the same one"
+            )
+        # an agent's in-process tool answers from that agent's own state, so its server refuses
+        # every other caller even though the registry already routes by owner: a registry predating
+        # that rule, or a fault in it, must not be able to hand this agent's state to another.
+        self._serves_only_its_owner: bool = inprocess_owner is not None
+        # the agent this server belongs to, as the audit owner axis and the owner refusal record it.
+        self._owning_agent_id: UUID | None = inprocess_owner if inprocess_owner is not None else agent_id
+        # the manifest's ``owner_agent_id``: what the caller supplied and nothing derived. On the
+        # manifest it chooses which hub ``namespaces`` row the tools are written to (see the
+        # ``agent_id`` parameter), so filling it from the pod-id would move an in-process server's
+        # tools off the platform's shared rows.
+        self._manifest_owner_agent_id: UUID | None = agent_id
         # SELF-IDENTITY, learned from the registration reply and never derived locally.
         # ``None`` is "not learned yet"; an empty tuple is a real answer, because a pod
         # with no ``tool_pods`` row and no owning agent genuinely owns nothing. Collapsing
         # the two would make "never asked" indistinguishable from "asked and told nothing",
         # and only one of those is worth retrying.
         self._owned_namespaces: tuple[str, ...] | None = None
+        # the tools the registry refused on the LAST reply this server heard. replaced whole on
+        # every reply -- the latest answer is the truth, so a refusal fixed upstream stops being
+        # reported the next time the pod asks -- which is why it is an immutable tuple.
+        self._refused_tools: tuple[RefusedTool, ...] = ()
+        # the error of the last reply that refused the registration WITHOUT a code or a tool named
+        # -- an older registry's answer -- or None. a temporary state, waited out like one.
+        self._unexplained_refusal: str | None = None
+        # the causes of temporary refusals already logged in their current episode, so each is
+        # logged once however many heartbeats and polls repeat it; a cause leaves the set when a
+        # reply stops carrying it, so its next episode is logged too.
+        self._temporary_causes_logged: set[str] = set()
+        # whether this pod has logged that the registry answering its discovery is older than it.
+        self._older_registry_logged = False
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
         # per-key-identity connect credential provider (self-minted identity JWT). when set it is
@@ -1003,7 +1251,6 @@ class ToolServer:
         # manifest so the registry-layer verifier always sees a fresh JWT. None -> static fallback.
         self._auth_token = auth_token
         self._context_factory = context_factory
-        self._agent_id = agent_id
         self._customer_id = customer_id
         # defense-in-depth: the pod re-verifies the Hub identity token AND the proxy's body-bound
         # assertion on every inbound call (closes the direct-internal-subject bypass). enforce-only
@@ -1031,16 +1278,20 @@ class ToolServer:
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
-        # proactive NATS-JWT re-auth loop (only started for the self-owned-connection path in serve()):
-        # forces a reconnect a margin before the auth-callout-minted user JWT expires, so the pod never
-        # hits the terminal auth-close forever-reconnect cannot recover. an INJECTED (agent-owned)
-        # connection has its OWN re-auth loop, so the pod must not double-drive it -- left None there.
-        self._nats_reauth_task: asyncio.Task[None] | None = None
         self._running = False
         self._owned_jwks_provider: CachedHubJwksProvider | None = None
         # the proxy-assertion replay guard is REQUIRED at verify time (a guardless pod must NOT
         # silently skip single-use enforcement). serve() always provisions it over the pod's
-        # connection; callers driving handle_call without serve() (tests) inject one here.
+        # connection; callers driving handle_call without serve() (tests) inject one here. an injected
+        # guard must be sized for this pod's assertion leeway, or a replay stamped at that edge would
+        # pass its wipe check: refused at construction rather than discovered after a restart.
+        # held for the self-provisioned guard below, which is built at serve() time when the
+        # connection exists. Typed as the PROTOCOL, not as the concrete CollectionReplayAnchor:
+        # a pod supplies one over its registry, and a test supplies a double, and neither has
+        # to stand up L3 to say `this ledger existed before now`.
+        self._assertion_replay_anchor = assertion_replay_anchor
+        if assertion_replay_guard is not None:
+            assertion_replay_guard.require_covers(timedelta(seconds=_ASSERTION_LEEWAY_SECONDS))
         self._assertion_replay_guard: ReplayGuard | None = assertion_replay_guard
         # leak-safe in-flight-requests gauge bracketed around every handle_call:
         # the tool-pod bootstrap serves it on the shared HealthServer's /metrics
@@ -1113,6 +1364,50 @@ class ToolServer:
         """
         self._object_resolution_cache = cache
 
+    def attach_assertion_replay_anchor(self, anchor: "ReplayAnchor") -> None:
+        """hand the proxy-assertion guard the durable first-existence record it needs.
+
+        The third lifecycle-owner seam, and the same shape as the two above for the same
+        reason: an anchor reads through the pod's collection registry, which exists only once
+        the connection is up, while the guard below is built moments later inside
+        :meth:`serve`. ``ToolServerBootstrap`` calls this from its connected callback, which
+        runs BEFORE that construction, so the ordering is guaranteed rather than hoped for.
+
+        **Why the SDK does this instead of the pod.** Without an anchor the guard cannot tell a
+        bucket it never had from one it lost, so it applies its creation-time watermark to both
+        -- and ``proxy_assertion_nonces`` is memory-backed, so it dies with the broker. Every
+        cold start therefore refused its first proxied call, naming ``proxy assertion nonce
+        replay``, which is the one thing that had not happened. A pod could pass its own anchor,
+        but it cannot build one at construction time: the registry needs a connected NATS
+        client, and the thing that connects is this server. So every pod that tried would have
+        to defer the lookup by hand, and a pod that did not try got a silent five-second
+        refusal window after every restart. An anchor a host had to remember to build is one a
+        host will forget to build.
+
+        A pod that supplied its own ``assertion_replay_anchor`` keeps it: that is a decision
+        made elsewhere, and this is a default, not an override.
+
+        :param anchor: the durable record of when this pod's nonce buckets first existed
+        :ptype anchor: ReplayAnchor
+        :return: nothing
+        :rtype: None
+        """
+        if self._assertion_replay_anchor is None:
+            self._assertion_replay_anchor = anchor
+
+    @property
+    def object_resolver(self) -> ObjectResolver | None:
+        """the object-id resolver this pod installs on every per-call scope, or ``None``.
+
+        the injected resolver when one was passed at construction, else the one :meth:`serve`
+        provisions from the NATS client -- ``None`` until then. read-only: the pod owns the one
+        instance, and a caller that wants a different one injects it at construction.
+
+        :return: the pod's object resolver, or ``None`` before it is provisioned
+        :rtype: ObjectResolver | None
+        """
+        return self._object_resolver
+
     @property
     def owned_namespaces(self) -> tuple[str, ...] | None:
         """the namespaces this pod OWNS, as its registration reply named them.
@@ -1123,13 +1418,25 @@ class ToolServer:
         CONNECT from that same row, and the tool names it holds locally are LEAVES, which
         no rule can reduce back to their node.
 
-        ``None`` until a registration has been published with ``learn_identity=True`` AND
+        ``None`` until a registration has been published with ``await_reply=True`` AND
         answered. An empty tuple is a different thing: an answer that named nothing.
 
         :return: the owned namespace names, or ``None`` when not learned yet
         :rtype: tuple[str, ...] | None
         """
         return self._owned_namespaces
+
+    @property
+    def refused_tools(self) -> tuple[RefusedTool, ...]:
+        """the tools the registry refused on the last registration reply this server heard.
+
+        Empty until a reply names a refusal, and cleared by a later reply that names none. A
+        plain publish (the heartbeat's) hears no reply and changes nothing here.
+
+        :return: the refusals, in reply order
+        :rtype: tuple[RefusedTool, ...]
+        """
+        return self._refused_tools
 
     @property
     def pod_id(self) -> str:
@@ -1300,6 +1607,21 @@ class ToolServer:
         :rtype: bool
         """
         return self._owns_nats_connection
+
+    @property
+    def is_ready(self) -> bool:
+        """return whether serve() has bound its call and probe subjects and published once.
+
+        the non-blocking twin of :meth:`wait_ready`. a caller that publishes the manifest
+        itself must not do so before this is true: the registry probes a newly named
+        endpoint the moment the manifest arrives, a probe to a subject nothing has bound
+        yet fails, and a later publish does not probe an endpoint the registry already
+        holds -- so the endpoint stays pending until the pod's next heartbeat.
+
+        :return: true once serve() has subscribed and published its first registration
+        :rtype: bool
+        """
+        return self._ready_event.is_set()
 
     async def wait_ready(self, timeout: float | None = None) -> None:
         """block until serve() has subscribed to NATS and published registration.
@@ -1538,46 +1860,98 @@ class ToolServer:
                 request_timeout_seconds=get_engagement_scope_request_timeout(),
             )
         if self._assertion_replay_guard is None:
+            # ANCHORED WHERE THE POD HAS SOMEWHERE TO ANCHOR. Without one the guard cannot tell
+            # a bucket it never had from one it lost, so it applies its creation-time watermark
+            # to both -- and `proxy_assertion_nonces` is memory-backed, so it dies with the
+            # broker. On a first run nothing was ever recorded and no replay is possible, yet
+            # every assertion issued before the bucket existed is refused as `pop nonce replay`.
+            #
+            # The window here is narrow -- `_ASSERTION_LEEWAY_SECONDS` is 0, so the reach is the
+            # 5s clock-drift allowance alone -- but it is not nothing: for five seconds after any
+            # NATS restart this pod refuses every proxied call, and the refusal names replay,
+            # which is the one thing that did not happen. The registry's own guard had the same
+            # defect with a 65s reach; both are the twin of the bug the hub's DPoP guard was
+            # given an anchor to fix.
+            #
+            # `anchor` stays None for a pod that supplied no registry, because such a pod has
+            # nowhere to record first-existence. That is a real remaining window, recorded
+            # rather than hidden: the fix for it is giving the pod a registry, not weakening the
+            # guard, and a guard that guessed permissively would be the wrong answer here.
+            #
+            # INJECTED, and typed as the Protocol. The registry an anchor reads through belongs
+            # to the pod's bootstrap, which builds it only once NATS is up and never for an
+            # in-process pod riding its agent's connection -- so this server takes the ANCHOR
+            # rather than the registry, and a caller with no L3 can still supply one.
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
                 bucket_name="proxy_assertion_nonces",
                 ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
+                verifier_future_tolerance=timedelta(seconds=_ASSERTION_LEEWAY_SECONDS),
+                anchor=self._assertion_replay_anchor,
             )
+        # BOUND HERE, before the call subject is subscribed, whether this server built the guard
+        # or was handed one. After a broker restart the guard refuses every assertion issued
+        # before its bucket's creation time plus its reach, and the bucket is created by whoever
+        # opens it first. Left to the first call, that call creates it and is refused as a replay
+        # it is not. Binding now puts the creation time before anything this pod can answer. The
+        # hub builds its tool pods without injecting a guard, so no owner can do this for them.
+        await self._assertion_replay_guard.bind()
 
-        # DQ-B7 queue-group sweep: call_subject and probe_subject are
-        # pod-specific (``{ns}.tools.internal.{pod_id}`` /
-        # ``{ns}.tools.probe.{pod_id}``); only this pod's connection
-        # binds them, so a queue group would be redundant. heartbeat
-        # publishes are write-only and need no queue group.
+        # QUEUE-GROUPED, because a pod identity is not a process. The DQ-B7 sweep
+        # left these ungrouped on the premise that "only this pod's connection
+        # binds them" -- true of one process per pod id, and FALSE of every
+        # Kubernetes Deployment with replicas > 1, where N processes share one
+        # registered identity and all N bind the same pod-scoped subject.
+        #
+        # Without a group NATS broadcasts, so each call is delivered to every
+        # replica. They all handle it, and the first to reach the shared
+        # proxy-assertion ReplayGuard consumes the assertion's nonce -- so every
+        # other replica rejects the SAME call as `proxy assertion nonce replay`.
+        # The hub turns that into a 502. Observed on cobalt-prod 2026-09-20 with
+        # two replicas: one correlation id, both pods, one rejection.
+        #
+        # THE QUEUE NAME IS THE SUBJECT PATH, matching `nats/forward.py`. It has
+        # to be stable across restarts and distinct per pod identity, and the
+        # subject already is both -- it carries the pod id, so two DIFFERENT tool
+        # pods never share a group and a restarted replica rejoins its own.
+        #
+        # Heartbeat publishes are write-only and still need no queue group.
         call_subject = Subjects.tools_internal(self._pod_id)
-        await self._nc.subscribe(subject=call_subject, cb=self.handle_call)
+        await self._nc.subscribe(subject=call_subject, queue=call_subject.path, cb=self.handle_call)
         log.info(
             "subscribed to call subject",
-            extra={"extra_data": {"subject": call_subject.path}},
+            extra={"extra_data": {"subject": call_subject.path, "queue": call_subject.path}},
         )
 
         probe_subject = Subjects.tools_probe(self._pod_id)
-        await self._nc.subscribe(subject=probe_subject, cb=self.handle_probe)
+        await self._nc.subscribe(subject=probe_subject, queue=probe_subject.path, cb=self.handle_probe)
         log.info(
             "subscribed to probe subject",
             extra={"extra_data": {"subject": probe_subject.path}},
         )
 
-        # the ONE place the pod asks who it is. a re-publish does not need to re-ask, so the
-        # round trip is paid once rather than on every heartbeat.
-        await self.publish_registration(learn_identity=True)
+        # the ONE place the pod asks who it is and which of its tools were refused. a re-publish
+        # does not need to re-ask, so the round trip is paid once rather than on every heartbeat.
+        await self.publish_registration(await_reply=True)
 
         self._ready_event.set()
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        # proactive NATS-JWT re-auth: ONLY on the self-owned-connection path. an injected
-        # (agent-owned) connection carries its own re-auth loop on the agent runtime, so the pod must
-        # not race a second reconnect against it. a standalone pod (opened its own connection above)
-        # owns the reconnect and must re-auth before its user JWT expires.
-        if self._owns_nats_connection:
-            self._warn_if_tool_timeout_exceeds_jwt_ttl()
-            self._nats_reauth_task = asyncio.create_task(self._nats_reauth_loop())
+        # credential renewal: ONLY on the self-owned connection the auth-callout minted a user JWT
+        # for. an injected (agent-owned) connection is renewed by its owner, so the pod must not
+        # race a second reconnect against it. a static user/password or anonymous connection holds
+        # a credential that never expires, so renewing it would drop its requests in flight and
+        # re-register the manifest every cycle for nothing. the client runs the loop, and stops it
+        # when this pod shuts the client down; it also judges whether the cadence can carry a
+        # synchronous call, crediting the drain the pod holds the connection open for.
+        if self._owns_nats_connection and self._auth_token is not None and self._nc is not None:
+            self._nc.renew_credential(
+                ttl_seconds=self._current_nats_jwt_ttl_seconds,
+                before_renewal=self.drain_before_reauth,
+                longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS,
+                drain_grace_seconds=DRAIN_BEFORE_RENEWAL_SECONDS,
+            )
 
         await self._shutdown_event.wait()
 
@@ -1606,18 +1980,65 @@ class ToolServer:
         ack = ProbeAck(pod_id=self._pod_id, ready=True)
         await self._nc.publish_reply(reply_subject=msg.reply_subject, message=ack)
 
-    async def wait_until_ready(self, timeout: float | None = None) -> bool:
-        """block until registry catalog reports every tool as available.
+    def _own_refusals(self) -> tuple[RefusedTool, ...]:
+        """the refusals that name a tool this server currently holds.
 
-        polls the registry's discovery subject with this pod's tool
-        manifest until the catalog reports every entry as 'available',
-        then returns True. unlike an event-driven probe-arrival signal,
-        this waits for the full probe -> mark_ready -> discovery round-
-        trip so routable state is guaranteed when the function returns
-        (no residual race where ``TOOL_NOT_READY`` could still fire for
-        a fresh caller). returns False on timeout. intended as the
-        developer-friendly substitute for ``asyncio.sleep(1.0)`` after
-        ``serve``.
+        :return: those refusals
+        :rtype: tuple[RefusedTool, ...]
+        """
+        return tuple(refusal for refusal in self._refused_tools if f"{refusal.name}@{refusal.version}" in self._tools)
+
+    def _own_copy_status(self, result: DiscoveryProbeResultEntry) -> str:
+        """the state of this pod's own copy, as one discovery result reports it.
+
+        A registry that knows copies reports ``requester_copy_status`` on every result whenever the
+        request names a pod, which this pod's always does. A result with none comes from a registry
+        older than this pod, which holds one copy per tool and reports only ``status`` -- whether
+        any copy is available. That is the readiness rule such a registry was deployed with, so
+        it is the one read while it answers, and the pod says once that it is reading it: failing
+        or stalling a boot for a field the registry cannot send would break every pod that meets
+        an older registry mid-roll.
+
+        :param result: one discovery result
+        :ptype result: DiscoveryProbeResultEntry
+        :return: ``available``, or another state
+        :rtype: str
+        """
+        status = result.requester_copy_status
+        if status is None:
+            status = result.status
+            if not self._older_registry_logged:
+                self._older_registry_logged = True
+                log.warning(
+                    "the registry answering discovery is older than this pod and does not report this "
+                    "pod's own copy; readiness reads whether any copy is available until it is upgraded",
+                    extra={"extra_data": {"pod_id": self._pod_id}},
+                )
+        return status
+
+    async def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """block until the registry reports THIS pod's own copy of every tool available.
+
+        polls the registry's discovery subject with this pod's tool manifest AND its pod id, and
+        waits for each result's ``requester_copy_status`` -- the state of this pod's own copy --
+        to read ``available``. another pod's copy of the same name being available does not
+        count: a pod whose own copy was refused would otherwise come up "ready" serving nothing.
+
+        this waits for the full probe -> mark_ready -> discovery round-trip, so routable state is
+        guaranteed when the function returns (no residual race where ``TOOL_NOT_READY`` could
+        still fire for a fresh caller). returns False on timeout. intended as the
+        developer-friendly substitute for ``asyncio.sleep(1.0)`` after ``serve``.
+
+        a FINAL refusal is not waited out: when the last registration reply refused any of this
+        pod's own tools with a code in :data:`FINAL_REFUSAL_CODES`, :class:`ToolRegistrationRefused`
+        is raised at once, naming each. every other refusal -- the registry could not read its
+        ownership graph, a publisher it could not verify yet, an older registry's failed reply with
+        no code -- is waited out: it was logged at WARNING once, the heartbeat re-offers the manifest
+        and re-reads the verdict, and the pod is ready the poll after the registry admits it. a
+        refusal that never clears runs the wait out, and ``False`` is the answer.
+
+        a registry older than this pod reports no ``requester_copy_status``; readiness then reads
+        ``status`` (see :meth:`_own_copy_status`).
 
         :param timeout: seconds to wait before giving up. sourced
             from THREETEARS_TOOLSERVER_READY_TIMEOUT env var if not
@@ -1626,19 +2047,14 @@ class ToolServer:
         :return: True if ready within timeout, False on timeout
         :rtype: bool
         :raises RuntimeError: if called before ``serve`` connects NATS
+        :raises ToolRegistrationRefused: when the registry refused any of this pod's own tools finally
         """
         if self._nc is None:
             raise RuntimeError("wait_until_ready called before serve() connected NATS")
         effective_timeout = timeout if timeout is not None else _get_ready_timeout()
         deadline = asyncio.get_event_loop().time() + effective_timeout
         manifest_names = [
-            ToolManifestEntry(
-                name=t.mcp_schema().name,
-                version=t.mcp_schema().version,
-                description=t.mcp_schema().description,
-                input_schema=t.mcp_schema().input_schema,
-                timeout_seconds=t.mcp_schema().timeout_seconds,
-            )
+            DiscoveryProbeToolEntry(name=t.mcp_schema().name, version=t.mcp_schema().version)
             for t in self._tools.values()
         ]
         # a tool-less server has nothing to become ready for -- return True
@@ -1650,10 +2066,14 @@ class ToolServer:
         poll_interval = _get_ready_poll_interval()
         expected_count = len(manifest_names)
         while asyncio.get_event_loop().time() < deadline:
+            final = tuple(refusal for refusal in self._own_refusals() if refusal_is_final(refusal.code))
+            if final:
+                raise ToolRegistrationRefused(final, pod_id=self._pod_id)
             try:
                 request = DiscoveryProbeRequest(
                     agent_id=self._pod_id,
-                    tool_manifest=[DiscoveryProbeToolEntry(name=m.name, version=m.version) for m in manifest_names],
+                    pod_id=self._pod_id,
+                    tool_manifest=manifest_names,
                 )
                 request_timeout = timedelta(
                     seconds=min(
@@ -1667,8 +2087,8 @@ class ToolServer:
                     response_type=DiscoveryProbeResponse,
                     timeout=request_timeout,
                 )
-                available_count = sum(1 for tool in response.tools if tool.status == "available")
-                if available_count == expected_count:
+                own_available = sum(1 for tool in response.tools if self._own_copy_status(tool) == "available")
+                if own_available == expected_count:
                     ready = True
                     break
             except Exception as exc:
@@ -1717,12 +2137,37 @@ class ToolServer:
         The agent now performs no direct namespace write; the manifest
         publish is the only path.
 
+        **On a serving pod the reply is awaited**, and a FINAL refusal of the tool
+        just added (:func:`refusal_is_final`) raises :class:`ToolRegistrationRefused`;
+        a temporary one is logged and waited out on the heartbeat. the tool stays
+        registered locally and is re-offered on every heartbeat, so a refusal
+        whose cause is fixed upstream (an ownership edge added) heals without
+        the caller. Before :meth:`serve` has bound the pod's probe subject the
+        manifest is published without waiting: the registry answers only after
+        probing the pod, and a probe nobody can answer yet would only be waited
+        out. A reply that never arrives is a warning, as it is for
+        :meth:`serve`; the manifest was published either way.
+
         :param tool: TearsTool instance to register
         :ptype tool: TearsTool
+        :raises ToolRegistrationRefused: when the registry refused this tool finally
         """
         self.register(tool)
         if self._nc is not None:
-            await self.publish_registration()
+            reply = await self.publish_registration(await_reply=self._ready_event.is_set())
+            refused = (
+                tuple(
+                    refusal
+                    for refusal in self._refused_tools
+                    if refusal.name == tool.mcp_name()
+                    and refusal.version == tool.mcp_version()
+                    and refusal_is_final(refusal.code)
+                )
+                if reply is not None
+                else ()
+            )
+            if refused:
+                raise ToolRegistrationRefused(refused, pod_id=self._pod_id)
 
     @traced()
     async def deregister_tool(self, tool_name: str) -> bool:
@@ -1764,8 +2209,8 @@ class ToolServer:
         return removed
 
     @traced()
-    async def publish_registration(self, *, learn_identity: bool = False) -> None:
-        """publish registration manifest to NATS, optionally reading the reply.
+    async def publish_registration(self, *, await_reply: bool = False) -> RegistrationResponse | None:
+        """publish registration manifest to NATS, optionally awaiting and reading the reply.
 
         sends manifest containing all registered tool definitions
         to registration subject for discovery by registry. requires
@@ -1775,27 +2220,27 @@ class ToolServer:
         when you need to re-publish the current manifest without
         changing it (e.g. on registry recovery).
 
-        **``learn_identity`` asks the registry which namespace this pod OWNS**, and stores
-        the answer on :attr:`owned_namespaces`. The pod cannot work that out for itself:
-        its subject grants are minted at CONNECT from the tool-name NODES on its
-        ``tool_pods`` row, which it never sees, and the tool names it holds locally are
-        LEAVES that no rule reduces back to their node. The registry has just read that
-        row, so the reply is the one place the answer can come from.
+        **``await_reply`` sends the manifest as a request and reads the answer.** The reply names
+        which namespace this pod OWNS, stored on :attr:`owned_namespaces` -- the pod cannot work
+        that out for itself: its subject grants are minted at CONNECT from the tool-name NODES on
+        its ``tool_pods`` row, which it never sees -- and every tool the registry REFUSED, stored
+        on :attr:`refused_tools` and logged -- a final refusal at ERROR, one line per tool naming
+        its code and reason; a temporary one at WARNING, once per cause.
 
-        **It is OFF by default, and that is the whole reason it is a parameter.** This
-        method is called on every heartbeat and on every dynamic register/deregister; a
-        round trip on each would turn a slow registry into a stalled pod. The identity is
-        learned once, at :meth:`serve`, and re-asked by the heartbeat only while it is
-        still unknown.
+        **It is OFF by default, and that is the whole reason it is a parameter.** This method is
+        called on every heartbeat and on every dynamic register/deregister; a round trip on each
+        would turn a slow registry into a stalled pod. The reply is read at :meth:`serve`, on a
+        serving pod's :meth:`register_tool`, and by the heartbeat only while the identity is still
+        unknown or a refusal still stands.
 
-        **Every failure of the ask degrades to a warning**, because a NATS request IS a
-        publish: the manifest has left this process before the reply is awaited, so a pod
-        that cannot hear the answer is in exactly the state it was in before this existed.
+        **Every failure of the ask degrades to a warning**, because a NATS request IS a publish:
+        the manifest has left this process before the reply is awaited, so a pod that cannot hear
+        the answer is in exactly the state it was in before this existed.
 
-        :param learn_identity: whether to await the reply and keep the namespaces it names
-        :ptype learn_identity: bool
-        :return: nothing
-        :rtype: None
+        :param await_reply: whether to await the registry's reply and keep what it names
+        :ptype await_reply: bool
+        :return: the reply, or ``None`` when none was awaited or none arrived
+        :rtype: RegistrationResponse | None
         :raises RuntimeError: if called before ``serve`` connects NATS
         """
         nc = self._nc
@@ -1863,13 +2308,14 @@ class ToolServer:
             pod_id=self._pod_id,
             tools=tools_list,
             bootstrap_token=manifest_token,
-            owner_agent_id=self._agent_id,
+            owner_agent_id=self._manifest_owner_agent_id,
             customer_id=self._customer_id,
         )
 
         subject = Subjects.tools_register()
-        if learn_identity:
-            await self._register_and_learn_identity(nc, subject, manifest)
+        reply: RegistrationResponse | None = None
+        if await_reply:
+            reply = await self._register_and_read_reply(nc, subject, manifest)
         else:
             await nc.publish(subject=subject, message=manifest)
         log.debug(
@@ -1882,25 +2328,29 @@ class ToolServer:
                 }
             },
         )
+        return reply
 
-    async def _register_and_learn_identity(
+    async def _register_and_read_reply(
         self,
         nc: NatsClient,
         subject: Subject,
         manifest: RegistrationManifest,
-    ) -> None:
-        """publish the manifest as a REQUEST and keep the self-identity its reply names.
+    ) -> RegistrationResponse | None:
+        """publish the manifest as a REQUEST and keep what its reply names.
 
         The manifest is identical either way -- a request is a publish that also carries a
         reply subject -- so the registration itself is unaffected by anything that happens
         to the answer.
 
-        Failures are swallowed to a WARNING rather than raised, and the reason is which
-        failure this is: the registration SUCCEEDED (the manifest was published), and only
-        the identity is missing. Raising here would turn a working registration into a
-        failed startup over a value the pod ran without until now. A refused registration
-        is not treated as an identity either: its reply names nothing, and keeping the
-        previous answer over a refusal would report ownership the registry just denied.
+        A transport failure is swallowed to a WARNING rather than raised, and the reason is
+        which failure this is: the manifest was published, and only the answer is missing.
+        Raising here would turn a working registration into a failed startup over a value the
+        pod ran without until now.
+
+        Every reply that does arrive replaces :attr:`refused_tools` and logs its refusals (see
+        :meth:`_record_refusals`). A refused REGISTRATION is not treated as an identity: its reply names no
+        namespace, and keeping the previous answer over a refusal would report ownership the
+        registry just denied.
 
         :param nc: the connected client
         :ptype nc: NatsClient
@@ -1908,21 +2358,21 @@ class ToolServer:
         :ptype subject: Subject
         :param manifest: the manifest to send
         :ptype manifest: RegistrationManifest
-        :return: nothing
-        :rtype: None
+        :return: the reply, or ``None`` when none arrived
+        :rtype: RegistrationResponse | None
         """
         try:
-            reply = await nc.request(
+            reply: RegistrationResponse = await nc.request(
                 subject=subject,
                 message=manifest,
                 response_type=RegistrationResponse,
                 timeout=_IDENTITY_REPLY_TIMEOUT,
             )
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the identity and never the registration. Logged with its type and message
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the answer and never the registration. Logged with its type and message
             log.warning(
-                "could not learn this pod's owned namespaces from the registration reply; "
-                "its human-in-the-loop family cannot be keyed on a node it was never told, so "
-                "any owner-routed session will subscribe successfully and receive nothing",
+                "could not read the registration reply; this pod does not know which namespaces it "
+                "owns or whether any of its tools were refused, and any owner-routed human-in-the-loop "
+                "session will subscribe successfully and receive nothing",
                 extra={
                     "extra_data": {
                         "pod_id": self._pod_id,
@@ -1931,18 +2381,118 @@ class ToolServer:
                     }
                 },
             )
-            return
+            return None
+        self._record_refusals(reply)
         if not reply.success:
-            log.warning(
+            # the refusal itself is logged by _record_refusals -- a final one at ERROR on every
+            # reply, a temporary one at WARNING once per cause -- so this line, repeated on every
+            # heartbeat that re-asks, stays below WARNING.
+            log.info(
                 "the registry refused this pod's registration, so it names no owned namespace",
-                extra={"extra_data": {"pod_id": self._pod_id, "error": reply.error}},
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                        "error": reply.error,
+                        "error_code": reply.error_code,
+                    }
+                },
             )
-            return
+            return reply
         self._owned_namespaces = tuple(reply.owned_namespaces)
         log.info(
             "learned the namespaces this pod owns",
             extra={"extra_data": {"pod_id": self._pod_id, "owned_namespaces": list(reply.owned_namespaces)}},
         )
+        return reply
+
+    def _record_refusals(self, reply: RegistrationResponse) -> None:
+        """replace :attr:`refused_tools` with what ``reply`` refuses, and log it.
+
+        A reply that refused the manifest as a whole, with a code and no tool named, refuses every
+        tool this pod holds under that code (see :func:`refusals_in_reply`). A failed reply with no
+        code and no tool named -- an older registry's answer -- refuses nothing this pod can act on
+        and is kept as :attr:`_unexplained_refusal`, a temporary state.
+
+        A final refusal (:func:`refusal_is_final`) is logged at ERROR, one line per tool, on every
+        reply. A temporary one is logged at WARNING once per EPISODE of its cause, however many
+        heartbeats repeat it: it is waited out, and a line every heartbeat would bury the one that
+        matters. An episode ends on the first reply that no longer carries the cause, so the same
+        cause coming back -- the next signing-key rotation, the next hub read failure -- warns again,
+        and the reply that clears the last temporary cause logs one INFO line saying so.
+
+        :param reply: the registration reply
+        :ptype reply: RegistrationResponse
+        :return: nothing
+        :rtype: None
+        """
+        held = [(tool.mcp_name(), tool.mcp_version()) for tool in self._tools.values()]
+        refused = tuple(reply.refused_tools) or refusals_in_reply(reply, held)
+        self._refused_tools = refused
+        self._unexplained_refusal = (reply.error or "no reason given") if not reply.success and not refused else None
+        temporary: dict[str, list[RefusedTool]] = {}
+        for refusal in refused:
+            if not refusal_is_final(refusal.code):
+                temporary.setdefault(refusal.code, []).append(refusal)
+        unexplained_cause = (
+            f"unexplained: {self._unexplained_refusal}" if self._unexplained_refusal is not None else None
+        )
+        current_causes = set(temporary) | ({unexplained_cause} if unexplained_cause is not None else set())
+        # an episode ends when a reply stops carrying its cause: forget it, so its return warns again
+        cleared = self._temporary_causes_logged - current_causes
+        self._temporary_causes_logged &= current_causes
+        if cleared and not current_causes:
+            log.info(
+                "the registry admitted this pod's tools after a temporary refusal",
+                extra={"extra_data": {"pod_id": self._pod_id, "cleared_causes": sorted(cleared)}},
+            )
+        for refusal in refused:
+            if not refusal_is_final(refusal.code):
+                continue
+            log.error(
+                "the registry refused this pod's tool %s@%s (%s): %s",
+                refusal.name,
+                refusal.version,
+                refusal.code,
+                refusal.reason,
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                        "tool_name": refusal.name,
+                        "tool_version": refusal.version,
+                        "refusal_code": refusal.code,
+                        "reason": refusal.reason,
+                    }
+                },
+            )
+        for code, refusals in temporary.items():
+            self._log_temporary_refusal_once(
+                code,
+                f"the registry refused {len(refusals)} of this pod's tool(s) for now ({code}: "
+                f"{refusals[0].reason}); waiting -- the heartbeat re-offers the manifest until the "
+                f"registry admits them: {', '.join(f'{r.name}@{r.version}' for r in refusals)}",
+            )
+        if unexplained_cause is not None:
+            self._log_temporary_refusal_once(
+                unexplained_cause,
+                f"the registry refused this pod's registration without a refusal code "
+                f"({self._unexplained_refusal}), as a registry older than this pod answers; waiting "
+                "-- the heartbeat re-offers the manifest until the registry admits it",
+            )
+
+    def _log_temporary_refusal_once(self, cause: str, message: str) -> None:
+        """log a temporary refusal at WARNING the first time its cause is seen in this episode.
+
+        :param cause: what identifies the cause -- a refusal code, or an unexplained reply's error
+        :ptype cause: str
+        :param message: the line to log, naming the cause
+        :ptype message: str
+        :return: nothing
+        :rtype: None
+        """
+        if cause in self._temporary_causes_logged:
+            return
+        self._temporary_causes_logged.add(cause)
+        log.warning(message, extra={"extra_data": {"pod_id": self._pod_id, "cause": cause}})
 
     def _load_pod_jwks(self, tool_name: str) -> dict[str, Any]:
         """fetch the cached Hub JWKS via the injected provider, converting ANY provider failure to a
@@ -2012,7 +2562,7 @@ class ToolServer:
             )
 
     @traced(record_args=True)
-    async def _verify_identity(self, request: CallRequest) -> tuple[CallRequest, str | None]:
+    async def _verify_identity(self, request: CallRequest) -> tuple[CallRequest, str | None, bool]:
         """re-verify the Hub identity token and RE-STAMP the verified identity (defense in depth).
 
         The registry proxy already verifies + re-stamps identity, but anything that can publish on
@@ -2041,10 +2591,13 @@ class ToolServer:
 
         :param request: the parsed inbound call request
         :ptype request: CallRequest
-        :return: ``(request, reason)`` where ``request`` is the re-stamped request on verify
-            success (else the original) and ``reason`` is ``None`` when the call may proceed or a
-            rejection-reason string when the call MUST be rejected without dispatching
-        :rtype: tuple[CallRequest, str | None]
+        :return: ``(request, reason, principal_is_tool_pod)`` where ``request`` is the re-stamped
+            request on verify success (else the original), ``reason`` is ``None`` when the call may
+            proceed or a rejection-reason string when the call MUST be rejected without
+            dispatching, and ``principal_is_tool_pod`` is whether the VERIFIED principal is a tool
+            pod -- ``False`` on every rejection, so nothing downstream can read a mark a failed
+            verification never earned
+        :rtype: tuple[CallRequest, str | None, bool]
         """
         context = request.context
         # shared across the handshake + user-assertion verifications so the reactive Hub refresh (on
@@ -2062,12 +2615,17 @@ class ToolServer:
             # OVERWRITE the envelope's claimed identity with the verified token. a captured token
             # re-pointed at a forged agent / customer, or stripped of its identity to skip a
             # comparison, runs under the token's TRUE identity -- never the self-asserted one.
-            # these UUID conversions live INSIDE the try so a malformed-but-signed non-UUID claim
-            # fails closed (rejects) rather than escaping as an uncaught ValueError. user_id DEFAULTS
-            # to the handshake token's: ``None`` for a per-pod agent handshake token (it CANNOT carry
-            # the per-turn user); the bound user-assertion below may override it.
-            agent_id_value = UUID(claims.sub)
-            customer_id_value = UUID(claims.customer_id)
+            # the principal is read through the ONE reading the registry's door uses, INSIDE the
+            # try so a malformed-but-signed claim fails closed (rejects) rather than escaping as an
+            # uncaught ValueError: a tool pod's token carries the platform customer sentinel, read
+            # as no customer, and this gate MIRRORS the registry in admitting it -- a pod the
+            # registry authorized on its own grant must not be refused here by a parse the registry
+            # already decided against. user_id DEFAULTS to the handshake token's: ``None`` for a
+            # per-pod handshake token (it CANNOT carry the per-turn user); the bound user-assertion
+            # below may override it.
+            principal = principal_from_claims(claims)
+            agent_id_value = principal.principal_id
+            customer_id_value = principal.customer_id
             user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
@@ -2077,11 +2635,34 @@ class ToolServer:
             # key material (IdentityTokenError carries only the structural reason).
             extra = {"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}}
             log.warning("pod identity verification failed; rejecting call", extra=extra)
-            return request, f"identity verification failed ({reason})"
+            return request, f"identity verification failed ({reason})", False
 
         # the handshake token verified above, so ``context`` is non-None (the try raised + returned
         # otherwise). re-narrow for the type checker.
         assert context is not None
+
+        if principal.is_tool_pod:
+            # the same decision the registry's door logs, mirrored here so a dispatch under a
+            # platform principal is visible from a line and not from a missing customer tag.
+            log.info(
+                "pod identity verified as a platform principal; customer claim read as none",
+                extra={"extra_data": {"agent_id": str(principal.principal_id), "tool_name": request.tool_name}},
+            )
+            if context.user_identity_token:
+                # MIRRORS the registry: a pod acts on nobody's behalf, so a user assertion on a
+                # pod token is malformed by definition, refused at the sink rather than left to
+                # the claim-equality binding below, which would admit one minted with the sentinel.
+                log.warning(
+                    "pod user-assertion presented on a tool pod token; rejecting call",
+                    extra={
+                        "extra_data": {
+                            "reason": "IdentityTokenError",
+                            "detail": "a tool pod acts on nobody's behalf; a user assertion on a pod token is malformed",
+                            "tool_name": request.tool_name,
+                        }
+                    },
+                )
+                return request, "user-assertion verification failed (IdentityTokenError)", False
 
         # MIRROR THE PROXY's user-assertion gate (registry/proxy.py ``_verify_identity``): a
         # user-driven turn's tool call ALSO carries a Hub-minted, cnf-LESS user-assertion
@@ -2127,7 +2708,7 @@ class ToolServer:
                 # expired/absent assertion), never token or key material.
                 extra = {"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}}
                 log.warning("pod user-assertion verification failed; rejecting call", extra=extra)
-                return request, f"user-assertion verification failed ({reason})"
+                return request, f"user-assertion verification failed ({reason})", False
 
         verified_context = context.model_copy(
             update={
@@ -2136,7 +2717,7 @@ class ToolServer:
                 "customer_id": customer_id_value,
             }
         )
-        return request.model_copy(update={"context": verified_context}), None
+        return request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod
 
     async def _verify_proxy_assertion(self, request: CallRequest) -> str | None:
         """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
@@ -2177,8 +2758,11 @@ class ToolServer:
                 jwks=self._jwks_provider(),
                 expected_pod_id=self._pod_id,
                 body_hash=body_hash,
+                leeway_seconds=_ASSERTION_LEEWAY_SECONDS,
             )
-            if not await self._assertion_replay_guard.record_unique(claims.jti):
+            if not await self._assertion_replay_guard.record_unique(
+                claims.jti, issued_at=datetime.fromtimestamp(claims.iat, UTC)
+            ):
                 raise IdentityTokenError("proxy assertion nonce replay")
         except (IdentityTokenError, ValueError) as exc:
             kind = type(exc).__name__
@@ -2188,6 +2772,30 @@ class ToolServer:
             log.warning("pod proxy-assertion verification failed; rejecting", extra=extra)
             reason = f"proxy assertion verification failed ({kind})"
         return reason
+
+    def _foreign_caller_rejection(self, request: CallRequest) -> str | None:
+        """refuse a verified caller that is not the agent this in-process server belongs to.
+
+        An in-process tool answers from its own agent's state -- that agent's scope, its
+        per-conversation store -- so serving another agent's call hands that caller this agent's
+        state. The registry routes by owner and should never deliver such a call; this is the same
+        rule held at the pod, for a registry predating it or a fault in it. A Tool Pod's server has
+        no owner and serves everyone. Runs after identity verification, so the caller compared is
+        the one the Hub token names, never the envelope's claim.
+
+        :param request: the identity-verified call request
+        :ptype request: CallRequest
+        :return: the rejection reason, or ``None`` when the call may proceed
+        :rtype: str | None
+        """
+        result: str | None = None
+        caller = request.context.agent_id if request.context is not None else None
+        if self._serves_only_its_owner and caller != self._owning_agent_id:
+            result = (
+                f"caller {caller} is not agent {self._owning_agent_id}, whose in-process tool server this is; an "
+                "agent's in-process tool answers only its own agent"
+            )
+        return result
 
     async def handle_call(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler for incoming tool call request.
@@ -2206,6 +2814,12 @@ class ToolServer:
         ``agent``/``customer``) from the :class:`CallContext` for the
         duration of the dispatch so every log line in this handler and
         its callees renders with those tags.
+
+        an agent's in-process server (a dotted pod-id) answers only the
+        agent that owns it: once identity and the proxy assertion verify,
+        any other verified caller is refused ``TOOL_CALLER_NOT_OWNER``
+        before the tool is looked up. a Tool Pod's server serves every
+        caller.
 
         audit-task-01 (AUD-03): every dispatch -- including malformed
         requests, unknown-tool rejections, and raising tools -- emits a
@@ -2413,8 +3027,8 @@ class ToolServer:
         split out of :meth:`handle_call` so the public NATS callback can
         bracket the dispatch in the in-flight-requests gauge without
         re-indenting the whole body. the full handler contract (identity
-        verification, proxy-assertion check, baseline audit) is documented
-        on :meth:`handle_call`.
+        verification, proxy-assertion check, owner check, baseline audit) is
+        documented on :meth:`handle_call`.
 
         :param msg: incoming wrapper envelope carrying the call request
         :ptype msg: IncomingMessage
@@ -2542,7 +3156,7 @@ class ToolServer:
                 owes_sync_reply[0] = False
                 self._settle_sync_reply()
 
-            request, identity_rejection = await self._verify_identity(request)
+            request, identity_rejection, principal_is_tool_pod = await self._verify_identity(request)
             if identity_rejection is not None:
                 error_response = CallResponse(
                     success=False,
@@ -2593,6 +3207,31 @@ class ToolServer:
                 failure_reason = assertion_rejection
                 return
 
+            owner_rejection = self._foreign_caller_rejection(request)
+            if owner_rejection is not None:
+                error_response = CallResponse(
+                    success=False,
+                    content="",
+                    error=owner_rejection,
+                    error_code="TOOL_CALLER_NOT_OWNER",
+                    context=request.context,
+                )
+                await self._answer(msg, error_response, delivery_subject)
+                log.warning(
+                    "pod refused call: the verified caller is not the agent this in-process server belongs to",
+                    extra={
+                        "extra_data": {
+                            "reason": owner_rejection,
+                            "pod_id": self._pod_id,
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                outcome = "failure"
+                failure_reason = owner_rejection
+                return
+
             tool = self._tools.get(tool_key)
 
             if tool is None:
@@ -2617,7 +3256,7 @@ class ToolServer:
                 return
 
             try:
-                scope = await self._build_call_scope(request)
+                scope = await self._build_call_scope(request, principal_is_tool_pod=principal_is_tool_pod)
                 tool_result = await self._run_tool_guarded(tool, request, scope)
                 response = CallResponse(
                     success=tool_result.success,
@@ -2860,10 +3499,10 @@ class ToolServer:
         if context is not None and context.correlation_id is not None:
             correlation_id = context.correlation_id
         else:
-            # malformed request / no-context dispatch: mint a fresh
-            # correlation id so the ``(correlation_id, event_type)``
-            # unique index still distinguishes concurrent baseline
-            # rows for otherwise-identical tool names.
+            # malformed request / no-context dispatch: there is no
+            # request to tie this event to, so it gets a correlation id
+            # of its own (the column is NOT NULL). the row's identity is
+            # its envelope id either way.
             correlation_id = uuid7()
         event = AuditEvent(
             id=uuid7(),
@@ -2871,7 +3510,7 @@ class ToolServer:
             event_type="tool.call",
             actor_user_id=context.user_id if context is not None else None,
             calling_agent_id=context.agent_id if context is not None else None,
-            owner_agent_id=self._agent_id,
+            owner_agent_id=self._owning_agent_id,
             customer_id=context.customer_id if context is not None else None,
             resource_namespace_id=None,
             resource_namespace_type=None,
@@ -2906,6 +3545,8 @@ class ToolServer:
     async def _build_call_scope(
         self,
         request: CallRequest,
+        *,
+        principal_is_tool_pod: bool,
     ) -> ToolCallScope:
         """construct per-call scope from envelope :class:`CallContext`.
 
@@ -2916,7 +3557,10 @@ class ToolServer:
         ``user_id`` are present. callers that do not need the context
         (stateless tools) can safely omit ``context`` entirely: the
         resulting scope carries ``context_manager=None`` and any tool
-        that requires it raises at first use.
+        that requires it raises at first use. the construction itself is
+        :func:`~threetears.agent.tools.call_scope.build_call_scope`, shared
+        with a tool wrapped for LangGraph, so a tool sees one scope shape on
+        either path.
 
         factory exceptions propagate to :meth:`handle_call`'s except
         block so the call is surfaced as a failed tool result rather
@@ -2924,29 +3568,28 @@ class ToolServer:
 
         :param request: parsed call request
         :ptype request: CallRequest
+        :param principal_is_tool_pod: whether the principal :meth:`_verify_identity` verified is
+            a tool pod. REQUIRED rather than defaulted: it is an authorization input a tool reads
+            to admit a caller with no user, so a construction site that forgot it must fail
+            loudly rather than build a scope that quietly says "agent"
+        :ptype principal_is_tool_pod: bool
         :return: populated :class:`ToolCallScope`
         :rtype: ToolCallScope
         """
-        context = request.context if request.context is not None else CallContext()
-        context_manager: ToolContextManager | None = None
         log.debug(
             "building call scope",
             extra={
                 "extra_data": {
                     "factory_present": self._context_factory is not None,
-                    "conv_present": context.conversation_id is not None,
-                    "user_present": context.user_id is not None,
+                    "conv_present": request.context is not None and request.context.conversation_id is not None,
+                    "user_present": request.context is not None and request.context.user_id is not None,
                 }
             },
         )
-        if self._context_factory is not None and context.conversation_id is not None and context.user_id is not None:
-            context_manager = await self._context_factory(
-                context.conversation_id,
-                context.user_id,
-            )
-        return ToolCallScope(
-            context=context,
-            context_manager=context_manager,
+        return await build_call_scope(
+            request.context,
+            principal_is_tool_pod=principal_is_tool_pod,
+            context_factory=self._context_factory,
             object_store=self._object_store,
             object_resolver=self._object_resolver,
             engagement_resolver=self._engagement_resolver,
@@ -2982,10 +3625,13 @@ class ToolServer:
                     extra={"extra_data": {"error": str(exc)}},
                 )
             try:
-                # re-ask ONLY while the answer is still unknown: a pod that started before
-                # the registry did would otherwise never learn which node it owns, and the
-                # heartbeat is the only thing that runs again on its own.
-                await self.publish_registration(learn_identity=self._owned_namespaces is None)
+                # re-ask ONLY while the answer is still unknown or unsettled: a pod that started
+                # before the registry did would otherwise never learn which node it owns, and a
+                # refused tool's verdict would never be re-read -- a temporary refusal must be seen
+                # to clear, and a final one fixed upstream to heal. the heartbeat is the only thing
+                # that runs again on its own. a settled, clean registration publishes without asking.
+                unsettled = bool(self._refused_tools) or self._unexplained_refusal is not None
+                await self.publish_registration(await_reply=self._owned_namespaces is None or unsettled)
             except Exception as exc:
                 log.warning(
                     "periodic re-registration failed",
@@ -3022,36 +3668,15 @@ class ToolServer:
 
         unlike the agent runtime -- which learns its NATS-JWT TTL from the Hub handshake -- a
         standalone tool pod receives no handshake reporting the minted TTL, so the value is sourced
-        from :func:`get_nats_user_jwt_ttl_seconds` (env-overridable, with a platform default). read
-        every cycle so an operator env change reschedules correctly; ``None`` when the config value is
-        non-positive / malformed (unknown -> the loop re-checks rather than churning).
+        from :func:`threetears.nats.nats_user_jwt_ttl_seconds` (env-overridable, with a platform
+        default). read every renewal cycle so an operator env change reschedules correctly; ``None``
+        when the config value is non-positive / malformed (unknown -> the loop re-checks rather than
+        churning).
 
         :return: the connection JWT TTL in seconds, or ``None`` when unknown
         :rtype: int | None
         """
-        return get_nats_user_jwt_ttl_seconds()
-
-    async def _reauth_nats_once(self) -> None:
-        """force ONE proactive NATS reconnect so the auth-callout re-mints a fresh user JWT.
-
-        the reconnect reuses the same nats-py client (the transport cycles), replays subscriptions
-        under their original ``sid``, and re-runs the auth-callout -- minting a FRESH user JWT with
-        full TTL -- so the connection rides on indefinitely and the schedule self-corrects. kept
-        separate from :meth:`_nats_reauth_loop` so the per-pass behaviour is unit-testable without
-        spinning up the loop.
-
-        :return: nothing
-        :rtype: None
-        """
-        nc = self._nc
-        if nc is None:
-            log.debug("NATS re-auth skipped: tool server not connected (no nats_client)")
-            return
-        await nc.reconnect()
-        log.info(
-            "NATS connection re-authenticated via proactive reconnect (fresh user JWT before expiry)",
-            extra={"extra_data": {"pod_id": self._pod_id}},
-        )
+        return nats_user_jwt_ttl_seconds()
 
     async def drain_before_reauth(self, ttl_seconds: int | None) -> None:
         """wait for outstanding replies before recycling the connection.
@@ -3071,7 +3696,7 @@ class ToolServer:
 
         So the re-auth waits for the pod to owe nothing. The wait is BOUNDED by
         the JWT's real deadline, not open-ended: the schedule fires at
-        ``ttl - leeway - buffer``, leaving :data:`nats_reauth.REAUTH_BUFFER_SECONDS`
+        ``ttl - leeway - buffer``, leaving :data:`threetears.nats.REAUTH_BUFFER_SECONDS`
         of slack before the point where the reconnect itself must begin to beat
         expiry. Waiting past that would trade a lost reply for a dead
         connection, which is strictly worse -- so on timeout it reconnects
@@ -3093,7 +3718,7 @@ class ToolServer:
         """
         if self.sync_replies_in_flight == 0:
             return
-        grace = float(nats_reauth.REAUTH_BUFFER_SECONDS)
+        grace = DRAIN_BEFORE_RENEWAL_SECONDS
         log.info(
             "NATS re-auth deferred: waiting up to %ss for %d in-flight call(s) to reply",
             grace,
@@ -3114,91 +3739,6 @@ class ToolServer:
                 extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self.sync_replies_in_flight}},
             )
 
-    def _warn_if_tool_timeout_exceeds_jwt_ttl(self) -> None:
-        """say loudly when even a SHORT call could not be answered on this connection.
-
-        A long tool no longer needs the connection to outlive it. Past
-        :data:`threetears.nats.SYNC_REPLY_BUDGET_SECONDS` the caller routes the answer to a durable
-        subject this pod holds a standing grant on, so recycling the connection mid-call is
-        harmless -- which is why this no longer compares the JWT TTL against the longest tool
-        timeout, a comparison that would now fire on every pentest pod and mean nothing.
-
-        What remains is the floor underneath that arrangement. A call INSIDE the budget is still
-        answered on the reply inbox and still depends on the drain holding the connection open until
-        the answer is out. A TTL configured so tightly that the drain grace does not fit inside it
-        breaks that floor -- and breaks it for every call, not only the long ones. That is a
-        configuration fact knowable at startup, so it is said here, naming both numbers, rather than
-        discovered from a call that completed and then could not answer.
-
-        :return: nothing
-        :rtype: None
-        """
-        from threetears.nats import SYNC_REPLY_BUDGET_SECONDS  # noqa: PLC0415 -- local: import cost only on serve
-
-        ttl = self._current_nats_jwt_ttl_seconds()
-        if not nats_reauth.has_schedulable_ttl(ttl):
-            return
-        assert ttl is not None  # narrowed above
-        usable = ttl - nats_reauth.REAUTH_LEEWAY_SECONDS
-        if usable < SYNC_REPLY_BUDGET_SECONDS:
-            log.error(
-                "NATS user JWT TTL is too short to carry even a short tool call: %ss of usable "
-                "connection (TTL %ss minus %ss leeway) against a %ss synchronous-reply budget. "
-                "Calls inside that budget are answered on the reply inbox and will be refused when "
-                "the connection is recycled underneath them. Raise the pod's NATS user JWT TTL.",
-                usable,
-                ttl,
-                nats_reauth.REAUTH_LEEWAY_SECONDS,
-                SYNC_REPLY_BUDGET_SECONDS,
-                extra={
-                    "extra_data": {
-                        "pod_id": self._pod_id,
-                        "usable_connection_seconds": usable,
-                        "sync_reply_budget_seconds": SYNC_REPLY_BUDGET_SECONDS,
-                        "nats_user_jwt_ttl_seconds": ttl,
-                    }
-                },
-            )
-
-    async def _nats_reauth_loop(self) -> None:
-        """force a NATS reconnect before the connection's user JWT expires; unkillable + self-healing.
-
-        mirrors the agent runtime's re-auth loop: a ``while True`` whose body is wrapped in a BROAD
-        ``except Exception`` so a single failed re-auth logs and retries FAST
-        (:data:`nats_reauth.REAUTH_RETRY_SECONDS`) instead of ending the loop -- a connection nearing
-        JWT expiry must never wait a full cycle after a transient failure. the sleep before each
-        re-auth is recomputed every cycle from the CURRENT config TTL (never a fixed interval), so a
-        changed TTL reschedules correctly. when the TTL is unknown the loop re-checks on a short
-        cadence WITHOUT reconnecting (it must not churn the connection on a guess; the heartbeat
-        supervisor covers a terminal close in that window). cancellation ends the loop.
-
-        :return: nothing
-        :rtype: None
-        """
-        try:
-            while True:
-                try:
-                    ttl = self._current_nats_jwt_ttl_seconds()
-                    delay = nats_reauth.seconds_until_reauth(ttl)
-                    await asyncio.sleep(delay)
-                    if not nats_reauth.has_schedulable_ttl(ttl):
-                        # TTL still unknown after the wait -- re-check next cycle rather than force a
-                        # reconnect on a guess. SAME predicate the scheduler uses (so the two never
-                        # diverge); the heartbeat supervisor covers any terminal close while unknown.
-                        continue
-                    await self.drain_before_reauth(ttl)
-                    await self._reauth_nats_once()
-                except Exception as exc:
-                    log.warning(
-                        "NATS re-auth failed (retrying in %ss): %s",
-                        nats_reauth.REAUTH_RETRY_SECONDS,
-                        exc,
-                    )
-                    await asyncio.sleep(nats_reauth.REAUTH_RETRY_SECONDS)
-        # NOSILENT: cancellation ends the NATS re-auth loop on tool-server shutdown
-        except asyncio.CancelledError:
-            return
-
     @traced()
     async def shutdown(self) -> None:
         """gracefully shut down tool server.
@@ -3218,29 +3758,25 @@ class ToolServer:
         )
         self._running = False
 
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
-            self._heartbeat_task = None
+        # ``serve`` is released in ``finally``: a step below that raises -- the NATS drain against
+        # a reconnecting server raised ``ConnectionResetError`` in production -- used to skip the
+        # release, and ``serve`` waited forever on an event nothing would set. The exception still
+        # propagates to the caller, which decides what a failed shutdown means for the process.
+        try:
+            if self._heartbeat_task is not None:
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    # NOSILENT: this IS the cancellation requested on the line above
+                    pass
+                self._heartbeat_task = None
 
-        if self._nats_reauth_task is not None:
-            self._nats_reauth_task.cancel()
-            try:
-                await self._nats_reauth_task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
-            self._nats_reauth_task = None
+            if self._owned_jwks_provider is not None:
+                await self._owned_jwks_provider.stop()
+                self._owned_jwks_provider = None
 
-        if self._owned_jwks_provider is not None:
-            await self._owned_jwks_provider.stop()
-            self._owned_jwks_provider = None
-
-        if self._nc is not None and self._owns_nats_connection:
-            await self._nc.shutdown()
-
-        self._shutdown_event.set()
+            if self._nc is not None and self._owns_nats_connection:
+                await self._nc.shutdown()
+        finally:
+            self._shutdown_event.set()

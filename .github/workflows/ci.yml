@@ -197,4 +197,7 @@ jobs:
         # rest (S3/minio, SearXNG, a live Redshift) still start their own
         # containers or want credentials this job does not have, and would skip
         # noisily or hang; bringing them in is a follow-up with its own services.
-        run: uv run pytest packages/core packages/nats packages/epoch packages/scheduled-jobs -m integration -v
+        # agent/acl needs Postgres alone: its NATS is an in-memory double. It is here
+        # because its integration tests measure, against a real table, the teardown
+        # queries (`list_owned_by`, `schema_in_use`) a consumer drops schemas on.
+        run: uv run pytest packages/core packages/nats packages/epoch packages/scheduled-jobs packages/agent/acl -m integration -v

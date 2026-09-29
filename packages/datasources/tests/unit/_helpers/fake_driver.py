@@ -178,6 +178,19 @@ class FakeDriver(Driver):
             raise RuntimeError("FakeDriver is closed")
         return list(self._column_rows)
 
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> Any:
+        """stub fingerprint; the ABC requires the method.
+
+        :param relation: the relation to fingerprint
+        :ptype relation: str
+        :param key: the ordering columns
+        :ptype key: list[str]
+        :return: never returns
+        :rtype: Any
+        :raises NotImplementedError: this double has no relation to fingerprint
+        """
+        raise NotImplementedError("this driver double has no relation to fingerprint")
+
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         if self._closed:
             raise RuntimeError("FakeDriver is closed")

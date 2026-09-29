@@ -17,7 +17,7 @@ from threetears.core.security import SandboxDenied
 from threetears.agent.workspace.tools.workspace_history import (
     WorkspaceHistoryTool,
 )
-from _helpers.workspace_shims import (
+from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,

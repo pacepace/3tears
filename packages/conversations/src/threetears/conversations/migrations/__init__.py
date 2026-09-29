@@ -58,6 +58,13 @@ version history:
   idempotent; the FK is guarded by a ``pg_constraint`` /
   ``current_schema()`` probe (``ADD CONSTRAINT`` has no ``IF NOT EXISTS``
   form), matching v007's discipline.
+- v010 -- drop the v005 GIN index ``idx_conversations_search_vector``.
+  ``ConversationsCollection.search`` filters through
+  ``threetears.core.data.gin_filter``, which keeps the planner off the
+  index because YugabyteDB's ybgin refuses a multi-entry scan, so the index
+  had no reader and only cost writes and storage. the ``search_vector``
+  column and its trigger stay. ``DROP INDEX IF EXISTS``, so replay is a
+  no-op.
 """
 
 from __future__ import annotations
@@ -88,6 +95,9 @@ from threetears.conversations.migrations.v008_create_folders_and_conversation_fo
 )
 from threetears.conversations.migrations.v009_folder_referential_integrity import (
     add_folder_referential_integrity,
+)
+from threetears.conversations.migrations.v010_drop_search_vector_gin_index import (
+    drop_search_vector_gin_index,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -124,6 +134,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(7)(rename_id_to_conversation_id)
     pkg.version(8)(create_folders_and_conversation_folder_id)
     pkg.version(9)(add_folder_referential_integrity)
+    pkg.version(10)(drop_search_vector_gin_index)
     runner.register(pkg)
     return pkg
 
@@ -138,6 +149,7 @@ __all__ = [
     "create_conversations_table",
     "create_folders_and_conversation_folder_id",
     "datetime_to_datetimetz",
+    "drop_search_vector_gin_index",
     "register",
     "rename_id_to_conversation_id",
 ]

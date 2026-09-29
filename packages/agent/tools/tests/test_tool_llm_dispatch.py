@@ -128,7 +128,7 @@ async def test_recall_intent_short_circuits_before_resolver() -> None:
         }
     )
     assert "[REDIRECT]" in result
-    assert "recall_context" in result
+    assert "context_recall" in result
     # Resolver was not called at all
     assert resolver.calls == []
 

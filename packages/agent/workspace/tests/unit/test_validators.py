@@ -26,8 +26,13 @@ from threetears.agent.workspace.validators import (
     dispatch_validators,
 )
 from threetears.agent.workspace import validators as validators_module
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
-from _helpers.workspace_shims import (
+from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+    FakeAsyncpgAcquireCM,
+    FakeAsyncpgConnection,
+    FakeAsyncpgPool,
+    FakeAsyncpgTransaction,
+)
+from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceEntity,
 )
 

@@ -18,8 +18,8 @@ from threetears.agent.workspace.tools import (
 from threetears.agent.workspace.tools.workspace_rollback import (
     WorkspaceRollbackTool,
 )
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgPool
-from _helpers.workspace_shims import (
+from packages.agent.workspace.tests._helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgPool
+from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,

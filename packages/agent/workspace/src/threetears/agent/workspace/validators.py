@@ -51,6 +51,8 @@ from collections.abc import Callable
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from threetears.observe import BuildOnce
+
 __all__ = [
     "WorkspaceValidationError",
     "dispatch_validators",
@@ -97,7 +99,9 @@ class WorkspaceValidationError(ValueError):
         super().__init__(f"validation failed for pattern {pattern!r} (via {validator_path}): {reason}")
 
 
-_RESOLVED: dict[str, Callable[..., Any]] = {}
+#: dotted path -> resolved validator callable, built through ``BuildOnce`` so concurrent first
+#: resolutions of one path import and check it once.
+_RESOLVED: BuildOnce[str, Callable[..., Any]] = BuildOnce()
 
 
 def _resolve_validator(dotted: str) -> Callable[..., Any]:
@@ -107,7 +111,7 @@ def _resolve_validator(dotted: str) -> Callable[..., Any]:
     splits on the final ``.`` to derive ``module_path`` and ``attr``,
     calls :func:`importlib.import_module` on the module path, then
     :func:`getattr` on the resulting module. results are cached in the
-    module-level ``_RESOLVED`` dict so each dotted path imports at most
+    module-level ``_RESOLVED`` cache so each dotted path imports at most
     once per process. on code change the agent must restart -- same
     constraint as ``tools:`` entries in agent.yaml today.
 
@@ -127,10 +131,21 @@ def _resolve_validator(dotted: str) -> Callable[..., Any]:
     :raises AttributeError: if the module lacks the named attribute
         (propagated unchanged, same rationale)
     """
-    result: Callable[..., Any]
-    cached = _RESOLVED.get(dotted)
-    if cached is not None:
-        return cached
+    return _RESOLVED.get(dotted, lambda: _import_validator(dotted))
+
+
+def _import_validator(dotted: str) -> Callable[..., Any]:
+    """
+    import the callable *dotted* names, for :data:`_RESOLVED`.
+
+    :param dotted: dotted import path resolving to a callable
+    :ptype dotted: str
+    :return: resolved callable
+    :rtype: Callable[..., Any]
+    :raises ValueError: if ``dotted`` has no module component, or the attribute is not callable
+    :raises ImportError: if the module path cannot be imported
+    :raises AttributeError: if the module lacks the named attribute
+    """
     module_path, _, attr = dotted.rpartition(".")
     if not module_path:
         raise ValueError(f"validator must be a dotted import path, got {dotted!r}")
@@ -138,8 +153,7 @@ def _resolve_validator(dotted: str) -> Callable[..., Any]:
     fn = getattr(module, attr)
     if not callable(fn):
         raise ValueError(f"validator {dotted!r} is not callable")
-    _RESOLVED[dotted] = fn
-    result = fn
+    result: Callable[..., Any] = fn
     return result
 
 

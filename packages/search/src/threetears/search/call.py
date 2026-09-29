@@ -75,6 +75,7 @@ time).
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Final
 
@@ -289,6 +290,7 @@ async def _pace(
     egress: str,
     budget_seconds: float,
     started: float,
+    clock: Callable[[], float],
 ) -> float:
     """Wait for this call's turn at ``(provider instance, egress)`` (D8, D20).
 
@@ -318,6 +320,8 @@ async def _pace(
     :param started: the call's own monotonic start, for authoritative
         wall-clock on the refusal
     :ptype started: float
+    :param clock: the call's monotonic clock, which measures the wait
+    :ptype clock: Callable[[], float]
     :return: what remains of the bound for the provider call itself
     :rtype: float
     :raises threetears.search.contracts.errors.RateLimited: when the key did
@@ -326,7 +330,7 @@ async def _pace(
         key's configured burst is smaller than the one token a call costs,
         so no wait could ever release it
     """
-    waiting_from = time.monotonic()
+    waiting_from = clock()
     try:
         decision = await limiter.acquire(
             provider_instance=provider.provider_instance,
@@ -365,7 +369,7 @@ async def _pace(
             # The call never happened, so the only real dimension is the
             # wall-clock the caller waited (SR-E3), exactly as on the denial
             # below.
-            spend=Spend(wall_clock_seconds=time.monotonic() - started),
+            spend=Spend(wall_clock_seconds=clock() - started),
             provider_instance=provider.provider_instance,
             remediation=(
                 "raise burst_tokens for this key on the limiter the host constructed -- one call costs one "
@@ -375,7 +379,7 @@ async def _pace(
             egress=egress,
             scope=PACING_BURST_SCOPE,
         ) from exc
-    waited = time.monotonic() - waiting_from
+    waited = clock() - waiting_from
     if not decision.acquired:
         raise RateLimited(
             f"pacing for {provider.provider_instance} via {egress} did not release within "
@@ -385,7 +389,7 @@ async def _pace(
             # -- the caller waited it -- and SR-E3's "every failure carries
             # what it consumed" is satisfied by saying exactly that, rather
             # than by charging for a request nobody sent.
-            spend=Spend(wall_clock_seconds=time.monotonic() - started),
+            spend=Spend(wall_clock_seconds=clock() - started),
             provider_instance=provider.provider_instance,
             remediation=(
                 "raise this call's timeout so pacing can wait it out, raise the key's configured rate if "
@@ -407,6 +411,7 @@ async def search(
     budget: BudgetPort | None = None,
     limiter: RateLimiterPort | None = None,
     egress: str = EGRESS_DIRECT,
+    clock: Callable[[], float] = time.monotonic,
 ) -> CandidateSet:
     """Turn one request into one candidate set through one provider.
 
@@ -436,6 +441,11 @@ async def search(
         rebuild it. ``direct`` is a named value, not an absence, so it is
         the default rather than None
     :ptype egress: str
+    :param clock: the monotonic clock every wall-clock figure and the pacing
+        wait are measured on. ``time.monotonic`` in production; a test drives
+        one by hand so the bound's arithmetic is exact rather than a window a
+        loaded event loop can fall out of
+    :ptype clock: Callable[[], float]
     :return: the candidates, one disposition per criterion, and the spend
         the call consumed. Zero candidates is a success (SR-J2)
     :rtype: CandidateSet
@@ -444,7 +454,7 @@ async def search(
         see an exception at all go through
         :func:`threetears.search.bind.bind_search` (D10)
     """
-    started = time.monotonic()
+    started = clock()
     bounded = request.model_copy(
         update={"criteria": _bounded_criteria(request, max_results_ceiling=max_results_ceiling)}
     )
@@ -463,13 +473,18 @@ async def search(
 
     if limiter is not None:
         remaining_seconds = await _pace(
-            limiter, provider=provider, egress=egress, budget_seconds=remaining_seconds, started=started
+            limiter,
+            provider=provider,
+            egress=egress,
+            budget_seconds=remaining_seconds,
+            started=started,
+            clock=clock,
         )
 
     try:
         result = await provider.search(bounded, timeout_seconds=remaining_seconds)
     except SearchFailure as failure:
-        _stamp(failure, elapsed=time.monotonic() - started)
+        _stamp(failure, elapsed=clock() - started)
         # SR-E3: a typed failure carries the spend it incurred, and that
         # spend is as real as a success's -- an attempt that reached the
         # provider and failed after billing has to debit. Recorded before
@@ -498,7 +513,7 @@ async def search(
         # told nothing about it would under-count every defective call --
         # and inventing ``calls=1`` would be Call billing on a guess. Either
         # way the budget hears exactly what the caller hears.
-        failed_spend = Spend(wall_clock_seconds=time.monotonic() - started)
+        failed_spend = Spend(wall_clock_seconds=clock() - started)
         await _record(budget, failed_spend, scope_tags=scope_tags)
         raise TransportFailed(
             f"provider {provider.provider_instance} failed with an unmapped {type(exc).__name__}: {exc}",
@@ -509,7 +524,7 @@ async def search(
     completed = result.model_copy(
         update={
             "dispositions": _completed_dispositions(bounded, result, provider),
-            "spend": result.spend.model_copy(update={"wall_clock_seconds": time.monotonic() - started}),
+            "spend": result.spend.model_copy(update={"wall_clock_seconds": clock() - started}),
         }
     )
     # After the provider answered, with what it actually reported spending

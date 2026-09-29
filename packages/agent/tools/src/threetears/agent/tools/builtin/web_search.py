@@ -33,7 +33,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.search.adapters.searxng import SearxngAdapter
@@ -45,7 +44,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_MAX_RESULTS",
-    "WebSearchInput",
     "WebSearchTool",
     "create_web_search_tool",
 ]
@@ -54,12 +52,6 @@ __all__ = [
 #: sliced the provider's response to ten *after* it arrived; this is the same
 #: number stated as a criterion the adapter can push down and answer for.
 DEFAULT_MAX_RESULTS: Final[int] = 10
-
-
-class WebSearchInput(BaseModel):
-    """Input for the web search tool."""
-
-    query: str = Field(description="Search query")
 
 
 def create_web_search_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -99,7 +91,6 @@ def create_web_search_tool(config: dict[str, Any], description: str) -> Structur
             limiter=config.get("limiter"),
         ),
         description=description,
-        args_schema=WebSearchInput,
     )
 
 

@@ -11,6 +11,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import AgentState
 from langchain_core.language_models import BaseChatModel
@@ -75,6 +76,53 @@ class TestSafeCutoff:
         new = out["messages"]
         assert not isinstance(new[2], ToolMessage)
         assert new[2].content == "m4"
+
+
+class _FailingSummaryModel:
+    """chat model whose ``ainvoke`` raises ``error``, then answers once ``error`` is cleared."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error: BaseException | None = error
+
+    async def ainvoke(self, messages: Any, config: Any = None) -> AIMessage:
+        if self.error is not None:
+            raise self.error
+        return AIMessage(content="SUMMARY")
+
+
+class TestFailedSummary:
+    """a failed summary call leaves the window as it was; it never writes a stand-in summary."""
+
+    def test_a_model_error_leaves_the_window_unsummarized(self) -> None:
+        model = _FailingSummaryModel(ConnectionError("provider down"))
+        mw = SummarizationMiddleware(cast("BaseChatModel", model), trigger_messages=4, keep_messages=2)
+        messages: list[AnyMessage] = [HumanMessage(content=f"m{i}") for i in range(6)]
+        assert _before(mw, messages) is None
+        assert [m.content for m in messages] == [f"m{i}" for i in range(6)], "nothing removed, nothing added"
+
+    def test_a_model_timeout_leaves_the_window_unsummarized(self) -> None:
+        model = _FailingSummaryModel(TimeoutError("summary call timed out"))
+        mw = SummarizationMiddleware(cast("BaseChatModel", model), trigger_messages=4, keep_messages=2)
+        messages: list[AnyMessage] = [HumanMessage(content=f"m{i}") for i in range(6)]
+        assert _before(mw, messages) is None
+
+    def test_the_next_model_call_retries_the_summary(self) -> None:
+        """nothing was rewritten, so the window is still over the trigger and the next call summarizes."""
+        model = _FailingSummaryModel(ConnectionError("provider down"))
+        mw = SummarizationMiddleware(cast("BaseChatModel", model), trigger_messages=4, keep_messages=2)
+        messages: list[AnyMessage] = [HumanMessage(content=f"m{i}") for i in range(6)]
+        assert _before(mw, messages) is None
+        model.error = None
+        out = _before(mw, messages)
+        assert out is not None
+        assert "SUMMARY" in out["messages"][1].content
+
+    def test_cancellation_propagates(self) -> None:
+        model = _FailingSummaryModel(asyncio.CancelledError())
+        mw = SummarizationMiddleware(cast("BaseChatModel", model), trigger_messages=4, keep_messages=2)
+        messages: list[AnyMessage] = [HumanMessage(content=f"m{i}") for i in range(6)]
+        with pytest.raises(asyncio.CancelledError):
+            _before(mw, messages)
 
 
 class TestSyncMirror:

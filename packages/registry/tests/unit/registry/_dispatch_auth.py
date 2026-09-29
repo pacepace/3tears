@@ -13,6 +13,9 @@ not a ``test_*`` module, so pytest does not collect it; the registry test packag
 
 from __future__ import annotations
 
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
+
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -38,7 +41,6 @@ __all__ = [
     "DEFAULT_CORRELATION_ID",
     "DEFAULT_CUSTOMER_ID",
     "HUB_JWKS",
-    "StubReplayGuard",
     "hub_jwks_provider",
     "make_authed_request",
     "make_proxy",
@@ -63,20 +65,6 @@ def hub_jwks_provider() -> dict[str, Any]:
     return HUB_JWKS
 
 
-class StubReplayGuard:
-    """records each pop nonce + returns a fixed freshness verdict so the proxy's replay wiring runs
-    without a live NATS-KV (the real guard's compare-and-set is covered by its own coordination
-    tests). default ``fresh=True`` -> every first-seen pop is accepted."""
-
-    def __init__(self, *, fresh: bool = True) -> None:
-        self._fresh = fresh
-        self.seen: list[str] = []
-
-    async def record_unique(self, nonce: str) -> bool:
-        self.seen.append(nonce)
-        return self._fresh
-
-
 def make_proxy(
     catalog: ToolCatalog,
     authorizer: Any = None,
@@ -98,7 +86,7 @@ def make_proxy(
     return CallProxy(
         catalog,
         authorizer if authorizer is not None else AllowAllAuthorizer(),
-        pop_replay_guard if pop_replay_guard is not None else StubReplayGuard(),
+        pop_replay_guard if pop_replay_guard is not None else FakeReplayGuard(),
         limit_guard if limit_guard is not None else AllowAllLimitGuard(),
         jwks_provider=jwks_provider,
         **kwargs,
@@ -113,6 +101,8 @@ def make_authed_request(
     arguments: dict[str, Any] | None = None,
     correlation_id: UUID | None = None,
     customer_id: UUID | None = None,
+    customer_claim: str | None = None,
+    input_schema_digest: str | None = None,
 ) -> ProxyCallRequest:
     """create an AUTHENTICATED :class:`ProxyCallRequest`.
 
@@ -121,6 +111,9 @@ def make_authed_request(
     and re-stamps it rather than rejecting it. the re-stamp is identity-preserving here (the token's
     ``sub`` == the request's ``agent_id``) so routing / forwarding assertions still see the same
     agent; ``customer_id`` rides on the token so the re-stamped customer is observable too.
+    ``customer_claim`` replaces the token's customer claim verbatim -- the platform sentinel makes
+    the caller a tool pod rather than an agent. ``input_schema_digest`` is the schema digest the
+    caller was shown in discovery, asking to be routed only to copies still serving it.
     """
     if arguments is None:
         arguments = {"expression": "2+2"}
@@ -131,7 +124,7 @@ def make_authed_request(
     token = sign_identity_token(
         IdentityClaims(
             sub=str(effective_agent_id),
-            customer_id=str(effective_customer_id),
+            customer_id=customer_claim if customer_claim is not None else str(effective_customer_id),
             user_id=None,
             sid="sid-1",
             pod_id="pod-1",
@@ -161,4 +154,5 @@ def make_authed_request(
             identity_token=token,
         ),
         pop=pop,
+        input_schema_digest=input_schema_digest,
     )

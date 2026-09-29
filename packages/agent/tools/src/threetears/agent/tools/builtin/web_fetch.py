@@ -44,7 +44,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+
+from threetears.agent.tools.text_window import WindowedInput, window_text
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED
@@ -66,7 +67,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_MAX_CHARS",
-    "WebFetchInput",
     "WebFetchTool",
     "create_web_fetch_tool",
 ]
@@ -79,29 +79,6 @@ DEFAULT_MAX_CHARS: Final[int] = 15000
 #: what the provenance of a directly-fetched page names as its source. Not a
 #: search provider -- nothing searched -- so it names the tool that asked.
 _FETCH_PROVIDER_INSTANCE: Final[str] = "threetears.web_fetch"
-
-#: appended when the extracted text is cut to :data:`DEFAULT_MAX_CHARS`.
-_TRUNCATION_MARK: Final[str] = "\n\n[Content truncated]"
-
-
-class WebFetchInput(BaseModel):
-    """Input for the web fetch tool."""
-
-    url: str = Field(description="URL to fetch and extract content from")
-    etag: str | None = Field(
-        default=None,
-        description=(
-            "ETag from a previous fetch of this URL. When given, the fetch is conditional: "
-            "if the page is unchanged the result says so instead of returning the body again."
-        ),
-    )
-    last_modified: str | None = Field(
-        default=None,
-        description=(
-            "Last-Modified value from a previous fetch of this URL, echoed back verbatim. "
-            "Used with or instead of etag to make the fetch conditional."
-        ),
-    )
 
 
 def create_web_fetch_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -139,7 +116,6 @@ def create_web_fetch_tool(config: dict[str, Any], description: str) -> Structure
             transport=config.get("transport"),
         ),
         description=description,
-        args_schema=WebFetchInput,
     )
 
 
@@ -172,6 +148,13 @@ class WebFetchTool(TearsTool):
                     "Last-Modified value from a previous fetch of this URL, echoed back "
                     "verbatim. Used with or instead of etag to make the fetch conditional."
                 ),
+            },
+            # One wording for the argument, from the shared input model, so every
+            # windowed tool describes its offset the same way.
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": WindowedInput.model_fields["offset"].description,
             },
         },
         "required": ["url"],
@@ -290,7 +273,7 @@ class WebFetchTool(TearsTool):
         # the reason this reader was named in the task doc before it was written.
         readable = {EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED}
         if fetched.content is None or status not in readable:
-            message = f"no readable content extracted from {url} (extraction_status: {status})"
+            message = f"No readable text could be taken from {url}."
             return ToolResult(
                 success=False,
                 content=message,
@@ -305,24 +288,26 @@ class WebFetchTool(TearsTool):
             # and the caller reads the typed status off metadata either way.
             return ToolResult(
                 success=True,
-                content=f"{url} is unchanged since your copy; upstream confirmed it. Use the copy you hold.",
+                content=f"{url} is unchanged since your copy. Use the copy you have.",
                 metadata=_metadata(url, candidate_set),
                 error=None,
             )
 
-        text = fetched.content.text
-        if len(text) > self._max_chars:
-            # ``max(0, ...)``: a bound below the marker's own length made this
-            # index negative, and a negative slice keeps the *end* of the
-            # string -- returning the tail of the page, longer than the bound
-            # that was asked for. Under the marker's length the honest answer
-            # is the marker alone, cut to the bound.
-            keep = max(0, self._max_chars - len(_TRUNCATION_MARK))
-            text = (text[:keep] + _TRUNCATION_MARK)[: self._max_chars]
+        # A page longer than the bound is windowed, not cut: the note names the
+        # call that returns the next part, and nothing is discarded. Before this,
+        # a whitepaper came back cut at exactly 15,000 characters and was
+        # discussed as if whole (metallm conv 01a097bc, 2026-09-16).
+        window = window_text(fetched.content.text, offset=int(kwargs.get("offset") or 0), max_chars=self._max_chars)
+        metadata = _metadata(url, candidate_set)
+        metadata["window"] = {
+            "offset": window.offset,
+            "total_chars": window.total,
+            "next_offset": window.next_offset,
+        }
         return ToolResult(
             success=True,
-            content=text,
-            metadata=_metadata(url, candidate_set),
+            content=window.rendered(tool="web_fetch"),
+            metadata=metadata,
             error=None,
         )
 

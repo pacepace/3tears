@@ -80,9 +80,21 @@ the engines do:
   outside an explicit block unless the caller opens one, and
   ``Pool.release`` runs ``Connection.reset`` (``ROLLBACK`` when in a
   transaction, then ``CLOSE ALL`` / ``UNLISTEN *`` / ``RESET ALL`` --
-  ``asyncpg/connection.py``, ``get_reset_query``). the configured
-  ``search_path`` survives that ``RESET ALL`` because it is sent in the
-  pgwire STARTUP packet and is therefore the session default.
+  ``asyncpg/connection.py``, ``get_reset_query``). for a pool this driver
+  OWNS, the configured ``search_path`` survives that ``RESET ALL``
+  because it is sent in the pgwire STARTUP packet and is therefore the
+  session default.
+- **a BORROWED pool sends no startup packet**, so that mechanism does not
+  reach the ``AGENT_INTERNAL`` path at all. It inherited the pool owner's
+  ``search_path`` and was never scoped: an unqualified ``FROM users``
+  resolved against the Hub's own schema and raised ``UndefinedTableError``
+  while the same query fully qualified returned rows -- a datasource that
+  did not route to the schema its own name advertises. Every acquire now
+  issues ``SET search_path`` for that case
+  (:meth:`AsyncpgDriver._scope_borrowed_connection`), which is safe on a
+  shared pool precisely because ``RESET ALL`` on release restores the
+  owner's startup default. Stating both halves here because describing
+  only the owned-pool half is what let the gap sit unnoticed.
 
 cancellation: what this driver does NOT do (dsd-task-02):
 
@@ -149,6 +161,7 @@ from threetears.datasources.config import (
 )
 from threetears.datasources.drivers._util import (
     _translate_placeholders,
+    build_relation_key_expression,
     build_reset_statement_timeout_sql,
     build_search_path_value,
     build_set_local_statement_timeout_sql,
@@ -157,18 +170,26 @@ from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
     Driver,
+    RelationFingerprint,
     TableRow,
     Transaction,
     _check_otel_metrics,
     _instrument_cache,
     _observed,
 )
+from pydantic import SecretStr
+
+from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
+from threetears.datasources.drivers.errors import (
+    DriverConnectError,
+    connect_error_from,
+    optional_password,
+)
 from threetears.observe import get_logger, traced
 
 __all__ = [
     "AsyncpgDriver",
     "DriverCancellationError",
-    "DriverConnectError",
     "DriverQueryError",
 ]
 
@@ -211,13 +232,14 @@ ORDER BY table_schema, table_name, ordinal_position
 
 #: per-table MD5 over the column shape (Tier-2 change-probe).
 #:
-#: the formula ``column_name || ':' || data_type || ':' ||
-#: COALESCE(is_nullable, '')`` is byte-for-byte the same payload as
-#: the python-side helper in ``datasource-task-02`` (see test
-#: ``test_table_hash_python_byte_equivalence`` for the cross-language
-#: invariant). swapping the COALESCE for an alternative null handling
-#: silently breaks the Tier-2 probe -- DO NOT change without updating
-#: the python helper in lockstep.
+#: byte-for-byte the payload
+#: :func:`threetears.datasources.introspection.column_hash_payload`
+#: describes and :func:`~threetears.datasources.introspection.compute_column_hash`
+#: hashes; ``TestTier2HashEquivalence`` in
+#: ``tests/integration/test_asyncpg_driver_live.py`` checks the two
+#: against a real engine. swapping the COALESCE for an alternative null
+#: handling silently breaks the Tier-2 probe -- DO NOT change without
+#: updating the python helper in lockstep.
 #: Per-column pre-hash before the aggregate. PostgreSQL's STRING_AGG has no
 #: 65535-byte ceiling, so this is not needed HERE -- it is needed for the
 #: formula to stay byte-identical to the Redshift driver and to
@@ -240,21 +262,6 @@ _PING_SQL = "SELECT 1"
 # ---------------------------------------------------------------------------
 # Exception types (DS-10-11)
 # ---------------------------------------------------------------------------
-
-
-class DriverConnectError(Exception):
-    """raised when connect / auth fails.
-
-    the message intentionally carries the host / port / database
-    identifiers (safe to log) but NEVER the resolved password value.
-    callers should raise the wrapper with ``from None`` to break the
-    cause chain -- the original asyncpg exception sometimes embeds the
-    password in nested context, which would defeat the sanitization.
-
-    :param message: human-readable description; MUST NOT carry the
-        password value or any other resolved secret
-    :ptype message: str
-    """
 
 
 class DriverQueryError(Exception):
@@ -332,8 +339,14 @@ def _get_cancellation_fired_counter() -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = ("asyncpg", "datasource.driver.cancellation.fired")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -341,8 +354,9 @@ def _get_cancellation_fired_counter() -> Any:
                 name="datasource.driver.cancellation.fired",
                 description="datasource driver cancellation fired count",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 
@@ -396,6 +410,7 @@ class AsyncpgDriver(Driver):
         *,
         external_pool: asyncpg.Pool[Any] | None = None,
         datasource_name: str = "unknown",
+        connect_guard: ConnectGuard | None = None,
     ) -> None:
         """capture config + optional borrowed pool. no I/O.
 
@@ -406,16 +421,25 @@ class AsyncpgDriver(Driver):
         :param datasource_name: name of the datasource this driver serves;
             surfaces on every OTel metric
         :ptype datasource_name: str
+        :param connect_guard: asked before every login the owned pool makes and
+            told of every refusal; ``None`` for an unguarded driver. a borrowed
+            pool logs into no warehouse, so it is never consulted there
+        :ptype connect_guard: ConnectGuard | None
         :return: nothing
         :rtype: None
         """
         self._config = config
+        self._connect_guard = connect_guard
         self._external_pool = external_pool
         # the pool is None until first use OR a borrowed pool is
         # supplied; ``_owns_pool`` distinguishes the lifecycle paths
         # so :meth:`close` knows whether to call ``pool.close()``.
         self._pool: asyncpg.Pool[Any] | None = external_pool
         self._owns_pool = external_pool is None
+        # held while the owned pool is created, so concurrent first callers share one pool:
+        # without it each built its own -- one login apiece with the same credential -- and
+        # every pool but the last was never closed.
+        self._pool_lock = asyncio.Lock()
         self._closed = False
         # read by :func:`_observed` as the ``datasource_name`` attribute
         # on every emitted metric. the Hub-side caller (shards 13/14)
@@ -437,6 +461,8 @@ class AsyncpgDriver(Driver):
         owned-pool path (postgres / yugabyte): the first call creates
         the asyncpg pool sized from the config's documented defaults
         via :func:`threetears.core.utils.pg_pool_kwargs.get_pg_pool_kwargs`.
+        concurrent first callers wait on one creation rather than each
+        building a pool.
 
         :return: the live :class:`asyncpg.Pool` (owned or borrowed)
         :rtype: asyncpg.Pool
@@ -449,8 +475,11 @@ class AsyncpgDriver(Driver):
             raise RuntimeError("AsyncpgDriver is closed")
         pool = self._pool
         if pool is None:
-            pool = await self._create_owned_pool()
-            self._pool = pool
+            async with self._pool_lock:
+                pool = self._pool
+                if pool is None:
+                    pool = await self._create_owned_pool()
+                    self._pool = pool
         return pool
 
     async def _create_owned_pool(self) -> asyncpg.Pool[Any]:
@@ -472,9 +501,15 @@ class AsyncpgDriver(Driver):
 
         :return: live owned pool
         :rtype: asyncpg.Pool
-        :raises DriverConnectError: on auth / network / DNS failure;
-            the wrapper carries host/port/database (safe to log) but
-            never the password
+        :raises DriverMissingCredentialError: before any network attempt,
+            when a configured ``password_ref`` resolves to nothing
+        :raises DriverCredentialPausedError: before any network attempt,
+            when the connect guard holds this credential refused
+        :raises DriverAuthError: when the server refuses the login;
+            carries its SQLSTATE and message
+        :raises DriverConnectError: on any other connect failure; the
+            wrapper carries host/port/database (safe to log) but never
+            the password
         """
         # agent-internal MUST not reach here -- the factory passes
         # external_pool= for that case. defending against a future
@@ -486,11 +521,13 @@ class AsyncpgDriver(Driver):
                 " (Hub's L3 pool); cannot open a fresh pool from agent_internal"
             )
         cfg: _PgConfig = self._config
-        # SecretStr round-trip: resolve only if password_ref is set;
-        # local dev / trust-auth setups legitimately have no password.
-        # ``.get_secret_value()`` is called inside the ``create_pool``
-        # call site to keep the value off any intermediate variable
-        # (see DS-10-10).
+        # SecretStr round-trip: a config with no password_ref connects with
+        # none (local dev / trust-auth setups legitimately have no password);
+        # one whose reference resolves to nothing is refused here, before any
+        # network attempt. the value stays a SecretStr and
+        # ``.get_secret_value()`` is called inside the ``create_pool`` call
+        # site, so no intermediate ``str`` holds it (see DS-10-10).
+        password = optional_password(cfg, datasource_name=self._datasource_name)
         #
         # search_path: when ``allowed_schemas`` is non-empty, pass the
         # value through asyncpg's ``server_settings`` connect kwarg.
@@ -512,30 +549,85 @@ class AsyncpgDriver(Driver):
             connect_kwargs: dict[str, Any] = {}
             if server_settings is not None:
                 connect_kwargs["server_settings"] = server_settings
+            # every login the pool makes -- the first ``min_size`` and each one it
+            # opens later to replace a closed connection -- goes through
+            # ``_connect_one``, so a credential refused mid-life is paused too.
             pool = await asyncpg.create_pool(
                 host=cfg.host,
                 port=cfg.port,
                 database=cfg.database,
                 user=cfg.username,
-                password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
+                password=(password.get_secret_value() if password is not None else None),
                 min_size=cfg.pool_min_size,
                 max_size=cfg.pool_max_size,
                 command_timeout=cfg.command_timeout_seconds,
+                connect=self._connect_one,
                 **connect_kwargs,
                 **get_pg_pool_kwargs(),
             )
-        except Exception:
+        except DriverConnectError:
+            # ``_connect_one`` already classified it (and a guard already heard
+            # of a refusal); re-wrapping would read the server's reason off our
+            # own exception and lose it.
+            raise
+        except Exception as exc:
             # break the cause chain (``from None``) so the original
             # asyncpg error -- which sometimes embeds the password
             # value in nested context -- does NOT reach loggers /
-            # tracebacks via ``__cause__``. the wrapper's message is
-            # the only thing callers see.
-            raise DriverConnectError(f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}") from None
+            # tracebacks via ``__cause__``. its type, and when the
+            # server answered, its SQLSTATE and message, are read off
+            # it first: a refused login must not read like an
+            # unreachable host to a caller deciding whether to retry.
+            raise connect_error_from(
+                f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}",
+                exc,
+                password=password,
+            ) from None
         # asyncpg.create_pool can return None on edge cases; guard
         # against the typing.
         if pool is None:
             raise DriverConnectError(f"connection returned no pool for {cfg.host}:{cfg.port}/{cfg.database}")
         return pool
+
+    async def _connect_one(self, *args: Any, **kwargs: Any) -> asyncpg.Connection[Any]:
+        """open ONE pooled connection, under this datasource's connect guard.
+
+        the pool calls this instead of :func:`asyncpg.connect` for every
+        connection it makes, with the arguments it would have passed there, so
+        each login is admitted by the guard first and a refusal is classified
+        and recorded before it reaches the pool.
+
+        :param args: positional connect arguments, forwarded unchanged
+        :ptype args: Any
+        :param kwargs: keyword connect arguments, forwarded unchanged; its
+            ``password`` is read only to mask it out of a server message
+        :ptype kwargs: Any
+        :return: the new connection
+        :rtype: asyncpg.Connection
+        :raises DriverCredentialPausedError: when the guard holds this
+            credential refused; no login is attempted
+        :raises DriverAuthError: when the server refuses the login
+        :raises DriverConnectError: on any other connect failure
+        """
+        raw_password = kwargs.get("password")
+        password = SecretStr(raw_password) if isinstance(raw_password, str) else None
+        host, port, database = kwargs.get("host"), kwargs.get("port"), kwargs.get("database")
+
+        async def _login() -> asyncpg.Connection[Any]:
+            try:
+                connection: asyncpg.Connection[Any] = await asyncpg.connect(*args, **kwargs)
+            except Exception as exc:
+                # classified here, inside the pool, because the pool would
+                # otherwise hand the raw backend exception -- which can carry the
+                # password in nested context -- to whichever caller it reaches.
+                raise connect_error_from(
+                    f"connection failed for {host}:{port}/{database}",
+                    exc,
+                    password=password,
+                ) from None
+            return connection
+
+        return await guarded_connect(self._connect_guard, _login)
 
     async def _reset_statement_timeout(self, conn: asyncpg.Connection[Any]) -> None:
         """restore the connection's session-default ``statement_timeout``.
@@ -566,6 +658,47 @@ class AsyncpgDriver(Driver):
                 extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
             )
 
+    async def _scope_borrowed_connection(self, conn: "asyncpg.Connection[Any]") -> None:
+        """scope a BORROWED connection to this datasource's schema.
+
+        A driver that opens its own pool sends ``search_path`` in the pgwire
+        STARTUP packet, which is why it survives the ``RESET ALL`` asyncpg issues
+        on release. A driver that BORROWS a pool -- the ``agent_internal`` case,
+        which shares the Hub's L3 pool -- never sends a startup packet, so it
+        inherited the pool owner's ``search_path`` and had no scoping at all.
+
+        The effect was that an ``agent_internal`` datasource did not route to the
+        schema its own name advertises: an unqualified ``FROM users`` resolved
+        against the Hub's own ``search_path`` and raised ``UndefinedTableError``,
+        while the identical query fully qualified returned rows. The module
+        docstring on the Hub side asserted a "per-query SET search_path" that did
+        not exist anywhere in this driver; ``schema_name`` was read in exactly one
+        place, to build a display string.
+
+        ``SET`` rather than ``SET LOCAL``: ``SET LOCAL`` outside a transaction is
+        a no-op with a warning, and this runs before the optional transaction the
+        timeout path opens. Session-level ``SET`` is safe on a shared pool because
+        ``Pool.release`` runs ``RESET ALL``, restoring the owner's startup default
+        -- the same property the statement_timeout path above relies on.
+
+        No-op when the driver owns its pool, where the startup packet already did
+        this and re-issuing it every acquire would be a wasted round trip.
+
+        :param conn: the freshly acquired connection
+        :ptype conn: asyncpg.Connection
+        :return: nothing
+        :rtype: None
+        """
+        if self._external_pool is None:
+            return
+        schema_name = getattr(self._config, "schema_name", None)
+        if not schema_name:
+            return
+        value = build_search_path_value([schema_name])
+        if value is None:
+            return
+        await conn.execute(f"SET search_path TO {value}")
+
     async def _acquire_and_run(
         self,
         coro_fn: Callable[[asyncpg.Connection[Any]], Awaitable[Any]],
@@ -573,6 +706,7 @@ class AsyncpgDriver(Driver):
         timeout_seconds: int | None = None,
     ) -> Any:
         """acquire a connection from the pool + route the call through cancellation.
+
 
         canonical wrapper every single-statement method routes through.
 
@@ -601,8 +735,12 @@ class AsyncpgDriver(Driver):
         :raises RuntimeError: if the driver was previously closed
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
+        # every single-statement method routes through here, which is why the
+        # borrowed-pool search_path is applied at this one point rather than at
+        # each call site.
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
+            await self._scope_borrowed_connection(conn)
             if timeout_seconds is None:
                 result = await self._with_cancellation(
                     lambda: coro_fn(conn),
@@ -742,6 +880,10 @@ class AsyncpgDriver(Driver):
         pool = await self._ensure_pool()
         conn = await pool.acquire()
         try:
+            # before the transaction opens: a borrowed connection carries the
+            # pool owner's search_path until scoped, and SET inside the
+            # transaction would roll back with it on any abort.
+            await self._scope_borrowed_connection(conn)
             transaction = conn.transaction()
             await transaction.start()
         except BaseException:
@@ -897,6 +1039,7 @@ class AsyncpgDriver(Driver):
         translated = _translate_placeholders(sql, "asyncpg")
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
+            await self._scope_borrowed_connection(conn)
             async with conn.transaction():
                 # ``Connection.cursor`` returns a server-side cursor;
                 # this is the WHOLE reason we override the ABC default.
@@ -968,12 +1111,48 @@ class AsyncpgDriver(Driver):
 
     @traced
     @_observed(driver_type="asyncpg")
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+        """count and fingerprint ``relation`` over ``key``, in one statement.
+
+        Postgres turns a hash into a summable number by casting the leading hex
+        digits through ``bit(32)``: ``('x' || <8 hex chars>)::bit(32)::bigint``.
+        That is the spelling this engine has, and it is why the fingerprint is a
+        driver method rather than SQL a portable caller writes.
+
+        ``SUM`` over ``bigint`` widens to ``numeric`` here, so a large relation
+        cannot silently wrap -- an overflow would fingerprint two different
+        relations identically, which is the one failure a change-probe must not
+        have.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the ordering columns, TRUSTED identifiers
+        :ptype key: list[str]
+        :return: the relation's current row count and key digest
+        :rtype: RelationFingerprint
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        key_expression = build_relation_key_expression(key)
+        sql = (
+            "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
+            "COALESCE(SUM(('x' || SUBSTR(MD5(k), 1, 8))::bit(32)::bigint), 0) AS digest "
+            f"FROM (SELECT {key_expression} AS k FROM {relation}) AS fingerprint_source"
+        )
+        record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql))
+        return RelationFingerprint(row_count=int(record["row_count"]), digest=str(record["digest"]))
+
+    @traced
+    @_observed(driver_type="asyncpg")
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """compute per-table MD5 over the column shape (Tier-2 change-probe).
 
         the warehouse-side MD5 formula in :data:`_POSTGRES_TABLE_HASHES_SQL`
-        is byte-equivalent to the python-side ``_compute_column_hash``
-        helper specified in ``datasource-task-02``. equality is the
+        is byte-equivalent to the python-side
+        :func:`~threetears.datasources.introspection.compute_column_hash`
+        over the same rows. equality is the
         cross-language invariant that makes the Tier-2 probe work --
         see ``tests/integration/test_asyncpg_driver_live.py`` for the
         cross-check.
@@ -1023,6 +1202,11 @@ class AsyncpgDriver(Driver):
             await self._acquire_and_run(
                 lambda conn: conn.fetchval(_PING_SQL),
             )
+        except DriverConnectError:
+            # already sanitized by the pool open, and it may be the auth type a
+            # caller stops retrying on: re-wrapping it would drop both that type
+            # and the server's reason.
+            raise
         except Exception:
             # sanitize: the wrapper carries the connection identity
             # (safe to log) but never the password. ``from None``

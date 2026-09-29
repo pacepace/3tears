@@ -15,14 +15,23 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityKeyNotFoundError,
     IdentityTokenError,
+    VerifiedPrincipal,
     canonical_call_hash,
+    principal_from_claims,
     verify_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
@@ -39,7 +48,7 @@ from threetears.nats import (
 )
 from threetears.observe import InflightRequestsGauge, clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
-from threetears.registry.catalog import ToolCatalog
+from threetears.registry.catalog import ToolCatalog, ToolDefinition
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
 # the issuer the Hub stamps on identity tokens, and the clock-skew tolerance the proxy allows
@@ -47,7 +56,10 @@ from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrateg
 # need to tune them.
 _IDENTITY_ISSUER = "hub"
 _IDENTITY_LEEWAY_SECONDS = 60
-_POP_LEEWAY_SECONDS = 60
+#: how far either side of the proxy's clock a pop proof's ``iat`` may fall. public because the pop
+#: replay guard must be sized for its future half: whoever constructs that guard reads it here, and
+#: :class:`CallProxy` refuses a guard that does not cover it.
+POP_LEEWAY_SECONDS = 60
 
 # how many times a durable result publish to the caller is retried before the answer is declared
 # lost. by that point the tool has already run, so a transport blip must not cost the work; the
@@ -62,6 +74,7 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
+    "POP_LEEWAY_SECONDS",
     "CallProxy",
     "ProxyCallAccepted",
     "ProxyCallRequest",
@@ -80,9 +93,15 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
     {"conversation_id", "user_id", "customer_id", "correlation_id", "agent_id"}
 )
 
+#: the optional ``ProxyCallRequest`` fields a registry older than the field refuses outright,
+#: because the model forbids unknown keys and an unknown ``null`` is as fatal as an unknown value.
+#: the model omits each of them from its serialized form when unset, so no sender -- whichever
+#: serializer it calls -- can put one on the wire as an explicit null.
+_OMITTED_WHEN_UNSET: tuple[str, ...] = ("deadline_seconds", "input_schema_digest")
+
 
 class ProxyCallRequest(BaseModel):
-    """incoming tool call request from agent.
+    """incoming tool call request from a caller: an agent, a tool pod, or the hub.
 
     all per-call identity dimensions (conversation_id, user_id,
     customer_id, correlation_id, agent_id) ride as a single nested
@@ -140,8 +159,25 @@ class ProxyCallRequest(BaseModel):
         optional is pruned from the forwarded envelope rather than
         crossing as an explicit ``null``. An agent-side sender must
         prune likewise, which is the lesson that cost three days of
-        refusals on the hop below this one
+        refusals on the hop below this one. **The model now does that
+        pruning itself**: an unset ``deadline_seconds`` is omitted from
+        every serialized form, whichever serializer the sender calls
     :ptype deadline_seconds: float | None
+    :param input_schema_digest: the :attr:`DiscoverResultEntry.input_schema_digest`
+        the caller was shown. When set, the call is routed ONLY to copies
+        still serving that input schema, and refused
+        ``TOOL_DEFINITION_CHANGED`` when copies are visible but none
+        serves it -- the caller's view is stale and it should
+        re-discover rather than send arguments shaped for a schema nobody
+        serves. ``None`` routes exactly where discovery would show.
+        Checked here and NEVER forwarded to the pod.
+
+        **Rollout: the registry ships before any sender sets it**, because
+        a registry older than this field refuses the whole call on the
+        unknown key. The model omits it from every serialized form when
+        unset, so a sender that never sets it cannot put a null on the
+        wire either
+    :ptype input_schema_digest: str | None
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -153,6 +189,22 @@ class ProxyCallRequest(BaseModel):
     pop: str | None = None
     result_subject: str | None = None
     deadline_seconds: float | None = None
+    input_schema_digest: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_rollout_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """drop each :data:`_OMITTED_WHEN_UNSET` field from the serialized form when it is ``None``.
+
+        :param handler: pydantic's default serializer
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized fields
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        for name in _OMITTED_WHEN_UNSET:
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -186,7 +238,7 @@ class ProxyCallRequest(BaseModel):
 
 
 class ProxyCallResponse(BaseModel):
-    """outgoing tool call response to agent.
+    """outgoing tool call response to the caller.
 
     the response echoes the inbound :class:`CallContext` verbatim so
     identity has one shape on both sides of the proxy hop. there is no
@@ -250,7 +302,7 @@ class ProxyCallAccepted(BaseModel):
 
 
 class CallProxy:
-    """proxies tool calls from agents to tool pods.
+    """proxies tool calls from callers -- agents, tool pods, the hub -- to tool pods.
 
     subscribes to call subject with queue group for HA,
     validates tool availability in catalog, selects endpoint
@@ -291,7 +343,8 @@ class CallProxy:
         :ptype authorizer: AgentToolAuthorizer
         :param pop_replay_guard: records each pop nonce for single-use enforcement; REQUIRED.
             without it a captured pop could be replayed verbatim for the same call body within the
-            iat freshness window, so the enforce-only proxy must always carry one
+            iat freshness window, so the enforce-only proxy must always carry one. It must be
+            sized for a verifier future tolerance of at least :data:`POP_LEEWAY_SECONDS`
         :ptype pop_replay_guard: ReplayGuard
         :param limit_guard: pre-call spend gate; REQUIRED. every tool dispatch is
             gated through the limit guard after the pop check and before catalog
@@ -346,6 +399,8 @@ class CallProxy:
             it here; ``None`` (tests / standalone) self-provisions a private
             gauge so the bracket is always live
         :ptype inflight_gauge: InflightRequestsGauge | None
+        :raises ValueError: when ``pop_replay_guard`` is sized for a smaller verifier future
+            tolerance than :data:`POP_LEEWAY_SECONDS`
         """
         from threetears.registry.config import get_call_timeout
 
@@ -359,6 +414,9 @@ class CallProxy:
         self._jwks_provider = jwks_provider
         self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
+        # a guard sized for a smaller future tolerance than this proxy accepts would let a replayed
+        # proof stamped at the edge through its wipe check; refuse it here, at startup.
+        pop_replay_guard.require_covers(timedelta(seconds=POP_LEEWAY_SECONDS))
         self._pop_replay_guard = pop_replay_guard
         self._inflight_gauge = inflight_gauge or InflightRequestsGauge("threetears_registry_inflight_requests")
         self._nc: "NatsClient | None" = None
@@ -390,12 +448,20 @@ class CallProxy:
         replica's local routing strategy then selects an endpoint
         from the shared catalog.
 
+        the pop replay guard is bound first, before the call subject is subscribed. after a
+        broker restart the guard refuses every proof issued before its bucket's creation time
+        plus its reach, and the bucket is created by whoever opens it first; left to the first
+        call, that call creates it and is refused as a replay it is not. binding here puts the
+        creation time before any proof this replica can receive.
+
         :param nc: connected canonical NATS wrapper client
         :ptype nc: NatsClient
         :return: nothing
         :rtype: None
+        :raises threetears.nats.KvError: when the pop nonce bucket cannot be opened
         """
         self._nc = nc
+        await self._pop_replay_guard.bind()
         subject = Subjects.tools_call()
         self._sub = await nc.subscribe(
             subject=subject,
@@ -551,7 +617,7 @@ class CallProxy:
 
     async def _verify_identity(
         self, request: "ProxyCallRequest"
-    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None"]:
+    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None", VerifiedPrincipal | None]:
         """verify the Hub-issued identity token and re-stamp the VERIFIED identity.
 
         the heart of the platform-auth fix: authorization + forwarding must act on an
@@ -561,15 +627,27 @@ class CallProxy:
 
         verification is UNCONDITIONAL and fail-closed (caller guarantees ``request.context`` and
         ``context.agent_id`` present): verify; on success return the re-stamped request; on ANY
-        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>)`` so the dispatcher rejects
-        the call without forwarding. there is no off/warn passthrough -- a call the proxy cannot
-        authenticate never reaches the tool pod on the self-asserted envelope.
+        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>, None)`` so the dispatcher
+        rejects the call without forwarding. there is no off/warn passthrough -- a call the proxy
+        cannot authenticate never reaches the tool pod on the self-asserted envelope.
+
+        the third value is the principal the token names, read ONCE through
+        :func:`~threetears.core.security.principal_from_claims` and carried whole to the
+        authorizer and the assertion mint, so neither reconstructs the principal's kind from the
+        re-stamped customer on its own. a tool pod's token carries the platform customer
+        sentinel in place of a customer UUID, because a tool pod has no customer; it is read as
+        ``customer_id=None`` plus the tool-pod kind. any other non-UUID customer claim still fails
+        closed -- the sentinel is the one value the hub mints on purpose, and a garbage claim is
+        a malformed token, not a platform principal. a tool pod presenting a user assertion is
+        refused outright: a pod acts on nobody's behalf, so an assertion on a pod token is
+        malformed by definition, whatever customer it was minted for.
 
         :param request: the parsed call request (its context carries the identity token)
         :ptype request: ProxyCallRequest
-        :return: ``(possibly re-stamped request, error response or None)``. a non-None response
-            means the caller must reject the call without dispatching
-        :rtype: tuple[ProxyCallRequest, ProxyCallResponse | None]
+        :return: ``(possibly re-stamped request, error response or None, the verified
+            principal or None)``. a non-None response means the caller must reject the call
+            without dispatching, and the principal is ``None`` exactly then
+        :rtype: tuple[ProxyCallRequest, ProxyCallResponse | None, VerifiedPrincipal | None]
         """
         context = request.context
         assert context is not None  # guaranteed by the caller's agent_id presence check
@@ -589,8 +667,13 @@ class CallProxy:
             # ``None`` for an agent handshake token (one per pod; it CANNOT carry the per-turn
             # user), the system principal for a hub-originated call. the bound user-assertion below
             # may override it with the per-turn verified user.
-            agent_id_value = UUID(claims.sub)
-            customer_id_value = UUID(claims.customer_id)
+            # the ONE reading of who the token names. a tool pod's token carries the platform
+            # sentinel where a customer UUID would be, because ``tool_pods`` has no customer: it
+            # is read as NO customer plus the tool-pod kind, and a non-UUID claim that is not the
+            # sentinel still fails closed on the UUID parse inside this try.
+            principal = principal_from_claims(claims)
+            agent_id_value = principal.principal_id
+            customer_id_value = principal.customer_id
             user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
@@ -614,7 +697,48 @@ class CallProxy:
                 error_code="TOOL_IDENTITY_UNVERIFIED",
                 context=context,
             )
-            return request, response
+            return request, response, None
+
+        if principal.is_tool_pod:
+            # the decision tier: a signed claim was read as "platform principal, no customer",
+            # and the operator reading a dispatch has to be able to see that from a line rather
+            # than from the ABSENCE of a customer tag. never token or key material.
+            log.info(
+                "identity verified as a platform principal; customer claim read as none",
+                extra={
+                    "extra_data": {
+                        "agent_id": str(principal.principal_id),
+                        "tool_name": request.tool_name,
+                        "correlation_id": _correlation_id_str(request),
+                    }
+                },
+            )
+            if context.user_identity_token:
+                # a pod acts on nobody's behalf, so an assertion on a pod token is malformed by
+                # definition -- refused here at the sink, not left to the customer-binding check
+                # below, which compares claim strings and would admit one minted with the sentinel.
+                log.warning(
+                    "user-assertion presented on a tool pod token; rejecting call",
+                    extra={
+                        "extra_data": {
+                            "tool_name": request.tool_name,
+                            "reason": "IdentityTokenError",
+                            "detail": "a tool pod acts on nobody's behalf; a user assertion on a pod token is malformed",
+                            "correlation_id": _correlation_id_str(request),
+                        }
+                    },
+                )
+                return (
+                    request,
+                    ProxyCallResponse(
+                        success=False,
+                        content="",
+                        error="user-assertion verification failed (IdentityTokenError)",
+                        error_code="TOOL_USER_IDENTITY_UNVERIFIED",
+                        context=context,
+                    ),
+                    None,
+                )
 
         # the verified user identity DEFAULTS to the handshake token's user_id: ``None`` for an
         # agent handshake token (one per pod; it CANNOT carry the per-turn user), the system
@@ -691,7 +815,7 @@ class CallProxy:
                     error_code="TOOL_USER_IDENTITY_UNVERIFIED",
                     context=context,
                 )
-                return request, response
+                return request, response, None
 
         verified_context = context.model_copy(
             update={
@@ -700,7 +824,7 @@ class CallProxy:
                 "customer_id": customer_id_value,
             }
         )
-        return request.model_copy(update={"context": verified_context}), None
+        return request.model_copy(update={"context": verified_context}), None, principal
 
     async def _verify_pop(self, request: "ProxyCallRequest") -> "ProxyCallResponse | None":
         """verify the per-call proof-of-possession against the token's holder-key binding.
@@ -743,14 +867,18 @@ class CallProxy:
                 request.arguments,
                 str(context.correlation_id) if context.correlation_id is not None else None,
             )
-            jti = verify_pop_proof(
+            proof = verify_pop_proof(
                 request.pop,
                 expected_jkt=claims.cnf,
                 access_token_hash=access_token_hash(token),
                 body_hash=body_hash,
-                leeway_seconds=_POP_LEEWAY_SECONDS,
+                leeway_seconds=POP_LEEWAY_SECONDS,
             )
-            if not await self._pop_replay_guard.record_unique(jti):
+            try:
+                fresh = await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at)
+            except Exception as exc:  # noqa: BLE001 -- the ledger failing fails the check closed, with a reply
+                return self._pop_ledger_unavailable(request, exc)
+            if not fresh:
                 raise IdentityTokenError("pop nonce replay")
             return None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
@@ -791,8 +919,11 @@ class CallProxy:
         unauthorized-for-the-tool call still gets ``TOOL_NOT_AUTHORIZED``
         rather than a spend error. the limit gate is the ONE fail-OPEN
         gate (a guard that raises serves the call); every other gate is
-        fail-CLOSED. after a successful forward the post-call
-        usage-emit seam fires fire-and-forget.
+        fail-CLOSED. routing narrows the entry's endpoints to the ones the
+        verified caller may use (an agent's in-process endpoint only for
+        that agent, a Tool Pod's for everyone) before the strategy picks
+        one, and failover stays inside that set. after a successful
+        forward the post-call usage-emit seam fires fire-and-forget.
 
         :param request: parsed + identity-bound call request
         :ptype request: ProxyCallRequest
@@ -830,9 +961,9 @@ class CallProxy:
         # verify the Hub-issued identity token and re-stamp the VERIFIED identity onto the
         # request BEFORE authorization + forwarding, so RBAC and the tool pod act on an
         # authenticated identity rather than the self-asserted envelope. unconditional + fail-closed.
-        verified_request, identity_error = await self._verify_identity(request)
-        if identity_error is not None:
-            if msg.reply_subject is not None:
+        verified_request, identity_error, principal = await self._verify_identity(request)
+        if identity_error is not None or principal is None:
+            if msg.reply_subject is not None and identity_error is not None:
                 await self._nc.publish_reply(
                     reply_subject=msg.reply_subject,
                     message=identity_error,
@@ -861,7 +992,7 @@ class CallProxy:
         # CallContext envelope (context-task-01) and is plumbed to
         # the authorizer so rbac-evaluator implementations can
         # resolve user-side grants; ``None`` when the dispatch
-        # carries no user identity (authorizer will deny).
+        # carries no user identity.
         correlation_id_log = _correlation_id_str(request)
         agent_id_log = str(request.context.agent_id)
         user_id_log: str | None = str(request.context.user_id) if request.context.user_id is not None else None
@@ -965,27 +1096,61 @@ class CallProxy:
                 return
 
         if self._authorizer is not None:
-            authorized = await self._authorizer.is_authorized(
-                agent_id_log,
-                user_id_log,
-                request.tool_name,
-                request.tool_version,
-            )
+            # the tool-pod mark rides beside the ids because the ids cannot carry it: a pod's
+            # principal id and an agent's are both UUIDs, and only the verified token's customer
+            # claim says which kind this one is. the authorizer admits a pod on its own grant
+            # and refuses an agent with no user; the mark is what tells those two apart.
+            try:
+                authorized = await self._authorizer.is_authorized(
+                    agent_id_log,
+                    user_id_log,
+                    request.tool_name,
+                    request.tool_version,
+                    principal_is_tool_pod=principal.is_tool_pod,
+                )
+            except Exception as exc:  # noqa: BLE001 -- fail closed WITH a reply; never a dropped call
+                log.error(
+                    "tool call refused: the authorizer could not reach the store it decides from, so the "
+                    "call is denied rather than decided",
+                    extra={
+                        "extra_data": {
+                            "agent_id": agent_id_log,
+                            "user_id": user_id_log,
+                            "tool_name": request.tool_name,
+                            "correlation_id": correlation_id_log,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    },
+                )
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=(
+                        f"authorization for tool {request.tool_name} could not be decided: the authorizer's "
+                        f"store failed ({type(exc).__name__}); retry"
+                    ),
+                    error_code="TOOL_AUTHORIZATION_UNAVAILABLE",
+                    context=request.context,
+                )
+                await self._answer(msg, response, delivery_subject)
+                return
             if not authorized:
                 response = ProxyCallResponse(
                     success=False,
                     content="",
-                    error=f"agent not authorized for tool {request.tool_name}",
+                    error=f"principal not authorized for tool {request.tool_name}",
                     error_code="TOOL_NOT_AUTHORIZED",
                     context=request.context,
                 )
                 await self._answer(msg, response, delivery_subject)
                 log.warning(
-                    "agent tool call denied",
+                    "tool call denied",
                     extra={
                         "extra_data": {
                             "agent_id": agent_id_log,
                             "user_id": user_id_log,
+                            "principal_is_tool_pod": principal.is_tool_pod,
                             "tool_name": request.tool_name,
                             "correlation_id": correlation_id_log,
                         }
@@ -1017,14 +1182,84 @@ class CallProxy:
             )
             return
 
-        endpoint = self._routing_strategy.select(entry.endpoints)
+        # WHICH copies this caller may reach, decided by the ONE selection discovery also asks, so
+        # the copy a call lands on is the copy the caller was shown. an agent's in-process copy is
+        # routed only to the agent that serves it, and preferred over the shared copies for that
+        # agent; a Tool Pod's copy serves every caller. a caller that names the input schema it was
+        # shown is routed only where that schema is still served. decided on the VERIFIED
+        # principal, before the strategy sees anything, and reused by the failover below --
+        # least-busy with a random tie-break otherwise hands one agent's call to another agent's
+        # process as the ordinary case. see ``CatalogEntry.select_copies``.
+        selection = entry.select_copies(principal.principal_id, request.input_schema_digest)
+        routable = list(selection.routable)
+        callable_endpoints = entry.endpoints_for(principal.principal_id)
+        endpoint = self._routing_strategy.select(routable)
 
         if endpoint is None:
+            has_pending = any(ep.status == "pending" for ep in callable_endpoints)
+            if selection.definition_changed:
+                # copies are serving this tool for this caller, but none serves the input schema the
+                # caller was shown. its arguments were shaped for a definition that has changed, so
+                # the answer is "re-discover", not "unavailable" -- the tool is right there.
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=(
+                        f"tool {full_name} is no longer served with the input schema this call was built "
+                        f"for (digest {request.input_schema_digest}); re-discover the tool and retry"
+                    ),
+                    error_code="TOOL_DEFINITION_CHANGED",
+                    context=request.context,
+                )
+                await self._answer(msg, response, delivery_subject)
+                log.warning(
+                    "tool call refused: no visible copy serves the input schema the caller named",
+                    extra={
+                        "extra_data": {
+                            "full_name": full_name,
+                            "input_schema_digest": request.input_schema_digest,
+                            "visible_copy_count": len(selection.visible),
+                            "agent_id": agent_id_log,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                return
             # TOOL_NOT_READY takes priority over TOOL_UNAVAILABLE: if ANY
-            # endpoint is still pending its probe confirmation, the caller
-            # should retry shortly rather than give up. TOOL_UNAVAILABLE is
+            # endpoint this caller may use is still pending its probe
+            # confirmation, the caller should retry shortly rather than give
+            # up. a pending endpoint of ANOTHER agent's process does not count:
+            # no retry would ever route this caller to it. TOOL_UNAVAILABLE is
             # only reported when no pending endpoints exist either.
-            has_pending = any(ep.status == "pending" for ep in entry.endpoints)
+            if entry.endpoints and not callable_endpoints:
+                # every endpoint belongs to another agent's process. the same answer as "nothing
+                # routable for this call" -- because that is what it is -- with the reason named,
+                # since "has no available endpoints" would be false here and would send an operator
+                # hunting for a dead pod that is in fact healthy and serving its own agent.
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=(
+                        f"tool {full_name} is served only in-process by other agents, and an agent's in-process "
+                        "tool answers from that agent's own state; the calling agent serves no endpoint of it"
+                    ),
+                    error_code="TOOL_UNAVAILABLE",
+                    context=request.context,
+                )
+                await self._answer(msg, response, delivery_subject)
+                log.warning(
+                    "tool call refused: every endpoint is another agent's in-process server",
+                    extra={
+                        "extra_data": {
+                            "full_name": full_name,
+                            "endpoint_count": len(entry.endpoints),
+                            "agent_id": agent_id_log,
+                            "principal_is_tool_pod": principal.is_tool_pod,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                return
             if has_pending:
                 response = ProxyCallResponse(
                     success=False,
@@ -1040,6 +1275,7 @@ class CallProxy:
                         "extra_data": {
                             "full_name": full_name,
                             "endpoint_count": len(entry.endpoints),
+                            "callable_endpoint_count": len(callable_endpoints),
                             "agent_id": agent_id_log,
                             "correlation_id": correlation_id_log,
                         }
@@ -1060,6 +1296,7 @@ class CallProxy:
                     "extra_data": {
                         "full_name": full_name,
                         "endpoint_count": len(entry.endpoints),
+                        "callable_endpoint_count": len(callable_endpoints),
                         "agent_id": agent_id_log,
                         "correlation_id": correlation_id_log,
                     }
@@ -1075,6 +1312,12 @@ class CallProxy:
         # pod dying and the heartbeat sweep evicting its catalog endpoints:
         # a single call to a not-yet-evicted dead pod no longer fails the
         # whole request when a healthy sibling pod serves the same tool.
+        #
+        # the sibling comes from ``routable``, never the whole entry:
+        # when an agent's own replica is dead, the least-busy survivor is
+        # usually ANOTHER agent's process, and failing over to it would answer
+        # from the wrong agent's state -- the very misroute the owner rule
+        # above exists to prevent.
         #
         # only TOOL_UNAVAILABLE is retried. a TOOL_TIMEOUT may have reached
         # the pod and be executing, so retrying it would risk double-execution
@@ -1093,12 +1336,17 @@ class CallProxy:
             attempted_pod_ids.add(endpoint.pod_id)
             endpoint.in_flight += 1
             try:
-                response = await self._forward_call(request, endpoint.pod_id)
+                response = await self._forward_call(
+                    request,
+                    endpoint.pod_id,
+                    principal,
+                    selection.routed_definitions[endpoint.pod_id],
+                )
             finally:
                 endpoint.in_flight -= 1
             if response.error_code != "TOOL_UNAVAILABLE":
                 break
-            remaining = [ep for ep in entry.endpoints if ep.pod_id not in attempted_pod_ids]
+            remaining = [ep for ep in routable if ep.pod_id not in attempted_pod_ids]
             next_endpoint = self._routing_strategy.select(remaining)
             if next_endpoint is None:
                 # NOSILENT: the failover warning below fires only when a SIBLING pod exists, so
@@ -1114,6 +1362,7 @@ class CallProxy:
                             "full_name": full_name,
                             "failed_pod_id": endpoint.pod_id,
                             "endpoint_count": len(entry.endpoints),
+                            "callable_endpoint_count": len(routable),
                             "agent_id": agent_id_log,
                             "correlation_id": correlation_id_log,
                         }
@@ -1209,34 +1458,31 @@ class CallProxy:
                 )
                 await asyncio.sleep(_RESULT_DELIVERY_RETRY_SECONDS)
 
-    def _resolve_timeout(self, tool_name: str, tool_version: str) -> float:
-        """resolve effective timeout for a tool call.
+    def _resolve_timeout(self, definition: ToolDefinition) -> float:
+        """resolve the effective timeout for a call routed to one copy.
 
-        checks catalog entry for per-tool declared timeout, falls back
-        to proxy default (from env var or platform default).
+        the ROUTED copy's declared timeout, when it declares one, else the proxy default (from env
+        var or platform default). a different copy of the same tool may declare a different one, and
+        the call runs on this one.
 
-        :param tool_name: namespaced tool name
-        :ptype tool_name: str
-        :param tool_version: tool version string
-        :ptype tool_version: str
+        :param definition: the routed copy's definition for this call
+        :ptype definition: ToolDefinition
         :return: effective timeout in seconds
         :rtype: float
         """
-        full_name = f"{tool_name}@{tool_version}"
-        entry = self._catalog.get(full_name)
-        if entry is not None and entry.timeout_seconds is not None:
-            result: float = entry.timeout_seconds
-            return result
-        return self.timeout
+        result: float = definition.timeout_seconds if definition.timeout_seconds is not None else self.timeout
+        return result
 
     async def _forward_call(
         self,
         request: ProxyCallRequest,
         pod_id: str,
+        principal: VerifiedPrincipal,
+        definition: ToolDefinition,
     ) -> ProxyCallResponse:
         """forward tool call to target tool pod, on whichever path its declared timeout allows.
 
-        uses per-tool timeout from catalog if declared, otherwise
+        uses the routed copy's declared timeout if it declares one, otherwise
         falls back to proxy default.
 
         A tool whose timeout exceeds :data:`threetears.nats.SYNC_REPLY_BUDGET_SECONDS` cannot be
@@ -1245,23 +1491,27 @@ class CallProxy:
         calls go through :meth:`_forward_call_durable` instead. Everything shorter keeps the fast
         request/reply path unchanged.
 
-        :param request: original call request from agent
+        :param request: the identity-verified call request
         :ptype request: ProxyCallRequest
         :param pod_id: identifier of target tool pod
         :ptype pod_id: str
+        :param principal: the principal the verified token named, for the proxy assertion
+        :ptype principal: VerifiedPrincipal
+        :param definition: the routed copy's definition this call runs under
+        :ptype definition: ToolDefinition
         :return: response from tool pod or error response on timeout
         :rtype: ProxyCallResponse
         :raises RuntimeError: when invoked before ``start`` connects NATS
         """
         if self._nc is None:
             raise RuntimeError("_forward_call invoked before NATS connected")
-        effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)
+        effective_timeout = self._resolve_timeout(definition)
         if requires_async_result(effective_timeout):
-            return await self._forward_call_durable(request, pod_id, effective_timeout)
+            return await self._forward_call_durable(request, pod_id, effective_timeout, principal)
         internal_subject = Subjects.tools_internal(pod_id)
         internal_payload = _build_internal_payload(
             request,
-            self._mint_proxy_assertion(request, pod_id),
+            self._mint_proxy_assertion(request, pod_id, principal),
             effective_timeout=effective_timeout,
         )
         correlation_id_log = _correlation_id_str(request)
@@ -1272,7 +1522,6 @@ class CallProxy:
                 payload=internal_payload,
                 timeout=timedelta(seconds=effective_timeout),
             )
-            response = ProxyCallResponse.model_validate_json(reply_bytes)
         except (TimeoutError, RequestError) as exc:
             # the wrapper raises RequestError ("timed out" / "no responders" /
             # "connection closed") for transport-level failures; we coalesce
@@ -1305,13 +1554,89 @@ class CallProxy:
                 error_code=error_code,
                 context=request.context,
             )
+        else:
+            response = self._pod_response(reply_bytes, request, pod_id)
         return response
+
+    def _pod_response(self, raw: bytes, request: ProxyCallRequest, pod_id: str) -> ProxyCallResponse:
+        """read a tool pod's answer, or a typed refusal when it is not a :class:`ProxyCallResponse`.
+
+        The pod ANSWERED, so it may have run the tool: this is never ``TOOL_UNAVAILABLE`` (which
+        the failover loop retries on a sibling) but ``TOOL_RESPONSE_MALFORMED``, which it does not.
+        Left to raise, the parse failure killed the dispatch task with the caller unanswered.
+
+        :param raw: the pod's reply bytes
+        :ptype raw: bytes
+        :param request: the call request, for context echoing and the log
+        :ptype request: ProxyCallRequest
+        :param pod_id: the pod that answered
+        :ptype pod_id: str
+        :return: the pod's answer, or the malformed-answer refusal
+        :rtype: ProxyCallResponse
+        """
+        try:
+            response = ProxyCallResponse.model_validate_json(raw)
+        except ValidationError as exc:
+            log.error(
+                "tool pod answered with a body that is not a call response; the caller is told so",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": _correlation_id_str(request),
+                        "error": str(exc),
+                    }
+                },
+            )
+            response = ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"tool pod {pod_id} answered with a malformed response; it may have run the tool",
+                error_code="TOOL_RESPONSE_MALFORMED",
+                context=request.context,
+            )
+        return response
+
+    def _pop_ledger_unavailable(self, request: ProxyCallRequest, exc: Exception) -> ProxyCallResponse:
+        """the refusal for a call whose proof could not be checked against the replay ledger.
+
+        The ledger's contract says a failure MUST be a failed check, never fresh, so the call is
+        denied -- but not as ``TOOL_POP_UNVERIFIED``, which tells the caller its proof is bad. The
+        proof was never judged; the ledger could not be reached. Logged once at ERROR with the cause.
+
+        :param request: the call request
+        :ptype request: ProxyCallRequest
+        :param exc: what the ledger raised
+        :ptype exc: Exception
+        :return: the ``TOOL_POP_LEDGER_UNAVAILABLE`` refusal
+        :rtype: ProxyCallResponse
+        """
+        log.error(
+            "tool call refused: the proof-of-possession replay ledger could not be reached, so the "
+            "proof could not be checked and the call is denied",
+            extra={
+                "extra_data": {
+                    "tool_name": request.tool_name,
+                    "correlation_id": _correlation_id_str(request),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            },
+        )
+        return ProxyCallResponse(
+            success=False,
+            content="",
+            error=f"the replay ledger could not be reached ({type(exc).__name__}); the call was not checked, retry",
+            error_code="TOOL_POP_LEDGER_UNAVAILABLE",
+            context=request.context,
+        )
 
     async def _forward_call_durable(
         self,
         request: ProxyCallRequest,
         pod_id: str,
         effective_timeout: float,
+        principal: VerifiedPrincipal,
     ) -> ProxyCallResponse:
         """forward a LONG call: subscribe, dispatch, and collect the answer off a durable subject.
 
@@ -1327,12 +1652,14 @@ class CallProxy:
         per CALL, never the per-turn ``correlation_id``: a turn can dispatch several tool calls, and a
         correlation-keyed subject would hand this waiter another call's result.
 
-        :param request: original call request from agent
+        :param request: the identity-verified call request
         :ptype request: ProxyCallRequest
         :param pod_id: identifier of target tool pod
         :ptype pod_id: str
         :param effective_timeout: how long the tool is allowed to take
         :ptype effective_timeout: float
+        :param principal: the principal the verified token named, for the proxy assertion
+        :ptype principal: VerifiedPrincipal
         :return: the pod's answer, or a well-typed error response
         :rtype: ProxyCallResponse
         """
@@ -1341,15 +1668,40 @@ class CallProxy:
         result_subject = Subjects.tools_result(pod_id, uuid7())
         internal_payload = _build_internal_payload(
             request,
-            self._mint_proxy_assertion(request, pod_id),
+            self._mint_proxy_assertion(request, pod_id, principal),
             result_subject=result_subject.path,
             effective_timeout=effective_timeout,
         )
-        waiter = await self._nc.jetstream_result_waiter(
-            subject=result_subject,
-            stream=result_stream_name(),
-            wait_budget=timedelta(seconds=effective_timeout),
-        )
+        try:
+            waiter = await self._nc.jetstream_result_waiter(
+                subject=result_subject,
+                stream=result_stream_name(),
+                wait_budget=timedelta(seconds=effective_timeout),
+            )
+        except Exception as exc:  # noqa: BLE001 -- every failure becomes a typed response, never a hang
+            # the waiter is opened BEFORE the call is dispatched, so a failure here means the call
+            # never reached a pod: TOOL_UNAVAILABLE, the retryable answer. left uncaught it killed
+            # the dispatch task with the reply subject unanswered, and the caller learned nothing
+            # until its own deadline -- a stream missing from a bus read as a dead tool.
+            log.warning(
+                "durable result waiter could not open; the call was never dispatched",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "stream": result_stream_name(),
+                        "detail": str(exc),
+                    }
+                },
+            )
+            return ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"durable result stream unavailable; the call was not dispatched: {exc}",
+                error_code="TOOL_UNAVAILABLE",
+                context=request.context,
+            )
         try:
             accept_error = await self._await_pod_accept(
                 pod_id=pod_id,
@@ -1388,7 +1740,7 @@ class CallProxy:
                 )
         finally:
             await waiter.close()
-        return ProxyCallResponse.model_validate_json(delivered)
+        return self._pod_response(delivered, request, pod_id)
 
     async def _await_pod_accept(
         self,
@@ -1414,7 +1766,7 @@ class CallProxy:
         :ptype internal_payload: bytes
         :param result_subject: the subject the pod was asked to deliver on
         :ptype result_subject: Subject
-        :param request: original call request from agent (for context echoing)
+        :param request: original call request (for context echoing)
         :ptype request: ProxyCallRequest
         :param correlation_id_log: stringified correlation id for log records
         :ptype correlation_id_log: str
@@ -1456,7 +1808,7 @@ class CallProxy:
         if accept is None:
             # not an accept envelope: the pod answered the call outright (it could not parse the
             # request far enough to learn where to deliver). that IS the answer; pass it through.
-            return ProxyCallResponse.model_validate_json(accept_bytes)
+            return self._pod_response(accept_bytes, request, pod_id)
         if not accept.accepted:
             log.error(
                 "tool pod refused the delivery subject it was given",
@@ -1482,29 +1834,30 @@ class CallProxy:
             )
         return None
 
-    def _mint_proxy_assertion(self, request: ProxyCallRequest, pod_id: str) -> str | None:
-        """sign a proxy->pod assertion for a forwarded call, or ``None`` when unsignable.
+    def _mint_proxy_assertion(self, request: ProxyCallRequest, pod_id: str, principal: VerifiedPrincipal) -> str | None:
+        """sign a proxy->pod assertion for a forwarded call, or ``None`` when no signer is wired.
 
-        Binds the VERIFIED caller identity (already re-stamped onto the context by
-        :meth:`_verify_identity`) + the call body + a single-use nonce + the target pod, so the pod
-        can verify the call came from THIS proxy, for THIS body, once. Returns ``None`` when no
-        signer is configured (the binding is inert) or the verified identity is incomplete.
+        Binds the VERIFIED caller identity + the call body + a single-use nonce + the target pod,
+        so the pod can verify the call came from THIS proxy, for THIS body, once. The identity is
+        taken from the principal :meth:`_verify_identity` read, never reconstructed from the
+        re-stamped context: the assertion's ``customer_id`` claim is required, and a tool pod
+        has no customer, so the claim is re-minted VERBATIM from the token -- the platform
+        sentinel for a pod, the customer UUID for an agent -- and travels intact to the pod. Under
+        the old ``customer_id is not None`` guard a pod's call was forwarded unsigned whenever the
+        production signer was wired, and every pod is bound to reject an unsigned call.
 
-        :param request: the forwarded call request (its context carries the verified identity)
+        :param request: the forwarded call request
         :ptype request: ProxyCallRequest
         :param pod_id: the target pod id (the assertion ``aud``)
         :ptype pod_id: str
-        :return: a compact JWS assertion, or ``None``
+        :param principal: the principal the verified token named
+        :ptype principal: VerifiedPrincipal
+        :return: a compact JWS assertion, or ``None`` when no signer is configured
         :rtype: str | None
         """
         context = request.context
         result: str | None = None
-        if (
-            self._proxy_signer is not None
-            and context is not None
-            and context.agent_id is not None
-            and context.customer_id is not None
-        ):
+        if self._proxy_signer is not None and context is not None:
             body_hash = canonical_call_hash(
                 request.tool_name,
                 request.arguments,
@@ -1512,8 +1865,8 @@ class CallProxy:
             )
             result = self._proxy_signer.mint(
                 pod_id=pod_id,
-                agent_id=str(context.agent_id),
-                customer_id=str(context.customer_id),
+                agent_id=str(principal.principal_id),
+                customer_id=principal.customer_claim,
                 body_hash=body_hash,
                 nonce=str(uuid7()),
                 now=int(datetime.now(UTC).timestamp()),

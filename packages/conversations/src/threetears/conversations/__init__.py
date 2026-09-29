@@ -45,9 +45,17 @@ from threetears.conversations.events import ConversationSummarizedEvent
 from threetears.conversations.folder_collection import FolderCollection
 from threetears.conversations.folder_entity import Folder
 from threetears.conversations.merge import repoint_user
+from threetears.conversations.summary_store import (
+    SUMMARY_CURSOR_KEY,
+    ConversationSummaryStore,
+    dispatch_conversation_summarized,
+)
 from threetears.conversations.migrations import register
 
 __all__ = [
+    "SUMMARY_CURSOR_KEY",
+    "ConversationSummaryStore",
+    "dispatch_conversation_summarized",
     "ACTION_CONVERSATION_DELETE",
     "ACTION_CONVERSATION_READ",
     "ACTION_CONVERSATION_WRITE",

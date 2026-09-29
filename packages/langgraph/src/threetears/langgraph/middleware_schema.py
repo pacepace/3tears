@@ -354,7 +354,7 @@ def _priority_key(table: dict[str, Any]) -> tuple[int, int, str]:
     return (-hazard, -_documentation_weight(table), qualified)
 
 
-def _render_schema_block(digests: list[Any], *, budget: int | None = None) -> str:
+def _render_schema_block(all_tables: list[Any], *, budget: int | None = None) -> str:
     """Render the bounded ``# Documented schema`` block from the digests.
 
     Flattens the documented tables across every datasource's digest, orders them by
@@ -365,26 +365,22 @@ def _render_schema_block(digests: list[Any], *, budget: int | None = None) -> st
     one-line footer names the count and the rule so truncation is never silent (logging
     contract). Returns an empty string when no documented table exists.
 
-    :param digests: digest entities, each exposing a ``tables`` projection.
-    :ptype digests: list[Any]
+    :param all_tables: the documented table projections, already flattened
+        across every datasource the agent declared.
+    :ptype all_tables: list[Any]
     :param budget: documented-schema token budget; ``None`` derives it from the
         documented-table count via :func:`_scaled_budget`.
     :ptype budget: int | None
     :return: rendered block (preamble + tables [+ footer]), or empty string.
     :rtype: str
     """
-    all_tables: list[dict[str, Any]] = []
-    for entity in digests:
-        tables = getattr(entity, "tables", None) or []
-        all_tables.extend(tables)
     if not all_tables:
         # SDS-04: this is what a missing digest materialization looks like from the
         # prompt side -- the agent ships the honesty preamble and looks normally
         # primed while carrying no schema at all.
         log.warning(
-            "documented-schema priming has no tables to render (digests=%d): the "
-            "agent is primed with NO schema; has the digest been materialized?",
-            len(digests),
+            "documented-schema priming has no tables to render: the agent is primed "
+            "with NO schema; is the datasource documented on this hub?",
         )
         return ""
 
@@ -431,41 +427,6 @@ def _render_schema_block(digests: list[Any], *, budget: int | None = None) -> st
             "Use the datasource schema-inspection tool to inspect them._"
         )
     return _BLOCK_PREAMBLE + body
-
-
-async def _read_schema_block(integration: Any, datasource_ids: list[Any], budget: int | None) -> str:
-    """Read each datasource's digest and render the documented-schema block.
-
-    A SEPARATE soft-fail from the honesty rule: a fault reading any digest yields an
-    empty block (the honesty rule still ships) rather than crashing the turn or
-    suppressing the honesty framing.
-
-    :param integration: the injected schema-priming integration (opaque duck-type
-        exposing ``async get_digest(datasource_id)``).
-    :ptype integration: Any
-    :param datasource_ids: the agent's resolved datasource ids.
-    :ptype datasource_ids: list[Any]
-    :param budget: documented-schema token budget; ``None`` derives it from the
-        documented-table count.
-    :ptype budget: int | None
-    :return: rendered ``# Documented schema`` block, or empty string when no digest
-        documents tables / a digest read faults.
-    :rtype: str
-    """
-    block = ""
-    try:
-        digests: list[Any] = []
-        for datasource_id in datasource_ids:
-            entity = await integration.get_digest(datasource_id)
-            if entity is not None:
-                digests.append(entity)
-        block = _render_schema_block(digests, budget=budget)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- digest read is best-effort; a fault drops the block but the honesty rule still ships
-        log.warning(
-            "schema priming digest read failed (soft-fail; honesty rule still shipped): %s",
-            type(exc).__name__,
-        )
-    return block
 
 
 class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
@@ -535,11 +496,35 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
         # datasource_ids() soft-fails internally to [] (never raises): a
         # non-datasource agent, or one whose datasource has not resolved yet, yields
         # [] and no injection.
-        datasource_ids = await integration.datasource_ids()
-        if not datasource_ids:
+        # The integration asks the hub BY NAME and hands back documented tables.
+        # It used to hand back datasource ids for this middleware to read digests
+        # with; that meant the agent holding hub-internal ids and reading a
+        # hub-owned table, which the rbac carve-out correctly stopped admitting.
+        # Soft-fails internally to [] (never raises): a non-datasource agent, or
+        # one whose hub is briefly unreachable, yields [] and no injection.
+        # The gate is "does this agent HAVE datasources", NOT "did we get
+        # tables". The honesty rule ships whenever the agent can read a
+        # datasource at all, because any datasource read emits imperatives and
+        # the rule is what makes the model consume them. An agent whose
+        # datasources are simply undocumented still needs it; gating on tables
+        # would silently drop the rule for exactly that agent.
+        if not getattr(integration, "datasource_names", None):
             passthrough = await handler(request)
             return passthrough
-        schema_block = await _read_schema_block(integration, datasource_ids, self.token_budget)
+        try:
+            tables = await integration.documented_schema()
+        except Exception as exc:  # noqa: BLE001 -- priming is best-effort; a fault must not fail the turn
+            # The integration soft-fails internally, so reaching here means it
+            # broke in a way it did not anticipate. The honesty rule still
+            # ships below: losing the schema block degrades the answer, losing
+            # the rule removes the instruction to ground it at all.
+            log.warning(
+                "documented-schema read failed (soft-fail; honesty rule still shipped): %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            tables = []
+        schema_block = _render_schema_block(tables, budget=self.token_budget)
         # the honesty rule ships whenever a datasource resolves, so the folded block is
         # always non-empty even when no digest documented tables (schema_block == "").
         block = _HONESTY_PREAMBLE + schema_block

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 
 from threetears.nats import (
@@ -83,7 +85,7 @@ def test_inprocess_composite_pod_owns_its_result_subject() -> None:
     the composite renders as two subject tokens; a prefix built by collapsing it to one would reject
     every in-process tool result, and the failure would look like a permissions problem.
     """
-    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
+    composite = Subjects.agent_inprocess_pod_id(UUID("01948a00-aaaa-7000-8000-00000000000a"), "inst-1")
     subject = Subjects.tools_result(composite, "call-1").path
     assert result_subject_is_owned_by_pod(subject, pod_id=composite) is True
 

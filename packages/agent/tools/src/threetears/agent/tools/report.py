@@ -39,6 +39,7 @@ from threetears.observe import get_logger
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope
+from threetears.agent.tools.config import get_report_timeout
 from threetears.agent.tools.produce import (
     ProduceObjectError,
     object_handle_result_metadata,
@@ -67,11 +68,6 @@ _PRESIGN_TTL_ENV = "REPORT_PRESIGN_TTL_SECONDS"
 
 #: byte chunk size for streaming the rendered report to the store.
 _STREAM_CHUNK = 65536
-
-#: expected max render+store time; PDF (pandoc/pdflatex) is the slow path.
-#: override with REPORT_TIMEOUT_SECONDS.
-_DEFAULT_TIMEOUT_SECONDS = 120.0
-_TIMEOUT_ENV = "REPORT_TIMEOUT_SECONDS"
 
 _VALID_FORMATS = ("markdown", "pdf")
 
@@ -149,24 +145,6 @@ _INPUT_SCHEMA: dict[str, Any] = {
     },
     "required": [],
 }
-
-
-def _timeout_seconds() -> float:
-    """Resolve the tool's expected-max render+store time from the environment.
-
-    :return: timeout in seconds (falls back to the default on unset/invalid)
-    :rtype: float
-    """
-    raw = os.environ.get(_TIMEOUT_ENV)
-    if raw:
-        try:
-            value = float(raw)
-        except ValueError:
-            _log.warning("invalid %s=%r; using default", _TIMEOUT_ENV, raw)
-        else:
-            if value > 0:
-                return value
-    return _DEFAULT_TIMEOUT_SECONDS
 
 
 def _presign_ttl() -> int:
@@ -519,7 +497,7 @@ class ReportTool(TearsTool):
                 "object handle plus a presigned download link; the report bytes are not returned inline."
             ),
             input_schema=_INPUT_SCHEMA,
-            timeout_seconds=_timeout_seconds(),
+            timeout_seconds=get_report_timeout(),
         )
 
     def mcp_name(self) -> str:

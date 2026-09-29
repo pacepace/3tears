@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -36,6 +36,8 @@ class _FakeKv:
 
     def __init__(self) -> None:
         self.store: dict[str, tuple[bytes, int]] = {}
+        # the revision of each key's deletion marker, as nats-py reports it on KeyNotFoundError.entry
+        self.markers: dict[str, int] = {}
         self.next_revision = 0
         self.fail_next: BaseException | None = None
 
@@ -49,6 +51,9 @@ class _FakeKv:
         self._maybe_fail()
         entry = self.store.get(key)
         if entry is None:
+            marker = self.markers.get(key)
+            if marker is not None:
+                raise KeyNotFoundError(_FakeEntry(value=b"", revision=marker), "DEL")
             raise KeyNotFoundError()
         value, rev = entry
         return _FakeEntry(value=value, revision=rev)
@@ -81,6 +86,8 @@ class _FakeKv:
         if key not in self.store:
             raise KeyNotFoundError()
         del self.store[key]
+        self.next_revision += 1
+        self.markers[key] = self.next_revision
 
 
 def _make_bucket() -> tuple[NatsKvBucket, _FakeKv]:
@@ -229,6 +236,30 @@ async def test_get_entry_returns_none_on_miss() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_latest_returns_a_live_value_and_its_revision() -> None:
+    bucket, kv = _make_bucket()
+    rev = await kv.put("k", b"v")
+    assert await bucket.get_latest(key="k") == (b"v", rev)
+
+
+@pytest.mark.asyncio
+async def test_get_latest_reports_a_deleted_key_by_its_markers_revision() -> None:
+    # get_entry reports a deleted key as absent; the marker's revision is what lets a writer land
+    # only if nothing has happened to the key since it looked.
+    bucket, kv = _make_bucket()
+    await kv.put("k", b"v")
+    await kv.delete("k")
+    assert await bucket.get_entry(key="k") is None
+    assert await bucket.get_latest(key="k") == (None, kv.markers["k"])
+
+
+@pytest.mark.asyncio
+async def test_get_latest_reports_a_never_written_key_as_revision_zero() -> None:
+    bucket, _ = _make_bucket()
+    assert await bucket.get_latest(key="absent") == (None, 0)
+
+
+@pytest.mark.asyncio
 async def test_put_returns_new_revision() -> None:
     bucket, _ = _make_bucket()
     rev = await bucket.put(key="k", value=b"v1")
@@ -352,6 +383,69 @@ async def test_persistent_failure_after_reopen_surfaces_kverror() -> None:
 
     with pytest.raises(KvError):
         await bucket.put(key="k", value=b"v")
+
+
+# parity-exempt: minimal JetStream stand-in exposing only stream_info for the date_created read; the full JetStreamContext surface is unrelated to it
+class _StreamInfoJetStream:
+    """Answers stream_info with a fixed object, or raises what it was given."""
+
+    def __init__(self, *, info: Any = None, error: BaseException | None = None) -> None:
+        self._info = info
+        self._error = error
+        self.asked: list[str] = []
+
+    async def stream_info(self, name: str) -> Any:
+        self.asked.append(name)
+        if self._error is not None:
+            raise self._error
+        return self._info
+
+
+# parity-exempt: minimal NatsClient stand-in exposing only jetstream_context() for the date_created read; full NatsClient parity would be over-mocking
+class _StreamInfoClient:
+    def __init__(self, js: _StreamInfoJetStream) -> None:
+        self._js = js
+
+    def jetstream_context(self) -> _StreamInfoJetStream:
+        return self._js
+
+
+def _bucket_over(js: _StreamInfoJetStream) -> NatsKvBucket:
+    """a bucket whose stream-info reads go to ``js``."""
+    return NatsKvBucket(
+        client=_StreamInfoClient(js),  # type: ignore[arg-type]
+        full_name="3tears-tests",
+        kv=_FakeKv(),  # type: ignore[arg-type]
+        ttl=timedelta(seconds=60),
+    )
+
+
+class TestDateCreated:
+    """the creation time a wipe check trusts must fail closed, never hand back a non-time."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_backing_streams_creation_time(self) -> None:
+        created = datetime(2026, 9, 15, 20, 0, tzinfo=UTC)
+        js = _StreamInfoJetStream(info=MagicMock(created=created))
+        assert await _bucket_over(js).date_created() == created
+        assert js.asked == ["KV_3tears-tests"]
+
+    @pytest.mark.asyncio
+    async def test_a_stream_reporting_no_creation_time_raises_kverror(self) -> None:
+        # without this, `None + skew` would surface in a guard as a TypeError no caller denies on.
+        js = _StreamInfoJetStream(info=MagicMock(created=None))
+        with pytest.raises(KvError, match="no creation time"):
+            await _bucket_over(js).date_created()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_stream_info_raises_kverror_after_one_reopen(self) -> None:
+        js = _StreamInfoJetStream(error=RuntimeError("nats: no response from stream"))
+        bucket = _bucket_over(js)
+        with patch.object(NatsKvBucket, "_reopen", autospec=True) as reopen:
+            with pytest.raises(KvError, match="stream info failed"):
+                await bucket.date_created()
+        reopen.assert_awaited_once()
+        assert len(js.asked) == 2  # the self-heal retried once before surfacing
 
 
 @pytest.mark.asyncio

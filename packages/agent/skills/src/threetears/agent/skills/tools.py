@@ -257,31 +257,31 @@ class SkillRegistryClient(Protocol):
 class SkillCreateInput(BaseModel):
     """Input schema for the ``skill_create`` tool."""
 
-    name: str = Field(description="Short unique name (1-128 chars).")
-    summary: str = Field(description="One-line catalog entry shown in skill_list.")
+    name: str = Field(description="A short name no other skill has, 1-128 characters.")
+    summary: str = Field(description="One line saying what it is for, shown by skill_list.")
     body: str | None = Field(
         default=None,
-        description="Markdown procedure (optional). Max 32KB.",
+        description="Optional. The steps to follow, in plain words, up to 32KB.",
     )
     prompt_mode: PromptMode = Field(
         default="additive",
-        description="'additive' appends body to system prompt; 'replace' substitutes it.",
+        description="'additive' adds the steps to your instructions; 'replace' uses them instead of your instructions.",
     )
     tool_additions: list[str] = Field(
         default_factory=list,
-        description="Tool mcp_names to surface when this skill loads.",
+        description="Names of tools to give you while the skill is in use.",
     )
     tool_restrictions: list[str] = Field(
         default_factory=list,
-        description="Tool mcp_names to remove from default surface.",
+        description="Names of tools to take away while the skill is in use.",
     )
     trigger_keywords: str = Field(
         default="",
-        description="Keywords for skill_list filter. Not for auto-load.",
+        description="Words skill_list can find it by. They do not start the skill.",
     )
     tags: list[str] = Field(
         default_factory=list,
-        description="Classification tags (max 8).",
+        description="Up to 8 labels to sort skills by.",
     )
     enabled: bool = Field(default=True)
 
@@ -291,29 +291,27 @@ class SkillListInput(BaseModel):
 
     query: str | None = Field(
         default=None,
-        description="Optional substring/keyword filter.",
+        description="Optional words to match.",
     )
     kind_filter: SkillKindFilter = Field(
         default="all",
-        description="Restrict to prose-skill rows, tool-skills, or both.",
+        description="Show skills you wrote, skills that are tools, or both.",
     )
     tag_filter: str | None = Field(
         default=None,
-        description=(
-            "Optional tag (matches prose skills only). When set, tool-skills are excluded since they carry no tags."
-        ),
+        description="Optional label. Only skills you wrote have labels, so this leaves out skills that are tools.",
     )
     enabled_only: bool = Field(
         default=True,
-        description="Hide disabled prose skills (tool skills are always enabled).",
+        description="Leave out skills you turned off.",
     )
-    limit: int = Field(default=20, ge=1, le=200, description="Max entries.")
+    limit: int = Field(default=20, ge=1, le=200, description="Most skills to list.")
 
 
 class SkillGetInput(BaseModel):
     """Input schema for the ``skill_get`` tool."""
 
-    skill_id: str = Field(description="[skill:<id>] from skill_list / skill_create.")
+    skill_id: str = Field(description="The [skill:<id>] from skill_list or skill_create.")
 
 
 class SkillUpdateInput(BaseModel):
@@ -325,7 +323,7 @@ class SkillUpdateInput(BaseModel):
     lists).
     """
 
-    skill_id: str = Field(description="[skill:<id>] of the skill to update.")
+    skill_id: str = Field(description="The [skill:<id>] to change.")
     name: str | None = None
     summary: str | None = None
     body: str | None = None
@@ -340,16 +338,16 @@ class SkillUpdateInput(BaseModel):
 class SkillDeleteInput(BaseModel):
     """Input schema for the ``skill_delete`` tool."""
 
-    skill_id: str = Field(description="[skill:<id>] of the skill to delete.")
+    skill_id: str = Field(description="The [skill:<id>] to delete.")
 
 
 class SkillInvokeInput(BaseModel):
     """Input schema for the ``skill_invoke`` tool."""
 
-    skill_id: str = Field(description="[skill:<id>] to activate for the current turn.")
+    skill_id: str = Field(description="The [skill:<id>] to use now.")
     rationale: str | None = Field(
         default=None,
-        description="Optional one-line note recorded with the invocation.",
+        description="Optional one line on why, kept with the record of this use.",
     )
 
 
@@ -357,11 +355,11 @@ class SkillReportOutcomeInput(BaseModel):
     """Input schema for the ``skill_report_outcome`` tool."""
 
     outcome: SkillOutcome = Field(
-        description="Whether the active skill's task succeeded or failed.",
+        description="Whether the skill's task worked.",
     )
     notes: str | None = Field(
         default=None,
-        description="Optional one-line note on why (surfaced in logs, not stored on the row in v1).",
+        description="Optional one line on why.",
     )
 
 
@@ -374,7 +372,7 @@ class SkillIntrospectInput(BaseModel):
     """
 
     name_or_id: str = Field(
-        description="Skill name OR [skill:<id>]. Works for prose-skills AND tool-skills.",
+        description="The skill's name or its [skill:<id>], for skills you wrote and skills that are tools.",
     )
 
     @model_validator(mode="after")
@@ -907,10 +905,9 @@ def load_skill_create_tool(
         return _format_skill_summary(entity)
 
     skill_create.description = (
-        "Save a procedure as a skill — named, reusable unit that modifies your turn.\n"
-        "- prose body OR tool_additions OR tool_restrictions (at least one)\n"
-        "- prompt_mode 'additive' (default) appends body; 'replace' substitutes\n"
-        f"Returns [skill:<id>]. Cap of {max_prose_skills_per_user} prose skills."
+        "Save a way of doing something as a skill you can use again. Give it steps in body, "
+        "tools in tool_additions or tool_restrictions, or both.\n"
+        f"Returns [skill:<id>]. You can keep up to {max_prose_skills_per_user} skills you wrote."
     )
 
     return [skill_create]
@@ -1045,11 +1042,8 @@ def load_skill_list_tool(
         return "\n".join(lines)
 
     skill_list.description = (
-        "List skills available to you — prose skills you authored AND tools "
-        "registered as skill-eligible.\n"
-        "Returns [skill:<id>] + name + summary + kind ('prose' | 'tool'). "
-        "Use skill_introspect for details.\n"
-        "tag_filter applies to prose skills only; setting it hides all tool-skills."
+        "List the skills you can use: the ones you wrote ('prose') and tools that work as "
+        "skills ('tool'). Returns id, name, summary and kind. skill_introspect shows one in full."
     )
 
     return [skill_list]
@@ -1098,7 +1092,7 @@ def load_skill_get_tool(
             return _tool_error("skill_get", "skill not found")
         return _render_prose_introspect(entity)
 
-    skill_get.description = "Read a prose-skill's body, metadata, and tool composition. Use before skill_update."
+    skill_get.description = "Read a skill you wrote: its steps, settings and tools. Use it before skill_update."
 
     return [skill_get]
 
@@ -1272,7 +1266,7 @@ def load_skill_update_tool(
 
         return _format_skill_summary(entity)
 
-    skill_update.description = "Edit a skill in place. Pass only fields to change. Returns the updated summary."
+    skill_update.description = "Change a skill you wrote. Pass only what changes. Returns its summary line."
 
     return [skill_update]
 
@@ -1339,7 +1333,8 @@ def load_skill_delete_tool(
         return f"Deleted skill {deleted_name!r} ([skill:{deleted_skill_id}])."
 
     skill_delete.description = (
-        "Delete a prose skill permanently. Invocation history cascades. Use enabled=false to disable instead."
+        "Delete a skill you wrote, and its history, for good. To turn it off and keep it, "
+        "use skill_update with enabled=false."
     )
 
     return [skill_delete]
@@ -1526,9 +1521,8 @@ def load_skill_invoke_tool(
         return _render_skill_invoke_block(entity)
 
     skill_invoke.description = (
-        "Activate a skill for the rest of THIS turn. First invoke per turn wins; "
-        "subsequent invokes error.\n"
-        "Returns the skill's body + tool composition. Records the invocation."
+        "Use a skill for the rest of this turn. One skill per turn: a second call fails.\n"
+        "Returns the skill's steps and tools."
     )
 
     return [skill_invoke]
@@ -1642,10 +1636,9 @@ def load_skill_report_outcome_tool(
         return f"Recorded {outcome} for [skill:{active_skill_id}]."
 
     skill_report_outcome.description = (
-        "Report whether the active skill's task succeeded or failed. Call this once you "
-        "know the outcome -- do NOT write [SUCCESS]/[FAILED] in your reply, this tool is "
-        "the only way outcomes get recorded.\n"
-        "Errors if no skill is active this turn."
+        "Record whether the skill in use did its job. Call it once you know. This is the "
+        "only way the result is kept.\n"
+        "Fails when no skill is in use this turn."
     )
 
     return [skill_report_outcome]
@@ -1739,8 +1732,8 @@ def load_skill_introspect_tool(
         return _render_tool_introspect(tool_payload)
 
     skill_introspect.description = (
-        "Examine a skill before using it — see its body, tool surface, args, examples.\n"
-        "Use to discover how to use a skill in a wake or skill_invoke."
+        "Look at a skill before you use it: its steps, tools, arguments and examples. "
+        "Use it to learn how to use a skill with skill_invoke or a wake."
     )
 
     return [skill_introspect]

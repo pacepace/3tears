@@ -31,12 +31,15 @@ cheap to import from non-test code).
 from __future__ import annotations
 
 from threetears.core.testing.containers import (
+    CONTAINER_STAGGER_ENV,
     check_docker_available,
     nats_reachable,
     skip_without_docker_marker,
     skip_without_nats_marker,
+    stagger_container_start,
 )
 from threetears.core.testing.entities import entity_collection_stub
+from threetears.core.testing.migrations import FAKE_DATABASE_NAME, uncontended_ddl_lock_rows
 from threetears.core.testing.sqla_parity import (
     assert_tables_equivalent,
     column_signature,
@@ -46,6 +49,8 @@ from threetears.core.testing.sqla_parity import (
 )
 
 __all__ = [
+    "CONTAINER_STAGGER_ENV",
+    "FAKE_DATABASE_NAME",
     "assert_tables_equivalent",
     "check_docker_available",
     "column_signature",
@@ -56,4 +61,6 @@ __all__ = [
     "nats_reachable",
     "skip_without_docker_marker",
     "skip_without_nats_marker",
+    "stagger_container_start",
+    "uncontended_ddl_lock_rows",
 ]

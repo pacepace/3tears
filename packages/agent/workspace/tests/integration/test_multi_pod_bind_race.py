@@ -41,8 +41,13 @@ from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.agent.workspace.materialize import bind
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
-from _helpers.workspace_shims import (
+from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+    FakeAsyncpgAcquireCM,
+    FakeAsyncpgConnection,
+    FakeAsyncpgPool,
+    FakeAsyncpgTransaction,
+)
+from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceEntity,
     FakeWorkspaceFileCollection,

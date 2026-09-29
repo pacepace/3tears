@@ -13,7 +13,7 @@ reply, which already crosses that boundary in the right direction.
 
 **Registration stays a PUBLISH by default.** ``publish_registration`` is called on every
 heartbeat and on every dynamic register/deregister; turning all of those into round trips
-would make a registry that is merely slow into a pod that stalls. ``learn_identity=True``
+would make a registry that is merely slow into a pod that stalls. ``await_reply=True``
 asks for the reply, and every failure of that ask degrades to a warning: the manifest was
 published either way, because a request IS a publish.
 """
@@ -139,7 +139,7 @@ class TestRegistrationStaysAPublishUnlessAsked:
 
 
 class TestLearningTheOwnedNamespace:
-    """what ``learn_identity=True`` buys, and what it costs when it fails."""
+    """what ``await_reply=True`` buys, and what it costs when it fails."""
 
     async def test_the_reply_becomes_the_pods_self_identity(self) -> None:
         """the canonical node names come back and are held on the server.
@@ -149,7 +149,7 @@ class TestLearningTheOwnedNamespace:
         """
         server = _server()
         server._nc = _replying_nc("tools.pentest")  # noqa: SLF001
-        await server.publish_registration(learn_identity=True)
+        await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ("tools.pentest",)
 
     async def test_the_manifest_is_still_the_one_a_publish_sends(self) -> None:
@@ -161,7 +161,7 @@ class TestLearningTheOwnedNamespace:
         server = _server()
         nc = _replying_nc("tools.pentest")
         server._nc = nc  # noqa: SLF001
-        await server.publish_registration(learn_identity=True)
+        await server.publish_registration(await_reply=True)
         manifest = nc.request.await_args.kwargs["message"]
         assert isinstance(manifest, RegistrationManifest)
         assert manifest.pod_id == _POD
@@ -175,7 +175,7 @@ class TestLearningTheOwnedNamespace:
         """
         server = _server()
         server._nc = _replying_nc("tools.pentest", "tools.threetears")  # noqa: SLF001
-        await server.publish_registration(learn_identity=True)
+        await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ("tools.pentest", "tools.threetears")
 
     async def test_owning_nothing_is_recorded_as_owning_nothing(self) -> None:
@@ -186,7 +186,7 @@ class TestLearningTheOwnedNamespace:
         """
         server = _server()
         server._nc = _replying_nc()  # noqa: SLF001
-        await server.publish_registration(learn_identity=True)
+        await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ()
 
 
@@ -206,7 +206,7 @@ class TestALearnThatFailsDoesNotBreakRegistration:
         nc = AsyncMock()
         nc.request = AsyncMock(side_effect=RequestError("no responders"))
         server._nc = nc  # noqa: SLF001
-        await server.publish_registration(learn_identity=True)
+        await server.publish_registration(await_reply=True)
         assert server.owned_namespaces is None
 
     async def test_a_refused_registration_leaves_the_pod_unidentified(self) -> None:
@@ -221,7 +221,7 @@ class TestALearnThatFailsDoesNotBreakRegistration:
             return_value=RegistrationResponse(success=False, pod_id=_POD, error="invalid bootstrap token"),
         )
         server._nc = nc  # noqa: SLF001
-        await server.publish_registration(learn_identity=True)
+        await server.publish_registration(await_reply=True)
         assert server.owned_namespaces is None
 
     async def test_a_later_learn_replaces_an_earlier_one(self) -> None:
@@ -232,21 +232,21 @@ class TestALearnThatFailsDoesNotBreakRegistration:
         """
         server = _server()
         server._nc = _replying_nc("tools.pentest")  # noqa: SLF001
-        await server.publish_registration(learn_identity=True)
+        await server.publish_registration(await_reply=True)
         server._nc = _replying_nc("tools.pentest", "tools.threetears")  # noqa: SLF001
-        await server.publish_registration(learn_identity=True)
+        await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ("tools.pentest", "tools.threetears")
 
 
-@pytest.mark.parametrize("learn", [False, True])
-async def test_registration_requires_a_connection_either_way(learn: bool) -> None:
+@pytest.mark.parametrize("await_reply", [False, True])
+async def test_registration_requires_a_connection_either_way(await_reply: bool) -> None:
     """the guard is on the connection, not on which path is taken.
 
-    :param learn: whether the identity is asked for
-    :ptype learn: bool
+    :param await_reply: whether the reply is asked for
+    :ptype await_reply: bool
     :return: none
     :rtype: None
     """
     server = _server()
     with pytest.raises(RuntimeError, match="publish_registration called before NATS connected"):
-        await server.publish_registration(learn_identity=learn)
+        await server.publish_registration(await_reply=await_reply)

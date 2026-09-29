@@ -52,7 +52,7 @@ from threetears.search.contracts import (
 )
 from threetears.search.standalone import StandaloneTransport
 from threetears.search.testing import LocalHttpServer, Reply
-from _searxng_payloads import TWO_RESULTS_BODY
+from packages.search.tests._searxng_payloads import TWO_RESULTS_BODY
 
 #: the host-supplied base URL for the live tier. Read by the TEST, never by
 #: the package: SR-K1 forbids the package reading ambient config, and the

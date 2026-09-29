@@ -24,7 +24,7 @@ construct the ``Table`` directly.
 
 **Drift protection.** A parallel hand-written DDL with no parity
 guarantee would be the embedded-DDL-drift smell. The factory output is
-pinned against the canonical v001/v002 migration DDL by
+pinned against the schema the canonical v001-v003 migrations produce by
 ``tests/integration/test_sqlalchemy_table_parity.py``: it applies the
 migrations to one Postgres schema, emits each factory's ``CREATE
 TABLE`` into a second schema, and asserts the two are structurally
@@ -80,7 +80,10 @@ def agent_skills_table(metadata: MetaData) -> Table:
     three ``TEXT[]`` array columns, the trigger-maintained
     ``search_vector`` TSVECTOR column, the two CHECK constraints
     (``prompt_mode`` enum-by-app + the at-least-one-payload invariant),
-    every NOT NULL DEFAULT, and the four indexes.
+    every NOT NULL DEFAULT, and the two btree indexes. v001's two GIN
+    indexes (``search_vector``, ``tags``) are absent: v003 dropped them,
+    because every predicate that could use them goes through
+    ``gin_filter`` and YugabyteDB's ybgin refuses a multi-entry scan.
 
     Idempotent: returns the existing :class:`Table` if one with this
     name is already registered on ``metadata``. Call this before the
@@ -206,16 +209,6 @@ def agent_skills_table(metadata: MetaData) -> Table:
             "agent_id",
             "user_id",
             "enabled",
-        ),
-        Index(
-            "idx_skills_search_vector",
-            "search_vector",
-            postgresql_using="gin",
-        ),
-        Index(
-            "idx_skills_tags",
-            "tags",
-            postgresql_using="gin",
         ),
     )
 

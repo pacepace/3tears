@@ -55,7 +55,7 @@ from threetears.search.contracts import (
     TransportFailed,
 )
 from threetears.search.testing import ScriptedTransport, TransportScript
-from _searxng_payloads import (
+from packages.search.tests._searxng_payloads import (
     IMAGE_RESULT,
     MALFORMED_BODY,
     TWO_RESULTS_BODY,

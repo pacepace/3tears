@@ -132,7 +132,10 @@ async def validate_dpop_proof(
         EXACTLY -- never as a prefix or a wildcard -- so a list is not a relaxation, just a
         longer allow-list.
     :ptype expected_htu: str | Sequence[str]
-    :param replay_guard: the fail-closed single-use guard for the proof's ``jti``.
+    :param replay_guard: the fail-closed single-use guard for the proof's ``jti``. This is a
+        function with no startup step, so the service that owns the guard calls its
+        :meth:`~threetears.core.coordination.ReplayGuard.bind` at startup; an unbound guard still
+        works, but after a broker wipe it refuses every proof issued before its first use.
     :ptype replay_guard: ReplayGuard
     :param iat_window: freshness tolerance for ``iat``.
     :ptype iat_window: timedelta
@@ -140,7 +143,13 @@ async def validate_dpop_proof(
     :rtype: DpopProof
     :raises DpopError: on any failure. The caller MUST treat this as deny -- never as a
         fallback to an unverified key.
+    :raises ValueError: when ``replay_guard`` was sized for a smaller verifier future tolerance
+        than ``iat_window``. A configuration error, not a proof failure: that pairing would let a
+        proof replayed after a wipe of the guard's bucket through.
     """
+    # the iat check below accepts issue times up to iat_window ahead of now, so the guard's wipe
+    # check must reach that far. checked before the proof, because it is about the wiring.
+    replay_guard.require_covers(iat_window)
     try:
         header = jwt.get_unverified_header(proof)
     except jwt.PyJWTError as exc:
@@ -203,8 +212,8 @@ async def validate_dpop_proof(
     jti = payload.get("jti")
     if not isinstance(jti, str) or not jti:
         raise DpopError("dpop proof jti must be a non-empty string.")
-    if not await replay_guard.record_unique(jti):
-        raise DpopError("dpop proof jti has already been used (replay).")
+    if not await replay_guard.record_unique(jti, issued_at=datetime.fromtimestamp(iat, UTC)):
+        raise DpopError("dpop proof jti refused: already used, or issued before the replay guard's bucket was created.")
     return DpopProof(jkt=jwk_thumbprint(holder_key))
 
 

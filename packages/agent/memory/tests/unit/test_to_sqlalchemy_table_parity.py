@@ -150,11 +150,8 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             "customer_id",
             "user_id",
         ),
-        SAIndex(
-            "idx_memories_search_vector",
-            "search_vector",
-            postgresql_using="gin",
-        ),
+        # no GIN over search_vector: v027 dropped it (keyword predicates go
+        # through gin_filter, so the index had no reader).
         SAIndex(
             "ix_memories_embedding_hnsw",
             "embedding",
@@ -321,11 +318,8 @@ def _reference_media_content_table(metadata: sa.MetaData) -> sa.Table:
             "agent_id",
             "user_id",
         ),
-        SAIndex(
-            "idx_media_content_search_vector",
-            "search_vector",
-            postgresql_using="gin",
-        ),
+        # no GIN over search_vector: v027 dropped it (keyword predicates go
+        # through gin_filter, so the index had no reader).
         # prod does NOT carry a WITH clause for this HNSW index.
         SAIndex(
             "ix_media_content_embedding",
@@ -392,11 +386,8 @@ def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
             "agent_id",
             "user_id",
         ),
-        SAIndex(
-            "idx_memory_chunks_search_vector",
-            "search_vector",
-            postgresql_using="gin",
-        ),
+        # no GIN over search_vector: v027 dropped it (keyword predicates go
+        # through gin_filter, so the index had no reader).
         # prod does NOT carry a WITH clause for this HNSW index.
         SAIndex(
             "ix_memory_chunks_embedding",

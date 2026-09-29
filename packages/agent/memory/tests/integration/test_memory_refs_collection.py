@@ -123,17 +123,36 @@ class _InMemoryKvBucket:
 
     def __init__(self) -> None:
         self.kv: dict[str, bytes] = {}
+        # each key's latest revision, a deletion's included: a read seeds L2 at the revision it
+        # saw before its L3 query, and lands only if nothing happened to the key since.
+        self.latest: dict[str, int] = {}
+        self._sequence = 0
+
+    def _advance(self, key: str) -> int:
+        self._sequence += 1
+        self.latest[key] = self._sequence
+        return self._sequence
 
     async def get(self, *, key: str) -> bytes | None:
         return self.kv.get(key)
 
+    async def get_latest(self, *, key: str) -> tuple[bytes | None, int]:
+        return (self.kv.get(key), self.latest.get(key, 0))
+
     async def put(self, *, key: str, value: bytes) -> int:
         self.kv[key] = value
-        return len(self.kv)
+        return self._advance(key)
+
+    async def update(self, *, key: str, value: bytes, revision: int) -> int | None:
+        if self.latest.get(key, 0) != revision:
+            return None
+        self.kv[key] = value
+        return self._advance(key)
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
         existed = key in self.kv
         self.kv.pop(key, None)
+        self._advance(key)
         return existed or revision is None
 
 

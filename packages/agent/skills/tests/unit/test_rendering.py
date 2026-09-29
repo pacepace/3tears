@@ -120,20 +120,21 @@ class TestRenderSkillBodyBlock:
     """Contract tests for :func:`render_skill_body_block`."""
 
     def test_prose_body_no_tags(self) -> None:
-        """Body-only skill renders the labeled header + body."""
+        """Body-only skill renders the lead line + body."""
         skill = _make_skill(name="deploy", body="Run terraform apply", tags=[])
         rendered = render_skill_body_block(skill)
-        assert rendered == "## Skill: deploy\n\nRun terraform apply"
+        assert rendered == 'Follow the skill "deploy" for this task:\n\nRun terraform apply'
 
     def test_prose_body_with_tags(self) -> None:
-        """Tags render between the header and the body."""
+        """Tags find a skill in skill_list; they do not reach the prompt."""
         skill = _make_skill(
             name="deploy",
             body="Run terraform apply",
             tags=["ops", "prod"],
         )
         rendered = render_skill_body_block(skill)
-        assert rendered == ("## Skill: deploy\n<tags: [ops, prod]>\n\nRun terraform apply")
+        assert rendered == 'Follow the skill "deploy" for this task:\n\nRun terraform apply'
+        assert "ops" not in rendered and "#" not in rendered
 
     def test_empty_body_returns_empty_string(self) -> None:
         """Skill with ``body=None`` renders ``""`` (no header announcement)."""
@@ -216,11 +217,13 @@ class TestComposeTurnContextAdditive:
             acl_permits=_permit_all,
         )
 
-        assert result.system_prompt == ("You are a helpful assistant.\n\n## Skill: deploy\n\nRun terraform apply")
+        assert result.system_prompt == (
+            'You are a helpful assistant.\n\nFollow the skill "deploy" for this task:\n\nRun terraform apply'
+        )
         assert result.active_skill_id == skill.skill_id
 
     def test_additive_with_body_and_tags(self) -> None:
-        """Tags propagate into the appended block."""
+        """The appended block carries the lead line and body, not the tags."""
         skill = _make_skill(
             name="deploy",
             body="Run terraform apply",
@@ -234,7 +237,7 @@ class TestComposeTurnContextAdditive:
             acl_permits=_permit_all,
         )
 
-        assert result.system_prompt == ("base\n\n## Skill: deploy\n<tags: [ops]>\n\nRun terraform apply")
+        assert result.system_prompt == 'base\n\nFollow the skill "deploy" for this task:\n\nRun terraform apply'
 
     def test_additive_with_empty_body_leaves_base_unchanged(self) -> None:
         """A pure tool-composition skill in additive mode does not mutate the prompt."""
@@ -278,7 +281,7 @@ class TestComposeTurnContextReplace:
             acl_permits=_permit_all,
         )
 
-        assert result.system_prompt == "## Skill: locked-down\n\nStrict mode body"
+        assert result.system_prompt == 'Follow the skill "locked-down" for this task:\n\nStrict mode body'
         assert "you should not see" not in result.system_prompt
 
     def test_replace_with_empty_body_falls_back_to_summary(self) -> None:

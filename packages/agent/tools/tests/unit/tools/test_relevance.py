@@ -17,7 +17,9 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from threetears.agent.tools.relevance import (
     ToolRelevanceIndex,
+    ToolSearchResult,
     create_tool_search_tool,
+    match_words,
 )
 
 
@@ -42,8 +44,10 @@ class _FakeEmbeddings(Embeddings):
         raise_on_documents: bool = False,
         raise_on_query: bool = False,
         sleep_s: float = 0.0,
+        documents_sleep_s: float | None = None,
     ) -> None:
         self.vectors = vectors
+        self.documents_sleep_s = sleep_s if documents_sleep_s is None else documents_sleep_s
         self.raise_on_documents = raise_on_documents
         self.raise_on_query = raise_on_query
         self.sleep_s = sleep_s
@@ -58,8 +62,8 @@ class _FakeEmbeddings(Embeddings):
 
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         self.aembed_documents_calls.append(list(texts))
-        if self.sleep_s:
-            await asyncio.sleep(self.sleep_s)
+        if self.documents_sleep_s:
+            await asyncio.sleep(self.documents_sleep_s)
         if self.raise_on_documents:
             raise RuntimeError("embedder unavailable")
         return [self.vectors.get(t, [0.0, 0.0]) for t in texts]
@@ -264,6 +268,38 @@ async def test_select_falls_back_to_full_catalog_on_latency_ceiling() -> None:
     assert result.selected == tools
 
 
+async def test_a_catalog_embedding_cut_off_by_the_ceiling_still_lands_for_the_next_turn() -> None:
+    """Found live: embedding a 51-tool catalog took longer than the 1 s ceiling, and the timeout
+    cancelled the embedding along with the ranking -- the cache never filled, so every turn that
+    started cold fell back to the full catalog and threw the work away again."""
+    tools = _catalog(10)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    embedder = _FakeEmbeddings(vectors, documents_sleep_s=0.2)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=3, latency_ceiling_s=0.05)
+
+    first = await index.select(tools, "anything")
+    assert first.fallback_reason == "latency_ceiling"
+
+    await asyncio.sleep(0.3)
+    second = await index.select(tools, "anything")
+
+    assert not second.fallback_used
+    assert len(second.selected) == 3
+    assert len(embedder.aembed_documents_calls) == 1, "the catalog was embedded again"
+
+
+async def test_turns_arriving_together_embed_one_catalog_once() -> None:
+    tools = _catalog(10)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    embedder = _FakeEmbeddings(vectors, documents_sleep_s=0.05)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=3, latency_ceiling_s=1.0)
+
+    results = await asyncio.gather(*(index.select(tools, f"query {n}") for n in range(4)))
+
+    assert all(not r.fallback_used for r in results)
+    assert len(embedder.aembed_documents_calls) == 1
+
+
 async def test_fallback_result_is_never_smaller_than_full_catalog() -> None:
     """Regression shape for the review finding: a fallback must be
     indistinguishable in SIZE from "everything bound", not a silently
@@ -307,8 +343,9 @@ async def test_search_returns_empty_on_embedder_failure_no_fallback_contract() -
 
 
 async def test_search_returns_empty_on_latency_ceiling() -> None:
-    """search() shares select()'s latency ceiling -- a slow (not raising)
-    embedder must not hang a mid-turn tool_search call indefinitely.
+    """search() falls under select()'s latency ceiling unless given its own --
+    a slow (not raising) embedder must not hang a mid-turn tool_search call
+    indefinitely.
     """
     tools = _catalog(5)
     vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
@@ -318,6 +355,42 @@ async def test_search_returns_empty_on_latency_ceiling() -> None:
     hits = await index.search(tools, "query")
 
     assert hits == []
+
+
+async def test_search_waits_to_its_own_ceiling_while_select_keeps_the_tight_one() -> None:
+    """A cold catalog that select gives up on is still one tool_search can
+    finish: the two ceilings are separate because the two failures cost
+    differently (select falls back to the full catalog; search reads as
+    "no such tool").
+    """
+    tools = _catalog(5)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    embedder = _FakeEmbeddings(vectors, sleep_s=0.05)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=2, latency_ceiling_s=0.01, search_latency_ceiling_s=1.0)
+
+    selection = await index.select(tools, "query")
+    hits = await index.search(tools, "query", limit=2)
+    scored = await index.search_scored(tools, "query", limit=2)
+
+    assert selection.fallback_reason == "latency_ceiling"
+    assert len(hits) == 2
+    assert len(scored) == 2
+
+
+async def test_search_outcome_says_why_there_are_no_hits() -> None:
+    tools = _catalog(3)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+
+    slow = ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors, sleep_s=0.2), top_k=2, latency_ceiling_s=0.01)
+    broken = ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors, raise_on_documents=True), top_k=2)
+    fine = ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors), top_k=2)
+
+    assert await slow.search_outcome(tools, "query") == ToolSearchResult(hits=[], fallback_reason="latency_ceiling")
+    assert await broken.search_outcome(tools, "query") == ToolSearchResult(hits=[], fallback_reason="embedder_error")
+    assert await fine.search_outcome([], "query") == ToolSearchResult(hits=[])
+    finished = await fine.search_outcome(tools, "query", limit=2)
+    assert finished.fallback_reason is None
+    assert len(finished.hits) == 2
 
 
 async def test_search_on_empty_catalog_returns_empty() -> None:
@@ -400,25 +473,58 @@ async def test_tool_search_hit_message_matches_next_round_description() -> None:
     result_text = await search_tool.ainvoke({"query": "send a message"})
 
     assert "now available to call" not in result_text
-    assert "NEXT reply" in result_text
+    assert "after this search returns" in result_text
     assert "session_send" in result_text
 
 
 async def test_tool_search_reports_no_match_without_calling_on_hit() -> None:
-    tools = _catalog(3)
-    embedder = _FakeEmbeddings({}, raise_on_documents=True)  # forces search() -> []
+    embedder = _FakeEmbeddings({})
     index = ToolRelevanceIndex(embedder=embedder, top_k=2)
 
     hits: list[list[BaseTool]] = []
     search_tool = create_tool_search_tool(
         index=index,
-        full_catalog_provider=lambda: tools,
+        full_catalog_provider=list,  # an empty catalog: nothing to match
         on_hit=hits.append,
     )
 
     result_text = await search_tool.ainvoke({"query": "anything"})
 
     assert result_text == "No matching tools found."
+    assert hits == []
+
+
+async def test_tool_search_says_it_did_not_finish_rather_than_nothing_matched() -> None:
+    """A search cut off by the ceiling found nothing because it never ran.
+    Told "No matching tools found." the model tells the person the tool does
+    not exist (live: metallm's first turn after a deploy, cold catalog).
+    """
+    tools = _catalog(3)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors, sleep_s=0.2), top_k=2, latency_ceiling_s=0.01)
+
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(index=index, full_catalog_provider=lambda: tools, on_hit=hits.append)
+
+    result_text = await search_tool.ainvoke({"query": "anything"})
+
+    assert "did not finish in time" in result_text
+    assert "Run the same search once more" in result_text
+    assert "No matching tools found" not in result_text
+    assert hits == []
+
+
+async def test_tool_search_says_the_index_failed_rather_than_nothing_matched() -> None:
+    tools = _catalog(3)
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(index=index, full_catalog_provider=lambda: tools, on_hit=hits.append)
+
+    result_text = await search_tool.ainvoke({"query": "anything"})
+
+    assert result_text.startswith("Tool search failed")
+    assert "Nothing was found and nothing was ruled out" in result_text
     assert hits == []
 
 
@@ -480,3 +586,123 @@ async def test_tool_search_hits_are_deduplicated_by_caller_not_this_module() -> 
 
     assert len(hits) == 2
     assert [t.name for t in hits[0]] == [t.name for t in hits[1]] == ["target_tool"]
+
+
+async def test_search_scored_returns_the_similarity_beside_each_tool() -> None:
+    """The score is the point: ranking alone cannot tell a message that wants
+    a tool from one that merely sits nearest to it. Every query has a closest
+    tool, so a caller acting on the top hit without a model in the loop needs
+    to know how close it actually was.
+    """
+    tools = _catalog(5)
+    vectors = {_tool_text(t): [0.0, 1.0] for t in tools}
+    vectors[_tool_text(tools[3])] = [1.0, 0.0]
+    vectors["query"] = [1.0, 0.0]
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors), top_k=2)
+
+    hits = await index.search_scored(tools, "query", limit=2)
+
+    assert [t.name for t, _ in hits] == ["tool_3", "tool_0"]
+    best, best_score = hits[0]
+    _, runner_up_score = hits[1]
+    assert best.name == "tool_3"
+    assert best_score == 1.0
+    assert runner_up_score < best_score
+
+
+async def test_search_scored_separates_a_near_match_from_a_far_one() -> None:
+    """The same catalog against two queries: one a tool answers, one it does
+    not. Both have a top hit; only one of them should be acted on, and the
+    score is the only thing that says so.
+    """
+    tools = _catalog(3)
+    vectors = {_tool_text(t): [0.0, 1.0] for t in tools}
+    vectors[_tool_text(tools[0])] = [1.0, 0.0]
+    vectors["wants the tool"] = [1.0, 0.0]
+    # Deliberately aligned with nothing in the catalog: a message that sits
+    # between the tools rather than on one. Using a vector that matches the
+    # other tools exactly would score 1.0 and prove nothing.
+    vectors["wants nothing"] = [1.0, 1.0]
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors), top_k=2)
+
+    wanted = await index.search_scored(tools, "wants the tool", limit=1)
+    unwanted = await index.search_scored(tools, "wants nothing", limit=1)
+
+    # Which tool wins the far query is not the contract -- with nothing
+    # aligned, the hits tie and stable order decides. The score is the
+    # contract: it is what separates "this message wants a tool" from "this
+    # message has a nearest tool", and every message has the latter.
+    assert wanted[0][0].name == "tool_0"
+    assert wanted[0][1] == 1.0
+    assert unwanted[0][1] < wanted[0][1], "a far match must not score like a near one"
+
+
+async def test_search_scored_returns_empty_on_embedder_failure() -> None:
+    """Same soft-fail contract as search(): no hits rather than a guess."""
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+
+    assert await index.search_scored(_catalog(5), "query") == []
+
+
+async def test_search_scored_returns_empty_on_latency_ceiling() -> None:
+    tools = _catalog(5)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    embedder = _FakeEmbeddings(vectors, sleep_s=0.2)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=2, latency_ceiling_s=0.01)
+
+    assert await index.search_scored(tools, "query") == []
+
+
+async def test_search_scored_on_empty_catalog_returns_empty() -> None:
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}), top_k=2)
+
+    assert await index.search_scored([], "query") == []
+
+
+# ---------------------------------------------------------------------------
+# The word match: tool_search still finds a tool while the ranking is down
+# ---------------------------------------------------------------------------
+
+
+def _house_catalog() -> list[BaseTool]:
+    return [
+        _make_tool("web_search", "Search the web for current information."),
+        _make_tool("ha_call_service", "Turn a device in the house on or off, or set it."),
+        _make_tool("calculator", "Work out arithmetic."),
+    ]
+
+
+def test_match_words_ranks_by_how_many_words_match() -> None:
+    names = [t.name for t in match_words(_house_catalog(), "turn on the house fan")]
+    assert names == ["ha_call_service"]
+
+
+def test_match_words_reads_a_name_s_separators_as_spaces() -> None:
+    assert [t.name for t in match_words(_house_catalog(), "search")] == ["web_search"]
+
+
+def test_match_words_with_only_common_words_matches_nothing() -> None:
+    assert match_words(_house_catalog(), "what is the") == []
+
+
+async def test_a_failed_ranking_still_finds_tools_by_their_words() -> None:
+    """A consumer that binds only the pick and tool_search reaches nothing else while the embedder is down."""
+    tools = _house_catalog()
+    broken = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+
+    result = await broken.search_outcome(tools, "search the web")
+
+    assert [t.name for t in result.hits] == ["web_search"]
+    assert result.fallback_reason == "embedder_error"
+
+
+async def test_tool_search_hands_over_word_matches_when_the_ranking_fails() -> None:
+    tools = _house_catalog()
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(index=index, full_catalog_provider=lambda: tools, on_hit=hits.append)
+
+    result_text = await search_tool.ainvoke({"query": "search the web"})
+
+    assert [[t.name for t in h] for h in hits] == [["web_search"]]
+    assert "web_search" in result_text and "Tool search failed" not in result_text

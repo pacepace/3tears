@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from enum import StrEnum
 from typing import Any, NamedTuple, TYPE_CHECKING
 
 import asyncpg
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
+from threetears.core.collections.l2_order import l2_order_of
 from threetears.observe import get_logger
 
 __all__ = [
@@ -160,6 +162,16 @@ class WriteBuffer:
         :rtype: None
         """
         key = self._key(table_name, entity_id)
+        pending = self._buf.get(key)
+        if pending is not None and _orders_after(pending.data, data):
+            # two compare-and-swap winners for one row can reach this buffer in either order (a
+            # coroutine suspended between its win and this add). The newer order is the one L3
+            # must end on, so an older one arriving last is dropped rather than coalesced over it.
+            log.debug(
+                "buffered write superseded by a newer compare-and-swap order already pending",
+                extra={"extra_data": {"table": table_name, "entity_id": str(entity_id)}},
+            )
+            return
         self._buf[key] = PendingWrite(table_name, entity_id, data, retries)
         # a fresh (re)write supersedes any in-flight claim for this key: the
         # flush that claimed the old value must NOT evict or re-enqueue over
@@ -297,6 +309,24 @@ class WriteBuffer:
         return len(self._buf)
 
 
+def _orders_after(pending: dict[str, Any], incoming: dict[str, Any]) -> bool:
+    """whether a pending row carries a compare-and-swap order strictly after an incoming one.
+
+    Rows without an order -- every write that is not a compare-and-swap -- compare as not after,
+    so they keep the buffer's ordinary last-write-wins coalescing.
+
+    :param pending: the row already buffered
+    :ptype pending: dict[str, Any]
+    :param incoming: the row being added
+    :ptype incoming: dict[str, Any]
+    :return: whether ``pending`` must be kept over ``incoming``
+    :rtype: bool
+    """
+    pending_order = l2_order_of(pending)
+    incoming_order = l2_order_of(incoming)
+    return pending_order is not None and incoming_order is not None and pending_order > incoming_order
+
+
 def _toposort_pending(
     pending: list[PendingWrite],
     parent_key_map: dict[str, str] | None = None,
@@ -425,6 +455,9 @@ def _write_landed(collection: Any, pending: PendingWrite, rows_affected: Any) ->
     The collection answers what its own 0 means, so the report is graded rather than
     uniform:
 
+    - ``persists_l2_order`` with a row carrying its compare-and-swap order says the write
+      was fenced on that order, so a 0 means L3 already holds a newer one -- a later swap
+      that built on this row persisted first. Nothing was lost; reported at debug.
     - ``emits_cas_fence`` says every write it generates carries a fence, so a 0 is
       provably a lost race -- reported at error. Only reachable through a buffer that
       already held rows when the table was fenced, because
@@ -461,7 +494,13 @@ def _write_landed(collection: Any, pending: PendingWrite, rows_affected: Any) ->
         "entity_id": str(pending.entity_id),
         "rows_affected": rows_affected,
     }
-    if getattr(collection, "emits_cas_fence", False) is True:
+    if getattr(collection, "persists_l2_order", False) is True and l2_order_of(pending.data) is not None:
+        log.debug(
+            "Deferred compare-and-swap write superseded by a newer order already in L3; the later "
+            "swap built on this one and carries it",
+            extra={"extra_data": address},
+        )
+    elif getattr(collection, "emits_cas_fence", False) is True:
         log.error(
             "Deferred L3 write lost its CAS race and was dropped; the buffered payload "
             "was decided under a fence value another writer has since moved",
@@ -589,7 +628,14 @@ async def _flush_per_entity(
                 # durable row (version-guarded — a newer coalesced write is kept).
                 await write_buffer.ack(pw.table_name, pw.entity_id)
             else:
-                log.warning(
+                # An FK deferral repeats once per drain until the parent lands or
+                # the budget runs out, and a parent that was deleted never lands:
+                # one row wrote this line up to _FK_RETRY_LIMIT times. The first
+                # deferral is the event; the repeats are DEBUG, and the drop above
+                # is the ERROR that says it never landed.
+                level = logging.WARNING if (not fk_violation or next_retry == 1) else logging.DEBUG
+                log.log(
+                    level,
                     "Flush write deferred (FK parent pending), re-adding to buffer"
                     if fk_violation
                     else "Flush write failed, re-adding to buffer for retry",

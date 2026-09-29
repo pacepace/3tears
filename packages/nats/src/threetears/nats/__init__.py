@@ -46,7 +46,13 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         CrossWorkerCanceller,
         TaskCancelEnvelope,
     )
-    from threetears.nats.distributed_lock import LockHeld, nats_distributed_lock
+    from threetears.nats.distributed_lock import (
+        LockHeld,
+        LockHold,
+        LockLossReason,
+        LockLost,
+        nats_distributed_lock,
+    )
     from threetears.nats.forward import (
         DEFAULT_FORWARD_TIMEOUT,
         ForwardError,
@@ -104,6 +110,20 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     from threetears.nats.kv import NatsKvBucket
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
 
+from threetears.nats.credential_renewal import (
+    NATS_USER_JWT_TTL_ENV,
+    PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS,
+    REAUTH_BUFFER_SECONDS,
+    REAUTH_LEEWAY_SECONDS,
+    REAUTH_MARGIN_SECONDS,
+    REAUTH_MIN_SLEEP_SECONDS,
+    REAUTH_RETRY_SECONDS,
+    REAUTH_UNKNOWN_TTL_RECHECK_SECONDS,
+    has_schedulable_ttl,
+    nats_user_jwt_ttl_seconds,
+    seconds_until_reauth,
+    unsafe_reauth_delay_reason,
+)
 from threetears.nats.errors import (
     KvConfigMismatch,
     KvError,
@@ -185,7 +205,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "TokenCallback",
     ),
     "cross_worker_cancel": ("CrossWorkerCanceller", "TaskCancelEnvelope"),
-    "distributed_lock": ("LockHeld", "nats_distributed_lock"),
+    "distributed_lock": ("LockHeld", "LockHold", "LockLossReason", "LockLost", "nats_distributed_lock"),
     "forward": (
         "DEFAULT_FORWARD_TIMEOUT",
         "ForwardError",
@@ -319,6 +339,19 @@ __all__ = [
     "NatsClient",
     "Subscription",
     "TokenCallback",
+    # renewing a connection whose credential expires (NatsClient.renew_credential's arithmetic)
+    "NATS_USER_JWT_TTL_ENV",
+    "PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS",
+    "REAUTH_BUFFER_SECONDS",
+    "REAUTH_LEEWAY_SECONDS",
+    "REAUTH_MARGIN_SECONDS",
+    "REAUTH_MIN_SLEEP_SECONDS",
+    "REAUTH_RETRY_SECONDS",
+    "REAUTH_UNKNOWN_TTL_RECHECK_SECONDS",
+    "has_schedulable_ttl",
+    "nats_user_jwt_ttl_seconds",
+    "seconds_until_reauth",
+    "unsafe_reauth_delay_reason",
     # subjects
     "PipeDirection",
     "Subject",
@@ -379,6 +412,9 @@ __all__ = [
     "OpRecord",
     # distributed lock
     "LockHeld",
+    "LockHold",
+    "LockLossReason",
+    "LockLost",
     "nats_distributed_lock",
     # cross-worker cancel-by-key (keyed task registry + routed cancel)
     "CrossWorkerCanceller",

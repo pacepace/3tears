@@ -11,12 +11,17 @@ covers:
   expose the resolved password; the reference string itself is safe
 - access-mode + ``password_ref`` validators
 - round-trip via ``model_dump`` / ``model_validate``
+- the stored form (only the fields that were set) reads back unchanged and
+  stays readable by an earlier release
 """
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, create_model
 
 from threetears.datasources.config import (
     AgentInternalConnectionConfig,
@@ -434,11 +439,12 @@ class TestConnectionConfigRefusesUnknownKeys:
     the rule stopped at the outer model and every pool-sizing and timeout
     value underneath it was silently droppable.
 
-    the config is read by the process that OWNS it -- the driver
-    constructed from the same checkout that declares these fields -- so
-    there is no version boundary to be tolerant across. refusal is the
-    right policy here, unlike the relations wire that crosses Hub and SDK
-    releases.
+    refusal is the right policy here, unlike the relations wire that
+    crosses Hub and SDK releases: tolerating an unknown key would let a
+    reader run without a setting someone chose. the one version boundary
+    a stored config does cross -- a consumer rolled back to an earlier
+    release -- is kept open by storing only the fields that were set;
+    :class:`TestStoredForm` pins that.
     """
 
     @pytest.mark.parametrize(("label", "body", "unknown_key"), _UNKNOWN_KEY_PROBES)
@@ -614,7 +620,7 @@ class TestConnectionConfigDiscriminator:
             )
 
 
-def _validate(raw: dict) -> ConnectionConfig:
+def _validate(raw: dict[str, object]) -> ConnectionConfig:
     """validate a raw dict through the discriminated union for tests.
 
     pydantic v2 doesn't expose a top-level ``model_validate`` on an
@@ -756,7 +762,7 @@ class TestRoundTrip:
             {"datasource_type": "agent_internal", "schema_name": "agent_abc"},
         ],
     )
-    def test_each_member_roundtrips(self, raw: dict) -> None:
+    def test_each_member_roundtrips(self, raw: dict[str, object]) -> None:
         original = _validate(raw)
         dumped = original.model_dump(mode="json")
         restored = _validate(dumped)
@@ -781,3 +787,100 @@ class TestRoundTrip:
         dumped = original.model_dump(mode="json")
         restored = DatasourceConfig.model_validate(dumped)
         assert restored == original
+
+
+# ---------------------------------------------------------------------------
+# Stored form
+# ---------------------------------------------------------------------------
+
+_SENT_REDSHIFT: dict[str, object] = {
+    "datasource_type": "redshift",
+    "host": "h",
+    "database": "d",
+    "username": "u",
+    "password_ref": "env://PW",
+    "executor_max_workers": 3,
+}
+
+
+def _stored(config: ConnectionConfig) -> dict[str, object]:
+    """the form a consumer persists: only the fields that were set.
+
+    :param config: the validated config
+    :ptype config: ConnectionConfig
+    :return: the stored JSON, parsed
+    :rtype: dict[str, object]
+    """
+    stored: dict[str, object] = json.loads(config.model_dump_json(exclude_unset=True))
+    return stored
+
+
+def _redshift_reader_without(field: str) -> type[BaseModel]:
+    """a Redshift config as an earlier release declared it: without ``field``, unknown keys refused.
+
+    :param field: the field the earlier release does not declare
+    :ptype field: str
+    :return: the earlier release's model
+    :rtype: type[BaseModel]
+    """
+    declared: dict[str, Any] = {
+        name: (info.annotation, info) for name, info in RedshiftConnectionConfig.model_fields.items() if name != field
+    }
+    return create_model("EarlierRedshiftConnectionConfig", __config__=ConfigDict(extra="forbid"), **declared)
+
+
+class TestStoredForm:
+    """a stored config reads back unchanged, and an earlier release can still read it.
+
+    a consumer that persists a config and is rolled back reads, with the
+    earlier release, what the newer one wrote. the full dump writes every
+    default -- including a field the earlier release does not declare, which
+    its ``extra="forbid"`` refuses -- so a rollback strands every row the
+    newer release touched. the stored form writes only the fields that were
+    set, so the earlier release refuses only a config that deliberately uses
+    a setting it cannot honour.
+    """
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"datasource_type": "postgres", "host": "h", "database": "d", "username": "u", "password_ref": "env://PW"},
+            {"datasource_type": "yugabyte", "host": "h", "database": "d", "username": "u", "password_ref": "env://PW"},
+            _SENT_REDSHIFT,
+            # an explicit cache equal to its default but not to the worker count:
+            # a form that dropped it would re-derive 3 on read.
+            pytest.param(dict(_SENT_REDSHIFT, connection_cache_size=5), id="redshift-explicit-cache-at-default"),
+            {"datasource_type": "snowflake", "account": "a", "warehouse": "w", "user": "u", "password_ref": "env://PW"},
+            {"datasource_type": "bigquery", "project_id": "p", "credentials_json_ref": "env://GCP"},
+            {"datasource_type": "agent_internal", "schema_name": "agent_abc"},
+        ],
+    )
+    def test_each_member_reads_back_unchanged(self, raw: dict[str, object]) -> None:
+        original = _validate(raw)
+
+        assert _validate(_stored(original)) == original
+
+    def test_an_earlier_release_reads_a_config_that_left_a_new_field_at_its_default(self) -> None:
+        config = _validate(_SENT_REDSHIFT)
+        earlier = _redshift_reader_without("connect_timeout_seconds")
+
+        earlier.model_validate(_stored(config))
+        with pytest.raises(ValidationError, match="connect_timeout_seconds"):
+            earlier.model_validate(json.loads(config.model_dump_json()))
+
+    def test_an_earlier_release_refuses_a_config_that_set_a_field_it_cannot_honour(self) -> None:
+        config = _validate(dict(_SENT_REDSHIFT, connect_timeout_seconds=10))
+
+        with pytest.raises(ValidationError, match="connect_timeout_seconds"):
+            _redshift_reader_without("connect_timeout_seconds").model_validate(_stored(config))
+
+    def test_an_explicit_choice_equal_to_the_default_is_stored(self) -> None:
+        default = RedshiftConnectionConfig.model_fields["query_timeout_seconds"].default
+        config = _validate(dict(_SENT_REDSHIFT, query_timeout_seconds=default))
+
+        assert _stored(config)["query_timeout_seconds"] == default
+
+    def test_a_derived_cache_size_is_stored(self) -> None:
+        stored = _stored(_validate(_SENT_REDSHIFT))
+
+        assert stored["connection_cache_size"] == 3

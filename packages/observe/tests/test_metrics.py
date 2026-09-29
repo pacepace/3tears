@@ -119,6 +119,55 @@ class TestAccessors:
 
         assert first is second
 
+    def test_first_calls_on_several_threads_at_once_register_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """concurrent first calls for one name get one instrument and no error.
+
+        the cache is checked and then filled; without a lock every thread that checked
+        before the first one filled it constructed its own instrument, and the second
+        registration raised ``Duplicated timeseries``. registration is slowed here so every
+        thread is certainly inside that window at once.
+        """
+        import threading
+        import time
+
+        from prometheus_client import REGISTRY
+
+        real_register = REGISTRY.register
+        registrations: list[object] = []
+
+        def slow_register(collector: object) -> None:
+            registrations.append(collector)
+            time.sleep(0.05)
+            real_register(collector)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(REGISTRY, "register", slow_register)
+        threads_count = 8
+        start = threading.Barrier(threads_count)
+        results: list[object] = []
+        errors: list[BaseException] = []
+        record = threading.Lock()
+
+        def first_call() -> None:
+            start.wait()
+            try:
+                instrument = counter("test.accessor.concurrent_first")
+            except BaseException as exc:  # noqa: BLE001 -- the assertion below reports every one
+                with record:
+                    errors.append(exc)
+                return
+            with record:
+                results.append(instrument)
+
+        workers = [threading.Thread(target=first_call) for _ in range(threads_count)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=30)
+
+        assert errors == [], f"concurrent first calls raised: {errors!r}"
+        assert len({id(instrument) for instrument in results}) == 1
+        assert len(registrations) == 1
+
     def test_different_kinds_under_the_same_name_raise(self):
         """counter/histogram/gauge each register under the exact name given;
 

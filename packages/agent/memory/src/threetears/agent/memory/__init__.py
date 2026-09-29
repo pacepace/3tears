@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         memory_namespace_name,
         memory_namespace_schema_name,
     )
+    from threetears.agent.memory.local_provisioner import LocalMemoryNamespaceProvisioner
     from threetears.agent.memory.namespace_client import (
         HubMemoryNamespaceProvisioner,
         MemoryNamespaceEnsureReply,
@@ -89,7 +90,13 @@ if TYPE_CHECKING:
         MemoryRetrievedEvent,
         default_memory_created_dispatcher,
     )
-    from threetears.agent.memory.extraction import ChatModelFactory, MemoryExtractor
+    from threetears.agent.memory.extraction import (
+        ChatModelFactory,
+        ExtractionGate,
+        ExtractionOutcome,
+        ExtractionResult,
+        MemoryExtractor,
+    )
     from threetears.agent.memory.integration import (
         MemoryIntegration,
         NatsEmbeddingAdapter,
@@ -125,7 +132,14 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ChunkSearchInput": ("threetears.agent.memory.tools", "ChunkSearchInput"),
     "ConsolidationResult": ("threetears.agent.memory.dream", "ConsolidationResult"),
     "DreamService": ("threetears.agent.memory.dream", "DreamService"),
+    "ExtractionGate": ("threetears.agent.memory.extraction", "ExtractionGate"),
+    "ExtractionOutcome": ("threetears.agent.memory.extraction", "ExtractionOutcome"),
     "ExtractionPrompts": ("threetears.agent.memory.prompts", "ExtractionPrompts"),
+    "ExtractionResult": ("threetears.agent.memory.extraction", "ExtractionResult"),
+    "LocalMemoryNamespaceProvisioner": (
+        "threetears.agent.memory.local_provisioner",
+        "LocalMemoryNamespaceProvisioner",
+    ),
     "HubMemoryNamespaceProvisioner": (
         "threetears.agent.memory.namespace_client",
         "HubMemoryNamespaceProvisioner",
@@ -216,7 +230,11 @@ __all__ = [
     "ConsolidationCycleError",
     "ConsolidationResult",
     "DreamService",
+    "ExtractionGate",
+    "ExtractionOutcome",
     "ExtractionPrompts",
+    "ExtractionResult",
+    "LocalMemoryNamespaceProvisioner",
     "HubMemoryNamespaceProvisioner",
     "MEMORY_NAMESPACE_TYPE",
     "MEMORY_OWNER_GROUP_PREFIX",

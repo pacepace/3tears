@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry
@@ -244,7 +244,11 @@ class ScheduledJobsMetricsEmitter:
         """Increment :data:`SCHEDULED_JOBS_FAILURES_TOTAL` by reason.
 
         Reasons (bounded): ``handler_exception``, ``claim_lost``,
-        ``reaped``, ``unrouted_kind``, ``other``. ``unrouted_kind`` is
+        ``reaped``, ``unrouted_kind``, ``timeout``, ``cancelled``, ``other``.
+        ``timeout`` and ``cancelled`` are recorded by
+        :class:`~threetears.scheduled_jobs.background.BackgroundDispatch`: a
+        fire that ran out of time, and one cancelled before it finished
+        (``aclose``), so an alert can tell a hung fire from a crashing one. ``unrouted_kind`` is
         the routing refusal -- a due row whose ``kind`` has no registered
         handler on the pump that scanned it. It carries no ``kind``
         label because ``kind`` is unbounded (see
@@ -285,7 +289,11 @@ class ScheduledJobsMetricsEmitter:
 # the same registry raises in prometheus_client, so we cache per
 # ``id(registry)``. Sentinel key ``0`` indexes the default global
 # registry path.
-_EMITTERS: dict[int, ScheduledJobsMetricsEmitter] = {}
+#: the per-registry emitters. a consumer may reach the getter from several threads at
+#: once, and a second emitter's registration on one registry raises ``Duplicated
+#: timeseries in CollectorRegistry``, so each is built through
+#: :class:`~threetears.observe.build_once.BuildOnce`.
+_EMITTERS: BuildOnce[int, ScheduledJobsMetricsEmitter] = BuildOnce()
 
 
 def get_scheduled_jobs_emitter(
@@ -302,11 +310,7 @@ def get_scheduled_jobs_emitter(
     :rtype: ScheduledJobsMetricsEmitter
     """
     key = 0 if registry is None else id(registry)
-    emitter = _EMITTERS.get(key)
-    if emitter is None:
-        emitter = ScheduledJobsMetricsEmitter(registry=registry)
-        _EMITTERS[key] = emitter
-    return emitter
+    return _EMITTERS.get(key, lambda: ScheduledJobsMetricsEmitter(registry=registry))
 
 
 def reset_scheduled_jobs_emitter_for_testing() -> None:
@@ -317,6 +321,4 @@ def reset_scheduled_jobs_emitter_for_testing() -> None:
     from the underlying registry, then drops the cache entry so the next
     :func:`get_scheduled_jobs_emitter` call builds fresh.
     """
-    for emitter in _EMITTERS.values():
-        emitter.unregister_from_registry()
-    _EMITTERS.clear()
+    _EMITTERS.clear(dispose=lambda emitter: emitter.unregister_from_registry())

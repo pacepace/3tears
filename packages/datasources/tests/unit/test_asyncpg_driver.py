@@ -24,9 +24,13 @@ from threetears.datasources.config import (
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
+from threetears.datasources.drivers import (
+    DriverAuthError,
+    DriverConnectError,
+    DriverMissingCredentialError,
+)
 from threetears.datasources.drivers.asyncpg_driver import (
     AsyncpgDriver,
-    DriverConnectError,
     _POSTGRES_COLUMNS_SQL,
     _POSTGRES_TABLE_HASHES_SQL,
     _POSTGRES_TABLES_SQL,
@@ -524,6 +528,91 @@ class TestPoolCreation:
         assert "localhost" in str(exc_info.value)
         assert "kapow" not in str(exc_info.value)
 
+    @pytest.mark.asyncio
+    async def test_a_refused_login_is_an_auth_error_carrying_the_servers_reason(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """the server's SQLSTATE and message survive the ``from None`` that drops the chain.
+
+        Without them a refused login reads exactly like an unreachable host, and a caller
+        that retries it is the thing that locks the account.
+        """
+        monkeypatch.setenv("MY_PG_PW", "horse-battery-staple")
+        cfg = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="h",
+            database="x",
+            username="u",
+            password_ref="env://MY_PG_PW",
+        )
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            AsyncMock(
+                side_effect=asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "u"')
+            ),
+        )
+        driver = AsyncpgDriver(cfg)
+
+        with pytest.raises(DriverAuthError) as exc_info:
+            await driver.fetch("SELECT 1")
+
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.sqlstate == "28P01"
+        assert 'password authentication failed for user "u"' in str(exc_info.value)
+        assert "horse-battery-staple" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_a_reference_that_resolves_to_nothing_is_refused_before_any_connect(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """a named credential that is absent is a missing credential, not a network failure."""
+        monkeypatch.delenv("MISSING_PG_PW", raising=False)
+        cfg = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="h",
+            database="x",
+            username="u",
+            password_ref="env://MISSING_PG_PW",
+        )
+        create_pool_mock = AsyncMock()
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            create_pool_mock,
+        )
+        driver = AsyncpgDriver(cfg, datasource_name="reporting")
+
+        with pytest.raises(DriverMissingCredentialError) as exc_info:
+            await driver.fetch("SELECT 1")
+
+        create_pool_mock.assert_not_awaited()
+        assert "reporting" in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+    @pytest.mark.asyncio
+    async def test_test_connection_keeps_the_auth_type(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        postgres_config: PostgresConnectionConfig,
+    ) -> None:
+        """the connection probe must not re-wrap an auth refusal into a plain connect error.
+
+        That re-wrap dropped both the type a caller stops retrying on and the server's reason.
+        """
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            AsyncMock(
+                side_effect=asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "u"')
+            ),
+        )
+        driver = AsyncpgDriver(postgres_config)
+
+        with pytest.raises(DriverAuthError) as exc_info:
+            await driver.test_connection()
+
+        assert exc_info.value.sqlstate == "28P01"
+
 
 class TestServerSettingsSearchPath:
     """``_create_owned_pool`` wires ``allowed_schemas`` -> startup ``search_path``.
@@ -635,3 +724,100 @@ class TestServerSettingsSearchPath:
         await driver.fetch("SELECT 1")
         server_settings = create_pool_mock.await_args.kwargs["server_settings"]
         assert server_settings == {"search_path": '"app"'}
+
+
+# ---------------------------------------------------------------------------
+# Borrowed-pool search_path scoping
+# ---------------------------------------------------------------------------
+
+
+class TestABorrowedConnectionIsScopedToItsSchema:
+    """an ``agent_internal`` driver shares the Hub's L3 pool and must scope itself.
+
+    A driver that opens its own pool sends ``search_path`` in the pgwire STARTUP
+    packet, which is why it survives the ``RESET ALL`` asyncpg issues on release.
+    A BORROWED pool never sends a startup packet, so before this the
+    ``agent_internal`` driver inherited the Hub's own ``search_path`` and had no
+    scoping at all.
+
+    Observed on cobalt-dev: an unqualified ``SELECT count(*) FROM users`` against
+    an ``agent_internal`` datasource raised ``UndefinedTableError`` while the
+    identical query fully qualified returned rows -- a datasource that did not
+    route to the schema its own name advertises. The Hub-side docstring asserted
+    a "per-query SET search_path" that existed nowhere in this driver;
+    ``schema_name`` was read in one place, to build a display string.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fetch_sets_search_path_on_the_borrowed_connection(
+        self,
+        agent_internal_config: AgentInternalConnectionConfig,
+    ) -> None:
+        """
+        :return: nothing
+        :rtype: None
+        """
+        fake_pool = _build_mock_pool()
+        driver = AsyncpgDriver(agent_internal_config, external_pool=fake_pool)
+
+        await driver.fetch("SELECT 1")
+
+        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        executed = [call.args[0] for call in conn.execute.await_args_list]
+        assert 'SET search_path TO "agent_abc123"' in executed
+
+    @pytest.mark.asyncio
+    async def test_the_schema_name_is_identifier_quoted(
+        self,
+    ) -> None:
+        """The name reaches SQL as an identifier, not as interpolated text.
+
+        ``schema_name`` is operator-controlled rather than caller-controlled, so
+        this is defence in depth rather than the primary boundary -- but a
+        driver that interpolates a name into DDL-adjacent SQL should quote it,
+        and ``build_search_path_value`` already does.
+
+        :return: nothing
+        :rtype: None
+        """
+        cfg = AgentInternalConnectionConfig(
+            datasource_type=DataSourceType.AGENT_INTERNAL,
+            schema_name='weird"name',
+        )
+        fake_pool = _build_mock_pool()
+        driver = AsyncpgDriver(cfg, external_pool=fake_pool)
+
+        await driver.fetch("SELECT 1")
+
+        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        executed = [call.args[0] for call in conn.execute.await_args_list]
+        assert any('"weird""name"' in statement for statement in executed)
+
+    @pytest.mark.asyncio
+    async def test_an_owned_pool_is_not_re_scoped_every_acquire(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The startup packet already did it; repeating it is a wasted round trip.
+
+        :return: nothing
+        :rtype: None
+        """
+        cfg = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="h",
+            database="x",
+            allowed_schemas=["app"],
+        )
+        fake_pool = _build_mock_pool()
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            AsyncMock(return_value=fake_pool),
+        )
+        driver = AsyncpgDriver(cfg)
+
+        await driver.fetch("SELECT 1")
+
+        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        executed = [call.args[0] for call in conn.execute.await_args_list]
+        assert not any("search_path" in statement for statement in executed)

@@ -34,8 +34,10 @@ from threetears.nats import (
     Subjects,
     set_default_namespace,
 )
-from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallAccepted, ProxyCallResponse
+
+from ._copies import uniform_entry
 
 from ._dispatch_auth import DEFAULT_AGENT_ID, make_authed_request, make_proxy
 
@@ -125,7 +127,7 @@ async def _registered_catalog(timeout_seconds: float, *, pods: tuple[str, ...] =
     """a catalog holding one tool whose DECLARED timeout decides which delivery path it takes."""
     catalog = ToolCatalog()
     await catalog.register(
-        CatalogEntry(
+        uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",
@@ -249,6 +251,34 @@ class TestCollectingAPodsAnswer:
 
         assert nats.waiters[0].closed is True
         assert nats.replies[0].error_code == "TOOL_TIMEOUT"
+
+
+class _NatsWithNoResultStream(_Nats):
+    """a bus on which the result stream was never provisioned: opening a waiter raises."""
+
+    async def jetstream_result_waiter(self, *, subject: Subject, stream: str, wait_budget: timedelta) -> _Waiter:
+        del subject, stream, wait_budget
+        self.order.append("open-waiter")
+        raise RuntimeError("stream not found")
+
+
+class TestWhenTheWaiterCannotOpen:
+    """a bus missing the result stream must answer the caller, never kill the dispatch task.
+
+    the waiter opens BEFORE the call is dispatched, so a failure there means the call never
+    reached a pod. left uncaught it raised out of the background task with the reply subject
+    unanswered, and the caller learned nothing until its own deadline.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failed_waiter_open_answers_unavailable_and_never_dispatches(self) -> None:
+        catalog = await _registered_catalog(_LONG)
+        nats = _NatsWithNoResultStream(delivered=_pod_answer())
+        await _dispatch(make_proxy(catalog, namespace=_NS), nats, make_authed_request())
+
+        assert nats.order == ["open-waiter"]  # the call was never forwarded
+        assert nats.replies[0].success is False
+        assert nats.replies[0].error_code == "TOOL_UNAVAILABLE"
 
 
 class TestWhenTheOtherEndDoesNotPlayAlong:

@@ -63,27 +63,19 @@ class _StubIntegration:
 
     def __init__(
         self,
-        ids: list[Any],
-        digests: dict[Any, Any] | None = None,
+        datasource_names: list[str] | None = None,
+        tables: list[Any] | None = None,
         *,
-        raise_on_digest: bool = False,
+        raise_on_read: bool = False,
     ) -> None:
-        self._ids = ids
-        self._digests = digests or {}
-        self._raise_on_digest = raise_on_digest
+        self.datasource_names = list(datasource_names or [])
+        self._tables = list(tables or [])
+        self._raise_on_read = raise_on_read
 
-    async def datasource_ids(self) -> list[Any]:
-        return self._ids
-
-    async def get_digest(self, datasource_id: Any) -> Any:
-        if self._raise_on_digest:
-            raise RuntimeError("digest read boom")
-        return self._digests.get(datasource_id)
-
-
-def _digest(tables: list[dict[str, Any]]) -> Any:
-    """build a digest entity exposing a ``tables`` projection (duck-typed)."""
-    return SimpleNamespace(tables=tables)
+    async def documented_schema(self) -> list[Any]:
+        if self._raise_on_read:
+            raise RuntimeError("schema read boom")
+        return self._tables
 
 
 @contextmanager
@@ -135,7 +127,7 @@ _TABLE = {
 
 class TestInjection:
     def test_folds_honesty_and_schema_into_system(self) -> None:
-        integration = _StubIntegration(["ds-1"], {"ds-1": _digest([_TABLE])})
+        integration = _StubIntegration(["ds-1"], [_TABLE])
         req, _out = _drive(
             SchemaPrimingMiddleware(),
             _request(SystemMessage(content="base")),
@@ -150,7 +142,7 @@ class TestInjection:
         assert "public.orders" in content
 
     def test_returns_extended_response_with_metadata_block(self) -> None:
-        integration = _StubIntegration(["ds-1"], {"ds-1": _digest([_TABLE])})
+        integration = _StubIntegration(["ds-1"], [_TABLE])
         _req, out = _drive(
             SchemaPrimingMiddleware(),
             _request(SystemMessage(content="base")),
@@ -168,7 +160,7 @@ class TestInjection:
     def test_honesty_ships_when_no_digest_documents_tables(self) -> None:
         # datasource resolves but no digest entity exists -> schema block empty, but
         # the honesty rule still folds (imperatives are emitted by any datasource read).
-        integration = _StubIntegration(["ds-1"], {})
+        integration = _StubIntegration(["ds-1"], [])
         req, out = _drive(SchemaPrimingMiddleware(), _request(None), {"schema_priming_integration": integration})
         assert isinstance(out, ExtendedModelResponse)
         assert req.system_message is not None
@@ -177,7 +169,7 @@ class TestInjection:
         assert out.command.update["metadata"]["documented_schema_block"] == ""
 
     def test_digest_read_fault_drops_block_but_keeps_honesty(self) -> None:
-        integration = _StubIntegration(["ds-1"], raise_on_digest=True)
+        integration = _StubIntegration(["ds-1"], raise_on_read=True)
         req, out = _drive(SchemaPrimingMiddleware(), _request(None), {"schema_priming_integration": integration})
         assert isinstance(out, ExtendedModelResponse)
         assert req.system_message is not None
@@ -253,23 +245,23 @@ def _rendered_names(block: str) -> list[str]:
 class TestBudget:
     def test_tail_dropped_with_footer(self) -> None:
         tables = [{"schema": "public", "table": f"t{i}", "description": "x" * 200, "columns": []} for i in range(10)]
-        block = _render_schema_block([_digest(tables)], budget=120)
+        block = _render_schema_block(tables, budget=120)
         assert "not shown here" in block
         # at least one table always renders even under a tight budget.
         assert "public.t0" in block
 
     def test_empty_when_no_tables(self) -> None:
-        assert _render_schema_block([_digest([])], budget=1500) == ""
+        assert _render_schema_block([], budget=1500) == ""
 
     def test_single_oversized_table_still_renders(self) -> None:
         # the at-least-one rule: a budget smaller than one table still primes that table.
-        block = _render_schema_block([_digest([_rich("only", columns=20)])], budget=10)
+        block = _render_schema_block([_rich("only", columns=20)], budget=10)
         assert _rendered_names(block) == ["public.only"]
         assert "not shown here" not in block
 
     def test_footer_count_matches_tables_dropped(self) -> None:
         tables = [_rich(f"t{i:02d}") for i in range(20)]
-        block = _render_schema_block([_digest(tables)], budget=400)
+        block = _render_schema_block(tables, budget=400)
         dropped = len(tables) - len(_rendered_names(block))
         assert dropped > 0
         assert f"_{dropped} more documented table(s) not shown here" in block
@@ -277,7 +269,7 @@ class TestBudget:
     def test_footer_states_the_selection_rule(self) -> None:
         # a table missing from the block must read as a stated decision, not a fault.
         tables = [_rich(f"t{i:02d}") for i in range(20)]
-        block = _render_schema_block([_digest(tables)], budget=400)
+        block = _render_schema_block(tables, budget=400)
         assert "keeps the tables carrying the most documentation" in block
 
 
@@ -299,10 +291,10 @@ class TestScaledBudget:
         # the measured regression: 35 documented tables, of which the fixed 1500-token
         # budget primed 3. the derived budget primes all 35.
         tables = [_rich(f"t{i:02d}", columns=12) for i in range(35)]
-        scaled = _render_schema_block([_digest(tables)])
+        scaled = _render_schema_block(tables)
         assert len(_rendered_names(scaled)) == 35
         assert "not shown here" not in scaled
-        fixed = _render_schema_block([_digest(tables)], budget=_SCHEMA_PRIMING_TOKEN_FLOOR)
+        fixed = _render_schema_block(tables, budget=_SCHEMA_PRIMING_TOKEN_FLOOR)
         assert len(_rendered_names(fixed)) < 10
 
     def test_middleware_defaults_to_the_derived_budget(self) -> None:
@@ -314,7 +306,7 @@ class TestPriority:
         # the lottery this replaces: the bare tables led the input, so they used to be
         # the ones that survived. selection is by documentation now, not by position.
         tables = [_bare(f"b{i:02d}") for i in range(20)] + [_rich(f"r{i}") for i in range(3)]
-        block = _render_schema_block([_digest(tables)], budget=300)
+        block = _render_schema_block(tables, budget=300)
         names = _rendered_names(block)
         assert names, "at least one table must always render"
         assert all(name.startswith("public.r") for name in names)
@@ -322,9 +314,9 @@ class TestPriority:
 
     def test_selection_is_independent_of_input_order(self) -> None:
         tables = [_bare(f"b{i:02d}") for i in range(20)] + [_rich(f"r{i}") for i in range(3)]
-        forward = _render_schema_block([_digest(list(tables))], budget=300)
-        backward = _render_schema_block([_digest(list(reversed(tables)))], budget=300)
-        rotated = _render_schema_block([_digest(tables[7:] + tables[:7])], budget=300)
+        forward = _render_schema_block(list(tables), budget=300)
+        backward = _render_schema_block(list(reversed(tables)), budget=300)
+        rotated = _render_schema_block(tables[7:] + tables[:7], budget=300)
         assert forward == backward == rotated
 
     def test_output_is_byte_stable_across_shuffled_input(self) -> None:
@@ -334,32 +326,33 @@ class TestPriority:
         for _ in range(5):
             permutation = list(tables)
             shuffled.shuffle(permutation)
-            orders.append(_render_schema_block([_digest(permutation)]))
+            orders.append(_render_schema_block(permutation))
         assert len(set(orders)) == 1
 
     def test_hazard_tables_outrank_richer_documentation(self) -> None:
         # an unloaded column reads as a measured 0; nothing in the live catalog says
         # otherwise, so that warning outranks even a heavily documented table.
         tables = [_rich("r0"), _rich("r1"), _hazardous("h0")]
-        names = _rendered_names(_render_schema_block([_digest(tables)]))
+        names = _rendered_names(_render_schema_block(tables))
         assert names[0] == "public.h0"
 
     def test_caveats_count_as_hazard_documentation(self) -> None:
         # forward-compatible: the projection carries no caveats today, but when it does
         # they rank with the unloaded-column overlay rather than falling to the tail.
         with_caveats = _bare("c0") | {"caveats": "never sum across geo_level"}
-        names = _rendered_names(_render_schema_block([_digest([_rich("r0"), with_caveats])]))
+        names = _rendered_names(_render_schema_block([_rich("r0"), with_caveats]))
         assert names[0] == "public.c0"
 
     def test_equal_documentation_is_tie_broken_by_name(self) -> None:
         tables = [_rich("zebra"), _rich("alpha"), _rich("mango")]
-        names = _rendered_names(_render_schema_block([_digest(tables)]))
+        names = _rendered_names(_render_schema_block(tables))
         assert names == ["public.alpha", "public.mango", "public.zebra"]
 
-    def test_tables_from_every_digest_are_ranked_together(self) -> None:
-        # ranking spans datasources: a rich table on the second digest beats a bare one
-        # on the first, which per-digest ordering would have preferred.
-        block = _render_schema_block([_digest([_bare("b0")]), _digest([_rich("r0")])])
+    def test_tables_from_every_datasource_are_ranked_together(self) -> None:
+        # ranking spans datasources: a rich table from the second datasource beats a
+        # bare one from the first, which per-datasource ordering would have preferred.
+        # the integration hands over ONE flattened list precisely so this holds.
+        block = _render_schema_block([_bare("b0"), _rich("r0")])
         assert _rendered_names(block) == ["public.r0", "public.b0"]
 
 
@@ -373,7 +366,7 @@ class TestSyncMirror:
             captured["req"] = r
             return SimpleNamespace(result=[])
 
-        integration = _StubIntegration(["ds-1"], {"ds-1": _digest([_TABLE])})
+        integration = _StubIntegration(["ds-1"], [_TABLE])
         with _configured({"schema_priming_integration": integration}):
             out = mw.wrap_model_call(req, _handler)
         assert captured["req"] is req  # un-primed
@@ -446,7 +439,7 @@ class _CapturingChatModel(BaseChatModel):
 class TestRealAgentRegression:
     def test_model_receives_exactly_one_leading_system_message(self) -> None:
         model = _CapturingChatModel(sink=[])
-        integration = _StubIntegration(["ds-1"], {"ds-1": _digest([_TABLE])})
+        integration = _StubIntegration(["ds-1"], [_TABLE])
         agent = create_agent(
             model=model,
             tools=[],

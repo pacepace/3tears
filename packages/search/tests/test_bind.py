@@ -36,8 +36,8 @@ from threetears.search.contracts import (
 )
 from threetears.search.limiter import InProcessRateLimiter
 from threetears.search.testing import FakeBudgetPort, FakeRateLimiterPort, ScriptedTransport, TransportScript
-from _search_instances import CANDIDATE, CANDIDATE_SET, DISPOSITION, SPEND
-from _searxng_payloads import MALFORMED_BODY, TWO_RESULTS_BODY, ZERO_RESULTS_BODY, body
+from packages.search.tests._search_instances import CANDIDATE, CANDIDATE_SET, DISPOSITION, SPEND
+from packages.search.tests._searxng_payloads import MALFORMED_BODY, TWO_RESULTS_BODY, ZERO_RESULTS_BODY, body
 
 #: byte-for-byte what ``_format_results`` produced for the two-result fixture.
 #: The old renderer read SearXNG JSON directly; this one reads typed
@@ -107,7 +107,7 @@ async def test_an_unsatisfied_criterion_is_named_in_the_prose() -> None:
     prose = render_prose(result)
 
     assert prose.startswith(EXPECTED_PROSE)
-    assert "rights-class was not applied (unsatisfied)" in prose
+    assert "the rights-class filter was not applied" in prose
 
 
 async def test_a_provider_degradation_is_named_in_the_prose() -> None:

@@ -410,18 +410,43 @@ class EvaluationContext:
     caller is checking for (e.g. ``"read"``, ``"write"``,
     ``"namespace.access"``).
 
+    ``group_id`` asks a third, audit-shaped question: what does a
+    direct member of this group reach? It is answered alone -- never
+    alongside a user or an agent -- by the same walk a user member of
+    the group gets: the group, its ancestors to
+    :data:`MAX_GROUP_MEMBERSHIP_DEPTH`, and every wall past the
+    member's own membership row. A caller recording what nesting a
+    group changed asks it rather than re-deriving the walk, so the
+    answer cannot drift from the evaluator's own.
+
+    Two things the answer depends on that the caller owns:
+
+    - it has no membership row to check, so the first wall -- a
+      member's row must carry the namespace's customer -- cannot apply.
+      For a customer-scoped group that changes nothing (the group's own
+      wall covers it). For a PLATFORM-scoped group it is the reach of
+      the widest possible member: a customer-scoped member reaches only
+      its own customer's share of it.
+    - the group's parent set is read through the membership cache like
+      every other walk, so a caller asking right after it wrote a
+      membership evicts that group's membership key first, or it is
+      answered from the parent set before the write.
+
     :ivar namespace: namespace under evaluation
     :ivar action: action string being checked
     :ivar user_id: invoking user UUID, or ``None`` for an agent-only
         evaluation
     :ivar agent_id: invoking agent UUID, or ``None`` for a user-only
         evaluation
+    :ivar group_id: group whose direct members are being evaluated,
+        or ``None``; exclusive of ``user_id`` and ``agent_id``
     """
 
     namespace: Namespace
     action: str
     user_id: UUID | None = None
     agent_id: UUID | None = None
+    group_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -477,8 +502,10 @@ class EvaluationResult:
     fields populated for single-actor evaluations:
 
     - :attr:`trails` — every grant path on the one side that ran.
-    - :attr:`user_actions` / :attr:`agent_actions` /
-      :attr:`limiting_side` left at defaults (empty / NEITHER).
+    - :attr:`user_actions` for a user- or group-member evaluation, or
+      :attr:`agent_actions` for an agent-only one -- the set the side
+      that ran contributed; the other is left empty.
+    - :attr:`limiting_side` left at :attr:`LimitingSide.NEITHER`.
 
     :ivar decision: True for allow, False for deny
     :ivar effective_actions: final action set after intersection /
@@ -486,10 +513,9 @@ class EvaluationResult:
     :ivar trails: trails for the single-actor side that ran (empty
         for intersection evaluations; intersection evaluations use
         :attr:`user_trails` and :attr:`agent_trails` instead)
-    :ivar user_actions: action set the user side contributed
-        (intersection mode)
+    :ivar user_actions: action set the user side (or the group-member
+        side) contributed
     :ivar agent_actions: action set the agent side contributed
-        (intersection mode)
     :ivar limiting_side: which side is capping (intersection mode)
     :ivar user_trails: user-side grant paths (intersection mode)
     :ivar agent_trails: agent-side grant paths (intersection mode)

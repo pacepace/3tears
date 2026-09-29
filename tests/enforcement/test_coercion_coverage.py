@@ -6,10 +6,11 @@ declares, so a subclass that overrides ``run`` receives whatever the model happe
 emit -- a string where an int was declared, a null where a list was -- and the coercion
 step it skipped is invisible at the call site.
 
-The walker has been in ``packages/enforcement`` with no caller since it was written. It
-currently reports nothing, which is the point: this locks in an invariant that is already
-true across every package, so the first ``run`` override fails at commit rather than at
-the first malformed model response in production.
+This locks in an invariant that is true across every package, so the first ``run`` override
+fails at commit rather than at the first malformed model response in production. The walker
+reads a base as Tool-ish by the suffix of its name, so LangChain's ``BaseTool`` and
+``StructuredTool`` qualify; the two LangChain wrappers that override ``run`` without being
+TearsTools are exempted, by class, in ``_coercion_coverage_exemptions.txt``.
 """
 
 from __future__ import annotations
@@ -34,7 +35,11 @@ _SRC_ROOTS = tuple(
     )
 )
 
-_CONFIG = CoerceCoverageConfig(repo_root=_REPO_ROOT, src_roots=_SRC_ROOTS)
+_CONFIG = CoerceCoverageConfig(
+    repo_root=_REPO_ROOT,
+    src_roots=_SRC_ROOTS,
+    exemptions_path=Path(__file__).with_name("_coercion_coverage_exemptions.txt"),
+)
 
 
 def test_tool_subclasses_override_execute_not_run() -> None:

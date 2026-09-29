@@ -8,14 +8,18 @@ change-driven introspection path (datasource-task-13).
 
 byte-equivalence with the driver-side SQL is load-bearing:
 
-- :func:`compute_column_hash` MUST produce the same MD5 hex digest
-  as ``MD5(STRING_AGG(column_name || ':' || data_type || ':' ||
-  COALESCE(is_nullable, ''), ',' ORDER BY ordinal_position))`` (the
-  formula used by :class:`AsyncpgDriver` /
-  :class:`RedshiftDriver`'s ``table_hashes`` SQL). the integration
-  tests in ``tests/integration/test_*_driver_live.py`` already
-  verify the cross-language invariant -- this module is the python
-  side of that contract.
+- :func:`compute_column_hash` MUST produce the same MD5 hex digest as
+  each SQL driver's ``table_hashes`` over the same rows
+  (``_POSTGRES_TABLE_HASHES_SQL`` in the asyncpg driver,
+  ``_REDSHIFT_TABLE_HASHES_SQL_TEMPLATE`` in the Redshift driver). the
+  formula is described in ONE place, :func:`column_hash_payload`; every
+  other description points there, because a restated copy stops agreeing
+  the next time the formula changes. the live tests in
+  ``tests/integration/test_*_driver_live.py`` verify the equivalence
+  against a real warehouse -- this module is the python side of it.
+- the equivalence holds per driver, python against that driver's SQL,
+  not across drivers: each engine's catalog spells ``data_type``
+  differently, so one table hashes differently on two engines.
 
 these primitives live in 3tears (not Hub) so future 3tears
 consumers reuse them. shard 13's DS-13-14 flags this lift as a
@@ -39,17 +43,10 @@ __all__ = [
 def compute_column_hash(cols: list[dict[str, Any]]) -> str:
     """MD5 over the canonical column-shape payload (Tier-2 change probe).
 
-    payload format (byte-identical to the driver-side SQL in
-    ``_POSTGRES_TABLE_HASHES_SQL`` / ``_REDSHIFT_TABLE_HASHES_SQL``):
-
-    .. code-block:: text
-
-        MD5(column_name:data_type:is_nullable),MD5(...),...
-
-    i.e. each column's payload is hashed first and the 32-char digests are
-    joined -- see :func:`column_hash_payload` for why.
-
-    where columns are sorted by ``ordinal_position`` ascending,
+    the payload is :func:`column_hash_payload`'s, which describes the
+    formula; it is byte-identical to the driver-side SQL in
+    ``_POSTGRES_TABLE_HASHES_SQL`` / ``_REDSHIFT_TABLE_HASHES_SQL_TEMPLATE``
+    over the same rows. columns are sorted by ``ordinal_position`` ascending,
     ``is_nullable`` is the RAW warehouse string (``'YES'`` / ``'NO'``
     / ``''``) -- NOT a python ``bool`` (the warehouse-side ``COALESCE
     (is_nullable, '')`` makes NULL render as the empty string, so

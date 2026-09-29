@@ -62,8 +62,8 @@ Row-shape pinning
     (``'YES'``/``'NO'``/``''``), NEVER a bool -- Snowflake's
     ``information_schema.columns`` returns the same shape as
     postgres so the byte-equivalence with the python-side
-    ``_compute_column_hash`` from ``datasource-task-02`` holds
-    without translation.
+    :func:`~threetears.datasources.introspection.compute_column_hash`
+    holds without translation.
 
 information_schema source
     Snowflake exposes a postgres-compatible
@@ -71,7 +71,10 @@ information_schema source
     that supports aggregates. unlike Redshift, you can use
     ``MD5(LISTAGG(...))`` (Snowflake variant) over
     ``information_schema.columns`` directly. the same SQL template
-    shape used by :class:`AsyncpgDriver` adapts cleanly; mind that
+    shape used by :class:`AsyncpgDriver` adapts cleanly -- it hashes
+    each column before the aggregate, as
+    :func:`~threetears.datasources.introspection.column_hash_payload`
+    describes; mind that
     Snowflake reserves the ``$$`` token, so prefer single-quoted
     strings in the SQL constants.
 
@@ -132,7 +135,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.datasources.config import SnowflakeConnectionConfig
-from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow, Transaction
+from threetears.datasources.drivers.base import ColumnRow, Driver, RelationFingerprint, TableRow, Transaction
 from threetears.observe import get_logger
 
 __all__ = ["SnowflakeDriver"]
@@ -232,6 +235,27 @@ class SnowflakeDriver(Driver):
         :raises NotImplementedError: stub method; see module docstring
         """
         raise NotImplementedError(f"SnowflakeDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
+
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+        """count and fingerprint a relation over its key -- NOT YET IMPLEMENTED.
+
+        When this driver is built, the dialect-specific half is
+        ``TO_NUMBER(SUBSTR(MD5(k), 1, 8), 'XXXXXXXX')`` -- Snowflake's own
+        spelling of the hash-to-number step Postgres does through ``bit(32)``
+        and Redshift through ``STRTOL``. The key expression itself is shared:
+        :func:`threetears.datasources.drivers._util.build_relation_key_expression`.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the ordering columns, TRUSTED identifiers
+        :ptype key: list[str]
+        :return: never returns
+        :rtype: RelationFingerprint
+        :raises NotImplementedError: stub method; see module docstring
+        """
+        raise NotImplementedError(
+            f"SnowflakeDriver.relation_fingerprint is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
+        )
 
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over column shape (Tier-2 probe) -- NOT YET IMPLEMENTED.

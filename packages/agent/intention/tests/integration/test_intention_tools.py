@@ -49,15 +49,24 @@ _DIM = 1024
 class _OneHotEmbedder:
     """deterministic embedder: identical text -> identical unit vector.
 
-    Maps each distinct text to a one-hot 1024-vector at ``hash % 1024``.
-    Identical strings collide on the same axis (cosine 1.0 >= dedup
-    threshold); different strings land on different axes (cosine 0.0),
-    so dedup fires exactly when two logs carry the same want text.
+    Gives each distinct text its own axis of a 1024-vector, in the order the
+    texts are first seen. Identical strings share an axis (cosine 1.0 >= dedup
+    threshold); different strings never do (cosine 0.0), so dedup fires exactly
+    when two logs carry the same want text.
+
+    Not ``hash(text) % 1024``: Python randomizes ``str`` hashes per process, so
+    two different texts shared an axis in about one run in 1024 -- under
+    ``PYTHONHASHSEED=713`` "want A" and "a totally unrelated want B" collide,
+    and the distinct-wants test failed as a dedup it never asked for.
     """
 
+    def __init__(self) -> None:
+        self._axes: dict[str, int] = {}
+
     async def aembed_query(self, text: str) -> list[float]:
+        axis = self._axes.setdefault(text, len(self._axes))
         vec = [0.0] * _DIM
-        vec[hash(text) % _DIM] = 1.0
+        vec[axis] = 1.0
         return vec
 
 

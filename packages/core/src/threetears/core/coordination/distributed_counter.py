@@ -62,8 +62,8 @@ __all__ = [
 log = get_logger(__name__)
 
 #: bounded CAS retry budget for increment()/decrement()'s read-modify-write.
-#: deliberately higher than IdempotencyKeyStore's 8 (this module's sibling):
-#: that primitive's keys are mostly distinct per operation, so contention on
+#: deliberately higher than a framework compare-and-swap's default 8:
+#: a claim-style primitive's keys are mostly distinct per operation, so contention on
 #: any ONE key is rare, whereas this primitive's whole point is many pods
 #: hammering the SAME shared key (a fixed-window rate-limit counter, a
 #: concurrent-in-flight gauge) -- a genuinely hotter access pattern. 30
@@ -120,8 +120,7 @@ class DistributedCounter:
     """atomic increment/decrement counter over one shared NATS JetStream KV bucket.
 
     bucket binding is lazy (deferred to the first operation), matching
-    :class:`KVLease`/:class:`IdempotencyKeyStore`'s construction style
-    within this package.
+    :class:`KVLease`'s construction style within this package.
     """
 
     def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl: timedelta | None = None) -> None:

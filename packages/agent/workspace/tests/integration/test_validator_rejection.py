@@ -13,16 +13,14 @@ REALISM
   rejection is asserted by inspecting the in-memory store directly.
 
 the validator lives at
-:mod:`tests.integration._strict_validator.reject_any_audience_units`
-(module-level so :func:`_resolve_validator` can import it by dotted
-path). it fails every payload that carries the ``audience_units:`` key
+:mod:`packages.agent.workspace.tests.integration._strict_validator`
+(module-level so :func:`_resolve_validator` can import it by its
+repo-root dotted path, the name every test module already has). it fails every payload that carries the ``audience_units:`` key
 so the fixture ``audience_settings.yaml`` is rejected deterministically.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -37,14 +35,6 @@ from threetears.agent.workspace.tools.fs_write import FsWriteTool
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
-
-
-# ensure the directory holding _strict_validator.py is importable via
-# dotted path. pytest --import-mode=importlib rewires sys.path for
-# test modules but not for arbitrary siblings; we make it explicit.
-_THIS_DIR = Path(__file__).resolve().parent
-if str(_THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(_THIS_DIR))
 
 
 async def test_fs_write_on_rejected_content_returns_failure_and_leaves_store_untouched(
@@ -65,7 +55,7 @@ async def test_fs_write_on_rejected_content_returns_failure_and_leaves_store_unt
         validators=[
             ValidatorEntry(
                 pattern="audience_settings.yaml",
-                validator="_strict_validator.reject_any_audience_units",
+                validator="packages.agent.workspace.tests.integration._strict_validator.reject_any_audience_units",
             ),
         ],
     )

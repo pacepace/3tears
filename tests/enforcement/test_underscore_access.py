@@ -4,7 +4,7 @@
 the underscore-access domain is universal: there are no per-repo
 allowlists, dictionaries, or configuration knobs. the consumer
 declares only the repo root and the exemptions file path; every
-shape walker (A through E), the rationale-required exemption
+shape walker (A through F), the rationale-required exemption
 parser, the mode resolver, the report emitter, and the ruff
 shell-out for shape B all live in the package.
 
@@ -31,7 +31,13 @@ _CONFIG = UnderscoreAccessConfig(
 
 
 class TestUnderscoreAccess:
-    """aggregate test: five shapes, one assertion, exemptions applied."""
+    """aggregate test: six shapes, one assertion, exemptions applied.
+
+    shape F -- a private name reached through ``setattr`` / ``getattr`` / ``delattr`` /
+    ``hasattr`` -- also scans every ``tests/`` tree. the other shapes stay src-only, and SLF001
+    reaches tests through ``./scripts/lint.sh``; the reflective spelling had nothing reaching it
+    anywhere, and every instance that surfaced it was a test fixture.
+    """
 
     def test_no_underscore_violations(self) -> None:
         """every private access crosses a public API boundary or is exempted."""

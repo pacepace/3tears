@@ -45,6 +45,7 @@ __all__ = [
     "ScrapeTargetHealth",
     "ScrapeTargetHealthCollection",
     "content_fingerprint",
+    "clear_classification",
     "clear_robots_block",
     "record_circuit_state",
     "record_classification",
@@ -610,3 +611,41 @@ async def record_classification(
     if kind == "blocked":
         changes["last_blocked_at"] = datetime.now(UTC)
     return await _merge_health(health_collection, target_id=target_id, changes=changes)
+
+
+async def clear_classification(
+    health_collection: ScrapeTargetHealthCollection,
+    *,
+    target_id: str,
+    fingerprint: str,
+) -> ScrapeTargetHealth | None:
+    """Forget the verdict cached for the page digesting to *fingerprint*: it was never acted on.
+
+    :func:`record_classification` is written before the eval loop acts on a verdict, so that a
+    regeneration's own failure path reads it back instead of asking again. A cached
+    ``"changed"`` is then read as "we already regenerated against this exact page and it did not
+    stick". When the regeneration never happened -- the model it needed was unavailable -- that
+    reading is false, and the next poll would count a failure against a page it knows changed.
+    This takes the verdict back, so the next poll asks and regenerates.
+
+    Clears only when the cached verdict is still about *fingerprint*: a newer page's verdict,
+    written meanwhile by another poll, is a different observation and is left alone.
+
+    :param health_collection: this target's health store
+    :ptype health_collection: ScrapeTargetHealthCollection
+    :param target_id: the target whose verdict is withdrawn
+    :ptype target_id: str
+    :param fingerprint: digest of the page the withdrawn verdict was about
+    :ptype fingerprint: str
+    :return: the persisted health row, or ``None`` when there was nothing of this page's to clear
+    :rtype: ScrapeTargetHealth | None
+    """
+    existing = await health_collection.get(target_id)
+    result: ScrapeTargetHealth | None = None
+    if existing is not None and existing.classified_fingerprint == fingerprint:
+        result = await _merge_health(
+            health_collection,
+            target_id=target_id,
+            changes={"classified_fingerprint": None, "classified_verdict": None, "classified_evidence": None},
+        )
+    return result

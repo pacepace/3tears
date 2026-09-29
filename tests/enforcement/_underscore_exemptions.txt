@@ -127,15 +127,6 @@ packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
 packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_datastore_create_table_threads_registry_l2#0:_nats_client
 
-# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
-packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._arun#0:_arun
-# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
-packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._arun#1:_arun
-# rationale: the sync _run override forwards to delegate._run for the same double-wrapper reason as the _arun entries above -- the proxy's own run wrapper has already fired the callback chain.
-packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._run#0:_run
-# rationale: the sync _run override forwards to delegate._run for the same double-wrapper reason as the _arun entries above -- the proxy's own run wrapper has already fired the callback chain.
-packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._run#1:_run
-
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
 packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_emits_on_chat_model_stream#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
@@ -316,6 +307,8 @@ packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForw
 packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#2:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
 packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#3:_agenerate
+# rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; with a call deadline the wrapper's _agenerate collects the answer from _astream, so the test calls it directly with ChatOpenRouter._astream replaced to prove that path still forward-translates dotted tool names without a real HTTP call.
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_under_a_deadline_forward_translates_too#0:_agenerate
 
 # rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test (OTel 1.39+ guards set_tracer_provider behind this once-flag; resetting _done is the only documented escape). Mirrors the matching exemption in observe/setup.py.
 packages/models/tests/unit/models/test_tracking.py:TestUsageTracker.setup_class#0:_TRACER_PROVIDER_SET_ONCE
@@ -342,7 +335,7 @@ packages/models/tests/unit/models/test_tracking_dimensions.py:TestUsageTrackerDi
 packages/models/tests/unit/models/test_tracking_dimensions.py:TestUsageTrackerDimensionSpanAttrs.setup_class#0:_done
 
 # rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
-packages/observe/src/threetears/observe/logging.py:ThreeTearsLogger.makeRecord#0:_getframe
+packages/observe/src/threetears/observe/logging.py:_find_call_site#0:_getframe
 
 # rationale: OpenTelemetry SDK >=1.39 guards trace.set_tracer_provider with the internal _TRACER_PROVIDER_SET_ONCE sentinel; resetting ._done is required for test isolation and repeat-init, and OTel exposes no public reset. type-ignored at the call site. upstream issue: open-telemetry/opentelemetry-python#3978
 packages/observe/src/threetears/observe/setup.py:init_telemetry#0:_TRACER_PROVIDER_SET_ONCE
@@ -665,6 +658,8 @@ packages/scrape/tests/test_collections.py:TestInMemoryL3FallbackWarning.test_no_
 
 # rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced
 packages/scrape/tests/test_driver_api.py:TestApiDriverEgress.test_the_configured_exit_is_bound_to_the_client_it_builds#0:_pool
+# rationale: the proxy pool's url is which exit the driver was bound to; the pool class says only that some exit exists, and httpx offers no accessor for the url
+packages/scrape/tests/test_driver_api.py:TestApiDriverEgress.test_the_configured_exit_is_bound_to_the_client_it_builds#0:_proxy_url
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
 packages/scrape/tests/test_driver_api.py:TestApiDriverEgress.test_the_configured_exit_is_bound_to_the_client_it_builds#0:_egress
 # rationale: the pinned httpx client has no accessor; the test asserts an injected client is reused rather than replaced
@@ -711,6 +706,8 @@ packages/scrape/tests/test_health.py:test_an_unparseable_timestamp_is_a_corrupt_
 packages/scrape/tests/test_robots.py:test_the_default_fetcher_leaves_by_the_configured_exit#0:_default_fetch_via
 # rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced
 packages/scrape/tests/test_robots.py:test_the_default_fetcher_leaves_by_the_configured_exit#0:_pool
+# rationale: the proxy pool's url is which exit the robots read left by; the pool class says only that some exit exists, and httpx offers no accessor for the url
+packages/scrape/tests/test_robots.py:test_the_default_fetcher_leaves_by_the_configured_exit#0:_proxy_url
 # rationale: module-private factory for the default robots fetcher; which exit that default binds is the whole subject and is unobservable from outside
 packages/scrape/tests/test_robots.py:test_the_default_fetcher_with_no_exit_binds_no_transport#0:_default_fetch_via
 # rationale: the tool's recipe collection has no accessor, and seeding it is what keeps the eval loop off a real LLM

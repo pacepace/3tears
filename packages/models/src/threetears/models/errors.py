@@ -10,9 +10,115 @@ from __future__ import annotations
 from typing import Any
 
 __all__ = [
+    "ModelCallTimeout",
+    "ModelProviderError",
+    "ModelRateLimitError",
     "friendly_api_error",
     "identify_provider",
+    "is_provider_error",
 ]
+
+
+class ModelCallTimeout(TimeoutError):
+    """A model call ran past its whole-call deadline.
+
+    Its own class, so a caller can tell the provider running long from any other
+    ``TimeoutError`` -- its own deadlines included.
+    """
+
+
+class ModelProviderError(RuntimeError):
+    """A model call's provider reported that the call failed.
+
+    For a provider that answers a failure as data rather than raising an SDK
+    exception of its own -- the Claude CLI behind a subscription sends its
+    errors as messages. Raised in place of an answer, so the provider's error
+    text never reaches a caller as the model's words, and a circuit breaker
+    counts the call as the failure it was.
+
+    :param detail: what the provider said, in its own words
+    :ptype detail: str
+    :param provider: human-readable name of the provider
+    :ptype provider: str
+    :param reason: the provider's own code for the failure (``"server_error"``,
+        ``"authentication_failed"``, ...), when it gave one
+    :ptype reason: str | None
+    :param status: HTTP status of the provider's failing API call, when known
+    :ptype status: int | None
+    :param rejected_output: for a call asked for a structured answer, the last answer the
+        provider rejected against the schema, exactly as the model gave it
+    :ptype rejected_output: dict[str, Any] | None
+    :param rejection: why the provider rejected ``rejected_output``, in its own words
+    :ptype rejection: str | None
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        provider: str,
+        reason: str | None = None,
+        status: int | None = None,
+        rejected_output: dict[str, Any] | None = None,
+        rejection: str | None = None,
+    ) -> None:
+        self.detail = detail
+        self.provider = provider
+        self.reason = reason
+        self.status = status
+        self.rejected_output = rejected_output
+        self.rejection = rejection
+        said = f"{detail} (last rejected answer: {rejection})" if rejection else detail
+        super().__init__(f"{provider} call failed ({reason or status or 'error'}): {said}")
+
+
+class ModelRateLimitError(ModelProviderError):
+    """The provider refused a call for a rate or usage limit.
+
+    Its own class so a caller can wait for the limit rather than treat the
+    provider as down. A subscription's session limit is one.
+
+    :param detail: what the provider said, in its own words
+    :ptype detail: str
+    :param provider: human-readable name of the provider
+    :ptype provider: str
+    :param reason: the provider's own code for the failure, when it gave one
+    :ptype reason: str | None
+    :param status: HTTP status of the provider's failing API call, when known
+    :ptype status: int | None
+    :param resets: when the limit resets, in the provider's words, when it said
+    :ptype resets: str | None
+    :param rejected_output: the last structured answer the provider rejected, as for
+        :class:`ModelProviderError`
+    :ptype rejected_output: dict[str, Any] | None
+    :param rejection: why the provider rejected ``rejected_output``, in its own words
+    :ptype rejection: str | None
+    """
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        provider: str,
+        reason: str | None = None,
+        status: int | None = None,
+        resets: str | None = None,
+        rejected_output: dict[str, Any] | None = None,
+        rejection: str | None = None,
+    ) -> None:
+        self.resets = resets
+        super().__init__(
+            detail,
+            provider=provider,
+            reason=reason,
+            status=status,
+            rejected_output=rejected_output,
+            rejection=rejection,
+        )
+
+
+#: The packages a model call's own errors come from.
+_PROVIDER_PACKAGES = frozenset({"anthropic", "openai", "openrouter", "httpx", "httpcore"})
 
 try:
     from anthropic import (
@@ -41,7 +147,9 @@ def identify_provider(exc: Exception) -> str:
 
     result = "The LLM provider"
 
-    if "anthropic" in module:
+    if isinstance(exc, ModelProviderError):
+        result = exc.provider
+    elif "anthropic" in module:
         result = "Anthropic"
     elif "openai" in module:
         result = "OpenAI"
@@ -77,6 +185,40 @@ def _extract_provider_body_message(body: Any) -> str | None:
     return msg.strip()
 
 
+def _friendly_reported_failure(exc: ModelProviderError) -> str:
+    """the user-facing message for a failure a provider reported as data.
+
+    worded as :func:`friendly_api_error` words the API route's status of the
+    same kind, so a caller shows one message whichever route failed. a limit
+    that says when it resets says so; the provider's own words are shown where
+    the API route shows them -- a billing or request problem the caller can act
+    on.
+
+    :param exc: the reported failure
+    :ptype exc: ModelProviderError
+    :return: user-friendly error message string
+    :rtype: str
+    """
+    provider = exc.provider
+    status = exc.status or 0
+    message = f"{provider} returned an unexpected error. Please retry in a minute."
+    if isinstance(exc, ModelRateLimitError):
+        message = (
+            f"{provider} has reached its usage limit. It resets {exc.resets}."
+            if exc.resets
+            else f"{provider} rate-limited our request. Please retry in about 30 seconds."
+        )
+    elif exc.reason == "authentication_failed" or status == 401:
+        message = f"{provider} rejected our credentials. Please contact an administrator."
+    elif status == 529:
+        message = f"{provider} is overloaded right now. Please retry in 1-2 minutes."
+    elif exc.reason == "server_error" or 500 <= status < 600:
+        message = f"{provider} is having a server-side outage. Please retry in 2-3 minutes."
+    elif exc.reason in ("billing_error", "invalid_request") and exc.detail.strip():
+        message = f"{provider}: {exc.detail.strip()}"
+    return message
+
+
 def friendly_api_error(exc: Exception) -> str:
     """maps exception to user-facing error message string.
 
@@ -104,7 +246,9 @@ def friendly_api_error(exc: Exception) -> str:
 
     message = f"Something unexpected went wrong ({type(exc).__name__}). Please retry or contact an administrator."
 
-    if _HAS_ANTHROPIC and isinstance(exc, APIStatusError):
+    if isinstance(exc, ModelProviderError):
+        message = _friendly_reported_failure(exc)
+    elif _HAS_ANTHROPIC and isinstance(exc, APIStatusError):
         body = exc.body
         error_obj = body.get("error", {}) if isinstance(body, dict) else {}
         is_overloaded = isinstance(error_obj, dict) and error_obj.get("type") == "overloaded_error"
@@ -138,3 +282,27 @@ def friendly_api_error(exc: Exception) -> str:
         message = "OpenRouter returned an error. Please retry in 1-2 minutes."
 
     return message
+
+
+def is_provider_error(exc: BaseException) -> bool:
+    """Whether a model call's provider failed, rather than the caller's code.
+
+    A provider SDK's or its HTTP client's exception, a :class:`ModelCallTimeout`,
+    a failure the provider reported as data (:class:`ModelProviderError`, a rate
+    limit included), the circuit breaker refusing a provider that keeps failing
+    (:class:`~threetears.models.circuit_breaker.CircuitOpenError`), or the
+    OpenRouter error the chat model raises as a ``ValueError``.
+
+    :param exc: what the call raised
+    :ptype exc: BaseException
+    :return: ``True`` for a provider failure
+    :rtype: bool
+    """
+    from threetears.models.circuit_breaker import CircuitOpenError
+
+    package = (type(exc).__module__ or "").split(".", 1)[0]
+    return (
+        package in _PROVIDER_PACKAGES
+        or isinstance(exc, (ModelCallTimeout, ModelProviderError, CircuitOpenError))
+        or (isinstance(exc, ValueError) and "OpenRouter API" in str(exc))
+    )

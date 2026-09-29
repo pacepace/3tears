@@ -15,6 +15,12 @@ The contract this pins (exercised end-to-end through the public dispatch surface
 
 from __future__ import annotations
 
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
+from datetime import UTC, datetime
+
+import jwt
+
 import asyncio
 import json
 import logging
@@ -28,6 +34,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.core.security.identity_token import (
+    PLATFORM_CUSTOMER_SENTINEL,
     IdentityClaims,
     build_jwks,
     canonical_call_hash,
@@ -36,10 +43,13 @@ from threetears.core.security.identity_token import (
     sign_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, make_pop_proof
-from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.nats import IncomingMessage, KvError, set_default_namespace
 from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
+
+from ._copies import uniform_entry
 
 _ISS = "hub"
 _KID = "kid-1"
@@ -64,24 +74,11 @@ def hub() -> tuple[Any, dict[str, Any]]:
     return priv, build_jwks({_KID: pub})
 
 
-class _StubReplayGuard:
-    """returns a fixed freshness verdict so the proxy's replay wiring can be tested without a live
-    NATS-KV (the real guard's compare-and-set is covered by its own coordination tests)."""
-
-    def __init__(self, *, fresh: bool = True) -> None:
-        self._fresh = fresh
-        self.seen: list[str] = []
-
-    async def record_unique(self, nonce: str) -> bool:
-        self.seen.append(nonce)
-        return self._fresh
-
-
 def _token(
     priv: Any,
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID | None,
     exp_delta: int = 600,
     iss: str = _ISS,
@@ -131,7 +128,7 @@ def _authed_request(
     priv: Any,
     *,
     token_sub: UUID,
-    token_customer: UUID,
+    token_customer: UUID | str,
     token_user: UUID | None,
     envelope_agent: UUID,
     envelope_user: UUID | None = None,
@@ -187,7 +184,7 @@ def _user_assertion(
     priv: Any,
     *,
     sub: UUID,
-    customer_id: UUID,
+    customer_id: UUID | str,
     user_id: UUID,
     exp_delta: int = 3600,
     conversation_id: UUID | None = None,
@@ -205,7 +202,7 @@ def _user_assertion(
 
 
 def _entry() -> CatalogEntry:
-    return CatalogEntry(
+    return uniform_entry(
         tool_name=_TOOL,
         tool_version="1.0.0",
         full_name=f"{_TOOL}@1.0.0",
@@ -257,7 +254,7 @@ class TestDispatchIdentityEnforcement:
         proxy = CallProxy(
             await _catalog(),
             authorizer if authorizer is not None else AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
@@ -342,7 +339,13 @@ class TestDispatchIdentityEnforcement:
 
         class _RecordingAuthorizer:
             async def is_authorized(
-                self, agent_id: str, user_id: str | None, tool_name: str, tool_version: str
+                self,
+                agent_id: str,
+                user_id: str | None,
+                tool_name: str,
+                tool_version: str,
+                *,
+                principal_is_tool_pod: bool,
             ) -> bool:
                 captured["agent_id"] = agent_id
                 captured["user_id"] = user_id
@@ -436,6 +439,165 @@ class TestDispatchIdentityEnforcement:
         assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
 
 
+class TestDispatchToolPodPrincipal:
+    """a TOOL POD's token carries the platform customer sentinel where a customer UUID would be.
+
+    the door reads that claim, off the SIGNED token, as ``customer_id=None`` plus a tool-pod
+    mark the authorizer receives beside the ids. a UUID claim is an agent and carries no mark; any
+    other non-UUID claim is a malformed token and fails closed exactly as before.
+    """
+
+    async def _drive(
+        self,
+        jwks_provider: Any,
+        req: ProxyCallRequest,
+        *,
+        authorizer: Any = None,
+    ) -> AsyncMock:
+        proxy = CallProxy(
+            await _catalog(),
+            authorizer if authorizer is not None else AllowAllAuthorizer(),
+            FakeReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
+            namespace="test",
+            jwks_provider=jwks_provider,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_tool_reply())
+        await proxy.start(nc)
+        msg = IncomingMessage(
+            data=req.model_dump_json().encode("utf-8"),
+            reply_subject="reply.subject",
+            subject="test.tools.call",
+        )
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+        return nc
+
+    @staticmethod
+    def _forwarded_context(nc: AsyncMock) -> dict[str, Any]:
+        payload = json.loads(nc.request_raw.call_args.kwargs["payload"])
+        context: dict[str, Any] = payload["context"]
+        return context
+
+    @staticmethod
+    def _reply(nc: AsyncMock) -> ProxyCallResponse:
+        message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
+        return message
+
+    @staticmethod
+    def _recording_authorizer(captured: dict[str, Any]) -> Any:
+        class _RecordingAuthorizer:
+            async def is_authorized(
+                self,
+                agent_id: str,
+                user_id: str | None,
+                tool_name: str,
+                tool_version: str,
+                *,
+                principal_is_tool_pod: bool,
+            ) -> bool:
+                captured["agent_id"] = agent_id
+                captured["user_id"] = user_id
+                captured["principal_is_tool_pod"] = principal_is_tool_pod
+                return True
+
+        return _RecordingAuthorizer()
+
+    @pytest.mark.asyncio
+    async def test_sentinel_customer_forwards_no_customer_and_marks_the_pod(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        priv, jwks = hub
+        pod_id = uuid7()
+        captured: dict[str, Any] = {}
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=pod_id,
+                token_customer=PLATFORM_CUSTOMER_SENTINEL,
+                token_user=None,
+                envelope_agent=uuid7(),
+            ),
+            authorizer=self._recording_authorizer(captured),
+        )
+        nc.request_raw.assert_called_once()
+        forwarded = self._forwarded_context(nc)
+        assert forwarded["agent_id"] == str(pod_id)
+        assert forwarded["customer_id"] is None  # no customer was stamped, not a UUID and not the literal
+        assert forwarded["user_id"] is None
+        assert captured["agent_id"] == str(pod_id)
+        assert captured["user_id"] is None
+        assert captured["principal_is_tool_pod"] is True
+
+    @pytest.mark.asyncio
+    async def test_uuid_customer_is_an_agent_and_carries_no_mark(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        priv, jwks = hub
+        captured: dict[str, Any] = {}
+        await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=uuid7(),
+                token_customer=uuid7(),
+                token_user=None,
+                envelope_agent=uuid7(),
+            ),
+            authorizer=self._recording_authorizer(captured),
+        )
+        assert captured["principal_is_tool_pod"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_non_uuid_customer_that_is_not_the_sentinel_still_fails_closed(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        # the sentinel is the ONE non-UUID value the hub mints on purpose; a signed token carrying
+        # any other non-UUID customer is malformed and must never read as a platform principal.
+        priv, jwks = hub
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=uuid7(),
+                token_customer="aibots-platform-but-not-quite",
+                token_user=None,
+                envelope_agent=uuid7(),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_a_pod_presenting_a_user_assertion_is_refused(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # the assertion is minted with the pod's own sub AND the sentinel customer, so the customer
+        # binding check -- which compares claim strings -- would admit it. only the explicit refusal of
+        # any assertion on a pod token can turn this call away, which is the rule under test: a pod
+        # acts on nobody's behalf and cannot borrow a user by attaching one.
+        priv, jwks = hub
+        pod_id, conv = uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=pod_id,
+                token_customer=PLATFORM_CUSTOMER_SENTINEL,
+                token_user=None,
+                envelope_agent=uuid7(),
+                conversation_id=conv,
+                user_assertion=_user_assertion(
+                    priv,
+                    sub=pod_id,
+                    customer_id=PLATFORM_CUSTOMER_SENTINEL,
+                    user_id=uuid7(),
+                    conversation_id=conv,
+                ),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+
 # ---------------------------------------------------------------------------
 # v0.13.9 enforce-flip final piece: the Hub-minted, cnf-less user-assertion (two-token design).
 #
@@ -465,7 +627,7 @@ class TestDispatchUserAssertion:
         proxy = CallProxy(
             await _catalog(),
             authorizer if authorizer is not None else AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
@@ -525,7 +687,13 @@ class TestDispatchUserAssertion:
 
         class _RecordingAuthorizer:
             async def is_authorized(
-                self, agent_id: str, user_id: str | None, tool_name: str, tool_version: str
+                self,
+                agent_id: str,
+                user_id: str | None,
+                tool_name: str,
+                tool_version: str,
+                *,
+                principal_is_tool_pod: bool,
             ) -> bool:
                 captured["agent_id"] = agent_id
                 captured["user_id"] = user_id
@@ -766,7 +934,7 @@ class TestDispatchUserAssertion:
         # passes the pop gate and forwards.
         priv, jwks = hub
         agent, cust, real_user, conv = uuid7(), uuid7(), uuid7(), uuid7()
-        guard = _StubReplayGuard(fresh=True)
+        guard = FakeReplayGuard(fresh=True)
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
@@ -888,7 +1056,7 @@ class TestDispatchReactiveJwksRefresh:
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=provider,
@@ -985,7 +1153,7 @@ class TestVerificationObservability:
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
-            _StubReplayGuard(fresh=True),
+            FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=provider,
@@ -1069,7 +1237,7 @@ class TestDispatchPopEnforcement:
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
-            pop_replay_guard if pop_replay_guard is not None else _StubReplayGuard(fresh=True),
+            pop_replay_guard if pop_replay_guard is not None else FakeReplayGuard(fresh=True),
             limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
@@ -1095,7 +1263,7 @@ class TestDispatchPopEnforcement:
     async def test_forwards_a_valid_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        nc = await self._drive(lambda: jwks, req, pop_replay_guard=_StubReplayGuard(fresh=True))
+        nc = await self._drive(lambda: jwks, req, pop_replay_guard=FakeReplayGuard(fresh=True))
         nc.request_raw.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1130,7 +1298,7 @@ class TestDispatchPopEnforcement:
     async def test_rejects_a_replayed_nonce(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        guard = _StubReplayGuard(fresh=False)  # the nonce was already consumed
+        guard = FakeReplayGuard(fresh=False)  # the nonce was already consumed
         nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_not_called()
         assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
@@ -1140,7 +1308,180 @@ class TestDispatchPopEnforcement:
     async def test_forwards_when_the_nonce_is_fresh(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        guard = _StubReplayGuard(fresh=True)
+        guard = FakeReplayGuard(fresh=True)
         nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_called_once()
         assert len(guard.seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_guard_receives_the_proofs_signed_issue_time(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # the guard refuses a proof issued before a wipe of its bucket only if it is handed the
+        # proof's own signed iat -- not the proxy's clock, which would make every replay look new.
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        guard = FakeReplayGuard(fresh=True)
+        await self._drive(lambda: jwks, req, pop_replay_guard=guard)
+        assert req.pop is not None
+        signed_iat = jwt.decode(req.pop, options={"verify_signature": False})["iat"]
+        assert guard.issued_at == [datetime.fromtimestamp(signed_iat, UTC)]
+
+
+class _RaisingAuthorizer:
+    """an authorizer whose store cannot be read, as the rbac authorizer's is when the broker refuses."""
+
+    async def is_authorized(
+        self,
+        agent_id: str,
+        user_id: str | None,
+        tool_name: str,
+        tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
+    ) -> bool:
+        """raise the data-layer failure a proxy-backed collection raises.
+
+        :param agent_id: the verified principal
+        :ptype agent_id: str
+        :param user_id: the verified user
+        :ptype user_id: str | None
+        :param tool_name: the tool
+        :ptype tool_name: str
+        :param tool_version: its version
+        :ptype tool_version: str
+        :param principal_is_tool_pod: whether the principal is a tool pod
+        :ptype principal_is_tool_pod: bool
+        :return: never returns
+        :rtype: bool
+        :raises DataLayerUnavailableError: always
+        """
+        del agent_id, user_id, tool_name, tool_version, principal_is_tool_pod
+        raise DataLayerUnavailableError("L3 query failed: NAMESPACE_ACCESS_DENIED: carve-out read refused")
+
+
+class TestAHostFailureIsAnsweredNotTimedOut:
+    """a gate whose store fails answers the caller with a typed code -- never silence.
+
+    Left uncaught, each of these killed the dispatch task with the reply subject unanswered, so the
+    caller waited out its own deadline and read an outage in the registry's store as a dead tool.
+    """
+
+    @staticmethod
+    async def _drive(
+        req: ProxyCallRequest,
+        jwks: dict[str, Any],
+        *,
+        authorizer: Any = None,
+        guard: Any = None,
+        pod_reply: bytes | None = None,
+    ) -> AsyncMock:
+        """dispatch one call through a proxy wired with the given seams.
+
+        :param req: the call
+        :ptype req: ProxyCallRequest
+        :param jwks: the hub key set
+        :ptype jwks: dict[str, Any]
+        :param authorizer: the authorizer, allow-all when ``None``
+        :ptype authorizer: Any
+        :param guard: the replay guard, always-fresh when ``None``
+        :ptype guard: Any
+        :param pod_reply: what the pod answers, a successful reply when ``None``
+        :ptype pod_reply: bytes | None
+        :return: the NATS double
+        :rtype: AsyncMock
+        """
+        proxy = CallProxy(
+            await _catalog(),
+            authorizer if authorizer is not None else AllowAllAuthorizer(),
+            guard if guard is not None else FakeReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
+            namespace="test",
+            jwks_provider=lambda: jwks,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=pod_reply if pod_reply is not None else _tool_reply())
+        await proxy.start(nc)
+        await proxy.handle_call(
+            IncomingMessage(data=req.model_dump_json().encode("utf-8"), reply_subject="r", subject="test.tools.call")
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return nc
+
+    @staticmethod
+    def _reply(nc: AsyncMock) -> ProxyCallResponse:
+        """the one reply the proxy published.
+
+        :param nc: the NATS double
+        :ptype nc: AsyncMock
+        :return: the reply
+        :rtype: ProxyCallResponse
+        """
+        nc.publish_reply.assert_awaited_once()
+        message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
+        return message
+
+    @pytest.mark.asyncio
+    async def test_an_authorizer_that_cannot_read_its_store_refuses_with_a_reply(
+        self, hub: tuple[Any, dict[str, Any]], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """fail closed, and say so: the call is not forwarded and the caller learns why.
+
+        :param hub: the hub key and key set
+        :ptype hub: tuple[Any, dict[str, Any]]
+        :param caplog: the log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        priv, jwks = hub
+        req = _authed_request(
+            priv, token_sub=uuid7(), token_customer=uuid7(), token_user=uuid7(), envelope_agent=uuid7()
+        )
+        with caplog.at_level(logging.ERROR, logger="threetears.registry.proxy"):
+            nc = await self._drive(req, jwks, authorizer=_RaisingAuthorizer())
+
+        nc.request_raw.assert_not_called()
+        reply = self._reply(nc)
+        assert reply.success is False
+        assert reply.error_code == "TOOL_AUTHORIZATION_UNAVAILABLE"
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "NAMESPACE_ACCESS_DENIED" in json.dumps(errors[0].__dict__.get("extra_data", {}))
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_replay_ledger_refuses_with_a_reply(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        """the ledger failing is a failed check (fail closed), but not an unverified proof.
+
+        :param hub: the hub key and key set
+        :ptype hub: tuple[Any, dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        guard = FakeReplayGuard(record_error=KvError("nonce bucket unreachable"))
+
+        nc = await self._drive(req, jwks, guard=guard)
+
+        nc.request_raw.assert_not_called()
+        assert len(guard.seen) == 1
+        assert self._reply(nc).error_code == "TOOL_POP_LEDGER_UNAVAILABLE"
+
+    @pytest.mark.asyncio
+    async def test_a_pod_answer_that_does_not_parse_is_answered(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        """the pod may have run the tool, so this is not retried -- but it is answered.
+
+        :param hub: the hub key and key set
+        :ptype hub: tuple[Any, dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        priv, jwks = hub
+        req = _authed_request(
+            priv, token_sub=uuid7(), token_customer=uuid7(), token_user=uuid7(), envelope_agent=uuid7()
+        )
+
+        nc = await self._drive(req, jwks, pod_reply=b"{not json")
+
+        nc.request_raw.assert_called_once()
+        assert self._reply(nc).error_code == "TOOL_RESPONSE_MALFORMED"

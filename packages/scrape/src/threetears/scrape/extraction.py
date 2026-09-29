@@ -20,7 +20,7 @@ import asyncio
 import base64
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 from bs4 import BeautifulSoup, Comment
 from bs4.element import Tag
@@ -30,11 +30,13 @@ from soupsieve.util import SelectorSyntaxError
 from threetears.models import LlmPurpose
 from threetears.observe import get_logger
 
-from .llm_retry import bounded_retry_structured_call
+from .bounded_regex import bounded_matches
+from .llm_retry import bounded_retry_structured_call_or_raise
 
 __all__ = [
     "DEFAULT_EXTRACTION_MODEL_ID",
     "MAX_HTML_CHARS_IN_PROMPT",
+    "REGEX_TIMEOUT_SECONDS",
     "DiscoveredField",
     "DiscoverySchemaResult",
     "FieldSchema",
@@ -516,11 +518,10 @@ async def generate_candidates(
 ) -> list[dict[str, str]]:
     """Ask an LLM for *n* candidate CSS-selector extraction strategies.
 
-    Same bounded-retry shape as ``query_agent/matching.py``'s
-    ``_invoke_match_disambiguation``: never raises, returns an empty list
-    only after every attempt fails (an honest "no candidates" degrade, not
-    a crash -- the eval loop treats this the same as every candidate
-    failing structural validation).
+    Bounded retry on transient failure. When every attempt fails it raises rather than
+    returning an empty list: an empty list is only ever the model proposing nothing, and
+    the eval loop must not record a provider outage as a page nothing could be extracted
+    from.
 
     :param html: the rendered page's full HTML
     :ptype html: str
@@ -536,11 +537,12 @@ async def generate_candidates(
     :ptype attempts: int
     :param backoff_seconds: base backoff between retries (multiplied by attempt number)
     :ptype backoff_seconds: float
-    :return: proposed strategies, each a field_name -> CSS selector dict; empty on total failure
+    :return: proposed strategies, each a field_name -> CSS selector dict
     :rtype: list[dict[str, str]]
+    :raises StructuredCallExhaustedError: if every attempt failed
     """
     prompt = _build_candidate_prompt(html, schema, n)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         prompt,
         _CandidateStrategyList,
         model_id=model_id,
@@ -551,9 +553,8 @@ async def generate_candidates(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape candidate generation",
-        degraded_to="no candidates",
     )
-    return [] if result is None else [c.selectors for c in result.candidates]
+    return [c.selectors for c in result.candidates]
 
 
 class _RowCandidateStrategy(BaseModel):
@@ -605,8 +606,8 @@ async def generate_row_candidates(
 ) -> list[dict[str, Any]]:
     """Ask an LLM for *n* candidate row-extraction strategies (many records per page).
 
-    Same bounded-retry shape as :func:`generate_candidates` -- never raises,
-    returns an empty list only after every attempt fails.
+    Same bounded retry as :func:`generate_candidates`, and the same raise when every
+    attempt fails.
 
     :param html: the rendered page's full HTML
     :ptype html: str
@@ -622,12 +623,12 @@ async def generate_row_candidates(
     :ptype attempts: int
     :param backoff_seconds: base backoff between retries (multiplied by attempt number)
     :ptype backoff_seconds: float
-    :return: proposed strategies, each ``{"row_selector": str, "field_selectors": dict[str, str]}``;
-        empty on total failure
+    :return: proposed strategies, each ``{"row_selector": str, "field_selectors": dict[str, str]}``
     :rtype: list[dict[str, Any]]
+    :raises StructuredCallExhaustedError: if every attempt failed
     """
     prompt = _build_row_candidate_prompt(html, schema, n)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         prompt,
         _RowCandidateStrategyList,
         model_id=model_id,
@@ -638,15 +639,8 @@ async def generate_row_candidates(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape row candidate generation",
-        degraded_to="no candidates",
     )
-    if result is None:
-        candidates_out = []
-    else:
-        candidates_out = [
-            {"row_selector": c.row_selector, "field_selectors": c.field_selectors} for c in result.candidates
-        ]
-    return candidates_out
+    return [{"row_selector": c.row_selector, "field_selectors": c.field_selectors} for c in result.candidates]
 
 
 # ===========================================================================
@@ -862,9 +856,10 @@ async def discover_candidates(
     The inverse of :func:`generate_candidates`: instead of proposing
     selectors for known fields, an LLM proposes field names/types/selectors
     it finds on the page, each validated the same way
-    :func:`validate_candidate` validates every other candidate. Never
-    raises; returns ``validated=False`` with no fields if every proposal
-    validates zero fields.
+    :func:`validate_candidate` validates every other candidate. Returns
+    ``validated=False`` with no fields when the model answered and every proposal
+    validated zero fields; raises when every attempt failed, since an outage is
+    not a page with nothing to discover.
 
     :param html: the rendered page's full HTML
     :ptype html: str
@@ -880,9 +875,10 @@ async def discover_candidates(
     :ptype backoff_seconds: float
     :return: the best-validating discovery, or an honest empty result
     :rtype: DiscoverySchemaResult
+    :raises StructuredCallExhaustedError: if every attempt failed
     """
     prompt = _build_discovery_prompt(html, n)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         prompt,
         _DiscoveredCandidateList,
         model_id=model_id,
@@ -893,10 +889,7 @@ async def discover_candidates(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape schema discovery",
-        degraded_to="no discovered fields",
     )
-    if result is None:
-        return DiscoverySchemaResult(validated=False)
     proposals_and_validations = []
     for candidate in result.candidates:
         schema = {f.name: _DISCOVERY_TYPE_NAMES[f.type_name] for f in candidate.fields}
@@ -935,9 +928,10 @@ async def discover_row_candidates(
     :ptype backoff_seconds: float
     :return: the best-validating discovery, or an honest empty result
     :rtype: DiscoverySchemaResult
+    :raises StructuredCallExhaustedError: if every attempt failed
     """
     prompt = _build_row_discovery_prompt(html, n)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         prompt,
         _DiscoveredRowCandidateList,
         model_id=model_id,
@@ -948,10 +942,7 @@ async def discover_row_candidates(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape row schema discovery",
-        degraded_to="no discovered fields",
     )
-    if result is None:
-        return DiscoverySchemaResult(validated=False)
     best: DiscoverySchemaResult = DiscoverySchemaResult(validated=False)
     for candidate in result.candidates:
         survivors = _fields_matching_any_row(html, candidate.row_selector, candidate.fields)
@@ -1123,6 +1114,24 @@ def extract_page_images(html: str) -> list[bytes]:
 #: needing to know to embed inline flags itself.
 _REGEX_FLAGS = re.MULTILINE | re.DOTALL
 
+#: Longest a regex candidate (or a cached regex recipe) may take to match over one page. The
+#: patterns are written by an LLM, and a lazily repeated group can backtrack catastrophically:
+#: live (2026-09-22) a proposed ``(?P<employer>[^\n]+)\n(?:[^\n]+\n)*?COUNTY:...`` ran 20+ minutes
+#: on one state's WARN page, on the caller's event-loop thread, and stopped every other task in the
+#: process. Matching runs in :mod:`threetears.scrape.bounded_regex`'s worker, on stdlib ``re`` (so
+#: results are exactly ``re``'s), and a candidate still matching at the limit is rejected like an
+#: invalid one.
+REGEX_TIMEOUT_SECONDS: Final[float] = 5.0
+
+
+def _timed_out(pattern: str) -> str:
+    """The rejection reason for a regex candidate still matching at :data:`REGEX_TIMEOUT_SECONDS`."""
+    log.warning(
+        "scrape: regex candidate ran past its time limit; rejected",
+        extra={"extra_data": {"timeout_seconds": REGEX_TIMEOUT_SECONDS, "pattern_head": pattern[:120]}},
+    )
+    return f"regex still matching after {REGEX_TIMEOUT_SECONDS:g}s on this page; rejected"
+
 
 def validate_regex_candidate(text: str, pattern: str, schema: FieldSchema) -> ValidationResult:
     """Apply *pattern*'s named groups to *text* and structurally validate the result.
@@ -1144,17 +1153,23 @@ def validate_regex_candidate(text: str, pattern: str, schema: FieldSchema) -> Va
     :rtype: ValidationResult
     """
     try:
-        compiled = re.compile(pattern, _REGEX_FLAGS)
+        re.compile(pattern, _REGEX_FLAGS)  # syntax errors reported here, in-process, as before
+        found = bounded_matches(pattern, _REGEX_FLAGS, text, mode="search", timeout=REGEX_TIMEOUT_SECONDS)
     except re.error as exc:
         result = ValidationResult(valid=False, errors=[f"invalid regex: {exc}"])
+    except TimeoutError:
+        result = ValidationResult(valid=False, errors=[_timed_out(pattern)])
+    except (RuntimeError, ValueError) as exc:
+        # The worker died, answered unreadably, or refused the pattern: this candidate is out,
+        # the rest of the round goes on.
+        result = ValidationResult(valid=False, errors=[f"regex could not be evaluated: {exc}"])
     else:
-        match = compiled.search(text)
-        if match is None:
+        if not found:
             result = ValidationResult(valid=False, errors=["pattern matched nothing"])
         else:
             extracted: dict[str, Any] = {}
             errors: list[str] = []
-            group_dict = match.groupdict()
+            group_dict = found[0]
             for field_name, expected_type in schema.items():
                 raw = group_dict.get(field_name)
                 if raw is None:
@@ -1193,17 +1208,22 @@ def validate_regex_row_candidate(text: str, pattern: str, schema: FieldSchema) -
     :rtype: RowValidationResult
     """
     try:
-        compiled = re.compile(pattern, _REGEX_FLAGS)
+        re.compile(pattern, _REGEX_FLAGS)  # syntax errors reported here, in-process, as before
+        matches = bounded_matches(pattern, _REGEX_FLAGS, text, mode="finditer", timeout=REGEX_TIMEOUT_SECONDS)
     except re.error as exc:
         result = RowValidationResult(valid=False, errors=[f"invalid regex: {exc}"])
+    except TimeoutError:
+        result = RowValidationResult(valid=False, errors=[_timed_out(pattern)])
+    except (RuntimeError, ValueError) as exc:
+        # The worker died, answered unreadably, or refused the pattern: this candidate is out,
+        # the rest of the round goes on.
+        result = RowValidationResult(valid=False, errors=[f"regex could not be evaluated: {exc}"])
     else:
-        matches = list(compiled.finditer(text))
         errors: list[str] = []
         records_out: list[dict[str, Any]] = []
-        for match_index, match in enumerate(matches):
+        for match_index, group_dict in enumerate(matches):
             row_extracted: dict[str, Any] = {}
             row_errors: list[str] = []
-            group_dict = match.groupdict()
             for field_name, expected_type in schema.items():
                 raw = group_dict.get(field_name)
                 if raw is None:
@@ -1295,8 +1315,8 @@ async def generate_regex_candidates(
 ) -> list[str]:
     """Ask an LLM for *n* candidate single-record regex extraction patterns.
 
-    Same bounded-retry shape as :func:`generate_candidates` -- never raises,
-    returns an empty list only after every attempt fails.
+    Same bounded retry as :func:`generate_candidates`, and the same raise when every
+    attempt fails.
 
     :param text: the page's plain text (see :func:`html_to_text`), never HTML
     :ptype text: str
@@ -1312,11 +1332,12 @@ async def generate_regex_candidates(
     :ptype attempts: int
     :param backoff_seconds: base backoff between retries (multiplied by attempt number)
     :ptype backoff_seconds: float
-    :return: proposed regex pattern strings; empty on total failure
+    :return: proposed regex pattern strings
     :rtype: list[str]
+    :raises StructuredCallExhaustedError: if every attempt failed
     """
     prompt = _build_regex_candidate_prompt(text, schema, n)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         prompt,
         _RegexCandidateStrategyList,
         model_id=model_id,
@@ -1327,9 +1348,8 @@ async def generate_regex_candidates(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape regex candidate generation",
-        degraded_to="no candidates",
     )
-    return [] if result is None else [c.pattern for c in result.candidates]
+    return [c.pattern for c in result.candidates]
 
 
 def _build_regex_row_candidate_prompt(text: str, schema: FieldSchema, n: int) -> str:
@@ -1402,8 +1422,8 @@ async def generate_regex_row_candidates(
 ) -> list[str]:
     """Ask an LLM for *n* candidate multi-record regex extraction patterns.
 
-    Same bounded-retry shape as :func:`generate_row_candidates` -- never
-    raises, returns an empty list only after every attempt fails.
+    Same bounded retry as :func:`generate_row_candidates`, and the same raise when every
+    attempt fails.
 
     :param text: the page's plain text (see :func:`html_to_text`), never HTML
     :ptype text: str
@@ -1419,11 +1439,12 @@ async def generate_regex_row_candidates(
     :ptype attempts: int
     :param backoff_seconds: base backoff between retries (multiplied by attempt number)
     :ptype backoff_seconds: float
-    :return: proposed regex pattern strings; empty on total failure
+    :return: proposed regex pattern strings
     :rtype: list[str]
+    :raises StructuredCallExhaustedError: if every attempt failed
     """
     prompt = _build_regex_row_candidate_prompt(text, schema, n)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         prompt,
         _RegexCandidateStrategyList,
         model_id=model_id,
@@ -1434,9 +1455,8 @@ async def generate_regex_row_candidates(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape regex row candidate generation",
-        degraded_to="no candidates",
     )
-    return [] if result is None else [c.pattern for c in result.candidates]
+    return [c.pattern for c in result.candidates]
 
 
 # ===========================================================================
@@ -1536,7 +1556,7 @@ async def extract_fields_directly(
     api_key: str,
     attempts: int = _EXTRACTION_ATTEMPTS,
     backoff_seconds: float = _EXTRACTION_BACKOFF_SECONDS,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """Ask an LLM to extract *schema*'s field values directly from ONE independent document's text.
 
     No cached pattern, no candidate/judge comparison -- unlike every other
@@ -1571,13 +1591,14 @@ async def extract_fields_directly(
     :return: field_name -> coerced value for every field the model found AND that
         coerced successfully as *schema* declares (a field it couldn't find, or
         whose text doesn't parse as the declared type, is simply absent from the
-        dict -- callers decide whether a partial record counts); ``None`` only on
-        total LLM failure (never raises)
-    :rtype: dict[str, Any] | None
+        dict -- callers decide whether a partial record counts)
+    :rtype: dict[str, Any]
+    :raises StructuredCallExhaustedError: if every attempt failed -- a field absent for
+        that reason would be indistinguishable from one the document never carried
     """
     model_cls = _build_direct_extraction_model(schema)
     prompt = _build_direct_extraction_prompt(text, schema)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         prompt,
         model_cls,
         model_id=model_id,
@@ -1588,11 +1609,8 @@ async def extract_fields_directly(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape direct per-document field extraction",
-        degraded_to="no extraction",
         is_acceptable=_is_plausible_direct_extraction,
     )
-    if result is None:
-        return None
     return _coerce_direct_extraction_result(result, schema)
 
 
@@ -1666,11 +1684,14 @@ async def extract_fields_directly_chunked(
     :ptype backoff_seconds: float
     :param fields_per_call: how many schema fields each chunk's own call requests
     :ptype fields_per_call: int
-    :return: field_name -> coerced value, the union of every chunk's own result (one
-        chunk's total failure only costs that chunk's own fields, never the others --
-        the caller decides whether the merged, possibly-partial dict counts as a
-        complete record, same contract :func:`extract_fields_directly` itself has)
+    :return: field_name -> coerced value, the union of every chunk's own result (the
+        caller decides whether the merged, possibly-partial dict counts as a complete
+        record, same contract :func:`extract_fields_directly` itself has)
     :rtype: dict[str, Any]
+    :raises StructuredCallExhaustedError: if any chunk's every attempt failed. One failed
+        chunk used to cost only its own fields, which then read as fields the document did
+        not carry. Every chunk is awaited before the first failure is raised, so none is
+        left running unobserved
     """
     items = list(schema.items())
     chunks = [dict(items[i : i + fields_per_call]) for i in range(0, len(items), fields_per_call)]
@@ -1685,12 +1706,14 @@ async def extract_fields_directly_chunked(
                 backoff_seconds=backoff_seconds,
             )
             for chunk_schema in chunks
-        )
+        ),
+        return_exceptions=True,
     )
     merged: dict[str, Any] = {}
     for chunk_result in chunk_results:
-        if chunk_result:
-            merged.update(chunk_result)
+        if isinstance(chunk_result, BaseException):
+            raise chunk_result
+        merged.update(chunk_result)
     return merged
 
 
@@ -1765,9 +1788,10 @@ async def extract_fields_from_images(
     :param backoff_seconds: base backoff between retries (multiplied by attempt number)
     :ptype backoff_seconds: float
     :return: field_name -> coerced value, same partial-result contract as
-        :func:`extract_fields_directly`; ``None`` when *images* is empty or every
-        attempt failed (never raises)
+        :func:`extract_fields_directly`; ``None`` only when *images* is empty, so there
+        was nothing to read
     :rtype: dict[str, Any] | None
+    :raises StructuredCallExhaustedError: if every attempt failed
     """
     if not images:
         return None
@@ -1781,7 +1805,7 @@ async def extract_fields_from_images(
     content.append({"type": "text", "text": _build_vision_extraction_prompt(schema)})
 
     model_cls = _build_direct_extraction_model(schema)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         [HumanMessage(content=content)],
         model_cls,
         model_id=model_id,
@@ -1793,11 +1817,8 @@ async def extract_fields_from_images(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape vision per-document field extraction",
-        degraded_to="no extraction",
         is_acceptable=_is_plausible_direct_extraction,
     )
-    if result is None:
-        return None
     return _coerce_direct_extraction_result(result, schema)
 
 
@@ -1897,9 +1918,10 @@ async def extract_multi_row_fields_from_images(
     :param backoff_seconds: base backoff between retries (multiplied by attempt number)
     :ptype backoff_seconds: float
     :return: one field_name -> coerced value dict per record found, in table order (same
-        partial-per-record contract as :func:`extract_fields_directly`); ``None`` when
-        *images* is empty or every attempt failed (never raises)
+        partial-per-record contract as :func:`extract_fields_directly`); ``None`` only when
+        *images* is empty, so there was nothing to read
     :rtype: list[dict[str, Any]] | None
+    :raises StructuredCallExhaustedError: if every attempt failed
     """
     if not images:
         return None
@@ -1913,7 +1935,7 @@ async def extract_multi_row_fields_from_images(
     content.append({"type": "text", "text": _build_multi_row_vision_extraction_prompt(schema)})
 
     model_cls = _build_multi_row_vision_model(schema)
-    result = await bounded_retry_structured_call(
+    result = await bounded_retry_structured_call_or_raise(
         [HumanMessage(content=content)],
         model_cls,
         model_id=model_id,
@@ -1925,9 +1947,6 @@ async def extract_multi_row_fields_from_images(
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape multi-row vision extraction",
-        degraded_to="no extraction",
         is_acceptable=_is_plausible_multi_row_extraction,
     )
-    if result is None:
-        return None
     return [_coerce_direct_extraction_result(record, schema) for record in getattr(result, "records", [])]

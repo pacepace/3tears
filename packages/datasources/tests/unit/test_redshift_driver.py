@@ -18,10 +18,15 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import redshift_connector
 
 from threetears.datasources.config import RedshiftConnectionConfig
-from threetears.datasources.drivers.redshift_driver import (
+from threetears.datasources.drivers import (
+    DriverAuthError,
     DriverConnectError,
+    DriverMissingCredentialError,
+)
+from threetears.datasources.drivers.redshift_driver import (
     RedshiftDriver,
     _CANCEL_TIMEOUT_SECONDS,
     _PING_SQL,
@@ -76,6 +81,7 @@ def _build_mock_connection(
     description: list[tuple[str, Any]] | None = None,
     fetchone_row: tuple[Any, ...] | None = None,
     fetchmany_chunks: list[list[tuple[Any, ...]]] | None = None,
+    usock: MagicMock | None = None,
 ) -> MagicMock:
     """build a MagicMock that behaves like a ``redshift_connector.Connection``.
 
@@ -92,6 +98,9 @@ def _build_mock_connection(
     :param fetchmany_chunks: successive return values for fetchmany;
         the final element should be ``[]`` to terminate the loop
     :ptype fetchmany_chunks: list[list[tuple]] | None
+    :param usock: the socket the connection talks over, for a test asserting on what the driver
+        does to it; a fresh mock otherwise
+    :ptype usock: MagicMock | None
     :return: connection mock with cursor/close/commit wired
     :rtype: MagicMock
     """
@@ -111,15 +120,39 @@ def _build_mock_connection(
     conn.close = MagicMock(return_value=None)
     # surface the cursor on the conn mock for assertions.
     conn._cursor = cursor  # noqa: SLF001 - test surface only
+    if usock is not None:
+        # the stand-in reproduces redshift_connector's private socket slot, because that slot is
+        # what the driver reads; the test then asserts on its own socket object.
+        conn._usock = usock  # noqa: SLF001 - mirrors the third-party slot the driver reads
     return conn
+
+
+#: the env var every config in this module resolves its password from. the driver
+#: refuses to connect without one -- an empty password is a failed login Redshift
+#: counts toward locking the account -- so even the mocked path carries a real ref.
+_TEST_PASSWORD_ENV = "TEST_REDSHIFT_DRIVER_PW"
+_TEST_PASSWORD_REF = f"env://{_TEST_PASSWORD_ENV}"
+_TEST_PASSWORD = "unit-test-redshift-password"
+
+
+@pytest.fixture(autouse=True)
+def _redshift_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """make :data:`_TEST_PASSWORD_REF` resolvable for every test in this module.
+
+    :param monkeypatch: pytest's environment patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: None
+    :rtype: None
+    """
+    monkeypatch.setenv(_TEST_PASSWORD_ENV, _TEST_PASSWORD)
 
 
 @pytest.fixture
 def redshift_config() -> RedshiftConnectionConfig:
     """default :class:`RedshiftConnectionConfig` for the unit tests.
 
-    no ``password_ref`` -- the connect call gets ``password=None``,
-    which is fine for the mocked path.
+    carries a resolvable ``password_ref``: the driver refuses a connect with no
+    password before calling ``redshift_connector.connect`` at all.
     """
     return RedshiftConnectionConfig(
         datasource_type=DataSourceType.REDSHIFT,
@@ -127,7 +160,7 @@ def redshift_config() -> RedshiftConnectionConfig:
         port=5439,
         database="analytics",
         username="rs_user",
-        password_ref=None,
+        password_ref=_TEST_PASSWORD_REF,
         executor_max_workers=2,
         connection_cache_size=2,
         query_timeout_seconds=60,
@@ -307,7 +340,8 @@ class TestConnectionCaching:
         via setsockopt on the underlying socket -- passing them as connect kwargs raises
         TypeError (the regression that silently broke every datasource connection).
         """
-        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        usock = MagicMock(name="MockRedshiftSocket")
+        conn = _build_mock_connection(fetchall_rows=[], description=[], usock=usock)
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
@@ -322,7 +356,6 @@ class TestConnectionCaching:
             assert "tcp_keepalive_interval" not in kwargs
             assert "tcp_keepalive_count" not in kwargs
             # the granular tuning is applied via setsockopt on the underlying socket.
-            usock = getattr(conn, "_usock")
             opts = {(call.args[0], call.args[1]): call.args[2] for call in usock.setsockopt.call_args_list}
             # SO_KEEPALIVE is always enabled.
             assert opts[(socket.SOL_SOCKET, socket.SO_KEEPALIVE)] == 1
@@ -411,7 +444,7 @@ class TestSetSearchPathOnOpen:
             port=5439,
             database="analytics",
             username="rs_user",
-            password_ref=None,
+            password_ref=_TEST_PASSWORD_REF,
             allowed_schemas=["reporting_prod", "audit"],
         )
         conn = _build_mock_connection(fetchall_rows=[], description=[])
@@ -448,7 +481,7 @@ class TestSetSearchPathOnOpen:
             port=5439,
             database="analytics",
             username="rs_user",
-            password_ref=None,
+            password_ref=_TEST_PASSWORD_REF,
             allowed_schemas=["reporting_prod"],
         )
         conn = _build_mock_connection(fetchall_rows=[], description=[])
@@ -496,7 +529,7 @@ class TestSetSearchPathOnOpen:
             port=5439,
             database="analytics",
             username="rs_user",
-            password_ref=None,
+            password_ref=_TEST_PASSWORD_REF,
             # adversarial schema name carrying an embedded double quote
             allowed_schemas=['my"schema'],
         )
@@ -527,7 +560,7 @@ class TestSetSearchPathOnOpen:
             port=5439,
             database="analytics",
             username="rs_user",
-            password_ref=None,
+            password_ref=_TEST_PASSWORD_REF,
             allowed_schemas=["reporting_prod"],
         )
         conn = _build_mock_connection(fetchall_rows=[], description=[])
@@ -726,6 +759,107 @@ class TestTestConnection:
             # ...but the exception TYPE is surfaced (a class name, never sensitive) so a
             # config / library error is diagnosable, not masked as a bare "connection failed".
             assert "RuntimeError" in str(exc_info.value)
+
+
+class TestALoginIsNeverSpentBlind:
+    """the driver never sends a login the warehouse will count against the account for nothing.
+
+    Redshift locks a user after five consecutive failed logins and never unlocks it by
+    itself. A connect with no password is one of those failures, and so is every retry of
+    a refused login -- so a missing credential is refused before any network attempt, and
+    a refusal carries the server's reason and its own type so a caller can stop at once.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_password_reference_is_refused_before_connect(self) -> None:
+        config = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="rs.example.com",
+            database="analytics",
+            username="rs_user",
+            password_ref=None,
+        )
+        with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect") as connect_mock:
+            driver = RedshiftDriver(config, datasource_name="central-reporting")
+            try:
+                with pytest.raises(DriverMissingCredentialError) as exc_info:
+                    await driver.fetch("SELECT 1")
+            finally:
+                await driver.close()
+
+        connect_mock.assert_not_called()
+        assert "central-reporting" in str(exc_info.value)
+        assert "rs.example.com" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_a_reference_that_resolves_to_nothing_is_refused_before_connect(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("ABSENT_REDSHIFT_PW", raising=False)
+        config = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="rs.example.com",
+            database="analytics",
+            username="rs_user",
+            password_ref="env://ABSENT_REDSHIFT_PW",
+        )
+        with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect") as connect_mock:
+            driver = RedshiftDriver(config, datasource_name="influencers-build")
+            try:
+                with pytest.raises(DriverMissingCredentialError) as exc_info:
+                    await driver.test_connection()
+            finally:
+                await driver.close()
+
+        connect_mock.assert_not_called()
+        assert "influencers-build" in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+    @pytest.mark.asyncio
+    async def test_a_refused_login_is_an_auth_error_carrying_the_servers_reason(
+        self,
+        redshift_config: RedshiftConnectionConfig,
+    ) -> None:
+        """the shape ``redshift_connector`` raises for a server ErrorResponse with SQLSTATE 28000."""
+        refused = redshift_connector.InterfaceError(
+            {"S": "FATAL", "C": "28000", "M": 'password authentication failed for user "rs_user"'}
+        )
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            side_effect=refused,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            try:
+                with pytest.raises(DriverAuthError) as exc_info:
+                    await driver.test_connection()
+            finally:
+                await driver.close()
+
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.sqlstate == "28000"
+        assert 'password authentication failed for user "rs_user"' in str(exc_info.value)
+        assert _TEST_PASSWORD not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_login_reaches_a_query_caller_with_its_type(
+        self,
+        redshift_config: RedshiftConnectionConfig,
+    ) -> None:
+        """a query that opens the connection sees the same auth type the probe does."""
+        refused = redshift_connector.InterfaceError({"S": "FATAL", "C": "28000", "M": "user rs_user is locked"})
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            side_effect=refused,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            try:
+                with pytest.raises(DriverAuthError) as exc_info:
+                    await driver.fetch("SELECT 1")
+            finally:
+                await driver.close()
+
+        assert "user rs_user is locked" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

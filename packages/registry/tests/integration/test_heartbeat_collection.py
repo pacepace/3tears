@@ -38,6 +38,7 @@ from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.l1_cache import create_registry_l1_backend
+from threetears.core.testing.kv import FakeKvBucket
 
 
 # ---------------------------------------------------------------------------
@@ -45,23 +46,22 @@ from threetears.registry.l1_cache import create_registry_l1_backend
 # ---------------------------------------------------------------------------
 
 
-class _InMemoryKvBucket:
-    """typed-wrapper KV bucket stand-in matching :class:`NatsKvBucket`."""
+class _InMemoryKvBucket(FakeKvBucket):
+    """the shared collections bucket, as the published fake models it.
+
+    Once a hand-rolled subset of get/put/delete; now the published double, so it carries the
+    revision history -- deletion markers and ``get_latest`` included -- that a collection's read
+    path fences its L2 seed on. A subset double that cannot answer the real bucket's questions is
+    how a KV bug ships green.
+    """
 
     def __init__(self) -> None:
-        self._store: dict[str, bytes] = {}
+        """open an empty bucket.
 
-    async def get(self, *, key: str) -> bytes | None:
-        return self._store.get(key)
-
-    async def put(self, *, key: str, value: bytes) -> int:
-        self._store[key] = value
-        return len(self._store)
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
-        existed = key in self._store
-        self._store.pop(key, None)
-        return existed or revision is None
+        :return: None
+        :rtype: None
+        """
+        super().__init__(bucket_name="collections")
 
 
 class InMemoryNatsBus:
@@ -322,8 +322,6 @@ class TestHeartbeatSubscriberFlow:
             tool_name="threetears.sub_tool",
             tool_version="1.0.0",
             full_name="threetears.sub_tool@1.0.0",
-            description="test tool",
-            input_schema={"type": "object", "properties": {}},
             endpoints=[endpoint],
         )
         await catalog.register(entry)
@@ -367,8 +365,6 @@ class TestHeartbeatSubscriberFlow:
             tool_name="threetears.calc",
             tool_version="1.0.0",
             full_name="threetears.calc@1.0.0",
-            description="test",
-            input_schema={"type": "object", "properties": {}},
             endpoints=[endpoint],
         )
         await catalog.register(entry)

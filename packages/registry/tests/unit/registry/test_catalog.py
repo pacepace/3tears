@@ -3,15 +3,33 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 
+from threetears.nats import Subjects
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+
+from ._copies import uniform_entry
+
+_AGENT_A = UUID("01948a00-aaaa-7000-8000-00000000000a")
+_AGENT_B = UUID("01948a00-aaaa-7000-8000-00000000000b")
 
 
 # -- helpers --
+
+
+def _inproc(agent_id: UUID) -> str:
+    """the pod-id of ``agent_id``'s in-process tool server.
+
+    :param agent_id: the owning agent
+    :ptype agent_id: UUID
+    :return: the ``{agent_id}.{instance}`` composite
+    :rtype: str
+    """
+    return Subjects.agent_inprocess_pod_id(agent_id, "inst-1")
 
 
 def _make_entry(
@@ -37,7 +55,7 @@ def _make_entry(
         pod_id=pod_id,
         status=status,
     )
-    result = CatalogEntry(
+    result = uniform_entry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
@@ -134,10 +152,16 @@ class TestToolEndpoint:
         assert restored.in_flight == 0
 
     def test_endpoint_from_dict_defaults_status_to_unavailable(self) -> None:
-        """from_dict defaults status to unavailable when not present."""
+        """from_dict defaults status to unavailable when not present.
+
+        the dict is a current-shape endpoint (its definitions and publisher mark are part of
+        that shape); only ``status`` is left out.
+        """
         data = {
             "pod_id": "pod-001",
             "date_last_heartbeat": datetime.now(UTC).isoformat(),
+            "definitions": [],
+            "verified_publisher": False,
         }
         restored = ToolEndpoint.from_dict(data)
         assert restored.status == "unavailable"
@@ -165,7 +189,7 @@ class TestCatalogEntry:
 
     def test_entry_status_unavailable_with_no_endpoints(self) -> None:
         """CatalogEntry status is unavailable when no endpoints exist."""
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.tool",
             tool_version="1.0",
             full_name="test.tool@1.0",
@@ -177,7 +201,7 @@ class TestCatalogEntry:
 
     def test_entry_status_unavailable_when_all_endpoints_unavailable(self) -> None:
         """CatalogEntry status is unavailable when all endpoints are unavailable."""
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.tool",
             tool_version="1.0",
             full_name="test.tool@1.0",
@@ -192,7 +216,7 @@ class TestCatalogEntry:
 
     def test_entry_status_available_with_mixed_endpoints(self) -> None:
         """CatalogEntry status is available when at least one endpoint is available among many."""
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.tool",
             tool_version="1.0",
             full_name="test.tool@1.0",
@@ -206,22 +230,25 @@ class TestCatalogEntry:
         assert entry.status == "available"
 
     def test_entry_to_dict_includes_all_fields(self) -> None:
-        """to_dict includes all expected fields."""
+        """to_dict includes all expected fields -- and no definition, which each copy carries."""
         entry = _make_entry()
         data = entry.to_dict()
         expected_keys = {
+            "shape",
             "tool_name",
             "tool_version",
             "full_name",
-            "description",
-            "input_schema",
-            "output_schema",
-            "timeout_seconds",
-            "requires_confirmation",
             "endpoints",
             "date_registered",
         }
         assert set(data.keys()) == expected_keys
+        assert set(data["endpoints"][0]) == {
+            "pod_id",
+            "status",
+            "date_last_heartbeat",
+            "verified_publisher",
+            "definitions",
+        }
 
     def test_entry_to_dict_roundtrip(self) -> None:
         """CatalogEntry serializes and deserializes correctly."""
@@ -231,8 +258,7 @@ class TestCatalogEntry:
         assert restored.tool_name == original.tool_name
         assert restored.tool_version == original.tool_version
         assert restored.full_name == original.full_name
-        assert restored.description == original.description
-        assert restored.input_schema == original.input_schema
+        assert restored.endpoints[0].definitions == original.endpoints[0].definitions
         assert restored.status == original.status
         assert len(restored.endpoints) == len(original.endpoints)
         assert restored.endpoints[0].pod_id == original.endpoints[0].pod_id
@@ -240,7 +266,7 @@ class TestCatalogEntry:
 
     def test_entry_to_dict_roundtrip_multiple_endpoints(self) -> None:
         """CatalogEntry roundtrips correctly with multiple endpoints."""
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.tool",
             tool_version="1.0",
             full_name="test.tool@1.0",
@@ -290,7 +316,7 @@ class TestCatalogEntry:
 
     def test_remove_endpoint_found(self) -> None:
         """remove_endpoint removes matching endpoint and returns True."""
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="test.tool",
             tool_version="1.0",
             full_name="test.tool@1.0",
@@ -356,12 +382,17 @@ class TestToolCatalogCRUD:
         assert merged.get_endpoint("pod-002") is not None
 
     @pytest.mark.asyncio
-    async def test_register_merges_updates_description_and_schema(self) -> None:
-        """register updates description and schema on merge."""
+    async def test_register_merge_keeps_each_copys_own_definition(self) -> None:
+        """a second pod's registration no longer rewrites the first pod's definition.
+
+        this used to assert the opposite -- that the last registration's description and schema
+        replaced the entry's -- which is the defect per-copy definitions remove: any pod could
+        redefine a tool for every caller by registering last.
+        """
         catalog = ToolCatalog()
         entry_a = _make_entry(pod_id="pod-001")
         await catalog.register(entry_a)
-        entry_b = CatalogEntry(
+        entry_b = uniform_entry(
             tool_name="threetears.calculator",
             tool_version="1.0.0",
             full_name="threetears.calculator@1.0.0",
@@ -372,42 +403,56 @@ class TestToolCatalogCRUD:
         )
         await catalog.register(entry_b)
         merged = catalog.get("threetears.calculator@1.0.0")
-        assert merged.description == "updated description"
-        assert merged.input_schema == {"type": "object", "properties": {"x": {"type": "number"}}}
-        assert merged.output_schema == {"type": "number"}
+        assert merged is not None
+        now = datetime.now(UTC)
+        ttl = timedelta(seconds=45)
+        first = merged.get_endpoint("pod-001")
+        second = merged.get_endpoint("pod-002")
+        assert first is not None and second is not None
+        assert [d.definition.description for d in first.live_definitions(now, ttl)] == [
+            "test tool threetears.calculator"
+        ]
+        (updated,) = second.live_definitions(now, ttl)
+        assert updated.definition.description == "updated description"
+        assert updated.definition.input_schema == {"type": "object", "properties": {"x": {"type": "number"}}}
+        assert updated.definition.output_schema == {"type": "number"}
 
     @pytest.mark.asyncio
     async def test_register_updates_timeout_seconds_on_merge(self) -> None:
-        """register updates timeout_seconds when tool re-registers with new value.
+        """a pod re-registering with a new timeout is routed under the new one.
 
         regression test: catalog.register() previously preserved the old
         timeout_seconds on merge, so a tool that changed its declared
-        timeout would be stuck at the original value forever.
+        timeout would be stuck at the original value forever. the copy now
+        holds both definitions until the old one lapses, and the newer one
+        is what a call to this copy runs under.
         """
         catalog = ToolCatalog()
-        entry_a = CatalogEntry(
+        entry_a = uniform_entry(
             tool_name="test.slow_wait",
             tool_version="1.0",
             full_name="test.slow_wait@1.0",
             description="slow tool",
             input_schema={"type": "object", "properties": {}},
             timeout_seconds=120.0,
-            endpoints=[ToolEndpoint(pod_id="pod-001")],
+            endpoints=[ToolEndpoint(pod_id="pod-001", status="available")],
         )
         await catalog.register(entry_a)
-        assert catalog.get("test.slow_wait@1.0").timeout_seconds == 120.0
+        held = catalog.get("test.slow_wait@1.0")
+        assert held is not None
+        assert held.select_copies(None).routed_definitions["pod-001"].timeout_seconds == 120.0
 
-        entry_b = CatalogEntry(
+        entry_b = uniform_entry(
             tool_name="test.slow_wait",
             tool_version="1.0",
             full_name="test.slow_wait@1.0",
             description="slow tool",
             input_schema={"type": "object", "properties": {}},
             timeout_seconds=180.0,
-            endpoints=[ToolEndpoint(pod_id="pod-001")],
+            endpoints=[ToolEndpoint(pod_id="pod-001", status="available")],
         )
         await catalog.register(entry_b)
-        assert catalog.get("test.slow_wait@1.0").timeout_seconds == 180.0, (
+        assert held.select_copies(None).routed_definitions["pod-001"].timeout_seconds == 180.0, (
             "timeout_seconds must update on re-registration, not stay at old value"
         )
 
@@ -466,7 +511,7 @@ class TestToolCatalogCRUD:
     async def test_deregister_pod_keeps_entry_with_remaining_endpoints(self) -> None:
         """deregister_pod keeps entry when other endpoints remain."""
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="tool.shared",
             tool_version="1.0",
             full_name="tool.shared@1.0",
@@ -572,7 +617,7 @@ class TestToolCatalogSearch:
         entry_b = _make_entry(tool_name="tool.beta", status="unavailable")
         await catalog.register(entry_a)
         await catalog.register(entry_b)
-        available = catalog.list_available()
+        available = catalog.list_available(_AGENT_A)
         assert len(available) == 1
         assert available[0].tool_name == "tool.alpha"
 
@@ -582,7 +627,46 @@ class TestToolCatalogSearch:
         catalog = ToolCatalog()
         entry = _make_entry(status="unavailable")
         await catalog.register(entry)
-        assert catalog.list_available() == []
+        assert catalog.list_available(_AGENT_A) == []
+
+    @pytest.mark.asyncio
+    async def test_list_available_is_answered_for_the_caller(self) -> None:
+        """an agent's in-process tool is available to that agent and to no one else.
+
+        its entry still aggregates to 'available' -- ``status`` ignores the caller, which is
+        exactly why no listing reads it.
+        """
+        catalog = ToolCatalog()
+        entry = _make_entry(tool_name="aibots.knowledge_drafts", pod_id=_inproc(_AGENT_A))
+        await catalog.register(entry)
+        await catalog.register(_make_entry(tool_name="tool.shared", pod_id="pod-001"))
+
+        assert entry.status == "available"
+        assert {e.tool_name for e in catalog.list_available(_AGENT_A)} == {"aibots.knowledge_drafts", "tool.shared"}
+        assert {e.tool_name for e in catalog.list_available(_AGENT_B)} == {"tool.shared"}
+        assert {e.tool_name for e in catalog.list_available(None)} == {"tool.shared"}
+
+    def test_an_entry_answers_endpoints_and_availability_per_caller(self) -> None:
+        own, peer = _inproc(_AGENT_A), _inproc(_AGENT_B)
+        entry = uniform_entry(
+            tool_name="aibots.knowledge_drafts",
+            tool_version="1.0",
+            full_name="aibots.knowledge_drafts@1.0",
+            description="d",
+            input_schema={},
+            endpoints=[
+                ToolEndpoint(pod_id=own, status="pending"),
+                ToolEndpoint(pod_id=peer, status="available"),
+                ToolEndpoint(pod_id="pod-001", status="unavailable"),
+            ],
+        )
+
+        assert [ep.pod_id for ep in entry.endpoints_for(_AGENT_A)] == [own, "pod-001"]
+        # a's own endpoint is only pending and the tool pod's is down: not available to a,
+        # though b's available endpoint makes the caller-blind status say otherwise
+        assert entry.available_to(_AGENT_A) is False
+        assert entry.available_to(_AGENT_B) is True
+        assert entry.status == "available"
 
 
 # -- availability marking tests --
@@ -685,7 +769,7 @@ class TestToolCatalogAvailability:
     async def test_mark_pod_endpoints_available_only_affects_target_pod(self) -> None:
         """mark_pod_endpoints_available does not affect endpoints of other pods."""
         catalog = ToolCatalog()
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="tool.shared",
             tool_version="1.0",
             full_name="tool.shared@1.0",
@@ -792,7 +876,7 @@ class TestToolCatalogKVPersistence:
     @pytest.mark.asyncio
     async def test_deregister_pod_updates_kv_for_remaining_endpoints(self) -> None:
         """deregister_pod persists updated entry to KV when endpoints remain."""
-        entry = CatalogEntry(
+        entry = uniform_entry(
             tool_name="tool.shared",
             tool_version="1.0",
             full_name="tool.shared@1.0",

@@ -74,6 +74,18 @@ version history:
   composite PK, both refs FK to ``memories`` ON DELETE CASCADE,
   ``rationale`` audit column, back-edge index) that Dream consolidation
   populates. Additive; non-destructive to the source rows.
+- v027 drops every GIN index over ``search_vector``: both copies on
+  ``memories`` (``idx_mem_search_vector`` from v005,
+  ``idx_memories_search_vector`` from v022), on ``media_content``
+  (``idx_mc_search_vector``, ``idx_media_content_search_vector``) and on
+  ``memory_chunks`` (``idx_chunks_search_vector``,
+  ``idx_memory_chunks_search_vector``). Every keyword predicate goes
+  through ``threetears.core.data.gin_filter``, which keeps the planner off
+  the index because YugabyteDB's ybgin refuses a multi-entry scan, so
+  these indexes had no reader and only cost writes and storage. The
+  columns and their triggers stay; ``idx_memories_tags`` stays because
+  ``tags @>`` containment reads it. ``DROP INDEX IF EXISTS``, so replay is a
+  no-op.
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -161,6 +173,9 @@ from threetears.agent.memory.migrations.v025_add_memory_tags import (
 from threetears.agent.memory.migrations.v026_create_memory_consolidations import (
     create_memory_consolidations,
 )
+from threetears.agent.memory.migrations.v027_drop_search_vector_gin_indexes import (
+    drop_search_vector_gin_indexes,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -215,6 +230,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(24)(add_memory_salience_and_relax_scope)
     pkg.version(25)(add_memory_tags)
     pkg.version(26)(create_memory_consolidations)
+    pkg.version(27)(drop_search_vector_gin_indexes)
     runner.register(pkg)
     return pkg
 
@@ -238,6 +254,7 @@ __all__ = [
     "create_memory_consolidations",
     "datetime_to_datetimetz",
     "drop_legacy_memory_columns",
+    "drop_search_vector_gin_indexes",
     "enforce_conversation_id_not_null",
     "flip_memory_parent_fks",
     "media_composite_fk",

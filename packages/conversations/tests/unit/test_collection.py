@@ -345,6 +345,8 @@ class TestSearch:
         assert "websearch_to_tsquery" in sql
         assert "ts_rank_cd" in sql
         assert "search_vector @@" in sql
+        # a filter, not a GIN index scan: YugabyteDB refuses the OR / NOT a user types
+        assert "(search_vector @@ websearch_to_tsquery($6::regconfig, $3)) IS TRUE" in sql
         assert "agent_id = $1" in sql
         assert "user_id = $2" in sql
         # v006: the FTS config is passed as the $6 bind param cast to

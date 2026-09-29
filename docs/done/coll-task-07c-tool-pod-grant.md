@@ -8,15 +8,17 @@ no other principal can reach its data and it can reach no one else's.
 Last in the sequence: this is the grant the previous shards make safe. Depends on
 `coll-task-07a` (one consolidated stack to wire into).
 
-L3 is `design-l3-for-non-agent-principals.md`. Two tiers is a complete pattern.
+This shard covers L1 and L2. Tool pods hold L3 too, as provider storage: see
+`14-eng-ai-bot/docs/data-access-paths.md`, row A2.
 
 Facts cited here live in the evidence ledger.
 
 ---
 
-## The gap
+## The gap this shard closed
 
-`_tool_pod` grants exactly two KV buckets -- `{ns}-proxy_assertion_nonces` and
+`_tool_pod` now grants `{ns}-collections`, the invalidation subject, and the L3
+subjects. Before this shard it granted exactly two KV buckets -- `{ns}-proxy_assertion_nonces` and
 `{ns}-leases`. **No `{ns}-collections`.**
 
 `CROSS_PLATFORM_CACHE_INVALIDATE` appears in the pub and sub tuples of the agent

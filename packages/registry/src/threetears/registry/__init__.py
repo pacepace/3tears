@@ -24,7 +24,21 @@ from threetears.registry.auth import (
     ToolPodAuth,
     ToolPodAuthenticator,
 )
-from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.catalog import (
+    AnnouncedDefinition,
+    CatalogEntry,
+    CopySelection,
+    CopyStatus,
+    ToolCatalog,
+    ToolDefinition,
+    ToolEndpoint,
+)
+from threetears.registry.client import (
+    DEFAULT_CALL_TIMEOUT_SECONDS,
+    PopSignerProtocol,
+    ToolCallClient,
+    ToolCallError,
+)
 from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.entities import HeartbeatEntity
 from threetears.registry.health import HeartbeatSubscriber
@@ -37,17 +51,25 @@ from threetears.registry.l1_cache import (
 )
 from threetears.registry.proxy import CallProxy
 from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
-from threetears.registry.registration import RegistrationHandler, RegistrationResponse
-from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
+from threetears.registry.ownership import RefusalCode
+from threetears.registry.registration import RefusedTool, RegistrationHandler, RegistrationResponse
+from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy, endpoints_callable_by
 from threetears.registry.server import RegistryServer
 
 __all__ = [
     "AgentToolAuthorizer",
     "AllowAllAuthorizer",
+    "AnnouncedDefinition",
     "CallProxy",
     "CatalogEntry",
+    "CopySelection",
+    "CopyStatus",
+    "DEFAULT_CALL_TIMEOUT_SECONDS",
     "DenyAllAuthorizer",
     "DiscoveryHandler",
+    "PopSignerProtocol",
+    "ToolCallClient",
+    "ToolCallError",
     "HeartbeatCollection",
     "HeartbeatEntity",
     "HeartbeatSubscriber",
@@ -55,14 +77,18 @@ __all__ = [
     "REGISTRY_L1_METADATA",
     "REGISTRY_L1_TABLE_NAMES",
     "RbacEvaluatorAuthorizer",
+    "RefusalCode",
+    "RefusedTool",
     "RegistrationHandler",
     "RegistrationResponse",
     "RegistryServer",
     "RoutingStrategy",
     "ToolCatalog",
+    "ToolDefinition",
     "ToolEndpoint",
     "ToolPodAuth",
     "ToolPodAuthenticator",
     "create_registry_l1_backend",
+    "endpoints_callable_by",
     "pod_heartbeats_table",
 ]

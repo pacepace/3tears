@@ -72,7 +72,7 @@ class CurrentDateTool(TearsTool):
         "properties": {
             "timezone": {
                 "type": "string",
-                "description": "IANA timezone (e.g. America/Los_Angeles). Defaults to agent timezone.",
+                "description": "IANA timezone, e.g. America/Los_Angeles. Leave it out for the person's own timezone.",
             },
         },
     }

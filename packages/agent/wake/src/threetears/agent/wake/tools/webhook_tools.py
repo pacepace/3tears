@@ -79,28 +79,28 @@ class WebhookSubscriptionCreateInput(BaseModel):
 
     name: str | None = Field(
         default=None,
-        description="Optional human-readable subscription name (max 256 chars).",
+        description="Optional name, up to 256 characters.",
     )
     task_prompt_template: str = Field(
         description=(
-            "Jinja2 sandbox template rendered with {{event}} (the payload). Max 4KB. Becomes the per-fire task prompt."
+            "The instructions you get each time it fires, up to 4KB. {{event}} is replaced with what was sent."
         ),
     )
     default_skill_id: str | None = Field(
         default=None,
-        description="Optional [skill:<id>] loaded as the attached skill on each fire.",
+        description="Optional skill to use each time it fires: a [skill:<id>] or its id.",
     )
     execution_mode: Literal["inline", "spawn"] = Field(
         default="inline",
-        description="'inline' fires in this conversation; 'spawn' creates a new conversation.",
+        description="'inline' wakes you in this conversation; 'spawn' starts a new conversation.",
     )
     allowed_source_pattern: str | None = Field(
         default=None,
-        description="Optional regex matched against the inbound source IP.",
+        description="Optional regex. Only senders whose IP address matches are accepted.",
     )
     rate_limit_per_minute: int | None = Field(
         default=None,
-        description="Optional override for the platform default per-subscription rate cap.",
+        description="Optional limit on fires per minute. Leave out for the default.",
     )
 
 
@@ -118,26 +118,26 @@ class WebhookSubscriptionUpdateInput(BaseModel):
     Passing the attach value AND its detach flag together is rejected.
     """
 
-    subscription_id: str = Field(description="[webhook:<id>] to update.")
+    subscription_id: str = Field(description="The [webhook:<id>] to change.")
     name: str | None = None
     clear_name: bool = Field(
         default=False,
-        description="When true, clear the human-readable name. Must not be combined with name.",
+        description="True removes the name. Do not also pass name.",
     )
     task_prompt_template: str | None = None
     default_skill_id: str | None = Field(
         default=None,
-        description="New [skill:<uuid>] or bare UUID to set as the default skill. Omit to leave unchanged. To detach, pass detach_default_skill=true (do not pass both).",
+        description="A skill to attach: a [skill:<id>] or its id. To remove the skill, use detach_default_skill instead.",
     )
     detach_default_skill: bool = Field(
         default=False,
-        description="When true, clear the default_skill_id. Must not be combined with default_skill_id.",
+        description="True removes the attached skill. Do not also pass default_skill_id.",
     )
     execution_mode: Literal["inline", "spawn"] | None = None
     allowed_source_pattern: str | None = None
     clear_allowed_source_pattern: bool = Field(
         default=False,
-        description="When true, clear allowed_source_pattern. Must not be combined with allowed_source_pattern.",
+        description="True removes allowed_source_pattern. Do not also pass allowed_source_pattern.",
     )
     rate_limit_per_minute: int | None = None
 
@@ -145,7 +145,7 @@ class WebhookSubscriptionUpdateInput(BaseModel):
 class WebhookSubscriptionIdInput(BaseModel):
     """Shared input for pause / resume / delete / rotate."""
 
-    subscription_id: str = Field(description="[webhook:<id>] of the target subscription.")
+    subscription_id: str = Field(description="The [webhook:<id>].")
 
 
 # ---------------------------------------------------------------------------
@@ -422,11 +422,9 @@ def load_webhook_subscription_create_tool(
         return f"{catalog}\nsecret (copy now; shown only once): {plaintext_secret}{endpoint_segment}"
 
     wake_schedule_create_desc = (
-        "Create an inbound webhook subscription for THIS conversation.\n"
-        "- task_prompt_template: Jinja2 sandbox; {{event}} = payload (max 4KB)\n"
-        "- default_skill_id: optional skill loaded on each fire\n"
-        "- allowed_source_pattern: optional regex against the source IP\n"
-        "Returns [webhook:<id>] + the HMAC secret ONCE (copy it; cannot be retrieved later)."
+        "Give this conversation an address that other systems can send events to. Each event "
+        "wakes you with task_prompt_template filled in.\n"
+        "Returns [webhook:<id>] and its secret. The secret is shown only once: copy it."
     )
     webhook_subscription_create.description = wake_schedule_create_desc
     return [webhook_subscription_create]
@@ -587,10 +585,9 @@ def load_webhook_subscription_update_tool(
         return _format_subscription_line(entity, skill_name=skill_name)
 
     webhook_subscription_update.description = (
-        "Edit a webhook subscription in place. Pass only fields to change.\n"
-        "Attach a skill: pass default_skill_id=<uuid>. Detach: pass detach_default_skill=true.\n"
-        "Clear name/source-pattern via clear_name=true / clear_allowed_source_pattern=true.\n"
-        "Cannot change the HMAC secret -- use webhook_subscription_rotate_secret."
+        "Change a webhook subscription. Pass only what changes. To remove a skill, name or "
+        "source pattern, pass detach_default_skill, clear_name or clear_allowed_source_pattern, "
+        "not the value as well. To change the secret, use webhook_subscription_rotate_secret."
     )
     return [webhook_subscription_update]
 
@@ -640,9 +637,7 @@ def load_webhook_subscription_list_tool(
             lines.append("- " + _format_subscription_line(entity, skill_name=skill_name))
         return "\n".join(lines)
 
-    webhook_subscription_list.description = (
-        "List webhook subscriptions in THIS conversation. Returns [webhook:<id>] + name + status."
-    )
+    webhook_subscription_list.description = "List the webhook subscriptions in this conversation: id, name and status."
     return [webhook_subscription_list]
 
 
@@ -677,7 +672,9 @@ def load_webhook_subscription_pause_tool(
             return _tool_error("webhook_subscription_pause", f"persist failed: {exc}")
         return f"Paused [webhook:{parsed}]."
 
-    webhook_subscription_pause.description = "Pause a webhook subscription. Inbound webhooks 404 until you resume it."
+    webhook_subscription_pause.description = (
+        "Pause a webhook subscription. Events sent to it are refused until webhook_subscription_resume."
+    )
     return [webhook_subscription_pause]
 
 
@@ -737,9 +734,7 @@ def load_webhook_subscription_delete_tool(
             return _tool_error("webhook_subscription_delete", f"persist failed: {exc}")
         return f"Deleted [webhook:{parsed}] ({entity.name or 'untitled'})."
 
-    webhook_subscription_delete.description = (
-        "Delete a webhook subscription permanently. Fire history unbinds (SET NULL on FK)."
-    )
+    webhook_subscription_delete.description = "Delete a webhook subscription for good. Its past fires are kept."
     return [webhook_subscription_delete]
 
 
@@ -827,7 +822,7 @@ def load_webhook_subscription_rotate_secret_tool(
         return f"Rotated secret for [webhook:{parsed}]. New secret (copy now; shown only once): {plaintext_secret}"
 
     webhook_subscription_rotate_secret.description = (
-        "Rotate the HMAC secret on a webhook subscription. Returns the new plaintext ONCE.\n"
-        "Old secret stops working immediately -- update upstream callers."
+        "Replace a webhook subscription's secret. The old one stops working at once, so every "
+        "sender needs the new one. The new secret is shown only once."
     )
     return [webhook_subscription_rotate_secret]

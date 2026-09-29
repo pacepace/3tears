@@ -17,14 +17,16 @@ pass an explicit ``provider`` kwarg (or to register capabilities first).
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any, cast
 
+from langchain_core.runnables import Runnable, RunnableBinding
 from threetears.observe import get_logger
 
 from threetears.models.capabilities import ModelCapabilities, get_capabilities
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitBreakerRegistry
 from threetears.models.enums import ModelType
-from threetears.models.tracking import LlmPurpose, UsageTracker
+from threetears.models.tracking import LlmPurpose, UsageTracker, default_usage_tracker
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import BaseCallbackHandler
@@ -39,9 +41,53 @@ __all__ = [
 logger = get_logger(__name__)
 
 
-# A single shared registry by default — host apps can override by passing
-# their own breaker registry or constructing breakers per model id.
+# A single shared registry by default -- host apps can override by passing
+# their own breaker. It is keyed by provider AND credential: a process calling
+# one provider with several customers' keys must not let one key's failures
+# fast-fail the others, and a process with one key sees one breaker per
+# provider exactly as before.
 _DEFAULT_BREAKER_REGISTRY = CircuitBreakerRegistry()
+
+
+class _CallbacksKeptBinding(RunnableBinding[Any, Any]):
+    """The model with the factory's callbacks bound, kept through every re-binding a caller does.
+
+    A plain ``RunnableBinding`` reaches the chat model's own methods -- ``bind_tools``,
+    ``with_structured_output`` -- through an attribute proxy, and what they return is built from
+    the bare model: the binding's callbacks were left behind. Every tool-bound or structured call
+    then ran with no usage tracker and no circuit breaker, which is every call an agent makes.
+
+    Here a proxied method that returns a runnable returns it bound again, with this binding's
+    config and arguments, so the callbacks run however the model is re-bound. The binding's own
+    ``bind``, ``with_config``, ``with_retry`` and ``with_types`` already keep them, and return this
+    class.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        """the bound model's attribute; a method returning a runnable returns it re-bound.
+
+        :param name: the attribute
+        :ptype name: str
+        :return: the attribute, wrapped when it is callable
+        :rtype: Any
+        """
+        attr = super().__getattr__(name)
+        if not callable(attr):
+            return attr
+
+        @functools.wraps(attr)
+        def kept(*args: Any, **kwargs: Any) -> Any:
+            result = attr(*args, **kwargs)
+            if isinstance(result, Runnable):
+                result = type(self)(
+                    bound=result,
+                    kwargs=self.kwargs,
+                    config=self.config,
+                    config_factories=self.config_factories,
+                )
+            return result
+
+        return kept
 
 
 def _resolve_provider(
@@ -83,6 +129,7 @@ def _build_callbacks(
     purpose: LlmPurpose,
     tracker: UsageTracker | None,
     breaker: CircuitBreaker | None,
+    api_key: str,
     extra_callbacks: list[BaseCallbackHandler] | None,
 ) -> list[BaseCallbackHandler]:
     """builds the default callback list (tracker + breaker + extras).
@@ -97,8 +144,12 @@ def _build_callbacks(
     :ptype purpose: LlmPurpose
     :param tracker: usage tracker (defaults to a fresh instance)
     :ptype tracker: UsageTracker | None
-    :param breaker: circuit breaker (defaults to one from the shared registry)
+    :param breaker: circuit breaker (defaults to the shared registry's breaker
+        for this provider and credential)
     :ptype breaker: CircuitBreaker | None
+    :param api_key: the credential the model calls with; scopes the default
+        breaker, and is never stored or logged
+    :ptype api_key: str
     :param extra_callbacks: additional callbacks the caller wants attached
     :ptype extra_callbacks: list[BaseCallbackHandler] | None
     :return: ordered list of callbacks to wire into the model
@@ -106,7 +157,7 @@ def _build_callbacks(
     """
     callbacks: list[BaseCallbackHandler] = []
 
-    effective_tracker = tracker if tracker is not None else UsageTracker()
+    effective_tracker = tracker if tracker is not None else default_usage_tracker()
     cost_in = capabilities.cost_per_input_token if capabilities is not None else None
     cost_out = capabilities.cost_per_output_token if capabilities is not None else None
     tier = capabilities.model_tier if capabilities is not None else None
@@ -121,7 +172,9 @@ def _build_callbacks(
         ),
     )
 
-    effective_breaker = breaker if breaker is not None else _DEFAULT_BREAKER_REGISTRY.get(provider_name)
+    effective_breaker = (
+        breaker if breaker is not None else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key)
+    )
     callbacks.append(effective_breaker.make_callback())
 
     if extra_callbacks:
@@ -145,8 +198,9 @@ def create_chat_model(
 
     resolves the provider name from the capabilities registry (or the
     explicit ``provider`` kwarg), invokes the appropriate provider factory
-    function, and attaches the usage tracker + circuit breaker callbacks
-    via ``with_config(callbacks=[...])``.
+    function, and binds the usage tracker + circuit breaker callbacks to it in
+    a ``RunnableBinding`` that keeps them through ``bind_tools``,
+    ``with_structured_output`` and every other re-binding a caller does.
 
     :param model_id: model identifier
     :ptype model_id: str
@@ -158,7 +212,11 @@ def create_chat_model(
     :ptype purpose: LlmPurpose
     :param tracker: optional shared usage tracker (defaults to a fresh instance)
     :ptype tracker: UsageTracker | None
-    :param breaker: optional explicit circuit breaker (defaults to shared registry)
+    :param breaker: optional explicit circuit breaker. the default is the
+        shared registry's breaker for this provider AND ``api_key``, so calls
+        made with one credential never trip the breaker for another credential
+        on the same provider; a process with one key has one breaker per
+        provider, as before
     :ptype breaker: CircuitBreaker | None
     :param extra_callbacks: optional extra callbacks to attach
     :ptype extra_callbacks: list[BaseCallbackHandler] | None
@@ -195,16 +253,17 @@ def create_chat_model(
         purpose=purpose,
         tracker=tracker,
         breaker=breaker,
+        api_key=api_key,
         extra_callbacks=extra_callbacks,
     )
 
-    # `with_config` returns a RunnableBinding wrapping the model, not the model itself, so
-    # the concrete chat-model type is erased even though every chat-model method callers
-    # use (`with_structured_output`, `invoke`, `ainvoke`, `bind_tools`) is proxied straight
-    # through. Widening this function's return type to `Runnable` instead would be the
-    # wrong trade: `with_structured_output` is not on `Runnable`, so it would break every
-    # caller in the workspace to describe an object that does in fact have it.
-    configured = cast("BaseChatModel", model.with_config(callbacks=callbacks))
+    # The binding wraps the model, not the model itself, so the concrete chat-model type is
+    # erased even though every chat-model method callers use (`with_structured_output`,
+    # `invoke`, `ainvoke`, `bind_tools`) is proxied straight through. Widening this function's
+    # return type to `Runnable` instead would be the wrong trade: `with_structured_output` is
+    # not on `Runnable`, so it would break every caller in the workspace to describe an object
+    # that does in fact have it.
+    configured = cast("BaseChatModel", _CallbacksKeptBinding(bound=model, config={"callbacks": callbacks}))
     return configured
 
 

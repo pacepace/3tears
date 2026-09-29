@@ -383,7 +383,7 @@ async def _resolve_context_from(
 
     label = upstream_name or f"schedule {upstream_id}"
     fired_at_iso = upstream_fire.actual_fired_at.isoformat()
-    block = f'Context from upstream schedule "{label}" (fired {fired_at_iso}):\n{payload}\n---'
+    block = f'What your schedule "{label}" said when it last fired, at {fired_at_iso}:\n{payload}'
     encoded = block.encode("utf-8")
     if len(encoded) > _CONTEXT_BLOCK_BUDGET_BYTES:
         truncated = encoded[:_CONTEXT_BLOCK_BUDGET_BYTES].decode("utf-8", errors="ignore")

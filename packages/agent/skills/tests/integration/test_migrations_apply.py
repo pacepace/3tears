@@ -1,9 +1,12 @@
 """Integration test: agent-skills migrations apply cleanly.
 
-Verifies that running v001 + v002 against a fresh schema:
+Verifies that running v001-v003 against a fresh schema:
 
 - Creates ``agent_skills`` + ``agent_skill_invocations`` with the
   expected column inventory and indexes.
+- Leaves no GIN index on ``agent_skills``: v003 drops the two v001
+  created, because every predicate that could use them goes through
+  ``gin_filter``.
 - Installs the FTS trigger function + trigger.
 - Is idempotent on re-apply.
 - Produces zero rows on the first ``apply_for_agent_schema`` after
@@ -16,6 +19,7 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
+from threetears.agent.skills.migrations import drop_gin_indexes
 from threetears.agent.skills.migrations import register as register_skills
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.data.migrations import MigrationRunner
@@ -24,6 +28,9 @@ from .conftest import AsyncpgStore
 
 
 pytestmark = pytest.mark.integration
+
+#: the v001 GIN indexes v003 drops.
+_DROPPED_GIN_INDEXES: tuple[str, ...] = ("idx_skills_search_vector", "idx_skills_tags")
 
 
 def _build_runner() -> MigrationRunner:
@@ -102,7 +109,7 @@ async def _trigger_exists(
 
 
 class TestSchemaShape:
-    """The v001 + v002 chain produces the documented schema."""
+    """The v001-v003 chain produces the documented schema."""
 
     async def test_migration_applies_and_creates_tables(
         self,
@@ -175,12 +182,42 @@ class TestSchemaShape:
             for index_name in (
                 "uq_skills_agent_user_name",
                 "idx_skills_agent_user_enabled",
-                "idx_skills_search_vector",
-                "idx_skills_tags",
                 "idx_skill_invocations_skill_time",
                 "idx_skill_invocations_conv",
             ):
                 assert await _index_exists(conn, schema, index_name), index_name
+            for index_name in _DROPPED_GIN_INDEXES:
+                assert not await _index_exists(conn, schema, index_name), index_name
+        finally:
+            await conn.close()
+
+    async def test_v003_drops_both_gin_indexes(self, pg_schema: tuple[str, str]) -> None:
+        """A schema migrated to v002 carries both GIN indexes; v003 removes them.
+
+        The v002 checkpoint is the non-vacuity guard: it proves each name
+        asserted absent afterwards really existed on an upgraded schema. The
+        ``search_vector`` column and its FTS trigger survive the drop.
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store, target=2)  # type: ignore[arg-type]
+            for index_name in _DROPPED_GIN_INDEXES:
+                assert await _index_exists(conn, schema, index_name), f"{index_name} missing at v002"
+
+            applied = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            assert applied >= 1
+
+            for index_name in _DROPPED_GIN_INDEXES:
+                assert not await _index_exists(conn, schema, index_name), f"{index_name} survived v003"
+            assert "search_vector" in await _columns(conn, schema, "agent_skills")
+            assert await _trigger_exists(conn, schema, "trg_agent_skills_search_vector")
+
+            # the body tolerates indexes that are already gone.
+            await drop_gin_indexes(store)  # type: ignore[arg-type]
         finally:
             await conn.close()
 

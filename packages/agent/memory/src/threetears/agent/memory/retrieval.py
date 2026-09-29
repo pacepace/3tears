@@ -22,7 +22,8 @@ from __future__ import annotations
 import asyncio
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 from uuid import UUID
 
@@ -40,6 +41,7 @@ from langchain_core.embeddings import Embeddings
 
 from threetears.agent.memory.embedding_utils import _estimate_tokens, _safe_aembed_query
 from threetears.agent.memory.types import MemoryConfig
+from threetears.langgraph.fence import nonce_for, untrusted_fence, untrusted_rule
 from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
@@ -200,14 +202,80 @@ def _mmr_rerank(
     return selected
 
 
+def _written(mem: dict[str, Any], tz: tzinfo | None) -> str:
+    """When a memory was written, in the person's own time, or ``""`` when unknown.
+
+    Without it every memory reads as current. Live, a memory from May stating
+    that "memory clears between threads" sat beside the person's name from
+    September with nothing to tell them apart, and the agent greeted the person
+    as someone whose history had been wiped. The time is on the row; the agent
+    was never shown it.
+
+    Local time with the time of day, because that is how the person remembers
+    it: a UTC date puts a late evening on the wrong day, and a bare date loses
+    whether it was a morning or a night.
+
+    :param mem: a retrieved memory row
+    :ptype mem: dict[str, Any]
+    :param tz: the person's timezone, or ``None`` when the caller does not want
+        times shown -- the row still carries ``date_created`` either way
+    :ptype tz: tzinfo | None
+    :return: the suffix, e.g. `` (written Thu 14 May 2026, 2:30 AM PDT)``, or ``""``
+    :rtype: str
+    """
+    if tz is None:
+        return ""
+    written = mem.get("date_created")
+    if isinstance(written, str):
+        try:
+            written = datetime.fromisoformat(written)
+        except ValueError:
+            return ""
+    if not isinstance(written, datetime):
+        return ""
+    if written.tzinfo is None:
+        written = written.replace(tzinfo=timezone.utc)
+    local = written.astimezone(tz)
+    return f" (written {local.strftime('%a %-d %b %Y, %-I:%M %p %Z')})"
+
+
+def resolve_timezone(name: str | None) -> tzinfo | None:
+    """The named IANA timezone; ``None`` when no name was given; UTC when the name is unknown.
+
+    ``None`` is the caller saying it does not want times on its memory lines.
+    An unknown name is a caller that asked for them, so it gets UTC, labelled.
+
+    :param name: an IANA name such as ``America/Los_Angeles``
+    :ptype name: str | None
+    :return: the timezone, or ``None``
+    :rtype: tzinfo | None
+    """
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError, ValueError:
+        return timezone.utc
+
+
 def _format_memory_context(
     memories: list[dict[str, Any]],
     media_content: list[dict[str, Any]] | None = None,
     memory_chunks: list[dict[str, Any]] | None = None,
     detail_threshold: float = 0.85,
     ledgered_ids: set[str] | None = None,
+    tz: tzinfo | None = None,
+    include_memories: bool = True,
 ) -> str:
     """Format retrieved memories, media content, and chunks as structured context.
+
+    Every memory, media excerpt and chunk headline is read back from storage,
+    and what was stored came from a conversation, a document or a tool: any of
+    it can carry an instruction. Each section's items are fenced, and the block
+    opens with the rule for its fence, so a consumer that places the block
+    anywhere in a prompt gives the model both (``threetears.langgraph.fence``).
+    The fence's tag is derived from the items, so the same memories render the
+    same block and a cached prompt that carries it stays cached.
 
     :param memories: ranked memory rows
     :ptype memories: list[dict[str, Any]]
@@ -219,10 +287,17 @@ def _format_memory_context(
     :ptype detail_threshold: float
     :param ledgered_ids: IDs to exclude (already surfaced)
     :ptype ledgered_ids: set[str] | None
+    :param tz: the person's timezone; when given, each memory line says when it
+        was written, in that timezone. ``None`` leaves the lines as they were
+    :ptype tz: tzinfo | None
+    :param include_memories: ``False`` leaves the memories section out and keeps
+        the files and passages, still anchored to their parent memories' summaries
+    :ptype include_memories: bool
     :return: formatted context string
     :rtype: str
     """
     lines: list[str] = []
+    fenced: list[tuple[int, list[str]]] = []
     _ledger = ledgered_ids or set()
 
     if _ledger:
@@ -264,28 +339,51 @@ def _format_memory_context(
                 continue
             parent_summary_by_id[str(mid_raw)] = mem_summary
 
-    if memories:
-        lines.append("Things you remember about this user:")
+    if memories and include_memories:
+        # NOT "things you remember about this user". Memories are extracted from
+        # conversations, so a large share of them are about the AGENT's own work
+        # rather than about the person: on one deployment, 609 memories of which
+        # 59 named the agent in the third person and 44 named both.
+        #
+        # Under the old header a memory the agent wrote about itself -- "<agent>
+        # must write in short, plain English" -- was presented as a fact about
+        # the user, so the agent read the name in it as the user's. It then
+        # addressed the person by its own name and signed off with theirs, twice
+        # in one conversation, until the person said so.
+        #
+        # The header therefore says whose memory it might be AND what the
+        # agent's own name inside one means, because the first without the
+        # second still leaves the agent guessing per memory.
+        lines.append(
+            "What you remember. Some memories are about the person you are talking with "
+            "and some are about you. Where a memory uses your name, it means you."
+        )
+        items = []
         for mem in memories:
             text, detailed = _get_display_text(mem, detail_threshold)
-            marker = " (detailed)" if detailed else ""
+            marker = " (in full)" if detailed else ""
             mem_id = str(mem["memory_id"])
-            lines.append(f"- [mem:{mem_id}] {text}{marker}")
+            items.append(f"- [memory:{mem_id}]{_written(mem, tz)} {text}{marker}")
+        fenced.append((len(lines), items))
+        lines.append("")
 
     if media_content:
         if lines:
             lines.append("")
-        lines.append("Relevant media context:")
+        lines.append("Files you have seen:")
+        items = []
         for mc in media_content:
             text, detailed = _get_display_text(mc, detail_threshold)
-            marker = " (detailed)" if detailed else ""
+            marker = " (in full)" if detailed else ""
             content_id = str(mc["content_id"])
-            lines.append(f"- [media:{content_id}] {text}{marker}")
+            items.append(f"- [media:{content_id}] {text}{marker}")
+        fenced.append((len(lines), items))
+        lines.append("")
 
     if deduped_chunks:
         if lines:
             lines.append("")
-        lines.append("Relevant document excerpts:")
+        lines.append("Passages from documents and past conversations:")
         # PULL-NOT-PUSH INVARIANT (Shard D D-02): chunk SUMMARIES are
         # pushed into the system prompt; chunk CONTENT is pulled via
         # the agent's chunk_recall(chunk_id) / memory_recall(memory_id,
@@ -310,6 +408,7 @@ def _format_memory_context(
                 len(deduped_chunks),
                 _MAX_SURFACED_CHUNKS,
             )
+        items = []
         for chunk in surfaced_chunks:
             chunk_id = str(chunk["chunk_id"])
             # ``summary`` is the canonical headline. Fall back to a
@@ -348,25 +447,27 @@ def _format_memory_context(
                 if parent_summary:
                     if len(parent_summary) > _MAX_CHUNK_SUMMARY_CHARS:
                         parent_summary = parent_summary[: _MAX_CHUNK_SUMMARY_CHARS - 3] + "..."
-                    parent_anchor = f' (of memory {parent_id_str}: "{parent_summary}")'
+                    parent_anchor = f' (from [memory:{parent_id_str}]: "{parent_summary}")'
                 else:
-                    parent_anchor = f" (of memory {parent_id_str})"
-            # The recall-affordance parenthetical is intentional --
-            # without it the agent has no way to know it can pull the
-            # verbatim chunk content if needed.
-            lines.append(
-                f"- [chunk:{chunk_id}{location}]{parent_anchor} {headline} "
-                f"(call chunk_recall('{chunk_id}') to read in full)"
-            )
+                    parent_anchor = f" (from [memory:{parent_id_str}])"
+            # How to read the whole passage is said once, in the footer: it
+            # is the block's own instruction, and a line inside the fence is
+            # material the agent is told not to take instructions from.
+            items.append(f"- [chunk:{chunk_id}{location}]{parent_anchor} {headline}")
+        fenced.append((len(lines), items))
+        lines.append("")
 
     if lines:
         lines.append("")
         lines.append(
-            "Items marked (detailed) contain full content above. For summary-only "
-            "memories or media, use memory_recall(<id>) / read the media URL. "
-            "Chunk headlines above are summary-only; call chunk_recall(<chunk_id>) "
-            "for the verbatim chunk content."
+            "A line marked (in full) is the whole of it. For any other line, "
+            "memory_recall(<id>) reads the whole memory, chunk_recall(<id>) the whole "
+            "passage, and memory_search(ids=[<id>]) opens a file."
         )
+        tag = nonce_for("\n".join(item for _at, items in fenced for item in items))
+        for at, items in fenced:
+            lines[at] = untrusted_fence(tag, "\n".join(items))
+        lines.insert(0, untrusted_rule(tag))
 
     return "\n".join(lines)
 
@@ -387,6 +488,10 @@ class RetrievalResult:
     """
 
     context: str | None = None
+    #: the files and passages alone, fenced, without the memories section: for a
+    #: consumer that renders the agent's own memories itself and must still fence
+    #: what came from documents and other conversations
+    material_context: str | None = None
     memories: list[dict[str, Any]] = field(default_factory=list)
     media_content: list[dict[str, Any]] = field(default_factory=list)
     memory_chunks: list[dict[str, Any]] = field(default_factory=list)
@@ -453,6 +558,7 @@ class MemoryRetriever:
         surfaced_ids: set[str] | None = None,
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
+        user_timezone: str | None = None,
     ) -> str | None:
         """full retrieval pipeline; returns formatted context or ``None``.
 
@@ -475,6 +581,9 @@ class MemoryRetriever:
         :param caller_agent_id: invoking agent UUID; owner short-
             circuit applies when equal to ``agent_id``
         :ptype caller_agent_id: UUID | None
+        :param user_timezone: IANA timezone; when given, each memory line says
+            when it was written, in local time. ``None`` shows no times
+        :ptype user_timezone: str | None
         :return: formatted context string or ``None``
         :rtype: str | None
         :raises MemoryAccessDenied: when rbac enforcement denies
@@ -487,6 +596,7 @@ class MemoryRetriever:
             surfaced_ids=surfaced_ids,
             caller_user_id=caller_user_id,
             caller_agent_id=caller_agent_id,
+            user_timezone=user_timezone,
         )
         return result.context
 
@@ -501,6 +611,7 @@ class MemoryRetriever:
         surfaced_ids: set[str] | None = None,
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
+        user_timezone: str | None = None,
     ) -> RetrievalResult:
         """Full retrieval pipeline returning structured results.
 
@@ -521,6 +632,10 @@ class MemoryRetriever:
         :ptype caller_user_id: UUID | None
         :param caller_agent_id: invoking agent UUID
         :ptype caller_agent_id: UUID | None
+        :param user_timezone: IANA timezone; when given, each memory line says
+            when it was written, in local time. ``None`` shows no times; the
+            rows carry ``date_created`` either way
+        :ptype user_timezone: str | None
         :return: structured retrieval results
         :rtype: RetrievalResult
         :raises MemoryAccessDenied: when rbac enforcement denies
@@ -641,16 +756,28 @@ class MemoryRetriever:
         if not memories and not media_content and not memory_chunks:
             return RetrievalResult(embed_tokens=embed_tokens)
 
+        tz = resolve_timezone(user_timezone)
         context = _format_memory_context(
             memories,
             media_content,
             memory_chunks,
             detail_threshold=cfg.detail_threshold,
             ledgered_ids=ledgered_ids,
+            tz=tz,
+        )
+        material = _format_memory_context(
+            memories,
+            media_content,
+            memory_chunks,
+            detail_threshold=cfg.detail_threshold,
+            ledgered_ids=ledgered_ids,
+            tz=tz,
+            include_memories=False,
         )
 
         return RetrievalResult(
             context=context or None,
+            material_context=material or None,
             memories=memories,
             media_content=media_content,
             memory_chunks=memory_chunks,

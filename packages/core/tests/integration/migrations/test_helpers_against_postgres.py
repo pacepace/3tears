@@ -31,6 +31,7 @@ from threetears.core.data.migrations.helpers import (
     InboundFk,
     add_check_constraint,
     add_column_with_backfill,
+    add_index,
     add_partition_column,
     replace_check_constraint,
     replace_primary_key,
@@ -439,3 +440,68 @@ async def test_add_partition_column_lands_column_backfill_and_check(
         await pg_conn.execute(
             "INSERT INTO w (customer_id, row_scope) VALUES (NULL, 'invalid')",
         )
+
+
+# ---------------------------------------------------------------------------
+# add_index
+# ---------------------------------------------------------------------------
+
+
+async def _index_validity(conn: asyncpg.Connection, name: str) -> bool | None:
+    """return ``indisvalid`` for the named index on the search path, ``None`` when absent.
+
+    :param conn: connection bound to the test schema
+    :ptype conn: asyncpg.Connection
+    :param name: index name
+    :ptype name: str
+    :return: validity, or ``None`` when no such index exists
+    :rtype: bool | None
+    """
+    result: bool | None = await conn.fetchval(
+        "SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass($1)",
+        name,
+    )
+    return result
+
+
+async def test_add_index_rebuilds_an_invalid_index_a_failed_build_left(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """a build that failed outside a transaction leaves an invalid index of the same name.
+
+    migrations run outside a transaction, where YugabyteDB builds an index on a
+    populated table online -- the ``CONCURRENTLY`` path, reproduced here on
+    PostgreSQL. a UNIQUE build over duplicate rows fails and leaves the index
+    behind with ``indisvalid = false``. ``CREATE INDEX IF NOT EXISTS`` then
+    reports success against it, so without the rebuild the migration records
+    itself applied over an index the planner never uses and that enforces
+    nothing.
+    """
+    await pg_conn.execute("CREATE TABLE u (id INT PRIMARY KEY, c INT)")
+    await pg_conn.execute("INSERT INTO u VALUES (1, 7), (2, 7)")
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await pg_conn.execute("CREATE UNIQUE INDEX CONCURRENTLY ux_u_c ON u (c)")
+    assert await _index_validity(pg_conn, "ux_u_c") is False
+
+    await pg_conn.execute("DELETE FROM u WHERE id = 2")
+    store = _AsyncpgStore(pg_conn)
+    await add_index(store, table="u", name="ux_u_c", columns=("c",), unique=True)
+
+    assert await _index_validity(pg_conn, "ux_u_c") is True
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await pg_conn.execute("INSERT INTO u VALUES (3, 7)")
+
+
+async def test_add_index_leaves_a_valid_index_alone_on_replay(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """replay over a valid index is a no-op: same index, not a rebuild."""
+    await pg_conn.execute("CREATE TABLE r (id INT PRIMARY KEY, c INT)")
+    store = _AsyncpgStore(pg_conn)
+    await add_index(store, table="r", name="idx_r_c", columns=("c",))
+    first = await pg_conn.fetchval("SELECT to_regclass('idx_r_c')::oid")
+    await add_index(store, table="r", name="idx_r_c", columns=("c",))
+    second = await pg_conn.fetchval("SELECT to_regclass('idx_r_c')::oid")
+
+    assert first == second
+    assert await _index_validity(pg_conn, "idx_r_c") is True

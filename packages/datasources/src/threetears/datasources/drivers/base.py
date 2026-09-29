@@ -23,8 +23,9 @@ The ABC is intentionally minimal:
 - **Row shapes are pinned** via :class:`TableRow` and :class:`ColumnRow`.
   The ``is_nullable`` field is the raw warehouse string
   (``'YES'``/``'NO'``/``''``), NOT a boolean -- the Tier-2 column hash
-  from datasource-task-02 depends on byte-equality with the warehouse-
-  side MD5, which uses the raw value.
+  (:func:`threetears.datasources.introspection.compute_column_hash`)
+  depends on byte-equality with the warehouse-side MD5, which uses the
+  raw value.
 
 Observability contract (DS-09-11):
 
@@ -62,13 +63,14 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
     "CallbackTransaction",
     "ColumnCoverage",
     "ColumnRow",
     "Driver",
+    "RelationFingerprint",
     "TableRow",
     "Transaction",
     "TransactionContext",
@@ -82,6 +84,31 @@ F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
 # ---------------------------------------------------------------------------
 # Pinned row shapes (DS-09-10)
 # ---------------------------------------------------------------------------
+
+
+class RelationFingerprint(TypedDict):
+    """what :meth:`Driver.relation_fingerprint` reports about a relation right now.
+
+    Two fields, because a complete read needs two different answers and one query
+    can carry both. ``row_count`` says HOW MANY rows the relation holds, which is
+    what a paged read compares its own total against. ``digest`` says WHICH rows
+    they were, which is what a count cannot say: a delete and an insert landing
+    during a read leave the count identical, so a list that is half old and half
+    new passes a count check while being a relation that never existed.
+
+    ``digest`` is OPAQUE. Its only contract is that the same rows produce the same
+    value on the same backend within one read, so callers compare it for equality
+    and never parse it. The spelling differs per dialect by necessity -- turning a
+    hash into a summable number has no portable form -- so two backends' digests
+    are not comparable to each other, and neither is one taken across a driver
+    upgrade.
+
+    :key row_count: rows in the relation at the moment of the read
+    :key digest: opaque value identifying the set of ordering-key values present
+    """
+
+    row_count: int
+    digest: str
 
 
 class TableRow(TypedDict):
@@ -105,11 +132,11 @@ class ColumnRow(TypedDict):
     """canonical row shape returned by :meth:`Driver.list_columns`.
 
     ``is_nullable`` is the RAW warehouse value (``'YES'`` / ``'NO'`` /
-    ``''``), NOT a boolean. the Tier-2 column hash in
-    datasource-task-02 computes MD5 over a concatenation of the column
-    metadata WITH the raw nullable string; converting to bool here
-    would make the python-side hash diverge from the warehouse-side
-    MD5, breaking the change-probe contract.
+    ``''``), NOT a boolean. the Tier-2 column hash
+    (:func:`threetears.datasources.introspection.column_hash_payload`
+    describes its formula) includes the raw nullable string; converting
+    to bool here would make the python-side hash diverge from the
+    warehouse-side MD5, breaking the change-probe contract.
 
     :key table_schema: schema name (matches warehouse
         ``information_schema.columns.table_schema``)
@@ -255,8 +282,10 @@ def _check_otel_metrics() -> bool:
 
 # instrument cache so we don't recreate Histogram / Counter objects on
 # every call. keyed by ``(driver_type, metric_name)``. populated lazily
-# the first time a metric fires for a given driver type.
-_instrument_cache: dict[tuple[str, str], Any] = {}
+# the first time a metric fires for a given driver type, through
+# ``BuildOnce``: the getters are sync and reachable from any thread, and
+# two threads first firing one metric would otherwise each create it.
+_instrument_cache: BuildOnce[tuple[str, str], Any] = BuildOnce()
 
 
 def _get_query_duration_histogram(driver_type: str) -> Any:
@@ -270,8 +299,14 @@ def _get_query_duration_histogram(driver_type: str) -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = (driver_type, "datasource.driver.query.duration")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -280,8 +315,9 @@ def _get_query_duration_histogram(driver_type: str) -> Any:
                 description="datasource driver query duration in seconds",
                 unit="s",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 
@@ -296,8 +332,14 @@ def _get_error_counter(driver_type: str) -> Any:
     result: Any = None
     if _check_otel_metrics():
         key = (driver_type, "datasource.driver.error")
-        instrument = _instrument_cache.get(key)
-        if instrument is None:
+
+        def _build() -> Any:
+            """
+            creates this instrument on the drivers' meter.
+
+            :return: the new OTel instrument
+            :rtype: Any
+            """
             from opentelemetry import metrics
 
             meter = metrics.get_meter("threetears.datasources.drivers")
@@ -305,8 +347,9 @@ def _get_error_counter(driver_type: str) -> Any:
                 name="datasource.driver.error",
                 description="datasource driver error count by error kind",
             )
-            _instrument_cache[key] = instrument
-        result = instrument
+            return instrument
+
+        result = _instrument_cache.get(key, _build)
     return result
 
 
@@ -901,11 +944,50 @@ class Driver(ABC):
         """
 
     @abstractmethod
+    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+        """count a relation and fingerprint its ordering key, in one statement.
+
+        The completeness check a paged read rests on. Taken before the first page
+        and again after the last: an unchanged pair means the relation held still,
+        and the row count says whether the read returned all of it.
+
+        **Why a digest and not just a count.** A count proves only THAT the right
+        number of rows arrived. A delete and an insert during the read leave it
+        unchanged, so a half-old, half-new list passes as complete while being a
+        state of the relation that never existed at any instant.
+
+        **Why this is a driver method and not SQL the caller writes.** Turning a
+        hash into a number to aggregate has no portable spelling: Postgres casts
+        through ``bit(32)``, Redshift has ``STRTOL``, Snowflake has ``TO_NUMBER``
+        with a format model. A caller reaching a datasource through the hub does
+        not know which engine answers, so the dialect-specific half has to live
+        where the dialect is already known -- here.
+
+        **NULL key values must contribute**, or a row swapped for one with a NULL
+        in the same position goes unseen. Implementations distinguish a NULL from
+        an empty string rather than coalescing both to ``''``.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the ordering columns, TRUSTED identifiers. MUST be non-empty:
+            a fingerprint over no columns would answer the same for every
+            relation of the same size, which is a count wearing a digest's name
+        :ptype key: list[str]
+        :return: the relation's current row count and key digest
+        :rtype: RelationFingerprint
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
+
+    @abstractmethod
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape; Tier-2 change-probe.
 
-        MUST byte-equal the python-side ``_compute_column_hash`` from
-        datasource-task-02 over identical input. the warehouse-side
+        MUST byte-equal the python-side
+        :func:`~threetears.datasources.introspection.compute_column_hash`
+        over identical input; the formula is described once, in
+        :func:`~threetears.datasources.introspection.column_hash_payload`.
+        the warehouse-side
         MD5 hashes the raw ``is_nullable`` string (``'YES'`` / ``'NO'``
         / ``''``) -- using a boolean here makes the python-side hash
         diverge and breaks the probe.

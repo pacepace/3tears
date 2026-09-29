@@ -1,7 +1,7 @@
 """authentication and authorization protocols for tool registry.
 
 defines protocols that host applications implement to provide
-tool pod verification and agent tool access control. the registry
+tool pod verification and tool access control for every caller. the registry
 uses these to enforce security without depending on specific
 persistence implementations.
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from uuid import UUID
 
 from threetears.observe import get_logger
 
@@ -76,54 +77,92 @@ class ToolPodAuth:
         are names compared on a segment boundary, so ``pentest.`` and
         ``pentest.*`` match nothing at all.
     :ptype owned_namespaces: list[str]
+    :param platform_shared: whether this verified pod is the PLATFORM -- the
+        shared built-in tool pod, or a pod the host itself runs -- and so may
+        serve every caller a tool name no provider node contains. Any other
+        pod offering such a name is refused ``NOT_PLATFORM_SHARED``.
+
+        **The host sets this from VERIFIED identity, and nothing else may.**
+        3tears defines the flag and honours it; it never infers it. The aibots
+        hub sets it for the ``tool_pods`` row named ``builtin-tool-server``
+        (unique by index) and for the identity it issues its own in-process
+        pods. A manifest has no field that could set it.
+    :ptype platform_shared: bool
     """
 
     pod_entity_id: str
     name: str
     owned_namespaces: list[str]
+    platform_shared: bool = False
 
 
 @runtime_checkable
 class ToolPodAuthenticator(Protocol):
-    """protocol for verifying tool pod identity during registration.
+    """protocol for verifying WHO published a registration manifest.
 
-    host applications implement this to VERIFY the pod's self-minted identity JWT (per-key
-    identity) against the pod's stored public key in their persistence layer (e.g. the tool_pods
-    table). the registry passes the RAW token straight through -- verification (signature, issuer,
-    expiry, kid==pod) is the implementer's responsibility, so a bearer-hash comparison is no longer
-    the model (a hashed opaque token could not be cryptographically verified).
+    Every manifest carries its publisher's credential in ``RegistrationManifest.bootstrap_token``,
+    re-minted per manifest by the publishing ``ToolServer``'s ``auth_token`` provider. The registry
+    reads the pod id to decide which kind of publisher is claimed and asks the matching method --
+    never both, and never chosen from anything the token says about itself:
+
+    * a SINGLE-TOKEN pod id is a Tool Pod's, and :meth:`verify_pod` is asked. The verified
+      :attr:`ToolPodAuth.pod_entity_id` must equal the manifest's pod id or the whole manifest is
+      refused ``POD_ID_MISMATCH``. This covers every pod that serves every caller: a
+      ``tool_pods`` row, and the pods the host runs in its own process, for which the host issues
+      an identity of its own and answers with ``platform_shared=True``.
+    * a DOTTED pod id is an agent's in-process server (``{agent_id}.{instance}``), and
+      :meth:`verify_agent` is asked. The verified agent must be the agent the pod id names, or the
+      whole manifest is refused ``POD_ID_MISMATCH`` -- which is what stops agent A publishing
+      under agent B's pod id.
+
+    The registry passes the RAW token straight through; verification (signature, issuer, expiry,
+    key id) is the implementer's responsibility, and any failure answers ``None``. A token that
+    fails is REFUSED, never treated as if the manifest had carried none.
     """
 
     async def verify_pod(self, token: str) -> ToolPodAuth | None:
-        """verify a tool pod by its presented registration token.
+        """verify a TOOL POD by the token on its registration manifest.
 
         :param token: the RAW token the pod carried on its registration manifest
             (``RegistrationManifest.bootstrap_token``). under per-key identity this is the pod's
             self-minted identity JWT; the implementer verifies it against the pod's stored key.
+            a host that runs tool pods in its own process verifies the identity it issued them
+            here too, and answers ``platform_shared=True`` for them
         :ptype token: str
-        :return: auth context with the namespaces the pod owns, or None if verification fails
+        :return: auth context with the namespaces the pod owns and whether it is the platform, or
+            ``None`` if verification fails
         :rtype: ToolPodAuth | None
+        """
+        ...
+
+    async def verify_agent(self, token: str) -> UUID | None:
+        """verify an AGENT by the token on its in-process server's registration manifest.
+
+        The token is the agent's OWN identity -- on the aibots platform the connect JWT the agent
+        self-mints with its per-agent Ed25519 key (or the one its hosting runtime mints on its
+        behalf), which the host already verifies at NATS connect and on the hub's manifest
+        reconciliation. The registry compares the returned id with the agent its pod id names.
+
+        :param token: the RAW token the agent's in-process server carried on its manifest
+        :ptype token: str
+        :return: the verified agent's id, or ``None`` if verification fails
+        :rtype: UUID | None
         """
         ...
 
     async def provider_nodes(self) -> tuple[str, ...]:
         """every tool PROVIDER node the host's namespace graph holds.
 
-        The whole inventory, not this pod's slice, and it is asked for WITHOUT a
-        token because the caller that most needs it presents none. A tool pod
-        registering over its owning agent's authenticated NATS connection carries
-        no registration token -- it holds no row in the host's tool-pod store and
-        could never present one -- so it used to be admitted with no filtering at
-        all. That path is every agent's in-process ``ToolServer``. It is filtered
-        now, against this inventory: an unbound pod may claim a name no provider
-        node contains, and may not claim one inside somebody else's node.
+        The whole inventory, not one pod's slice, because the rule needs both
+        halves: a pod may claim a name its own node contains, and may not claim
+        one inside a node somebody else owns -- and an agent's in-process copy,
+        which owns no node, is filtered against it too.
 
-        **A host that returns an empty tuple enforces nothing**, which is the
-        honest answer for a deployment whose graph has no provider nodes, and is
-        the behaviour registration had before ownership existed. It must not be
-        used to signal a read FAILURE: an empty inventory silently widens every
-        unbound pod, so an implementer that cannot read the graph should raise
-        and let the registration be refused rather than answer with nothing.
+        **A host that returns an empty tuple enforces no ownership**, which is the
+        honest answer for a deployment whose graph has no provider nodes. It must
+        not be used to signal a read FAILURE: an empty inventory silently widens
+        every pod, so an implementer that cannot read the graph should raise and
+        let the registration be refused rather than answer with nothing.
 
         :return: the canonical ``namespaces.name`` of every provider node
         :rtype: tuple[str, ...]
@@ -139,10 +178,10 @@ class AgentToolAuthorizer(Protocol):
     two-argument ``(agent_id, tool_name)`` shape to include the
     calling user identity. the unified rbac evaluator resolves a
     two-sided decision (user grants intersected with agent grants)
-    so the user dimension is mandatory on the protocol. callers
-    without a user identity (fully-stateless tool dispatch) pass
-    ``user_id=None``; implementations return ``False`` because tool
-    grants are always two-sided.
+    so the user dimension is mandatory on the protocol. an AGENT
+    dispatch without a user identity passes ``user_id=None`` and
+    implementations return ``False``, because an agent's tool grants
+    are always two-sided.
 
     Phase 26 widened the protocol again to carry ``tool_version`` so
     rbac implementations can construct the canonical
@@ -152,6 +191,17 @@ class AgentToolAuthorizer(Protocol):
     canonical name is undefined and the namespace lookup is
     inherently ambiguous between concurrent versions of the same
     tool.
+
+    ``principal_is_tool_pod`` carries the one fact the proxy knows
+    and the authorizer cannot recover from the ids alone: whether the
+    verified principal is a TOOL POD rather than an agent. a tool pod
+    acts on nobody's behalf, so it never carries a user, and an
+    implementation evaluates it on its own grant alone -- exactly as
+    the L3 broker and the hub's datasource authorizer evaluate the
+    same principal. the keyword is required rather than defaulted so
+    an implementer cannot forget it and silently keep refusing every
+    pod, and so a fake that predates it fails loudly under the parity
+    walker rather than passing on the wrong protocol.
     """
 
     async def is_authorized(
@@ -160,10 +210,13 @@ class AgentToolAuthorizer(Protocol):
         user_id: str | None,
         tool_name: str,
         tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
     ) -> bool:
-        """check if agent + user pair is authorized to call named tool.
+        """check if the verified principal may call the named tool.
 
-        :param agent_id: calling agent UUID in string form
+        :param agent_id: calling principal UUID in string form: an
+            agent's id, or a tool pod's ``tool_pods.id``
         :ptype agent_id: str
         :param user_id: invoking user UUID in string form, or
             ``None`` when the dispatch carries no user identity
@@ -174,6 +227,10 @@ class AgentToolAuthorizer(Protocol):
             paired with ``tool_name`` to build the canonical
             namespace lookup key
         :ptype tool_version: str
+        :param principal_is_tool_pod: whether the proxy verified the
+            principal as a tool pod; with no user, a tool pod is
+            evaluated on its own grant and an agent is refused
+        :ptype principal_is_tool_pod: bool
         :return: True if authorized, False if denied
         :rtype: bool
         """
@@ -194,10 +251,12 @@ class AllowAllAuthorizer:
         user_id: str | None,
         tool_name: str,
         tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
     ) -> bool:
-        """return True for any agent and tool combination.
+        """return True for any principal and tool combination.
 
-        :param agent_id: calling agent UUID (ignored)
+        :param agent_id: calling principal UUID (ignored)
         :ptype agent_id: str
         :param user_id: invoking user UUID (ignored)
         :ptype user_id: str | None
@@ -205,6 +264,8 @@ class AllowAllAuthorizer:
         :ptype tool_name: str
         :param tool_version: tool version (ignored)
         :ptype tool_version: str
+        :param principal_is_tool_pod: whether the principal is a tool pod (ignored)
+        :ptype principal_is_tool_pod: bool
         :return: always True
         :rtype: bool
         """
@@ -227,10 +288,12 @@ class DenyAllAuthorizer:
         user_id: str | None,
         tool_name: str,
         tool_version: str,
+        *,
+        principal_is_tool_pod: bool,
     ) -> bool:
-        """return False for any agent and tool combination.
+        """return False for any principal and tool combination.
 
-        :param agent_id: calling agent UUID (ignored)
+        :param agent_id: calling principal UUID (ignored)
         :ptype agent_id: str
         :param user_id: invoking user UUID (ignored)
         :ptype user_id: str | None
@@ -238,6 +301,8 @@ class DenyAllAuthorizer:
         :ptype tool_name: str
         :param tool_version: tool version (ignored)
         :ptype tool_version: str
+        :param principal_is_tool_pod: whether the principal is a tool pod (ignored)
+        :ptype principal_is_tool_pod: bool
         :return: always False
         :rtype: bool
         """

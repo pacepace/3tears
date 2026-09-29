@@ -24,23 +24,25 @@ concurrency by a lock rather than left as a bare racing dict.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import UUID, uuid7
 
 from pydantic import ValidationError
 
 from threetears.agent.acl import AccessDenied, authorize_on_entity
-from threetears.channels.frames import Frame, OpRejected
+from threetears.channels.frames import Frame, OpRejected, RoomAccessRequest
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.agent.acl import AclCache
-    from threetears.channels.frames import FrameHandler, NsResolver, OpHandler, ReplaySource
+    from threetears.channels.frames import FrameHandler, NsResolver, OpHandler, ReplaySource, RoomPolicy
     from threetears.channels.presence.fanout import RoomFanout
     from threetears.channels.presence.room_state import RoomState
 
@@ -67,6 +69,37 @@ _TRANSIENT_FRAME_TYPES = frozenset({"cursor", "typing", "presence"})
 # handler for one of these (it would shadow core routing). app-specific
 # frame types (e.g. scriob ``commit``) go through ``frame_handlers``.
 _BUILTIN_FRAME_TYPES = frozenset({"message", "join", "leave", "editor.op", "resume", *_TRANSIENT_FRAME_TYPES})
+
+# the built-in frame types that act on a room. each is handled under the
+# connection's room lock, so a revocation cannot interleave with one.
+_ROOM_FRAME_TYPES = frozenset({"join", "leave", "editor.op", "resume", *_TRANSIENT_FRAME_TYPES})
+
+_DEFAULT_REVOKE_REASON = "access revoked"
+
+
+@dataclass(eq=False)
+class _RoomConnection:
+    """one live connection's identity and the rooms it is in, as this pod holds it.
+
+    the handler keeps one per open socket so a room's members can be taken out
+    from OUTSIDE the socket's own message loop (:meth:`WebSocketHandler.revoke`,
+    :meth:`WebSocketHandler.reevaluate_room`). ``lock`` serializes every room
+    action on the connection with those evictions: without it an eviction could
+    land between a join's authorization and its membership write, and the
+    member would be back in the room it was just taken out of.
+
+    :ivar websocket: the live socket
+    :ivar user_id: authenticated principal
+    :ivar customer_id: the principal's customer
+    :ivar joined_rooms: rooms this connection is currently a member of
+    :ivar lock: serializes room actions and evictions on this connection
+    """
+
+    websocket: Any
+    user_id: str
+    customer_id: str
+    joined_rooms: set[str] = field(default_factory=set)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
@@ -291,6 +324,7 @@ class WebSocketHandler:
         frame_handlers: dict[str, FrameHandler] | None = None,
         join_action: str = _DEFAULT_JOIN_ACTION,
         write_action: str = _DEFAULT_WRITE_ACTION,
+        room_policy: RoomPolicy | None = None,
     ) -> None:
         """initialize websocket handler with router, auth validator, and config.
 
@@ -344,6 +378,14 @@ class WebSocketHandler:
         :param write_action: canonical ``agent-acl`` action gating
             broadcast / op (default ``entry.write``)
         :ptype write_action: str
+        :param room_policy: the app's per-room access rule, asked AFTER the
+            namespace gate on every gated room action (``join`` and
+            ``resume`` with ``join_action``; ``editor.op`` and the transient
+            frames with ``write_action``); both must allow. the namespace
+            gate cannot tell two rooms in one namespace apart, so without a
+            policy anyone who may read the namespace may enter every room in
+            it. ``None`` leaves the namespace gate as the only rule
+        :ptype room_policy: RoomPolicy | None
         """
         self.router = router
         self._auth_validator = auth_validator
@@ -374,6 +416,12 @@ class WebSocketHandler:
         self._replay_source = replay_source
         self._join_action = join_action
         self._write_action = write_action
+        self._room_policy = room_policy
+        # connection_id -> the live connection's identity + joined rooms, so a
+        # room's members can be evicted from outside their message loops.
+        # guarded like ``ConnectionRegistry``: reads take a snapshot.
+        self._connections: dict[str, _RoomConnection] = {}
+        self._connections_lock = threading.Lock()
 
     async def handle_connection(self, websocket: Any) -> None:
         """manage full lifecycle of single websocket connection.
@@ -412,22 +460,32 @@ class WebSocketHandler:
         if self._room_state is not None:
             await self._room_state.register(connection_id, websocket)
 
-        # the rooms THIS connection has joined — connection-local scope only
+        # the rooms THIS connection has joined — pod-local scope only
         # (design T3-D6: not shared/queryable state), so disconnect can leave
-        # each. cross-pod membership itself lives in the task-01 collection.
-        joined_rooms: set[str] = set()
+        # each and an eviction can find them. cross-pod membership itself
+        # lives in the task-01 collection.
+        connection = _RoomConnection(websocket=websocket, user_id=user_id, customer_id=customer_id)
+        with self._connections_lock:
+            self._connections[connection_id] = connection
 
         try:
             # resume-on-connect (design T3-D4): if the client carries a resume
             # cursor on the query string and a replay source is wired, stream
             # the durable tail before going live so a reconnect loses nothing.
-            await self._maybe_resume_on_connect(websocket)
-            await self._message_loop(websocket, user_id, customer_id, connection_id, joined_rooms)
+            await self._maybe_resume_on_connect(websocket, connection)
+            await self._message_loop(websocket, user_id, customer_id, connection_id, connection)
         finally:
+            with self._connections_lock:
+                self._connections.pop(connection_id, None)
             self.registry.unregister(user_id, websocket)
-            if self._room_fanout is not None:
-                for room_id in joined_rooms:
-                    await self._room_fanout.leave_room(room_id, connection_id)
+            # under the room lock, so an eviction in flight finishes first and
+            # a room it already left is not left a second time.
+            async with connection.lock:
+                rooms_to_leave = sorted(connection.joined_rooms)
+                connection.joined_rooms.clear()
+                if self._room_fanout is not None:
+                    for room_id in rooms_to_leave:
+                        await self._room_fanout.leave_room(room_id, connection_id)
             if self._room_state is not None:
                 await self._room_state.unregister(connection_id, websocket)
 
@@ -476,15 +534,17 @@ class WebSocketHandler:
         self,
         websocket: Any,
         user_id: str,
-        customer_id: str = "",
-        connection_id: str = "",
-        joined_rooms: set[str] | None = None,
+        customer_id: str,
+        connection_id: str,
+        connection: _RoomConnection,
     ) -> None:
         """process inbound messages until disconnect or error.
 
         receives JSON messages, parses each into a typed :class:`Frame`,
         and dispatches by ``type`` (design T3-D2): ``message`` runs the
-        existing chat router path **unchanged**; ``join`` / ``leave`` /
+        chat router path, refusing with an ``error`` frame a message whose
+        ``content`` is empty or not a string, or whose ``metadata`` is not an
+        object, before any router sees it; ``join`` / ``leave`` /
         ``editor.op`` / the transient ``cursor`` / ``typing`` / ``presence``
         / ``resume`` types drive the cross-pod room seams (when wired);
         an **unknown** type yields an ``error`` frame (never a silent drop).
@@ -499,15 +559,13 @@ class WebSocketHandler:
             membership + the authz scope); empty in the chat config
         :ptype customer_id: str
         :param connection_id: this socket's stable id (presence pk +
-            broadcast ``exclude``); empty in the chat config
+            broadcast ``exclude``)
         :ptype connection_id: str
-        :param joined_rooms: connection-local set of rooms this socket has
-            joined, mutated in place so the disconnect path leaves each
-        :ptype joined_rooms: set[str] | None
+        :param connection: this socket's identity and joined rooms, shared with
+            the disconnect path and with evictions
+        :ptype connection: _RoomConnection
         """
         is_streaming = isinstance(self.router, StreamingChannelRouter)
-        if joined_rooms is None:
-            joined_rooms = set()
 
         rate_window_start = time.monotonic()
         rate_message_count = 0
@@ -555,10 +613,10 @@ class WebSocketHandler:
                 )
                 continue
 
-            # the chat ``message`` path is preserved verbatim: it reads ``data``
-            # loosely (``.get(...)``) and never strict-validates ``room``/``seq``/
-            # ``payload``, so a legacy chat frame is handled byte-identically to
-            # before task-03. only the typed cross-pod frames are parsed into the
+            # the chat ``message`` path reads ``data`` loosely (``.get(...)``) and
+            # never strict-validates ``room``/``seq``/``payload``, so a legacy chat
+            # frame is handled as before task-03; it checks only that there is a
+            # string to route. only the typed cross-pod frames are parsed into the
             # strict ``Frame`` envelope.
             msg_type = data.get("type", "") if isinstance(data, dict) else ""
             if msg_type != "message":
@@ -573,14 +631,7 @@ class WebSocketHandler:
                     )
                     continue
                 try:
-                    await self._route_frame(
-                        websocket,
-                        frame,
-                        user_id=user_id,
-                        customer_id=customer_id,
-                        connection_id=connection_id,
-                        joined_rooms=joined_rooms,
-                    )
+                    await self._route_frame(websocket, frame, connection_id=connection_id, connection=connection)
                 except Exception:  # prawduct:allow prawduct/broad-except -- per-frame safety net: a single frame's handler (a built-in path, an injected op_handler/frame_handler, a bad room id) must NEVER crash the whole socket; an unanticipated error becomes one error frame + a log and the connection keeps serving (recoverable rejections are already an OpRejected/error frame upstream)
                     log.exception(
                         "frame handler raised; surfacing an error and keeping the socket alive",
@@ -593,6 +644,21 @@ class WebSocketHandler:
 
             content = data.get("content", "")
             metadata = data.get("metadata", {})
+            # a chat frame with nothing an agent can use is answered here, before the
+            # router: dispatching it would spend a model call on nothing (the REST chat
+            # door refuses an empty message too), and a non-object ``metadata`` would
+            # fail the ``.get`` reads below, outside the per-message safety net.
+            refusal: str | None = None
+            if not isinstance(content, str) or not isinstance(metadata, dict):
+                refusal = "invalid message"
+            elif not content:
+                refusal = "empty message"
+            if refusal is not None:
+                log.warning("refused websocket chat message from user %s: %s", user_id, refusal)
+                await _safe_send(
+                    websocket, json.dumps({"type": "error", "message": refusal}), context="chat-message-refused"
+                )
+                continue
 
             # browser-supplied per-message locale info -- mirrors the
             # devx chat client pattern: top-level fields on the WS
@@ -709,10 +775,8 @@ class WebSocketHandler:
         websocket: Any,
         frame: Frame,
         *,
-        user_id: str,
-        customer_id: str,
         connection_id: str,
-        joined_rooms: set[str],
+        connection: _RoomConnection,
     ) -> None:
         """dispatch a non-``message`` typed frame to its room seam (design T3-D2).
 
@@ -723,29 +787,22 @@ class WebSocketHandler:
         ``resume`` streams the durable tail. an **unknown** type yields an
         ``error`` frame — never a silent drop.
 
+        every room frame is handled under the connection's room lock, so an
+        eviction (:meth:`revoke` / :meth:`reevaluate_room`) waits for one in
+        flight and the next one sees the eviction.
+
         :param websocket: the live socket
         :ptype websocket: Any
         :param frame: the parsed inbound frame
         :ptype frame: Frame
-        :param user_id: authenticated principal
-        :ptype user_id: str
-        :param customer_id: tenant id
-        :ptype customer_id: str
         :param connection_id: this socket's stable id
         :ptype connection_id: str
-        :param joined_rooms: connection-local joined-room set (mutated)
-        :ptype joined_rooms: set[str]
+        :param connection: this socket's identity and joined rooms
+        :ptype connection: _RoomConnection
         """
-        if frame.type == "join":
-            await self._handle_join(websocket, frame, user_id, customer_id, connection_id, joined_rooms)
-        elif frame.type == "leave":
-            await self._handle_leave(frame, connection_id, joined_rooms)
-        elif frame.type == "editor.op":
-            await self._handle_editor_op(websocket, frame, user_id, joined_rooms)
-        elif frame.type in _TRANSIENT_FRAME_TYPES:
-            await self._handle_transient(websocket, frame, user_id, connection_id, joined_rooms)
-        elif frame.type == "resume":
-            await self._handle_resume(websocket, frame)
+        if frame.type in _ROOM_FRAME_TYPES:
+            async with connection.lock:
+                await self._route_room_frame(websocket, frame, connection_id=connection_id, connection=connection)
         elif frame.type in self._frame_handlers:
             # app-registered frame type (e.g. scriob ``commit``): hand it the
             # frame + identity + a reply ``send``; the app owns its own authz.
@@ -761,96 +818,154 @@ class WebSocketHandler:
             # ``_safe_send``-guarded), so a crash still cannot reach the connection level.
             await self._frame_handlers[frame.type](
                 frame,
-                user_id=user_id,
-                customer_id=customer_id,
+                user_id=connection.user_id,
+                customer_id=connection.customer_id,
                 connection_id=connection_id,
                 send=websocket.send_text,
             )
         else:
             await _safe_send(websocket, Frame.error(f"unknown frame type: {frame.type}"), context="unknown-frame-type")
 
-    async def _authorize(self, websocket: Any, room_id: str, action: str, user_id: str) -> bool:
-        """run an ``agent-acl`` gate for ``action`` on ``room_id``'s namespace.
+    async def _route_room_frame(
+        self,
+        websocket: Any,
+        frame: Frame,
+        *,
+        connection_id: str,
+        connection: _RoomConnection,
+    ) -> None:
+        """dispatch one built-in room frame. **caller holds ``connection.lock``.**
 
-        resolves the room to its ACL namespace via the injected
-        ``ns_resolver`` and calls ``authorize_on_entity`` — the ONLY
-        authorization path (design T3-D1/D8). ``user_id`` is border-converted
-        ``str → UUID`` at the call (the UUID-boundary rule). on
-        :class:`AccessDenied` an ``error`` frame is sent and ``False``
-        returned; the caller performs **no** side effect. with no resolver /
-        cache wired (chat config) the gate is a no-op allow.
+        :param websocket: the live socket
+        :ptype websocket: Any
+        :param frame: the parsed inbound room frame
+        :ptype frame: Frame
+        :param connection_id: this socket's stable id
+        :ptype connection_id: str
+        :param connection: this socket's identity and joined rooms
+        :ptype connection: _RoomConnection
+        """
+        if frame.type == "join":
+            await self._handle_join(websocket, frame, connection_id, connection)
+        elif frame.type == "leave":
+            await self._handle_leave(frame, connection_id, connection.joined_rooms)
+        elif frame.type == "editor.op":
+            await self._handle_editor_op(websocket, frame, connection)
+        elif frame.type in _TRANSIENT_FRAME_TYPES:
+            await self._handle_transient(websocket, frame, connection_id, connection)
+        else:
+            await self._handle_resume(websocket, frame, connection)
+
+    async def _decide(self, room_id: str, action: str, user_id: str, customer_id: str) -> bool:
+        """answer whether ``user_id`` may perform ``action`` in ``room_id``, sending nothing.
+
+        two gates, in order, and both must allow. first the ``agent-acl``
+        namespace gate: the room resolves to its ACL namespace via the injected
+        ``ns_resolver`` and ``authorize_on_entity`` decides (design T3-D1/D8),
+        with ``user_id`` border-converted ``str → UUID``; a malformed principal
+        is a denial, never a crash. then the injected ``room_policy``, which is
+        what tells apart two rooms in one namespace; only a literal ``True``
+        from it allows. a gate that is not wired allows, so the chat config
+        (neither wired) allows everything, as it always has.
+
+        a policy that raises propagates: every caller treats that as a refusal
+        -- the per-frame safety net answers it with an error frame and no side
+        effect, and :meth:`reevaluate_room` evicts.
+
+        :param room_id: the room acted in
+        :ptype room_id: str
+        :param action: canonical action string being gated
+        :ptype action: str
+        :param user_id: authenticated principal (str; converted to UUID for the
+            namespace gate)
+        :ptype user_id: str
+        :param customer_id: the principal's customer
+        :ptype customer_id: str
+        :return: ``True`` when every wired gate allows
+        :rtype: bool
+        """
+        allowed = True
+        if self._ns_resolver is not None and self._acl_cache is not None:
+            principal: UUID | None = None
+            try:
+                principal = UUID(user_id) if user_id else None
+            except ValueError:
+                allowed = False
+            if allowed:
+                ns_entity = await self._ns_resolver(room_id)
+                try:
+                    await authorize_on_entity(
+                        ns_entity=ns_entity,
+                        action=action,
+                        user_id=principal,
+                        agent_id=None,
+                        cache=self._acl_cache,
+                    )
+                except AccessDenied:
+                    allowed = False
+        if allowed and self._room_policy is not None:
+            answer = await self._room_policy(
+                RoomAccessRequest(room_id=room_id, user_id=user_id, customer_id=customer_id, action=action)
+            )
+            allowed = answer is True
+        return allowed
+
+    async def _authorize(self, websocket: Any, room_id: str, action: str, connection: _RoomConnection) -> bool:
+        """gate ``action`` in ``room_id`` for this connection, answering a refusal with an error frame.
+
+        the decision is :meth:`_decide`; on a refusal an ``error`` frame is sent
+        and ``False`` returned, and the caller performs **no** side effect.
 
         :param websocket: the live socket (for the denial frame)
         :ptype websocket: Any
-        :param room_id: the room whose namespace is the policy object
+        :param room_id: the room acted in
         :ptype room_id: str
-        :param action: canonical ``agent-acl`` action string
+        :param action: canonical action string
         :ptype action: str
-        :param user_id: authenticated principal (str; converted to UUID)
-        :ptype user_id: str
-        :return: ``True`` when allowed (or no authz wired), ``False`` on deny
+        :param connection: the acting connection's identity
+        :ptype connection: _RoomConnection
+        :return: ``True`` when allowed, ``False`` on refusal
         :rtype: bool
         """
-        if self._ns_resolver is None or self._acl_cache is None:
-            return True
-        # border-convert str -> UUID defensively: ``user_id`` comes from the
-        # host ``auth_validator`` payload, so a malformed value must DENY (an
-        # error frame), never raise out of the message loop and crash the
-        # socket. an authz-enabled gate requires a UUID principal.
-        try:
-            principal = UUID(user_id) if user_id else None
-        except ValueError:
-            await _safe_send(websocket, Frame.error(f"access denied: {action}"), context="authorize-bad-principal")
-            return False
-        ns_entity = await self._ns_resolver(room_id)
-        try:
-            await authorize_on_entity(
-                ns_entity=ns_entity,
-                action=action,
-                user_id=principal,
-                agent_id=None,
-                cache=self._acl_cache,
-            )
-        except AccessDenied:
+        allowed = await self._decide(room_id, action, connection.user_id, connection.customer_id)
+        if not allowed:
             await _safe_send(websocket, Frame.error(f"access denied: {action}"), context="authorize-denied")
-            return False
-        return True
+        return allowed
 
     async def _handle_join(
         self,
         websocket: Any,
         frame: Frame,
-        user_id: str,
-        customer_id: str,
         connection_id: str,
-        joined_rooms: set[str],
+        connection: _RoomConnection,
     ) -> None:
         """authorize ``room.join`` then add the connection to the room (task-02).
 
         a denied join writes **no** presence row and triggers **no**
-        broadcast (the gate returns before any membership write).
+        broadcast (the gate returns before any membership write). a join for
+        a room the connection is already in is authorized again and changes
+        nothing: a second membership write would take a second room reference
+        that the one leave on disconnect can never release.
 
         :param websocket: the live socket
         :ptype websocket: Any
         :param frame: the inbound ``join`` frame (carries ``room``)
         :ptype frame: Frame
-        :param user_id: authenticated principal
-        :ptype user_id: str
-        :param customer_id: tenant id
-        :ptype customer_id: str
         :param connection_id: this socket's stable id
         :ptype connection_id: str
-        :param joined_rooms: connection-local joined-room set (mutated)
-        :ptype joined_rooms: set[str]
+        :param connection: this socket's identity and joined rooms (mutated)
+        :ptype connection: _RoomConnection
         """
         room_id = frame.room
         if room_id is None or self._room_fanout is None:
             await _safe_send(websocket, Frame.error("join requires a room"), context="join-no-room")
             return
-        if not await self._authorize(websocket, room_id, self._join_action, user_id):
+        if not await self._authorize(websocket, room_id, self._join_action, connection):
             return
-        await self._room_fanout.join_room(room_id, connection_id, user_id, customer_id)
-        joined_rooms.add(room_id)
+        if room_id in connection.joined_rooms:
+            return
+        await self._room_fanout.join_room(room_id, connection_id, connection.user_id, connection.customer_id)
+        connection.joined_rooms.add(room_id)
 
     async def _handle_leave(self, frame: Frame, connection_id: str, joined_rooms: set[str]) -> None:
         """remove the connection from a room it joined (task-02).
@@ -871,7 +986,7 @@ class WebSocketHandler:
         await self._room_fanout.leave_room(room_id, connection_id)
         joined_rooms.discard(room_id)
 
-    async def _handle_editor_op(self, websocket: Any, frame: Frame, user_id: str, joined_rooms: set[str]) -> None:
+    async def _handle_editor_op(self, websocket: Any, frame: Frame, connection: _RoomConnection) -> None:
         """authorize ``entry.write``, append durably, then broadcast with the seq.
 
         the durable append is the injected ``op_handler`` (scriob's op-log,
@@ -891,10 +1006,9 @@ class WebSocketHandler:
         :ptype websocket: Any
         :param frame: the inbound ``editor.op`` frame
         :ptype frame: Frame
-        :param user_id: authenticated principal
-        :ptype user_id: str
-        :param joined_rooms: connection-local joined-room set (membership gate)
-        :ptype joined_rooms: set[str]
+        :param connection: the authoring connection's identity and joined rooms
+            (membership gate)
+        :ptype connection: _RoomConnection
         """
         room_id = frame.room
         if room_id is None:
@@ -905,17 +1019,17 @@ class WebSocketHandler:
                 websocket, Frame.error("editor.op is not supported on this connection"), context="editor-op-unsupported"
             )
             return
-        if room_id not in joined_rooms:
+        if room_id not in connection.joined_rooms:
             # editing a room requires having joined it: the author needs its
             # pod subscribed to receive its own op back (the OT ack), and a
             # member is the authorization-clean unit. fail explicitly rather
             # than silently appending an op whose ack the author never sees.
             await _safe_send(websocket, Frame.error("not joined to room"), context="editor-op-not-joined")
             return
-        if not await self._authorize(websocket, room_id, self._write_action, user_id):
+        if not await self._authorize(websocket, room_id, self._write_action, connection):
             return
         try:
-            result = await self._op_handler(room_id, user_id, frame)
+            result = await self._op_handler(room_id, connection.user_id, frame)
         except OpRejected as rejected:
             # recoverable (e.g. an op-log CAS miss — the client is behind):
             # tell the sender, do NOT broadcast, keep the socket alive.
@@ -927,7 +1041,7 @@ class WebSocketHandler:
         await self._room_fanout.broadcast(room_id, op_frame.model_dump_json())
 
     async def _handle_transient(
-        self, websocket: Any, frame: Frame, user_id: str, connection_id: str, joined_rooms: set[str]
+        self, websocket: Any, frame: Frame, connection_id: str, connection: _RoomConnection
     ) -> None:
         """authorize ``entry.write`` then transient-broadcast (no seq, no durability).
 
@@ -940,53 +1054,61 @@ class WebSocketHandler:
         :ptype websocket: Any
         :param frame: the inbound transient frame
         :ptype frame: Frame
-        :param user_id: authenticated principal
-        :ptype user_id: str
         :param connection_id: this socket's stable id (the broadcast exclude)
         :ptype connection_id: str
-        :param joined_rooms: connection-local joined-room set (membership gate)
-        :ptype joined_rooms: set[str]
+        :param connection: the sending connection's identity and joined rooms
+            (membership gate)
+        :ptype connection: _RoomConnection
         """
         room_id = frame.room
         if room_id is None or self._room_fanout is None:
             await _safe_send(websocket, Frame.error(f"{frame.type} requires a room"), context="transient-no-room")
             return
-        if room_id not in joined_rooms:
+        if room_id not in connection.joined_rooms:
             await _safe_send(websocket, Frame.error("not joined to room"), context="transient-not-joined")
             return
-        if not await self._authorize(websocket, room_id, self._write_action, user_id):
+        if not await self._authorize(websocket, room_id, self._write_action, connection):
             return
         out = Frame(type=frame.type, room=room_id, payload=frame.payload)
         await self._room_fanout.broadcast(room_id, out.model_dump_json(), exclude=connection_id)
 
-    async def _handle_resume(self, websocket: Any, frame: Frame) -> None:
+    async def _handle_resume(self, websocket: Any, frame: Frame, connection: _RoomConnection) -> None:
         """stream the durable op-log tail for a ``resume`` frame (design T3-D4).
 
-        replays ``replay_source(room, last_seq)`` to the socket. the resume
-        cursor is the op-log ``seq`` carried on the frame — never an
-        in-process counter. with no replay source wired this is a no-op.
+        replays ``replay_source(room, last_seq)`` to the socket, after the same
+        ``join_action`` gate a join passes: the tail IS the room's content, so
+        reading it is what joining grants. the resume cursor is the op-log
+        ``seq`` carried on the frame — never an in-process counter. with no
+        replay source wired this is a no-op.
 
         :param websocket: the live socket
         :ptype websocket: Any
         :param frame: the inbound ``resume`` frame (carries ``room`` + ``seq``)
         :ptype frame: Frame
+        :param connection: the resuming connection's identity
+        :ptype connection: _RoomConnection
         """
         room_id = frame.room
         if room_id is None or self._replay_source is None:
             return
+        if not await self._authorize(websocket, room_id, self._join_action, connection):
+            return
         await self._stream_replay(websocket, room_id, frame.seq or 0)
 
-    async def _maybe_resume_on_connect(self, websocket: Any) -> None:
+    async def _maybe_resume_on_connect(self, websocket: Any, connection: _RoomConnection) -> None:
         """resume from a query-string cursor on connect, before going live.
 
         a client reconnecting to any pod may carry ``resume_room`` +
         ``resume_seq`` on the connect query string; when a ``replay_source``
         is wired, the durable tail after that seq is streamed to the socket
         before the live message loop starts, so nothing is lost across the
-        reconnect (design T3-D4).
+        reconnect (design T3-D4). gated like a ``resume`` frame; a refusal is
+        an error frame and the connection goes live without the tail.
 
         :param websocket: the live socket
         :ptype websocket: Any
+        :param connection: the connecting socket's identity
+        :ptype connection: _RoomConnection
         """
         if self._replay_source is None:
             return
@@ -999,7 +1121,10 @@ class WebSocketHandler:
             from_seq = int(raw_seq)
         except TypeError, ValueError:
             from_seq = 0
-        await self._stream_replay(websocket, room_id, from_seq)
+        async with connection.lock:
+            if not await self._authorize(websocket, room_id, self._join_action, connection):
+                return
+            await self._stream_replay(websocket, room_id, from_seq)
 
     async def _stream_replay(self, websocket: Any, room_id: str, from_seq: int) -> None:
         """stream the durable tail after ``from_seq`` to the socket, in order.
@@ -1029,6 +1154,127 @@ class WebSocketHandler:
                 extra={"extra_data": {"room_id": room_id, "from_seq": from_seq}},
             )
             await _safe_send(websocket, Frame.error("resume failed"), context="replay-source-except")
+
+    async def revoke(self, room_id: str, user_id: str, *, reason: str = _DEFAULT_REVOKE_REASON) -> int:
+        """Take ``user_id`` out of ``room_id`` on every connection this pod holds for them.
+
+        For when an app withdraws someone's access to a room they are already in -- a room made
+        private, a person removed from a share. The join gate cannot help with that: it ran when
+        they joined, and without an eviction they keep receiving everything streamed to the room.
+
+        Each of the user's connections that is in the room leaves it exactly as a ``leave`` frame
+        would, then receives an ``error`` frame carrying ``reason`` and the ``room``, so the client
+        can tell the room was closed to it rather than silently going quiet. The socket stays open
+        and the user's other rooms are untouched; a later ``join`` is decided afresh.
+
+        Pod-local by construction, like :meth:`disconnect_user`: the live connections are held
+        here. A deployment running several pods revokes everywhere by having each pod call this
+        from whatever it already broadcasts on.
+
+        :param room_id: the room to take the user out of.
+        :ptype room_id: str
+        :param user_id: the authenticated user to take out.
+        :ptype user_id: str
+        :param reason: text of the ``error`` frame the evicted connection receives.
+        :ptype reason: str
+        :return: how many of the user's connections on this pod were taken out of the room.
+        :rtype: int
+        """
+        evicted = 0
+        for connection_id, connection in self._connection_snapshot():
+            if connection.user_id != user_id:
+                continue
+            async with connection.lock:
+                if room_id in connection.joined_rooms:
+                    await self._evict_locked(room_id, connection_id, connection, reason)
+                    evicted += 1
+        if evicted:
+            log.info(
+                "revoked a user's room membership",
+                extra={"extra_data": {"room_id": room_id, "user_id": user_id, "evicted": evicted}},
+            )
+        return evicted
+
+    async def reevaluate_room(self, room_id: str, *, reason: str = _DEFAULT_REVOKE_REASON) -> int:
+        """Re-decide every member of ``room_id`` on this pod, and take out each one now refused.
+
+        Each connection in the room is asked the question its ``join`` was: the namespace gate and
+        the ``room_policy``, with the ``join_action``. One the gates now refuse leaves the room as
+        :meth:`revoke` takes it out. Call this when a room's visibility tightens and the app does
+        not know, or does not want to enumerate, who was in it.
+
+        A gate that raises for a member is a refusal for that member -- access that cannot be
+        confirmed is not kept -- and is logged; the others are still decided.
+
+        Pod-local by construction, like :meth:`revoke`.
+
+        :param room_id: the room whose members to re-decide.
+        :ptype room_id: str
+        :param reason: text of the ``error`` frame an evicted connection receives.
+        :ptype reason: str
+        :return: how many connections on this pod were taken out of the room.
+        :rtype: int
+        """
+        evicted = 0
+        for connection_id, connection in self._connection_snapshot():
+            async with connection.lock:
+                if room_id not in connection.joined_rooms:
+                    continue
+                try:
+                    allowed = await self._decide(room_id, self._join_action, connection.user_id, connection.customer_id)
+                except Exception:  # prawduct:allow prawduct/broad-except -- a member whose access cannot be confirmed is evicted, not kept; logged, and the room's other members are still decided
+                    log.warning(
+                        "room access could not be re-decided for a member; evicting",
+                        exc_info=True,
+                        extra={"extra_data": {"room_id": room_id, "user_id": connection.user_id}},
+                    )
+                    allowed = False
+                if not allowed:
+                    await self._evict_locked(room_id, connection_id, connection, reason)
+                    evicted += 1
+        if evicted:
+            log.info(
+                "re-decided a room's members and evicted the refused",
+                extra={"extra_data": {"room_id": room_id, "evicted": evicted}},
+            )
+        return evicted
+
+    def _connection_snapshot(self) -> list[tuple[str, _RoomConnection]]:
+        """return a snapshot of this pod's live connections.
+
+        :return: ``(connection_id, connection)`` pairs, copied under the lock
+        :rtype: list[tuple[str, _RoomConnection]]
+        """
+        with self._connections_lock:
+            return list(self._connections.items())
+
+    async def _evict_locked(self, room_id: str, connection_id: str, connection: _RoomConnection, reason: str) -> None:
+        """take one connection out of a room and tell it. **caller holds ``connection.lock``.**
+
+        the room is dropped from the connection's joined set BEFORE the
+        membership write, so nothing the connection sends afterwards is
+        treated as coming from a member, and the disconnect path does not
+        leave the room a second time.
+
+        :param room_id: the room to leave
+        :ptype room_id: str
+        :param connection_id: the connection's stable id
+        :ptype connection_id: str
+        :param connection: the connection's identity and joined rooms (mutated)
+        :ptype connection: _RoomConnection
+        :param reason: text of the ``error`` frame the connection receives
+        :ptype reason: str
+        :return: nothing
+        :rtype: None
+        """
+        connection.joined_rooms.discard(room_id)
+        if self._room_fanout is not None:
+            await self._room_fanout.leave_room(room_id, connection_id)
+        await _safe_send(
+            connection.websocket,
+            json.dumps({"type": "error", "message": reason, "room": room_id}),
+            context="room-access-revoked",
+        )
 
     async def disconnect_user(self, user_id: str, *, reason: str = "session ended") -> int:
         """Close every live socket this pod holds for ``user_id``.

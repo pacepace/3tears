@@ -63,7 +63,10 @@ def _search(base_url: str, query: str) -> dict[str, Any]:
     :rtype: dict[str, Any]
     """
     url = f"{base_url}/search?{urllib.parse.urlencode({'q': query, 'format': 'json'})}"
-    with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310
+    # Direct, never via the environment's proxy: the container sits on this host's
+    # bridge, which a forward proxy cannot reach (it answers 503).
+    direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with direct.open(url, timeout=60) as response:  # noqa: S310
         payload: dict[str, Any] = json.loads(response.read())
     return payload
 

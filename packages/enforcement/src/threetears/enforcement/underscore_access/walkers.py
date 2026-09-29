@@ -1,4 +1,4 @@
-"""five-shape walkers for the underscore-access enforcement domain.
+"""six-shape walkers for the underscore-access enforcement domain.
 
 each walker takes a tuple of src roots plus a repo root and returns a
 list of :class:`~threetears.enforcement.common.violations.Violation`
@@ -26,6 +26,11 @@ implementation notes:
   negatives.
 - shape E inspects literal-shaped ``__all__`` assignments for entries
   whose string value is a private name.
+- shape F walks ``setattr`` / ``getattr`` / ``delattr`` / ``hasattr``
+  calls whose name argument is a private string literal -- the spelling
+  of a private access that every attribute-node check, SLF001
+  included, cannot see. unlike A, C, D and E it is meant to scan the
+  ``tests/`` trees too.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ __all__ = [
     "shape_c_violations",
     "shape_d_violations",
     "shape_e_violations",
+    "shape_f_violations",
 ]
 
 
@@ -657,6 +663,239 @@ def shape_e_violations(
                         )
                     )
     return violations
+
+
+#: the builtins that reach an attribute through a NAME passed as data. ruff's SLF001 and every other
+#: shape look at attribute nodes, imports and ``__all__``, so ``setattr(obj, "_x", v)`` passed them all
+#: while binding to exactly the implementation detail they exist to protect.
+_REFLECTIVE_ACCESSORS: frozenset[str] = frozenset({"setattr", "getattr", "delattr", "hasattr"})
+
+#: the receivers that ARE the owner of a private name, the same test SLF001 applies.
+_OWNER_RECEIVERS: frozenset[str] = frozenset({"self", "cls"})
+
+#: a node that opens a name scope, for resolving what a receiver name is bound to.
+_ScopeNode = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef
+
+#: the node types whose body is a NEW scope, not part of the scope that contains them.
+_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def shape_f_violations(
+    scan_roots: tuple[Path, ...],
+    repo_root: Path,
+) -> list[Violation]:
+    """walk every call that reaches a private name through ``setattr``/``getattr``/``delattr``/``hasattr`` (shape F).
+
+    a call is a violation when its name argument is a string constant naming a private
+    (single-leading-underscore, not dunder) attribute and its receiver is none of:
+
+    - ``self`` or ``cls``, the owner, exactly as SLF001 excludes them;
+    - an object this module DEFINES -- a name whose nearest binding is a ``def`` or ``class``
+      statement. constructing an instance of somebody else's class does not make its private
+      slots yours; only defining the object does.
+
+    and a name this module stamps onto an object it defines (``setattr(wrapper, "_marker", True)``
+    on its own ``def wrapper``) is the module's own protocol: reading it back anywhere in the SAME
+    module is allowed, off any object. that is the decorator-marker shape. any other module reading
+    or writing it is still a violation.
+
+    **there is no reflective escape hatch.** where a private genuinely must be reached -- a
+    third-party object with no public accessor -- spell it as an attribute, where SLF001 sees it and
+    the per-file exemption and its ledger entry record why. the string spelling is the one no tool
+    reads back.
+
+    :param scan_roots: where to look for violations; unlike shapes A, C, D and E this is meant to
+        include ``tests/`` trees, where every instance that surfaced the gap lived
+    :ptype scan_roots: tuple[Path, ...]
+    :param repo_root: repo root (retained for parity with sibling walkers)
+    :ptype repo_root: Path
+    :return: shape-F violations
+    :rtype: list[Violation]
+    """
+    _ = repo_root
+    violations: list[Violation] = []
+    for root in scan_roots:
+        for file in iter_python_files(root):
+            tree = parse_python_file(file)
+            if tree is None:
+                continue
+            violations.extend(_reflective_private_violations(tree, file))
+    return violations
+
+
+def _reflective_private_violations(tree: ast.Module, file: Path) -> list[Violation]:
+    """shape-F violations in one parsed module.
+
+    two passes because a marker's ownership is a property of the whole module: the ``setattr``
+    that stamps it may sit below the ``getattr`` that reads it.
+
+    :param tree: the parsed module
+    :ptype tree: ast.Module
+    :param file: the module's path, for the violation records
+    :ptype file: Path
+    :return: the module's violations, in source order
+    :rtype: list[Violation]
+    """
+    bindings_cache: dict[int, dict[str, set[str]]] = {}
+    owned_markers: set[str] = set()
+    candidates: list[tuple[ast.Call, str, str]] = []
+    for call, scopes in _reflective_private_calls(tree):
+        accessor = call.func.id if isinstance(call.func, ast.Name) else ""
+        name = _private_name_argument(call)
+        receiver = call.args[0]
+        if isinstance(receiver, ast.Name) and receiver.id in _OWNER_RECEIVERS:
+            continue
+        if _is_module_own_object(receiver, scopes, bindings_cache):
+            if accessor == "setattr":
+                owned_markers.add(name)
+            continue
+        candidates.append((call, accessor, name))
+    violations: list[Violation] = []
+    for call, accessor, name in candidates:
+        if name in owned_markers:
+            continue
+        violations.append(
+            Violation(
+                category="underscore_access.F",
+                file=file,
+                line=call.lineno,
+                symbol=name,
+                reason=(
+                    f"reaches private '{name}' through {accessor}() on an object that is not self, cls or "
+                    f"one this module defines. SLF001 cannot see a name passed as a string, so this binds to "
+                    f"another module's implementation detail unseen. promote the name, pass the value through "
+                    f"a public argument or accessor, or -- for a third-party object with no public accessor -- "
+                    f"read it as an attribute under a per-file SLF001 exemption and its ledger entry"
+                ),
+            )
+        )
+    return violations
+
+
+def _reflective_private_calls(tree: ast.Module) -> list[tuple[ast.Call, tuple[_ScopeNode, ...]]]:
+    """every reflective call with a private-name literal, with its enclosing scopes outermost first.
+
+    :param tree: the parsed module
+    :ptype tree: ast.Module
+    :return: ``(call, scopes)`` pairs in source order
+    :rtype: list[tuple[ast.Call, tuple[_ScopeNode, ...]]]
+    """
+    found: list[tuple[ast.Call, tuple[_ScopeNode, ...]]] = []
+
+    def _visit(node: ast.AST, scopes: tuple[_ScopeNode, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _NESTED_SCOPES):
+                _visit(child, (*scopes, child))
+                continue
+            if isinstance(child, ast.Call) and _private_name_argument(child):
+                found.append((child, scopes))
+            _visit(child, scopes)
+
+    _visit(tree, (tree,))
+    return sorted(found, key=lambda pair: (pair[0].lineno, pair[0].col_offset))
+
+
+def _private_name_argument(call: ast.Call) -> str:
+    """the private attribute name a reflective builtin call names, or ``""`` when it names none.
+
+    :param call: a call node
+    :ptype call: ast.Call
+    :return: the private name, or the empty string for any other call
+    :rtype: str
+    """
+    result = ""
+    if (
+        isinstance(call.func, ast.Name)
+        and call.func.id in _REFLECTIVE_ACCESSORS
+        and len(call.args) >= 2
+        and isinstance(call.args[1], ast.Constant)
+        and isinstance(call.args[1].value, str)
+        and is_private_name(call.args[1].value)
+    ):
+        result = call.args[1].value
+    return result
+
+
+def _is_module_own_object(
+    receiver: ast.expr,
+    scopes: tuple[_ScopeNode, ...],
+    bindings_cache: dict[int, dict[str, set[str]]],
+) -> bool:
+    """whether *receiver* names an object this module defines with ``def`` or ``class``.
+
+    resolved the way python resolves a name: innermost scope first, class bodies visible only to a
+    call sitting directly in them. the nearest scope that binds the name decides, and it must bind it
+    ONLY by definition -- a parameter, an assignment or an import is somebody else's object, and a
+    name that is both defined and rebound cannot be trusted to be the definition at the call.
+
+    :param receiver: the reflective call's first argument
+    :ptype receiver: ast.expr
+    :param scopes: the enclosing scopes, outermost first
+    :ptype scopes: tuple[_ScopeNode, ...]
+    :param bindings_cache: per-scope binding maps, keyed by node identity, so a module is analysed once
+    :ptype bindings_cache: dict[int, dict[str, set[str]]]
+    :return: true when the nearest binding of the name is a definition and nothing else
+    :rtype: bool
+    """
+    if not isinstance(receiver, ast.Name):
+        return False
+    for depth, scope in enumerate(reversed(scopes)):
+        if isinstance(scope, ast.ClassDef) and depth > 0:
+            continue
+        key = id(scope)
+        if key not in bindings_cache:
+            bindings_cache[key] = _scope_bindings(scope)
+        kinds = bindings_cache[key].get(receiver.id)
+        if kinds:
+            return kinds == {"def"}
+    return False
+
+
+def _scope_bindings(scope: _ScopeNode) -> dict[str, set[str]]:
+    """every name *scope* binds, with how it binds it: ``def``, ``param``, ``assign`` or ``import``.
+
+    nested functions, classes, lambdas and comprehensions are their own scopes: their bodies are not
+    walked, though a nested ``def`` or ``class`` statement binds its own NAME here.
+
+    :param scope: the scope node
+    :ptype scope: _ScopeNode
+    :return: name -> the kinds of binding it receives in this scope
+    :rtype: dict[str, set[str]]
+    """
+    bindings: dict[str, set[str]] = {}
+
+    def _bind(name: str, kind: str) -> None:
+        bindings.setdefault(name, set()).add(kind)
+
+    if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+        arguments = scope.args
+        for arg in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs):
+            _bind(arg.arg, "param")
+        for extra in (arguments.vararg, arguments.kwarg):
+            if extra is not None:
+                _bind(extra.arg, "param")
+    stack: list[ast.AST] = list(scope.body) if isinstance(scope.body, list) else [scope.body]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            _bind(node.name, "def")
+            continue
+        if isinstance(node, ast.Lambda | ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp):
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+            _bind(node.id, "assign")
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            for alias in node.names:
+                _bind(alias.asname or alias.name.split(".")[0], "import")
+        elif isinstance(node, ast.Global | ast.Nonlocal):
+            for name in node.names:
+                _bind(name, "assign")
+        elif isinstance(node, ast.ExceptHandler | ast.MatchAs | ast.MatchStar) and node.name:
+            _bind(node.name, "assign")
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            _bind(node.rest, "assign")
+        stack.extend(ast.iter_child_nodes(node))
+    return bindings
 
 
 def _extract_all_value(node: ast.stmt) -> tuple[ast.expr | None, int]:

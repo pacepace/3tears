@@ -25,6 +25,8 @@ from threetears.registry.proxy import ProxyCallResponse
 from threetears.registry.registration import RegistrationHandler
 from threetears.registry.routing import LeastConnectionsStrategy
 
+from ._copies import uniform_entry
+
 from ._dispatch_auth import make_authed_request, make_proxy
 
 
@@ -195,7 +197,7 @@ def _make_catalog_entry(
     """
     if endpoints is None:
         endpoints = []
-    result = CatalogEntry(
+    result = uniform_entry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
@@ -609,7 +611,11 @@ class TestMultiPodDiscovery:
 
     @pytest.mark.asyncio
     async def test_discovery_available_if_any_endpoint_available(self) -> None:
-        """tool shows as available when at least one endpoint is available."""
+        """tool shows as available when at least one endpoint is available.
+
+        ``endpoint_count`` counts the copies a call could actually be routed to, so the unavailable
+        copy is not counted; it used to count every copy the caller was allowed, reachable or not.
+        """
         catalog = ToolCatalog()
         entry = _make_catalog_entry(
             endpoints=[
@@ -637,4 +643,4 @@ class TestMultiPodDiscovery:
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["status"] == "available"
-        assert tool_result["endpoint_count"] == 2
+        assert tool_result["endpoint_count"] == 1

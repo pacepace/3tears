@@ -40,7 +40,7 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
-from threetears.core.backends.protocol import DurableStore
+from threetears.core.backends.protocol import DurableStore, OrderedDurableStore
 from threetears.core.backends.schema_sql import (
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
@@ -49,6 +49,7 @@ from threetears.core.backends.schema_sql import (
 )
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.collections.flush import FlushStrategy
+from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.observe import get_logger
 
 __all__ = [
@@ -75,6 +76,7 @@ __all__ = [
     "TableSchema",
     "UUID_TYPE",
     "VECTOR_TYPE",
+    "l2_order_columns",
     "spans_partitions",
 ]
 
@@ -361,7 +363,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
             ops={"embedding": "vector_cosine_ops"},
             pg_with={"m": "16", "ef_construction": "64"},
         )
-        Index("idx_memories_search_vector", "search_vector", using="gin")
+        Index("idx_memories_tags", "tags", using="gin")
 
     The ``ops`` and ``pg_with`` arguments accept any
     :class:`collections.abc.Mapping` (typically ``dict``) and are
@@ -669,6 +671,24 @@ class Column:
             )
 
 
+def l2_order_columns() -> list[Column]:
+    """the two columns a table needs so ``l2_cas_mutate`` can persist to it in order.
+
+    Splice into a :class:`TableSchema`'s ``columns``. ``l2_epoch`` holds the creation time of the
+    L2 stream a row's compare-and-swap won in, ``l2_revision`` the revision it won; together they
+    are the order :meth:`BaseCollection.l2_cas_mutate` fences every L3 persist on (see
+    :mod:`threetears.core.collections.l2_order`). Both nullable -- a row another path wrote carries
+    no order and orders before every swap -- and mutable, since the fenced upsert rewrites them.
+
+    :return: the ``l2_epoch`` (``TIMESTAMPTZ``) and ``l2_revision`` (``BIGINT``) columns
+    :rtype: list[Column]
+    """
+    return [
+        Column(L2_EPOCH_COLUMN, DATETIMETZ_TYPE, nullable=True),
+        Column(L2_REVISION_COLUMN, BIGINT_TYPE, nullable=True),
+    ]
+
+
 @dataclass(frozen=True)
 class TableSchema:
     """table descriptor for :class:`SchemaBackedCollection`.
@@ -696,7 +716,8 @@ class TableSchema:
         from asyncpg naturally (journal / append-only tables).
         ``"ignore"`` emits ``ON CONFLICT (pk) DO NOTHING``; duplicate
         primary keys are silently dropped (dedup-on-redelivery tables
-        like ``audit_events`` keyed on ``(correlation_id, event_type)``)
+        like ``audit_events``, where a redelivered envelope repeats its
+        ``id``)
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
         which leaves every existing schema's emitted SQL untouched.
@@ -894,6 +915,69 @@ class TableSchema:
                 f"used by both an IndexDef and a UniqueConstraintDef",
             )
         self._validate_cas_null_safe(pk_cols, by_name)
+        self._validate_l2_order(pk_cols, by_name)
+
+    def _validate_l2_order(self, pk_cols: tuple[str, ...], by_name: dict[str, Column]) -> None:
+        """reject order columns a compare-and-swap persist could not fence on.
+
+        The two columns are declared together or not at all: one without the other leaves a
+        table that looks fenced and is not. Each must be nullable (a row some other path wrote
+        carries no order), mutable and outside the key (the fenced ``DO UPDATE`` must rewrite
+        them), and of the one type the fence compares as. The fence lives on the ``ON CONFLICT
+        DO UPDATE`` branch, and it replaces the ``cas_null_safe`` fence rather than composing
+        with it.
+
+        :param pk_cols: primary-key column names in declared order
+        :ptype pk_cols: tuple[str, ...]
+        :param by_name: declared columns indexed by name
+        :ptype by_name: dict[str, Column]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when only one order column is declared, when either is of the wrong
+            type, non-nullable, immutable, part of the key or carries a ``server_default``, or
+            when a table declaring them has ``on_conflict`` other than ``"update"`` or sets
+            ``cas_null_safe``
+        """
+        declared = [name for name in L2_ORDER_COLUMNS if name in by_name]
+        if not declared:
+            return
+        if len(declared) != len(L2_ORDER_COLUMNS):
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): declares {declared!r} but not both of "
+                f"{L2_ORDER_COLUMNS!r}; the compare-and-swap order is the pair, and half of it "
+                f"cannot fence anything. Declare both with l2_order_columns()",
+            )
+        expected = {L2_EPOCH_COLUMN: DATETIMETZ_TYPE, L2_REVISION_COLUMN: BIGINT_TYPE}
+        for name, column_type in expected.items():
+            col = by_name[name]
+            unsound = (
+                col.column_type != column_type
+                or not col.nullable
+                or col.immutable
+                or name in pk_cols
+                or col.server_default is not None
+            )
+            if unsound:
+                raise ValueError(
+                    f"TableSchema(name={self.name!r}): order column {name!r} must be a nullable, "
+                    f"mutable, non-key {column_type!r} column with no server_default -- declare it "
+                    f"with l2_order_columns()",
+                )
+        if self.on_conflict != "update" or self.cas_null_safe:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): a table carrying the compare-and-swap order "
+                f"needs on_conflict='update' and no cas_null_safe fence -- its persist is the "
+                f"ordered ON CONFLICT DO UPDATE, fenced on the order and nothing else",
+            )
+
+    @property
+    def declares_l2_order(self) -> bool:
+        """whether this table carries the compare-and-swap order columns.
+
+        :return: whether both ``l2_epoch`` and ``l2_revision`` are declared (validated as a pair)
+        :rtype: bool
+        """
+        return L2_EPOCH_COLUMN in self._by_name
 
     def _validate_cas_null_safe(self, pk_cols: tuple[str, ...], by_name: dict[str, Column]) -> None:
         """reject a :attr:`cas_null_safe` opt-in whose fence could never work.
@@ -1538,6 +1622,46 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: bool
         """
         return bool(self.schema.cas_null_safe)
+
+    @property
+    def persists_l2_order(self) -> bool:
+        """whether this table carries the order columns and its L3 backend can write fenced on them.
+
+        see :attr:`BaseCollection.persists_l2_order`. ``True`` when the schema declares
+        :func:`l2_order_columns` and the durable store implements
+        :class:`~threetears.core.backends.protocol.OrderedDurableStore` (the SQL backend does).
+        A collection with no L3 backend answers from its schema alone: nothing is persisted there.
+
+        :return: whether ``l2_cas_mutate`` can persist to this collection in order
+        :rtype: bool
+        """
+        store = self._durable_store()
+        return self.schema.declares_l2_order and (store is None or isinstance(store, OrderedDurableStore))
+
+    async def save_ordered_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
+        """persist a compare-and-swap row fenced on its order, via the ordered durable store.
+
+        see :meth:`BaseCollection.save_ordered_to_store` for the contract. the SQL backend emits
+        ``INSERT ... ON CONFLICT (pk) DO UPDATE ... WHERE`` the stored order is strictly older
+        than the incoming one, ``NULL`` counting as older than every order.
+
+        :param data: row payload, order columns included
+        :ptype data: dict[str, Any]
+        :param conn: optional asyncpg-compatible connection the write joins
+        :ptype conn: Any
+        :return: rows affected: 1 when written, 0 when the stored order is newer or equal
+        :rtype: int
+        :raises TypeError: when the schema carries no order columns, or the durable store cannot
+            write fenced on them
+        """
+        store = self._durable_store()
+        if not self.schema.declares_l2_order or not isinstance(store, OrderedDurableStore):
+            raise TypeError(
+                f"{type(self).__name__}: table {self.schema.name!r} cannot take an ordered write -- it needs "
+                f"l2_order_columns() in its schema and a durable store implementing OrderedDurableStore, "
+                f"got store {type(store).__name__}"
+            )
+        return await store.upsert_ordered(self.schema.name, data, conn=conn)
 
     def _reject_deferred_flush_on_cas_null_safe(self) -> None:
         """fail construction when a fenced table is also configured for deferred flush.

@@ -20,15 +20,16 @@ plus the timeout claims:
 5. neither inherits the other's after a cache hit.
 
 the postgres half runs against the shared testcontainer. the Redshift
-half is env-gated on ``OTS_REDSHIFT_PASSWORD`` -- ``pytest.fail`` in CI
-(the cross-engine proof cannot silently no-op) and ``pytest.skip``
-locally.
+half takes ``redshift_config`` from this directory's conftest: gated on
+``OTS_REDSHIFT_PASSWORD`` -- ``pytest.fail`` in CI (the cross-engine
+proof cannot silently no-op) and ``pytest.skip`` locally -- and on ONE
+login the warehouse accepts, since the credential is a production
+user's that Redshift locks after five refusals.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -235,45 +236,21 @@ class TestAsyncpgTransactionLive:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-def redshift_creds() -> dict[str, Any]:
-    """gate the Redshift half on ``OTS_REDSHIFT_PASSWORD``.
+def _redshift_config(base: RedshiftConnectionConfig) -> RedshiftConnectionConfig:
+    """the gated connection, with a one-connection cache so the re-borrow is a cache hit.
 
-    :return: connection-config dict for the central-reporting cluster
-    :rtype: dict[str, Any]
-    """
-    pw = os.environ.get("OTS_REDSHIFT_PASSWORD")
-    if not pw:
-        if os.environ.get("CI"):
-            pytest.fail("OTS_REDSHIFT_PASSWORD missing in CI; the cross-engine transaction proof cannot run")
-        pytest.skip("OTS_REDSHIFT_PASSWORD not set; live redshift transaction test skipped locally")
-    return {
-        "host": "central.c30hiwrajgjj.us-east-1.redshift.amazonaws.com",
-        "port": 5439,
-        "database": "analytics",
-        "username": "fourteen_eng_ai_bot_agent_ots",
-        "password_ref": "env://OTS_REDSHIFT_PASSWORD",
-    }
-
-
-def _redshift_config(creds: dict[str, Any]) -> RedshiftConnectionConfig:
-    """build a Redshift config from the creds dict.
-
-    :param creds: creds mapping from :func:`redshift_creds`
-    :ptype creds: dict[str, Any]
-    :return: config with a one-connection cache so the re-borrow is a cache hit
+    :param base: the connection from the ``redshift_config`` fixture
+    :ptype base: RedshiftConnectionConfig
+    :return: the same connection with this module's pool and timeout settings
     :rtype: RedshiftConnectionConfig
     """
-    return RedshiftConnectionConfig(
-        datasource_type=DataSourceType.REDSHIFT,
-        host=creds["host"],
-        port=creds["port"],
-        database=creds["database"],
-        username=creds["username"],
-        password_ref=creds["password_ref"],
-        executor_max_workers=2,
-        connection_cache_size=1,
-        query_timeout_seconds=300,
+    return RedshiftConnectionConfig.model_validate(
+        {
+            **base.model_dump(exclude_unset=True),
+            "executor_max_workers": 2,
+            "connection_cache_size": 1,
+            "query_timeout_seconds": 300,
+        }
     )
 
 
@@ -284,10 +261,10 @@ class TestRedshiftTransactionLive:
     @pytest.mark.asyncio
     async def test_two_statement_transaction_rolls_back_atomically(
         self,
-        redshift_creds: dict[str, Any],
+        redshift_config: RedshiftConnectionConfig,
     ) -> None:
         """``CREATE TABLE`` is transactional on Redshift; prove the rollback."""
-        driver = RedshiftDriver(_redshift_config(redshift_creds))
+        driver = RedshiftDriver(_redshift_config(redshift_config))
         table = f"dsd_txn_{uuid.uuid4().hex[:8]}"
         try:
             with pytest.raises(Exception):  # noqa: B017,PT011 -- redshift_connector error types vary
@@ -303,9 +280,9 @@ class TestRedshiftTransactionLive:
             await driver.close()
 
     @pytest.mark.asyncio
-    async def test_two_statements_share_a_backend_pid(self, redshift_creds: dict[str, Any]) -> None:
+    async def test_two_statements_share_a_backend_pid(self, redshift_config: RedshiftConnectionConfig) -> None:
         """DSD-01-02 on Redshift: one session for the transaction's life."""
-        driver = RedshiftDriver(_redshift_config(redshift_creds))
+        driver = RedshiftDriver(_redshift_config(redshift_config))
         try:
             async with driver.transaction() as transaction:
                 first = await transaction.fetch("SELECT pg_backend_pid() AS p")
@@ -317,14 +294,14 @@ class TestRedshiftTransactionLive:
     @pytest.mark.asyncio
     async def test_short_timeout_does_not_leak_to_the_next_borrower(
         self,
-        redshift_creds: dict[str, Any],
+        redshift_config: RedshiftConnectionConfig,
     ) -> None:
         """THE leak, against the engine that has to honour ``SET LOCAL``.
 
         with ``connection_cache_size=1`` the second statement is
         guaranteed to draw the connection the first one released.
         """
-        driver = RedshiftDriver(_redshift_config(redshift_creds))
+        driver = RedshiftDriver(_redshift_config(redshift_config))
         try:
             # borrow 1: a deliberately tiny bound
             await driver.fetch("SELECT 1", timeout_seconds=1)
@@ -340,10 +317,10 @@ class TestRedshiftTransactionLive:
     @pytest.mark.asyncio
     async def test_completed_select_leaves_no_open_transaction(
         self,
-        redshift_creds: dict[str, Any],
+        redshift_config: RedshiftConnectionConfig,
     ) -> None:
         """DSD-01-05 on Redshift: nothing is left idle in transaction."""
-        driver = RedshiftDriver(_redshift_config(redshift_creds))
+        driver = RedshiftDriver(_redshift_config(redshift_config))
         try:
             await driver.fetch("SELECT 1")
             rows = await driver.fetch(

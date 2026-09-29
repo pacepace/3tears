@@ -1,0 +1,74 @@
+# Column-type-alignment exemptions.
+#
+# Format (matching the underscore-audit / cache-primitive convention):
+#
+#   # rationale: <specific reason>
+#   <table>:<column>
+#
+# Every entry needs its own non-empty rationale line immediately above it.
+#
+# ---------------------------------------------------------------------------
+# Tables whose DDL lives in the hub repo, not in 3tears.
+#
+# A pod never creates its own tables: the broker refuses DDL from a pod, and these tables are
+# declared by an operator and created by the hub. So 3tears declares the Column and the hub owns
+# the CREATE TABLE, and a gate walking only 3tears migration roots structurally cannot pair them.
+# Exempting is right here; the alternative would be to stop walking these packages, which is what
+# this gate's hand-written root list used to do by accident and hid six packages.
+#
+# Verified 2026-09-16 against 14-eng-ai-bot/src/aibots/hub/migrations: every column below is
+# declared `timestamp with time zone` there, which is what DATETIMETZ_TYPE renders to, so these
+# 19 are an ownership boundary and NOT suppressed drift. Re-verify when the hub moves one.
+#
+# What is still caught: a type mismatch inside 3tears' own migration trees, and any NEW datetime
+# column in these packages, which is not exempt until someone adds it here with its own rationale.
+# What is NOT caught: the hub changing one of these columns out from under 3tears. Closing that
+# needs a cross-repo check and is not this gate.
+# ---------------------------------------------------------------------------
+
+# rationale: platform.datasources is created by the hub (v001_initial_schema.sql:185), declared there as timestamp with time zone
+datasources:date_created
+# rationale: platform.datasources is created by the hub (v001_initial_schema.sql:185), declared there as timestamp with time zone
+datasources:date_updated
+
+# rationale: platform.groups is created by the hub (v001_initial_schema.sql:294), declared there as timestamp with time zone
+groups:date_created
+# rationale: platform.groups is created by the hub (v001_initial_schema.sql:294), declared there as timestamp with time zone
+groups:date_updated
+
+# rationale: platform.group_members is created by the hub (v001_initial_schema.sql:283), declared there as timestamp with time zone
+group_members:date_added
+
+# rationale: platform.roles is created by the hub (v001_initial_schema.sql:364), declared there as timestamp with time zone
+roles:date_created
+# rationale: platform.roles is created by the hub (v001_initial_schema.sql:364), declared there as timestamp with time zone
+roles:date_updated
+
+# rationale: platform.role_assignments is created by the hub (v001_initial_schema.sql:345), declared there as timestamp with time zone
+role_assignments:date_granted
+
+# rationale: platform.namespaces is created by the hub (v001_initial_schema.sql:328), declared there as timestamp with time zone
+namespaces:date_created
+# rationale: platform.namespaces is created by the hub (v001_initial_schema.sql:328), declared there as timestamp with time zone
+namespaces:date_updated
+
+# rationale: platform.impersonation_gates is created by the hub (v049_impersonation_gate.py:104), declared there as timestamp with time zone
+impersonation_gates:requested_at
+# rationale: platform.impersonation_gates is created by the hub (v049_impersonation_gate.py:104), declared there as timestamp with time zone
+impersonation_gates:granted_at
+# rationale: platform.impersonation_gates is created by the hub (v049_impersonation_gate.py:104), declared there as timestamp with time zone
+impersonation_gates:expires_at
+# rationale: platform.impersonation_gates is created by the hub (v049_impersonation_gate.py:104), declared there as timestamp with time zone
+impersonation_gates:date_created
+# rationale: platform.impersonation_gates is created by the hub (v049_impersonation_gate.py:104), declared there as timestamp with time zone
+impersonation_gates:date_updated
+
+# rationale: platform.concepts is created by the hub (v013_concepts.py:64), declared there as timestamp with time zone
+concepts:date_created
+# rationale: platform.concepts is created by the hub (v013_concepts.py:64), declared there as timestamp with time zone
+concepts:date_updated
+
+# rationale: platform.playbook_entries is created by the hub (v012_playbooks.py:104), declared there as timestamp with time zone
+playbook_entries:date_created
+# rationale: platform.playbook_entries is created by the hub (v012_playbooks.py:104), declared there as timestamp with time zone
+playbook_entries:date_updated

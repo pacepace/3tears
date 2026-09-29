@@ -15,15 +15,21 @@ import os
 from threetears.observe import get_logger
 
 __all__ = [
+    "OWNER_POLL_INTERVAL_ENV",
+    "SHUTDOWN_TIMEOUT_ENV",
     "get_connect_retry_backoff_cap",
     "get_connect_retry_budget",
+    "get_deliver_timeout",
     "get_engagement_scope_request_timeout",
     "get_jwks_request_timeout",
-    "get_nats_user_jwt_ttl_seconds",
+    "get_namespace_discovery_request_timeout",
     "get_object_resolve_request_timeout",
+    "get_owner_poll_interval",
     "get_ready_poll_interval",
     "get_ready_timeout",
+    "get_report_timeout",
     "get_serve_ready_timeout",
+    "get_shutdown_timeout",
 ]
 
 log = get_logger(__name__)
@@ -34,27 +40,30 @@ _PLATFORM_DEFAULT_SERVE_READY_TIMEOUT = 30.0
 _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT = 5.0
 _PLATFORM_DEFAULT_OBJECT_RESOLVE_REQUEST_TIMEOUT = 5.0
 _PLATFORM_DEFAULT_ENGAGEMENT_SCOPE_REQUEST_TIMEOUT = 5.0
+# one broker request/reply round trip, matching the other hub request/reply helpers above.
+_PLATFORM_DEFAULT_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT = 5.0
+# the deliver tool's expected max resolve+presign time: a NATS round trip and a presign, no rendering.
+_PLATFORM_DEFAULT_DELIVER_TIMEOUT = 30.0
+# the report tool's expected max render+store time; a PDF through pandoc and pdflatex is the slow path.
+_PLATFORM_DEFAULT_REPORT_TIMEOUT = 120.0
 # a standalone tool pod that opens its OWN connection retries the initial connect for this long before
 # giving up (fail-visible crash -> k8s CrashLoopBackoff). generous by design: k8s starts pods in any
 # order, so the hub (auth-callout + the pod's seeded tool_pods row) may not be up yet -- the pod must
 # wait it out rather than depend on start ordering.
 _PLATFORM_DEFAULT_CONNECT_RETRY_BUDGET = 180.0
 _PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP = 15.0
-# TTL (seconds) a standalone tool pod ASSUMES its auth-callout-minted NATS user JWT carries, so its
-# proactive re-auth loop can schedule a reconnect BEFORE expiry. the pod receives no handshake
-# reporting the minted TTL, so it reads the SAME ``FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS`` env var
-# the minting side reads; this constant is only the fallback for a pod where that var is unset. the
-# library must not import the minting service, hence the parallel default here.
-#
-# The error is not symmetric, so the two directions are worth naming. Assuming LESS than the minted
-# TTL costs only churn: the pod recycles a still-valid credential, and every reconnect re-registers
-# its whole tool manifest. Assuming MORE is fatal: the JWT expires first and nats-py routes the auth
-# ``-ERR`` straight to a terminal close that the forever-reconnect path does not cover. So this value
-# must never exceed the platform's minted TTL -- and it must not be left behind when that TTL moves,
-# which is exactly how it drifted before, having kept a superseded value after the mint was raised.
-#
-# A deployment that tunes the minted TTL MUST set the env var on the tool pod as well.
-_PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS = 300
+# how long a tool pod's shutdown -- the server's drain, then the bootstrap's teardown -- may take before
+# the pod gives up on it and exits non-zero. inside k8s' default 30s termination grace, so the pod
+# leaves on its own terms rather than being SIGKILLed mid-teardown.
+_PLATFORM_DEFAULT_SHUTDOWN_TIMEOUT = 20.0
+# how often a tool pod with an owner process checks that the owner still exists. one ``kill(pid, 0)``
+# syscall per interval, so a short interval costs nothing measurable.
+_PLATFORM_DEFAULT_OWNER_POLL_INTERVAL = 1.0
+
+#: environment variable bounding a tool pod's shutdown, in seconds (positive)
+SHUTDOWN_TIMEOUT_ENV = "THREETEARS_TOOL_POD_SHUTDOWN_TIMEOUT_SECONDS"
+#: environment variable setting how often a tool pod checks its owner process, in seconds (positive)
+OWNER_POLL_INTERVAL_ENV = "THREETEARS_TOOL_POD_OWNER_POLL_INTERVAL_SECONDS"
 
 
 def _env_float(name: str, fallback: float) -> float:
@@ -76,6 +85,34 @@ def _env_float(name: str, fallback: float) -> float:
         except ValueError:
             log.warning("invalid %s=%r, using default", name, raw)
             result = fallback
+    return result
+
+
+def _env_positive_float(name: str, fallback: float) -> float:
+    """read an env var as a positive float, falling back on a blank, malformed or non-positive value.
+
+    a tool's declared timeout of zero or less would make every call time out at once, so such a
+    value is refused with a warning naming it rather than applied.
+
+    :param name: environment variable name
+    :ptype name: str
+    :param fallback: returned when the variable is blank, malformed or not positive
+    :ptype fallback: float
+    :return: resolved positive float
+    :rtype: float
+    """
+    raw = os.environ.get(name)
+    result = fallback
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            log.warning("invalid %s=%r, using default", name, raw)
+        else:
+            if value > 0:
+                result = value
+            else:
+                log.warning("non-positive %s=%r, using default", name, raw)
     return result
 
 
@@ -151,32 +188,34 @@ def get_engagement_scope_request_timeout() -> float:
     )
 
 
-def get_nats_user_jwt_ttl_seconds() -> int | None:
-    """return the assumed TTL (seconds) of the pod's auth-callout-minted NATS user JWT, or None.
+def get_namespace_discovery_request_timeout() -> float:
+    """return the broker namespace-discovery request/reply timeout in seconds.
 
-    the proactive re-auth loop schedules a reconnect ``ttl - margin`` before the JWT expires; since a
-    standalone tool pod gets no handshake reporting the minted TTL, the value comes from
-    ``FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS`` (the SAME env var + default the hub auth-callout
-    responder uses). unset -> the platform default (150). a non-positive or malformed value resolves
-    to ``None`` (UNKNOWN) so the loop re-checks on a cadence rather than churning the connection on a
-    guess -- never a crash on operator misconfig.
-
-    :return: positive int TTL from the env var or the platform default, or ``None`` when the override
-        is non-positive / malformed (treated as unknown)
-    :rtype: int | None
+    :return: timeout from THREETEARS_TOOLSERVER_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT or platform default
+    :rtype: float
     """
-    raw = os.environ.get("FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS")
-    if raw is None:
-        result: int | None = _PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
-    else:
-        try:
-            parsed = int(raw)
-        except ValueError:
-            log.warning("invalid FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS=%r; treating NATS-JWT TTL as unknown", raw)
-            result = None
-        else:
-            result = parsed if parsed > 0 else None
-    return result
+    return _env_float(
+        "THREETEARS_TOOLSERVER_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT",
+        _PLATFORM_DEFAULT_NAMESPACE_DISCOVERY_REQUEST_TIMEOUT,
+    )
+
+
+def get_deliver_timeout() -> float:
+    """return the deliver tool's declared timeout in seconds.
+
+    :return: positive seconds from DELIVER_TIMEOUT_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_positive_float("DELIVER_TIMEOUT_SECONDS", _PLATFORM_DEFAULT_DELIVER_TIMEOUT)
+
+
+def get_report_timeout() -> float:
+    """return the report tool's declared timeout in seconds.
+
+    :return: positive seconds from REPORT_TIMEOUT_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_positive_float("REPORT_TIMEOUT_SECONDS", _PLATFORM_DEFAULT_REPORT_TIMEOUT)
 
 
 def get_connect_retry_budget() -> float:
@@ -201,3 +240,21 @@ def get_connect_retry_backoff_cap() -> float:
         "THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP",
         _PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP,
     )
+
+
+def get_shutdown_timeout() -> float:
+    """return how long a tool pod's shutdown may take before the pod exits without it.
+
+    :return: positive seconds from THREETEARS_TOOL_POD_SHUTDOWN_TIMEOUT_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_positive_float(SHUTDOWN_TIMEOUT_ENV, _PLATFORM_DEFAULT_SHUTDOWN_TIMEOUT)
+
+
+def get_owner_poll_interval() -> float:
+    """return how often a tool pod checks that its owner process still exists.
+
+    :return: positive seconds from THREETEARS_TOOL_POD_OWNER_POLL_INTERVAL_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_positive_float(OWNER_POLL_INTERVAL_ENV, _PLATFORM_DEFAULT_OWNER_POLL_INTERVAL)

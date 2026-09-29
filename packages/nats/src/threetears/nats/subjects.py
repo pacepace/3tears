@@ -712,7 +712,7 @@ class Subjects:
         return Subject(path=f"{_ns()}.tools.probe.{sanitize_subject_segment(agent_id)}.>", kind="pattern")
 
     @classmethod
-    def agent_inprocess_pod_id(cls, agent_id: str | UUID, instance_id: str | UUID) -> str:
+    def agent_inprocess_pod_id(cls, agent_id: UUID, instance_id: str | UUID) -> str:
         """compose the NATS routing pod-id for an agent's IN-PROCESS tool server.
 
         Returns a plain routing-key STRING (not a :class:`Subject`):
@@ -734,14 +734,71 @@ class Subjects:
         widening the grant. Tool Pods (separate ``TOOL_POD`` processes) keep
         their single-token UUID pod-id and are unaffected.
 
+        ``agent_id`` is a :class:`UUID` and nothing else, checked at runtime too.
+        The inverse, :meth:`agent_inprocess_owner_id`, accepts only a canonically
+        spelled agent UUID as the first token -- the spelling every agent grant is
+        keyed on -- so a composer that took a string would hand out ids the rest of
+        the system refuses one step later, with an error about the pod-id rather
+        than about the agent id that caused it.
+
         :param agent_id: the authenticated agent identity (leads the routing key)
-        :ptype agent_id: str | UUID
+        :ptype agent_id: UUID
         :param instance_id: this pod replica's unique instance id (the connect-name pod id)
         :ptype instance_id: str | UUID
         :return: routing pod-id string ``{agent_id}.{instance_id}``
         :rtype: str
+        :raises TypeError: when ``agent_id`` is not a :class:`UUID`
         """
-        return f"{sanitize_subject_segment(agent_id)}.{sanitize_subject_segment(instance_id)}"
+        if not isinstance(agent_id, UUID):
+            raise TypeError(f"agent_id must be a UUID, got {type(agent_id).__name__} {agent_id!r}")
+        return f"{agent_id}.{sanitize_subject_segment(instance_id)}"
+
+    @classmethod
+    def agent_inprocess_owner_id(cls, pod_id: str) -> UUID | None:
+        """read the agent that owns a tool routing pod-id, or ``None`` for a Tool Pod.
+
+        The inverse of :meth:`agent_inprocess_pod_id`, for the registry and the serving pod, which
+        both have to answer "whose process is this endpoint?" from the pod-id alone.
+
+        A Tool Pod's id is one token and it serves every caller, so it has no owner. A pod-id with
+        a structural dot lives under the ``tools.{internal,probe}.{agent_id}.>`` subtree that only
+        the agent named by its FIRST token is granted (:meth:`tools_probe_agent_subtree`). So an
+        endpoint that passed the registry's reachability probe under a dotted id was answered by
+        that agent's own connection, and the first token proves the owner without trusting
+        anything the registering manifest claimed. The whole subtree belongs to that agent, so
+        tokens past the second change nothing.
+
+        A dotted id whose first token is not a canonically spelled agent UUID is refused rather
+        than read as a Tool Pod. Every agent grant is keyed on ``str(agent_uuid)``, so such an id
+        names no agent that could answer for it, and reading it as ownerless would make it
+        callable by everyone -- the failure this method exists to prevent.
+
+        :param pod_id: a tool routing pod-id, as registered in the catalog
+        :ptype pod_id: str
+        :return: the owning agent's id, or ``None`` when ``pod_id`` is a single-token Tool Pod id
+        :rtype: UUID | None
+        :raises ValueError: when ``pod_id`` is empty, has an empty token, or is dotted and does not
+            lead with a canonically spelled UUID
+        """
+        tokens = pod_id.split(".")
+        if not all(tokens):
+            raise ValueError(f"tool routing pod-id {pod_id!r} has an empty token")
+        if len(tokens) == 1:
+            return None
+        head = tokens[0]
+        try:
+            owner = UUID(head)
+        except ValueError:
+            raise ValueError(
+                f"tool routing pod-id {pod_id!r} is dotted, so it is an agent's, but {head!r} is not an agent id"
+            ) from None
+        if str(owner) != head:
+            # the grant is keyed on the canonical spelling; any other spelling of the same uuid is
+            # a token no agent's subtree contains.
+            raise ValueError(
+                f"tool routing pod-id {pod_id!r} spells its agent id {head!r} non-canonically; expected {str(owner)!r}"
+            )
+        return owner
 
     # ------------------------------------------------------------------
     # tools -- asynchronous result delivery
@@ -1067,6 +1124,24 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
+
+    @classmethod
+    def hub_audit_anonymize(cls) -> Subject:
+        """request/reply subject for anonymizing the audit rows an agent published.
+
+        An AGENT pod erasing a person asks the hub to anonymize the platform audit rows
+        that agent published about them (``threetears.agent.audit.request_audit_anonymization``).
+        The agent forwards its ``identity_token``; the hub verifies it, derives the agent
+        from the signed claims, refuses a body naming a different agent, and touches only
+        rows whose agent is the verified caller.
+
+        Under ``hub.`` and never under ``audit.``: the durable audit stream captures
+        ``{ns}.audit.>``, so a request there would be persisted and consumed as an event.
+
+        :return: subject ``{ns}.hub.audit.anonymize``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.audit.anonymize", kind="point")
 
     @classmethod
     def hub_channel_engagement_default_resolve(cls) -> Subject:
@@ -1841,6 +1916,23 @@ class Subjects:
             raise ValueError("datasource name must be non-empty")
         return Subject(path=f"{_ns()}.datasource.{sanitize_subject_segment(name)}.query", kind="point")
 
+    @classmethod
+    def datasource_query_wildcard(cls) -> Subject:
+        """pattern spanning every datasource's query subject.
+
+        the hub subscribes it once and reads the datasource off the matched
+        subject, so a datasource added or removed at runtime needs no
+        subscribe or unsubscribe of its own. a tool pod is granted it as a
+        publish pattern: the grant is minted at connect, before the pod knows
+        which datasources an operator will declare for it, and it buys reach
+        and never authority -- the hub verifies the forwarded token and
+        evaluates the pod's grant on each datasource's namespace.
+
+        :return: subject ``{ns}.datasource.*.query``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.datasource.*.query", kind="pattern")
+
     # ------------------------------------------------------------------
     # cache invalidation
     # ------------------------------------------------------------------
@@ -1970,6 +2062,22 @@ class Subjects:
             path=f"{_ns()}.datasource.{sanitize_subject_segment(datasource_id)}.tiles.{sanitize_subject_segment(layer)}.epoch",
             kind="point",
         )
+
+    @classmethod
+    def collection_generation_epoch(cls, table_name: str) -> Subject:
+        """the key naming one collection table's write generation.
+
+        advanced by every committed write to a collection that caches absences, and read before
+        the L3 lookup whose miss it stamps. Read and written directly, never broadcast: a reader
+        compares the value it recorded an absence under against the current one on each lookup,
+        so no subscriber has to hear anything.
+
+        :param table_name: the collection's table, an ``[a-z_]`` identifier
+        :ptype table_name: str
+        :return: subject ``{ns}.collections.{table_name}.epoch``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.collections.{table_name}.epoch", kind="point")
 
     @classmethod
     def mcp_rbac_epoch(cls) -> Subject:
