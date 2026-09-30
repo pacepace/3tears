@@ -91,7 +91,9 @@ def test_the_shared_fixtures_stagger_before_starting_a_container() -> None:
         assert "stagger_container_start()" in source, f"{name} starts a container without staggering"
 
 
-def test_an_external_database_skips_the_container_and_the_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_external_database_skips_the_container_and_the_wait(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """A CI service container (the external URL) starts no container, so it must not wait for one."""
     from threetears.core.testing import fixtures
 
@@ -104,7 +106,7 @@ def test_an_external_database_skips_the_container_and_the_wait(monkeypatch: pyte
     gen = fixtures.db_container.__wrapped__("unused-image")
     assert next(gen) == "postgresql://ci/db"
     monkeypatch.setenv("THREETEARS_TEST_NATS_URL", "nats://ci:4222")
-    assert next(fixtures.nats_container.__wrapped__(True)) == "nats://ci:4222"
+    assert next(fixtures.nats_container.__wrapped__(True, tmp_path_factory)) == "nats://ci:4222"
 
 
 def test_the_stagger_setting_name_is_exported() -> None:

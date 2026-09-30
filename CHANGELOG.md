@@ -46,6 +46,10 @@ access is taken away when it must be, by closing the connection and refusing its
 - `IdentityMinter.mint(..., cnf=...)` (core): a connect credential can carry the thumbprint of the
   runner's proof-of-possession key, so a verifier can tell two runners of one pod-session apart
   before either has handshaken.
+- `threetears.core.testing.fixtures.nats_container` declares a SYSTEM account
+  (`NATS_TEST_SYSTEM_ACCOUNT`, one user `NATS_TEST_SYSTEM_USER` / `NATS_TEST_SYSTEM_PASSWORD`), as
+  every platform bus does, so a control plane under test can kick and ping. A client presenting no
+  credentials is still admitted to the global account with JetStream, as before.
 
 ### NatsClient's connections have one lifecycle model; a round trip holds its timeout
 

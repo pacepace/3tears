@@ -35,6 +35,9 @@ import pytest
 from threetears.core.testing.containers import check_docker_available, stagger_container_start
 
 __all__ = [
+    "NATS_TEST_SYSTEM_ACCOUNT",
+    "NATS_TEST_SYSTEM_PASSWORD",
+    "NATS_TEST_SYSTEM_USER",
     "db_container",
     "db_image",
     "nats_container",
@@ -53,6 +56,14 @@ __all__ = [
 #: appear here, and so a secret scanner has one obvious place to look.
 S3_TEST_ACCESS_KEY = "testcontainer-access-key"
 S3_TEST_SECRET_KEY = "testcontainer-secret-key"
+
+#: the NATS container's SYSTEM account and its one user, as every platform bus declares one: the
+#: account a control plane closes connections through (``$SYS.REQ.SERVER.<id>.KICK``) and pings
+#: servers on. Clients that present no credentials still land in the global account, JetStream
+#: included, exactly as before the account existed. Throwaway, for the same reasons as the S3 pair.
+NATS_TEST_SYSTEM_ACCOUNT = "SYS"
+NATS_TEST_SYSTEM_USER = "testcontainer-system"
+NATS_TEST_SYSTEM_PASSWORD = "testcontainer-system-password"  # noqa: S105 - ephemeral testcontainer credential
 
 
 @pytest.fixture(scope="session")
@@ -168,7 +179,7 @@ def db_container(db_image: str) -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
-def nats_container(nats_jetstream: bool) -> Iterator[str]:
+def nats_container(nats_jetstream: bool, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """session-scoped NATS testcontainer.
 
     yields the ``nats://`` connection URI from the container.
@@ -176,10 +187,15 @@ def nats_container(nats_jetstream: bool) -> Iterator[str]:
     discipline as :func:`db_container`.
 
     JetStream is enabled by default; override ``nats_jetstream``
-    in your conftest to disable it.
+    in your conftest to disable it. The server declares a SYSTEM account
+    (:data:`NATS_TEST_SYSTEM_ACCOUNT`) whose one user is
+    :data:`NATS_TEST_SYSTEM_USER` / :data:`NATS_TEST_SYSTEM_PASSWORD`; a client
+    presenting no credentials is admitted to the global account as before.
 
     :param nats_jetstream: whether to enable JetStream
     :ptype nats_jetstream: bool
+    :param tmp_path_factory: where the server's configuration is written
+    :ptype tmp_path_factory: pytest.TempPathFactory
     :yield: NATS connection URI
     :rtype: Iterator[str]
     """
@@ -197,8 +213,34 @@ def nats_container(nats_jetstream: bool) -> Iterator[str]:
 
     from testcontainers.nats import NatsContainer  # noqa: PLC0415
 
-    with NatsContainer(jetstream=nats_jetstream) as container:
+    conf_dir = tmp_path_factory.mktemp("nats-conf")
+    (conf_dir / "nats.conf").write_text(_nats_container_config(jetstream=nats_jetstream), encoding="utf-8")
+    container = (
+        NatsContainer(jetstream=False)
+        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
+        .with_command(["-c", "/etc/nats/nats.conf"])
+    )
+    with container:
         yield container.nats_uri()
+
+
+def _nats_container_config(*, jetstream: bool) -> str:
+    """the session NATS server's configuration: an open global account beside a SYSTEM account.
+
+    :param jetstream: whether to enable JetStream
+    :ptype jetstream: bool
+    :return: the server configuration
+    :rtype: str
+    """
+    lines = [
+        "port: 4222",
+        "http: 8222",
+        *(["jetstream {}"] if jetstream else []),
+        f"system_account: {NATS_TEST_SYSTEM_ACCOUNT}",
+        f"accounts {{ {NATS_TEST_SYSTEM_ACCOUNT} {{ users: [ "
+        f'{{ user: "{NATS_TEST_SYSTEM_USER}", password: "{NATS_TEST_SYSTEM_PASSWORD}" }} ] }} }}',
+    ]
+    return "\n".join(lines) + "\n"
 
 
 @pytest.fixture(scope="session")
