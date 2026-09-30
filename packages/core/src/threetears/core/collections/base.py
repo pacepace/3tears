@@ -2580,7 +2580,17 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 assert new_row is not None  # narrow: "upsert" always carries a row
                 if self._l1 is not None:
-                    self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
+                    # an ordered swap reaches this line only after the persist's round trip, and a
+                    # later swap can complete inside it: this replica's own, or a peer's whose
+                    # broadcast already evicted this L1. Caching this row then would leave L1 behind
+                    # L2 with nothing left to evict it, so it is cached only while L2 still holds
+                    # it; otherwise the key is dropped and the next read takes the newer value from
+                    # L2. No await separates the check from the write, so nothing lands between.
+                    assert won_revision is not None  # narrow: an upsert that won
+                    if not ordered or await self._swap_still_current(entity_id, key, won_revision, payload):
+                        self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
+                    else:
+                        self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
                 self._clear_l1_marker(entity_id)
             await self._publish_invalidation(entity_id, l2_key_current=True)
             if generation_failure is not None:
@@ -2682,6 +2692,45 @@ class BaseCollection(ABC, Generic[EntityT]):
                 },
             )
         return L2Order(epoch=chosen, revision=won_revision)
+
+    async def _swap_still_current(self, entity_id: Any, key: str, won_revision: int, payload: bytes) -> bool:
+        """whether L2 still holds exactly the value a won swap wrote, at the revision it won.
+
+        Asked after an ordered swap's persist, before its row is cached in L1: anything else in the
+        key -- a later swap's value, or no value -- means the row is no longer the newest, and
+        caching it would serve the older value on this replica until something evicted it. A
+        failed read answers ``False``: the swap has already won and persisted, so the mutation must
+        not be reported failed, and leaving L1 empty is always correct because the next read goes
+        to L2.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order, for the log
+        :ptype entity_id: Any
+        :param key: the scoped L2 key the swap won
+        :ptype key: str
+        :param won_revision: the revision the swap produced
+        :ptype won_revision: int
+        :param payload: the bytes the swap wrote
+        :ptype payload: bytes
+        :return: ``True`` only when the key still holds this swap's value at this swap's revision
+        :rtype: bool
+        """
+        current = False
+        try:
+            kv = await self._ensure_kv()
+            if kv is not None:
+                current = await kv.get_entry(key=key) == (payload, won_revision)
+        except KvError as exc:
+            log.warning(
+                "L2 read after a compare-and-swap failed; its row is not cached in L1 and the next read goes to L2",
+                extra={
+                    "extra_data": {
+                        "entity_id": str(entity_id),  # convert at border: log extra_data field
+                        "table": self.table_name,
+                        "error": str(exc),
+                    }
+                },
+            )
+        return current
 
     async def _withdraw_unpersisted_cas(
         self,
