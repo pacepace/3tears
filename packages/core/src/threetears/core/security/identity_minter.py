@@ -165,6 +165,7 @@ class IdentityMinter:
         pod_id: str | None = None,
         identity_generation: str | None = None,
         data_version: int | None = None,
+        cnf: str | None = None,
         now: int | None = None,
     ) -> str:
         """mint a short-lived identity JWT for ``subject`` (the authenticated principal id).
@@ -189,6 +190,12 @@ class IdentityMinter:
             ``data_version`` claim the L3 broker compares with its space's target version to cut off a
             pod on an older one. ``None`` (the claim is omitted) for a principal managing no tables.
         :ptype data_version: int | None
+        :param cnf: the JWK thumbprint of a key the holder of this token also holds, signed as the
+            ``cnf`` claim (``{"jkt": ...}``). A connection credential carries the thumbprint of the
+            runner's proof-of-possession key, the key its handshakes bind -- which is how a verifier
+            tells two runners of one pod-session apart before either has handshaken. ``None`` (the
+            claim is omitted) when the token binds no key.
+        :ptype cnf: str | None
         :param now: unix-seconds issue time (``exp`` = ``now`` + ttl); defaults to the wall clock.
         :ptype now: int | None
         :return: a compact EdDSA JWS identity token.
@@ -206,6 +213,7 @@ class IdentityMinter:
             exp=issued_at + self._ttl_seconds,
             identity_generation=identity_generation,
             data_version=data_version,
+            cnf=cnf,
         )
         token: str = sign_identity_token(claims, signing_key=self._signing_key, kid=self._kid)
         return token
