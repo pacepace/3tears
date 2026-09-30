@@ -40,6 +40,7 @@ import pytest
 from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.agent.workspace.lease import WorkspaceFileLease
+from threetears.nats.subject_permissions import WORKSPACE_LOCKS_BUCKET_SUFFIX, agent_platform_bucket_suffix
 from threetears.agent.workspace.materialize import bind
 from packages.agent.workspace.tests._helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
@@ -170,9 +171,10 @@ async def test_two_pods_peak_concurrency_is_one(tmp_path: Path) -> None:
     agent_id = uuid4()
     workspace = _FakeWorkspace(id=ws_id, name=ws_name, agent_id=agent_id)
 
-    nats = FakeNatsClient()
-    lease_a = WorkspaceFileLease(nats, namespace="test", pod_id="pod-A")
-    lease_b = WorkspaceFileLease(nats, namespace="test", pod_id="pod-B")
+    # the hub declares the agent's own workspace-locks bucket; the leases only bind it
+    nats = FakeNatsClient(declared_buckets=(agent_platform_bucket_suffix(agent_id, WORKSPACE_LOCKS_BUCKET_SUFFIX),))
+    lease_a = WorkspaceFileLease(nats, agent_id=agent_id, pod_id="pod-A")
+    lease_b = WorkspaceFileLease(nats, agent_id=agent_id, pod_id="pod-B")
 
     in_body = {"count": 0}
     peak = {"value": 0}
