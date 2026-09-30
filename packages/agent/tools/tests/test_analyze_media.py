@@ -809,3 +809,26 @@ class TestReferenceVisionRouting:
         assert len(vision.analyze_ref_calls) == 1
         object_ids, _ = vision.analyze_ref_calls[0]
         assert object_ids == [id_a, id_b]
+
+    async def test_an_id_the_storage_did_not_resolve_is_never_sent(self) -> None:
+        """an id get_media refused is dropped; analyze_ref sees only the resolved one."""
+        storage = FakeMediaStorage()
+        resolved, refused = uuid4(), uuid4()
+        storage.add_media(resolved, MediaInfo(resolved, "image", "image/jpeg"))
+        vision = FakeReferenceVisionProvider()
+        tool = _make_tool(storage, vision=vision)
+
+        await tool.ainvoke({"media_ids": [str(refused), str(resolved)], "question": "q", "analyzer": "TestVision"})
+
+        assert [ids for ids, _ in vision.analyze_ref_calls] == [[resolved]]
+
+    async def test_nothing_resolved_is_no_valid_media_and_no_call(self) -> None:
+        """when get_media resolves nothing, the answer says so and analyze_ref is never called."""
+        storage = FakeMediaStorage()
+        vision = FakeReferenceVisionProvider()
+        tool = _make_tool(storage, vision=vision)
+
+        result = await tool.ainvoke({"media_ids": [str(uuid4())], "question": "q", "analyzer": "TestVision"})
+
+        assert "No valid media found" in result
+        assert vision.analyze_ref_calls == []

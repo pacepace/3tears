@@ -30,6 +30,7 @@ from uuid import UUID
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.document import DocumentParseError, parse_document
 from threetears.agent.tools.protocols import (
     MediaInfo,
     MediaStorage,
@@ -373,7 +374,7 @@ class AnalyzeMediaTool(TearsTool):
                 f"Analyzer '{analyzer}' has no vision capability.",
             )
 
-        return await self._handle_vision(media_ids, acfg, question, analyzer)
+        return await self._handle_vision(media_ids, media_info, acfg, question, analyzer)
 
     async def _fire_callback(
         self,
@@ -404,6 +405,37 @@ class AnalyzeMediaTool(TearsTool):
                     extra={"extra_data": {"media_id": mid_str, "content_type": content_type}},
                 )
 
+    async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None]:
+        """read a document's text from its stored bytes.
+
+        the fallback for a storage that serves bytes but caches no extracted
+        text. an absent download is no text (the caller answers that); a type no
+        parser reads, or a parser failure, is an error naming why.
+
+        :param mid: media UUID
+        :ptype mid: UUID
+        :param mid_str: media UUID string for logging
+        :ptype mid_str: str
+        :return: ``(text, None)`` on success or absence, ``(None, detail)`` on a parse failure
+        :rtype: tuple[str | None, str | None]
+        """
+        text: str | None = None
+        error: str | None = None
+        dl = await self._storage.download_media(mid)
+        if dl is not None:
+            data, mime_type = dl
+            try:
+                parsed = await parse_document(data, mime_type)
+            except DocumentParseError as exc:
+                _log.warning(
+                    "document bytes could not be read as text",
+                    extra={"extra_data": {"media_id": mid_str, "mime_type": mime_type, "reason": exc.reason}},
+                )
+                error = f"This document could not be read ({exc.reason}): {exc.detail}"
+            else:
+                text = parsed.text
+        return text, error
+
     async def _handle_document(
         self,
         mid: UUID,
@@ -413,6 +445,10 @@ class AnalyzeMediaTool(TearsTool):
         question: str,
     ) -> str:
         """route a document item through extracted-text question answering.
+
+        the text is the storage's cached extraction when it has one, otherwise
+        the document's own bytes parsed by :func:`parse_document` -- a storage
+        with no extraction cache (the object catalog) is still readable.
 
         :param mid: media UUID
         :ptype mid: UUID
@@ -433,6 +469,13 @@ class AnalyzeMediaTool(TearsTool):
         extracted = await self._storage.get_content(mid, "extracted_text")
         if not extracted:
             extracted = await self._storage.get_content(mid, "transcript")
+        if not extracted and info.has_downloadable_data:
+            # a storage with no extraction cache (the object catalog has no
+            # content column) still serves the document's bytes; read the text
+            # from them rather than reporting a readable document unreadable.
+            extracted, parse_error = await self._extract_from_bytes(mid, mid_str)
+            if parse_error is not None:
+                return _tool_error("document analysis", parse_error)
         if not extracted:
             return _tool_error(
                 "document analysis",
@@ -602,6 +645,7 @@ class AnalyzeMediaTool(TearsTool):
     async def _handle_vision(
         self,
         media_ids: list[str],
+        media_info: dict[str, MediaInfo],
         acfg: AnalyzerConfig,
         question: str,
         analyzer_name: str,
@@ -610,6 +654,9 @@ class AnalyzeMediaTool(TearsTool):
 
         :param media_ids: list of media UUID strings to analyze together
         :ptype media_ids: list[str]
+        :param media_info: the media the caller's storage resolved, by id string;
+            an id missing here was refused (not the caller's, or absent)
+        :ptype media_info: dict[str, MediaInfo]
         :param acfg: resolved AnalyzerConfig (must carry a vision provider)
         :ptype acfg: AnalyzerConfig
         :param question: prompt for the vision model
@@ -626,7 +673,17 @@ class AnalyzeMediaTool(TearsTool):
         # ONE turn, the bytes never reach this pod, and no object-store creds are
         # needed here. bytes-taking backends fall through to the download path.
         if isinstance(acfg.vision, ReferenceVisionProvider):
-            return await self._handle_vision_by_reference(media_ids, acfg.vision, question, analyzer_name)
+            # only ids the caller's storage resolved go to the backend: an id the
+            # storage refused (another customer's object, or one planted in content
+            # by prompt injection) must not rest on the gateway's authorization
+            # alone. the bytes path gets the same guarantee from download_media.
+            resolved = [mid for mid in media_ids if mid in media_info]
+            if not resolved:
+                return _tool_error(
+                    "load media",
+                    "No valid media found for the given media IDs.",
+                )
+            return await self._handle_vision_by_reference(resolved, acfg.vision, question, analyzer_name)
 
         from threetears.agent.tools.builtin.image_prep import (
             prepare_image_for_vision,

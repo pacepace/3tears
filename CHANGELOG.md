@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### analyze_media reads a catalogued document, and sends the gateway only ids the caller owns
+
+Over `ObjectCatalogMediaStorage`, which caches no extracted text, every document analysis
+answered "No text could be extracted from this document." -- a text or PDF object included. And
+the reference-vision path sent the gateway every requested id, including ones the storage had just
+refused for the caller, and called it even when none resolved.
+
+**Contract changes:**
+
+- `AnalyzeMediaTool` document analysis falls back to the document's bytes when the storage has no
+  cached `extracted_text` / `transcript` and the item reports `has_downloadable_data`: it
+  downloads them and reads the text with `parse_document`. A type no parser reads, or a parser
+  failure, answers `[analyze_media/document analysis] Error: This document could not be read
+  (<reason>): <detail>` and asks no model.
+- A `ReferenceVisionProvider` receives only the ids `get_media` resolved. When none resolved, the
+  tool answers `No valid media found for the given media IDs.` and calls no backend, as the bytes
+  path already did.
+
 ### A user merge names every row its alias-collision cascade removed
 
 `threetears.agent.memory.merge.repoint_user` deletes a source memory whose alias the master
