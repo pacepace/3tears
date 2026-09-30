@@ -68,6 +68,7 @@ import math
 import random
 import re
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, TypeVar
@@ -110,7 +111,7 @@ from threetears.nats.errors import (
     SubscribeError,
 )
 from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
-from threetears.nats.subjects import Subject, Subjects, set_default_namespace
+from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subject, Subjects, set_default_namespace
 
 # JetStream API error code for "subjects overlap with an existing stream": a
 # subject belongs to exactly one stream. distinct from "stream name already in
@@ -2724,6 +2725,7 @@ class NatsClient:
         subject: Subject,
         payload: bytes,
         timeout: timedelta | float = DEFAULT_JETSTREAM_PUBLISH_TIMEOUT,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         """publish raw bytes to a JetStream subject with persistence ack.
 
@@ -2747,6 +2749,8 @@ class NatsClient:
         :param timeout: ceiling on the whole publish including the ack; a bare
             ``int``/``float`` is seconds
         :ptype timeout: timedelta | float
+        :param headers: message headers stored with the payload, or ``None`` for none
+        :ptype headers: Mapping[str, str] | None
         :return: nothing
         :rtype: None
         :raises PublishTimeoutError: the publish did not complete in time, or
@@ -2755,7 +2759,7 @@ class NatsClient:
         """
         seconds = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
         try:
-            await publish_bounded(self.jetstream_context(), subject.path, payload, timeout=seconds)
+            await publish_bounded(self.jetstream_context(), subject.path, payload, timeout=seconds, headers=headers)
         except PublishError:
             raise
         except Exception as exc:
@@ -2894,6 +2898,12 @@ class NatsClient:
           ``dead_letter_subject`` (when given), ``ack`` the original so it leaves
           the live consumer, and log ONE error.
 
+        the dead letter carries the subject the message arrived on in the
+        :data:`~threetears.nats.subjects.DEAD_LETTER_ORIGINAL_SUBJECT_HEADER`
+        header. the dead-letter subject is one fixed subject, so the payload
+        alone loses the part the broker authorised; a consumer that holds a
+        payload's claims to its subject needs it back to replay the letter.
+
         :param msg: raw nats-py JetStream message whose handler raised
         :ptype msg: Any
         :param exc: exception the handler raised
@@ -2913,7 +2923,16 @@ class NatsClient:
         num_delivered = int(getattr(metadata, "num_delivered", 1) or 1)
         if num_delivered >= max_deliver:
             if dead_letter_subject is not None:
-                await self.jetstream_publish(subject=dead_letter_subject, payload=msg.data)
+                original_subject = getattr(msg, "subject", None)
+                await self.jetstream_publish(
+                    subject=dead_letter_subject,
+                    payload=msg.data,
+                    headers=(
+                        {DEAD_LETTER_ORIGINAL_SUBJECT_HEADER: original_subject}
+                        if isinstance(original_subject, str) and original_subject
+                        else None
+                    ),
+                )
             await msg.ack()
             log.error(
                 "durable consumer dead-lettered message after %d attempts: durable=%s subject=%s dlq=%s error=%s",

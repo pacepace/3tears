@@ -48,6 +48,7 @@ from uuid import UUID
 from threetears.nats.errors import NamespaceNotConfiguredError
 
 __all__ = [
+    "DEAD_LETTER_ORIGINAL_SUBJECT_HEADER",
     "TOOL_POD_AUDIT_TOKEN",
     "PipeDirection",
     "Subject",
@@ -58,6 +59,13 @@ __all__ = [
     "sanitize_subject_segment",
     "set_default_namespace",
 ]
+
+#: the header a durable consumer's dead letter carries naming the subject the message ARRIVED ON.
+#: A dead letter is republished on one fixed subject, so without this the original subject -- the
+#: part the broker authorised, and the only part a consumer can hold a payload's claims to -- is
+#: gone. Written by the consumer wrapper from the delivered message, never from the payload, so it
+#: is as trustworthy as the dead-letter subject's own publish grant.
+DEAD_LETTER_ORIGINAL_SUBJECT_HEADER: Final[str] = "Threetears-Original-Subject"
 
 #: the token after ``{ns}.audit`` that leads every audit subject a TOOL POD publishes about its
 #: own work: ``{ns}.audit.tool_pod.<tool_pods.id>.<event_type>``. The hub records its own

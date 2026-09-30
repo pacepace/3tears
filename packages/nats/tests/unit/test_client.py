@@ -1817,6 +1817,58 @@ async def test_pull_handler_raise_dead_letters_at_budget() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("consumer_kind", ["push", "pull"])
+async def test_a_dead_letter_carries_the_subject_the_message_arrived_on(consumer_kind: str) -> None:
+    """the dead letter keeps the original subject in a header, not only the bytes.
+
+    A consumer that binds what an envelope claims to the subject it arrived on (the hub's audit
+    collector) cannot re-check a replayed dead letter against a subject it no longer has. The
+    header is written by this wrapper from the message the broker delivered, so it names the
+    subject the broker authorised, not one the payload asserts.
+    """
+    from threetears.nats import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER
+
+    msg = _fake_js_msg(data=b"poison", num_delivered=5)
+    msg.subject = "3tears.audit.tool_pod.0192a0b4-0000-7000-8000-000000000001.collector.promoted"
+    dlq = Subjects.audit_deadletter()
+    cb = AsyncMock(side_effect=RuntimeError("row refused"))
+    if consumer_kind == "push":
+        client, js = _client_with_js()
+        await client.jetstream_subscribe_durable(
+            subject=Subjects.audit_wildcard(), durable="d", cb=cb, max_deliver=5, dead_letter_subject=dlq
+        )
+        await js.subscribe.await_args.kwargs["cb"](msg)
+    else:
+        psub = MagicMock()
+        psub.fetch = AsyncMock(return_value=[msg])
+        client, js = _pull_js(psub=psub)
+        consumer = await client.jetstream_pull_subscribe(
+            subject=Subjects.audit_wildcard(), durable="d", cb=cb, max_deliver=5, dead_letter_subject=dlq
+        )
+        await consumer.fetch_and_process()
+
+    js.publish.assert_awaited_once_with(
+        dlq.path,
+        b"poison",
+        timeout=DEFAULT_JETSTREAM_PUBLISH_TIMEOUT.total_seconds(),
+        headers={DEAD_LETTER_ORIGINAL_SUBJECT_HEADER: msg.subject},
+    )
+    msg.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_jetstream_publish_passes_headers_through() -> None:
+    """headers reach the JetStream publish as given; none are sent when none are given."""
+    client, js = _client_with_js()
+    subject = Subjects.audit_deadletter()
+    await client.jetstream_publish(subject=subject, payload=b"x", headers={"A-Header": "v"})
+    await client.jetstream_publish(subject=subject, payload=b"y")
+    first, second = js.publish.await_args_list
+    assert first.kwargs["headers"] == {"A-Header": "v"}
+    assert "headers" not in second.kwargs
+
+
+@pytest.mark.asyncio
 async def test_pull_stop_unsubscribes_and_halts_run() -> None:
     """stop() unsubscribes the pull consumer and ends the run loop."""
     psub = MagicMock()

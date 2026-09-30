@@ -173,6 +173,7 @@ from threetears.nats.subject_permissions import (
     kv_key_scope_for_service,
 )
 from threetears.nats.subjects import (
+    DEAD_LETTER_ORIGINAL_SUBJECT_HEADER,
     TOOL_POD_AUDIT_TOKEN,
     PipeDirection,
     Subject,
@@ -361,6 +362,7 @@ __all__ = [
     "seconds_until_reauth",
     "unsafe_reauth_delay_reason",
     # subjects
+    "DEAD_LETTER_ORIGINAL_SUBJECT_HEADER",
     "TOOL_POD_AUDIT_TOKEN",
     "PipeDirection",
     "Subject",
