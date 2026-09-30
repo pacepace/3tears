@@ -285,6 +285,7 @@ PERSONAL_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "redirect_url",  # rendered from the respondent's answers, session.* (survey)
         "ref",  # a checkpoint label or claim-mapping name, typed by a user or admin (3tears, identity)
         "refused",  # str(exc), admin.action index_build (hub)
+        "removed_datasources",  # datasource names carry user-declared table names, agent.delete (hub)
         "removed_namespaces",  # namespace names, agent.delete (hub)
         "replaced_schema",  # customer schema name, datasource.rollover (hub)
         "revoked",  # namespace names, security.tool.approver.revoke (hub)
@@ -394,8 +395,8 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "schema.bulk_describe": frozenset({"matched", "unmatched", "total"}),
         # a flag (hub)
         "agent.context_capture_read": frozenset({"captured"}),
-        # a flag (hub)
-        "agent.delete": frozenset({"force"}),
+        # two flags: forced, and whether it finished an earlier delete's teardown (hub)
+        "agent.delete": frozenset({"force", "finished_earlier_delete"}),
         # fixed labels grants_not_materialized / grants_not_revoked (hub)
         "agent.update_tool_access": frozenset({"failure", "warning"}),
         "agent.update_model_access": frozenset({"failure", "warning"}),
