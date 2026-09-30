@@ -159,8 +159,17 @@ class TestTheModels:
     def test_the_error_codes_are_named(self) -> None:
         """the vocabulary a responder answers with and a caller branches on."""
         assert AUDIT_ANONYMIZE_ERROR_CODES == frozenset(
-            {"INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH", "ANONYMIZE_FAILED"}
+            {"INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH", "OWNER_NOT_GRANTED", "ANONYMIZE_FAILED"}
         )
+
+    async def test_an_owner_a_tool_pod_is_not_granted_is_a_refusal(self) -> None:
+        """a tool pod asking for an owner it holds no write on is refused, and retrying will not help."""
+        nats = _ScriptedRequests({"success": False, "error_code": "OWNER_NOT_GRANTED", "error_message": "no grant"})
+
+        with pytest.raises(AuditAnonymizeRefusedError) as refused:
+            await _call(nats, [uuid7()])
+
+        assert refused.value.error_code == "OWNER_NOT_GRANTED"
 
 
 class TestTheClient:

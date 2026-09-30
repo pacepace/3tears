@@ -29,7 +29,16 @@ own ``event_type``, and its ``ip_address`` through
    when they differ, touching nothing. The body's copy exists only so the two can be
    compared: a request that believes it is someone else is refused, never silently
    re-scoped.
-4. **Authorization rule: only rows whose agent is the verified caller.** Match rows
+
+   **A tool pod asks for its OWNER.** A tool pod granted an agent's data (a survey admin
+   pod erasing a respondent from the agent's tables) presents its own hub-minted token,
+   which names the POD, and the body's ``agent_id`` names the owner. The responder takes
+   the pod from the verified token and admits the owner only when the pod's operator-written
+   agent-data declaration grants it WRITE on that agent's data; any other owner -- one it
+   may only read, or one it holds no grant on -- is answered ``OWNER_NOT_GRANTED``,
+   touching nothing. The agent the rule below matches is then that owner.
+4. **Authorization rule: only rows whose agent is the verified caller** (or, for a tool
+   pod, the owner step 3 admitted). Match rows
    ``WHERE <agent column> = <verified agent> AND actor_user_id = ANY(<actor_user_ids>)``,
    where the agent column is the one the audit consumer fills from the envelope's
    ``calling_agent_id`` (the agent whose pod published the event). Never widen the match
@@ -93,9 +102,10 @@ DEFAULT_ANONYMIZE_TIMEOUT_SECONDS: Final[float] = 30.0
 #: - ``INVALID_REQUEST`` -- the body did not decode, or broke its bounds
 #: - ``IDENTITY_UNVERIFIED`` -- the forwarded identity token did not verify
 #: - ``AGENT_MISMATCH`` -- the body names an agent other than the verified caller
+#: - ``OWNER_NOT_GRANTED`` -- the verified caller is a tool pod granted no write on the body's agent
 #: - ``ANONYMIZE_FAILED`` -- the rewrite failed after verification; safe to retry
 AUDIT_ANONYMIZE_ERROR_CODES: Final[frozenset[str]] = frozenset(
-    {"INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH", "ANONYMIZE_FAILED"}
+    {"INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH", "OWNER_NOT_GRANTED", "ANONYMIZE_FAILED"}
 )
 
 #: the codes a retry can get past. the client raises :class:`AuditAnonymizeUnavailableError`
@@ -111,7 +121,8 @@ class AuditAnonymizeError(Exception):
 class AuditAnonymizeRefusedError(AuditAnonymizeError):
     """the hub answered and refused; retrying the same request will be refused again.
 
-    raised for ``INVALID_REQUEST``, ``IDENTITY_UNVERIFIED``, ``AGENT_MISMATCH``, and any code
+    raised for ``INVALID_REQUEST``, ``IDENTITY_UNVERIFIED``, ``AGENT_MISMATCH``,
+    ``OWNER_NOT_GRANTED``, and any code
     a newer hub sends that this client does not know. ``ANONYMIZE_FAILED`` is not a refusal:
     the hub verified the caller and then failed, and that is
     :class:`AuditAnonymizeUnavailableError`.
@@ -239,7 +250,9 @@ async def request_audit_anonymization(
     :ptype nats_client: NatsClient
     :param identity_token: this pod's CURRENT hub identity token
     :ptype identity_token: str
-    :param agent_id: this pod's own agent id, which the hub compares with the verified one
+    :param agent_id: this pod's own agent id, which the hub compares with the verified one -- or,
+        from a tool pod, the OWNER whose data it erases, which the hub checks against the pod's
+        agent-data grant
     :ptype agent_id: UUID
     :param actor_user_ids: the actors whose audit rows to anonymize
     :ptype actor_user_ids: Collection[UUID]
@@ -248,7 +261,8 @@ async def request_audit_anonymization(
     :return: the rows matched and changed, summed over the batches
     :rtype: AuditAnonymization
     :raises AuditAnonymizeRefusedError: when the hub refuses a batch with ``INVALID_REQUEST``,
-        ``IDENTITY_UNVERIFIED``, ``AGENT_MISMATCH`` or a code this client does not know
+        ``IDENTITY_UNVERIFIED``, ``AGENT_MISMATCH``, ``OWNER_NOT_GRANTED`` or a code this client
+        does not know
     :raises AuditAnonymizeUnavailableError: on no token, a transport failure or timeout, a
         reply that does not decode, a reply to a different request, a success without counts
         or for another agent, or the hub's ``ANONYMIZE_FAILED``
