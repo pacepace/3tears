@@ -154,6 +154,21 @@ def js_api_grants_for_stream(
     ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{owner_scope}.{table}.>`` -- one table of another
     principal's keys, and no consumer or watch route at all.
 
+    :attr:`JsCapability.KV_BUCKET_KEYS` covers the WHOLE of one bucket, through key-addressed calls
+    only, for a bucket whose isolation boundary is the bucket itself (another agent's coordination
+    bucket):
+
+    - ``$JS.API.STREAM.INFO.{stream}`` -- the bind.
+    - ``$JS.API.STREAM.MSG.GET.{stream}`` -- the read nats-py issues on a bucket bound WITHOUT
+      ``allow_direct`` (every coordination bucket an agent opens through ``kv_bucket``), with the
+      key in the body. Harmless here as it is not on a shared bucket: every key it can name is a
+      key the grant already covers. ``STREAM.MSG.DELETE`` is NOT granted.
+    - ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.>`` -- the read on a bucket WITH ``allow_direct``.
+
+    No stream-admin verb (``CREATE``/``UPDATE`` accept ``sources`` and ``republish``, a read of
+    any stream; ``PURGE``/``DELETE`` destroy the owner's state) and no consumer. The ``$KV.`` publish
+    for a writable grant is minted by :func:`mint_user_jwt` from the resource, not here.
+
     JetStream consumer ACK/NAK is NOT listed: it publishes to the delivered message's ``$JS.ACK.*``
     reply subject and rides the principal's ``allow_responses`` grant (the same way it did under the
     old ``$JS.API.>``, which never covered ``$JS.ACK``), so it needs no standing control grant here.
@@ -174,7 +189,19 @@ def js_api_grants_for_stream(
     :raises ValueError: if a scoped capability is requested without both ``bucket`` and ``scope``
     """
     grants: list[str]
-    if not capability_is_scoped(capability):
+    if capability is JsCapability.KV_BUCKET_KEYS:
+        if bucket is None:
+            raise ValueError(
+                f"{capability.value} grants for stream {stream!r} need the bucket name: the direct "
+                f"read subject is $JS.API.DIRECT.GET.{stream}.$KV.<bucket>.>, in which $KV and the "
+                f"bucket are separate tokens"
+            )
+        grants = [
+            f"$JS.API.STREAM.INFO.{stream}",
+            f"$JS.API.STREAM.MSG.GET.{stream}",
+            f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.>",
+        ]
+    elif not capability_is_scoped(capability):
         grants = [
             f"$JS.API.STREAM.*.{stream}",
             f"$JS.API.STREAM.MSG.*.{stream}",

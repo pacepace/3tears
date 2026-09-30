@@ -44,7 +44,7 @@ from threetears.agent.audit.erasure import (
     AuditAnonymizeUnavailableError,
     request_audit_anonymization,
 )
-from threetears.agent.audit.publish import TOOL_POD_AUDIT_TOKEN, publish_audit, tool_pod_audit_subject
+from threetears.agent.audit.publish import publish_audit
 
 # Version derived from pyproject.toml so the metadata is the single
 # source of truth -- a future release that bumps pyproject without
@@ -68,7 +68,6 @@ __all__ = [
     "MAX_ANONYMIZE_ACTORS",
     "PERSONAL_DETAIL_KEYS",
     "SAFE_DETAIL_KEYS",
-    "TOOL_POD_AUDIT_TOKEN",
     "AuditAnonymization",
     "AuditAnonymizeError",
     "AuditAnonymizeRefusedError",
@@ -83,5 +82,4 @@ __all__ = [
     "publish_audit",
     "request_audit_anonymization",
     "safe_detail_keys_for",
-    "tool_pod_audit_subject",
 ]
