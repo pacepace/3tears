@@ -52,7 +52,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -569,8 +569,8 @@ class FakeNatsClient:
     real listener against it.
     """
 
-    def __init__(self, *, bucket_age: timedelta | None = None) -> None:
-        """initialize with empty bucket registry.
+    def __init__(self, *, bucket_age: timedelta | None = None, declared_buckets: Iterable[str] = ()) -> None:
+        """initialize with a bucket registry holding only what a declarer already created.
 
         :param bucket_age: how long ago every bucket this client creates reports having been
             created. ``None`` means now, which is the real client's behaviour for a fresh bucket.
@@ -586,6 +586,13 @@ class FakeNatsClient:
             this is the one-line way to get one; a test about the watermark itself leaves this
             ``None`` and uses :meth:`FakeKvBucket.wipe` to place the creation time deliberately.
         :ptype bucket_age: timedelta | None
+        :param declared_buckets: bucket names another identity has already declared, as the
+            platform's hub declares every bucket a pod binds. A pod's primitives open bind-only
+            (``create_if_missing=False``), and a bind of a bucket nobody declared raises -- so a
+            test of pod code over this fake names the buckets the hub would have declared,
+            rather than every such test failing with an absent bucket that has nothing to do with
+            what it tests. Each is created in the default shape (no TTL, memory storage)
+        :ptype declared_buckets: Iterable[str]
         :return: None
         :rtype: None
         :raises ValueError: when ``bucket_age`` is negative
@@ -594,6 +601,8 @@ class FakeNatsClient:
             raise ValueError(f"FakeNatsClient bucket_age must not be negative, got {bucket_age}")
         self._bucket_age = bucket_age
         self._buckets: dict[str, FakeKvBucket] = {}
+        for name in declared_buckets:
+            self._buckets[name] = self._new_bucket(name=name, ttl=None, storage="memory", direct=None)
         self.published: list[Any] = []
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
         self._reconnect_callbacks: list[Callable[[], Awaitable[None]]] = []
@@ -717,15 +726,29 @@ class FakeNatsClient:
         if bucket is None:
             if not create_if_missing:
                 raise KeyError(f"bucket {name!r} not found")
-            bucket = FakeKvBucket(
-                bucket_name=name,
-                ttl=ttl if isinstance(ttl, timedelta) else None,
-                storage=storage,
-                direct=direct,
+            bucket = self._new_bucket(
+                name=name, ttl=ttl if isinstance(ttl, timedelta) else None, storage=storage, direct=direct
             )
-            if self._bucket_age is not None:
-                # `wipe` is how a creation time is placed, and on a bucket with no entries it
-                # removes nothing -- so this ages the bucket without pretending anything was lost.
-                bucket.wipe(date_created=datetime.now(UTC) - self._bucket_age)
             self._buckets[name] = bucket
+        return bucket
+
+    def _new_bucket(self, *, name: str, ttl: timedelta | None, storage: str, direct: bool | None) -> FakeKvBucket:
+        """create one fake bucket, aged by ``bucket_age`` when the client was given one.
+
+        :param name: bucket name
+        :ptype name: str
+        :param ttl: recorded TTL
+        :ptype ttl: timedelta | None
+        :param storage: recorded storage
+        :ptype storage: str
+        :param direct: recorded direct-get flag
+        :ptype direct: bool | None
+        :return: the bucket
+        :rtype: FakeKvBucket
+        """
+        bucket = FakeKvBucket(bucket_name=name, ttl=ttl, storage=storage, direct=direct)
+        if self._bucket_age is not None:
+            # `wipe` is how a creation time is placed, and on a bucket with no entries it
+            # removes nothing -- so this ages the bucket without pretending anything was lost.
+            bucket.wipe(date_created=datetime.now(UTC) - self._bucket_age)
         return bucket

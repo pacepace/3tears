@@ -204,3 +204,20 @@ class TestBindOnly:
             await build(client, False)()
         with pytest.raises(KeyError):
             await client.kv_bucket(name="owned", create_if_missing=False)
+
+
+class TestTheFakeClientModelsADeclarer:
+    """the shipped fake names the buckets a declarer created, so pod code over it can bind them."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("build", _PRIMITIVES)
+    async def test_a_bind_only_primitive_binds_a_declared_bucket(self, build: _Opener) -> None:
+        client = FakeNatsClient(declared_buckets=("owned",))
+        await build(client, False)()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("build", _PRIMITIVES)
+    async def test_an_undeclared_bucket_is_still_refused(self, build: _Opener) -> None:
+        client = FakeNatsClient(declared_buckets=("someone-else",))
+        with pytest.raises(KeyError):
+            await build(client, False)()
