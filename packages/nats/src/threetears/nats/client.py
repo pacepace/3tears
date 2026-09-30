@@ -84,6 +84,7 @@ from nats.js.api import (
 from nats.errors import (
     AuthorizationError as _NatsAuthorizationError,
     ConnectionClosedError as _NatsConnectionClosedError,
+    FlushTimeoutError as _NatsFlushTimeoutError,
     NoRespondersError as _NatsNoRespondersError,
     OutboundBufferLimitError as _NatsOutboundBufferLimitError,
     StaleConnectionError as _NatsStaleConnectionError,
@@ -307,11 +308,12 @@ _RESULT_WAITER_CREATE_TIMEOUT_SECONDS: Final[float] = 10.0
 #: bound on handing a superseded subscription over during a renewal. It must NEVER cut nats-py's
 #: drain off inside the flush it starts: nats-py leaves the cancelled PING future in its PONG queue,
 #: the next PONG then raises ``InvalidStateError`` in ``_process_pong``, and the read loop's catch-all
-#: ends the loop -- the connection reports itself connected and never reads again. The flush bounds
-#: itself (``DEFAULT_FLUSH_TIMEOUT``), and a handover makes three of them (:func:`_stop_routing_then_drain`),
-#: so this bound exceeds all three: when it fires, the drain is past its flushes and waiting for queued
-#: messages to be taken, where a cancellation harms nothing.
-_HANDOVER_DRAIN_BOUND_SECONDS: Final[float] = REAUTH_RETIRE_DRAIN_SECONDS + 3 * _NATS_FLUSH_TIMEOUT_SECONDS
+#: ends the loop -- the connection reports itself connected and never reads again (see
+#: :func:`_round_trip`). A handover makes two round trips (:func:`_stop_routing_then_drain`): its own,
+#: which is safe to cancel, and the flush inside nats-py's drain, which bounds itself
+#: (``DEFAULT_FLUSH_TIMEOUT``). This bound exceeds both: when it fires, the drain is past its flush
+#: and waiting for queued messages to be taken, where a cancellation harms nothing.
+_HANDOVER_DRAIN_BOUND_SECONDS: Final[float] = REAUTH_RETIRE_DRAIN_SECONDS + 2 * _NATS_FLUSH_TIMEOUT_SECONDS
 
 #: the prefix of the queue group a subscription joins when its caller names none. Each such
 #: subscription gets a group of its OWN, of which it is the only member -- see
@@ -1432,6 +1434,51 @@ class JetStreamResultWaiter:
             await _unsubscribe_quietly(sub, subject=self._subject)
 
 
+async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SECONDS) -> None:
+    """prove the server has processed everything this connection sent before now.
+
+    nats-py's ``Client.flush`` is unsafe for this, in two ways, both reproduced against a real
+    server (``test_a_timed_out_ping_leaves_the_connection_reading_live``):
+
+    - it writes its ``PING`` straight to the socket (``Client._send_ping``) while a ``SUB``,
+      ``UNSUB`` or ``PUB`` sent just before may still sit in the pending buffer, so the ``PONG``
+      can answer a ``PING`` that overtook them and prove nothing about them;
+    - on a timeout -- or when the caller cancels it -- it cancels its ``PONG`` future but leaves it
+      in ``Client._pongs``. The late ``PONG`` pops the cancelled future, ``set_result`` raises
+      ``InvalidStateError`` in ``_process_pong``, and ``_read_loop``'s catch-all ends the read loop.
+      The connection still reports itself connected and never reads again -- and a later
+      ``flush`` then returns at once without a round trip, because it falls back to writing when
+      the read loop is gone, so a health probe built on it reports that dead connection healthy.
+
+    So the pending buffer is written out first, then the ``PING``, and the wait for its ``PONG`` is
+    shielded: a timeout or cancellation abandons the wait, never the future, which the late
+    ``PONG`` then resolves harmlessly, keeping every later ``PONG`` paired with its own ``PING``.
+
+    :param connection: the nats-py connection
+    :ptype connection: Any
+    :param timeout: seconds to wait for the ``PONG``
+    :ptype timeout: float
+    :return: nothing
+    :rtype: None
+    :raises nats.errors.ConnectionClosedError: when the connection is closed
+    :raises NatsClientError: when the connection is not currently connected
+    :raises nats.errors.FlushTimeoutError: when no ``PONG`` arrives within ``timeout``
+    """
+    if connection.is_closed:
+        raise _NatsConnectionClosedError
+    if not connection.is_connected:
+        raise NatsClientError("cannot round-trip a NATS connection that is not currently connected")
+    # rationale: nats-py exposes no round trip that is ordered after the pending buffer and safe to
+    # time out; see the docstring. both calls are the ones nats-py's own flush makes.
+    await connection._flush_pending(force_flush=True)  # noqa: SLF001 -- see rationale above
+    pong: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+    await connection._send_ping(pong)  # noqa: SLF001 -- see rationale above
+    try:
+        await asyncio.wait_for(asyncio.shield(pong), timeout=timeout)
+    except TimeoutError:
+        raise _NatsFlushTimeoutError from None
+
+
 async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> None:
     """end a subscription the server may still be routing to, without dropping what it routed.
 
@@ -1444,12 +1491,10 @@ async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> No
     server hands to the old member in that gap is lost outright -- no other member ever sees it.
     Found by the live renewal test: 1 of 11858 streamed messages, across a few dozen renewals.
 
-    So the ``UNSUB`` goes out on its own first, and the connection is round-tripped TWICE: the first
-    ``PING`` may still overtake it, but it hands control to the flusher, which writes the ``UNSUB``
-    before the second ``PING`` is written. The second ``PONG`` proves the server processed the
-    ``UNSUB`` and has sent every message it routed here before it. Only then does nats-py's drain run
-    -- its own round trip now harmless -- to wait for each of those messages to be taken, and forget
-    the subscription.
+    So the ``UNSUB`` goes out on its own first, then an ordered :func:`_round_trip`, whose ``PONG``
+    proves the server processed the ``UNSUB`` and has sent every message it routed here before it.
+    Only then does nats-py's drain run -- its own round trip now harmless -- to wait for each of
+    those messages to be taken, and forget the subscription.
 
     :param raw_subscription: the nats-py subscription to end
     :ptype raw_subscription: Any
@@ -1462,8 +1507,7 @@ async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> No
     # rationale: nats-py exposes no way to remove a subscription's interest without also forgetting
     # the subscription (unsubscribe) or racing its own round trip (drain); see the docstring.
     await connection._send_unsubscribe(raw_subscription._id)  # noqa: SLF001 -- see rationale above
-    await connection.flush()
-    await connection.flush()
+    await _round_trip(connection)
     await raw_subscription.drain()
 
 
@@ -2171,10 +2215,12 @@ class NatsClient:
 
         unlike :attr:`is_connected` (which only reports the local
         socket-state cached by nats-py), this awaits an actual
-        round-trip via ``nats-py.flush()`` -- a stale socket that
+        round-trip (:func:`_round_trip`) -- a stale socket that
         the OS hasn't yet timed out can report ``is_connected=True``
         long after the broker has gone away. consumers building
-        ``/healthz`` endpoints should call ``ping()``.
+        ``/healthz`` endpoints should call ``ping()``. a ping that
+        times out leaves the connection reading: nats-py's own flush
+        did not, and killed the connection it was probing.
 
         :param timeout: seconds to wait for the round-trip before
             treating as unhealthy.
@@ -2186,10 +2232,7 @@ class NatsClient:
         if not self._raw.is_connected:
             return False
         try:
-            # nats-py annotates flush(timeout: int) but its body waits via asyncio.wait_for, which
-            # accepts a float; the wrapper deliberately exposes sub-second float timeouts (a 1.5s
-            # health-check ping), so the int annotation is over-strict, not a real mismatch.
-            await self._raw.flush(timeout=timeout)  # type: ignore[arg-type]
+            await _round_trip(self._raw, timeout=timeout)
         except Exception:
             return False
         return True
@@ -2294,8 +2337,7 @@ class NatsClient:
             try:
                 for sub in [s for s in self._subscriptions if not s.is_closed]:
                     moving.append((sub, await sub.subscribe_on(successor)))
-                # nats-py annotates flush(timeout: int) but waits via asyncio.wait_for (accepts float).
-                await successor.flush(timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)  # type: ignore[arg-type]
+                await _round_trip(successor, timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)
             except BaseException:
                 await _close_quietly(successor)
                 raise
@@ -2453,10 +2495,9 @@ class NatsClient:
         A publisher that sends A on the old connection and then B on its successor would otherwise
         race them: they travel on two sockets, and B can be routed first -- a streamed answer's
         tokens arriving out of order. Round-tripping the old connection settles it, since the server
-        processes each connection's input in order and routes a message before it reads the next.
-        TWICE, because nats-py writes a ``PING`` straight to the socket while a publish may still sit
-        in its pending buffer (see :func:`_stop_routing_then_drain`); the second ``PING`` follows
-        everything published before the first. The publish gate is closed meanwhile, so nothing is
+        processes each connection's input in order and routes a message before it reads the next;
+        the round trip is ordered after the pending buffer (:func:`_round_trip`), which nats-py's own
+        flush is not. The publish gate is closed meanwhile, so nothing is
         published on the successor until this returns. A cluster that places the successor on a
         different server than the old connection routes the two over different paths, and no round
         trip can order those; on one server, and on the server the old connection shares with it,
@@ -2470,8 +2511,7 @@ class NatsClient:
         :rtype: None
         """
         try:
-            await previous.flush()
-            await previous.flush()
+            await _round_trip(previous)
         # NOSILENT: logged; the handover must not wedge publishing on a connection that stopped answering
         except Exception as exc:  # noqa: BLE001 -- ordering is best-effort once the old connection is unresponsive
             log.warning(
@@ -2687,9 +2727,8 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        # nats-py annotates flush(timeout: int) but waits via asyncio.wait_for (accepts float); the
-        # wrapper's float timeout is intentional, so the int annotation is over-strict.
-        await self._raw.flush(timeout=timeout)  # type: ignore[arg-type]
+        # ordered after everything already sent, and safe to time out (see _round_trip).
+        await _round_trip(self._raw, timeout=timeout)
         # resilience-task-03: a successful flush drained the outbound buffer -- clear the overflow streak.
         self._health_state["overflow_events"] = 0
 

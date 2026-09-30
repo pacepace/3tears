@@ -36,7 +36,7 @@ before its credential expires.
 - New `NatsClient.renew_connection(*, retire_after)`: the handover. It opens the successor with
   the options `connect` used (a client built around a caller's own nats-py connection cannot
   renew and raises `NatsClientError`); subscribes every `Subscription` on it in the same queue
-  group and round-trips it; proves by two round trips that everything already published on the
+  group and round-trips it; proves by an ordered round trip that everything already published on the
   old connection reached the server, holding new publishes meanwhile, so a message published
   after the renewal never overtakes one published before it; makes it current; ends each
   subscription's old half without dropping what the server had routed to it; rebinds each durable
@@ -75,12 +75,20 @@ before its credential expires.
   `PING`, `UNSUB`). The drain then forgets the subscription while the server may still route to
   it, and drops what arrives. With a shared queue group that is an outright loss: 1 of 11858
   streamed messages across a few dozen renewals. The handover sends the `UNSUB` on its own and
-  round-trips twice before nats-py's drain runs.
+  makes an ordered round trip (see below) before nats-py's drain runs.
 - A flush that times out, or is cancelled, leaves its future in nats-py's PONG queue; the next
   PONG raises `InvalidStateError` in `_process_pong` and the read loop's catch-all ends the read
-  loop -- the connection reports itself connected and never reads again. The handover's bounds
-  are set so they never cancel a flush in progress. `NatsClient.ping()`'s own timeout is still
-  exposed to it (unchanged by this work).
+  loop -- the connection reports itself connected and never reads again, and a later `flush`
+  returns at once without a round trip, so a health probe built on it reports the dead connection
+  healthy. `NatsClient.ping()` -- the `/healthz` probe, with a caller's timeout -- did exactly this
+  to itself whenever a PONG came back late. Every round trip the wrapper makes (`ping`, `flush`,
+  and the handover's) now goes through `_round_trip`: it writes the pending buffer out BEFORE the
+  `PING` (nats-py's `PING` otherwise overtakes a pending `SUB`/`UNSUB`/`PUB`, so its `PONG` proved
+  nothing about them) and shields the `PONG` future, so a timeout or cancellation abandons the wait
+  and the late `PONG` resolves the future harmlessly. Reproduced live
+  (`test_a_timed_out_ping_leaves_the_connection_reading_live.py`: after a ping timed out, the next
+  request timed out on a connection reporting itself connected). `NatsClient.flush` raises
+  nats-py's `FlushTimeoutError` on a timeout, as before.
 
 **Proven live** (`packages/nats/tests/integration/test_credential_renewal_live.py`, a real
 nats-server with config-mode `auth_callout` and the real `AuthCalloutResponder`): a request in

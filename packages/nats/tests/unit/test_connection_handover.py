@@ -86,6 +86,9 @@ class _Conn:
         self._subscribe_fails = subscribe_fails
         # the protocol the handover writes, in order
         self.calls: list[str] = []
+        # set by a test to hold every PONG until it opens the gate
+        self.pong_gate: asyncio.Event | None = None
+        self.late_pongs: list[asyncio.Task[None]] = []
 
     async def subscribe(self, subject: str, queue: str = "") -> _Sub:
         if self._subscribe_fails:
@@ -97,8 +100,21 @@ class _Conn:
     async def _send_unsubscribe(self, sid: int, limit: int = 0) -> None:
         self.calls.append(f"unsub {sid}")
 
-    async def flush(self, timeout: float = 2.0) -> None:
-        self.calls.append("flush")
+    async def _flush_pending(self, force_flush: bool = False) -> None:
+        return None
+
+    async def _send_ping(self, future: asyncio.Future[bool]) -> None:
+        # the round trip's PING, answered at once -- or once the test opens the pong gate
+        self.calls.append("round-trip")
+        if self.pong_gate is None:
+            future.set_result(True)
+            return
+
+        async def _pong_later(gate: asyncio.Event) -> None:
+            await gate.wait()
+            future.set_result(True)
+
+        self.late_pongs.append(asyncio.create_task(_pong_later(self.pong_gate)))
 
     async def publish(self, subject: str, payload: bytes, reply: str = "", headers: Any = None) -> None:
         self.published.append((subject, payload))
@@ -244,10 +260,10 @@ async def test_the_handover_moves_every_subscription_before_the_old_half_is_rele
     assert client.raw is successor
     assert [(s.subject, s.queue) for s in successor.subs] == [("events.>", sub.queue)]
     assert old_half.drained
-    # two round trips settle what was published on the old connection before anything is published
-    # on the successor; then the UNSUB on its own, then TWO round trips -- nats-py's first PING can
-    # overtake the UNSUB -- and only then nats-py's drain, which forgets the subscription.
-    assert current.calls == ["flush", "flush", "unsub 1", "flush", "flush", "drain 1"]
+    # a round trip settles what was published on the old connection before anything is published
+    # on the successor; then the UNSUB on its own, then a round trip ordered after it, and only then
+    # nats-py's drain, which forgets the subscription.
+    assert current.calls == ["round-trip", "unsub 1", "round-trip", "drain 1"]
     await successor.subs[0].queue_in.put(_Msg(b"routed to the successor"))
     await _settle()
     assert received == [b"routed to the old connection", b"routed to the successor"]
@@ -449,7 +465,7 @@ async def test_a_push_consumer_is_released_then_bound_again_on_the_successor() -
 
     assert order == ["bind:successor-js:True"]
     assert consumer.raw_subscription is new
-    assert old_connection.calls == ["unsub 7", "flush", "flush"]
+    assert old_connection.calls == ["unsub 7", "round-trip"]
 
 
 async def test_a_push_consumer_stopped_during_the_move_is_not_bound_again() -> None:
@@ -486,13 +502,7 @@ async def test_nothing_is_published_on_the_successor_before_the_old_connection_s
     current, successor = _Conn("current"), _Conn("successor")
     client = await _connected(monkeypatch, current, successor)
     settle = asyncio.Event()
-    original_flush = current.flush
-
-    async def _slow_flush(timeout: float = 2.0) -> None:
-        await settle.wait()
-        await original_flush(timeout)
-
-    current.flush = _slow_flush  # type: ignore[method-assign]
+    current.pong_gate = settle
     await client.publish_raw(subject=Subject.raw("tokens"), payload=b"A")
     renewal = asyncio.create_task(client.renew_connection(retire_after=timedelta(seconds=30)))
     await _settle()

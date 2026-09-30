@@ -100,6 +100,10 @@ class _FakeNatsPyClient:
         # records errors passed to the nats-py op-error reconnect entry point that
         # :meth:`NatsClient.reconnect` drives.
         self.op_err_calls: list[Exception] = []
+        # the round trip's protocol, and the PONG futures it handed nats-py
+        self.wire: list[str] = []
+        self.pongs: list[asyncio.Future[bool]] = []
+        self.answers_pings = True
 
     async def _process_op_err(self, e: Exception) -> None:
         self.op_err_calls.append(e)
@@ -121,6 +125,17 @@ class _FakeNatsPyClient:
 
     async def close(self) -> None:
         self.is_closed = True
+
+    async def _flush_pending(self, force_flush: bool = False) -> None:
+        # the wrapper's round trip writes the pending buffer out before its PING
+        self.wire.append("flush-pending")
+
+    async def _send_ping(self, future: asyncio.Future[bool]) -> None:
+        # a PING whose PONG this fake answers at once, unless told the server is slow
+        self.wire.append("PING")
+        self.pongs.append(future)
+        if self.answers_pings:
+            future.set_result(True)
 
     async def flush(self, timeout: float = 2.0) -> None:
         self.flush_calls: list[float]
@@ -1193,13 +1208,13 @@ async def test_reconnect_noops_when_not_currently_connected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ping_returns_true_when_flush_succeeds() -> None:
-    """ping forwards to nats-py flush and returns True on success."""
+async def test_ping_round_trips_after_the_pending_buffer() -> None:
+    """ping writes out what is pending, THEN pings: its PONG must answer for what came before."""
     client, fake = _make_client()
     fake.is_connected = True
     result = await client.ping(timeout=1.5)
     assert result is True
-    assert fake.flush_calls == [1.5]
+    assert fake.wire == ["flush-pending", "PING"]
 
 
 @pytest.mark.asyncio
@@ -1209,17 +1224,25 @@ async def test_ping_returns_false_when_disconnected() -> None:
     fake.is_connected = False
     result = await client.ping()
     assert result is False
-    assert not hasattr(fake, "flush_calls") or fake.flush_calls == []
+    assert fake.wire == []
 
 
 @pytest.mark.asyncio
-async def test_ping_returns_false_when_flush_raises() -> None:
-    """ping converts a flush exception (timeout / broker error) into False."""
+async def test_a_ping_that_times_out_leaves_its_pong_future_for_the_late_pong() -> None:
+    """a timed-out ping reports False and abandons the WAIT, never the future.
+
+    nats-py's own flush cancels the future and leaves it in its PONG queue; the late PONG then
+    raises in the read loop and ends it. A pending future is resolved by that PONG harmlessly.
+    """
     client, fake = _make_client()
     fake.is_connected = True
-    fake.flush_error = TimeoutError("server slow")
-    result = await client.ping(timeout=0.1)
-    assert result is False
+    fake.answers_pings = False
+
+    assert await client.ping(timeout=0.05) is False
+
+    assert len(fake.pongs) == 1
+    assert not fake.pongs[0].cancelled()
+    fake.pongs[0].set_result(True)  # the late PONG: must not raise
 
 
 # ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ first one is closed:
 2. **Subscribe every subscription on it, in the same queue group**, and round-trip it. Both
    connections are now members.
 3. **Settle the old connection's publishes, then switch.** New publishes wait (the publish gate)
-   while the old connection is round-tripped twice, so a message published on the successor never
+   while the old connection makes an ordered round trip, so a message published on the successor never
    overtakes one already published on the old connection. Then the successor is current.
 4. **End each subscription's old half without dropping anything**, and rebind durable push
    consumers.
@@ -96,14 +96,16 @@ Both reproduced against a real nats-server.
   about the `UNSUB`; the drain forgets the subscription while the server may still route to it, and
   `_process_msg` drops what arrives for an unknown sid. With a shared queue group that message
   reached no other member: 1 of 11858 streamed messages was lost across a few dozen renewals under
-  load. The handover (`_stop_routing_then_drain`) sends the `UNSUB` on its own and round-trips
-  twice -- the second `PING` is written after the flusher has written the `UNSUB` -- before running
+  load. The handover (`_stop_routing_then_drain`) sends the `UNSUB` on its own and makes an ordered
+  round trip (`_round_trip`: the pending buffer is written out before the `PING`) before running
   nats-py's drain.
-- **A flush that times out or is cancelled can kill the read loop.** The cancelled future stays in
+- **A flush that times out or is cancelled kills the read loop.** The cancelled future stays in
   `_pongs`; the next `PONG` raises `InvalidStateError` in `_process_pong`, and `_read_loop`'s
   catch-all logs "nats: encountered error" and exits. The connection still reports connected and
-  never reads again. The handover's bounds are sized so they never cancel a flush in progress.
-  `NatsClient.ping()` -- a health probe with its own timeout -- is still exposed to it.
+  never reads again, and a later `flush` returns without a round trip. Every wrapper round trip
+  (`ping`, `flush`, the handover's) goes through `_round_trip`, which shields the `PONG` future, so a
+  timeout abandons the wait and never the future. The one flush left inside nats-py's own `drain`
+  is bounded by its own timeout and never cancelled by the handover.
 
 ## Alternatives rejected
 
