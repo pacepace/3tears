@@ -161,6 +161,20 @@ class TestFireInsertParams:
         params = _fire_insert_params(data)
         assert params[_FIRE_INSERT_COLUMNS.index("display_suppressed")] is False
 
+    def test_a_missing_protected_flag_binds_false(self) -> None:
+        """a cached row with no flag (written before v007, or never read back) upserts as unprotected."""
+        data = {
+            "conversation_id": _new_uuid(),
+            "schedule_id": _new_uuid(),
+            "user_id": _new_uuid(),
+            "agent_id": _new_uuid(),
+            "schedule_type": "interval",
+            "protected": None,
+            "date_created": datetime.now(UTC),
+            "date_updated": datetime.now(UTC),
+        }
+        assert _schedule_insert_params(data)[_SCHEDULE_INSERT_COLUMNS.index("protected")] is False
+
 
 class TestSubscriptionInsertParams:
     """``_subscription_insert_params`` preserves column order + defaults."""

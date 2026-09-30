@@ -1735,6 +1735,9 @@ def _schedule_value_for_column(col: str, data: dict[str, Any]) -> Any:
         value = data[col]
         if col == "schedule_config" and value is None:
             return {}
+        # an entity created or cached before v007 carries no flag; the column is NOT NULL
+        if col == "protected" and value is None:
+            return False
         return value
     if col == "schedule_config":
         return {}
