@@ -53,6 +53,7 @@ design notes
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, Final
@@ -76,7 +77,7 @@ from threetears.agent.wake.collections import (
 )
 from threetears.agent.wake.entities import WakeScheduleEntity
 from threetears.agent.wake.metrics import get_wake_emitter
-from threetears.agent.wake.types import FireSource, WakeDispatchResult, WakeTrigger
+from threetears.agent.wake.types import FireSource, ReapedFiresHook, WakeDispatchResult, WakeTrigger
 
 __all__ = ["DispatchCallback", "wake_tick_job"]
 
@@ -109,6 +110,7 @@ _P_EXECUTION_MODE: Final[str] = "execution_mode"
 _P_TASK_PROMPT: Final[str] = "task_prompt"
 _P_CONTEXT_FROM: Final[str] = "context_from_schedule_id"
 _P_INCLUDE_HISTORY: Final[str] = "include_conversation_history"
+_P_PROTECTED: Final[str] = "protected"
 
 
 # --- output-dict keys: bridge wake's typed result columns through the generic
@@ -218,6 +220,7 @@ class _WakeDueSchedule:
             _P_TASK_PROMPT: self._entity.task_prompt,
             _P_CONTEXT_FROM: self._entity.context_from_schedule_id,
             _P_INCLUDE_HISTORY: self._entity.include_conversation_history,
+            _P_PROTECTED: self._entity.protected,
         }
 
     @property
@@ -332,15 +335,18 @@ class _WakeFireStore:
     callsite symmetry and discarded -- they are not v1 ``wake_fires`` columns).
     """
 
-    def __init__(self, collection: WakeFireCollection) -> None:
+    def __init__(self, collection: WakeFireCollection, on_reaped: ReapedFiresHook | None = None) -> None:
         """Wrap a wake fire collection.
 
         :param collection: the unchanged wake fire collection
         :ptype collection: WakeFireCollection
+        :param on_reaped: consumer hook told of every fire a sweep failed
+        :ptype on_reaped: ReapedFiresHook | None
         :return: nothing
         :rtype: None
         """
         self._collection = collection
+        self._on_reaped = on_reaped
 
     async def create_dispatching(
         self,
@@ -361,9 +367,9 @@ class _WakeFireStore:
             actual_fired_at=actual_fired_at,
             fire_source=_WAKE_FIRE_SOURCE,
             # accepted for callsite symmetry + discarded by the collection (not
-            # a v1 wake_fires column); the real execution_mode lives on the
+            # a wake_fires column); the real execution_mode lives on the
             # schedule row and rides the trigger payload, not the fire row.
-            execution_mode="inline",
+            execution_mode="spawn",
         )
 
     async def finalize_success(
@@ -413,7 +419,10 @@ class _WakeFireStore:
 
         ``wake_fires`` holds exactly one kind, so a sweep for kinds that
         do not include ``agent_wake`` reclaims nothing rather than the
-        whole table.
+        whole table. The consumer's ``on_reaped`` hook then hears of every
+        fire the sweep failed, with the conversation each had started. The
+        rows are already failed when it runs, so a hook that raises is
+        logged and the count still stands.
 
         :param now: sweep instant
         :ptype now: datetime
@@ -426,7 +435,16 @@ class _WakeFireStore:
         """
         if _WAKE_KIND not in kinds:
             return 0
-        return await self._collection.reap_stale_dispatching(now, older_than=older_than)
+        reaped = await self._collection.reap_stale_dispatching(now, older_than=older_than)
+        if reaped and self._on_reaped is not None:
+            try:
+                await self._on_reaped(reaped)
+            except Exception:  # noqa: BLE001 - boundary: the rows are failed already; the hook must not undo the count
+                log.exception(
+                    "wake tick: on_reaped hook raised",
+                    extra={"extra_data": {"fire_ids": [str(fire.fire_id) for fire in reaped]}},
+                )
+        return len(reaped)
 
 
 def _rebuild_wake_trigger(job_trigger: JobTrigger) -> WakeTrigger:
@@ -456,6 +474,7 @@ def _rebuild_wake_trigger(job_trigger: JobTrigger) -> WakeTrigger:
         context_from_schedule_id=payload.get(_P_CONTEXT_FROM),
         skill_id=payload.get(_P_SKILL_ID),
         include_conversation_history=bool(payload.get(_P_INCLUDE_HISTORY, True)),
+        protected=bool(payload.get(_P_PROTECTED, False)),
     )
 
 
@@ -487,6 +506,8 @@ async def wake_tick_job(
     pool: Any,
     nats_client: Any,
     dispatch_callback: DispatchCallback,
+    *,
+    on_reaped: ReapedFiresHook | None = None,
 ) -> None:
     """Run one tick pass of the agent-wake scheduler.
 
@@ -517,8 +538,12 @@ async def wake_tick_job(
     :ptype nats_client: Any
     :param dispatch_callback: per-fire dispatcher; raised exceptions are
         isolated to a single schedule and recorded as failed fires by the
-        engine
+        engine. The trigger it receives carries its ``fire_id``.
     :ptype dispatch_callback: DispatchCallback
+    :param on_reaped: told of every fire the reaper failed this tick, with
+        the conversation each had started, so the consumer can close what
+        it opened for them
+    :ptype on_reaped: ReapedFiresHook | None
     :return: nothing
     :rtype: None
     """
@@ -531,12 +556,12 @@ async def wake_tick_job(
     registry.configure(l3_pool=pool)
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     schedule_store = _WakeScheduleStore(WakeScheduleCollection(registry=registry, config=cfg))
-    fire_store = _WakeFireStore(WakeFireCollection(registry=registry, config=cfg))
+    fire_store = _WakeFireStore(WakeFireCollection(registry=registry, config=cfg), on_reaped)
     emitter = get_wake_emitter()
 
     async def _adapt(job_trigger: JobTrigger, fire_id: UUID) -> JobFireResult:
         """Bridge one generic fire to wake's dispatch callback + result shape."""
-        wake_trigger = _rebuild_wake_trigger(job_trigger)
+        wake_trigger = dataclasses.replace(_rebuild_wake_trigger(job_trigger), fire_id=fire_id)
         result = await dispatch_callback(wake_trigger, fire_id, pool)
         # Re-emit the genuinely wake-specific yield-duration histogram (no
         # generic equivalent); the generic engine owns the fire / drift

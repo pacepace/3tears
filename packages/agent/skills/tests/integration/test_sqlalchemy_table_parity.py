@@ -10,7 +10,7 @@ from the schema the canonical migrations produce.
 
 This test pins the two against each other structurally. It:
 
-1. applies the full migration chain (v001-v003) to one fresh Postgres
+1. applies the full migration chain (v001-v004) to one fresh Postgres
    schema (the migration-DDL truth);
 2. emits each factory's ``CREATE TABLE`` + ``CREATE INDEX`` DDL into a
    second fresh schema (the factory truth), via the SQLAlchemy

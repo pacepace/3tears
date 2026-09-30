@@ -107,7 +107,8 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
         SAColumn("search_vector", TSVECTOR(), nullable=True),
         SAColumn("alias", Text(), nullable=True),
         SAColumn("date_created", DateTime(timezone=True), nullable=False),
-        SAColumn("date_updated", DateTime(timezone=True), nullable=True),
+        # NOT NULL, as every migration since v001 builds it (v0.57.0).
+        SAColumn("date_updated", DateTime(timezone=True), nullable=False),
         # v024 salience substrate. server_default strings mirror the
         # Column declarations verbatim (column_signature compares the
         # raw default arg), so parity holds byte-for-byte.
@@ -134,6 +135,8 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             ondelete="SET NULL",
         ),
         SAIndex("ix_memories_user_date", "user_id", "date_created"),
+        # v0.57.0: the v004 conversation index, now declared.
+        SAIndex("idx_mem_conversation", "conversation_id"),
         SAIndex(
             "ix_memories_user_alias",
             "agent_id",
@@ -231,9 +234,11 @@ def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
             ["cloud_connections.cloud_connection_id"],
             ondelete="SET NULL",
         ),
+        # v0.57.0: the composite parent key v017 builds, not the
+        # single-column ``memory_id`` one the declaration used to carry.
         SAForeignKeyConstraint(
-            ["memory_id"],
-            ["memories.memory_id"],
+            ["agent_id", "memory_id"],
+            ["memories.agent_id", "memories.memory_id"],
             ondelete="CASCADE",
         ),
         SAIndex("ix_media_user_date", "user_id", "date_created"),
@@ -373,6 +378,18 @@ def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
             ondelete="CASCADE",
         ),
         SAIndex("ix_memory_chunks_memory", "memory_id", "chunk_index"),
+        # v0.57.0: the v015 cursor-paging and message-range indexes, now declared.
+        SAIndex(
+            "idx_chunks_memory_id_chunk_id",
+            "memory_id",
+            "chunk_id",
+            postgresql_where=sa_text("memory_id IS NOT NULL"),
+        ),
+        SAIndex(
+            "idx_chunks_message_id_end",
+            "message_id_end",
+            postgresql_where=sa_text("message_id_end IS NOT NULL"),
+        ),
         SAIndex("ix_memory_chunks_user", "user_id"),
         # v0.8.1 enrichments mirror prod alembic.
         SAIndex(
@@ -425,7 +442,13 @@ def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table
             ["conversations.conversation_id"],
             ondelete="CASCADE",
         ),
-        SAIndex("ix_conversation_memory_refs_cid", "conversation_id"),
+        # v0.57.0: the ledger's (conversation_id, date_created) index the
+        # migrations build; the primary key serves conversation_id alone.
+        SAIndex(
+            "idx_conv_mem_refs_conversation_date_created",
+            "conversation_id",
+            "date_created",
+        ),
     )
 
 
@@ -486,6 +509,16 @@ def test_parity_media_collection_schema() -> None:
     via_reference = _reference_media_table(sa.MetaData())
     via_collection = MediaCollection.schema.to_sqlalchemy_table(sa.MetaData())
     assert_tables_equivalent(via_reference, via_collection)
+
+    # the only key to memories is the composite one: a single-column
+    # ``memory_id`` key would let a media row point into another agent's
+    # partition.
+    memory_fks = [
+        tuple(c.column_keys)
+        for c in via_collection.constraints
+        if isinstance(c, sa.ForeignKeyConstraint) and c.elements[0].target_fullname.split(".", 1)[0] == "memories"
+    ]
+    assert memory_fks == [("agent_id", "memory_id")]
 
 
 def test_parity_media_content_collection_schema() -> None:

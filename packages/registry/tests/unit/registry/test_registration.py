@@ -456,6 +456,7 @@ class _RecordingAuthenticator:
         self._owned = owned_namespaces
         self._other = other_nodes or []
         self.seen_tokens: list[str] = []
+        self.seen_agent_tokens: list[str] = []
 
     async def verify_pod(self, token: str) -> "ToolPodAuth | None":
         self.seen_tokens.append(token)
@@ -469,9 +470,9 @@ class _RecordingAuthenticator:
         return result
 
     async def verify_agent(self, token: str) -> "UUID | None":
-        """verify no agent: these tests register Tool Pods and tokenless manifests."""
-        del token
-        return None
+        """verify :data:`_AGENT_TOKEN` as the agent :data:`_AGENT_POD` names, and nothing else."""
+        self.seen_agent_tokens.append(token)
+        return _AGENT if token == _AGENT_TOKEN else None
 
     async def provider_nodes(self) -> tuple[str, ...]:
         from threetears.core.namespaces import build_tool_provider_node_name
@@ -485,10 +486,11 @@ class _RecordingAuthenticator:
         return tuple(nodes)
 
 
-#: the pod id an agent's in-process ToolServer registers under. a TOKENLESS manifest is only
-#: ever admitted under one of these: a single-token id is a Tool Pod's, whose copies serve every
-#: caller and so must come from a verified publisher.
-_AGENT_POD = Subjects.agent_inprocess_pod_id(UUID("01948a00-aaaa-7000-8000-00000000000a"), "inst-1")
+#: the agent whose in-process ToolServer registers under :data:`_AGENT_POD`, signing with
+#: :data:`_AGENT_TOKEN`. Since 0.57.0 an agent's manifest is admitted only signed.
+_AGENT = UUID("01948a00-aaaa-7000-8000-00000000000a")
+_AGENT_POD = Subjects.agent_inprocess_pod_id(_AGENT, "inst-1")
+_AGENT_TOKEN = "the-agents-own-token"
 
 
 def _manifest_with_token(
@@ -499,11 +501,12 @@ def _manifest_with_token(
 ) -> RegistrationManifest:
     """build a manifest carrying ``token`` as its bootstrap_token (the self-minted JWT slot).
 
-    a tokenless manifest registers under an agent's in-process pod id -- the only publisher that
-    presents no token -- unless ``pod_id`` says otherwise.
+    the agent's own token, or no token, registers under the agent's in-process pod id unless
+    ``pod_id`` says otherwise.
     """
     base = _make_manifest(tools=tools)
-    chosen = pod_id if pod_id is not None else (base.pod_id if token is not None else _AGENT_POD)
+    agent_shaped = token is None or token == _AGENT_TOKEN
+    chosen = pod_id if pod_id is not None else (_AGENT_POD if agent_shaped else base.pod_id)
     return RegistrationManifest(pod_id=chosen, tools=base.tools, bootstrap_token=token)
 
 
@@ -550,13 +553,11 @@ class TestRegistrationHandlerAuthenticator:
         assert catalog.get("threetears.calculator@1.0.0") is None
 
     @pytest.mark.asyncio
-    async def test_tokenless_manifest_is_admitted_outside_every_owned_node(self) -> None:
-        """the agent-owned in-process pod: still admitted, still never verified.
+    async def test_an_agent_signed_manifest_is_admitted_outside_every_owned_node(self) -> None:
+        """the agent-owned in-process pod, signed with its agent's token, is verified and admitted.
 
-        It registers over its agent's own NATS connection, which the auth-callout
-        already authenticated per-key, so it presents no token and never reaches
-        the verifier. What it offers here sits under no provider node anybody
-        owns, which is the ordinary case for an agent's own tools.
+        What it offers here sits under no provider node anybody owns, which is
+        the ordinary case for an agent's own tools.
         """
         catalog = ToolCatalog()
         auth = _RecordingAuthenticator("the-jwt", owned_namespaces=["threetears"])
@@ -571,22 +572,22 @@ class TestRegistrationHandlerAuthenticator:
                 "input_schema": {"type": "object", "properties": {}},
             },
         ]
-        manifest = _manifest_with_token(None, tools=tools)
+        manifest = _manifest_with_token(_AGENT_TOKEN, tools=tools)
         msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
 
         await handler.handle_registration(msg)
 
-        assert auth.seen_tokens == []  # tokenless -> never reached the verifier
+        assert auth.seen_tokens == []  # an agent's token never reaches the Tool Pod verifier
+        assert auth.seen_agent_tokens == [_AGENT_TOKEN]
         reply = nc.publish_reply.call_args.kwargs["message"]
         assert reply.success is True
         assert reply.registered_tools == ["myagent.summarize@1.0.0"]
 
     @pytest.mark.asyncio
-    async def test_tokenless_manifest_is_filtered_not_exempt(self) -> None:
-        """the path that used to return before any filtering ran.
+    async def test_an_agent_signed_manifest_is_filtered_not_exempt(self) -> None:
+        """a verified agent still owns no provider node.
 
-        A tokenless pod owns no provider node, so a name inside somebody else's
-        node is refused -- the whole point of this change. Paired above with the
+        A name inside somebody else's node is refused. Paired above with the
         name that IS admitted, so this is a filter rather than a blanket refusal.
         """
         catalog = ToolCatalog()
@@ -594,12 +595,12 @@ class TestRegistrationHandlerAuthenticator:
         handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
         nc = _make_registry_nc()
         await handler.start(nc)
-        manifest = _manifest_with_token(None)
+        manifest = _manifest_with_token(_AGENT_TOKEN)
         msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
 
         await handler.handle_registration(msg)
 
-        assert auth.seen_tokens == []  # still never verified: it holds no row to verify against
+        assert auth.seen_agent_tokens == [_AGENT_TOKEN]
         reply = nc.publish_reply.call_args.kwargs["message"]
         assert reply.success is False
         assert "threetears.calculator" in reply.error
@@ -943,12 +944,13 @@ class TestNoRegistrationPathIsUnfiltered:
         handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
         nc = _make_registry_nc()
         await handler.start(nc)
-        msg = _make_nats_msg(_manifest_with_token(None, tools=self._TOOL).model_dump_json().encode("utf-8"))
+        msg = _make_nats_msg(_manifest_with_token(_AGENT_TOKEN, tools=self._TOOL).model_dump_json().encode("utf-8"))
 
         await handler.handle_registration(msg)
 
         reply = nc.publish_reply.call_args.kwargs["message"]
         assert reply.success is False
+        assert [(r.name, r.code) for r in reply.refused_tools] == [("pentest.sqlmap", "OWNED_ELSEWHERE")]
         assert catalog.get("pentest.sqlmap@1.0.0") is None
 
 
@@ -968,8 +970,7 @@ class TestAnUnreadableOwnershipGraphRefuses:
             return None
 
         async def verify_agent(self, token: str) -> "UUID | None":
-            del token
-            return None
+            return _AGENT if token == _AGENT_TOKEN else None
 
         async def provider_nodes(self) -> tuple[str, ...]:
             raise RuntimeError("the broker is down")
@@ -981,7 +982,7 @@ class TestAnUnreadableOwnershipGraphRefuses:
         handler = RegistrationHandler(catalog, namespace="test", authenticator=self._BrokenDirectory())
         nc = _make_registry_nc()
         await handler.start(nc)
-        msg = _make_nats_msg(_manifest_with_token(None).model_dump_json().encode("utf-8"))
+        msg = _make_nats_msg(_manifest_with_token(_AGENT_TOKEN).model_dump_json().encode("utf-8"))
 
         await handler.handle_registration(msg)
 
@@ -998,7 +999,7 @@ class TestAnUnreadableOwnershipGraphRefuses:
         handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
         nc = _make_registry_nc()
         await handler.start(nc)
-        msg = _make_nats_msg(_manifest_with_token(None).model_dump_json().encode("utf-8"))
+        msg = _make_nats_msg(_manifest_with_token(_AGENT_TOKEN).model_dump_json().encode("utf-8"))
 
         await handler.handle_registration(msg)
 

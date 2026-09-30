@@ -109,8 +109,11 @@ _RETRO_ADD_FK_SQL = """
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conname = 'wake_fires_webhook_subscription_fk'
+        SELECT 1 FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+         WHERE c.conname = 'wake_fires_webhook_subscription_fk'
+           AND n.nspname = current_schema()
     ) THEN
         ALTER TABLE wake_fires
             ADD CONSTRAINT wake_fires_webhook_subscription_fk

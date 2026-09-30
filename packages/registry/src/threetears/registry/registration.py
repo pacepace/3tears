@@ -293,9 +293,6 @@ class RegistrationHandler:
         self._probe_timeout = probe_timeout if probe_timeout is not None else get_probe_timeout()
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
-        # agent pod ids already warned about for registering unsigned, so the rollout's progress
-        # reads as one line per not-yet-rebuilt agent process rather than one per heartbeat.
-        self._unsigned_agent_pods_warned: set[str] = set()
 
     @property
     def subscription_active(self) -> bool:
@@ -612,13 +609,9 @@ class RegistrationHandler:
         * **open mode** (no authenticator): nothing is verified and nothing enforced;
         * **a dotted pod id** is an agent's in-process server. A token must verify as the agent
           the pod id names (:meth:`ToolPodAuthenticator.verify_agent`), or the whole manifest is
-          refused -- a failed signature is never downgraded to an unsigned one. With no token the
-          manifest is UNSIGNED: agents built on an older SDK register this way, and in this
-          release they keep their own agent-scoped copies (see
-          :func:`~threetears.registry.ownership.admit_copy`), warned once per pod id, and 0.57.0
-          refuses them -- ``test_unsigned_agent_concession_expires.py`` fails until it does. A pod id
-          that has ever registered verified is refused unsigned, so the concession cannot be used
-          to rewrite a signed agent's copy;
+          refused -- a failed signature is never downgraded to an unsigned one. A manifest with no
+          token is refused: an agent registers signed with its own identity. (0.55 and 0.56 admitted
+          an unsigned agent's own copies while agents moved to an SDK that signs.)
         * **a single-token pod id** is a Tool Pod's, whose copies serve every caller. It must
           carry a token, the token must verify (:meth:`ToolPodAuthenticator.verify_pod`), and the
           verified pod must BE the pod the manifest names.
@@ -639,7 +632,16 @@ class RegistrationHandler:
         elif owner is not None and token is not None:
             result = await self._verified_agent(pod_id, owner, token, agent_identity)
         elif owner is not None:
-            result = self._unsigned_agent_publisher(pod_id, agent_identity)
+            result = _Publisher(
+                standing=unverified,
+                self_identity=(),
+                name=pod_id,
+                error=(
+                    "agent in-process manifest carries no identity token; an agent registers signed "
+                    "with its own identity"
+                ),
+                error_code=RefusalCode.UNVERIFIED_PUBLISHER,
+            )
         elif token is None:
             result = _Publisher(
                 standing=unverified,
@@ -704,41 +706,6 @@ class RegistrationHandler:
                     self_identity=agent_identity,
                     name=f"agent {owner}",
                 )
-        return result
-
-    def _unsigned_agent_publisher(self, pod_id: str, agent_identity: tuple[str, ...]) -> _Publisher:
-        """the standing of an agent's UNSIGNED manifest in this release.
-
-        :param pod_id: the agent in-process pod id
-        :ptype pod_id: str
-        :param agent_identity: the agent's namespace, returned on the reply
-        :ptype agent_identity: tuple[str, ...]
-        :return: an unverified publisher, or a refusal when the pod id has registered verified
-        :rtype: _Publisher
-        """
-        unverified = PublisherStanding(verified=False, platform_shared=False, owned_nodes=())
-        result: _Publisher
-        if self._catalog.pod_has_verified_copy(pod_id):
-            result = _Publisher(
-                standing=unverified,
-                self_identity=(),
-                name=pod_id,
-                error=(
-                    f"pod id {pod_id!r} has registered with a verified agent identity; an unsigned manifest "
-                    "under it cannot be told apart from another agent impersonating it, and is refused"
-                ),
-                error_code=RefusalCode.UNVERIFIED_PUBLISHER,
-            )
-        else:
-            if pod_id not in self._unsigned_agent_pods_warned:
-                self._unsigned_agent_pods_warned.add(pod_id)
-                log.warning(
-                    "agent in-process server registered unsigned; its copies are admitted for its own agent "
-                    "only. an agent SDK that signs its registration with the agent's own identity removes "
-                    "this line; 0.57.0 refuses unsigned registrations",
-                    extra={"extra_data": {"pod_id": pod_id}},
-                )
-            result = _Publisher(standing=unverified, self_identity=agent_identity, name=pod_id)
         return result
 
     async def _verified_tool_pod(self, pod_id: str, token: str, unverified: PublisherStanding) -> _Publisher:

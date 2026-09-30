@@ -28,6 +28,7 @@ from threetears.agent.skills.entities import (
 from threetears.agent.skills.tools import (
     SkillEligibleTool,
     SkillToolIntrospect,
+    TOOL_SKILLS_NOT_OFFERED,
     load_skill_create_tool,
     load_skill_delete_tool,
     load_skill_get_tool,
@@ -1233,3 +1234,164 @@ class TestSkillIntrospect:
         out = await tool.ainvoke({"name_or_id": "ghost"})
         assert "[TOOL ERROR]" in out
         assert "no skill or tool" in out
+
+
+# --- a skill that is one tool call ---
+
+
+def _tool_factories(
+    coll: _FakeSkillsCollection,
+    reg: _FakeRegistry,
+    *,
+    agent_id: UUID,
+    user_id: UUID,
+) -> tuple[Any, Any, Any]:
+    """Return the create, update and get tools bound to one actor."""
+    [create] = load_skill_create_tool(
+        agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg, offer_tool_skills=True
+    )
+    [update] = load_skill_update_tool(
+        agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg, offer_tool_skills=True
+    )
+    [get] = load_skill_get_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll)
+    return create, update, get
+
+
+class TestToolCallSkill:
+    """``skill_create`` / ``skill_update`` write ``tool`` + ``arguments`` and refuse a row that is both kinds."""
+
+    async def test_create_tool_only_skill(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        create, _, get = _tool_factories(
+            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+        )
+        out = await create.ainvoke(
+            {"name": "errors", "summary": "last hour's errors", "tool": "loki.query", "arguments": {"q": "error"}}
+        )
+        assert out.startswith("[skill:")
+        [row] = coll.rows.values()
+        assert row["body"] is None
+        assert row["tool"] == "loki.query"
+        assert row["arguments"] == {"q": "error"}
+        shown = await get.ainvoke({"skill_id": str(row["skill_id"])})
+        assert "tool: loki.query" in shown
+        assert 'arguments: {"q": "error"}' in shown
+
+    async def test_create_with_body_and_tool_refused(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        create, _, _ = _tool_factories(
+            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+        )
+        out = await create.ainvoke({"name": "both", "summary": "s", "body": "steps", "tool": "loki.query"})
+        assert out.startswith("[TOOL ERROR] skill_create:")
+        assert "not both" in out
+        assert coll.rows == {}
+
+    async def test_create_arguments_without_tool_refused(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        create, _, _ = _tool_factories(coll, _FakeRegistry(), agent_id=agent_id, user_id=user_id)
+        out = await create.ainvoke({"name": "orphan", "summary": "s", "body": "steps", "arguments": {"q": 1}})
+        assert "[TOOL ERROR]" in out
+        assert "arguments need a tool" in out
+        assert coll.rows == {}
+
+    async def test_create_tool_needs_acl(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        reg = _FakeRegistry()  # nothing permitted
+        create, _, _ = _tool_factories(coll, reg, agent_id=agent_id, user_id=user_id)
+        out = await create.ainvoke({"name": "denied", "summary": "s", "tool": "mcp.shell"})
+        assert "[TOOL ERROR]" in out
+        assert "tool entry 'mcp.shell' not authorized" in out
+        assert reg.acl_calls == [(user_id, agent_id, "mcp.shell")]
+        assert coll.rows == {}
+
+    async def test_create_oversized_arguments_refused(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        create, _, _ = _tool_factories(
+            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+        )
+        out = await create.ainvoke(
+            {"name": "big", "summary": "s", "tool": "loki.query", "arguments": {"q": "x" * (33 * 1024)}}
+        )
+        assert "arguments exceed 32 KB cap" in out
+        assert coll.rows == {}
+
+    async def test_update_adding_tool_to_body_skill_refused(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
+        _, update, _ = _tool_factories(
+            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+        )
+        out = await update.ainvoke({"skill_id": str(skill_id), "tool": "loki.query"})
+        assert "not both" in out
+        assert coll.rows[(agent_id, skill_id)]["body"] == "do the thing"
+        assert coll.rows[(agent_id, skill_id)].get("tool") is None
+
+    async def test_update_turns_body_skill_into_tool_skill(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
+        _, update, _ = _tool_factories(
+            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+        )
+        out = await update.ainvoke(
+            {"skill_id": str(skill_id), "body": "", "tool": "loki.query", "arguments": {"q": "warn"}}
+        )
+        assert "[TOOL ERROR]" not in out
+        row = coll.rows[(agent_id, skill_id)]
+        assert (row["body"], row["tool"], row["arguments"]) == (None, "loki.query", {"q": "warn"})
+
+    async def test_update_empty_tool_removes_tool_and_arguments(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id, body=None)
+        coll.rows[(agent_id, skill_id)].update({"tool": "loki.query", "arguments": {"q": "x"}})
+        _, update, _ = _tool_factories(coll, _FakeRegistry(), agent_id=agent_id, user_id=user_id)
+        out = await update.ainvoke({"skill_id": str(skill_id), "tool": "", "body": "now steps"})
+        assert "[TOOL ERROR]" not in out
+        row = coll.rows[(agent_id, skill_id)]
+        assert (row["body"], row["tool"], row["arguments"]) == ("now steps", None, None)
+
+    async def test_update_arguments_keep_existing_tool(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id, body=None)
+        coll.rows[(agent_id, skill_id)].update({"tool": "loki.query", "arguments": {"q": "x"}})
+        reg = _FakeRegistry()
+        _, update, _ = _tool_factories(coll, reg, agent_id=agent_id, user_id=user_id)
+        out = await update.ainvoke({"skill_id": str(skill_id), "arguments": {"q": "y"}})
+        assert "[TOOL ERROR]" not in out
+        row = coll.rows[(agent_id, skill_id)]
+        assert (row["tool"], row["arguments"]) == ("loki.query", {"q": "y"})
+        # the tool did not change, so its grant is not asked again.
+        assert reg.acl_calls == []
+
+
+class TestToolSkillsAreOfferedOnlyWhenTheyCanRun:
+    """Without ``offer_tool_skills`` the agent never sees ``tool`` / ``arguments``, and passing them is refused."""
+
+    async def test_the_fields_are_not_in_the_schema_by_default(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        reg = _FakeRegistry(permitted_tools={"loki.query"})
+        [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
+        [update] = load_skill_update_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
+        for tool_obj in (create, update):
+            fields = tool_obj.args_schema.model_fields  # type: ignore[union-attr]
+            assert "tool" not in fields and "arguments" not in fields
+            assert "tool call" not in tool_obj.description
+
+    async def test_a_tool_skill_passed_anyway_is_refused_and_nothing_is_written(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        reg = _FakeRegistry(permitted_tools={"loki.query"})
+        [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
+        out = await create.coroutine(name="errors", summary="s", tool="loki.query", arguments={"q": "error"})  # type: ignore[misc]
+        assert out == f"[TOOL ERROR] skill_create: {TOOL_SKILLS_NOT_OFFERED}"
+        assert coll.rows == {}

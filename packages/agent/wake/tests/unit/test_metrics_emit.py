@@ -24,7 +24,7 @@ from threetears.agent.wake.config import (
     DEFAULT_LOKI_NAMED_QUERIES,
     DEFAULT_MAX_FIRES_PER_CONV_PER_DAY,
     DEFAULT_MAX_FIRES_PER_USER_PER_DAY,
-    DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+    DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
     DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR,
     DEFAULT_POSTGRES_NAMED_QUERIES,
 )
@@ -206,13 +206,13 @@ def test_default_wake_caps_match_placement_lock() -> None:
     """The platform defaults match the locked values from PLACEMENT.
 
     Catches the failure mode where a future PR silently weakens a
-    default (e.g. ``DEFAULT_MAX_SCHEDULES_PER_CONVERSATION = 100``)
+    default (e.g. ``DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT = 500``)
     without updating PLACEMENT.
     """
     assert DEFAULT_MAX_FIRES_PER_CONV_PER_DAY == 24
     assert DEFAULT_MAX_FIRES_PER_USER_PER_DAY == 100
     assert DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR == 60
-    assert DEFAULT_MAX_SCHEDULES_PER_CONVERSATION == 10
+    assert DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT == 50
     assert DEFAULT_HTTP_ALLOWED_HOSTS == ()
     assert DEFAULT_LOKI_NAMED_QUERIES == {}
     assert DEFAULT_POSTGRES_NAMED_QUERIES == {}

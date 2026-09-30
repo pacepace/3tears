@@ -22,6 +22,7 @@ __all__ = [
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
     "EVENT_FIRE_FAILED",
+    "EVENT_FIRE_LIFE_OFF",
     "EVENT_FIRE_RATE_LIMITED",
     "EVENT_FIRE_SILENT",
     "EVENT_FIRE_SKIPPED_BUSY",
@@ -50,6 +51,9 @@ EVENT_FIRE_SILENT: str = "3tears.agent_wake.fire.silent"
 EVENT_FIRE_YIELDED: str = "3tears.agent_wake.fire.yielded"
 EVENT_FIRE_SKIPPED_BUSY: str = "3tears.agent_wake.fire.skipped_busy"
 EVENT_FIRE_RATE_LIMITED: str = "3tears.agent_wake.fire.rate_limited"
+# The consumer's permit answered "not now"; the fire is recorded as
+# ``'skipped_life_off'`` and is not a failure.
+EVENT_FIRE_LIFE_OFF: str = "3tears.agent_wake.fire.life_off"
 EVENT_FIRE_FAILED: str = "3tears.agent_wake.fire.failed"
 
 # Drift -- emitted when the actual fire instant differs from the
@@ -57,9 +61,9 @@ EVENT_FIRE_FAILED: str = "3tears.agent_wake.fire.failed"
 # (drift recorded but not actioned in v1).
 EVENT_FIRE_DRIFT: str = "3tears.agent_wake.fire.drift"
 
-# Per-conv cap rejection -- emitted by the agent-tool layer when a
-# ``wake_schedule_create`` call would push the conversation past
-# :data:`threetears.agent.wake.config.DEFAULT_MAX_SCHEDULES_PER_CONVERSATION`.
+# Active-schedule cap rejection -- emitted when creating or resuming a
+# wake would push the agent past
+# its ``max_active_schedules_per_agent`` cap.
 EVENT_SCHEDULE_CAP_REJECT: str = "3tears.agent_wake.schedule_cap.reject"
 
 # Webhook receiver lifecycle -- emitted by

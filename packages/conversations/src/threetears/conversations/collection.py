@@ -99,7 +99,8 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     # ``language`` server default ``'english'`` matches v006
     # migration. Indexes mirror the v001 migration:
     # ``idx_conv_user`` / ``idx_conv_customer`` (composite by
-    # date_created) + ``idx_conv_status``. There is no GIN over
+    # date_created) + ``idx_conv_status``, plus v011's
+    # ``idx_conv_parent``. There is no GIN over
     # ``search_vector``: v010 dropped the one v005 created, because
     # :meth:`search` filters through ``gin_filter`` (YugabyteDB's ybgin
     # refuses a multi-entry scan), so the index had no reader.
@@ -144,6 +145,12 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             # search_vector on UPDATE OF this column too, so flipping
             # language re-tokenizes lazily.
             Column("language", STRING_TYPE, server_default="'english'::text"),
+            # v011: what started the conversation -- an object type word
+            # (the consumer's vocabulary) plus its id. both NULL or both
+            # set (the v011 CHECK). declared last so every earlier bind
+            # position is unchanged.
+            Column("parent_type", STRING_TYPE, nullable=True),
+            Column("parent_id", UUID_TYPE, nullable=True),
         ],
         cas_column="date_updated",
         indexes=(
@@ -154,6 +161,8 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "date_created",
             ),
             SchemaIndex("idx_conv_status", "status"),
+            # v011: "every conversation this thing started" in one scan.
+            SchemaIndex("idx_conv_parent", "parent_type", "parent_id"),
         ),
     )
 

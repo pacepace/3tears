@@ -30,6 +30,7 @@ SK-09 .. SK-17) + the skills placement spec sections 1.5 /
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -44,6 +45,7 @@ from uuid_utils import uuid7
 from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
+    skill_shape_error,
 )
 from threetears.agent.skills.entities import AgentSkillEntity
 from threetears.agent.skills.types import PromptMode, SkillKindFilter, SkillOutcome
@@ -54,6 +56,9 @@ __all__ = [
     "ActiveSkillSetter",
     "ConversationIdResolver",
     "SkillCreateInput",
+    "TOOL_SKILLS_NOT_OFFERED",
+    "ToolSkillCreateInput",
+    "ToolSkillUpdateInput",
     "SkillDeleteInput",
     "SkillEligibleTool",
     "SkillGetInput",
@@ -91,6 +96,11 @@ NAME_MAX_LEN = 128
 SUMMARY_MIN_LEN = 1
 SUMMARY_MAX_LEN = 256
 BODY_MAX_BYTES = 32 * 1024  # 32 KB hard cap (Implementation note 2)
+ARGUMENTS_MAX_BYTES = 32 * 1024  # same cap as a body: a tool skill's whole payload
+
+# What skill_create / skill_update say when a tool-call skill is asked for and
+# the consumer does not offer them: it cannot run one yet.
+TOOL_SKILLS_NOT_OFFERED = "a skill cannot be one tool call here yet; give it steps in body"
 TRIGGER_KEYWORDS_MAX_LEN = 512
 TAGS_MAX_ENTRIES = 8
 TOOL_LIST_MAX_ENTRIES = 32
@@ -286,6 +296,24 @@ class SkillCreateInput(BaseModel):
     enabled: bool = Field(default=True)
 
 
+class ToolSkillCreateInput(SkillCreateInput):
+    """``skill_create``'s input when the consumer offers tool-call skills.
+
+    Offered only when the consumer can run one (``offer_tool_skills``):
+    a skill the agent can save but that does nothing when used is worse
+    than no such skill.
+    """
+
+    tool: str | None = Field(
+        default=None,
+        description="Optional. Instead of steps, the name of one tool this skill calls. Not with body.",
+    )
+    arguments: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional. The arguments that tool is called with, as named values. Only with tool.",
+    )
+
+
 class SkillListInput(BaseModel):
     """Input schema for the ``skill_list`` tool."""
 
@@ -326,13 +354,23 @@ class SkillUpdateInput(BaseModel):
     skill_id: str = Field(description="The [skill:<id>] to change.")
     name: str | None = None
     summary: str | None = None
-    body: str | None = None
+    body: str | None = Field(default=None, description="New steps. An empty string removes them.")
     prompt_mode: PromptMode | None = None
     tool_additions: list[str] | None = None
     tool_restrictions: list[str] | None = None
     trigger_keywords: str | None = None
     tags: list[str] | None = None
     enabled: bool | None = None
+
+
+class ToolSkillUpdateInput(SkillUpdateInput):
+    """``skill_update``'s input when the consumer offers tool-call skills."""
+
+    tool: str | None = Field(
+        default=None,
+        description="New tool to call. An empty string removes the tool and its arguments.",
+    )
+    arguments: dict[str, Any] | None = Field(default=None, description="New arguments for the tool.")
 
 
 class SkillDeleteInput(BaseModel):
@@ -488,6 +526,30 @@ def _validate_body(body: str | None) -> str | None:
     return None
 
 
+def _validate_arguments(arguments: dict[str, Any] | None) -> str | None:
+    """Return an error message when ``arguments`` exceeds the 32 KB cap.
+
+    The shape rules (a JSON object, only with a tool) are
+    :func:`~threetears.agent.skills.collections.skill_shape_error`'s; this is
+    the size cap the tools add on top, measured on the JSON the row stores.
+
+    :param arguments: candidate arguments
+    :ptype arguments: dict[str, Any] | None
+    :return: error string or ``None``
+    :rtype: str | None
+    """
+    error: str | None = None
+    if isinstance(arguments, dict):
+        try:
+            encoded = json.dumps(arguments)
+        except (TypeError, ValueError) as exc:
+            error = f"arguments must be plain JSON: {exc}"
+        else:
+            if len(encoded.encode("utf-8")) > ARGUMENTS_MAX_BYTES:
+                error = f"arguments exceed {ARGUMENTS_MAX_BYTES // 1024} KB cap"
+    return error
+
+
 def _validate_trigger_keywords(value: str) -> str | None:
     """Return an error message when ``trigger_keywords`` is too long.
 
@@ -546,8 +608,9 @@ def _at_least_one_payload(
     body: str | None,
     tool_additions: list[str],
     tool_restrictions: list[str],
+    tool: str | None = None,
 ) -> bool:
-    """Mirror the L3 CHECK constraint: ≥1 of body/tool_additions/tool_restrictions.
+    """Mirror the L3 CHECK constraint: ≥1 of body/tool/tool_additions/tool_restrictions.
 
     Empty strings count as no body (the DB constraint treats NULL and
     empty-string equivalently for "no payload"). Empty lists count as
@@ -555,6 +618,8 @@ def _at_least_one_payload(
 
     :param body: skill body or ``None``
     :ptype body: str | None
+    :param tool: the tool a tool skill calls, or ``None``
+    :ptype tool: str | None
     :param tool_additions: list of tool names
     :ptype tool_additions: list[str]
     :param tool_restrictions: list of tool names
@@ -563,6 +628,8 @@ def _at_least_one_payload(
     :rtype: bool
     """
     if body is not None and body.strip():
+        return True
+    if tool is not None:
         return True
     if tool_additions:
         return True
@@ -695,6 +762,11 @@ def _render_prose_introspect(entity: AgentSkillEntity) -> str:
         f"prompt_mode: {entity.prompt_mode}",
         "body: |",
         body_block,
+    ]
+    if entity.tool is not None:
+        lines.append(f"tool: {entity.tool}")
+        lines.append(f"arguments: {json.dumps(entity.arguments or {}, sort_keys=True)}")
+    lines += [
         f"tool_additions: {list(entity.tool_additions)}",
         f"tool_restrictions: {list(entity.tool_restrictions)}",
         f"triggers: {entity.trigger_keywords}",
@@ -745,8 +817,14 @@ def load_skill_create_tool(
     skills_collection: AgentSkillCollection,
     registry: SkillRegistryClient,
     max_prose_skills_per_user: int = DEFAULT_MAX_PROSE_SKILLS_PER_USER,
+    offer_tool_skills: bool = False,
 ) -> list[BaseTool]:
     """Build a ``skill_create`` tool bound to ``(agent_id, user_id)``.
+
+    ``offer_tool_skills`` adds ``tool`` and ``arguments`` to the input, so
+    the agent can save a skill that is one tool call. Leave it off until
+    the consumer runs such a skill: without it the agent never sees the
+    fields, and a call that passes them anyway is refused.
 
     Validates payload (name regex, bounded sizes, ACL on tool lists),
     enforces the 200-prose-skill cap (SK-14), enforces the at-least-one-
@@ -763,15 +841,19 @@ def load_skill_create_tool(
     :param max_prose_skills_per_user: cap on prose skills per
         ``(agent_id, user_id)``; default 200 (SK-14)
     :ptype max_prose_skills_per_user: int
+    :param offer_tool_skills: whether the agent may save a tool-call skill
+    :ptype offer_tool_skills: bool
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
 
-    @tool("skill_create", args_schema=SkillCreateInput)
+    @tool("skill_create", args_schema=ToolSkillCreateInput if offer_tool_skills else SkillCreateInput)
     async def skill_create(
         name: str,
         summary: str,
         body: str | None = None,
+        tool: str | None = None,
+        arguments: dict[str, Any] | None = None,
         prompt_mode: PromptMode = "additive",
         tool_additions: list[str] | None = None,
         tool_restrictions: list[str] | None = None,
@@ -779,15 +861,22 @@ def load_skill_create_tool(
         tags: list[str] | None = None,
         enabled: bool = True,
     ) -> str:
-        """Create a new prose-skill bound to the calling actor."""
+        """Create a new skill bound to the calling actor: steps in a body, or one tool call."""
         additions = list(tool_additions or [])
         restrictions = list(tool_restrictions or [])
         tag_values = list(tags or [])
+        if not offer_tool_skills and (tool is not None or arguments is not None):
+            return _tool_error("skill_create", TOOL_SKILLS_NOT_OFFERED)
+        # an empty body or tool is none at all, as it is when stored.
+        stored_body = body if body else None
+        stored_tool = tool if tool else None
 
         for err in (
             _validate_name(name),
             _validate_summary(summary),
             _validate_body(body),
+            skill_shape_error(body=stored_body, tool=stored_tool, arguments=arguments),
+            _validate_arguments(arguments),
             _validate_trigger_keywords(trigger_keywords),
             _validate_tags(tag_values),
             _validate_tool_list("tool_additions", additions),
@@ -804,12 +893,13 @@ def load_skill_create_tool(
 
         if not _at_least_one_payload(
             body=body,
+            tool=stored_tool,
             tool_additions=additions,
             tool_restrictions=restrictions,
         ):
             return _tool_error(
                 "skill_create",
-                "at least one of body, tool_additions, or tool_restrictions must be non-empty",
+                "at least one of body, tool, tool_additions, or tool_restrictions must be non-empty",
             )
 
         existing = await skills_collection.find_by_name_for_user(
@@ -833,6 +923,17 @@ def load_skill_create_tool(
                 "skill_create",
                 f"max {max_prose_skills_per_user} prose skills per user; delete or disable some first",
             )
+
+        if stored_tool is not None:
+            err = await _check_tool_acl(
+                registry=registry,
+                agent_id=agent_id,
+                user_id=user_id,
+                tool_name=stored_tool,
+                label="tool",
+            )
+            if err is not None:
+                return _tool_error("skill_create", err)
 
         for entry in additions:
             err = await _check_tool_acl(
@@ -864,7 +965,9 @@ def load_skill_create_tool(
             "user_id": user_id,
             "name": name,
             "summary": summary,
-            "body": body if body else None,
+            "body": stored_body,
+            "tool": stored_tool,
+            "arguments": dict(arguments) if arguments is not None else None,
             "prompt_mode": prompt_mode,
             "tool_additions": additions,
             "tool_restrictions": restrictions,
@@ -897,6 +1000,7 @@ def load_skill_create_tool(
                     "skill_id": str(skill_id),
                     "name": name,
                     "prompt_mode": prompt_mode,
+                    "tool": stored_tool,
                     "tool_additions_count": len(additions),
                     "tool_restrictions_count": len(restrictions),
                 }
@@ -906,7 +1010,9 @@ def load_skill_create_tool(
 
     skill_create.description = (
         "Save a way of doing something as a skill you can use again. Give it steps in body, "
-        "tools in tool_additions or tool_restrictions, or both.\n"
+        "tools in tool_additions or tool_restrictions, or both."
+        + (" Or make it one tool call: tool and arguments, with no body." if offer_tool_skills else "")
+        + "\n"
         f"Returns [skill:<id>]. You can keep up to {max_prose_skills_per_user} skills you wrote."
     )
 
@@ -1108,11 +1214,14 @@ def load_skill_update_tool(
     user_id: UUID,
     skills_collection: AgentSkillCollection,
     registry: SkillRegistryClient,
+    offer_tool_skills: bool = False,
 ) -> list[BaseTool]:
     """Build a ``skill_update`` tool with partial-update semantics.
 
     Only fields the LLM passes get applied; the at-least-one-payload
     check + ACL re-validation run on the merged shape (SK-09 / SK-11).
+    ``offer_tool_skills`` gates ``tool`` and ``arguments`` as it does on
+    :func:`load_skill_create_tool`.
 
     :param agent_id: caller's agent UUID
     :ptype agent_id: UUID
@@ -1122,16 +1231,20 @@ def load_skill_update_tool(
     :ptype skills_collection: AgentSkillCollection
     :param registry: consumer-supplied registry client for ACL probes
     :ptype registry: SkillRegistryClient
+    :param offer_tool_skills: whether the agent may make a skill a tool call
+    :ptype offer_tool_skills: bool
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
 
-    @tool("skill_update", args_schema=SkillUpdateInput)
+    @tool("skill_update", args_schema=ToolSkillUpdateInput if offer_tool_skills else SkillUpdateInput)
     async def skill_update(
         skill_id: str,
         name: str | None = None,
         summary: str | None = None,
         body: str | None = None,
+        tool: str | None = None,
+        arguments: dict[str, Any] | None = None,
         prompt_mode: PromptMode | None = None,
         tool_additions: list[str] | None = None,
         tool_restrictions: list[str] | None = None,
@@ -1139,7 +1252,9 @@ def load_skill_update_tool(
         tags: list[str] | None = None,
         enabled: bool | None = None,
     ) -> str:
-        """Edit a prose-skill in place."""
+        """Edit a skill in place."""
+        if not offer_tool_skills and (tool is not None or arguments is not None):
+            return _tool_error("skill_update", TOOL_SKILLS_NOT_OFFERED)
         parsed = _parse_skill_id(skill_id)
         if parsed is None:
             return _tool_error("skill_update", f"invalid skill_id {skill_id!r}")
@@ -1162,6 +1277,8 @@ def load_skill_update_tool(
             validation_errors.append(_validate_summary(summary))
         if body is not None:
             validation_errors.append(_validate_body(body))
+        if arguments is not None:
+            validation_errors.append(_validate_arguments(arguments))
         if trigger_keywords is not None:
             validation_errors.append(_validate_trigger_keywords(trigger_keywords))
         if tags is not None:
@@ -1194,20 +1311,43 @@ def load_skill_update_tool(
 
         # Compute the merged final shape (for at-least-one-payload +
         # ACL re-validation on any tool list the caller changed).
-        merged_body = body if body is not None else entity.body
+        # An empty string removes a body or a tool; removing the tool removes its arguments too.
+        merged_body = (body or None) if body is not None else entity.body
+        merged_tool = (tool or None) if tool is not None else entity.tool
+        if arguments is not None:
+            merged_arguments: dict[str, Any] | None = dict(arguments)
+        elif tool == "":
+            merged_arguments = None
+        else:
+            merged_arguments = entity.arguments
         merged_additions = list(tool_additions) if tool_additions is not None else list(entity.tool_additions)
         merged_restrictions = (
             list(tool_restrictions) if tool_restrictions is not None else list(entity.tool_restrictions)
         )
+        shape_err = skill_shape_error(body=merged_body, tool=merged_tool, arguments=merged_arguments)
+        if shape_err is not None:
+            return _tool_error("skill_update", shape_err)
         if not _at_least_one_payload(
             body=merged_body,
+            tool=merged_tool,
             tool_additions=merged_additions,
             tool_restrictions=merged_restrictions,
         ):
             return _tool_error(
                 "skill_update",
-                "at least one of body, tool_additions, or tool_restrictions must be non-empty",
+                "at least one of body, tool, tool_additions, or tool_restrictions must be non-empty",
             )
+
+        if tool:
+            err = await _check_tool_acl(
+                registry=registry,
+                agent_id=agent_id,
+                user_id=user_id,
+                tool_name=tool,
+                label="tool",
+            )
+            if err is not None:
+                return _tool_error("skill_update", err)
 
         if tool_additions is not None:
             for entry in tool_additions:
@@ -1240,7 +1380,10 @@ def load_skill_update_tool(
         if summary is not None:
             entity.summary = summary
         if body is not None:
-            entity.body = body if body else None
+            entity.body = merged_body
+        if tool is not None or arguments is not None:
+            entity.tool = merged_tool
+            entity.arguments = merged_arguments
         if prompt_mode is not None:
             entity.prompt_mode = prompt_mode
         if tool_additions is not None:

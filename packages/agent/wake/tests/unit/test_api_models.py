@@ -50,7 +50,6 @@ def test_create_wake_schedule_request_round_trip_with_skill() -> None:
     payload = CreateWakeScheduleRequest(
         schedule_type="daily_at",
         schedule_config={"time": "09:00", "tz": "UTC"},
-        execution_mode="inline",
         missed_fire_policy="coalesce",
         task_prompt="Check the dashboard",
         name="Morning check",
@@ -246,7 +245,6 @@ def test_create_webhook_subscription_request_round_trip_with_default_skill() -> 
     payload = CreateWebhookSubscriptionRequest(
         name="github-push",
         task_prompt_template="Push to {{event.repository.full_name}}",
-        execution_mode="inline",
         default_skill_id=skill_id,
         allowed_source_pattern=r"^140\.82\.\d+\.\d+$",
         rate_limit_per_minute=30,
@@ -402,3 +400,17 @@ def test_webhook_subscription_list_response_round_trip() -> None:
     assert again.total_count == 1
     for sub in again.subscriptions:
         assert "secret_plaintext" not in sub.model_dump()
+
+
+@pytest.mark.parametrize("model", [CreateWakeScheduleRequest, UpdateWakeScheduleRequest])
+def test_a_schedule_request_no_longer_takes_an_execution_mode(model: Any) -> None:
+    """Every fire starts a new conversation, so there is no mode to choose."""
+    fields: dict[str, Any] = {"schedule_type": "interval", "schedule_config": {"seconds": 60}}
+    with pytest.raises(ValidationError):
+        model(**fields, execution_mode="spawn")
+
+
+@pytest.mark.parametrize("model", [CreateWebhookSubscriptionRequest, UpdateWebhookSubscriptionRequest])
+def test_a_subscription_request_no_longer_takes_an_execution_mode(model: Any) -> None:
+    with pytest.raises(ValidationError):
+        model(task_prompt_template="x", execution_mode="spawn")
