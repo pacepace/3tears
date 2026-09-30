@@ -41,6 +41,7 @@ from threetears.nats.subject_permissions import (
     kv_key_scope_for,
     kv_key_scope_for_service,
 )
+from threetears.nats.result_delivery import result_stream_name
 from threetears.nats.subjects import Subjects, parse_tool_pod_audit_subject, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, js_api_grants_for_stream, mint_user_jwt
 
@@ -481,9 +482,12 @@ class TestBootCompleteness:
         assert f"{_NS}.hub.audit.anonymize" in agent.publish
         assert f"{_NS}.hub.audit.anonymize" in hub.subscribe
         assert f"{_NS}.hub.audit.anonymize" not in agent.subscribe
-        # a tool pod runs on a caller's behalf and has no audit rows of its own to erase.
+        # a tool pod granted WRITE on an agent's data erases a person from that agent's data, so it
+        # asks too; the subject names no owner, and the hub refuses any owner the pod's
+        # ``declared_agent_data`` does not grant it write on. it only asks, never answers.
         tool_pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
-        assert f"{_NS}.hub.audit.anonymize" not in tool_pod.publish
+        assert f"{_NS}.hub.audit.anonymize" in tool_pod.publish
+        assert f"{_NS}.hub.audit.anonymize" not in tool_pod.subscribe
 
     def test_engagement_scope_resolve_grant_is_pod_publish_hub_subscribe(self) -> None:
         # engagement scope (consumer A of the §2 keystone): the consuming tool pod
@@ -995,7 +999,10 @@ class TestScopedCollectionsGrant:
             if resource.kind is not JsResourceKind.KV_BUCKET or resource.name in {_COLLECTIONS, _DATA_VERSIONS}:
                 continue
             assert resource.scope is None, f"{principal}: {resource.name} would deny its own reads"
-            assert resource.capability is JsCapability.FULL, f"{principal}: {resource.name}"
+            # a pod binds what the hub declared and holds no stream verb; an infra identity that
+            # declares what it opens keeps the management grant.
+            expected = JsCapability.KV_BUCKET_KEYS if principal in _POD_PRINCIPALS else JsCapability.FULL
+            assert resource.capability is expected, f"{principal}: {resource.name}"
 
     def test_the_registry_holds_the_bucket_its_own_source_of_truth_collection_runs_on(self) -> None:
         """``HeartbeatCollection`` is ``L3 = None``, so an ungranted bucket is DATA LOSS.
@@ -1824,9 +1831,10 @@ class TestAgentBucketGrants:
 
     An agent's coordination buckets are its own, composed ``{ns}-{owner_scope}-{suffix}``; the bucket
     IS the isolation boundary and its keys carry no scope. So the grant is the WHOLE named bucket,
-    through exactly the key-addressed calls the 3tears KV client makes -- bind, get, and for a write
-    grant put, compare-and-set and delete -- and never a stream-admin verb (create, update, purge,
-    delete) or a consumer, either of which reads or reshapes more than the keys.
+    through exactly the calls the 3tears KV client makes -- bind, get, a named key consumer (watch or
+    listing) filtered inside the bucket, and for a write grant put, compare-and-set and delete -- and
+    never a stream-admin verb (create, update, purge, delete) or an unnamed consumer, either of which
+    reads or reshapes more than the bucket's keys.
     """
 
     _OWNER = uuid.UUID(_AGENT_A)
@@ -1859,6 +1867,7 @@ class TestAgentBucketGrants:
                 f"$JS.API.STREAM.INFO.KV_{bucket}",
                 f"$JS.API.STREAM.MSG.GET.KV_{bucket}",
                 f"$JS.API.DIRECT.GET.KV_{bucket}.$KV.{bucket}.>",
+                f"$JS.API.CONSUMER.CREATE.KV_{bucket}.*.$KV.{bucket}.>",
             ]
         )
 
@@ -1873,6 +1882,7 @@ class TestAgentBucketGrants:
                 f"$JS.API.STREAM.INFO.KV_{bucket}",
                 f"$JS.API.STREAM.MSG.GET.KV_{bucket}",
                 f"$JS.API.DIRECT.GET.KV_{bucket}.$KV.{bucket}.>",
+                f"$JS.API.CONSUMER.CREATE.KV_{bucket}.*.$KV.{bucket}.>",
             ]
         )
 
@@ -1907,8 +1917,13 @@ class TestAgentBucketGrants:
                     continue  # the pod binds its OWN scope of the shared bucket; unrelated to this grant
                 assert not any(_subject_matches(p, subject) for p in allow), subject
 
-    def test_no_stream_admin_verb_and_no_consumer_is_granted(self) -> None:
-        """create/update carry ``sources``/``republish`` (a read of any stream); consumers read it whole."""
+    def test_no_stream_admin_verb_and_no_unnamed_or_durable_consumer_is_granted(self) -> None:
+        """create/update carry ``sources``/``republish`` (a read of any stream); purge/delete destroy.
+
+        The one consumer granted is created BY NAME with its filter in the subject, inside the
+        bucket (the next test); the unnamed create carries its filter only in the body, and the
+        durable create and ``MSG.NEXT`` belong to a consumer nothing here builds.
+        """
         bucket = self._bucket(self._OWNER, "survey-quota-cells")
         stream = f"KV_{bucket}"
         allow = _minted_publish(
@@ -1920,12 +1935,37 @@ class TestAgentBucketGrants:
             f"$JS.API.STREAM.DELETE.{stream}",
             f"$JS.API.STREAM.PURGE.{stream}",
             f"$JS.API.STREAM.SNAPSHOT.{stream}",
+            f"$JS.API.STREAM.RESTORE.{stream}",
             f"$JS.API.STREAM.MSG.DELETE.{stream}",
             f"$JS.API.DIRECT.GET.{stream}",
             f"$JS.API.CONSUMER.CREATE.{stream}",
-            f"$JS.API.CONSUMER.CREATE.{stream}.w1.$KV.{bucket}.k",
             f"$JS.API.CONSUMER.DURABLE.CREATE.{stream}.w1",
             f"$JS.API.CONSUMER.MSG.NEXT.{stream}.w1",
+            f"$JS.API.CONSUMER.DELETE.{stream}.w1",
+        ):
+            assert not any(_subject_matches(p, subject) for p in allow), subject
+
+    def test_a_named_consumer_filtered_inside_the_bucket_is_granted(self) -> None:
+        """the key listing an erasure sweep needs, and a key watch: by name, filter in the subject.
+
+        The server checks a named create's subject filter against the body's ``filter_subject``, so
+        a filter inside the bucket reaches nothing the grant does not already cover. A filter in
+        another bucket is refused.
+        """
+        bucket = self._bucket(self._OWNER, "checkpoints")
+        other = self._bucket(self._OTHER_OWNER, "checkpoints")
+        allow = _minted_publish(
+            self._permissions(AgentBucketGrant(owner_agent_id=self._OWNER, suffix="checkpoints", writable=True))
+        )
+        for subject in (
+            f"$JS.API.CONSUMER.CREATE.KV_{bucket}.kl_1.$KV.{bucket}.>",
+            f"$JS.API.CONSUMER.CREATE.KV_{bucket}.kl_1.$KV.{bucket}.thread-1.>",
+            f"$JS.API.CONSUMER.CREATE.KV_{bucket}.kw_1.$KV.{bucket}.k",
+        ):
+            assert any(_subject_matches(p, subject) for p in allow), subject
+        for subject in (
+            f"$JS.API.CONSUMER.CREATE.KV_{other}.kl_1.$KV.{other}.>",
+            f"$JS.API.CONSUMER.CREATE.KV_{bucket}.kl_1.$KV.{other}.>",
         ):
             assert not any(_subject_matches(p, subject) for p in allow), subject
 
@@ -1933,8 +1973,10 @@ class TestAgentBucketGrants:
         permissions = self._permissions(
             AgentBucketGrant(owner_agent_id=self._OWNER, suffix="survey-quota-cells", writable=False)
         )
-        granted = [r for r in permissions.js_resources if r.capability is JsCapability.KV_BUCKET_KEYS]
+        owned = self._bucket(self._OWNER, "survey-quota-cells")
+        granted = [r for r in permissions.js_resources if r.name == owned]
         assert len(granted) == 1
+        assert granted[0].capability is JsCapability.KV_BUCKET_KEYS
         assert granted[0].name == self._bucket(self._OWNER, "survey-quota-cells")
         assert granted[0].scope is None
         assert granted[0].writable is False
@@ -1966,7 +2008,7 @@ class TestAgentBucketGrants:
             AgentBucketGrant(owner_agent_id=self._OWNER, suffix="survey-quota-cells", writable=True),
             AgentBucketGrant(owner_agent_id=self._OTHER_OWNER, suffix="survey-quota-cells", writable=False),
         )
-        granted = {r.name for r in permissions.js_resources if r.capability is JsCapability.KV_BUCKET_KEYS}
+        granted = {r.name for r in permissions.js_resources if "-agent_pod-" in r.name}
         assert granted == {
             self._bucket(self._OWNER, "survey-quota-cells"),
             self._bucket(self._OTHER_OWNER, "survey-quota-cells"),
@@ -2077,3 +2119,106 @@ class TestToolPodOwnAuditSubject:
     def test_a_pod_id_that_is_not_a_uuid_is_refused(self) -> None:
         with pytest.raises(ValueError):
             Subjects.tool_pod_audit_event("not-a-uuid", "collector.promoted")
+
+
+class TestPodsBindWhatTheHubDeclares:
+    """a pod binds, reads, writes and watches its buckets and never manages a stream.
+
+    ``STREAM.CREATE`` and ``STREAM.UPDATE`` take ``sources`` in the request body, so a pod holding
+    either against a bucket of its own could copy any stream on the bus into it and read the copy.
+    The hub declares every bucket and stream a pod touches; the exact subjects each pod capability
+    mints are pinned here, so a verb added to either capability fails a test rather than widening
+    every pod on the platform.
+    """
+
+    _SCOPE = kv_key_scope_for(Principal.AGENT_POD, agent_id=_AGENT_A)
+
+    def _agent(self, *suffixes: str) -> PrincipalPermissions:
+        return build_permissions(Principal.AGENT_POD, agent_id=_AGENT_A, pod_id=_POD_A, coordination_buckets=suffixes)
+
+    def test_an_own_coordination_bucket_mints_exactly_bind_read_watch_and_write(self) -> None:
+        bucket = coordination_bucket_name(self._SCOPE, "survey-quota-cells", ns=_NS)
+        stream = f"KV_{bucket}"
+        minted = _minted_publish(self._agent("survey-quota-cells"))
+        assert sorted(s for s in minted if bucket in s) == sorted(
+            [
+                f"$KV.{bucket}.>",
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.STREAM.MSG.GET.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.>",
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.>",
+            ]
+        )
+
+    @pytest.mark.parametrize(
+        "bucket",
+        [
+            f"{_NS}-checkpoints",
+            f"{_NS}-ratelimits",
+            f"{_NS}-proxy_assertion_nonces",
+            f"{_NS}-epochs",
+            f"{_NS}_agent_config",
+        ],
+    )
+    def test_every_shared_agent_bucket_is_bound_never_managed(self, bucket: str) -> None:
+        resource = [r for r in self._agent().js_resources if r.name == bucket]
+        assert len(resource) == 1, bucket
+        assert resource[0].capability is JsCapability.KV_BUCKET_KEYS
+
+    @pytest.mark.parametrize("bucket", [f"{_NS}-proxy_assertion_nonces", f"{_NS}-leases"])
+    def test_every_tool_pod_bucket_is_bound_never_managed(self, bucket: str) -> None:
+        resource = [r for r in _build(Principal.TOOL_POD).js_resources if r.name == bucket]
+        assert len(resource) == 1, bucket
+        assert resource[0].capability is JsCapability.KV_BUCKET_KEYS
+
+    @pytest.mark.parametrize("principal", _POD_PRINCIPALS)
+    def test_a_pod_stream_mints_exactly_bind_and_the_pinned_consumer_family(self, principal: Principal) -> None:
+        stream = result_stream_name()
+        minted = _minted_publish(_build(principal))
+        assert sorted(s for s in minted if s.startswith("$JS.API.") and stream in s.split(".")) == sorted(
+            [
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.CONSUMER.*.{stream}",
+                f"$JS.API.CONSUMER.*.{stream}.>",
+                f"$JS.API.CONSUMER.*.*.{stream}.>",
+            ]
+        )
+
+    @pytest.mark.parametrize("principal", _POD_PRINCIPALS)
+    def test_every_pod_stream_is_a_consumer_grant(self, principal: Principal) -> None:
+        streams = [r for r in _build(principal).js_resources if r.kind is JsResourceKind.STREAM]
+        assert streams, f"{principal} declares no stream"
+        assert all(r.capability is JsCapability.STREAM_CONSUMER for r in streams), streams
+
+    @pytest.mark.parametrize("verb", ["CREATE", "UPDATE", "DELETE", "PURGE", "SNAPSHOT", "RESTORE"])
+    def test_no_pod_may_manage_its_own_bucket_or_stream(self, verb: str) -> None:
+        bucket = coordination_bucket_name(self._SCOPE, "checkpoints", ns=_NS)
+        for permissions in (self._agent("checkpoints"), _build(Principal.TOOL_POD)):
+            minted = _minted_publish(permissions)
+            for stream in (f"KV_{bucket}", f"KV_{_NS}-checkpoints", result_stream_name(), f"{_NS}-audit"):
+                subject = f"$JS.API.STREAM.{verb}.{stream}"
+                assert not any(_subject_matches(p, subject) for p in minted), subject
+
+    def test_the_infra_declarers_keep_management(self) -> None:
+        """the registry declares the result stream at startup; narrowing it would strand it."""
+        resource = [r for r in _build(Principal.REGISTRY).js_resources if r.name == result_stream_name()]
+        assert len(resource) == 1
+        assert resource[0].capability is JsCapability.FULL
+
+    def test_a_consumer_capability_is_refused_on_a_bucket(self) -> None:
+        with pytest.raises(ValueError, match="plain stream"):
+            JsResource(
+                name=f"{_NS}-checkpoints",
+                kind=JsResourceKind.KV_BUCKET,
+                capability=JsCapability.STREAM_CONSUMER,
+                scope=None,
+                writable=False,
+            )
+
+    def test_the_consumer_grant_is_exactly_the_pinned_family(self) -> None:
+        assert js_api_grants_for_stream("s1", capability=JsCapability.STREAM_CONSUMER) == [
+            "$JS.API.STREAM.INFO.s1",
+            "$JS.API.CONSUMER.*.s1",
+            "$JS.API.CONSUMER.*.s1.>",
+            "$JS.API.CONSUMER.*.*.s1.>",
+        ]

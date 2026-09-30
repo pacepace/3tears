@@ -510,3 +510,130 @@ class TestWalkersFlagPlantedViolations:
         (tmp_path / "sanctioned_complete.py").write_text(source, encoding="utf-8")
 
         assert find_implicit_bucket_decisions((tmp_path,)) == []
+
+
+# ---------------------------------------------------------------------------
+# rule (d) -- no pod principal manages a stream
+# ---------------------------------------------------------------------------
+
+#: every JetStream stream-management verb. ``CREATE`` and ``UPDATE`` carry ``sources`` and
+#: ``republish`` in the request BODY, so a pod holding either against a stream of its own could copy
+#: any stream on the bus into it; the rest destroy, export or replace state.
+_STREAM_MANAGEMENT_VERBS: tuple[str, ...] = ("CREATE", "UPDATE", "DELETE", "PURGE", "SNAPSHOT", "RESTORE")
+
+#: a stream no pod declares, probed so a wildcard over the stream token cannot hide.
+_FOREIGN_STREAM = "KV_3tears-agent_pod-0000000000000000000000000000beef-victim"
+
+
+def _pattern_admits(pattern: str, subject: str) -> bool:
+    """NATS subject matching: ``*`` spans one token, ``>`` one or more trailing tokens.
+
+    :param pattern: the granted subject pattern
+    :ptype pattern: str
+    :param subject: the concrete subject under test
+    :ptype subject: str
+    :return: whether the pattern admits the subject
+    :rtype: bool
+    """
+    pattern_tokens = pattern.split(".")
+    subject_tokens = subject.split(".")
+    result = len(pattern_tokens) == len(subject_tokens)
+    for index, token in enumerate(pattern_tokens):
+        if token == ">":
+            result = index < len(subject_tokens)
+            break
+        if index >= len(subject_tokens) or (token != "*" and token != subject_tokens[index]):
+            result = False
+            break
+    return result
+
+
+def _pod_permissions() -> list[tuple[str, object]]:
+    """both pod principals, each holding every variable grant it can be given.
+
+    :return: ``(label, permissions)`` pairs
+    :rtype: list[tuple[str, PrincipalPermissions]]
+    """
+    from uuid import UUID
+
+    from threetears.nats.subject_permissions import (
+        AgentBucketGrant,
+        AgentTableGrant,
+        Principal,
+        build_permissions,
+    )
+    from threetears.nats.subjects import set_default_namespace
+
+    set_default_namespace("3tears")
+    owner = UUID("019470a8-b5c3-7def-8123-0000000000aa")
+    agent = build_permissions(
+        Principal.AGENT_POD,
+        agent_id="019470a8-b5c3-7def-8123-000000000001",
+        pod_id="01947100-0000-7000-8000-000000000001",
+        coordination_buckets=("checkpoints", "survey-quota-cells"),
+    )
+    tool = build_permissions(
+        Principal.TOOL_POD,
+        pod_id="01947100-0000-7000-8000-000000000002",
+        agent_table_grants=(AgentTableGrant(owner_agent_id=owner, table="responses", writable=True),),
+        agent_bucket_grants=(AgentBucketGrant(owner_agent_id=owner, suffix="checkpoints", writable=True),),
+    )
+    return [("agent_pod", agent), ("tool_pod", tool)]
+
+
+def _minted_pod_publish(permissions: object) -> list[str]:
+    """the publish allow-list a real minted user JWT carries for ``permissions``.
+
+    :param permissions: the resolved pod permissions
+    :ptype permissions: PrincipalPermissions
+    :return: every subject the pod may publish to
+    :rtype: list[str]
+    """
+    import base64
+    import json
+
+    from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+    token = mint_user_jwt(
+        account_seed=generate_account_seed(),
+        user_public_key="UTESTUSERPUBLICKEY",
+        permissions=permissions,  # type: ignore[arg-type]
+        name="no-pod-manages-a-stream",
+        expires_in_seconds=300,
+    )
+    payload = token.split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    allow: list[str] = claims["nats"]["pub"]["allow"]
+    return allow
+
+
+class TestNoPodManagesAStream:
+    """the hub declares every bucket and stream a pod touches; the pod never holds a management verb.
+
+    Asserted on the MINTED grant rather than on the resource records, because the grant is what the
+    broker enforces, and a capability that later gains a verb would pass a record-level check.
+    """
+
+    @pytest.mark.parametrize("index", [0, 1])
+    def test_no_stream_management_verb_on_any_stream(self, index: int) -> None:
+        label, permissions = _pod_permissions()[index]
+        allow = _minted_pod_publish(permissions)
+        streams = {r.stream_name for r in permissions.js_resources}  # type: ignore[attr-defined]
+        assert streams, f"{label} declares no stream; the probe below would be vacuous"
+        offenders = [
+            (pattern, f"$JS.API.STREAM.{verb}.{stream}")
+            for stream in (*sorted(streams), _FOREIGN_STREAM)
+            for verb in _STREAM_MANAGEMENT_VERBS
+            for pattern in allow
+            if _pattern_admits(pattern, f"$JS.API.STREAM.{verb}.{stream}")
+        ]
+        assert not offenders, f"{label} may manage a stream: {offenders}"
+
+    @pytest.mark.parametrize("index", [0, 1])
+    def test_no_pod_holds_a_management_capability(self, index: int) -> None:
+        from threetears.nats.subject_permissions import JsCapability
+
+        label, permissions = _pod_permissions()[index]
+        managing = {JsCapability.FULL, JsCapability.KV_SCOPED_DECLARE}
+        held = [(r.name, r.capability) for r in permissions.js_resources if r.capability in managing]  # type: ignore[attr-defined]
+        assert not held, f"{label} holds a stream-management capability: {held}"

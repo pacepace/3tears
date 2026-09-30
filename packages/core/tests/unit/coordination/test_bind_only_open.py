@@ -123,6 +123,9 @@ def _client_over_recording_jetstream() -> tuple[NatsClient, MagicMock]:
     js.add_stream = AsyncMock()
     js.update_stream = AsyncMock()
     js.key_value = AsyncMock(return_value=kv)
+    # a bind-only open that asks for an entry lifetime reads the live bucket's own expiry: the hub
+    # declares pod buckets with none and per-entry TTLs allowed.
+    js.stream_info = AsyncMock(return_value=MagicMock(config=MagicMock(max_age=0.0, allow_msg_ttl=True)))
     raw = MagicMock()
     raw.jetstream = MagicMock(return_value=js)
     return NatsClient(raw=raw, namespace="ns", client_name="bind-only-test"), js

@@ -338,6 +338,20 @@ class FakeKvBucket:
         """
         return tuple(key for key in tuple(self._entries) if self._live(key) is not None)
 
+    async def list_keys(self, *, prefix: str = "") -> list[str]:
+        """every live key starting with ``prefix``, as :meth:`threetears.nats.kv.NatsKvBucket.list_keys`.
+
+        :param prefix: keep keys starting with this; ``""`` lists every key
+        :ptype prefix: str
+        :return: the live keys, in insertion order
+        :rtype: list[str]
+        :raises ValueError: when ``prefix`` carries a wildcard or whitespace, as the real one does
+        """
+        if any(char in prefix for char in ("*", ">", " ", "\t", "\r", "\n")):
+            raise ValueError(f"list_keys needs a literal prefix, got {prefix!r}")
+        await self._arrive()
+        return [key for key in self.keys() if key.startswith(prefix)]
+
     def wipe(self, *, date_created: datetime | None = None) -> None:
         """empty the bucket, give it a new creation time and restart its revisions, as a broker restart does.
 

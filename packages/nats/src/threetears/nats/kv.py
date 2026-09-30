@@ -213,6 +213,13 @@ _KV_REMOVAL_OPERATIONS: Final[frozenset[str]] = frozenset({"DEL", "PURGE"})
 #: can tell a watch from anything else.
 _KEY_WATCH_CONSUMER_PREFIX: Final[str] = "kw_"
 
+#: Consumer names a key listing mints carry this prefix, beside the key watch's ``kw_``.
+_KEY_LISTING_CONSUMER_PREFIX: Final[str] = "kl_"
+
+#: How long one key listing may take, end to end, before it raises rather than hangs. A listing
+#: whose consumer create is ungranted is never answered, so without a bound it would block forever.
+_KEY_LISTING_TIMEOUT_SECONDS: Final[float] = 30.0
+
 #: Characters that make a subject token a wildcard or split it. A watched key must be literal: the
 #: grant names it literally, and a wildcard filter would be a different consumer from the one granted.
 _KEY_WATCH_FORBIDDEN: Final[frozenset[str]] = frozenset({"*", ">", " ", "\t", "\r", "\n"})
@@ -474,6 +481,64 @@ async def _bind_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> K
     return kv
 
 
+async def _entry_ttl_for_bound_bucket(*, js: Any, full_name: str, ttl: timedelta) -> timedelta | None:
+    """the per-entry lifetime a BIND-only opener must write with, so its entries still expire.
+
+    A bucket's TTL is a property of its stream, set by whoever CREATES it. A pod never creates
+    one: the hub declares every bucket a pod binds, uniformly, with no bucket-wide expiry and
+    per-entry TTLs allowed -- because the hub cannot know which lifetime each primitive a pod runs
+    over its bucket wants. The opener still knows. So a bind-only open that asks for ``ttl`` on a
+    bucket with no bucket-wide expiry carries ``ttl`` onto every entry it writes instead, and its
+    entries expire exactly as they would in a bucket created with that TTL.
+
+    Anything else is refused rather than bound: a live bucket-wide expiry that differs from the
+    request would expire this opener's entries early or late -- a quota count forgotten, a
+    replay nonce remembered past its window, a credential outliving its lifetime -- with nothing
+    to say so.
+
+    :param js: connected JetStream context
+    :ptype js: Any
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param ttl: the lifetime this opener wants every entry to have
+    :ptype ttl: timedelta
+    :return: ``None`` when the live bucket already expires entries at ``ttl``, else ``ttl`` itself
+        as the default per-entry lifetime
+    :rtype: timedelta | None
+    :raises KvConfigMismatch: when the live bucket expires entries at another age, or has no
+        bucket-wide expiry and refuses per-entry TTLs
+    :raises KvError: when the live configuration cannot be read
+    """
+    live = await _live_stream_config(js=js, full_name=full_name, stream=f"{_KV_STREAM_PREFIX}{full_name}")
+    requested = float(int(ttl.total_seconds()))
+    live_age = float(_normalised("max_age", live.max_age))
+    entry_ttl: timedelta | None = None
+    if live_age == requested:
+        log.debug(
+            "KV bucket bound with the bucket-wide lifetime it asked for", extra={"extra_data": {"bucket": full_name}}
+        )
+    elif live_age != 0.0:
+        raise KvConfigMismatch(
+            f"KV bucket {full_name!r} expires entries after {live_age:g}s and this process opened it "
+            f"read-only (create_if_missing=False) expecting {requested:g}s; its entries would expire at "
+            f"the wrong age. the bucket's declarer (the hub) must create it with no bucket-wide expiry, "
+            f"so each opener's entries carry their own lifetime."
+        )
+    elif not live.allow_msg_ttl:
+        raise KvConfigMismatch(
+            f"KV bucket {full_name!r} has no bucket-wide expiry and refuses per-entry TTLs "
+            f"(allow_msg_ttl is off), so this read-only opener cannot give its entries the {requested:g}s "
+            f"lifetime it needs. the declarer (the hub) must reconcile the bucket with allow_msg_ttl."
+        )
+    else:
+        entry_ttl = ttl
+        log.info(
+            "KV bucket bound with a per-entry lifetime standing in for a bucket-wide one",
+            extra={"extra_data": {"bucket": full_name, "entry_ttl_seconds": requested}},
+        )
+    return entry_ttl
+
+
 async def _reconcile_existing_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> None:
     """update a live KV stream in place, or say loudly which request was dropped.
 
@@ -619,7 +684,17 @@ class NatsKvBucket:
     :ptype ttl: timedelta | None
     """
 
-    __slots__ = ("_client", "_create_if_missing", "_direct", "_full_name", "_history", "_kv", "_storage", "_ttl")
+    __slots__ = (
+        "_client",
+        "_create_if_missing",
+        "_direct",
+        "_entry_ttl",
+        "_full_name",
+        "_history",
+        "_kv",
+        "_storage",
+        "_ttl",
+    )
 
     def __init__(
         self,
@@ -632,6 +707,7 @@ class NatsKvBucket:
         create_if_missing: bool = True,
         history: int = 1,
         direct: bool | None = None,
+        entry_ttl: timedelta | None = None,
     ) -> None:
         self._client = client
         self._full_name = full_name
@@ -648,6 +724,9 @@ class NatsKvBucket:
         # bucket with allow_direct unset, silently putting every read back on the
         # body-carried form no key-scoped grant can constrain.
         self._direct = direct
+        # the lifetime every write carries when its caller names none: a bind-only open's stand-in
+        # for a bucket-wide TTL the declarer did not set (``_entry_ttl_for_bound_bucket``).
+        self._entry_ttl = entry_ttl
 
     @property
     def name(self) -> str:
@@ -715,7 +794,8 @@ class NatsKvBucket:
         :return: ready bucket
         :rtype: NatsKvBucket
         :raises KvError: if bucket creation or binding fails
-        :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
+        :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing, or a
+            bucket-wide expiry that would expire its entries at the wrong age
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
         js = client.jetstream_context()
@@ -734,6 +814,9 @@ class NatsKvBucket:
             ),
             create_if_missing=create_if_missing,
         )
+        entry_ttl: timedelta | None = None
+        if not create_if_missing and ttl is not None and ttl_seconds > 0:
+            entry_ttl = await _entry_ttl_for_bound_bucket(js=js, full_name=full_name, ttl=ttl)
 
         return cls(
             client=client,
@@ -744,6 +827,7 @@ class NatsKvBucket:
             create_if_missing=create_if_missing,
             history=history,
             direct=direct,
+            entry_ttl=entry_ttl,
         )
 
     # ------------------------------------------------------------------
@@ -775,6 +859,7 @@ class NatsKvBucket:
             direct=self._direct,
         )
         self._kv = rebound._kv  # noqa: SLF001 - sibling instance of the same class
+        self._entry_ttl = rebound._entry_ttl  # noqa: SLF001 - sibling instance of the same class
 
     async def _run_with_reopen(self, op: Any, *, passthrough: tuple[type[BaseException], ...]) -> Any:
         """Run a KV op; on a TRANSPORT failure, re-open the bucket once and retry.
@@ -935,15 +1020,16 @@ class NatsKvBucket:
         :param value: bytes to store
         :ptype value: bytes
         :param ttl: a server-side lifetime for THIS entry, after which the server removes it;
-            ``None`` keeps the bucket's own expiry. Whole seconds, at least one. Needs the
-            stream's ``allow_msg_ttl``: a stream without it refuses the write, which raises
+            ``None`` keeps the bucket's own expiry -- or, for a bucket bound read-only whose
+            declarer set none, the lifetime the opener asked for. Whole seconds, at least one.
+            Needs the stream's ``allow_msg_ttl``: a stream without it refuses the write, which raises
         :ptype ttl: timedelta | None
         :return: new revision number
         :rtype: int
         :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
         :raises ValueError: when ``ttl`` is under one second
         """
-        msg_ttl = _msg_ttl_seconds(ttl)
+        msg_ttl = _msg_ttl_seconds(ttl if ttl is not None else self._entry_ttl)
         if msg_ttl is not None:
             return await self._put_with_ttl(key=key, value=value, msg_ttl=msg_ttl)
         try:
@@ -994,7 +1080,7 @@ class NatsKvBucket:
         :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
         :raises ValueError: when ``ttl`` is under one second
         """
-        msg_ttl = _msg_ttl_seconds(ttl)
+        msg_ttl = _msg_ttl_seconds(ttl if ttl is not None else self._entry_ttl)
 
         def _do_create() -> Any:
             # the keyword is sent only when a lifetime was asked for, so the call an untimed
@@ -1037,7 +1123,7 @@ class NatsKvBucket:
         :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
         :raises ValueError: when ``ttl`` is under one second
         """
-        msg_ttl = _msg_ttl_seconds(ttl)
+        msg_ttl = _msg_ttl_seconds(ttl if ttl is not None else self._entry_ttl)
         if msg_ttl is not None:
             return await self._update_with_ttl(key=key, value=value, revision=revision, msg_ttl=msg_ttl)
         try:
@@ -1236,6 +1322,89 @@ class NatsKvBucket:
                         yield update
             finally:
                 await consumer.close()
+
+    async def list_keys(self, *, prefix: str = "") -> list[str]:
+        """every live key in the bucket that starts with ``prefix``.
+
+        Lists through a push consumer created by NAME with its filter in the create subject
+        (``$JS.API.CONSUMER.CREATE.{stream}.{name}.$KV.{bucket}.{prefix}>``), the one consumer shape
+        a pod's grant on a bucket admits. nats-py's ``KeyValue.keys`` and ``watchall`` create an
+        UNNAMED consumer, whose filter rides only in the request body, and a pod is never granted
+        that -- the call blocks to its deadline instead of raising.
+
+        A prefix that ends on a token boundary (``""``, or ending in ``.``) narrows the filter
+        itself, so the server delivers only matching keys; any other prefix filters the whole
+        bucket and keeps the matching keys here. The consumer delivers each key's latest message,
+        headers only, and a key whose latest message is a delete or purge is not listed. It
+        acknowledges nothing, and the server reaps it after its inactivity threshold -- a pod's
+        grant carries no ``CONSUMER.DELETE``.
+
+        :param prefix: keep keys starting with this; ``""`` lists every key
+        :ptype prefix: str
+        :return: the live keys, in stream order
+        :rtype: list[str]
+        :raises ValueError: when ``prefix`` carries a wildcard or whitespace
+        :raises KvError: when the consumer cannot be created or the listing does not finish within
+            its bound -- an ungranted create is never answered, so it arrives here as a timeout
+        """
+        if any(char in _KEY_WATCH_FORBIDDEN for char in prefix):
+            raise ValueError(f"list_keys needs a literal prefix, got {prefix!r}")
+        subject_prefix = f"$KV.{self._full_name}."
+        narrowed = prefix == "" or prefix.endswith(".")
+        filter_subject = f"{subject_prefix}{prefix}>" if narrowed else f"{subject_prefix}>"
+        stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        try:
+            async with asyncio.timeout(_KEY_LISTING_TIMEOUT_SECONDS):
+                found = await self._list_keys_through(stream=stream, filter_subject=filter_subject)
+        except TimeoutError as exc:
+            raise KvError(
+                f"listing keys of {self._full_name} did not finish within {_KEY_LISTING_TIMEOUT_SECONDS:g}s. "
+                f"an ungranted consumer create blocks to its deadline -- check this principal's grant on "
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.{filter_subject}"
+            ) from exc
+        return [key[len(subject_prefix) :] for key in found if key[len(subject_prefix) :].startswith(prefix)]
+
+    async def _list_keys_through(self, *, stream: str, filter_subject: str) -> list[str]:
+        """create one named, headers-only consumer and read each key's latest message through it.
+
+        :param stream: the bucket's backing stream
+        :ptype stream: str
+        :param filter_subject: the subject filter, inside this bucket
+        :ptype filter_subject: str
+        :return: the subjects of the live keys, in stream order
+        :rtype: list[str]
+        :raises KvError: when the NATS connection is closed or the consumer create fails
+        """
+        raw = self._client.raw
+        if raw.is_closed:
+            raise KvError(f"cannot list keys of {self._full_name}: the NATS connection is closed")
+        inbox = raw.new_inbox()
+        subscription = await raw.subscribe(inbox)
+        subjects: list[str] = []
+        try:
+            config = ConsumerConfig(
+                name=f"{_KEY_LISTING_CONSUMER_PREFIX}{uuid.uuid7().hex}",
+                deliver_subject=inbox,
+                filter_subject=filter_subject,
+                deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
+                ack_policy=AckPolicy.NONE,
+                headers_only=True,
+                inactive_threshold=_KEY_WATCH_INACTIVE_THRESHOLD_SECONDS,
+                mem_storage=True,
+            )
+            try:
+                info = await self._client.jetstream_context().add_consumer(stream, config=config)
+            except Exception as exc:
+                raise KvError(f"key listing consumer on {stream} could not be created: {exc}") from exc
+            pending = int(info.num_pending or 0)
+            while pending > 0:
+                msg = await subscription.next_msg(timeout=_KEY_LISTING_TIMEOUT_SECONDS)
+                pending = int(msg.metadata.num_pending)
+                if (msg.headers or {}).get(_KV_OPERATION_HEADER) not in _KV_REMOVAL_OPERATIONS:
+                    subjects.append(msg.subject)
+        finally:
+            await _drop_subscription(subscription, subject=filter_subject)
+        return subjects
 
 
 class _KeyWatchConsumer:

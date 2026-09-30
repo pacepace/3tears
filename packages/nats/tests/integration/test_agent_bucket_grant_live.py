@@ -13,7 +13,9 @@ broker -- so each claim runs against a real nats-server, through the nats-py cal
   write refused;
 - another owner's bucket of the same suffix, and an undeclared suffix of the same owner, refused at
   the bind;
-- no watch (consumer create), no purge, no stream update, even on a granted bucket;
+- a key listing through a NAMED consumer filtered inside the granted bucket, which the survey's
+  erasure sweep needs; no unnamed consumer, no purge, no stream create or update (``sources`` would
+  copy any stream into one the pod reads), even on a granted bucket;
 - the pod's own audit subject accepted by the audit stream; another pod's, and a platform audit
   subject, refused.
 
@@ -273,18 +275,35 @@ async def test_a_tool_pod_reaches_exactly_the_agent_buckets_it_was_granted(tmp_p
                     with pytest.raises(_REFUSED):
                         await js.get_msg(f"KV_{bucket}", subject=f"$KV.{bucket}.cell-1")
 
-                # === REFUSED: a watch, a purge and a stream update, even on the granted bucket ====
-                for request_subject, body in (
-                    (
-                        f"$JS.API.CONSUMER.CREATE.KV_{written}.w1.$KV.{written}.cell-1",
+                # === SUCCEEDS: a named consumer filtered inside the granted bucket ===============
+                created = await nc.request(
+                    f"$JS.API.CONSUMER.CREATE.KV_{written}.w1.$KV.{written}.cell-1",
+                    json.dumps(
                         {
                             "stream_name": f"KV_{written}",
-                            "config": {"name": "w1", "filter_subject": f"$KV.{written}.cell-1"},
+                            "config": {"name": "w1", "filter_subject": f"$KV.{written}.cell-1", "ack_policy": "none"},
+                        }
+                    ).encode(),
+                    timeout=2,
+                )
+                assert "error" not in json.loads(created.data), created.data
+
+                # === REFUSED: an unnamed consumer, a purge and a stream create or update ==========
+                for request_subject, body in (
+                    (f"$JS.API.CONSUMER.CREATE.KV_{written}", {"stream_name": f"KV_{written}", "config": {}}),
+                    (
+                        f"$JS.API.CONSUMER.CREATE.KV_{written}.w2.$KV.{other_owners}.cell-1",
+                        {
+                            "stream_name": f"KV_{written}",
+                            "config": {"name": "w2", "filter_subject": f"$KV.{other_owners}.cell-1"},
                         },
                     ),
-                    (f"$JS.API.CONSUMER.CREATE.KV_{written}", {"stream_name": f"KV_{written}", "config": {}}),
                     (f"$JS.API.STREAM.PURGE.KV_{written}", {}),
                     (f"$JS.API.STREAM.UPDATE.KV_{written}", {"name": f"KV_{written}"}),
+                    (
+                        f"$JS.API.STREAM.CREATE.KV_{written}",
+                        {"name": f"KV_{written}", "sources": [{"name": f"KV_{other_owners}"}]},
+                    ),
                 ):
                     with pytest.raises(_REFUSED):
                         await nc.request(request_subject, json.dumps(body).encode(), timeout=2)

@@ -102,7 +102,8 @@ def js_api_grants_for_stream(
 
     The stream-name token position differs per op family (verified against the installed nats-py
     2.x: ``nats/js/manager.py`` STREAM/CONSUMER/DIRECT builders + ``nats/js/client.py`` pull-consumer
-    ``CONSUMER.MSG.NEXT``), so :attr:`JsCapability.FULL` pins the name at each position it can occupy:
+    ``CONSUMER.MSG.NEXT``), so :attr:`JsCapability.FULL` -- the infra identities' management grant,
+    never a pod's -- pins the name at each position it can occupy:
 
     - ``$JS.API.STREAM.*.{stream}`` -- STREAM INFO/CREATE/UPDATE/DELETE/PURGE (name at token 5);
       ``manager.stream_info``/``add_stream``/``update_stream``/``delete_stream``/``purge_stream``.
@@ -154,20 +155,33 @@ def js_api_grants_for_stream(
     ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{owner_scope}.{table}.>`` -- one table of another
     principal's keys, and no consumer or watch route at all.
 
-    :attr:`JsCapability.KV_BUCKET_KEYS` covers the WHOLE of one bucket, through key-addressed calls
-    only, for a bucket whose isolation boundary is the bucket itself (another agent's coordination
-    bucket):
+    :attr:`JsCapability.KV_BUCKET_KEYS` is every POD's grant on an unscoped bucket -- its own
+    coordination buckets, the platform's shared per-agent buckets, and another agent's coordination
+    bucket an operator granted it. It covers the WHOLE of one bucket, through key-addressed calls
+    and named key consumers, and nothing about the stream itself:
 
     - ``$JS.API.STREAM.INFO.{stream}`` -- the bind.
     - ``$JS.API.STREAM.MSG.GET.{stream}`` -- the read nats-py issues on a bucket bound WITHOUT
-      ``allow_direct`` (every coordination bucket an agent opens through ``kv_bucket``), with the
-      key in the body. Harmless here as it is not on a shared bucket: every key it can name is a
-      key the grant already covers. ``STREAM.MSG.DELETE`` is NOT granted.
+      ``allow_direct``, with the key in the body. Every key it can name is a key the grant already
+      covers, since the bucket is the grant's boundary. ``STREAM.MSG.DELETE`` is NOT granted.
     - ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.>`` -- the read on a bucket WITH ``allow_direct``.
+    - ``$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.>`` -- a key watch or a key listing, as a
+      NAMED consumer whose filter rides in the SUBJECT (:meth:`threetears.nats.kv.NatsKvBucket.watch_key`,
+      :meth:`threetears.nats.kv.NatsKvBucket.keys`). The unnamed ``CONSUMER.CREATE.{stream}``, the
+      durable create and ``MSG.NEXT`` are NOT granted; nats-py's ``KeyValue.watch``/``keys`` use the
+      unnamed form and are refused.
 
-    No stream-admin verb (``CREATE``/``UPDATE`` accept ``sources`` and ``republish``, a read of
-    any stream; ``PURGE``/``DELETE`` destroy the owner's state) and no consumer. The ``$KV.`` publish
-    for a writable grant is minted by :func:`mint_user_jwt` from the resource, not here.
+    No stream-admin verb, ever: ``CREATE``/``UPDATE`` accept ``sources`` and ``republish``, which
+    copy ANY stream's messages into one the holder can read; ``DELETE``/``PURGE`` destroy state;
+    ``SNAPSHOT``/``RESTORE`` export or replace it. The hub declares every bucket a pod binds. The
+    ``$KV.`` publish for a writable grant is minted by :func:`mint_user_jwt` from the resource, not
+    here.
+
+    :attr:`JsCapability.STREAM_CONSUMER` is a pod's grant on a plain stream: the bind
+    (``$JS.API.STREAM.INFO.{stream}``) and the consumer family pinned to the stream at each position
+    it occupies, exactly as :attr:`JsCapability.FULL` emits it -- and no ``STREAM`` verb besides
+    ``INFO``, no body-carried ``STREAM.MSG`` read and no ``DIRECT.GET``. Publishing into a stream is
+    an ordinary publish grant and needs nothing here.
 
     JetStream consumer ACK/NAK is NOT listed: it publishes to the delivered message's ``$JS.ACK.*``
     reply subject and rides the principal's ``allow_responses`` grant (the same way it did under the
@@ -200,6 +214,14 @@ def js_api_grants_for_stream(
             f"$JS.API.STREAM.INFO.{stream}",
             f"$JS.API.STREAM.MSG.GET.{stream}",
             f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.>",
+            f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.>",
+        ]
+    elif capability is JsCapability.STREAM_CONSUMER:
+        grants = [
+            f"$JS.API.STREAM.INFO.{stream}",
+            f"$JS.API.CONSUMER.*.{stream}",
+            f"$JS.API.CONSUMER.*.{stream}.>",
+            f"$JS.API.CONSUMER.*.*.{stream}.>",
         ]
     elif not capability_is_scoped(capability):
         grants = [

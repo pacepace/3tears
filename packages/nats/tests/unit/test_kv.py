@@ -13,7 +13,7 @@ import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
@@ -733,3 +733,88 @@ class TestTheRemedyIsNotSuppressedOnAFreshlyBootedMachine:
         assert any("'fresh-boot'" in r.getMessage() and "js_resources" in r.getMessage() for r in caplog.records), (
             "the first remedy was suppressed because the machine had not been up long enough"
         )
+
+
+# parity-exempt: minimal JetStream stand-in for a bind-only open -- key_value binds, stream_info reports a live config
+class _BindOnlyJs:
+    """binds any bucket and reports one live stream config for it."""
+
+    def __init__(self, *, max_age: float, allow_msg_ttl: bool) -> None:
+        self.config = MagicMock(max_age=max_age, allow_msg_ttl=allow_msg_ttl, allow_direct=True)
+        self.published: list[dict[str, Any]] = []
+
+    async def key_value(self, name: str) -> Any:
+        handle = MagicMock(name=f"kv:{name}")
+        handle.put = AsyncMock(return_value=3)
+        return handle
+
+    async def stream_info(self, name: str) -> Any:
+        return MagicMock(config=self.config)
+
+    async def publish(self, subject: str, payload: bytes, **kwargs: Any) -> Any:
+        self.published.append({"subject": subject, **kwargs})
+        return MagicMock(seq=7)
+
+
+class TestABindOnlyOpenKeepsItsEntryLifetime:
+    """a pod never creates a bucket, so a lifetime it asks for must ride each entry instead.
+
+    The hub declares every bucket a pod binds with no bucket-wide expiry, because it cannot know the
+    lifetime each primitive over the bucket wants. A replay nonce, a reset ticket or a resume handle
+    that stopped expiring would grow without bound or outlive its purpose, so a bind-only open that
+    asks for ``ttl`` writes every entry with it -- and refuses a bucket whose own expiry disagrees.
+    """
+
+    async def _open(self, js: _BindOnlyJs, *, ttl: timedelta | None) -> NatsKvBucket:
+        client = MagicMock()
+        client.jetstream_context = MagicMock(return_value=js)
+        return await NatsKvBucket.open(
+            client=client,
+            full_name="ns-agent_pod-x-nonces",
+            ttl=ttl,
+            storage="memory",
+            create_if_missing=False,
+            history=1,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_with_no_expiry_gets_the_lifetime_on_every_write(self) -> None:
+        js = _BindOnlyJs(max_age=0.0, allow_msg_ttl=True)
+        bucket = await self._open(js, ttl=timedelta(minutes=5))
+        await bucket.put(key="nonce-1", value=b"1")
+        assert js.published == [{"subject": "$KV.ns-agent_pod-x-nonces.nonce-1", "msg_ttl": 300.0}]
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_entry_lifetime_still_wins(self) -> None:
+        js = _BindOnlyJs(max_age=0.0, allow_msg_ttl=True)
+        bucket = await self._open(js, ttl=timedelta(minutes=5))
+        await bucket.put(key="nonce-1", value=b"1", ttl=timedelta(seconds=30))
+        assert js.published[0]["msg_ttl"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_already_expiring_at_that_age_writes_plainly(self) -> None:
+        js = _BindOnlyJs(max_age=300.0, allow_msg_ttl=True)
+        bucket = await self._open(js, ttl=timedelta(minutes=5))
+        await bucket.put(key="nonce-1", value=b"1")
+        assert js.published == []
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_expiring_at_another_age_is_refused(self) -> None:
+        from threetears.nats.errors import KvConfigMismatch
+
+        with pytest.raises(KvConfigMismatch, match="expires entries after 60s"):
+            await self._open(_BindOnlyJs(max_age=60.0, allow_msg_ttl=True), ttl=timedelta(minutes=5))
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_refusing_entry_lifetimes_is_refused(self) -> None:
+        from threetears.nats.errors import KvConfigMismatch
+
+        with pytest.raises(KvConfigMismatch, match="allow_msg_ttl"):
+            await self._open(_BindOnlyJs(max_age=0.0, allow_msg_ttl=False), ttl=timedelta(minutes=5))
+
+    @pytest.mark.asyncio
+    async def test_no_lifetime_asked_binds_whatever_the_declarer_set(self) -> None:
+        js = _BindOnlyJs(max_age=60.0, allow_msg_ttl=False)
+        bucket = await self._open(js, ttl=None)
+        await bucket.put(key="cell-1", value=b"1")
+        assert js.published == []
