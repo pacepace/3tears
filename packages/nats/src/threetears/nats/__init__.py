@@ -150,6 +150,11 @@ from threetears.nats.errors import (
     RequestTimeoutError,
     SubscribeError,
 )
+from threetears.nats.renewal_request import (
+    CREDENTIAL_RENEWAL_SUBJECT_TOKEN,
+    CredentialRenewalReason,
+    CredentialRenewalRequest,
+)
 from threetears.nats.result_delivery import (
     RESULT_ACK_TIMEOUT_SECONDS,
     RESULT_RETENTION_SECONDS,
@@ -392,6 +397,9 @@ __all__ = [
     "CredentialRefusal",
     "CredentialRefusalReason",
     "RefusedPrincipal",
+    "CREDENTIAL_RENEWAL_SUBJECT_TOKEN",
+    "CredentialRenewalReason",
+    "CredentialRenewalRequest",
     "REAUTH_BUFFER_SECONDS",
     "REAUTH_CONNECT_TIMEOUT_SECONDS",
     "REAUTH_LEEWAY_SECONDS",

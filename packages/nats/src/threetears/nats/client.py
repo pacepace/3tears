@@ -102,6 +102,7 @@ from threetears.nats._diagnostics import permissions_violation_remedy
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
 from threetears.nats._receipt import ReceiptBacklog
 from threetears.nats.credential_refusal import CredentialRefusal
+from threetears.nats.renewal_request import CredentialRenewalRequest
 from threetears.nats.credential_renewal import (
     REAUTH_CONNECT_TIMEOUT_SECONDS,
     REAUTH_MIN_SLEEP_SECONDS,
@@ -2214,11 +2215,13 @@ class _CredentialRenewal:
             return
 
 
-class _LameDuckMove:
-    """the loop a move off a lame-duck server runs: hand over until done, or until it is moot.
+class _SuccessorMove:
+    """the loop a move to a successor connection runs: hand over until done, or until it is moot.
 
-    its own class, like :class:`_CredentialRenewal`, so the client does not carry a periodic loop
-    beside the state it accumulates; this holds only what it reads.
+    Started when the current connection must be replaced now rather than at its renewal: its server
+    entered lame-duck mode, or the credential's minter asked for a renewal. Its own class, like
+    :class:`_CredentialRenewal`, so the client does not carry a periodic loop beside the state it
+    accumulates; this holds only what it reads.
     """
 
     def __init__(
@@ -2228,19 +2231,22 @@ class _LameDuckMove:
         still_leaving: Callable[[], bool],
         retire_after: timedelta,
         client_name: str,
+        why: str,
     ) -> None:
         """bind the move to the client and the connection it leaves.
 
         :param renew: the client's :meth:`NatsClient.renew_connection`, taking how long to keep
             the replaced connection open
         :ptype renew: Callable[[timedelta], Awaitable[None]]
-        :param still_leaving: whether the connection whose server is shutting down is still the
-            client's current, open connection, and the client still serves
+        :param still_leaving: whether the connection being left is still the client's current,
+            open connection, and the client still serves
         :ptype still_leaving: Callable[[], bool]
         :param retire_after: how long to keep the connection it leaves for the work it carries
         :ptype retire_after: timedelta
         :param client_name: the client's name, for the log
         :ptype client_name: str
+        :param why: why the connection is being left, for the log
+        :ptype why: str
         :return: nothing
         :rtype: None
         """
@@ -2248,12 +2254,15 @@ class _LameDuckMove:
         self._still_leaving = still_leaving
         self._retire_after = retire_after
         self._client_name = client_name
+        self._why = why
 
     async def run(self) -> None:
-        """hand over to a successor, retrying while the connection is still leaving.
+        """hand over to a successor, retrying while the connection is still being left.
 
-        Retried because the alternative is the reconnect this exists to avoid: a successor that could
-        not open (every other server busy, a callout that did not answer) is tried again after
+        Retried because the alternative is worse: a server in lame-duck mode closes the connection
+        itself, which is the reconnect this exists to avoid, and a minter that asked for a renewal
+        is waiting on a grant the old connection does not have. A successor that could not open
+        (every other server busy, a callout that did not answer) is tried again after
         :data:`~threetears.nats.credential_renewal.REAUTH_RETRY_SECONDS`. It stops being worth
         trying once something else replaced the connection (a renewal did) or the server closed it
         (nats-py's reconnect owns it then).
@@ -2265,9 +2274,10 @@ class _LameDuckMove:
             while self._still_leaving():
                 try:
                     await self._renew(self._retire_after)
-                except Exception as exc:  # noqa: BLE001 -- retried while the connection is still leaving; the reason is logged
+                except Exception as exc:  # noqa: BLE001 -- retried while the connection is still being left; the reason is logged
                     log.warning(
-                        "could not move off a NATS server in lame-duck mode (retrying in %ss): %s",
+                        "could not move to a successor NATS connection (%s; retrying in %ss): %s",
+                        self._why,
                         REAUTH_RETRY_SECONDS,
                         exc,
                         extra={"extra_data": {"client_name": self._client_name}},
@@ -2275,10 +2285,11 @@ class _LameDuckMove:
                     await asyncio.sleep(REAUTH_RETRY_SECONDS)
                 else:
                     log.info(
-                        "moved off a NATS server in lame-duck mode; the old connection retires with its work",
+                        "moved to a successor NATS connection; the old connection retires with its work",
                         extra={
                             "extra_data": {
                                 "client_name": self._client_name,
+                                "why": self._why,
                                 "retire_after_seconds": self._retire_after.total_seconds(),
                             }
                         },
@@ -2318,7 +2329,7 @@ class NatsClient:
         "_reply_routes",
         "_push_consumers",
         "_abandonment",
-        "_lame_duck_move",
+        "_successor_move",
         "_longest_request_seconds",
     )
 
@@ -2353,9 +2364,10 @@ class NatsClient:
         # the abandonment a deliberate credential refusal started (:meth:`abandon_on_refusal`), held so
         # the task is not collected mid-flight.
         self._abandonment: asyncio.Task[None] | None = None
-        # the move off a server that entered lame-duck mode (:meth:`_move_off_lame_duck_server`),
-        # held so it is not collected mid-flight and so shutdown and abandon can stop it.
-        self._lame_duck_move: asyncio.Task[None] | None = None
+        # a move to a successor connection that must happen now (:meth:`_start_successor_move`): the
+        # server entered lame-duck mode, or a renewal was requested. held so it is not collected
+        # mid-flight and so shutdown and abandon can stop it.
+        self._successor_move: asyncio.Task[None] | None = None
         # how long a replaced connection is kept for the work it carries when a move is not the
         # renewal loop's own: the longest request this client makes, which :meth:`renew_credential`
         # states when the owner arms it.
@@ -3179,42 +3191,98 @@ class NatsClient:
         and becomes current, and the old connection is kept for the work it already carries until
         the server closes it or the longest request has had its time.
 
-        Called from the connection's read loop, so it only schedules the move. A move already
-        running, or a renewal already in progress -- which opens the same successor -- is left to
-        finish.
+        Called from the connection's read loop, so it only schedules the move.
 
         :return: nothing
         :rtype: None
         """
-        running = self._lame_duck_move is not None and not self._lame_duck_move.done()
+        self._start_successor_move(why="the server entered lame-duck mode")
+
+    def _start_successor_move(self, *, why: str) -> None:
+        """schedule a move of the current connection to a successor, unless one is under way.
+
+        A move already running, or a client that no longer serves, is left alone; a renewal already
+        in progress opens the same successor, and the move retries until it has (see
+        :class:`_SuccessorMove`).
+
+        :param why: why the connection must be replaced now, for the log
+        :ptype why: str
+        :return: nothing
+        :rtype: None
+        """
+        running = self._successor_move is not None and not self._successor_move.done()
         if running or not self._lifecycle.is_live:
             log.info(
-                "a NATS server entered lame-duck mode; a move is already under way or the client is not serving",
-                extra={"extra_data": {"client_name": self._client_name, "phase": self._lifecycle.phase.value}},
+                "a move to a successor NATS connection was asked for; one is already under way or the "
+                "client is not serving",
+                extra={
+                    "extra_data": {"client_name": self._client_name, "why": why, "phase": self._lifecycle.phase.value}
+                },
             )
             return
         log.warning(
-            "the NATS server under this client entered lame-duck mode; moving to a successor connection "
-            "before it closes this one",
+            "moving to a successor NATS connection now: %s",
+            why,
             extra={"extra_data": {"client_name": self._client_name}},
         )
         leaving = self._raw
-        move = _LameDuckMove(
+        move = _SuccessorMove(
             renew=lambda retire_after: self.renew_connection(retire_after=retire_after),
             still_leaving=lambda: self._lifecycle.is_live and self._raw is leaving and not leaving.is_closed,
             retire_after=timedelta(seconds=self._longest_request_seconds),
             client_name=self._client_name,
+            why=why,
         )
-        self._lame_duck_move = asyncio.create_task(move.run(), name=f"nats-lame-duck-move:{self._client_name}")
+        self._successor_move = asyncio.create_task(move.run(), name=f"nats-successor-move:{self._client_name}")
 
-    async def _stop_lame_duck_move(self) -> None:
-        """cancel a move off a lame-duck server, if one runs, and wait for it to end.
+    async def renew_on_request(
+        self,
+        *,
+        inbox_prefix: str,
+        is_mine: Callable[[CredentialRenewalRequest], bool],
+    ) -> Subscription:
+        """renew this client's connection at once whenever its credential's minter asks.
+
+        A connection's grant is fixed when it is admitted, so a principal whose grant changed keeps
+        the old one until its connection is replaced. The minter publishes a
+        :class:`~threetears.nats.CredentialRenewalRequest` to the principal's inbox
+        (:mod:`threetears.nats.renewal_request`); on one that ``is_mine`` accepts, the client moves
+        to a successor exactly as a renewal does -- make-before-break, nothing in flight lost --
+        and the successor is admitted with the grant as it stands now. A principal's inbox can be
+        shared by several runners, so ``is_mine`` decides whether a request names this one.
+
+        :param inbox_prefix: this principal's inbox prefix, as it connected with
+        :ptype inbox_prefix: str
+        :param is_mine: whether a request is for this runner; read at the moment it arrives
+        :ptype is_mine: Callable[[CredentialRenewalRequest], bool]
+        :return: the subscription, for :meth:`unsubscribe`
+        :rtype: Subscription
+        """
+
+        async def _on_request(request: CredentialRenewalRequest) -> None:
+            if not is_mine(request):
+                log.debug(
+                    "a credential renewal request for another runner of this principal was ignored",
+                    extra={"extra_data": {"client_name": self._client_name, "pod_id": request.pod_id}},
+                )
+                return
+            self._start_successor_move(why=f"its credential's minter asked for a renewal ({request.reason.value})")
+
+        return await self.subscribe_typed(
+            subject=Subjects.credential_renewal_request(inbox_prefix),
+            cb=_on_request,
+            message_type=CredentialRenewalRequest,
+            deadletter_on_failure=False,
+        )
+
+    async def _stop_successor_move(self) -> None:
+        """cancel a move to a successor connection, if one runs, and wait for it to end.
 
         :return: nothing
         :rtype: None
         """
-        task = self._lame_duck_move
-        self._lame_duck_move = None
+        task = self._successor_move
+        self._successor_move = None
         if task is not None and task is not asyncio.current_task():
             task.cancel()
             try:
@@ -3261,8 +3329,8 @@ class NatsClient:
         self._renewal_task = None
         if renewal is not None and renewal is not asyncio.current_task():
             renewal.cancel()
-        move = self._lame_duck_move
-        self._lame_duck_move = None
+        move = self._successor_move
+        self._successor_move = None
         if move is not None and move is not asyncio.current_task():
             move.cancel()
         for connection in connections:
@@ -3371,7 +3439,7 @@ class NatsClient:
         # loop must not outlive its client, nor a connection it replaced or a candidate it opened.
         self._lifecycle.close()
         await self._stop_renewal()
-        await self._stop_lame_duck_move()
+        await self._stop_successor_move()
         await self._close_replaced_connections()
         if self._raw.is_closed:
             return

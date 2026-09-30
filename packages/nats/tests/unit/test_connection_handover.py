@@ -954,3 +954,37 @@ async def test_a_run_that_outlives_its_connection_continues_on_the_current_one(m
     assert current.published == [("s", b"t1")]
     assert successor.published == [("s", b"t2")]
     await client.shutdown()
+
+
+async def test_a_renewal_request_for_this_runner_moves_it_to_a_successor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """a changed grant reaches a live connection by a lossless renewal, not a day later."""
+    from threetears.nats import CredentialRenewalReason, CredentialRenewalRequest, Subjects
+
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    await client.renew_on_request(inbox_prefix="_INBOX_pod", is_mine=lambda request: request.pod_id in (None, "pod-a"))
+    [notice_sub] = current.subs
+    assert notice_sub.subject == Subjects.credential_renewal_request("_INBOX_pod").path
+
+    request = CredentialRenewalRequest(reason=CredentialRenewalReason.GRANTS_CHANGED, pod_id="pod-a")
+    await notice_sub.queue_in.put(_Msg(request.model_dump_json().encode(), subject=notice_sub.subject))
+    await _until(lambda: client.raw is successor)
+
+    assert not current.is_closed, "the replaced connection is held for its work"
+    await client.shutdown()
+
+
+async def test_a_renewal_request_for_another_runner_moves_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from threetears.nats import CredentialRenewalReason, CredentialRenewalRequest
+
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    await client.renew_on_request(inbox_prefix="_INBOX_pod", is_mine=lambda request: request.pod_id in (None, "pod-a"))
+    [notice_sub] = current.subs
+
+    request = CredentialRenewalRequest(reason=CredentialRenewalReason.GRANTS_CHANGED, pod_id="pod-b")
+    await notice_sub.queue_in.put(_Msg(request.model_dump_json().encode(), subject=notice_sub.subject))
+    await asyncio.sleep(0.1)
+
+    assert client.raw is current
+    await client.shutdown()
