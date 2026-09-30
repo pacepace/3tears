@@ -48,6 +48,7 @@ from threetears.agent.wake.hmac_util import verify_generic_hmac_sha256
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
     from threetears.agent.wake.config import WakeConfig
     from threetears.agent.wake.entities import EncryptionService
     from threetears.agent.wake.types import HandlerCallback
@@ -127,15 +128,23 @@ class WebhookReceiver:
 
     Consumers construct the receiver at app-startup time and register
     it on their FastAPI app via :meth:`register`. All dependencies
-    (asyncpg pool, encryption service, handler callback, wake config)
-    are constructor args -- no global state.
+    (asyncpg pool, the subscription + fire collections, encryption
+    service, handler callback, wake config) are constructor args -- no
+    global state.
+
+    The collections are the host process's own, built once on the
+    registry that carries its NATS client and runs its invalidation
+    listener. A fire stamps ``last_fired_at`` on the subscription, and
+    that eviction reaches the other replicas only through that client.
 
     Per PLACEMENT §1.13 the receiver does NOT host subscription CRUD
     endpoints. CRUD belongs in the consumer's REST router or the
     agent-tool surfaces from shard 04 (``webhook_subscription_create``,
     etc.). The receiver is receive-side only.
 
-    :ivar _pool: asyncpg pool the wake collections + dispatcher share
+    :ivar _pool: asyncpg pool the wake dispatcher reads through
+    :ivar _subscriptions: the host process's subscription collection
+    :ivar _fires: the host process's fire collection
     :ivar _encryption_service: consumer's :class:`EncryptionService`
         impl; used to decrypt the per-subscription HMAC secret on each
         inbound fire
@@ -159,6 +168,8 @@ class WebhookReceiver:
         self,
         *,
         pool: Any,
+        subscriptions: WebhookSubscriptionCollection,
+        fires: WakeFireCollection,
         encryption_service: EncryptionService,
         handler: HandlerCallback,
         wake_config: WakeConfig,
@@ -173,9 +184,18 @@ class WebhookReceiver:
         headers, etc.) for products that operate multiple webhook
         surfaces.
 
-        :param pool: asyncpg pool the wake collections + dispatcher
-            share. Forwarded verbatim to :func:`webhook_receive`.
+        :param pool: asyncpg pool the wake dispatcher reads through.
+            Forwarded verbatim to :func:`webhook_receive`.
         :ptype pool: Any
+        :param subscriptions: the host process's subscription collection,
+            built once on the registry that carries its NATS client and
+            runs its invalidation listener. Forwarded to
+            :func:`webhook_receive`, whose ``last_fired_at`` stamp reaches
+            other replicas only through that client
+        :ptype subscriptions: WebhookSubscriptionCollection
+        :param fires: the host process's fire collection, on the same
+            registry
+        :ptype fires: WakeFireCollection
         :param encryption_service: consumer's :class:`EncryptionService`
             implementation
         :ptype encryption_service: EncryptionService
@@ -192,6 +212,8 @@ class WebhookReceiver:
         :ptype max_payload_bytes: int
         """
         self._pool = pool
+        self._subscriptions = subscriptions
+        self._fires = fires
         self._encryption_service = encryption_service
         self._handler = handler
         self._wake_config = wake_config
@@ -294,10 +316,7 @@ class WebhookReceiver:
         # runners that only touch other channel adapters). Same
         # pattern as agent-wake's dispatch module uses for its
         # CollectionRegistry import.
-        from threetears.agent.wake.collections import WebhookSubscriptionCollection  # noqa: PLC0415
         from threetears.agent.wake.webhook_adapter import webhook_receive  # noqa: PLC0415
-        from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
-        from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
 
         body = await request.body()
         if len(body) > self._max_payload_bytes:
@@ -318,11 +337,7 @@ class WebhookReceiver:
         # verifier dispatch on the receiver layer (where vendor
         # schemes register) without coupling the adapter to the
         # registry type.
-        registry = CollectionRegistry()
-        registry.configure(l3_pool=self._pool)
-        cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-        subs = WebhookSubscriptionCollection(registry=registry, config=cfg)
-        sub = await subs.find_by_id(subscription_id)
+        sub = await self._subscriptions.find_by_id(subscription_id)
         if sub is None or sub.status != "active":
             # Forward to the wake adapter unchanged -- it owns the
             # not-found / paused outcome shape (404). Skipping
@@ -334,6 +349,8 @@ class WebhookReceiver:
                 signature_header=signature,
                 source_ip=source_ip,
                 pool=self._pool,
+                subscriptions=self._subscriptions,
+                fires=self._fires,
                 encryption_service=self._encryption_service,
                 handler=self._handler,
                 wake_config=self._wake_config,
@@ -411,6 +428,8 @@ class WebhookReceiver:
             signature_header=signature,
             source_ip=source_ip,
             pool=self._pool,
+            subscriptions=self._subscriptions,
+            fires=self._fires,
             encryption_service=self._encryption_service,
             handler=self._handler,
             wake_config=self._wake_config,

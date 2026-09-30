@@ -39,9 +39,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG
 from threetears.agent.wake.entities import WebhookSubscriptionEntity
 from threetears.agent.wake.webhook_adapter import WebhookReceiveResult
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.channels.webhook import (
     DEFAULT_MAX_PAYLOAD_BYTES,
     DEFAULT_SIGNATURE_HEADER,
@@ -82,14 +85,32 @@ class _NullHandler:
         raise AssertionError(msg)
 
 
+def _collections() -> tuple[WebhookSubscriptionCollection, WakeFireCollection]:
+    """the subscription + fire collections a receiver runs on, over a registry with no tiers."""
+    registry = CollectionRegistry()
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    return (
+        WebhookSubscriptionCollection(registry=registry, config=config),
+        WakeFireCollection(registry=registry, config=config),
+    )
+
+
 def _build_receiver(
     *,
     signature_header: str | None = None,
     max_payload_bytes: int | None = None,
+    collections: tuple[WebhookSubscriptionCollection, WakeFireCollection] | None = None,
 ) -> WebhookReceiver:
-    """Construct a receiver with stub dependencies suitable for routing tests."""
+    """Construct a receiver with stub dependencies suitable for routing tests.
+
+    The collections sit on a registry with no tiers: every test patches
+    ``find_by_id`` and stubs ``webhook_receive``, so nothing reaches them.
+    """
+    subscriptions, fires = collections if collections is not None else _collections()
     kwargs: dict[str, Any] = {
         "pool": object(),
+        "subscriptions": subscriptions,
+        "fires": fires,
         "encryption_service": _IdentityEncryption(),
         "handler": _NullHandler(),
         "wake_config": DEFAULT_WAKE_CONFIG,
@@ -378,7 +399,8 @@ class TestRegistryDispatch:
         """When the verifier succeeds the adapter MUST be invoked with
         ``pre_verified=True`` so it skips its inline HMAC compute.
         """
-        receiver = _build_receiver()
+        subscriptions, fires = _collections()
+        receiver = _build_receiver(collections=(subscriptions, fires))
 
         def _always_accept(secret: bytes, payload: bytes, signature_value: str) -> bool:
             del secret, payload, signature_value
@@ -413,6 +435,11 @@ class TestRegistryDispatch:
 
         assert r.status_code == 202
         assert captured["pre_verified"] is True
+        # the adapter runs on the receiver's own collections -- the host process's, whose
+        # registry carries the NATS client a fire's eviction is broadcast through -- never on
+        # collections it builds per request with no client.
+        assert captured["subscriptions"] is subscriptions
+        assert captured["fires"] is fires
         # The receiver forwards the raw signature header to the
         # adapter (so the adapter still records it for auditing /
         # logging downstream).

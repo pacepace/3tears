@@ -30,11 +30,14 @@ import pytest
 from uuid_utils import uuid7
 
 from threetears.agent.skills.migrations import register as register_skills
+from threetears.agent.wake.collections import WakeFireCollection, WakeScheduleCollection
 from threetears.agent.wake.migrations import register as register_wake
-from threetears.agent.wake.tick import wake_tick_job
+from threetears.agent.wake.tick import DispatchCallback, wake_tick_job
 from threetears.agent.wake.types import WakeDispatchResult, WakeTrigger
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.collections.asyncpg_init import init_connection
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 
 from .conftest import AsyncpgStore
@@ -45,6 +48,24 @@ pytestmark = pytest.mark.integration
 
 def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
+
+
+async def _tick(pool: asyncpg.Pool, dispatch: DispatchCallback) -> None:
+    """run one tick pass the way one pod does, on collections over ``pool`` (L3 only).
+
+    Each call is its own registry, as each pod is. Cross-replica eviction of a claimed row is
+    pinned in ``tests/unit/test_tick_claim_reaches_every_reader.py``.
+    """
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    await wake_tick_job(
+        pool,
+        None,
+        dispatch,
+        schedules=WakeScheduleCollection(registry=registry, config=cfg),
+        fires=WakeFireCollection(registry=registry, config=cfg),
+    )
 
 
 async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
@@ -147,7 +168,7 @@ class TestTickDispatchesOnlyDueSchedules:
                 seen.append(trigger.schedule_id)
                 return WakeDispatchResult(status="fired", output_text="ok", latency_ms=12)
 
-            await wake_tick_job(pool, None, dispatch)
+            await _tick(pool, dispatch)
             assert seen == [due]
             assert await _count_fires(pool, due) == 1
             assert await _count_fires(pool, future) == 0
@@ -182,7 +203,7 @@ class TestPerFireFailureIsolation:
                     raise Boom("dispatcher exploded")
                 return WakeDispatchResult(status="fired", output_text="ok")
 
-            await wake_tick_job(pool, None, dispatch)
+            await _tick(pool, dispatch)
 
             # both schedules generated a fire row; due_a finalised as failed
             assert await _count_fires(pool, due_a) == 1
@@ -228,7 +249,7 @@ class TestPerFireFailureIsolation:
                     latency_ms=42,
                 )
 
-            await wake_tick_job(pool, None, dispatch)
+            await _tick(pool, dispatch)
 
             assert await _count_fires(pool, sched) == 1
             row = await pool.fetchrow(
@@ -264,7 +285,7 @@ class TestMissedFirePolicy:
             async def dispatch(_trigger: WakeTrigger, _fire_id: UUID, _pool: object) -> WakeDispatchResult:
                 return WakeDispatchResult(status="fired")
 
-            await wake_tick_job(pool, None, dispatch)
+            await _tick(pool, dispatch)
             row = await _read_schedule(pool, sched)
             # coalesce anchors on now -> next_fire_at = now + 60s, which
             # is well into the future (NOT backlog_anchor + 60s in the past)
@@ -294,7 +315,7 @@ class TestMissedFirePolicy:
             async def dispatch(_trigger: WakeTrigger, _fire_id: UUID, _pool: object) -> WakeDispatchResult:
                 return WakeDispatchResult(status="fired")
 
-            await wake_tick_job(pool, None, dispatch)
+            await _tick(pool, dispatch)
             row = await _read_schedule(pool, sched)
             next_fire = row["next_fire_at"]
             assert isinstance(next_fire, datetime)
@@ -329,8 +350,8 @@ class TestConcurrentTickClaimRace:
                 return WakeDispatchResult(status="fired")
 
             await asyncio.gather(
-                wake_tick_job(pool, None, dispatch),
-                wake_tick_job(pool, None, dispatch),
+                _tick(pool, dispatch),
+                _tick(pool, dispatch),
             )
             # the optimistic-CAS UPDATE ensures only one dispatch ran.
             assert seen.count(due) == 1
@@ -358,7 +379,7 @@ class TestOneShotTerminalTransition:
             async def dispatch(_trigger: WakeTrigger, _fire_id: UUID, _pool: object) -> WakeDispatchResult:
                 return WakeDispatchResult(status="fired")
 
-            await wake_tick_job(pool, None, dispatch)
+            await _tick(pool, dispatch)
             row = await _read_schedule(pool, sched)
             assert row["status"] == "expired"
             assert row["next_fire_at"] is None

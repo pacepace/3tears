@@ -12,13 +12,19 @@ other's vocabulary.
 design notes
 ------------
 
-- **``wake_tick_job`` signature is preserved.** Consumers and the
-  integration tests still call ``wake_tick_job(pool, nats_client,
-  dispatch_callback)`` with the wake-shaped
-  ``DispatchCallback = (WakeTrigger, fire_id, pool) -> WakeDispatchResult``.
+- **``wake_tick_job`` keeps the wake-shaped callback.** Consumers call
+  ``wake_tick_job(pool, nats_client, dispatch_callback, schedules=, fires=)``
+  with ``DispatchCallback = (WakeTrigger, fire_id, pool) -> WakeDispatchResult``.
   The generic engine's ``(JobTrigger, fire_id) -> JobFireResult`` shape is
   bridged internally by :func:`_adapt` below, so the delegation is invisible
   to the consumer.
+- **The tick runs on the host process's collections.** ``schedules`` and
+  ``fires`` are built once on the registry that carries the process's NATS
+  client and runs its invalidation listener. A won claim evicts the schedule
+  from every cache tier; that eviction reaches the other replicas only
+  through that client. The tick used to build a registry per pass with no
+  client, and every other replica kept serving -- and its schedule tools kept
+  saving back -- the pre-claim row.
 - **Wrap, don't mutate.** :class:`_WakeScheduleStore` / :class:`_WakeFireStore`
   implement the core ``ScheduleStore`` / ``FireStore`` protocols by wrapping the
   UNCHANGED :class:`~threetears.agent.wake.collections.WakeScheduleCollection` /
@@ -514,6 +520,9 @@ async def wake_tick_job(
     pool: Any,
     nats_client: Any,
     dispatch_callback: DispatchCallback,
+    *,
+    schedules: WakeScheduleCollection,
+    fires: WakeFireCollection,
 ) -> None:
     """Run one tick pass of the agent-wake scheduler.
 
@@ -546,19 +555,18 @@ async def wake_tick_job(
         isolated to a single schedule and recorded as failed fires by the
         engine
     :ptype dispatch_callback: DispatchCallback
+    :param schedules: the host process's schedule collection, built once on
+        the registry that carries its NATS client and runs its invalidation
+        listener; a won claim's eviction reaches other replicas only through
+        that client
+    :ptype schedules: WakeScheduleCollection
+    :param fires: the host process's fire collection, on the same registry
+    :ptype fires: WakeFireCollection
     :return: nothing
     :rtype: None
     """
-    # local imports keep the registry / config plumbing out of the wake
-    # package's always-paid import cost (mirrors the pre-S-2 tick body).
-    from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
-    from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
-
-    registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
-    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-    schedule_store = _WakeScheduleStore(WakeScheduleCollection(registry=registry, config=cfg))
-    fire_store = _WakeFireStore(WakeFireCollection(registry=registry, config=cfg))
+    schedule_store = _WakeScheduleStore(schedules)
+    fire_store = _WakeFireStore(fires)
     emitter = get_wake_emitter()
 
     async def _adapt(job_trigger: JobTrigger, fire_id: UUID) -> JobFireResult:

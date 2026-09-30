@@ -487,7 +487,7 @@ class TestWakeTickJobWiring:
         async def _cb(_t: WakeTrigger, _f: UUID, _p: Any) -> WakeDispatchResult:
             return WakeDispatchResult(status="fired")
 
-        await wake_tick_job(object(), nats, _cb)
+        await wake_tick_job(object(), nats, _cb, schedules=_empty_schedule_collection(), fires=_empty_fire_collection())
 
         assert isinstance(captured["schedule_store"], _WakeScheduleStore)
         assert isinstance(captured["fire_store"], _WakeFireStore)
@@ -516,7 +516,7 @@ class TestWakeTickJobWiring:
             seen["pool"] = p
             return WakeDispatchResult(status="fired", output_text="ok", latency_ms=9)
 
-        await wake_tick_job(pool, None, _cb)
+        await wake_tick_job(pool, None, _cb, schedules=_empty_schedule_collection(), fires=_empty_fire_collection())
 
         # drive the captured adapter callback with a generic envelope
         entity = _make_schedule_entity()
@@ -565,7 +565,7 @@ class TestWakeTickJobWiring:
         async def _cb(_t: WakeTrigger, _f: UUID, _p: Any) -> WakeDispatchResult:
             return WakeDispatchResult(status="yielded", latency_ms=2000)
 
-        await wake_tick_job(object(), None, _cb)
+        await wake_tick_job(object(), None, _cb, schedules=_empty_schedule_collection(), fires=_empty_fire_collection())
 
         due = _WakeDueSchedule(_make_schedule_entity())
         job_trigger = JobTrigger(

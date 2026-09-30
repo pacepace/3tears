@@ -6,6 +6,13 @@ isolation, drift) and its reschedule math to the generic `3tears-scheduled-jobs`
 core. `threetears.agent.wake.tick` is a thin adapter over
 `threetears.scheduled_jobs.scheduled_tick_job`.
 
+> **Superseded since S-2:** `wake_tick_job` now also takes required keyword arguments
+> `schedules=` and `fires=` -- the host process's collections, built once on the registry that
+> carries its NATS client and runs its invalidation listener -- and so do `webhook_receive` and
+> `WebhookReceiver`. A tick driver calling `wake_tick_job(pool=..., nats_client=...,
+> dispatch_callback=...)` must add them. See the CHANGELOG entry "A wake write reaches every
+> replica, and never lands on a row it did not read".
+
 **The good news:** the wake-facing contract is unchanged. `wake_tick_job(pool,
 nats_client, dispatch_callback)`, the wake-shaped `DispatchCallback`,
 `WakeTrigger`, `WakeDispatchResult`, `FireStatus`, the schedule/fire schema, and

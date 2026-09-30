@@ -42,7 +42,7 @@ from fastapi import FastAPI
 from uuid_utils import uuid7
 
 from threetears.agent.skills.migrations import register as register_skills
-from threetears.agent.wake.collections import WebhookSubscriptionCollection
+from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG
 from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tools import (
@@ -201,10 +201,24 @@ def _hmac_header(secret: str, payload: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode("utf-8"), payload, sha256).hexdigest()
 
 
+def _receiver_collections(pool: asyncpg.Pool) -> tuple[WebhookSubscriptionCollection, WakeFireCollection]:
+    """the subscription + fire collections a receiver runs on, over ``pool`` (L3 only)."""
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    return (
+        WebhookSubscriptionCollection(registry=registry, config=cfg),
+        WakeFireCollection(registry=registry, config=cfg),
+    )
+
+
 def _build_app(pool: asyncpg.Pool, handler: HandlerCallback) -> FastAPI:
     """Construct a FastAPI app with the receiver mounted at /webhooks."""
+    subscriptions, fires = _receiver_collections(pool)
     receiver = WebhookReceiver(
         pool=pool,
+        subscriptions=subscriptions,
+        fires=fires,
         encryption_service=_IdentityEncryption(),
         handler=handler,
         wake_config=DEFAULT_WAKE_CONFIG,
@@ -314,8 +328,11 @@ async def test_webhook_receiver_oversized_body_returns_413(
         # Receiver capped at 32 bytes; we POST 256 bytes so the
         # size-cap short-circuit fires before any HMAC compute or
         # adapter invocation.
+        subscriptions, fires = _receiver_collections(pool)
         receiver = WebhookReceiver(
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=handler,
             wake_config=DEFAULT_WAKE_CONFIG,
@@ -387,8 +404,11 @@ async def test_webhook_receiver_custom_vendor_scheme_dispatches_via_registry(
         )
 
         handler = _RecordingHandler()
+        subscriptions, fires = _receiver_collections(pool)
         receiver = WebhookReceiver(
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=handler,
             wake_config=DEFAULT_WAKE_CONFIG,
@@ -480,8 +500,11 @@ async def test_webhook_receiver_unknown_scheme_returns_400(
         )
 
         handler = _RecordingHandler()
+        subscriptions, fires = _receiver_collections(pool)
         receiver = WebhookReceiver(
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=handler,
             wake_config=DEFAULT_WAKE_CONFIG,

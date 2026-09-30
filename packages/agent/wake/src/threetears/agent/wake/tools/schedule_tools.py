@@ -46,6 +46,7 @@ from threetears.agent.wake.rate_limit import (
     create_schedule_serialized,
     resume_schedule_serialized,
 )
+from threetears.core.exceptions import ConcurrentModificationError
 from threetears.scheduled_jobs import compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_schedule_id
 from threetears.agent.wake.tools.validators import (
@@ -915,6 +916,20 @@ def load_wake_schedule_update_tool(
         entity.date_updated = datetime.now(UTC)
         try:
             await schedules_collection.save_entity(entity)
+        except ConcurrentModificationError:
+            # the save is fenced on the row this edit read; something changed it since -- a fire,
+            # an expiry, a pause or resume, another edit -- and applying the edit would write that
+            # change away. The model re-reads and decides again.
+            log.info(
+                "wake_schedule_update refused: schedule changed since it was read",
+                extra={"extra_data": {"schedule_id": str(parsed)}},
+            )
+            return _tool_error(
+                "wake_schedule_update",
+                "the schedule changed after this edit read it (it fired, expired, was paused or resumed, "
+                "or was edited elsewhere); nothing was saved. Read it again with wake_schedule_list and "
+                "reapply the change if it still makes sense.",
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "wake_schedule_update persist failed",

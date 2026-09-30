@@ -36,6 +36,12 @@ eviction runs however the UPDATE ended, since one that raised may still have
 reached L3. An UPDATE joined to a caller's transaction is settled by the
 :class:`~threetears.core.collections.CallerTransaction` when it ends instead.
 
+**A multi-row scan caches nothing.** ``list_*``, ``find_by_id`` and
+``latest_for_schedule`` read L3 outside the per-key fence ``get`` reads under, so the
+entities they return hold their own rows (see :func:`_scanned`) rather than writing them into
+L1 where a concurrent write could leave them stale, or an eviction could empty them under a
+caller still reading them.
+
 **Fire rows are the exception, and why is a claim about their readers.** No
 code reads a ``wake_fires`` row by primary key:
 :meth:`WakeFireCollection.latest_for_schedule`,
@@ -73,8 +79,10 @@ from threetears.agent.wake.entities import (
     WakeScheduleEntity,
     WebhookSubscriptionEntity,
 )
+from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import (
     deserialize_from_json,
     serialize_to_json,
@@ -111,6 +119,28 @@ async def _evicting(collection: BaseCollection[Any], entity_id: tuple[Any, ...])
         yield
     finally:
         await asyncio.shield(collection.invalidate_cache(entity_id))
+
+
+def _scanned[EntityT: BaseEntity](entity_class: type[EntityT], row: Any) -> EntityT:
+    """build the entity a multi-row scan answers with, holding its own row and caching nothing.
+
+    An entity built with its collection writes its row into L1 and reads every field back
+    through it. A scan read L3 outside the per-key fence :meth:`BaseCollection.get` reads under,
+    so the row it caches can be older than a write that landed while the scan ran, with nothing
+    left to evict it; and once any write or peer broadcast evicts the key, the entity reads every
+    field as absent -- the webhook receiver's own ``record_fire`` did exactly that to the
+    subscription it had just looked up. A scanned entity therefore keeps its row in its change
+    buffer. It still carries the ``date_updated`` it was read with, so a save of it through
+    :meth:`BaseCollection.save_entity` is fenced like any other.
+
+    :param entity_class: the entity type to build
+    :ptype entity_class: type[EntityT]
+    :param row: one row the scan returned
+    :ptype row: Any
+    :return: the entity, detached from every cache tier
+    :rtype: EntityT
+    """
+    return entity_class(dict(row), is_new=False, collection=None)
 
 
 # Field-type hints used when L2 cache rounds a row through JSON. The
@@ -291,11 +321,48 @@ def _build_upsert_sql(
     )
 
 
+def _build_fenced_update_sql(
+    table: str,
+    update_cols: Sequence[str],
+    pk_cols: Sequence[str],
+) -> str:
+    """Build an update-only statement fenced on the ``date_updated`` the row was read with.
+
+    Positional parameters bind to ``pk_cols`` then ``update_cols`` in declared order, then the
+    fence last. The statement updates only a row that still carries the fence value, so a save
+    built from a row read before another writer changed it -- or deleted it -- updates nothing
+    rather than writing that change away, and never re-inserts a deleted row.
+
+    :param table: table name
+    :ptype table: str
+    :param update_cols: columns the save writes
+    :ptype update_cols: Sequence[str]
+    :param pk_cols: primary-key columns, matched in the ``WHERE`` clause
+    :ptype pk_cols: Sequence[str]
+    :return: SQL string ready for ``execute()``
+    :rtype: str
+    """
+    set_clause = ", ".join(f"{c} = ${len(pk_cols) + i + 1}" for i, c in enumerate(update_cols))
+    where_clause = " AND ".join(f"{c} = ${i + 1}" for i, c in enumerate(pk_cols))
+    fence_position = len(pk_cols) + len(update_cols) + 1
+    return f"UPDATE {table} SET {set_clause} WHERE {where_clause} AND date_updated = ${fence_position}"
+
+
 _AGENT_WAKE_SCHEDULES_UPSERT_SQL = _build_upsert_sql(
     "agent_wake_schedules",
     _SCHEDULE_INSERT_COLUMNS,
     _SCHEDULE_UPDATE_COLUMNS,
     ("conversation_id", "schedule_id"),
+)
+
+
+_SCHEDULE_PK_COLUMNS: tuple[str, ...] = ("conversation_id", "schedule_id")
+
+
+_AGENT_WAKE_SCHEDULES_FENCED_UPDATE_SQL = _build_fenced_update_sql(
+    "agent_wake_schedules",
+    _SCHEDULE_UPDATE_COLUMNS,
+    _SCHEDULE_PK_COLUMNS,
 )
 
 
@@ -312,6 +379,16 @@ _WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL = _build_upsert_sql(
     _SUBSCRIPTION_INSERT_COLUMNS,
     _SUBSCRIPTION_UPDATE_COLUMNS,
     ("conversation_id", "subscription_id"),
+)
+
+
+_SUBSCRIPTION_PK_COLUMNS: tuple[str, ...] = ("conversation_id", "subscription_id")
+
+
+_WEBHOOK_SUBSCRIPTIONS_FENCED_UPDATE_SQL = _build_fenced_update_sql(
+    "webhook_subscriptions",
+    _SUBSCRIPTION_UPDATE_COLUMNS,
+    _SUBSCRIPTION_PK_COLUMNS,
 )
 
 
@@ -418,26 +495,38 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """Upsert a schedule row.
+        """Insert a new schedule row, or update an existing one only as it was read.
+
+        With ``original_timestamp`` -- the ``date_updated`` the row carried when it was read, which
+        :meth:`BaseCollection.save_entity` passes for every entity read from a tier -- the write is
+        an update-only statement fenced on that value. The schedule tools save the whole row they
+        read, and between that read and this write the tick can claim and expire the row, another
+        replica can pause or resume it, or it can be deleted; each of those moves
+        ``date_updated`` or removes the row, so the save updates nothing and ``save_entity``
+        raises :class:`~threetears.core.exceptions.ConcurrentModificationError` instead of
+        writing the change away. Without it (a new row) the unfenced upsert runs.
 
         :param data: row dict keyed by column name; must carry both pk
             columns and every non-nullable column
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored (no CAS fence -- schedule
-            updates are idempotent in the upsert path)
+        :param original_timestamp: the ``date_updated`` the row was read with, or ``None`` for an
+            insert
         :ptype original_timestamp: Any
         :param conn: optional asyncpg-compatible connection
         :ptype conn: Any
-        :return: rows affected (1 on success)
+        :return: rows affected (1 on success, 0 when the row changed or was deleted since it was
+            read)
         :rtype: int
         """
-        del original_timestamp
-        params = _schedule_insert_params(data)
         target = conn if conn is not None else self.l3_pool
         if target is None:
             return 0
-        await target.execute(_AGENT_WAKE_SCHEDULES_UPSERT_SQL, *params)
-        return 1
+        if original_timestamp is None:
+            await target.execute(_AGENT_WAKE_SCHEDULES_UPSERT_SQL, *_schedule_insert_params(data))
+            return 1
+        params = [_schedule_value_for_column(col, data) for col in _SCHEDULE_PK_COLUMNS + _SCHEDULE_UPDATE_COLUMNS]
+        status = await target.execute(_AGENT_WAKE_SCHEDULES_FENCED_UPDATE_SQL, *params, original_timestamp)
+        return parse_rowcount(status)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a schedule row by composite pk.
@@ -512,7 +601,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             now,
             limit,
         )
-        return [WakeScheduleEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [_scanned(WakeScheduleEntity, row) for row in rows]
 
     async def list_active_for_conversation(
         self,
@@ -544,7 +633,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "ORDER BY next_fire_at ASC NULLS LAST",
             conversation_id,
         )
-        return [WakeScheduleEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [_scanned(WakeScheduleEntity, row) for row in rows]
 
     async def list_for_conversation(
         self,
@@ -573,7 +662,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "ORDER BY date_created DESC",
             conversation_id,
         )
-        return [WakeScheduleEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [_scanned(WakeScheduleEntity, row) for row in rows]
 
     async def count_active_for_conversation(
         self,
@@ -921,7 +1010,9 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
 
         :param data: row dict keyed by column name
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored
+        :param original_timestamp: always ``None``: ``wake_fires`` has no ``date_updated``
+            column, so an entity read from it carries no fence. Fires are written once as new
+            rows and finalized by targeted UPDATEs, never re-saved from a read.
         :ptype original_timestamp: Any
         :param conn: optional asyncpg-compatible connection
         :ptype conn: Any
@@ -1022,7 +1113,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             schedule_id,
             limit,
         )
-        return [WakeFireEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [_scanned(WakeFireEntity, row) for row in rows]
 
     async def list_for_conversation(
         self,
@@ -1055,7 +1146,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             conversation_id,
             limit,
         )
-        return [WakeFireEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [_scanned(WakeFireEntity, row) for row in rows]
 
     async def latest_for_schedule(
         self,
@@ -1091,7 +1182,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         )
         if row is None:
             return None
-        return WakeFireEntity(dict(row), is_new=False, collection=self)
+        return _scanned(WakeFireEntity, row)
 
     async def create_dispatching(
         self,
@@ -1422,26 +1513,40 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """Upsert a subscription row.
+        """Insert a new subscription row, or update an existing one only as it was read.
+
+        With ``original_timestamp`` the write is an update-only statement fenced on the
+        ``date_updated`` the row was read with (see :meth:`WakeScheduleCollection.save_to_store`).
+        The webhook tools save the whole row they read, secret included; a rotation, a pause, or
+        a fire stamping ``last_fired_at`` between that read and this write moves ``date_updated``,
+        so the save updates nothing and ``save_entity`` raises
+        :class:`~threetears.core.exceptions.ConcurrentModificationError` rather than restoring
+        the secret the rotation replaced. Without it (a new row) the unfenced upsert runs.
 
         :param data: row dict keyed by column name; must carry both pk
             columns and every non-nullable column (including
             ``secret_ciphertext`` bytes)
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored
+        :param original_timestamp: the ``date_updated`` the row was read with, or ``None`` for an
+            insert
         :ptype original_timestamp: Any
         :param conn: optional asyncpg-compatible connection
         :ptype conn: Any
-        :return: rows affected
+        :return: rows affected (1 on success, 0 when the row changed or was deleted since it was
+            read)
         :rtype: int
         """
-        del original_timestamp
-        params = _subscription_insert_params(data)
         target = conn if conn is not None else self.l3_pool
         if target is None:
             return 0
-        await target.execute(_WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL, *params)
-        return 1
+        if original_timestamp is None:
+            await target.execute(_WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL, *_subscription_insert_params(data))
+            return 1
+        params = [
+            _subscription_value_for_column(col, data) for col in _SUBSCRIPTION_PK_COLUMNS + _SUBSCRIPTION_UPDATE_COLUMNS
+        ]
+        status = await target.execute(_WEBHOOK_SUBSCRIPTIONS_FENCED_UPDATE_SQL, *params, original_timestamp)
+        return parse_rowcount(status)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a subscription row by composite pk.
@@ -1503,7 +1608,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         )
         if row is None:
             return None
-        return WebhookSubscriptionEntity(dict(row), is_new=False, collection=self)
+        return _scanned(WebhookSubscriptionEntity, row)
 
     async def list_for_conversation(
         self,
@@ -1529,7 +1634,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
             "ORDER BY date_created DESC",
             conversation_id,
         )
-        return [WebhookSubscriptionEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [_scanned(WebhookSubscriptionEntity, row) for row in rows]
 
     async def rotate_secret(
         self,

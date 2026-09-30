@@ -18,9 +18,9 @@ the engine so the engine's degrade-open actually protects wake:
   ``wake_tick_job`` does not raise.
 - ``LockHeld`` (another pod holds it) -> the body is skipped (no due-scan).
 
-The schedule collection is replaced with a no-DB subclass so the test needs no
-Postgres; only the lock-vs-body control flow is exercised. (The fire collection
-is never reached because the due-scan returns nothing.)
+The tick runs on a no-DB schedule collection so the test needs no Postgres;
+only the lock-vs-body control flow is exercised. (The fire collection is never
+reached because the due-scan returns nothing.)
 """
 
 from __future__ import annotations
@@ -33,23 +33,25 @@ import pytest
 from threetears.nats import LockHeld
 from threetears.nats.errors import KvError
 
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
+
 from threetears.agent.wake import tick as tick_mod
-from threetears.agent.wake.collections import WakeScheduleCollection
+from threetears.agent.wake.collections import WakeFireCollection, WakeScheduleCollection
 
 
 class _NoDbScheduleCollection(WakeScheduleCollection):
     """A schedule collection whose due-scan hits no database.
 
     Subclasses the production collection (parity declared by subclass) and
-    counts due-scans on a class attribute so the test can assert whether the
-    tick body ran past the lock without holding the wake_tick_job-constructed
-    instance.
+    counts due-scans so the test can assert whether the tick body ran past
+    the lock.
     """
 
     due_scans: int = 0
 
     async def list_due_for_tick(self, now: Any, *, limit: int = 200) -> list[Any]:
-        type(self).due_scans += 1
+        self.due_scans += 1
         return []
 
 
@@ -77,12 +79,14 @@ def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any) -> None:
     monkeypatch.setattr("threetears.nats.nats_distributed_lock", _factory)
 
 
-@pytest.fixture(autouse=True)
-def _no_db_collection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Swap the schedule collection wake_tick_job constructs for the no-DB one
-    and reset its due-scan counter per test."""
-    _NoDbScheduleCollection.due_scans = 0
-    monkeypatch.setattr(tick_mod, "WakeScheduleCollection", _NoDbScheduleCollection)
+def _collections() -> tuple[_NoDbScheduleCollection, WakeFireCollection]:
+    """the no-DB schedule collection and an unreached fire collection the tick runs on."""
+    registry = CollectionRegistry()
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    return (
+        _NoDbScheduleCollection(registry=registry, config=config),
+        WakeFireCollection(registry=registry, config=config),
+    )
 
 
 class TestTickDegradesOpenOnKvError:
@@ -91,8 +95,11 @@ class TestTickDegradesOpenOnKvError:
     async def test_kverror_runs_body_anyway(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_lock(monkeypatch, _CtxRaisingOnEnter(KvError("nats: no response from stream")))
         # Must NOT raise -- the KvError is degraded to a warning + run.
-        await tick_mod.wake_tick_job(object(), nats_client=object(), dispatch_callback=AsyncMock())
-        assert _NoDbScheduleCollection.due_scans == 1
+        schedules, fires = _collections()
+        await tick_mod.wake_tick_job(
+            object(), nats_client=object(), dispatch_callback=AsyncMock(), schedules=schedules, fires=fires
+        )
+        assert schedules.due_scans == 1
 
 
 class TestTickLockHeldSkips:
@@ -100,8 +107,11 @@ class TestTickLockHeldSkips:
 
     async def test_lockheld_skips_body(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_lock(monkeypatch, _CtxRaisingOnEnter(LockHeld("lock already held: agent_wake_tick")))
-        await tick_mod.wake_tick_job(object(), nats_client=object(), dispatch_callback=AsyncMock())
-        assert _NoDbScheduleCollection.due_scans == 0
+        schedules, fires = _collections()
+        await tick_mod.wake_tick_job(
+            object(), nats_client=object(), dispatch_callback=AsyncMock(), schedules=schedules, fires=fires
+        )
+        assert schedules.due_scans == 0
 
 
 class TestTickHealthyLockRunsOnce:
@@ -116,5 +126,8 @@ class TestTickHealthyLockRunsOnce:
                 return False
 
         _patch_lock(monkeypatch, _CtxHealthy())
-        await tick_mod.wake_tick_job(object(), nats_client=object(), dispatch_callback=AsyncMock())
-        assert _NoDbScheduleCollection.due_scans == 1
+        schedules, fires = _collections()
+        await tick_mod.wake_tick_job(
+            object(), nats_client=object(), dispatch_callback=AsyncMock(), schedules=schedules, fires=fires
+        )
+        assert schedules.due_scans == 1

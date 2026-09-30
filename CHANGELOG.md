@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A wake write reaches every replica, and never lands on a row it did not read
+
+The wake schedule and webhook tools read a row, change the fields the model asked for, and save
+the whole row back. That save ignored the version it read, so a row changed in between -- the
+tick claiming and expiring a one-shot, another replica pausing it, a webhook fire stamping
+`last_fired_at`, a secret rotation -- was written away: an expired one-shot re-armed, a paused
+schedule resumed, a rotated secret restored. And the two writers that change those rows most, the
+tick's claim and the webhook fire's `last_fired_at` stamp, each ran on a registry built per pass
+with no NATS client, so their evictions never reached another replica.
+
+**Contract changes:**
+
+- `WakeScheduleCollection` and `WebhookSubscriptionCollection` `save_to_store` honour
+  `original_timestamp`: a save of a row read from any tier is an update-only statement fenced on
+  the `date_updated` it was read with, and `save_entity` raises `ConcurrentModificationError` when
+  the row changed or was deleted since. A new row still upserts.
+- `wake_schedule_update` and `webhook_subscription_update` answer a refused save with a
+  `[TOOL ERROR]` telling the model the row changed and to re-read it with `wake_schedule_list` /
+  `webhook_subscription_list`, and save nothing.
+- **BREAKING:** `webhook_receive(..., subscriptions=, fires=)`,
+  `WebhookReceiver(..., subscriptions=, fires=)` and
+  `wake_tick_job(pool, nats_client, dispatch_callback, *, schedules=, fires=)` take the host
+  process's wake collections as required keyword arguments, and no longer build a registry of
+  their own. Build them once on the registry that carries the process's NATS client and runs its
+  invalidation listener (`start_invalidation_listener` / `stop_invalidation_listener`); a registry
+  with no client broadcasts nothing, and every other replica keeps the pre-write row.
+- A multi-row wake scan (`list_*`, `find_by_id`, `latest_for_schedule`) returns entities holding
+  their own rows and caches nothing. They wrote the scanned row into L1 outside the per-key read
+  fence, and read every field back through it, so an eviction of the key -- the receiver's own
+  `record_fire` among them -- emptied the subscription the receiver was still reading.
+
 ### No cache tier serves a row a bypassing write already replaced
 
 Three families of write reached L3 without leaving every cache tier agreeing with it.
