@@ -67,7 +67,7 @@ SESSION_CLAIM_TTL = timedelta(seconds=45)
 SESSION_CLAIM_REFRESH = timedelta(seconds=15)
 
 
-def operator_session_lease(nats_client: KvCapable, *, pod_id: str | None = None) -> KVLease:
+def operator_session_lease(nats_client: KvCapable, *, key_scope: str, pod_id: str | None = None) -> KVLease:
     """The lease a platform hands :func:`claim_session`: bind-only, on the platform's shared leases bucket.
 
     A display claim runs in a TOOL pod, and a pod holds no stream-management verb -- ``STREAM.CREATE``
@@ -77,14 +77,22 @@ def operator_session_lease(nats_client: KvCapable, *, pod_id: str | None = None)
     lease built any other way either asks for a create the pod's grant refuses -- a JetStream deadline
     on the first claim -- or names a bucket nothing grants, which is the same deadline later.
 
+    **Keyed under the pod's own scope.** Every tool pod binds that one bucket and is granted only the
+    keys under its own scope, so each claim is ``{key_scope}.{digest}``: replicas of one pod contend
+    for one key, and no pod can read, steal or release another pod's claim.
+
     :param nats_client: the pod's connected NATS client
     :ptype nats_client: KvCapable
+    :param key_scope: this pod's key scope -- ``kv_key_scope_for(Principal.TOOL_POD, pod_id=...)``
+        over its ``tool_pods.id``, the scope its grant on the bucket is narrowed to
+    :ptype key_scope: str
     :param pod_id: this pod's holder identity; ``None`` lets the lease mint one per process
     :ptype pod_id: str | None
     :return: a lease that binds the hub-declared bucket and never creates one
     :rtype: KVLease
+    :raises ValueError: when ``key_scope`` is not one literal subject token
     """
-    return KVLease(nats_client, pod_id=pod_id, create_if_missing=False)
+    return KVLease(nats_client, pod_id=pod_id, create_if_missing=False, key_scope=key_scope)
 
 
 def session_claim_key(session_id: str) -> str:

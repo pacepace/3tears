@@ -2249,3 +2249,71 @@ class TestNatsConnectAuthToken:
         assert kwargs["user"] == "u"
         assert kwargs["password"] == "p"
         assert "auth_token" not in kwargs
+
+
+class TestAssertionNoncesAreOwnerScoped:
+    """the self-provisioned nonce guard keys every nonce under the pod's own scope.
+
+    ``proxy_assertion_nonces`` is one bucket every pod binds, and each pod is granted only the keys
+    under its own scope -- the owning agent's for an in-process server, the ``tool_pods.id``'s for a
+    tool pod. A guard keyed any other way has every record refused by the grant.
+    """
+
+    _AGENT = UUID("019470a8-b5c3-7def-8123-0000000000aa")
+    _TOOL_POD = "01947100-0000-7000-8000-0000000000aa"
+
+    def test_an_in_process_server_scopes_by_its_owning_agent(self) -> None:
+        from threetears.nats import Principal, Subjects, kv_key_scope_for
+
+        server = ToolServer(nats_url="nats://x", pod_id=Subjects.agent_inprocess_pod_id(self._AGENT, "i1"))
+        assert server.assertion_nonce_key_scope == kv_key_scope_for(Principal.AGENT_POD, agent_id=self._AGENT)
+
+    def test_a_tool_pod_scopes_by_its_pod_id(self) -> None:
+        from threetears.nats import Principal, kv_key_scope_for
+
+        server = ToolServer(nats_url="nats://x", pod_id=self._TOOL_POD)
+        assert server.assertion_nonce_key_scope == kv_key_scope_for(Principal.TOOL_POD, pod_id=self._TOOL_POD)
+
+    def test_a_pod_id_no_platform_principal_carries_keys_its_nonces_unscoped(self) -> None:
+        # a non-uuid pod id cannot be minted a platform grant at all, so it runs on a bus of its own
+        server = ToolServer(nats_url="nats://x", pod_id="test-pod-slug")
+        assert server.assertion_nonce_key_scope is None
+
+    @pytest.mark.asyncio
+    async def test_the_guard_serve_builds_carries_the_scope(self) -> None:
+        from threetears.nats import Principal, kv_key_scope_for
+
+        built: list[dict[str, Any]] = []
+
+        class _SpyGuard(FakeReplayGuard):
+            def __init__(self, _client: Any, **kwargs: Any) -> None:
+                built.append(kwargs)
+                super().__init__()
+
+        server = ToolServer(nats_url="nats://localhost:9999", pod_id=self._TOOL_POD)
+        server.register(StubTool())
+        mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
+        mock_nc.is_connected = True
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        with (
+            patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc),
+            patch("threetears.agent.tools.server.ReplayGuard", _SpyGuard),
+        ):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        assert [kwargs["key_scope"] for kwargs in built] == [
+            kv_key_scope_for(Principal.TOOL_POD, pod_id=self._TOOL_POD)
+        ]
+        assert built[0]["bucket_name"] == "proxy_assertion_nonces"

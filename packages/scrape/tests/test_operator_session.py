@@ -253,6 +253,10 @@ class TestTheKeyIsDerivedNotUsedRaw:
             session_claim_key("")
 
 
+#: a tool pod's key scope, as ``kv_key_scope_for(Principal.TOOL_POD, pod_id=...)`` renders one.
+_SCOPE = "tool_pod-01947100000070008000000000000001"
+
+
 class TestAPodBindsTheLeaseBucketItNeverCreates:
     """The lease a pod claims with binds the hub's ``leases`` bucket and never creates one.
 
@@ -266,7 +270,7 @@ class TestAPodBindsTheLeaseBucketItNeverCreates:
         from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
         from threetears.scrape.operator_session import operator_session_lease
 
-        lease = operator_session_lease(DeclaringFake(), pod_id="pod-a")
+        lease = operator_session_lease(DeclaringFake(), key_scope=_SCOPE, pod_id="pod-a")
         # ``kv_bucket`` layers ``{ns}-`` on, so this is ``{ns}-leases``: the tool pod's grant
         assert lease.bucket_name == "leases"
         assert lease.pod_id == "pod-a"
@@ -275,16 +279,28 @@ class TestAPodBindsTheLeaseBucketItNeverCreates:
         from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
         from threetears.scrape.operator_session import operator_session_lease
 
-        lease = operator_session_lease(DeclaringFake(declared_buckets=("leases",)), pod_id="pod-a")
+        lease = operator_session_lease(DeclaringFake(declared_buckets=("leases",)), key_scope=_SCOPE, pod_id="pod-a")
         async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH) as claim:
             assert claim.held
+
+    async def test_the_claim_is_keyed_under_the_pods_own_scope(self) -> None:
+        """every tool pod binds the one ``leases`` bucket and is granted only its own scope's keys."""
+        from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
+        from threetears.scrape.operator_session import operator_session_lease
+
+        client = DeclaringFake(declared_buckets=("leases",))
+        lease = operator_session_lease(client, key_scope=_SCOPE, pod_id="pod-a")
+        bucket = await client.kv_bucket(name="leases", create_if_missing=False)
+        async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH):
+            assert await bucket.get(key=f"{_SCOPE}.{session_claim_key('session-1')}") is not None
+            assert await bucket.get(key=session_claim_key("session-1")) is None
 
     async def test_a_bucket_nobody_declared_is_refused_not_created(self) -> None:
         from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
         from threetears.scrape.operator_session import operator_session_lease
 
         client = DeclaringFake()
-        lease = operator_session_lease(client, pod_id="pod-a")
+        lease = operator_session_lease(client, key_scope=_SCOPE, pod_id="pod-a")
         with pytest.raises(KeyError):
             async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH):
                 pass

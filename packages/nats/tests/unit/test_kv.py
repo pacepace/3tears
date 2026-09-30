@@ -818,3 +818,125 @@ class TestABindOnlyOpenKeepsItsEntryLifetime:
         bucket = await self._open(js, ttl=None)
         await bucket.put(key="cell-1", value=b"1")
         assert js.published == []
+
+
+# parity-exempt: minimal JetStream stand-in whose bucket is absent for the first N binds, then declared
+class _DeclaredLateJs:
+    """a bucket nobody has declared yet: ``key_value`` answers not-found until ``absent_for`` binds have run."""
+
+    def __init__(self, *, absent_for: int, healed: Any) -> None:
+        self.absent_for = absent_for
+        self.binds = 0
+        self.healed = healed
+
+    async def key_value(self, name: str) -> Any:
+        from nats.js.errors import BucketNotFoundError
+
+        self.binds += 1
+        if self.binds <= self.absent_for:
+            raise BucketNotFoundError
+        return self.healed
+
+
+def _client_over(js: Any) -> MagicMock:
+    client = MagicMock()
+    client.jetstream_context = MagicMock(return_value=js)
+    return client
+
+
+@pytest.fixture
+def _fast_rebind() -> Iterator[None]:
+    """shrink the bind wait so a test that waits for a declarer spends milliseconds, not seconds."""
+    with (
+        patch("threetears.nats.kv._BIND_RETRY_FIRST_DELAY_SECONDS", 0.001),
+        patch("threetears.nats.kv._BIND_RETRY_MAX_DELAY_SECONDS", 0.004),
+        patch("threetears.nats.kv._BIND_WAIT_FOR_DECLARER_SECONDS", 0.5),
+    ):
+        yield
+
+
+class TestABindOnlyOpenWaitsForItsDeclarer:
+    """a pod never creates a bucket, so one missing right now is one its declarer has not declared YET.
+
+    A NATS restart wipes every memory-backed bucket. The hub re-declares them all once it reconnects,
+    but a pod can reach the bus first -- and a bind-only open that failed on that first miss left the
+    primitive over it unusable until something re-opened it, which for a guard bound once at startup
+    meant until the pod restarted. So a bind that finds the bucket ABSENT (the server answered
+    not-found) waits with bounded backoff for the declarer; one that is REFUSED (never answered -- an
+    ungranted bucket) is not retried, because no amount of waiting grants it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_declared_while_the_pod_waits_is_bound(self, _fast_rebind: None) -> None:
+        js = _DeclaredLateJs(absent_for=3, healed=_FakeKv())
+        bucket = await NatsKvBucket.open(
+            client=_client_over(js),
+            full_name="ns-proxy_assertion_nonces",
+            ttl=None,
+            storage="memory",
+            create_if_missing=False,
+            history=1,
+        )
+        assert js.binds == 4
+        assert bucket.name == "ns-proxy_assertion_nonces"
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_never_declared_fails_once_the_wait_is_spent(self, _fast_rebind: None) -> None:
+        js = _DeclaredLateJs(absent_for=10_000, healed=_FakeKv())
+        with (
+            patch("threetears.nats.kv._BIND_WAIT_FOR_DECLARER_SECONDS", 0.05),
+            pytest.raises(KvError, match="declar"),
+        ):
+            await NatsKvBucket.open(
+                client=_client_over(js),
+                full_name="ns-ratelimits",
+                ttl=None,
+                storage="memory",
+                create_if_missing=False,
+                history=1,
+            )
+        assert js.binds > 1
+
+    @pytest.mark.asyncio
+    async def test_a_refused_bind_is_not_retried(self, _fast_rebind: None) -> None:
+        calls = 0
+
+        async def _refused(*_args: object, **_kwargs: object) -> None:
+            nonlocal calls
+            calls += 1
+            raise TimeoutError("nats: timeout")
+
+        js = MagicMock()
+        js.key_value = _refused
+        with pytest.raises(KvError):
+            await NatsKvBucket.open(
+                client=_client_over(js),
+                full_name="ns-epochs",
+                ttl=None,
+                storage="memory",
+                create_if_missing=False,
+                history=1,
+            )
+        assert calls == 1, "an ungranted bucket was retried as if waiting could grant it"
+
+    @pytest.mark.asyncio
+    async def test_a_handle_whose_bucket_was_wiped_recovers_once_the_declarer_is_back(self, _fast_rebind: None) -> None:
+        """the handle a primitive holds outlives the wipe; its next operation re-binds and succeeds."""
+        stale = _FakeKv()
+
+        async def _stream_gone(key: str) -> Any:
+            raise RuntimeError("nats: no response from stream")
+
+        stale.get = _stream_gone  # type: ignore[method-assign]
+        healed = _FakeKv()
+        await healed.put("nonce", b"1")
+        js = _DeclaredLateJs(absent_for=2, healed=healed)
+        bucket = NatsKvBucket(
+            client=_client_over(js),  # type: ignore[arg-type]
+            full_name="ns-proxy_assertion_nonces",
+            kv=stale,  # type: ignore[arg-type]
+            ttl=None,
+            create_if_missing=False,
+        )
+        assert await bucket.get(key="nonce") == b"1"
+        assert js.binds == 3

@@ -6,6 +6,55 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A pod reaches only its own keys in the platform's shared pod buckets
+
+`{ns}-ratelimits`, `{ns}-proxy_assertion_nonces` and `{ns}-leases` are each one bucket every pod of
+a kind binds, and the pod grant covered the whole bucket: any pod could read, list, watch, overwrite
+or delete any other pod's keys -- lift another agent's extraction cooldown, burn another pod's
+in-flight assertion nonce, steal or release another pod's display claim. `{ns}-checkpoints` was
+granted to every agent pod the same way, keyed by thread id with no owner token: every agent's
+conversation state.
+
+**Contract changes:**
+
+- New `JsCapability.KV_OWNER_KEYS` and `JsResource.kv_owner_keys(name, *, scope, writable)`: bind,
+  a subject-carried read, a named key consumer and (when writable) a `$KV.` publish, each narrowed
+  to `{scope}.>`. No body-carried `STREAM.MSG.GET`, so the bucket must run `allow_direct`, which
+  the hub declares.
+- The agent pod holds `KV_OWNER_KEYS` on `ratelimits` and `proxy_assertion_nonces`, and the tool pod
+  on `proxy_assertion_nonces` and `leases`, each under its own `kv_key_scope_for` scope.
+- No pod, and not the hub's resolver, holds `{ns}-checkpoints` any more. Nothing on the platform
+  reads or writes it: the agent runtime's checkpointer runs on L3 alone, and a host wanting a
+  checkpoint L2 passes its own coordination bucket as `l2_bucket`.
+- The agent pod reads `{ns}-epochs` and no longer writes it; only the hub and the gateway bump.
+- `ReplayGuard`, `KVLease`, `DistributedCounter` and `TokenBucket` take `key_scope=`; with one,
+  every key is `{key_scope}.{key}`. `MemoryExtractor` takes `rate_limit_key_scope=`.
+- `ToolServer` keys its self-provisioned proxy-assertion guard under
+  `ToolServer.assertion_nonce_key_scope`: the owning agent's scope for an in-process server, the
+  pod's for a tool pod.
+- **BREAKING:** `threetears.scrape.operator_session_lease(nats_client, *, key_scope, pod_id=None)`
+  -- `key_scope` is required.
+
+**On upgrade:** keys written before the upgrade are unscoped and are never read again. Every one of
+these buckets is memory-backed and holds cache or coordination state (a throttle window, a nonce
+inside its accept window, a display claim with a TTL): the old keys expire with their own lifetimes
+or are lost at the next NATS restart, and nothing is migrated. `{ns}-checkpoints` is no longer
+declared by the hub; a bucket still live from before is inert until the next NATS restart.
+
+### A bind-only open waits for its declarer instead of failing on the first miss
+
+A pod never creates a bucket, and a NATS restart wipes every memory-backed one until the hub's
+reconnect re-declares them. A bind that found its bucket absent failed at once, which left a
+primitive bound once at startup unusable until something re-opened it.
+
+**Contract change:** a `create_if_missing=False` open that the server answers with not-found now
+retries with bounded backoff (0.1s doubling to 2s) for up to 30 seconds, then raises `KvError`
+naming the declarer. Every operation on a handle whose bucket vanished re-binds through the same
+wait, so a primitive recovers without a restart once the hub is back. A bind that is never answered
+-- an ungranted bucket -- is not retried. A bind-only `ReplayGuard` no longer registers a reconnect
+hook: it cannot recreate its bucket, and the hook would only wait for the declarer inside the
+client's serial reconnect callbacks.
+
 ### A save answered late no longer caches a row older than L3's
 
 `save_entity` committed to L3, then cached the row in L1 and wrote it to L2 with an

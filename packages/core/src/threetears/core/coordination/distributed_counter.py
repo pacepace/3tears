@@ -48,6 +48,8 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
+from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
+
 if TYPE_CHECKING:
     # From the submodule, not the package: these three are Protocols that
     # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
@@ -130,6 +132,7 @@ class DistributedCounter:
         bucket_name: str,
         ttl: timedelta | None = None,
         create_if_missing: bool = True,
+        key_scope: str | None = None,
     ) -> None:
         """configure the counter; defer bucket binding until first use.
 
@@ -157,9 +160,17 @@ class DistributedCounter:
             refused create is never answered -- it costs the full JetStream deadline before
             the bind that would have succeeded
         :ptype create_if_missing: bool
+        :param key_scope: the owner scope every counter key leads with (``{key_scope}.{key}``), for a
+            bucket SHARED by many owners -- the platform's ``ratelimits``, which every agent pod binds
+            and in which each pod is granted only the keys under its own
+            :func:`~threetears.nats.subject_permissions.kv_key_scope_for` scope. ``None`` keys by the
+            caller's key alone, for a bucket this counter's owner has to itself
+        :ptype key_scope: str | None
         :return: none
         :rtype: None
+        :raises ValueError: when ``key_scope`` is not one literal subject token
         """
+        self._key_scope = validated_key_scope(key_scope, primitive="DistributedCounter")
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = ttl
@@ -228,7 +239,7 @@ class DistributedCounter:
         :raises threetears.nats.KvError: on a KV transport failure
         """
         bucket = await self._ensure_bucket()
-        value = await bucket.get(key=key)
+        value = await bucket.get(key=owner_scoped_key(self._key_scope, key))
         return _decode_value(value) if value is not None else 0
 
     async def _apply_delta(self, key: str, delta: int) -> int:
@@ -243,6 +254,7 @@ class DistributedCounter:
         :raises DistributedCounterConflict: if the CAS retry budget is exhausted
         """
         bucket = await self._ensure_bucket()
+        key = owner_scoped_key(self._key_scope, key)
         for attempt in range(_CAS_MAX_RETRIES):
             entry = await bucket.get_entry(key=key)
             if entry is None:

@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
+from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
+
 if TYPE_CHECKING:
     # From the submodule, not the package: these three are Protocols that
     # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
@@ -198,6 +200,7 @@ class TokenBucket:
         create_if_missing: bool = True,
         clock: Callable[[], datetime] = _utc_now,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        key_scope: str | None = None,
     ) -> None:
         """configure the bucket; defer KV bucket binding until first use.
 
@@ -238,10 +241,18 @@ class TokenBucket:
             the sleeping, or a blocking claim would sleep in real time against a clock that
             never moves
         :ptype sleep: Callable[[float], Awaitable[None]]
+        :param key_scope: the owner scope every bucket-state key leads with (``{key_scope}.{key}``),
+            for a KV bucket SHARED by many owners -- the platform's ``ratelimits``, which every agent
+            pod binds and in which each pod is granted only the keys under its own
+            :func:`~threetears.nats.subject_permissions.kv_key_scope_for` scope. ``None`` keys by the
+            caller's key alone, for a bucket this limiter's owner has to itself
+        :ptype key_scope: str | None
         :return: none
         :rtype: None
-        :raises ValueError: if refill_rate or capacity is not positive
+        :raises ValueError: if refill_rate or capacity is not positive, or ``key_scope`` is not one
+            literal subject token
         """
+        self._key_scope = validated_key_scope(key_scope, primitive="TokenBucket")
         if refill_rate <= 0:
             raise ValueError(f"refill_rate must be positive, got {refill_rate}")
         if capacity <= 0:
@@ -302,9 +313,10 @@ class TokenBucket:
         if tokens > self._capacity:
             raise ValueError(f"cannot claim {tokens} tokens: exceeds bucket capacity {self._capacity}")
         bucket = await self._ensure_bucket()
+        stored = owner_scoped_key(self._key_scope, key)
         deadline = self._clock() + timedelta(seconds=max_wait_seconds) if max_wait_seconds > 0 else None
         while True:
-            result = await self._attempt(bucket, key, tokens)
+            result = await self._attempt(bucket, stored, tokens)
             if result.claimed:
                 return result
             if deadline is None:
@@ -346,9 +358,10 @@ class TokenBucket:
             return -1.0
         try:
             bucket = await self._ensure_bucket()
+            stored = owner_scoped_key(self._key_scope, key)
             for attempt in range(_CAS_MAX_RETRIES):
                 now = self._clock()
-                entry = await bucket.get_entry(key=key)
+                entry = await bucket.get_entry(key=stored)
                 if entry is None:
                     # No key means nothing was ever consumed from it; a refund would be
                     # inventing budget rather than returning it.
@@ -358,7 +371,7 @@ class TokenBucket:
                 elapsed = max(0.0, (now - state.last_refill).total_seconds())
                 current = min(self._capacity, state.tokens + elapsed * self._refill_rate)
                 restored = min(self._capacity, current + tokens)
-                if await bucket.update(key=key, value=_encode_state(restored, now), revision=revision) is not None:
+                if await bucket.update(key=stored, value=_encode_state(restored, now), revision=revision) is not None:
                     return restored
                 if attempt < _CAS_MAX_RETRIES - 1:
                     backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security

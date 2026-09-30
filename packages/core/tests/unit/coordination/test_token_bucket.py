@@ -441,3 +441,36 @@ class TestRefund:
         store = _bucket(client, clock, refill_rate=0.0001, capacity=10.0)
 
         assert await store.refund("k", tokens=2.0) == -1.0, "exhaustion must report, not raise"
+
+
+class TestOwnerScopedTokenBucketKeys:
+    """a token bucket over a SHARED KV bucket keys every bucket state under its owner's scope."""
+
+    _SCOPE = "agent_pod-019470a8b5c37def81230000000000aa"
+
+    async def test_a_claim_and_a_refund_land_under_the_scope(self) -> None:
+        client = FakeNatsClient()
+        bucket = TokenBucket(
+            client,  # type: ignore[arg-type]
+            bucket_name="ratelimits",
+            refill_rate=1.0,
+            capacity=2.0,
+            key_scope=self._SCOPE,
+        )
+        assert (await bucket.claim("rate_limit.llm.global")).claimed is True
+        kv = await client.kv_bucket(name="ratelimits")
+        assert await kv.get(key=f"{self._SCOPE}.rate_limit.llm.global") is not None
+        assert await kv.get(key="rate_limit.llm.global") is None
+        await bucket.refund("rate_limit.llm.global")
+        assert await kv.get(key="rate_limit.llm.global") is None
+
+    @pytest.mark.parametrize("scope", ["", "a.b", "a*", ">"])
+    def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
+        with pytest.raises(ValueError, match="key_scope"):
+            TokenBucket(
+                FakeNatsClient(),  # type: ignore[arg-type]
+                bucket_name="ratelimits",
+                refill_rate=1.0,
+                capacity=2.0,
+                key_scope=scope,
+            )

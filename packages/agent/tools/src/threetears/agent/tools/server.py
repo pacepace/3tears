@@ -72,6 +72,7 @@ from threetears.nats import (
     Subjects,
     TokenCallback,
     inbox_prefix_for,
+    kv_key_scope_for,
     nats_user_jwt_ttl_seconds,
     result_subject_is_owned_by_pod,
     result_subject_prefix_for_pod,
@@ -1451,6 +1452,32 @@ class ToolServer:
         return self._pod_id
 
     @property
+    def assertion_nonce_key_scope(self) -> str | None:
+        """the owner scope every proxy-assertion nonce this pod records leads with.
+
+        ``proxy_assertion_nonces`` is one bucket every pod binds, and a pod is granted only the keys
+        under its own :func:`~threetears.nats.kv_key_scope_for` scope -- so the self-provisioned
+        guard keys by the scope the pod's grant was minted with: the OWNING AGENT's for an
+        in-process server (its composite pod-id names the agent), the ``tool_pods.id``'s for a tool
+        pod. A pod-id that is neither -- not a uuid -- is one no platform grant can be minted for, so
+        its server runs on a bus of its own and keys by the nonce digest alone.
+
+        :return: the scope, or ``None`` for a pod-id no platform principal carries
+        :rtype: str | None
+        """
+        owner = Subjects.agent_inprocess_owner_id(self._pod_id)
+        scope: str | None = None
+        if owner is not None:
+            scope = kv_key_scope_for(Principal.AGENT_POD, agent_id=owner)
+        else:
+            try:
+                scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=self._pod_id)
+            except ValueError:
+                # NOSILENT: a non-uuid pod-id is not a platform tool pod, whose grant needs a uuid scope
+                scope = None
+        return scope
+
+    @property
     def tools_count(self) -> int:
         """return number of tools currently registered on this server.
 
@@ -1886,7 +1913,12 @@ class ToolServer:
             # BIND-ONLY. A tool server runs in a pod, and a pod holds no stream-management verb:
             # ``STREAM.CREATE`` carries ``sources`` in its body, a read of any stream on the bus.
             # The hub declares ``{ns}-proxy_assertion_nonces`` at startup and after every NATS
-            # reconnect; a guard that finds it missing refuses every assertion until it is back.
+            # reconnect; a guard that finds it missing waits for the hub to declare it, and refuses
+            # every assertion until it is back.
+            #
+            # OWNER-SCOPED KEYS. Every pod binds this one bucket and is granted only the keys under
+            # its own scope, so the guard records under ``assertion_nonce_key_scope``: no pod can
+            # read another's nonces, or burn one of its in-flight assertions by recording it first.
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
                 bucket_name="proxy_assertion_nonces",
@@ -1894,6 +1926,7 @@ class ToolServer:
                 verifier_future_tolerance=timedelta(seconds=_ASSERTION_LEEWAY_SECONDS),
                 anchor=self._assertion_replay_anchor,
                 create_if_missing=False,
+                key_scope=self.assertion_nonce_key_scope,
             )
         # BOUND HERE, before the call subject is subscribed, whether this server built the guard
         # or was handed one. After a broker restart the guard refuses every assertion issued

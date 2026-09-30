@@ -30,6 +30,7 @@ from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID
 
 import nats
@@ -224,9 +225,15 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_pat
                 await asyncio.sleep(0.25)
             assert await nonces.get(key="nonce-1") is None, "the entry lifetime was not applied"
 
-            # === FAILS FAST, naming the bucket: a bucket the hub never declared ======================
+            # === FAILS LOUDLY and BOUNDED, naming the bucket: a bucket the hub never declared ========
+            # a bind-only open waits for the declarer (a NATS restart leaves every pod bucket absent
+            # until the hub re-declares), so the bound here is that wait, shortened for the test --
+            # and the failure at its end names the bucket rather than arriving as a deadline.
             started = time.monotonic()
-            with pytest.raises(KvError, match=never_declared):
+            with (
+                patch("threetears.nats.kv._BIND_WAIT_FOR_DECLARER_SECONDS", 1.0),
+                pytest.raises(KvError, match=never_declared),
+            ):
                 await pod.kv_bucket(name=f"{scope}-{_NEVER_DECLARED}", create_if_missing=False)
             assert time.monotonic() - started < 5.0, "a missing bucket must fail loudly, not at a deadline"
 

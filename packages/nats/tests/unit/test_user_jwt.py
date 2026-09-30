@@ -406,6 +406,66 @@ class TestJsApiGrantsForStreamIsPublic:
             js_api_grants_for_stream(_COLL_STREAM, capability=JsCapability.KV_SCOPED, bucket=_COLL)
 
 
+class TestOwnerKeysGrant:
+    """``KV_OWNER_KEYS``: a shared pod bucket, reached only under the holder's own key prefix.
+
+    Every route to a key names the key in the SUBJECT -- a direct get, a named consumer whose filter
+    rides in the create subject, a ``$KV.`` publish -- so each is narrowed to ``{scope}.>``. The
+    body-carried ``STREAM.MSG.GET`` is withheld: its key cannot be seen by a subject permission, so
+    granting it would be a read of every owner's keys.
+    """
+
+    _BUCKET = "3tears-ratelimits"
+    _STREAM = f"KV_{_BUCKET}"
+    _SCOPE = "agent_pod-019470a8b5c37def81230000000000aa"
+
+    def _allow(self, *, writable: bool) -> list[str]:
+        permissions = PrincipalPermissions(
+            publish=(),
+            subscribe=("_INBOX_agent_pod_p1.>",),
+            allow_responses=True,
+            inbox_prefix="_INBOX_agent_pod_p1",
+            js_resources=(JsResource.kv_owner_keys(self._BUCKET, scope=self._SCOPE, writable=writable),),
+        )
+        allow: list[str] = _payload(_mint(permissions=permissions))["nats"]["pub"]["allow"]
+        return allow
+
+    def test_the_control_plane_is_bind_owner_read_and_owner_consumer(self) -> None:
+        assert js_api_grants_for_stream(
+            self._STREAM, capability=JsCapability.KV_OWNER_KEYS, bucket=self._BUCKET, scope=self._SCOPE
+        ) == [
+            f"$JS.API.STREAM.INFO.{self._STREAM}",
+            f"$JS.API.DIRECT.GET.{self._STREAM}.$KV.{self._BUCKET}.{self._SCOPE}.>",
+            f"$JS.API.CONSUMER.CREATE.{self._STREAM}.*.$KV.{self._BUCKET}.{self._SCOPE}.>",
+        ]
+
+    def test_a_writable_grant_publishes_only_the_owners_prefix(self) -> None:
+        allow = self._allow(writable=True)
+        assert f"$KV.{self._BUCKET}.{self._SCOPE}.>" in allow
+        assert f"$KV.{self._BUCKET}.>" not in allow
+
+    def test_a_read_only_grant_publishes_no_key(self) -> None:
+        assert not [s for s in self._allow(writable=False) if s.startswith("$KV.")]
+
+    def test_no_body_carried_or_whole_bucket_route_is_granted(self) -> None:
+        allow = self._allow(writable=True)
+        for subject in (
+            f"$JS.API.STREAM.MSG.GET.{self._STREAM}",
+            f"$JS.API.DIRECT.GET.{self._STREAM}",
+            f"$JS.API.DIRECT.GET.{self._STREAM}.$KV.{self._BUCKET}.agent_pod-other.k",
+            f"$JS.API.CONSUMER.CREATE.{self._STREAM}",
+            f"$JS.API.CONSUMER.CREATE.{self._STREAM}.kl.$KV.{self._BUCKET}.>",
+            f"$JS.API.STREAM.PURGE.{self._STREAM}",
+            f"$JS.API.STREAM.UPDATE.{self._STREAM}",
+            f"$JS.API.STREAM.CREATE.{self._STREAM}",
+        ):
+            assert not [p for p in allow if _nats_subject_match(p, subject)], subject
+
+    def test_a_grant_without_its_scope_raises_rather_than_emitting_a_dead_grant(self) -> None:
+        with pytest.raises(ValueError, match="separate tokens"):
+            js_api_grants_for_stream(self._STREAM, capability=JsCapability.KV_OWNER_KEYS, bucket=self._BUCKET)
+
+
 class TestUserJwtEncoding:
     def test_header_is_nats_jwt_v2(self) -> None:
         # alg MUST be ed25519-nkey (v2) -- not v1 'ed25519' nor JOSE 'EdDSA'.

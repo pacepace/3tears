@@ -53,7 +53,7 @@ from nats.js.api import (
     StreamConfig,
     StreamInfo,
 )
-from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError
+from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from threetears.observe import get_logger
 
 from threetears.nats._diagnostics import kv_grant_remedy, kv_timeout_remedy
@@ -219,6 +219,24 @@ _KEY_LISTING_CONSUMER_PREFIX: Final[str] = "kl_"
 #: How long one key listing may take, end to end, before it raises rather than hangs. A listing
 #: whose consumer create is ungranted is never answered, so without a bound it would block forever.
 _KEY_LISTING_TIMEOUT_SECONDS: Final[float] = 30.0
+
+#: How long a BIND-only open waits for a bucket that is absent to be declared, before it fails.
+#:
+#: A process that only binds a bucket never creates it, so a bucket missing at bind time is one its
+#: declarer has not declared YET: at first boot before the hub has run, or after a NATS restart
+#: wiped every memory-backed bucket and before the hub's reconnect re-declared them. Failing on the
+#: first miss left a primitive bound once at startup unusable until the process restarted. Long
+#: enough to cover the hub reconnecting and re-declaring after a broker restart; short enough that
+#: a bucket nobody will ever declare surfaces as an error an operator can read. Every later
+#: operation on a handle re-binds through the same wait, so an expiry here is never permanent.
+_BIND_WAIT_FOR_DECLARER_SECONDS: float = 30.0
+
+#: The first pause between two binds of an absent bucket; it doubles up to
+#: :data:`_BIND_RETRY_MAX_DELAY_SECONDS`.
+_BIND_RETRY_FIRST_DELAY_SECONDS: float = 0.1
+
+#: The longest pause between two binds of an absent bucket.
+_BIND_RETRY_MAX_DELAY_SECONDS: float = 2.0
 
 #: Characters that make a subject token a wildcard or split it. A watched key must be literal: the
 #: grant names it literally, and a wildcard filter would be a different consumer from the one granted.
@@ -386,7 +404,8 @@ async def open_kv_stream(
     - ``create_if_missing=False`` BINDS. a reader has no authority to change a
       shared bucket, so drift on the reconciled set raises
       :class:`~threetears.nats.errors.KvConfigMismatch`, which the L2 accessors
-      deliberately do not catch.
+      deliberately do not catch. an ABSENT bucket is waited for, with bounded
+      backoff, since only its declarer can create it (:func:`_bind_when_declared`).
 
     a create failure the SERVER answered is classified from its API error code;
     a failure the server never answered (a permissions refusal reads as a
@@ -440,8 +459,72 @@ async def open_kv_stream(
     return kv
 
 
+async def _bind_when_declared(*, js: Any, full_name: str) -> KeyValue:
+    """bind a KV bucket, waiting with bounded backoff while it is absent.
+
+    **Absent and refused are two different answers, and only one is worth waiting for.** A bucket
+    that does not exist is ANSWERED -- the server replies not-found -- and for a process that only
+    binds, that means its declarer has not declared it yet; the hub re-declares every pod bucket
+    when it reconnects after a broker restart, so waiting is what recovers. A bucket this principal
+    may not read is NEVER answered: the request dies on its deadline, and no amount of waiting grants
+    it, so that failure is raised at once.
+
+    :param js: connected JetStream context
+    :ptype js: Any
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :return: bound nats-py KeyValue handle
+    :rtype: KeyValue
+    :raises KvError: the bucket stayed absent for :data:`_BIND_WAIT_FOR_DECLARER_SECONDS`, or the
+        bind failed for any other reason
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _BIND_WAIT_FOR_DECLARER_SECONDS
+    delay = _BIND_RETRY_FIRST_DELAY_SECONDS
+    attempts = 0
+    kv: KeyValue | None = None
+    while kv is None:
+        attempts += 1
+        try:
+            kv = await js.key_value(full_name)
+        except NotFoundError as exc:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise KvError(
+                    f"bind KV bucket failed: bucket={full_name} does not exist, and its declarer did not "
+                    f"declare it within {_BIND_WAIT_FOR_DECLARER_SECONDS:g}s ({attempts} binds). this process "
+                    f"only binds it; the declaring identity (the hub, for every pod bucket) creates it at "
+                    f"startup and after every NATS reconnect -- check that it is running and connected."
+                ) from exc
+            if attempts == 1:
+                log.warning(
+                    "KV bucket %s does not exist yet; waiting up to %gs for its declarer to declare it",
+                    full_name,
+                    _BIND_WAIT_FOR_DECLARER_SECONDS,
+                    extra={"extra_data": {"bucket": full_name}},
+                )
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, _BIND_RETRY_MAX_DELAY_SECONDS)
+        except Exception as exc:
+            # Hedged: an unanswered bind is what a refused one looks like, and what an unreachable
+            # broker looks like too.
+            raise KvError(
+                f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
+            ) from exc
+    if attempts > 1:
+        log.info(
+            "KV bucket %s bound once its declarer declared it",
+            full_name,
+            extra={"extra_data": {"bucket": full_name, "binds": attempts}},
+        )
+    return kv
+
+
 async def _bind_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> KeyValue:
     """bind to an existing KV bucket, refusing one whose reconciled config differs.
+
+    A bucket that is ABSENT is waited for (:func:`_bind_when_declared`): a process that only binds
+    never creates one, so it waits for the declarer rather than failing the first time it looks.
 
     :param js: connected JetStream context
     :ptype js: Any
@@ -454,15 +537,7 @@ async def _bind_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> K
     :raises KvConfigMismatch: the live bucket differs on the reconciled field set
     :raises KvError: binding failed
     """
-    kv: KeyValue
-    try:
-        kv = await js.key_value(full_name)
-    except Exception as exc:
-        # Hedged: this branch never attempts a create, so a bucket nobody has
-        # created yet fails here exactly the way an ungranted one does.
-        raise KvError(
-            f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
-        ) from exc
+    kv = await _bind_when_declared(js=js, full_name=full_name)
     if any(getattr(config, field, None) is not None for field in _BIND_REFUSED_KV_STREAM_FIELDS):
         live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
         drift = {

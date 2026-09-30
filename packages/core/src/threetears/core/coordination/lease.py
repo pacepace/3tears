@@ -47,6 +47,8 @@ from uuid import uuid7
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
+from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
+
 if TYPE_CHECKING:
     # From the submodule, not the package: these three are Protocols that
     # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
@@ -514,6 +516,7 @@ class KVLease:
         pod_id: str | None = None,
         *,
         create_if_missing: bool = True,
+        key_scope: str | None = None,
     ) -> None:
         """configure factory; defer bucket creation until first acquire.
 
@@ -541,9 +544,18 @@ class KVLease:
             issues STREAM.CREATE -- for a process whose grant on the bucket is key-addressed
             only, where a refused create would cost the full JetStream deadline first
         :ptype create_if_missing: bool
+        :param key_scope: the owner scope every lease key leads with (``{key_scope}.{key}``), for a
+            bucket SHARED by many owners -- the platform's ``leases``, which every tool pod binds and
+            in which each pod is granted only the keys under its own
+            :func:`~threetears.nats.subject_permissions.kv_key_scope_for`. Replicas of one owner
+            share the scope and so contend for one key. ``None`` keys by the caller's key alone,
+            for a bucket this factory's owner has to itself
+        :ptype key_scope: str | None
         :return: None
         :rtype: None
+        :raises ValueError: when ``key_scope`` is not one literal subject token
         """
+        self._key_scope = validated_key_scope(key_scope, primitive="KVLease")
         self._client = nats_client
         self._bucket_name = bucket_name if bucket_name is not None else self._default_bucket_name()
         self._pod_id = pod_id if pod_id is not None else f"pod-{uuid7().hex}"
@@ -638,7 +650,8 @@ class KVLease:
         4. otherwise sleep ``min(1.0, remaining_time)`` and retry.
         5. on deadline elapsed, raise :class:`LeaseTimeout`.
 
-        :param key: KV key under which lease entry lives
+        :param key: the lease's name; the KV key is this, led by the factory's ``key_scope`` when
+            it has one (the handle carries the stored key)
         :ptype key: str
         :param ttl_seconds: seconds past acquisition at which entry goes stale
         :ptype ttl_seconds: int
@@ -651,6 +664,7 @@ class KVLease:
         :raises LeaseTimeout: if deadline elapses before lease becomes free
         """
         bucket = await self._ensure_bucket()
+        key = owner_scoped_key(self._key_scope, key)
         deadline = datetime.now(UTC) + timedelta(seconds=max_wait_seconds)
         handle: LeaseHandle | None = None
         timed_out = False

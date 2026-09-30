@@ -34,9 +34,11 @@ by many principals, so the per-stream pin admits every principal's keys. A resou
 ``$JS.API.DIRECT.GET.KV_{b}.$KV.{b}.{scope}.>`` on read -- and drops every JetStream verb that can
 carry a key in a request BODY (``STREAM.MSG.GET``, the bare ``DIRECT.GET``, consumer create with a
 ``filter_subject``) or export the whole stream (``SNAPSHOT`` / ``RESTORE`` / ``PURGE`` / ``UPDATE``).
-Scoping is per-resource OPT-IN: no other bucket writes a scope prefix, so narrowing them all would
-deny every read on all of them -- and a denied JetStream request is never answered, so it arrives as
-a ten-second deadline rather than as an error.
+Scoping is per-resource OPT-IN: a bucket whose keys carry no scope prefix would have every read
+denied by a narrowed grant -- and a denied JetStream request is never answered, so it arrives as a
+ten-second deadline rather than as an error. The platform's shared POD buckets (``{ns}-ratelimits``,
+``{ns}-proxy_assertion_nonces``, ``{ns}-leases``) opt in: every key 3tears writes there leads with
+the writer's scope, and a pod holds :attr:`JsCapability.KV_OWNER_KEYS` narrowed to it.
 
 A tool pod granted an AGENT's data additionally holds one :attr:`JsCapability.KV_TABLE_SCOPED`
 record per granted table (:class:`AgentTableGrant`), narrowed one token past the owning agent's
@@ -198,8 +200,9 @@ class JsCapability(StrEnum):
     messages -- another agent's bucket, the shared collections bucket, the audit stream -- into one
     it can read. ``DELETE``, ``PURGE``, ``SNAPSHOT`` and ``RESTORE`` destroy, export or replace
     state. The hub declares every bucket and stream a pod touches; a pod binds and works inside
-    them, through :attr:`KV_BUCKET_KEYS` on an unscoped bucket, a scoped capability on the shared
-    collections bucket, and :attr:`STREAM_CONSUMER` on a plain stream.
+    them, through :attr:`KV_BUCKET_KEYS` on a bucket of its own, :attr:`KV_OWNER_KEYS` on a shared
+    pod bucket, a scoped capability on the shared collections bucket, and :attr:`STREAM_CONSUMER`
+    on a plain stream.
     ``tests/enforcement/test_kv_grant_capability.py`` refuses a management verb in any pod's minted
     grant.
 
@@ -238,6 +241,16 @@ class JsCapability(StrEnum):
         compare-and-set, delete) only when the resource is writable. A body-carried read or a
         filtered consumer reaches nothing the grant does not already cover. Never a stream-admin
         verb (see above), never the unnamed or durable consumer create.
+    :cvar KV_OWNER_KEYS: a pod's grant on one of the platform's SHARED pod buckets
+        (``{ns}-ratelimits``, ``{ns}-proxy_assertion_nonces``, ``{ns}-leases``), where every pod of
+        a kind binds the same bucket and the KEY rather than the bucket is the isolation boundary:
+        every key a pod writes there leads with its own scope (:func:`kv_key_scope_for`), carried
+        in the resource's ``scope``. Bind (``STREAM.INFO``), a subject-carried read of
+        ``{scope}.>`` (``DIRECT.GET`` -- the bucket runs ``allow_direct``, which the hub declares),
+        a key watch or listing through a NAMED consumer filtered inside ``{scope}.>``, and a
+        ``$KV.`` publish of ``{scope}.>`` when writable. NOT the body-carried
+        ``STREAM.MSG.GET``: its key rides in the request body, where no subject permission can
+        narrow it to one owner, so granting it would be a read of every pod's keys.
     :cvar STREAM_CONSUMER: a pod's grant on a plain stream it COLLECTS from: exactly one verb, the
         NAMED consumer create with its filter in the subject
         (``CONSUMER.CREATE.{stream}.*.{filter}``), where the filter is the resource's
@@ -256,12 +269,19 @@ class JsCapability(StrEnum):
     KV_KEY_READ = "kv_key_read"
     KV_TABLE_SCOPED = "kv_table_scoped"
     KV_BUCKET_KEYS = "kv_bucket_keys"
+    KV_OWNER_KEYS = "kv_owner_keys"
     STREAM_CONSUMER = "stream_consumer"
 
 
 #: capabilities whose grants are narrowed to one key scope, and therefore REQUIRE a scope.
 _SCOPED_CAPABILITIES: Final[frozenset[JsCapability]] = frozenset(
-    {JsCapability.KV_SCOPED, JsCapability.KV_SCOPED_DECLARE, JsCapability.KV_KEY_READ, JsCapability.KV_TABLE_SCOPED}
+    {
+        JsCapability.KV_SCOPED,
+        JsCapability.KV_SCOPED_DECLARE,
+        JsCapability.KV_KEY_READ,
+        JsCapability.KV_TABLE_SCOPED,
+        JsCapability.KV_OWNER_KEYS,
+    }
 )
 
 #: capabilities narrowed to one TABLE within their scope, and therefore REQUIRE a table.
@@ -483,6 +503,31 @@ class JsResource:
             kind=JsResourceKind.KV_BUCKET,
             capability=JsCapability.KV_BUCKET_KEYS,
             scope=None,
+            writable=writable,
+        )
+
+    @classmethod
+    def kv_owner_keys(cls, name: str, *, scope: str, writable: bool) -> JsResource:
+        """declare a pod's access to its OWN keys in one shared bucket the hub declared.
+
+        :param name: fully-qualified bucket name, prefix included
+        :ptype name: str
+        :param scope: the holder's own key scope, from :func:`kv_key_scope_for`; every key it
+            reaches is ``{scope}.<rest>``
+        :ptype scope: str
+        :param writable: whether the holder may put, compare-and-set and delete its keys as well
+            as read them
+        :ptype writable: bool
+        :return: the resource record, at :attr:`JsCapability.KV_OWNER_KEYS`
+        :rtype: JsResource
+        :raises ValueError: if ``scope`` is not a single subject token matching
+            :data:`KV_KEY_SCOPE_GRAMMAR`
+        """
+        return cls(
+            name=name,
+            kind=JsResourceKind.KV_BUCKET,
+            capability=JsCapability.KV_OWNER_KEYS,
+            scope=scope,
             writable=writable,
         )
 
@@ -1321,11 +1366,10 @@ def _agent_bucket_resources(
     buckets, never a stream-admin verb, and a consumer only by name with its filter inside the
     bucket. Writable only for a write grant.
 
-    **The checkpoint cache is never reachable this way, by construction.** ``{ns}-checkpoints`` is
-    one shared bucket keyed ``[<customer>/]<thread>[.<ns>]`` with no owner token, so no grant can
-    be narrowed to one agent's entries in it -- and the owner data stack a tool pod builds opens no
-    checkpointer. A declared suffix of ``checkpoints`` names the owner's own coordination bucket
-    ``{ns}-{owner_scope}-checkpoints``, never the cache.
+    **The retired shared checkpoint bucket is never reachable this way, by construction.**
+    ``{ns}-checkpoints`` was one bucket keyed ``[<customer>/]<thread>[.<ns>]`` with no owner token,
+    and no pod is granted it at all. A declared suffix of ``checkpoints`` names the owner's own
+    coordination bucket ``{ns}-{owner_scope}-checkpoints``, never that bucket.
 
     :param ns: the subject namespace prefix
     :ptype ns: str
@@ -1503,12 +1547,14 @@ def _agent_pod(
         # request body, so a pod holding either could copy any stream on the bus into one it reads.
         # Unscoped buckets are ``KV_BUCKET_KEYS`` and plain streams ``STREAM_CONSUMER``.
         js_resources=(
-            # the epoch counter: every EPHEMERAL config epoch counts here.
-            # a missing grant does NOT raise -- the JS call blocks to its
-            # deadline, which reads as an unreachable broker rather than as a
-            # permission problem, so this is the kind of omission that costs a
-            # day.
-            JsResource.kv_bucket_keys(f"{ns}-epochs", writable=True),
+            # the epoch counter: every EPHEMERAL config epoch counts here. PLATFORM-SHARED by
+            # nature -- each key is a subject path (``{ns}.mcp.rbac.epoch``) that means the same
+            # thing to every pod, so a reader may need any of them -- and bumped only by the hub and
+            # the gateway after the write that motivates it. So a pod READS it and writes nothing: a
+            # write would let one agent fake an epoch bump every pod acts on, or reset a counter the
+            # fleet sequences its caches by. No platform pod process opens it today; the grant is
+            # the read a pod-side listener's catch-up needs, and nothing more.
+            JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
             # the agent-config HOT CACHE. The hub's ``agents`` table is the source of an agent's config and
             # the hub fills this bucket from it; the pod reads and watches its OWN key and writes
             # nothing. A write would let a pod rewrite the cache the agent router reads its turn
@@ -1518,31 +1564,28 @@ def _agent_pod(
             # ``{scope}.{table}.{body}``, so this is the one resource where a per-principal grant
             # is expressible at all.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
-            # UNSCOPED: ``checkpoints`` carries its OWN l2_key implementation
-            # (``langgraph/checkpoint.py``), keyed by thread id with no scope segment. the same
-            # accepted residual as ``{ns}_agent_config``.
+            # NO ``{ns}-checkpoints``. It was one bucket every agent pod could read, watch and list
+            # whole, keyed ``[<customer>/]<thread>[.<ns>]`` with no owner token -- every other
+            # agent's conversation state. Nothing on the platform reads or writes it any more: the
+            # agent runtime's checkpointer runs on L3 alone, and a host that wants a checkpoint L2
+            # declares a coordination bucket of its own (the survey's is
+            # ``{ns}-{scope}-checkpoints``, granted below with the rest of its declaration).
             #
-            # NAMESPACE-PREFIXED, unlike ``{ns}_agent_config`` beside it, and the difference is
-            # in HOW each is opened rather than in what either is. ``AgentConfigKV`` builds its
-            # own name and opens it with a direct ``js.create_key_value``, which applies no
-            # prefix; the checkpointer's L2 is opened through ``KvCapable.kv_bucket``, which
-            # takes a SUFFIX and layers ``{namespace}-`` over it. This grant read ``checkpoints``
-            # bare, so it named a bucket nothing opens while the one every host actually
-            # materialises -- ``{ns}-checkpoints`` -- was granted to nobody. A missing KV grant
-            # does not raise: the open blocks to its deadline and reports an unreachable broker,
-            # so a host that wrapped its checkpointer build in a try/except (14-eng-ai-survey
-            # did) simply ran without a checkpointer until the first graph call failed.
-            JsResource.kv_bucket_keys(f"{ns}-checkpoints", writable=True),
+            # THE SHARED POD BUCKETS BELOW ARE OWNER-KEYED. Every agent pod binds the same bucket,
+            # so the bucket is no boundary; every key 3tears writes there leads with this agent's
+            # own ``scope`` and the grant is narrowed to it (``KV_OWNER_KEYS``), so a pod reads,
+            # lists and writes its own keys and no other agent's.
+            #
             # memory extraction throttle: the agent's MemoryExtractor uses a
             # per-conversation SET-NX-with-TTL key in this bucket to rate-limit
             # extraction. without the grant the JS API calls are denied and
             # time out, so the gate fails open (no throttling).
-            JsResource.kv_bucket_keys(f"{ns}-ratelimits", writable=True),
+            JsResource.kv_owner_keys(f"{ns}-ratelimits", scope=scope, writable=True),
             # in-process tool serving: the in-process tool server verifies the proxy's body-bound
             # assertion under enforce and records single-use nonces here (mirrors ``_tool_pod``). used
             # in BOTH devx (``DevInProcessStrategy`` builtins) and production
             # (``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts`` tools).
-            JsResource.kv_bucket_keys(f"{ns}-proxy_assertion_nonces", writable=True),
+            JsResource.kv_owner_keys(f"{ns}-proxy_assertion_nonces", scope=scope, writable=True),
             # the ONE stream this pod collects from: the replies the registry delivers back to it for
             # the long calls it makes, on its OWN ``tools.reply.{agent}.*`` subjects. The results
             # its in-process tool server delivers ride the same stream but are only PUBLISHED, and
@@ -1738,7 +1781,9 @@ def _tool_pod(
         # EVERY BUCKET AND STREAM BELOW IS DECLARED BY THE HUB, and this pod binds it -- never a
         # stream-management verb, for the reason ``_agent_pod`` gives.
         js_resources=(
-            JsResource.kv_bucket_keys(f"{ns}-proxy_assertion_nonces", writable=True),
+            # OWNER-KEYED, as on the agent pod: every tool pod binds this one bucket, so each
+            # reaches only the nonces it recorded under its own ``scope``.
+            JsResource.kv_owner_keys(f"{ns}-proxy_assertion_nonces", scope=scope, writable=True),
             # the display claim: a pod serving a human session holds a ``KVLease`` for as long as
             # it serves. every name here is the bucket that MATERIALISES: ``kv_bucket`` takes a
             # suffix and layers the connection's ``{ns}-`` over it.
@@ -1751,7 +1796,11 @@ def _tool_pod(
             # JetStream timeout, which nothing catches. The symptom is a hard failure on the first
             # claim rather than a silent double-serve -- and because the open is deferred, a
             # platform cannot learn at construction time that it should downgrade.
-            JsResource.kv_bucket_keys(f"{ns}-leases", writable=True),
+            #
+            # OWNER-KEYED: a claim key is a digest of the session id under this pod's own
+            # ``scope`` (``threetears.scrape.operator_session``), so replicas of one pod contend
+            # for one key and no pod can read, steal or release another pod's claim.
+            JsResource.kv_owner_keys(f"{ns}-leases", scope=scope, writable=True),
             # NO grant on the result stream. a result rides JetStream rather than a core publish so
             # a CONSUMER-side reconnect cannot lose an answer that took twenty minutes to compute,
             # but this pod only publishes it -- a core publish acknowledged on its own inbox -- and
@@ -2030,8 +2079,9 @@ def _hub(
             # own coordination buckets (``{ns}-agent_pod-<hex>-<suffix>``) are declared by the hub
             # too, at agent create, on a change to the declaration and at the agent's handshake; they
             # are per-agent names, so they are not enumerable here -- the hub reaches them through the
-            # unrestricted static user the hub's static-grant module records as a residual.
-            JsResource.kv(f"{ns}-checkpoints", scope=None, writable=True),
+            # unrestricted static user the hub's static-grant module records as a residual. The hub
+            # holds each whole: pods' keys in them are owner-scoped, and the hub is the one identity
+            # that must reach every owner's (a purge, an operator's inspection).
             JsResource.kv(f"{ns}-ratelimits", scope=None, writable=True),
             JsResource.kv(f"{ns}-proxy_assertion_nonces", scope=None, writable=True),
             JsResource.kv(f"{ns}-leases", scope=None, writable=True),

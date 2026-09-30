@@ -172,6 +172,13 @@ def js_api_grants_for_stream(
       durable create and ``MSG.NEXT`` are NOT granted; nats-py's ``KeyValue.watch``/``keys`` use the
       unnamed form and are refused.
 
+    :attr:`JsCapability.KV_OWNER_KEYS` is a pod's grant on a SHARED pod bucket, where the key
+    prefix rather than the bucket is the boundary: the same three routes narrowed to the holder's
+    own ``{scope}.>`` -- ``STREAM.INFO`` (the bind), ``DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>``
+    and ``CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{scope}.>`` -- and NOT ``STREAM.MSG.GET``, whose
+    key rides in the body and so would read every owner's keys. The bucket must run
+    ``allow_direct``, which the hub declares, or nats-py falls back to that body-carried read.
+
     No stream-admin verb, ever: ``CREATE``/``UPDATE`` accept ``sources`` and ``republish``, which
     copy ANY stream's messages into one the holder can read; ``DELETE``/``PURGE`` destroy state;
     ``SNAPSHOT``/``RESTORE`` export or replace it. The hub declares every bucket a pod binds. The
@@ -262,6 +269,12 @@ def js_api_grants_for_stream(
                 f"$JS.API.STREAM.INFO.{stream}",
                 f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}",
                 f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{scope}",
+            ]
+        elif capability is JsCapability.KV_OWNER_KEYS:
+            grants = [
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>",
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{scope}.>",
             ]
         else:
             grants = [
@@ -388,11 +401,11 @@ def mint_user_jwt(
     # buckets (``checkpoints`` and ``{ns}_agent_config``) that are out of scope for KEY isolation.
     # Dropping it costs nothing and closes that firehose everywhere, not only on the scoped bucket.
     #
-    # PER-RESOURCE OPT-IN, and it is not optional. Only ``{ns}-collections`` writes a scope prefix.
-    # Emitting ``{scope}.>`` for ``checkpoints`` (its own separate ``l2_key``, keyed by thread id),
-    # ``{ns}_agent_config``, ``{ns}-epochs``, ``{ns}-ratelimits`` or ``{ns}-proxy_assertion_nonces``
-    # would deny every read on all of them -- and a refused JetStream request is never answered, so
-    # the failure arrives as a ten-second deadline that reads as an unreachable broker.
+    # PER-RESOURCE OPT-IN, and it is not optional. A resource carries a scope only where its keys
+    # lead with one: ``{ns}-collections`` and the shared pod buckets (``KV_OWNER_KEYS``). Emitting
+    # ``{scope}.>`` for ``{ns}_agent_config``, ``{ns}-epochs`` or a pod's own coordination bucket
+    # would deny every read on it -- and a refused JetStream request is never answered, so the
+    # failure arrives as a ten-second deadline that reads as an unreachable broker.
     #
     # ``key_prefix`` rather than ``scope`` for both tails: a table-scoped resource narrows one
     # token past its scope (``{scope}.{table}``), and reading the prefix from one property is what

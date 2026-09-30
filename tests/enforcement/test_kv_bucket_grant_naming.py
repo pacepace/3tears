@@ -156,21 +156,18 @@ def test_the_epoch_bucket_the_pods_are_granted_is_the_one_epochclient_opens() ->
         )
 
 
-def test_the_checkpoint_l2_grant_matches_the_bucket_a_host_opens() -> None:
-    """The checkpointer's L2 grant and the bucket its opener materialises must agree.
+def test_no_pod_is_granted_the_bucket_the_checkpointer_l2_defaults_to() -> None:
+    """The shared checkpoint bucket is granted to NO pod, and the saver's default names it.
 
-    ``ThreeTierCheckpointSaver`` takes ``l2_bucket`` as a SUFFIX (default
-    ``_DEFAULT_L2_BUCKET``) and the host opens it through
-    :meth:`~threetears.nats.kv.KvCapable.kv_bucket`, which layers ``{namespace}-``
-    over whatever it is given. So the bucket that exists is ``{ns}-checkpoints``,
-    and a grant naming ``checkpoints`` bare covers nothing.
+    ``ThreeTierCheckpointSaver`` defaults ``l2_bucket`` to ``_DEFAULT_L2_BUCKET``, which
+    ``kv_bucket`` materialises as ``{ns}-checkpoints`` -- one bucket keyed
+    ``[<customer>/]<thread>[.<ns>]`` with no owner token, so a grant on it was a read of every
+    agent's conversation state. Nothing on the platform reads or writes it: the agent runtime's
+    checkpointer runs on L3 alone, and a host that wants a checkpoint L2 declares a coordination
+    bucket of its own and passes it as ``l2_bucket`` (the survey's is ``{ns}-{scope}-checkpoints``).
 
-    Pinned as a PAIR, and read out of the saver's own default rather than
-    restated, for the reason this file exists: the mismatch is silent. A missing
-    KV grant does not raise -- the open blocks to its deadline and surfaces as an
-    unreachable broker -- so a host that soft-degrades its checkpointer build runs
-    with no checkpointer at all until the first graph call, which then fails as
-    something else entirely.
+    Pinned as a PAIR, read out of the saver's own default, so a pod that ever opens the default
+    finds it ungranted in a test rather than as a JetStream deadline in production.
     """
     from threetears.langgraph.checkpoint import _DEFAULT_L2_BUCKET
 
@@ -178,15 +175,51 @@ def test_the_checkpoint_l2_grant_matches_the_bucket_a_host_opens() -> None:
         f"{_DEFAULT_L2_BUCKET!r} looks like it has baked in a namespace of its own; it is a "
         f"SUFFIX that kv_bucket prefixes."
     )
-    granted = kv_bucket_names(build_permissions(Principal.AGENT_POD, agent_id=_AGENT_ID, pod_id=_POD_ID))
-    assert f"{_NAMESPACE}-{_DEFAULT_L2_BUCKET}" in granted, (
-        f"an agent pod is not granted the bucket its checkpointer L2 actually opens "
-        f"('{_NAMESPACE}-{_DEFAULT_L2_BUCKET}'); it holds {list(granted)}."
+    for principal in (Principal.AGENT_POD, Principal.TOOL_POD):
+        granted = kv_bucket_names(_permissions_for(principal))  # type: ignore[arg-type]
+        assert f"{_NAMESPACE}-{_DEFAULT_L2_BUCKET}" not in granted, (
+            f"{principal} is granted the shared checkpoint bucket ('{_NAMESPACE}-{_DEFAULT_L2_BUCKET}'), "
+            f"which carries every agent's thread state under keys no grant can narrow to one owner."
+        )
+
+
+def test_the_shared_pod_buckets_are_granted_under_the_scope_their_openers_key_with() -> None:
+    """Each shared pod bucket's grant names the bucket its opener opens, narrowed to the opener's scope.
+
+    ``KV_OWNER_KEYS`` narrows every route to ``{scope}.>``, so the opener must key with the SAME
+    scope the grant was minted with, or every call on the bucket blocks to its deadline. Both
+    sides live here: the tool server derives the nonce scope from its pod id, the memory extractor
+    opens ``ratelimits`` by default, ``KVLease`` opens ``leases`` by default.
+    """
+    from threetears.agent.memory.extraction import MemoryExtractor
+    from threetears.agent.tools.server import ToolServer
+    from threetears.core.coordination.lease import KVLease
+    from threetears.nats import Subjects
+    from threetears.nats.subject_permissions import JsCapability, kv_key_scope_for
+
+    import inspect
+    from uuid import UUID
+
+    def owner_scope_of(permissions: object, bucket: str) -> str | None:
+        found = [r for r in permissions.js_resources if r.name == bucket]  # type: ignore[attr-defined]
+        assert len(found) == 1, (bucket, found)
+        assert found[0].capability is JsCapability.KV_OWNER_KEYS, found[0]
+        return found[0].scope
+
+    agent = _permissions_for(Principal.AGENT_POD)
+    tool = _permissions_for(Principal.TOOL_POD)
+    in_process = ToolServer(nats_url="nats://x", pod_id=Subjects.agent_inprocess_pod_id(UUID(_AGENT_ID), "i1"))
+    tool_pod = ToolServer(nats_url="nats://x", pod_id=_POD_ID)
+    assert owner_scope_of(agent, f"{_NAMESPACE}-proxy_assertion_nonces") == in_process.assertion_nonce_key_scope
+    assert owner_scope_of(tool, f"{_NAMESPACE}-proxy_assertion_nonces") == tool_pod.assertion_nonce_key_scope
+
+    ratelimits = inspect.signature(MemoryExtractor.__init__).parameters["rate_limit_bucket"].default
+    assert owner_scope_of(agent, f"{_NAMESPACE}-{ratelimits}") == kv_key_scope_for(
+        Principal.AGENT_POD, agent_id=_AGENT_ID
     )
-    assert _DEFAULT_L2_BUCKET not in granted, (
-        f"the checkpoint grant is still the bare name '{_DEFAULT_L2_BUCKET}', which names a "
-        f"bucket no host opens through kv_bucket."
-    )
+
+    leases = KVLease(nats_client=object(), pod_id="probe").bucket_name  # type: ignore[arg-type]
+    assert owner_scope_of(tool, f"{_NAMESPACE}-{leases}") == kv_key_scope_for(Principal.TOOL_POD, pod_id=_POD_ID)
 
 
 def test_an_agent_pod_publishes_audit_events_and_holds_no_grant_on_the_audit_stream() -> None:
