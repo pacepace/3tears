@@ -164,8 +164,9 @@ def _make_conversation_pg_mock(store: dict[str, dict[str, Any]]) -> AsyncMock:
     emulates the CAS-UPDATE path for the conversations column order
     (agent_id, conversation_id, then mutables name, folder_id, status,
     summary, date_updated, date_last_message, metadata, message_count,
-    language) so ``save_entity`` -> ``save_to_store`` round-trips the
-    cleared ``folder_id`` back into the in-memory L3 store.
+    language, parent_type, parent_id) so ``save_entity`` ->
+    ``save_to_store`` round-trips the cleared ``folder_id`` back into the
+    in-memory L3 store.
 
     :param store: in-memory L3 row dict keyed by str(conversation_id)
     :ptype store: dict[str, dict[str, Any]]
@@ -191,6 +192,8 @@ def _make_conversation_pg_mock(store: dict[str, dict[str, Any]]) -> AsyncMock:
             existing["metadata"] = args[8]
             existing["message_count"] = args[9]
             existing["language"] = args[10]
+            existing["parent_type"] = args[11]
+            existing["parent_id"] = args[12]
             return "UPDATE 1"
         return "OK"
 

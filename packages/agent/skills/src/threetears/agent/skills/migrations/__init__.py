@@ -28,6 +28,11 @@ Version history:
   index had a reader and both only cost writes and storage. The
   ``search_vector`` column and its trigger stay. ``DROP INDEX IF EXISTS``,
   so replay is a no-op.
+- v004 adds ``tool`` (TEXT) and ``arguments`` (JSONB) to ``agent_skills``
+  so a skill can be one tool call run with no model, plus the checks that
+  keep a row one kind: never both a body and a tool, arguments only with a
+  tool and only as a JSON object, and a payload check that accepts a
+  tool-only row.
 """
 
 from __future__ import annotations
@@ -40,6 +45,9 @@ from threetears.agent.skills.migrations.v002_create_agent_skill_invocations impo
 )
 from threetears.agent.skills.migrations.v003_drop_gin_indexes import (
     drop_gin_indexes,
+)
+from threetears.agent.skills.migrations.v004_add_tool_call_columns import (
+    add_tool_call_columns,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -71,12 +79,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(1)(create_agent_skills)
     pkg.version(2)(create_agent_skill_invocations)
     pkg.version(3)(drop_gin_indexes)
+    pkg.version(4)(add_tool_call_columns)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_tool_call_columns",
     "create_agent_skill_invocations",
     "create_agent_skills",
     "drop_gin_indexes",

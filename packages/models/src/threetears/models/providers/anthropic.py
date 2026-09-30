@@ -38,8 +38,12 @@ from threetears.models.providers._name_translation_mixin import NameTranslatingC
 from threetears.models.providers.structured_output import StructuredOutputSchemaError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from langchain_anthropic import ChatAnthropic
-    from langchain_core.language_models import BaseChatModel
+    from langchain_core.language_models import BaseChatModel, LanguageModelInput
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import Runnable
 
 __all__ = [
     "ANTHROPIC_PROVIDER_NAME",
@@ -196,6 +200,30 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
         """
 
         _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
+
+        def bind_tools(
+            self,
+            tools: Sequence[Any],
+            **kwargs: Any,
+        ) -> Runnable[LanguageModelInput, AIMessage]:
+            """Bind tools, spelling "must call a tool" the way Anthropic does.
+
+            ``tool_choice="required"`` is the OpenAI spelling, and callers use
+            it across providers. ``ChatAnthropic.bind_tools`` passes ``any`` and
+            ``auto`` through and treats every other string as a tool's name, so
+            ``required`` reached the API as "call the tool named required" and
+            was refused with a 400. Anthropic's word for it is ``any``.
+
+            :param tools: the tools to bind
+            :ptype tools: Sequence[Any]
+            :param kwargs: passthrough, ``tool_choice`` included
+            :ptype kwargs: Any
+            :return: runnable bound to the tools
+            :rtype: Runnable[LanguageModelInput, AIMessage]
+            """
+            if kwargs.get("tool_choice") == "required":
+                kwargs["tool_choice"] = "any"
+            return super().bind_tools(tools, **kwargs)
 
     return _NameTranslatingChatAnthropic
 

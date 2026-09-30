@@ -195,8 +195,9 @@ def media_table(metadata: MetaData) -> Table:
     v0.8.0: schema declaration is now the single source of truth. This
     factory is a thin idempotency wrapper around
     :meth:`MediaCollection.schema.to_sqlalchemy_table`. Includes the
-    v0.14.0-unified ``memory_id`` FK (every media row attaches to a
-    memory) with CASCADE-on-memory-delete and the four indexes.
+    composite ``(agent_id, memory_id)`` key to ``memories`` (every media
+    row attaches to a memory in its own agent partition) with
+    CASCADE-on-memory-delete.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
@@ -651,7 +652,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             # below).
             Column("alias", STRING_TYPE, nullable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
-            Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+            # NOT NULL since v001; every save stamps it (it is the CAS fence).
+            Column("date_updated", DATETIMETZ_TYPE),
             # v024 (presence/aliveness): stored salience substrate.
             # NUMERIC(5,4) with a server default so existing INSERTs that
             # omit it apply 0.5 (metadata-only add, no table rewrite).
@@ -713,6 +715,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         ),
         indexes=(
             SchemaIndex("ix_memories_user_date", "user_id", "date_created"),
+            # v004: every memory a conversation produced, for the
+            # conversation-scoped reads and the delete cascade from a
+            # conversation. no other index leads with conversation_id.
+            SchemaIndex("idx_mem_conversation", "conversation_id"),
             SchemaIndex(
                 "ix_memories_user_alias",
                 "agent_id",
@@ -2059,11 +2065,9 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
     # v0.7.5 factory only declares ``date_created`` and prod has no
     # ``date_updated`` column. The composite FK ``(agent_id, memory_id)
     # → memories(agent_id, memory_id) ON DELETE CASCADE`` is the
-    # unified-model parent FK (3tears migration v017) and is required
-    # by the parity gate even though prod's upstream Alembic side only
-    # carries the single-column ``memory_id → memories.memory_id``
-    # variant; declared as a composite to encode the partition-aware
-    # relationship in 3tears.
+    # unified-model parent FK (3tears migration v017); v028 drops a
+    # single-column ``memory_id`` key where one exists, so the composite
+    # is the only key from media to memories.
     schema = TableSchema(
         name="media",
         primary_key=("agent_id", "media_id"),
@@ -2123,10 +2127,12 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                 "cloud_connection_id",
                 on_delete="SET NULL",
             ),
+            # the partition-aware parent key v017 builds: a media row's
+            # memory lives in the same agent partition.
             SchemaForeignKey(
-                "memory_id",
+                ("agent_id", "memory_id"),
                 "memories",
-                "memory_id",
+                ("agent_id", "memory_id"),
                 on_delete="CASCADE",
             ),
         ),
@@ -2802,6 +2808,20 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 "ix_memory_chunks_memory",
                 "memory_id",
                 "chunk_index",
+            ),
+            # v015: cursor paging within one memory (``find_by_memory_id``
+            # orders by chunk_id).
+            SchemaIndex(
+                "idx_chunks_memory_id_chunk_id",
+                "memory_id",
+                "chunk_id",
+                where="memory_id IS NOT NULL",
+            ),
+            # v015: transcript chunks by the last message they cover.
+            SchemaIndex(
+                "idx_chunks_message_id_end",
+                "message_id_end",
+                where="message_id_end IS NOT NULL",
             ),
             SchemaIndex("ix_memory_chunks_user", "user_id"),
             # v0.8.1: parity-gate enrichments relocated from upstream
@@ -3631,8 +3651,8 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     # constraint ``conversation_memory_refs_conversation_id_fkey``
     # (CASCADE on parent conversation delete) -- declared at table
     # level because the inline 2-tuple form does not carry
-    # ``on_delete=``. The lookup index ``ix_conversation_memory_refs_cid``
-    # is declared in 3tears so the parity gate stays clean.
+    # ``on_delete=``. The one secondary index is the (conversation_id,
+    # date_created) one the migrations build for the ledger read.
     schema = TableSchema(
         name="conversation_memory_refs",
         primary_key=("conversation_id", "item_id"),
@@ -3662,9 +3682,12 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
             ),
         ),
         indexes=(
+            # the ledger read: one conversation's refs in date order. the
+            # primary key already serves a conversation_id-only lookup.
             SchemaIndex(
-                "ix_conversation_memory_refs_cid",
+                "idx_conv_mem_refs_conversation_date_created",
                 "conversation_id",
+                "date_created",
             ),
         ),
     )

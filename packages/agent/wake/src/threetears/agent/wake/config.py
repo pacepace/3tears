@@ -24,7 +24,7 @@ __all__ = [
     "DEFAULT_LOKI_NAMED_QUERIES",
     "DEFAULT_MAX_FIRES_PER_CONV_PER_DAY",
     "DEFAULT_MAX_FIRES_PER_USER_PER_DAY",
-    "DEFAULT_MAX_SCHEDULES_PER_CONVERSATION",
+    "DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT",
     "DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR",
     "DEFAULT_POSTGRES_NAMED_QUERIES",
     "DEFAULT_WAKE_CONFIG",
@@ -53,11 +53,12 @@ DEFAULT_MAX_FIRES_PER_USER_PER_DAY: int = 100
 DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR: int = 60
 
 
-# Per-conversation active-schedule cap (PLACEMENT §1.9 / §3.5).
-# Enforced at ``wake_schedule_create`` time and re-verifiable on a tick
-# via :func:`threetears.agent.wake.rate_limit.check_active_schedule_cap`.
-# Default = 10 locked 2026-05-19.
-DEFAULT_MAX_SCHEDULES_PER_CONVERSATION: int = 10
+# Per-agent active-schedule cap. An agent's wakes live in several wake
+# conversations, so the cap counts across all of them; protected wakes are
+# not counted. Enforced when a wake is created or resumed, under a lock
+# keyed on the agent (:func:`threetears.agent.wake.rate_limit.create_schedule_serialized`).
+# It replaced the per-conversation cap of 10 in 0.57.0.
+DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT: int = 50
 
 
 # Empty platform-side default for the consumer's HTTP-allow-list. The
@@ -105,9 +106,9 @@ class WakeConfig(Protocol):
     :ivar max_webhook_fires_per_subscription_per_hour: rolling-hour
         cap consumed by the webhook receiver (subscription-row override
         wins when present)
-    :ivar max_schedules_per_conversation: count cap on rows with
-        ``status='active'`` for a given conversation (enforced at
-        create + verifiable on tick)
+    :ivar max_active_schedules_per_agent: cap on an agent's unprotected
+        ``status='active'`` schedules across all its conversations
+        (enforced at create and resume)
     :ivar http_allowed_hosts: tuple of FQDN patterns the
         ``http_get`` pre-check tool may target; empty tuple = no hosts
         allowed (safe default)
@@ -132,7 +133,7 @@ class WakeConfig(Protocol):
     def max_webhook_fires_per_subscription_per_hour(self) -> int: ...
 
     @property
-    def max_schedules_per_conversation(self) -> int: ...
+    def max_active_schedules_per_agent(self) -> int: ...
 
     @property
     def http_allowed_hosts(self) -> tuple[str, ...]: ...
@@ -176,8 +177,8 @@ class _DefaultWakeConfig:
         return DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR
 
     @property
-    def max_schedules_per_conversation(self) -> int:
-        return DEFAULT_MAX_SCHEDULES_PER_CONVERSATION
+    def max_active_schedules_per_agent(self) -> int:
+        return DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT
 
     @property
     def http_allowed_hosts(self) -> tuple[str, ...]:

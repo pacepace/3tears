@@ -15,6 +15,7 @@ writing replica alone passes against a fix that evicts nothing beyond its own pr
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.agent.wake.collections import WakeScheduleCollection, WebhookSubscriptionCollection
+from threetears.agent.wake.protected import delete_protected, update_protected
 from threetears.agent.wake.rate_limit import resume_schedule_serialized
 from threetears.agent.wake.tables import (
     agent_wake_schedules_table,
@@ -96,8 +98,14 @@ class _Store:
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         table = "webhook_subscriptions" if "FROM webhook_subscriptions" in sql else "agent_wake_schedules"
         self.reads += 1
-        row = self.rows.get((table, str(args[0]), str(args[1])))
-        return None if row is None else dict(row)
+        # match on whichever columns the WHERE names: the pk for ``get``, the agent and bare id for
+        # ``find_for_agent``.
+        where = {col: args[int(pos) - 1] for col, pos in re.findall(r"(\w+) = \$(\d+)", sql.split("WHERE", 1)[1])}
+        found: dict[str, Any] | None = None
+        for (row_table, _, _), row in self.rows.items():
+            if row_table == table and all(row.get(col) == value for col, value in where.items()):
+                found = dict(row)
+        return found
 
     async def execute(self, sql: str, *args: Any) -> str:
         del sql, args
@@ -312,6 +320,7 @@ class TestASerializedResumeSettlesAfterItsTransaction:
         store.staged[("agent_wake_schedules", str(conv), str(sid))] = _schedule_row(conv, sid, next_fire_at=_LATER)
         await resume_schedule_serialized(
             collection=writer,
+            agent_id=uuid.uuid4(),
             conversation_id=conv,
             schedule_id=sid,
             next_fire_at=_LATER,
@@ -343,6 +352,71 @@ class TestASerializedResumeSettlesAfterItsTransaction:
             await collection.resume(conv, sid, next_fire_at=_LATER, conn=conn)
             assert not _broadcast_for(nats, "agent_wake_schedules", conv, sid)
         assert _broadcast_for(nats, "agent_wake_schedules", conv, sid)
+
+
+class TestAProtectedWakeChangeSettlesAfterItsTransaction:
+    """0.57.0's two doors onto a protected wake write L3 past ``save_entity``, so they settle too."""
+
+    @pytest.mark.asyncio
+    async def test_a_protected_schedule_change_reaches_every_reader(self) -> None:
+        nats = FakeNatsClient()
+        store = _Store()
+        conv, sid, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        key = ("agent_wake_schedules", str(conv), str(sid))
+        store.rows[key] = _schedule_row(conv, sid, agent_id=agent_id, protected=True)
+        reader = WakeScheduleCollection(registry=await _replica(nats, store), config=_config())
+        writer = WakeScheduleCollection(registry=await _replica(nats, store), config=_config())
+        assert await reader.get((conv, sid)) is not None
+        reads_before = store.reads
+
+        store.staged[key] = _schedule_row(conv, sid, agent_id=agent_id, protected=True, schedule_config={"n": 6})
+        await update_protected(collection=writer, agent_id=agent_id, schedule_id=sid, schedule_config={"n": 6})
+
+        assert _broadcast_for(nats, "agent_wake_schedules", conv, sid), "update_protected broadcast no invalidation"
+        fresh = await reader.get((conv, sid))
+        assert store.reads > reads_before + 1, "the reader answered from a cache L3 no longer agrees with"
+        assert fresh is not None and fresh.schedule_config == {"n": 6}
+
+    @pytest.mark.asyncio
+    async def test_a_protected_delete_on_its_own_transaction_reaches_every_reader(self) -> None:
+        nats = FakeNatsClient()
+        store = _Store()
+        conv, sid, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        store.rows[("agent_wake_schedules", str(conv), str(sid))] = _schedule_row(
+            conv, sid, agent_id=agent_id, protected=True
+        )
+        collection = WakeScheduleCollection(registry=await _replica(nats, store), config=_config())
+
+        await delete_protected(collection=collection, agent_id=agent_id, schedule_id=sid)
+
+        assert _broadcast_for(nats, "agent_wake_schedules", conv, sid)
+
+    @pytest.mark.asyncio
+    async def test_a_protected_delete_joined_to_the_agent_deletion_waits_for_it(self) -> None:
+        """evicting before the agent deletion commits lets a reader re-cache the row L3 still holds."""
+        nats = FakeNatsClient()
+        store = _Store()
+        conv, sid, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        store.rows[("agent_wake_schedules", str(conv), str(sid))] = _schedule_row(
+            conv, sid, agent_id=agent_id, protected=True
+        )
+        collection = WakeScheduleCollection(registry=await _replica(nats, store), config=_config())
+        conn = _Conn(store)
+        async with CallerTransaction(conn):
+            await delete_protected(collection=collection, agent_id=agent_id, schedule_id=sid, conn=conn)
+            assert not _broadcast_for(nats, "agent_wake_schedules", conv, sid)
+        assert _broadcast_for(nats, "agent_wake_schedules", conv, sid)
+
+    @pytest.mark.asyncio
+    async def test_a_protected_delete_on_a_bare_connection_is_refused(self) -> None:
+        store = _Store()
+        conv, sid, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        store.rows[("agent_wake_schedules", str(conv), str(sid))] = _schedule_row(
+            conv, sid, agent_id=agent_id, protected=True
+        )
+        collection = WakeScheduleCollection(registry=await _replica(FakeNatsClient(), store), config=_config())
+        with pytest.raises(ValueError, match="CallerTransaction"):
+            await delete_protected(collection=collection, agent_id=agent_id, schedule_id=sid, conn=_Conn(store))
 
 
 _SubscriptionWrite = Callable[[WebhookSubscriptionCollection, UUID, UUID], Awaitable[Any]]

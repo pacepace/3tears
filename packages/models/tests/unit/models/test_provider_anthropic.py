@@ -643,3 +643,24 @@ class TestAnthropicForwardTranslation:
         sent = captured["messages"]
         assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
         assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+
+
+class TestAnthropicToolChoice:
+    """``tool_choice`` reaches Anthropic in Anthropic's words and with wire names."""
+
+    def test_required_is_sent_as_any(self) -> None:
+        """ "required" is the OpenAI spelling; Anthropic took it for a tool named "required"."""
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+        bound = model.bind_tools([DottedTool()], tool_choice="required")
+        assert bound.kwargs["tool_choice"] == {"type": "any"}  # type: ignore[attr-defined]
+
+    def test_a_named_tool_is_chosen_by_its_wire_name(self) -> None:
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+        bound = model.bind_tools([DottedTool()], tool_choice="threetears.calculator")
+        assert bound.kwargs["tool_choice"] == {"type": "tool", "name": "threetears_calculator"}  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("keyword", ["auto", "any"])
+    def test_anthropic_keywords_pass_through(self, keyword: str) -> None:
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+        bound = model.bind_tools([DottedTool()], tool_choice=keyword)
+        assert bound.kwargs["tool_choice"] == {"type": keyword}  # type: ignore[attr-defined]

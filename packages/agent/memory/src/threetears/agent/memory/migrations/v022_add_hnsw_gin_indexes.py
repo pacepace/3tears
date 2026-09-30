@@ -138,7 +138,10 @@ _IX_MEMORY_CHUNKS_EMBEDDING_SQL = "CREATE INDEX IF NOT EXISTS ix_memory_chunks_e
 # EXISTS``. Each guard checks ``pg_catalog.pg_constraint`` for an
 # existing constraint with the target name on the target table; only
 # adds when absent. ``conrelid`` joins to ``pg_class`` to disambiguate
-# multi-table constraints with the same name (rare but legal).
+# multi-table constraints with the same name (rare but legal), and the
+# table is looked up in ``current_schema()`` only: in a database holding
+# several agent schemas, a guard matching on names alone finds the first
+# schema's constraint and skips adding the second schema's own.
 _ADD_UQ_MEMORIES_MEMORY_ID_SQL = """
 DO $$
 BEGIN
@@ -147,6 +150,9 @@ BEGIN
         FROM pg_catalog.pg_constraint con
         JOIN pg_catalog.pg_class cls ON cls.oid = con.conrelid
         WHERE cls.relname = 'memories'
+          AND cls.relnamespace = (
+              SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema()
+          )
           AND con.conname = 'uq_memories_memory_id'
     ) THEN
         EXECUTE 'ALTER TABLE memories ADD CONSTRAINT uq_memories_memory_id UNIQUE (memory_id)';
@@ -163,6 +169,9 @@ BEGIN
         FROM pg_catalog.pg_constraint con
         JOIN pg_catalog.pg_class cls ON cls.oid = con.conrelid
         WHERE cls.relname = 'media'
+          AND cls.relnamespace = (
+              SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema()
+          )
           AND con.conname = 'uq_media_media_id'
     ) THEN
         EXECUTE 'ALTER TABLE media ADD CONSTRAINT uq_media_media_id UNIQUE (media_id)';
@@ -179,6 +188,9 @@ BEGIN
         FROM pg_catalog.pg_constraint con
         JOIN pg_catalog.pg_class cls ON cls.oid = con.conrelid
         WHERE cls.relname = 'media_content'
+          AND cls.relnamespace = (
+              SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema()
+          )
           AND con.conname = 'uq_media_content_content_id'
     ) THEN
         EXECUTE 'ALTER TABLE media_content ADD CONSTRAINT uq_media_content_content_id UNIQUE (content_id)';
@@ -195,6 +207,9 @@ BEGIN
         FROM pg_catalog.pg_constraint con
         JOIN pg_catalog.pg_class cls ON cls.oid = con.conrelid
         WHERE cls.relname = 'memory_chunks'
+          AND cls.relnamespace = (
+              SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema()
+          )
           AND con.conname = 'uq_memory_chunks_chunk_id'
     ) THEN
         EXECUTE 'ALTER TABLE memory_chunks ADD CONSTRAINT uq_memory_chunks_chunk_id UNIQUE (chunk_id)';

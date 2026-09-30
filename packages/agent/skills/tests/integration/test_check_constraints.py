@@ -257,3 +257,65 @@ class TestInvocationCheckConstraints:
             )
         finally:
             await conn.close()
+
+
+class TestToolCallCheckConstraints:
+    """v004's checks: a row is a body skill or a tool-call skill, never both."""
+
+    async def _insert(
+        self, conn: asyncpg.Connection, *, body: str | None, tool: str | None, arguments: str | None
+    ) -> None:
+        """Insert one skill with the given body / tool / arguments (arguments as JSON text)."""
+        await conn.execute(
+            "INSERT INTO agent_skills (agent_id, skill_id, user_id, name, summary, body, tool, arguments) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb)",
+            _new_uuid(),
+            _new_uuid(),
+            _new_uuid(),
+            f"skill-{_new_uuid()}",
+            "summary",
+            body,
+            tool,
+            arguments,
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "tool", "arguments", "constraint"),
+        [
+            ("steps", "loki.query", None, "agent_skills_body_or_tool_check"),
+            ("", "loki.query", None, "agent_skills_body_or_tool_check"),
+            ("steps", None, '{"q": 1}', "agent_skills_arguments_need_tool_check"),
+            (None, "loki.query", "[1, 2]", "agent_skills_arguments_object_check"),
+        ],
+    )
+    async def test_refused(
+        self,
+        pg_schema: tuple[str, str],
+        body: str | None,
+        tool: str | None,
+        arguments: str | None,
+        constraint: str,
+    ) -> None:
+        """Each refused shape is refused by the check named for it."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            with pytest.raises(asyncpg.exceptions.CheckViolationError) as caught:
+                await self._insert(conn, body=body, tool=tool, arguments=arguments)
+            assert caught.value.constraint_name == constraint
+        finally:
+            await conn.close()
+
+    async def test_tool_only_skill_satisfies_payload_check(self, pg_schema: tuple[str, str]) -> None:
+        """No body and no tool lists, only a tool: v004's payload check accepts it (v001's refused it)."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            await self._insert(conn, body=None, tool="loki.query", arguments='{"q": "error"}')
+            await self._insert(conn, body=None, tool="loki.query", arguments=None)
+            count = await conn.fetchval("SELECT COUNT(*) FROM agent_skills WHERE tool = 'loki.query'")
+            assert count == 2
+        finally:
+            await conn.close()

@@ -17,6 +17,7 @@ from threetears.core.testing.migrations import uncontended_ddl_lock_rows
 from threetears.conversations.migrations import (
     PACKAGE_NAME,
     add_conversation_language_column,
+    add_conversation_parent,
     add_conversation_search_vector,
     add_folder_referential_integrity,
     create_conversations_table,
@@ -145,27 +146,28 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_versions_one_through_ten(self) -> None:
+    async def test_register_populates_versions_one_through_eleven(self) -> None:
         """register wires v001 (create), v002 (message_count), v003
         (name), v004 (datetimetz), v005 (search_vector + trigger),
         v006 (language column + trigger update), v007 (rename id
         -> conversation_id), v008 (folders table + conversation
         folder_id), v009 (folder referential integrity: folder_id
         unique + conversation->folder FK ON DELETE SET NULL), v010
-        (drop the search_vector GIN index)."""
+        (drop the search_vector GIN index), v011 (the conversation's
+        parent: type + id, both-or-neither check, index)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
 
-    async def test_apply_runs_ten_versions_then_idempotent(self) -> None:
-        """apply records v1..v10 and re-running is a no-op."""
+    async def test_apply_runs_eleven_versions_then_idempotent(self) -> None:
+        """apply records v1..v11 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 10
+        assert first_count == 11
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -650,6 +652,57 @@ class TestDropSearchVectorGinIndexMigration:
         """direct invocation does not touch ``_schema_migrations``."""
         store = _FakeDataStore()
         await drop_search_vector_gin_index(store)  # type: ignore[arg-type]
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
+
+
+class TestAddConversationParentMigration:
+    """tests for v011: the nullable parent pair, its check and its index.
+
+    the migration must touch only those, so it applies to a consumer's
+    ``conversations`` table whatever the rest of its shape.
+    """
+
+    async def test_direct_call_issues_exactly_the_four_statements(self) -> None:
+        """two ADD COLUMN IF NOT EXISTS, one guarded CHECK, one CREATE INDEX IF NOT EXISTS."""
+        store = _FakeDataStore()
+        await add_conversation_parent(store)  # type: ignore[arg-type]
+        statements = [" ".join(sql.split()) for sql, _params in store.executed]
+        assert statements[0] == "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS parent_type TEXT"
+        assert statements[1] == "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS parent_id UUID"
+        assert "ADD CONSTRAINT conversations_parent_set_together" in statements[2]
+        assert "CHECK ((parent_type IS NULL) = (parent_id IS NULL))" in statements[2]
+        assert statements[3] == "CREATE INDEX IF NOT EXISTS idx_conv_parent ON conversations (parent_type, parent_id)"
+        assert len(statements) == 4
+
+    async def test_direct_call_guards_check_with_pg_constraint_probe(self) -> None:
+        """ADD CONSTRAINT has no IF NOT EXISTS; the probe is scoped to current_schema()."""
+        store = _FakeDataStore()
+        await add_conversation_parent(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "pg_constraint" in joined
+        assert "conname = 'conversations_parent_set_together'" in joined
+        assert "current_schema()::regnamespace" in joined
+
+    async def test_direct_call_names_no_other_column(self) -> None:
+        """nothing references the package's own pk, owner or other columns."""
+        store = _FakeDataStore()
+        await add_conversation_parent(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        for foreign in ("agent_id", "conversation_id", "user_id", "customer_id", "PRIMARY KEY", "UPDATE "):
+            assert foreign not in joined
+
+    async def test_direct_call_does_not_qualify_with_schema_name(self) -> None:
+        """DDL stays unqualified so search_path governs the target schema."""
+        store = _FakeDataStore()
+        await add_conversation_parent(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert not re.search(r"agent_[0-9a-f]{32}\.", joined)
+
+    async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
+        """direct invocation does not touch ``_schema_migrations``."""
+        store = _FakeDataStore()
+        await add_conversation_parent(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
 

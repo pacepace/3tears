@@ -32,19 +32,22 @@ collection has no NATS client, with `ValueError`.
 # before
 await wake_tick_job(pool=pool, nats_client=nc, dispatch_callback=dispatch)
 
-# after -- schedules / fires built once at startup on the NATS-wired registry
+# after -- schedules / fires built once at startup on the NATS-wired registry;
+# 0.57.0's on_reaped= (and webhook_receive's permit= / start_conversation=) sit beside them
 await wake_tick_job(pool=pool, nats_client=nc, dispatch_callback=dispatch, schedules=schedules, fires=fires)
 ```
 
-`WakeScheduleCollection.resume(conn=...)` now requires the connection's
-transaction to be opened by `threetears.core.collections.CallerTransaction(conn)`,
-and raises `ValueError` otherwise. The CHANGELOG entry "A wake write reaches every
+`WakeScheduleCollection.resume(conn=...)` and `delete_protected(conn=...)` now
+require the connection's transaction to be opened by
+`threetears.core.collections.CallerTransaction(conn)`, and raise `ValueError`
+otherwise. An agent deletion that removes the agent's protected wake in its own
+transaction opens that transaction with `CallerTransaction`. The CHANGELOG entry "A wake write reaches every
 replica, and never lands on a row it did not read" has the rest.
 
 Find every site:
 
 ```sh
-grep -rn "wake_tick_job(\|webhook_receive(\|WebhookReceiver(\|\.resume(.*conn=" .
+grep -rn "wake_tick_job(\|webhook_receive(\|WebhookReceiver(\|\.resume(.*conn=\|delete_protected(" .
 ```
 
 ## Breaking — change this one import (mechanical, no behavior change)

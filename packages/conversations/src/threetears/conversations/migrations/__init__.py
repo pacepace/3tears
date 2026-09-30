@@ -65,6 +65,13 @@ version history:
   had no reader and only cost writes and storage. the ``search_vector``
   column and its trigger stay. ``DROP INDEX IF EXISTS``, so replay is a
   no-op.
+- v011 -- a conversation records what started it: add the nullable
+  ``parent_type TEXT`` / ``parent_id UUID`` pair, a
+  ``conversations_parent_set_together`` CHECK (both NULL or both set,
+  guarded by a ``pg_constraint`` / ``current_schema()`` probe) and the
+  ``idx_conv_parent (parent_type, parent_id)`` index. every statement
+  names only those, so it applies to a consumer's differently shaped
+  ``conversations`` table too.
 """
 
 from __future__ import annotations
@@ -98,6 +105,9 @@ from threetears.conversations.migrations.v009_folder_referential_integrity impor
 )
 from threetears.conversations.migrations.v010_drop_search_vector_gin_index import (
     drop_search_vector_gin_index,
+)
+from threetears.conversations.migrations.v011_conversation_parent import (
+    add_conversation_parent,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -135,6 +145,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(8)(create_folders_and_conversation_folder_id)
     pkg.version(9)(add_folder_referential_integrity)
     pkg.version(10)(drop_search_vector_gin_index)
+    pkg.version(11)(add_conversation_parent)
     runner.register(pkg)
     return pkg
 
@@ -142,6 +153,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "PACKAGE_NAME",
     "add_conversation_language_column",
+    "add_conversation_parent",
     "add_folder_referential_integrity",
     "add_conversation_search_vector",
     "add_message_count",

@@ -269,18 +269,20 @@ with no NATS client, so their evictions never reached another replica.
 - `wake_schedule_update` and `webhook_subscription_update` answer a refused save with a
   `[TOOL ERROR]` telling the model the row changed and to re-read it with `wake_schedule_list` /
   `webhook_subscription_list`, and save nothing.
-- **BREAKING:** `webhook_receive(..., subscriptions=, fires=)`,
+- **BREAKING:** `webhook_receive(..., subscriptions=, fires=, permit=None, start_conversation=None)`,
   `WebhookReceiver(..., subscriptions=, fires=)` and
-  `wake_tick_job(pool, nats_client, dispatch_callback, *, schedules=, fires=)` take the host
-  process's wake collections as required keyword arguments, and no longer build a registry of
-  their own. Build them once on the registry that carries the process's NATS client and runs its
+  `wake_tick_job(pool, nats_client, dispatch_callback, *, schedules=, fires=, on_reaped=None)` take
+  the host process's wake collections as required keyword arguments, beside 0.57.0's optional
+  hooks, and no longer build a registry of their own. Build them once on the registry that carries the process's NATS client and runs its
   invalidation listener (`start_invalidation_listener` / `stop_invalidation_listener`); a registry
   with no client broadcasts nothing, and every other replica keeps the pre-write row.
   `wake_tick_job` given a `nats_client` raises `ValueError` for `schedules=` built with none,
   before it claims anything. New `BaseCollection.broadcasts_invalidations` says whether a
   collection's evictions reach other replicas.
-- A multi-row wake scan (`list_*`, `find_by_id`, `latest_for_schedule`) returns entities holding
-  their own rows and caches nothing. They wrote the scanned row into L1 outside the per-key read
+- A wake scan (`list_*`, `find_by_id`, 0.57.0's `find_for_agent`, `latest_for_schedule`) returns
+  entities holding their own rows and caches nothing. The tools' agent-scoped reads go through
+  `find_for_agent`, so the row an edit saves back is the one L3 held when it was read, and the
+  fenced save refuses it if anything changed it since. They wrote the scanned row into L1 outside the per-key read
   fence, and read every field back through it, so an eviction of the key -- the receiver's own
   `record_fire` among them -- emptied the subscription the receiver was still reading.
 
@@ -293,7 +295,7 @@ Three families of write reached L3 without leaving every cache tier agreeing wit
   for a revoked grant as much as for new knowledge.
 - The wake collections' targeted UPDATEs (schedule pause / resume / reschedule / claim / expire;
   webhook subscription pause / resume / rotate-secret / record-fire) evicted nothing. The schedule
-  and webhook tools read those rows with `get` and save the row they read, so a stale cached row
+  and webhook tools read those rows and save the row they read, so a stale cached row
   was written back over L3: a paused schedule resumed, a tick-expired one-shot re-armed, a rotated
   webhook secret restored.
 - The raw salience and supersession UPDATEs on memories and intentions evicted afterwards, but not
@@ -307,15 +309,24 @@ Three families of write reached L3 without leaving every cache tier agreeing wit
   `ValueError` for a token another `ScanCache` issued. New export `ScanReadToken`.
 - Every targeted UPDATE on `agent_wake_schedules` and `webhook_subscriptions` evicts the row from
   L1 and L2 and broadcasts the invalidation, however the UPDATE ended. A lost
-  `claim_and_reschedule` changed nothing and evicts nothing.
-- **BREAKING:** `WakeScheduleCollection.resume(..., conn=conn)` requires the connection's
-  transaction to be opened by `CallerTransaction`, which evicts the row once it ends, and raises
-  `ValueError` otherwise. `resume_schedule_serialized` does this itself.
+  `claim_and_reschedule` changed nothing and evicts nothing. 0.57.0's `update_protected` and
+  `delete_protected` do too, through `bypassing_write`, once their transaction has ended; in
+  0.57.0 they invalidated after the fact, and `delete_protected(conn=)` before the caller's
+  transaction had committed, when a reader could re-cache the row L3 still held.
+- **BREAKING:** `WakeScheduleCollection.resume(..., conn=conn)` and
+  `threetears.agent.wake.delete_protected(..., conn=conn)` require the connection's transaction to
+  be opened by `CallerTransaction`, which evicts the row once it ends, and raise `ValueError`
+  otherwise. `resume_schedule_serialized` and `create_schedule_serialized` do this themselves, as
+  do `webhook_subscription_create` with `WakeConversations` hooks and `dispatch_wake`'s
+  fire-conversation transaction, so a `WakeConversations.create` or `FireConversationHook` that
+  saves through a collection with `save_entity(conn=conn)` joins it.
 - The wake tick's due-schedule adapter reads every field when the row is listed. It read them
   through the entity's L1 proxy after the claim, which now evicts the row.
 - `wake_fires` and `scheduled_jobs` / `job_fires` UPDATEs still evict nothing, and their comments
-  now say why: no code reads those rows by primary key. A by-pk reader added later needs the
-  eviction.
+  now say why: no code reads those rows by primary key. That covers 0.57.0's
+  `link_started_conversation`, guarded `finalize_success` / `finalize_failed` and
+  `reap_stale_dispatching`. A by-pk reader added later needs the eviction; a wake test fails on
+  one.
 
 ### A pod reaches only its own keys in the platform's shared pod buckets
 
@@ -465,6 +476,161 @@ does so already. A test harness that builds a collection without running `__init
 A caller that passes neither gets exactly the bucket it got before. A test can now drive time
 instead of waiting for it; the unit tests that asserted refills against the wall clock failed on a
 loaded machine.
+
+## v0.57.0 -- 2026-09-30
+
+A wake belongs to its agent, and a fire starts its own conversation. Five packages change their
+schema; the runner applies the new versions on upgrade.
+
+### Upgrade
+
+- **The registry refuses unsigned agent registrations** (below): rebuild every agent on an SDK
+  that signs before the hub moves to 0.57.0.
+- **Migrations that run:** agent-wake v007, conversations v011, agent-skills v004, agent-memory
+  v028 to v031.
+- **agent-memory v028 can fail** on a database that holds two `media` rows with the same
+  `(cloud_connection_id, cloud_file_id)`: it creates the unique index
+  `uq_media_cloud_connection_file`. Find them first with a `GROUP BY ... HAVING count(*) > 1`.
+- **agent-wake API renames** a consumer must follow:
+  - `WakeConfig.max_schedules_per_conversation` is `max_active_schedules_per_agent`.
+    `DEFAULT_MAX_SCHEDULES_PER_CONVERSATION` (10) is `DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT` (50).
+  - The pause, resume and delete tool factories, for schedules and for webhook subscriptions, and
+    the rotate-secret factory take `agent_id` in place of `conversation_id` and `user_id`. The
+    update and list factories no longer take `conversation_id`.
+  - `create_schedule_serialized(collection, data, agent_id, cap, pool, make_wake_conversation=None)`
+    takes the row as a dict and returns the saved entity. `resume_schedule_serialized` takes
+    `agent_id`. `ScheduleCapExceeded` carries `agent_id` in place of `conversation_id`.
+  - `validate_context_from_chain` takes `agent_id`, and its resolver's `_ChainNode` carries
+    `agent_id`.
+  - `WakeFireCollection.reap_stale_dispatching` returns the reaped fires (`list[ReapedFire]`),
+    not a count.
+  - The create and update request models (`CreateWakeScheduleRequest`,
+    `UpdateWakeScheduleRequest`, and the two webhook-subscription ones) no longer accept
+    `execution_mode`.
+- **A consumer's ORM that mirrors the table factories** sees a diff: the wake tables gain
+  `protected`, `started_conversation_id`, two indexes, a check and a `'spawn'` default; the memory
+  factories drop and add indexes and make the `media` key to `memories` composite;
+  `agent_skills` gains `tool` and `arguments`; `conversations` gains `parent_type` and
+  `parent_id`.
+
+### registry: an agent's in-process server registers signed, or not at all
+
+The unsigned-agent concession has ended, as 0.55.0 promised and 0.56.0 deferred to this release.
+An agent's in-process manifest with no token is refused (`UNVERIFIED_PUBLISHER`); before, 0.55
+and 0.56 admitted its agent-scoped copies with a WARNING. `admit_copy` refuses an unverified
+publisher for every audience.
+
+**Before upgrading the hub:** every agent must run an SDK that signs its registration with the
+agent's own identity token. An agent that still registers unsigned loses its in-process tools
+when the hub moves to 0.57.0.
+
+### agent-wake: a wake is the agent's
+
+An agent's wakes live in several conversations, so everything that finds or counts them is scoped
+to the agent:
+
+- `WakeScheduleCollection.find_for_agent` and `list_for_agent`, and the same pair on
+  `WebhookSubscriptionCollection`, look across the agent's conversations and never return another
+  agent's row.
+- The schedule and webhook tools use them. A wake created in one conversation is listed, paused,
+  resumed, changed and deleted from any other conversation of the same agent. Another agent's wake
+  reads as not found.
+- The active-schedule cap counts the agent's active wakes in every conversation, under an advisory
+  lock keyed on the agent. Protected wakes are not counted.
+- `context_from` may name any wake of the same agent, in any conversation.
+
+### agent-wake: a wake lives in a wake conversation, and every fire starts a conversation
+
+- `wake_schedule_create` and `webhook_subscription_create` take the consumer's
+  `WakeConversations` hooks. The agent names one of its wake conversations, or a new one is made in
+  the same transaction as the row, with the calling conversation as its parent. Without the hooks
+  a wake lives in the calling conversation, as before.
+- `execution_mode` is no longer offered: every row written from now on is `'spawn'`, the new
+  column default. Rows written as `'inline'` keep working until their consumer moves them.
+- `dispatch_wake(start_conversation=...)` calls the consumer's `FireConversationHook` after the fire
+  is permitted and before the handler runs. It makes the fire's conversation on a connection inside
+  a transaction, and the platform records it on `wake_fires.started_conversation_id` in the same
+  transaction. The handler's trigger carries it as `started_conversation_id`.
+- `WakeTrigger.fire_id` is the fire's row, on the tick path and the webhook path alike.
+
+### agent-wake: limits per wake and per agent, and "not now"
+
+- `dispatch_wake(permit=...)` calls the consumer's `FirePermit` for every fire. It returns
+  `FireLimits(per_wake, per_agent)`, read fresh each fire, or `None` for "not now".
+- "Not now" ends the fire as the new status `'skipped_life_off'`. Nothing else runs, and it is not
+  counted as a failure.
+- The limits count fires that ran in the trailing day, silent ones included: per wake (its schedule
+  or its webhook subscription) and per agent. A protected wake is still asked, and is not counted.
+- Without a permit the older per-conversation and per-user caps apply, unchanged.
+
+### agent-wake: protected wakes
+
+- `agent_wake_schedules.protected`, set when the wake is created. The table's trigger refuses
+  deleting, pausing, expiring, retyping or unprotecting a protected wake, and changing its
+  `schedule_config`, from any code path. A check keeps a protected wake off the one-shot types.
+- `update_protected` changes the schedule only, after validating it against the wake's type,
+  recomputes `next_fire_at` and drops the cached row. `delete_protected` exists for deleting the
+  wake's agent; pass the deletion's connection to delete it in that transaction. Each opens the
+  trigger's gate for its own transaction only.
+- The pause, delete and update tools refuse a protected wake with a plain message.
+
+### agent-wake: the reaper and a late finish
+
+- `wake_tick_job(on_reaped=...)` hands the consumer every fire the reaper failed, with the
+  conversation each had started, so it can close what it opened. A hook that raises is logged; the
+  fires stay failed.
+- `finalize_success` and `finalize_failed` change only a row still `'dispatching'`. A fire the
+  reaper failed cannot turn into `'fired'` when its handler finishes late.
+
+### scheduled-jobs: after an outage, `coalesce` resumes on the schedule's own slots
+
+An `interval` or `every_n_hours` job under `coalesce`, the default, set its next fire to the tick
+time plus the interval, so every late tick moved the schedule later for good. It now fires once
+for the backlog and re-arms on the first of its own slots still in the future. `daily_at` and
+`cron` already did; `catch_up` is unchanged. Every consumer on `coalesce` gets this with no code
+change.
+
+### conversations: a conversation records what started it
+
+`Conversation.parent_type` and `parent_id`, both optional: a short type word the consumer chooses
+and an id. v011 adds them, a check that they are set together, and the index
+`idx_conv_parent (parent_type, parent_id)`. Existing rows have no parent.
+
+### agent-skills: a skill can be one tool call (schema only)
+
+`agent_skills.tool` and `arguments`. A skill is steps in a body or one tool call, never both;
+`SkillShapeError` refuses the mix before it reaches the database, and v004's checks back it.
+Running such a skill is not built yet, so `skill_create` and `skill_update` offer the two fields
+only with `offer_tool_skills=True`; otherwise the agent never sees them. Non-additive: the new
+checks refuse rows the old schema accepted.
+
+### agent-memory: a schema holds what the collections declare
+
+- v028 removes indexes and unique constraints the chain built twice under two names, creates the
+  declared ones no migration built, and leaves `media` with only the composite key to `memories`,
+  adding it where a schema adopted from a consumer's own chain lacks it. Adding it validates every
+  row: a media row whose memory is gone stops the migration.
+- v029 and v030 rank a chunk's heading above its content and summary in keyword search, and
+  recompute existing chunks.
+- v031 sets `customer_id` NOT NULL on `media`, `media_content` and `memory_chunks` where no row
+  lacks one, and warns and leaves a table that holds one. It also sets `memories.date_updated` NOT
+  NULL, filling a NULL from the row's `date_created`.
+- v022's constraint guards look only in their own schema, so a second agent schema in one database
+  gets its own constraints.
+
+### models: `tool_choice` reaches the provider in its own words
+
+`tool_choice="required"` is the OpenAI spelling, and `ChatAnthropic.bind_tools` treats any string
+but `any` and `auto` as a tool's name, so an Anthropic API call with it was refused with a 400
+("Tool 'required' not found"). The Anthropic chat model now sends it as `any`. And a `tool_choice`
+that names a dotted tool now names it by the wire name the tool was bound under, on every provider
+that translates names; it named a tool the provider was never given.
+
+### core: migration catalog lookups name their schema
+
+`add_check_constraint`, `replace_check_constraint` and `add_index` limit their lookups to the given
+schema, or to `current_schema()`. A workspace test now fails any migration whose catalog lookup
+names no schema.
 
 ## v0.56.3 -- 2026-09-28
 

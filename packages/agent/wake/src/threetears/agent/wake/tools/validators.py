@@ -226,7 +226,7 @@ def _validate_interval(config: dict[str, Any]) -> str | None:
 
 
 # Resolver Protocol shape the validator calls back into. The tool layer
-# wraps WakeScheduleCollection.get((conversation_id, schedule_id)) so
+# wraps WakeScheduleCollection.find_for_agent(agent_id, schedule_id) so
 # this validator stays pure / DB-agnostic and the same surface can be
 # stubbed in unit tests.
 ContextFromResolver = Callable[[UUID], Awaitable["_ChainNode | None"]]
@@ -236,20 +236,20 @@ class _ChainNode:
     """Lightweight result row the resolver returns for one chain hop.
 
     Carries the upstream schedule's ``context_from_schedule_id`` (the
-    next hop in the chain) plus the ``conversation_id`` so the
-    cross-conversation guard can fire. Constructed by the tool's
-    closure over :class:`WakeScheduleCollection`.
+    next hop in the chain) plus its ``agent_id`` so the cross-agent guard
+    can fire. Constructed by the tool's closure over
+    :class:`WakeScheduleCollection`.
     """
 
-    __slots__ = ("conversation_id", "context_from_schedule_id")
+    __slots__ = ("agent_id", "context_from_schedule_id")
 
     def __init__(
         self,
         *,
-        conversation_id: UUID,
+        agent_id: UUID,
         context_from_schedule_id: UUID | None,
     ) -> None:
-        self.conversation_id = conversation_id
+        self.agent_id = agent_id
         self.context_from_schedule_id = context_from_schedule_id
 
 
@@ -257,17 +257,14 @@ async def validate_context_from_chain(
     *,
     new_schedule_id: UUID,
     proposed_context_from: UUID,
-    conversation_id: UUID,
+    agent_id: UUID,
     resolver: ContextFromResolver,
     max_depth: int = CONTEXT_FROM_MAX_DEPTH,
 ) -> str | None:
-    """Walk ``proposed_context_from`` to detect cycles + cross-conv leaks.
+    """Walk ``proposed_context_from`` to detect cycles + cross-agent leaks.
 
-    Per PLACEMENT §1.6:
-
-    - The chain is same-conversation-only. If any hop's
-      ``conversation_id`` differs from the new schedule's
-      ``conversation_id``, reject.
+    - The chain stays within one agent, across any of its conversations.
+      If any hop belongs to another agent, reject.
     - Cycles are forbidden. The walker accumulates visited schedule
       ids; revisiting any (including ``new_schedule_id`` itself, which
       is added to ``visited`` up-front so self-references reject as
@@ -283,9 +280,8 @@ async def validate_context_from_chain(
     :ptype new_schedule_id: UUID
     :param proposed_context_from: the target schedule (chain head)
     :ptype proposed_context_from: UUID
-    :param conversation_id: the new schedule's conversation; chain
-        hops must match
-    :ptype conversation_id: UUID
+    :param agent_id: the new schedule's agent; chain hops must match
+    :ptype agent_id: UUID
     :param resolver: async callable mapping ``schedule_id -> _ChainNode``
         (or ``None`` when the schedule is missing)
     :ptype resolver: ContextFromResolver
@@ -306,11 +302,8 @@ async def validate_context_from_chain(
         node = await resolver(current)
         if node is None:
             return f"context_from target schedule {current} not found"
-        if node.conversation_id != conversation_id:
-            return (
-                f"context_from target schedule {current} belongs to a "
-                "different conversation; chain must stay in-conversation"
-            )
+        if node.agent_id != agent_id:
+            return f"context_from target schedule {current} not found"
         current = node.context_from_schedule_id
         depth += 1
     return None
