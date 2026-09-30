@@ -24,6 +24,7 @@ from threetears.nats import (
     Subscription,
     set_default_namespace,
 )
+from threetears.nats.credential_refusal import CredentialRefusal, CredentialRefusalReason
 
 pytestmark = pytest.mark.asyncio
 
@@ -591,3 +592,162 @@ async def test_an_abandoned_client_closes_every_connection_and_never_renews(
     assert client.is_closed
     with pytest.raises(NatsClientError):
         await client.renew_connection(retire_after=timedelta(seconds=30))
+
+
+async def test_a_renewal_cancelled_while_it_waits_for_the_handover_lock_closes_its_successor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the successor is owned from the moment it opens, so no cancellation can orphan it.
+
+    a subscribe holds the handover lock across the server's SUB; a renewal whose successor is open
+    waits for that lock. cancelled there, the successor used to escape every sweep -- abandon,
+    shutdown and retirement all walk the client's registry -- and forever-reconnect on its own.
+    """
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+
+    async def _cb(msg: IncomingMessage) -> None:
+        return None
+
+    current.subscribe_gate = asyncio.Event()
+    subscribing = asyncio.create_task(client.subscribe(Subject.raw("late"), cb=_cb))
+    await _settle()
+    renewal = asyncio.create_task(client.renew_connection(retire_after=timedelta(seconds=30)))
+    await _settle()
+    assert not successor.is_closed  # opened, and waiting for the lock
+
+    renewal.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await renewal
+
+    assert successor.is_closed
+    assert client.raw is current
+    current.subscribe_gate.set()
+    await client.unsubscribe(await subscribing)
+    await client.shutdown()
+
+
+async def test_shutdown_during_a_renewal_waiting_for_the_handover_lock_closes_its_successor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """shutdown cancels the renewal loop; the successor that loop had opened is closed with it."""
+    monkeypatch.setattr(client_module, "seconds_until_reauth", lambda _ttl, **_kw: 0.0)
+    monkeypatch.setattr(client_module, "REAUTH_MIN_SLEEP_SECONDS", 0.0)
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+
+    async def _cb(msg: IncomingMessage) -> None:
+        return None
+
+    current.subscribe_gate = asyncio.Event()
+    subscribing = asyncio.create_task(client.subscribe(Subject.raw("late"), cb=_cb))
+    await _settle()
+    client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=30.0)
+    await _settle()
+    assert not successor.is_closed  # the loop opened it, and waits for the lock
+
+    await client.shutdown()
+
+    assert successor.is_closed
+    assert current.is_closed
+    current.subscribe_gate.set()
+    await subscribing
+
+
+async def test_a_client_abandoned_during_a_direct_renewal_stays_abandoned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """abandon lands while a renewal it did not start is subscribing its successor.
+
+    the successor was not yet registered, so abandon's sweep missed it, and the handover then made
+    it current: an abandoned client with an open connection that reports itself open, which no
+    supervisor restarts -- the zombie a deliberate refusal exists to stop.
+    """
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    successor.pong_gate = asyncio.Event()
+    renewal = asyncio.create_task(client.renew_connection(retire_after=timedelta(seconds=30)))
+    await _settle()  # the successor's round trip waits for its PONG
+
+    await client.abandon(reason="credential refused: superseded")
+    successor.pong_gate.set()
+
+    with pytest.raises(NatsClientError, match="abandoned"):
+        await renewal
+    assert successor.is_closed
+    assert current.is_closed
+    assert client.is_closed
+
+
+async def test_a_refusal_abandons_only_the_runner_it_names_and_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """a principal's inbox is shared by every runner of it; only a refusal naming THIS one counts.
+
+    a foreign generation is another runner's refusal and changes nothing. this runner's own refusal
+    closes every connection at once, and a duplicate delivery of it starts no second abandonment.
+    """
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    await client.renew_connection(retire_after=timedelta(seconds=3600))  # two connections held
+    abandonments: list[str] = []
+    original_abandon = NatsClient.abandon
+
+    async def _counting_abandon(self: NatsClient, *, reason: str) -> None:
+        abandonments.append(reason)
+        await original_abandon(self, reason=reason)
+
+    monkeypatch.setattr(NatsClient, "abandon", _counting_abandon)
+
+    def _is_mine(refusal: CredentialRefusal) -> bool:
+        return refusal.pod_id == "pod-7" and refusal.identity_generation == "g-3"
+
+    await client.abandon_on_refusal(inbox_prefix="_INBOX_agent_pod_a1", is_mine=_is_mine)
+    refusals = successor.subs[-1]
+    assert refusals.subject == "_INBOX_agent_pod_a1.credential-refused"
+
+    def _refusal(generation: str) -> _Msg:
+        body = CredentialRefusal(
+            reason=CredentialRefusalReason.SUPERSEDED, pod_id="pod-7", identity_generation=generation
+        )
+        return _Msg(body.model_dump_json().encode(), subject=refusals.subject)
+
+    await refusals.queue_in.put(_refusal("g-2"))
+    await _settle()
+    assert abandonments == []
+    assert not client.is_closed and not current.is_closed and not successor.is_closed
+
+    await refusals.queue_in.put(_refusal("g-3"))
+    await refusals.queue_in.put(_refusal("g-3"))
+    for _ in range(100):
+        if client.is_closed:
+            break
+        await asyncio.sleep(0.01)
+    await _settle()
+
+    assert abandonments == ["credential refused: superseded"]
+    assert current.is_closed and successor.is_closed and client.is_closed
+
+
+async def test_one_renewal_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """a second renewal while one is handing over is refused and opens nothing."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    successor.pong_gate = asyncio.Event()
+    first = asyncio.create_task(client.renew_connection(retire_after=timedelta(seconds=30)))
+    await _settle()
+
+    with pytest.raises(NatsClientError, match="already in progress"):
+        await client.renew_connection(retire_after=timedelta(seconds=30))
+
+    successor.pong_gate.set()
+    await first
+    assert client.raw is successor
+    await client.shutdown()
+
+
+async def test_an_abandoned_or_shut_down_client_arms_no_renewal(monkeypatch: pytest.MonkeyPatch) -> None:
+    abandoned = await _connected(monkeypatch, _Conn("abandoned"))
+    await abandoned.abandon(reason="credential refused: superseded")
+    shut_down = await _connected(monkeypatch, _Conn("shut-down"))
+    await shut_down.shutdown()
+
+    for client in (abandoned, shut_down):
+        with pytest.raises(NatsClientError, match="cannot renew"):
+            client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=30.0)

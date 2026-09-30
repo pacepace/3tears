@@ -70,6 +70,7 @@ import re
 import time
 import uuid
 from collections.abc import Mapping
+from enum import StrEnum
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, TypeVar
@@ -1564,31 +1565,315 @@ async def _unsubscribe_quietly(sub: Any, *, subject: Subject) -> None:
         )
 
 
+class _Role(StrEnum):
+    """what one connection is to the client that holds it.
+
+    Every change of role is a transition of :class:`_ConnectionLifecycle`; nothing else sets one.
+    """
+
+    #: opened by a renewal and not yet current. Its refusals do not speak for the client: the
+    #: connection it would replace is still current and still valid, and is kept until it expires.
+    CANDIDATE = "candidate"
+    #: the one connection every new publish, request, subscribe, KV and JetStream call uses.
+    CURRENT = "current"
+    #: replaced by a renewal, and held open only for the work it already carries. Its callbacks
+    #: no longer speak for the client (no health counting, no reconnect hooks, no outage warning).
+    RETIRING = "retiring"
+
+
+class _Phase(StrEnum):
+    """where a client is in its life; see :class:`_ConnectionLifecycle` for every transition."""
+
+    #: one current connection, possibly with replaced ones still retiring
+    RUNNING = "running"
+    #: a renewal is opening, subscribing or handing over to a candidate; at most one at a time
+    RENEWING = "renewing"
+    #: refused on purpose (:meth:`NatsClient.abandon`): every connection closed, and nothing reopens one
+    ABANDONED = "abandoned"
+    #: shut down by its owner (:meth:`NatsClient.shutdown`): nothing renews it
+    CLOSED = "closed"
+
+
 class _ConnectionState:
     """what the client knows about one of its connections beyond what nats-py tracks.
 
-    :ivar retiring: set once a renewal has replaced the connection; its callbacks then stop
-        speaking for the client (no health counting, no reconnect hooks, no disconnect warning)
-    :ivar candidate: set while a renewal is still opening the connection; its refusals do not
-        speak for the client either -- the connection it would replace is still current and still
-        valid, and it is kept until its own credential expires
+    Read by the connection's own nats-py callbacks, which :class:`_ConnectionOpener` binds to it.
+
+    :ivar role: what the connection is to the client (:class:`_Role`); set only by
+        :class:`_ConnectionLifecycle`
     :ivar connected_at: ``time.monotonic()`` of the connection's latest successful
         (re)connect, which is when its current credential was minted
     """
 
-    __slots__ = ("retiring", "candidate", "connected_at")
+    __slots__ = ("role", "connected_at")
 
-    def __init__(self, *, candidate: bool = False) -> None:
-        """a connection established now; current, or a renewal's ``candidate``.
+    def __init__(self, *, role: _Role = _Role.CURRENT) -> None:
+        """a connection established now, in ``role``.
 
-        :param candidate: whether a renewal is opening it to replace the current connection
-        :ptype candidate: bool
+        :param role: what it is to the client; a renewal opens a :attr:`_Role.CANDIDATE`
+        :ptype role: _Role
         :return: nothing
         :rtype: None
         """
-        self.retiring = False
-        self.candidate = candidate
+        self.role = role
         self.connected_at = time.monotonic()
+
+
+class _ConnectionLifecycle:
+    """the one model of a client's connections and of the client's phase.
+
+    Each connection the client holds has exactly one :class:`_Role`, and the client exactly one
+    :class:`_Phase`. Every transition lives here and checks the whole state before it changes any
+    of it, so no caller can reach a combination the model does not name. The ones that matter:
+
+    - **a connection is owned from the moment it opens.** A renewal's candidate is registered in
+      the same step that opens it (:meth:`admit_candidate`), so every sweep -- :meth:`abandon`,
+      :meth:`end_renewal`, a shutdown's -- sees it, and no cancellation between opening it and
+      handing over to it can leave it open with nothing holding it.
+    - **only a live client changes its current connection.** :meth:`promote` refuses once the
+      client is abandoned or closed, in the same step that would switch it, so a renewal that was
+      mid-handover when :meth:`abandon` fired cannot make a connection current afterwards.
+    - **an abandoned client never holds an open connection.** :meth:`abandon` hands back every
+      connection to close and stops the successor being opened; :meth:`admit_candidate` refuses a
+      connection that finishes opening afterwards.
+
+    Also owns what a transition must stop with it: the task opening a candidate, the tasks retiring
+    replaced connections, and the publish gate a handover closes while it settles.
+
+    :param current: the connection the client starts with
+    :ptype current: nats.aio.client.Client
+    :param state: its state, which its callbacks already read
+    :ptype state: _ConnectionState
+    """
+
+    __slots__ = ("_phase", "_current", "_connections", "_publish_gate", "_opening", "_retirements")
+
+    def __init__(self, current: _NatsPyClient, state: _ConnectionState) -> None:
+        """start RUNNING, with ``current`` the one connection.
+
+        :param current: the connection the client starts with
+        :ptype current: nats.aio.client.Client
+        :param state: its state
+        :ptype state: _ConnectionState
+        :return: nothing
+        :rtype: None
+        """
+        state.role = _Role.CURRENT
+        self._phase = _Phase.RUNNING
+        self._current = current
+        self._connections: dict[_NatsPyClient, _ConnectionState] = {current: state}
+        # closed for the instant a handover takes to prove that everything already published on the
+        # replaced connection reached the server, so nothing published on the successor overtakes it.
+        self._publish_gate = asyncio.Event()
+        self._publish_gate.set()
+        # the task opening a renewal's candidate, so abandon() can stop a refused connect retrying.
+        self._opening: asyncio.Task[_NatsPyClient] | None = None
+        # replaced connections waiting out the work they carry, then drained.
+        self._retirements: set[asyncio.Task[None]] = set()
+
+    @property
+    def phase(self) -> _Phase:
+        """where the client is in its life.
+
+        :return: the phase
+        :rtype: _Phase
+        """
+        return self._phase
+
+    @property
+    def is_live(self) -> bool:
+        """whether the client still serves: neither abandoned nor closed.
+
+        :return: True while running or renewing
+        :rtype: bool
+        """
+        return self._phase in (_Phase.RUNNING, _Phase.RENEWING)
+
+    @property
+    def current(self) -> _NatsPyClient:
+        """the connection every new operation uses.
+
+        :return: the current connection
+        :rtype: nats.aio.client.Client
+        """
+        return self._current
+
+    def state_of(self, connection: _NatsPyClient) -> _ConnectionState | None:
+        """the state of a connection the client holds.
+
+        :param connection: the connection
+        :ptype connection: nats.aio.client.Client
+        :return: its state, or ``None`` when the client no longer holds it
+        :rtype: _ConnectionState | None
+        """
+        return self._connections.get(connection)
+
+    def replaced(self) -> list[_NatsPyClient]:
+        """every connection held that is not current: candidates, and those retiring.
+
+        :return: a snapshot of them
+        :rtype: list[nats.aio.client.Client]
+        """
+        return [connection for connection in self._connections if connection is not self._current]
+
+    def begin_renewal(self) -> None:
+        """RUNNING -> RENEWING: one renewal at a time, and never on a client that stopped serving.
+
+        :return: nothing
+        :rtype: None
+        :raises NatsClientError: when the client is abandoned, closed, or already renewing
+        """
+        if self._phase is _Phase.RENEWING:
+            raise NatsClientError("a credential renewal is already in progress on this NATS client")
+        if not self.is_live:
+            raise NatsClientError(
+                f"cannot renew the credential of a NATS client that is {self._phase.value}; it requires a fresh connect"
+            )
+        self._phase = _Phase.RENEWING
+
+    def track_opening(self, opening: asyncio.Task[_NatsPyClient] | None) -> None:
+        """hold the task opening a renewal's candidate, or forget it once it ended.
+
+        :param opening: the task, or ``None``
+        :ptype opening: asyncio.Task[nats.aio.client.Client] | None
+        :return: nothing
+        :rtype: None
+        """
+        self._opening = opening
+
+    def admit_candidate(self, connection: _NatsPyClient, state: _ConnectionState) -> bool:
+        """register a renewal's freshly opened connection as a CANDIDATE, in the step that opened it.
+
+        :param connection: the connection just opened
+        :ptype connection: nats.aio.client.Client
+        :param state: its state
+        :ptype state: _ConnectionState
+        :return: True when it is now owned; False when the client stopped serving while it opened,
+            in which case the caller closes it
+        :rtype: bool
+        """
+        if self._phase is not _Phase.RENEWING:
+            return False
+        state.role = _Role.CANDIDATE
+        self._connections[connection] = state
+        return True
+
+    def promote(self, candidate: _NatsPyClient) -> _NatsPyClient:
+        """make a candidate current and the current connection RETIRING, in one step.
+
+        :param candidate: the renewal's candidate, subscribed and round-tripped
+        :ptype candidate: nats.aio.client.Client
+        :return: the connection it replaced
+        :rtype: nats.aio.client.Client
+        :raises NatsClientError: when the client stopped serving during the renewal, or
+            ``candidate`` is not this renewal's candidate
+        """
+        if self._phase is not _Phase.RENEWING:
+            raise NatsClientError(f"the NATS client was {self._phase.value} during a credential renewal")
+        state = self._connections.get(candidate)
+        if state is None or state.role is not _Role.CANDIDATE:
+            raise NatsClientError("only a renewal's own candidate connection can be made current")
+        previous = self._current
+        previous_state = self._connections.get(previous)
+        if previous_state is not None:
+            previous_state.role = _Role.RETIRING
+        state.role = _Role.CURRENT
+        self._current = candidate
+        return previous
+
+    def end_renewal(self) -> list[_NatsPyClient]:
+        """RENEWING -> RUNNING, disowning any candidate that was never made current.
+
+        :return: the candidates disowned, for the caller to close
+        :rtype: list[nats.aio.client.Client]
+        """
+        stranded = [c for c, s in self._connections.items() if s.role is _Role.CANDIDATE]
+        for connection in stranded:
+            del self._connections[connection]
+        if self._phase is _Phase.RENEWING:
+            self._phase = _Phase.RUNNING
+        return stranded
+
+    def add_retirement(self, retirement: asyncio.Task[None]) -> None:
+        """hold a task retiring a replaced connection until it ends.
+
+        :param retirement: the task
+        :ptype retirement: asyncio.Task[None]
+        :return: nothing
+        :rtype: None
+        """
+        self._retirements.add(retirement)
+        retirement.add_done_callback(self._retirements.discard)
+
+    def take_retirements(self) -> list[asyncio.Task[None]]:
+        """cancel every pending retirement and hand the tasks back to be awaited.
+
+        :return: the cancelled tasks
+        :rtype: list[asyncio.Task[None]]
+        """
+        retirements = list(self._retirements)
+        for retirement in retirements:
+            retirement.cancel()
+        return retirements
+
+    def forget(self, connection: _NatsPyClient) -> None:
+        """stop holding a replaced connection that was closed; the current one is never forgotten.
+
+        :param connection: the connection
+        :ptype connection: nats.aio.client.Client
+        :return: nothing
+        :rtype: None
+        """
+        if connection is not self._current:
+            self._connections.pop(connection, None)
+
+    def abandon(self) -> list[_NatsPyClient]:
+        """-> ABANDONED: stop opening, stop retiring, and hand back every connection to close.
+
+        :return: every connection held, current, candidate and retiring, for the caller to close
+        :rtype: list[nats.aio.client.Client]
+        """
+        self._phase = _Phase.ABANDONED
+        if self._opening is not None:
+            self._opening.cancel()
+        self.take_retirements()
+        self._publish_gate.set()
+        return list(self._connections)
+
+    def close(self) -> None:
+        """-> CLOSED, for a shutdown; an abandoned client stays abandoned.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._phase is not _Phase.ABANDONED:
+            self._phase = _Phase.CLOSED
+
+    def hold_publishes(self) -> None:
+        """close the publish gate while a handover settles the replaced connection.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._publish_gate.clear()
+
+    def release_publishes(self) -> None:
+        """open the publish gate again.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._publish_gate.set()
+
+    async def publishing_connection(self) -> _NatsPyClient:
+        """the connection to publish on: the current one, once any handover has settled.
+
+        :return: the current connection
+        :rtype: nats.aio.client.Client
+        """
+        if not self._publish_gate.is_set():
+            await self._publish_gate.wait()
+        return self._current
 
 
 class _ConnectionOpener:
@@ -1671,11 +1956,14 @@ class _ConnectionOpener:
             """fan a reconnect out to the wrapper log + every consumer-registered callback."""
             # a (re)connect mints the connection a fresh credential: the renewal schedule restarts.
             state.connected_at = time.monotonic()
-            if state.retiring:
+            if state.role is not _Role.CURRENT:
                 # NOSILENT: a replaced connection outlived a network drop while it finished its
-                # work. it no longer speaks for the client: the current connection's health and
-                # the consumer's reconnect hooks are not its business.
-                log.info("a replaced NATS connection reconnected while it is being retired")
+                # work, or a candidate reconnected before it took over. neither speaks for the
+                # client: the current connection's health and the consumer's reconnect hooks are
+                # not their business.
+                log.info(
+                    "a NATS connection that is not current reconnected", extra={"extra_data": {"role": state.role}}
+                )
                 return
             health_state["auth_violations"] = 0  # a successful (re)connect clears the wedged-auth signal
             # resilience-task-03: a successful (re)connect also clears the outbound-overflow signal --
@@ -1703,10 +1991,16 @@ class _ConnectionOpener:
         client_name = self._client_name
 
         async def _dispatch_disconnected() -> None:
-            """warn of an outage, or record a planned retirement as the ordinary event it is."""
-            if state.retiring:
+            """warn of an outage, or record a retirement or a dropped candidate as the ordinary event it is."""
+            if state.role is _Role.RETIRING:
                 log.info(
                     "a NATS connection replaced by a credential renewal was retired",
+                    extra={"extra_data": {"client_name": client_name}},
+                )
+                return
+            if state.role is _Role.CANDIDATE:
+                log.info(
+                    "a credential renewal's candidate NATS connection closed before it took over",
                     extra={"extra_data": {"client_name": client_name}},
                 )
                 return
@@ -1729,10 +2023,11 @@ class _ConnectionOpener:
             # count the violation BEFORE the await: _on_error may suspend, and if a _dispatch_reconnected
             # reset interleaves at that suspension point a post-reset stale += 1 could survive, leaving a
             # phantom count after a healthy reconnect. Incrementing first keeps the counter honest within a
-            # run of failures; the next successful reconnect always resets it to 0. A retiring connection's
-            # refusals say nothing about whether the CURRENT credential is wedged, and neither does a
-            # renewal candidate's: the current connection is still valid, and is kept until it expires.
-            if not state.retiring and not state.candidate and _is_authorization_violation(exc):
+            # run of failures; the next successful reconnect always resets it to 0. Only the CURRENT
+            # connection's refusals count: a retiring connection's say nothing about whether the
+            # current credential is wedged, and neither does a renewal candidate's -- the current
+            # connection is still valid, and is kept until it expires.
+            if state.role is _Role.CURRENT and _is_authorization_violation(exc):
                 health_state["auth_violations"] += 1
             await _on_error(exc)
 
@@ -1858,7 +2153,7 @@ class NatsClient:
     """
 
     __slots__ = (
-        "_raw",
+        "_lifecycle",
         "_namespace",
         "_client_name",
         "_subscriptions",
@@ -1868,15 +2163,10 @@ class NatsClient:
         "_health_state",
         "_renewal_task",
         "_opener",
-        "_connections",
         "_handover_lock",
         "_reply_routes",
-        "_retirements",
         "_push_consumers",
-        "_publish_gate",
         "_abandonment",
-        "_abandoned",
-        "_opening",
     )
 
     def __init__(
@@ -1886,7 +2176,9 @@ class NatsClient:
         namespace: str,
         client_name: str,
     ) -> None:
-        self._raw = raw
+        # every connection this client holds, the role of each, and the client's phase: the one
+        # model every lifecycle transition goes through (:class:`_ConnectionLifecycle`).
+        self._lifecycle = _ConnectionLifecycle(raw, _ConnectionState())
         self._namespace = namespace
         self._client_name = client_name
         # the credential-renewal loop, when the owner asked for one (:meth:`renew_credential`);
@@ -1896,8 +2188,6 @@ class NatsClient:
         # what :meth:`renew_connection` opens the successor with. ``None`` for a client built
         # around a connection it did not open, which therefore cannot renew it.
         self._opener: _ConnectionOpener | None = None
-        # every connection this client still holds, current and retiring, with its state.
-        self._connections: dict[_NatsPyClient, _ConnectionState] = {raw: _ConnectionState()}
         # serializes a renewal's handover against a subscribe that would otherwise land on the
         # connection being replaced after the handover enumerated the subscriptions.
         self._handover_lock = asyncio.Lock()
@@ -1905,22 +2195,11 @@ class NatsClient:
         # renewal is armed so a reply owed across a handover leaves on the connection NATS lets
         # answer it. an entry leaves when the reply is sent, or when its connection is retired.
         self._reply_routes: dict[str, _NatsPyClient] = {}
-        # replaced connections waiting out the work they carry, then drained (:meth:`_retire`).
-        self._retirements: set[asyncio.Task[None]] = set()
         # durable push consumers, which a handover moves by rebinding the durable on the successor.
         self._push_consumers: list[JetStreamPushConsumer] = []
-        # closed for the instant a handover takes to prove that everything already published on the
-        # replaced connection reached the server, so nothing published on the successor overtakes it
-        # (:meth:`_settle_publishes`). open the rest of the time.
-        self._publish_gate = asyncio.Event()
-        self._publish_gate.set()
         # the abandonment a deliberate credential refusal started (:meth:`abandon_on_refusal`), held so
         # the task is not collected mid-flight.
         self._abandonment: asyncio.Task[None] | None = None
-        # set by :meth:`abandon`; nothing renews an abandoned client.
-        self._abandoned = False
-        # a renewal's successor while it is being opened, so :meth:`abandon` can stop the attempt.
-        self._opening: asyncio.Task[_NatsPyClient] | None = None
         self._subscriptions: list[Subscription] = []
         self._buckets: dict[str, NatsKvBucket] = {}
         self._kv_lock = asyncio.Lock()
@@ -1939,6 +2218,15 @@ class NatsClient:
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
+
+    @property
+    def _raw(self) -> _NatsPyClient:
+        """the current connection, as the lifecycle model holds it.
+
+        :return: the current nats-py connection
+        :rtype: nats.aio.client.Client
+        """
+        return self._lifecycle.current
 
     @classmethod
     async def connect(
@@ -2119,7 +2407,7 @@ class NatsClient:
 
         client = cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
         client._opener = opener
-        client._connections = {raw_client: state}
+        client._lifecycle = _ConnectionLifecycle(raw_client, state)
         # adopt the SAME list and dict every connection's callbacks close over, so an
         # ``add_reconnect_callback`` append is dispatched on the next reconnect and
         # :attr:`is_healthy` reads the live counts.
@@ -2173,12 +2461,12 @@ class NatsClient:
 
     @property
     def is_closed(self) -> bool:
-        """whether underlying nats-py client is closed.
+        """whether the client is closed: abandoned (:meth:`abandon`), or its current connection closed.
 
         :return: True if closed
         :rtype: bool
         """
-        return bool(self._raw.is_closed)
+        return self._lifecycle.phase is _Phase.ABANDONED or bool(self._raw.is_closed)
 
     @property
     def max_payload(self) -> int | None:
@@ -2356,6 +2644,12 @@ class NatsClient:
            key watch, a result waiter, a pull consumer -- rebinds to the current connection on its
            own the next time it is used or its connection closes.
 
+        Every step is a transition of the client's one lifecycle model (:class:`_ConnectionLifecycle`):
+        the successor is a CANDIDATE, owned from the step that opens it, until the step that makes
+        it current -- which is refused once the client was abandoned or shut down meanwhile. A
+        candidate that never became current is closed on every way out of this method, including a
+        cancellation.
+
         A connection this client did not open itself (constructed around a caller's nats-py
         client) cannot be renewed: the client does not know how to open another.
 
@@ -2364,7 +2658,8 @@ class NatsClient:
         :ptype retire_after: timedelta
         :return: nothing
         :rtype: None
-        :raises NatsClientError: if the client is closed, or did not open its own connection
+        :raises NatsClientError: if the client is closed, abandoned or already renewing -- before
+            the handover or during it -- or did not open its own connection
         :raises Exception: whatever opening or subscribing the successor raised; the current
             connection is untouched
         """
@@ -2374,51 +2669,25 @@ class NatsClient:
                 "this NATS client was built around a connection it did not open, so it cannot open a "
                 "successor to renew its credential; build it with NatsClient.connect",
             )
-        previous = self._raw
-        if previous.is_closed or self._abandoned:
+        if self._raw.is_closed:
             raise NatsClientError("cannot renew the credential of a closed NATS client; it requires a fresh connect")
-        state = _ConnectionState(candidate=True)
-        successor = await self._open_successor(opener, state)
-        async with self._handover_lock:
-            moving: list[tuple[Subscription, Any]] = []
-            try:
+        self._lifecycle.begin_renewal()
+        try:
+            successor = await self._open_successor(opener)
+            async with self._handover_lock:
+                moving: list[tuple[Subscription, Any]] = []
                 for sub in [s for s in self._subscriptions if not s.is_closed]:
                     moving.append((sub, await sub.subscribe_on(successor)))
                 await _round_trip(successor, timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)
-            except BaseException:
-                await _close_quietly(successor)
-                raise
-            self._connections[successor] = state
-            state.candidate = False
-            # nothing is published on the successor until everything already published on the old
-            # connection has reached the server (_settle_publishes).
-            self._publish_gate.clear()
-            try:
-                self._raw = successor
-                await self._settle_publishes(previous)
-            finally:
-                self._publish_gate.set()
-            previous_state = self._connections.get(previous)
-            if previous_state is not None:
-                previous_state.retiring = True
-            # a freshly authenticated connection clears the wedged-auth and outbound-overflow
-            # signals, exactly as a successful reconnect does: a refusal before this one said
-            # nothing about the credential now in use.
-            self._health_state["auth_violations"] = 0
-            self._health_state["overflow_events"] = 0
-            handovers = [sub.move_to(raw_sub, successor) for sub, raw_sub in moving]
-            self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
-            js = self.jetstream_context()
-            handovers.extend(
-                asyncio.create_task(consumer.move_to(js, successor), name=f"nats-handover:{consumer.durable}")
-                for consumer in self._push_consumers
-            )
-        retirement = asyncio.create_task(
-            self._retire(previous, after=retire_after, handovers=handovers),
-            name=f"nats-retire:{self._client_name}",
-        )
-        self._retirements.add(retirement)
-        retirement.add_done_callback(self._retirements.discard)
+                # the one step that changes the current connection, refused once the client stopped
+                # serving: an abandon or a shutdown that landed during any await above wins.
+                previous = self._lifecycle.promote(successor)
+                await self._hand_over(previous, successor, moving, retire_after=retire_after)
+        finally:
+            # a candidate that never became current is closed on every path out -- an error, a
+            # cancellation, an abandon or a shutdown -- because nothing else will ever reach it.
+            for stranded in self._lifecycle.end_renewal():
+                await _close_quietly(stranded)
         log.info(
             "NATS connection handed over to a successor with a fresh credential",
             extra={
@@ -2430,36 +2699,103 @@ class NatsClient:
             },
         )
 
-    async def _open_successor(self, opener: _ConnectionOpener, state: _ConnectionState) -> _NatsPyClient:
-        """open a renewal's successor, in a task :meth:`abandon` can stop.
+    async def _hand_over(
+        self,
+        previous: _NatsPyClient,
+        successor: _NatsPyClient,
+        moving: list[tuple[Subscription, Any]],
+        *,
+        retire_after: timedelta,
+    ) -> None:
+        """finish a handover the lifecycle has already made: settle, move, and schedule retirement.
+
+        Runs with the successor already current (:meth:`_ConnectionLifecycle.promote`), so it
+        completes even when cancelled while it settles: the moves and the retirement are scheduled
+        on every path out, or every subscription would keep reading only the connection that is
+        being retired. A client that stopped serving meanwhile has already closed both connections,
+        and schedules nothing.
+
+        :param previous: the connection just replaced
+        :ptype previous: nats.aio.client.Client
+        :param successor: the connection just made current
+        :ptype successor: nats.aio.client.Client
+        :param moving: each subscription with its nats-py subscription on the successor
+        :ptype moving: list[tuple[Subscription, Any]]
+        :param retire_after: how long to keep ``previous`` open for the work it carries
+        :ptype retire_after: timedelta
+        :return: nothing
+        :rtype: None
+        """
+        # nothing is published on the successor until everything already published on the old
+        # connection has reached the server (_settle_publishes).
+        self._lifecycle.hold_publishes()
+        try:
+            await self._settle_publishes(previous)
+        finally:
+            self._lifecycle.release_publishes()
+            if self._lifecycle.is_live:
+                # a freshly authenticated connection clears the wedged-auth and outbound-overflow
+                # signals, exactly as a successful reconnect does: a refusal before this one said
+                # nothing about the credential now in use.
+                self._health_state["auth_violations"] = 0
+                self._health_state["overflow_events"] = 0
+                handovers = [sub.move_to(raw_sub, successor) for sub, raw_sub in moving]
+                self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
+                js = successor.jetstream()
+                handovers.extend(
+                    asyncio.create_task(consumer.move_to(js, successor), name=f"nats-handover:{consumer.durable}")
+                    for consumer in self._push_consumers
+                )
+                self._lifecycle.add_retirement(
+                    asyncio.create_task(
+                        self._retire(previous, after=retire_after, handovers=handovers),
+                        name=f"nats-retire:{self._client_name}",
+                    )
+                )
+
+    async def _open_successor(self, opener: _ConnectionOpener) -> _NatsPyClient:
+        """open a renewal's candidate, owned from the step that opens it, in a task abandon can stop.
 
         nats-py retries a refused connect until the bound, so a successor the callout refuses on
         purpose would otherwise keep asking for the whole of it after the client was abandoned.
 
         :param opener: how to open it
         :ptype opener: _ConnectionOpener
-        :param state: its state
-        :ptype state: _ConnectionState
-        :return: the connected successor
+        :return: the connected candidate, registered with the lifecycle
         :rtype: nats.aio.client.Client
-        :raises NatsClientError: when the client was abandoned while the successor was opening
+        :raises NatsClientError: when the client stopped serving while the candidate was opening
         """
-        opening = asyncio.create_task(opener.open(state), name=f"nats-open-successor:{self._client_name}")
-        self._opening = opening
+        opening = asyncio.create_task(self._open_candidate(opener), name=f"nats-open-successor:{self._client_name}")
+        self._lifecycle.track_opening(opening)
         try:
             successor = await asyncio.wait_for(opening, timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             current = asyncio.current_task()
-            if self._abandoned and (current is None or current.cancelling() == 0):
+            if not self._lifecycle.is_live and (current is None or current.cancelling() == 0):
                 # the attempt was stopped by abandon(), not the caller cancelled: say so.
-                raise NatsClientError("the NATS client was abandoned while a renewal was opening") from None
+                raise NatsClientError(
+                    f"the NATS client was {self._lifecycle.phase.value} while a renewal was opening"
+                ) from None
             raise
         finally:
-            self._opening = None
-        if self._abandoned:
-            await _close_quietly(successor)
-            raise NatsClientError("the NATS client was abandoned while a renewal was opening")
+            self._lifecycle.track_opening(None)
         return successor
+
+    async def _open_candidate(self, opener: _ConnectionOpener) -> _NatsPyClient:
+        """open one connection and register it as the renewal's candidate with no await between.
+
+        :param opener: how to open it
+        :ptype opener: _ConnectionOpener
+        :return: the connected candidate
+        :rtype: nats.aio.client.Client
+        :raises NatsClientError: when the client stopped serving while it opened; it is closed
+        """
+        state = _ConnectionState(role=_Role.CANDIDATE)
+        connection = await opener.open(state)
+        if not self._lifecycle.admit_candidate(connection, state):
+            await _close_quietly(connection)
+            raise NatsClientError(f"the NATS client was {self._lifecycle.phase.value} while a renewal was opening")
+        return connection
 
     async def _retire(
         self, connection: _NatsPyClient, *, after: timedelta, handovers: list[asyncio.Task[None]]
@@ -2517,7 +2853,7 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        self._connections.pop(connection, None)
+        self._lifecycle.forget(connection)
         stale = [reply for reply, via in self._reply_routes.items() if via is connection]
         for reply in stale:
             del self._reply_routes[reply]
@@ -2556,17 +2892,7 @@ class NatsClient:
         via = self._reply_routes.pop(reply_subject, None)
         if via is not None and not via.is_closed:
             return via
-        return await self._publishing_connection()
-
-    async def _publishing_connection(self) -> _NatsPyClient:
-        """the connection to publish on: the current one, once any handover has settled.
-
-        :return: the current connection
-        :rtype: nats.aio.client.Client
-        """
-        if not self._publish_gate.is_set():
-            await self._publish_gate.wait()
-        return self._raw
+        return await self._lifecycle.publishing_connection()
 
     async def _settle_publishes(self, previous: _NatsPyClient) -> None:
         """prove that everything published on a replaced connection has reached the server.
@@ -2605,7 +2931,7 @@ class NatsClient:
         :return: seconds since the current connection's latest successful (re)connect
         :rtype: float
         """
-        state = self._connections.get(self._raw)
+        state = self._lifecycle.state_of(self._raw)
         return time.monotonic() - state.connected_at if state is not None else 0.0
 
     def renew_credential(
@@ -2637,7 +2963,12 @@ class NatsClient:
         :ptype longest_request_seconds: float
         :return: nothing
         :rtype: None
+        :raises NatsClientError: when the client is abandoned or closed
         """
+        if not self._lifecycle.is_live:
+            raise NatsClientError(
+                f"cannot renew the credential of a NATS client that is {self._lifecycle.phase.value}",
+            )
         if self._renewal_task is not None:
             self._renewal_task.cancel()
         renewal = _CredentialRenewal(
@@ -2682,17 +3013,12 @@ class NatsClient:
             "NATS client abandoned: every connection closed at once, without draining",
             extra={"extra_data": {"client_name": self._client_name, "reason": reason}},
         )
-        self._abandoned = True
+        connections = self._lifecycle.abandon()
         renewal = self._renewal_task
         self._renewal_task = None
         if renewal is not None and renewal is not asyncio.current_task():
             renewal.cancel()
-        opening = self._opening
-        if opening is not None:
-            opening.cancel()
-        for retirement in list(self._retirements):
-            retirement.cancel()
-        for connection in list(self._connections):
+        for connection in connections:
             await _close_quietly(connection)
 
     async def abandon_on_refusal(
@@ -2747,16 +3073,13 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        retirements = list(self._retirements)
-        for task in retirements:
-            task.cancel()
-        for task in retirements:
+        for task in self._lifecycle.take_retirements():
             try:
                 await task
             except asyncio.CancelledError:
                 # NOSILENT: this IS the cancellation requested above
                 pass
-        for connection in [c for c in self._connections if c is not self._raw]:
+        for connection in self._lifecycle.replaced():
             await self._drain_retired(connection)
             self._forget_connection(connection)
 
@@ -2797,8 +3120,9 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        # first, and even when already closed: a renewal loop must not outlive its client, nor a
-        # connection it replaced.
+        # first, and even when already closed: nothing renews a client being shut down, and a renewal
+        # loop must not outlive its client, nor a connection it replaced or a candidate it opened.
+        self._lifecycle.close()
         await self._stop_renewal()
         await self._close_replaced_connections()
         if self._raw.is_closed:
@@ -3137,7 +3461,7 @@ class NatsClient:
         :raises PublishError: if underlying publish fails
         """
         try:
-            connection = await self._publishing_connection()
+            connection = await self._lifecycle.publishing_connection()
             if reply_to is None:
                 await connection.publish(subject.path, payload)
             else:
@@ -3571,7 +3895,9 @@ class NatsClient:
             sub = pos_subject if isinstance(pos_subject, Subject) else Subject.raw(str(pos_subject))
             secs = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
             try:
-                msg = await (await self._publishing_connection()).request(sub.path, bytes(pos_payload), timeout=secs)
+                msg = await (await self._lifecycle.publishing_connection()).request(
+                    sub.path, bytes(pos_payload), timeout=secs
+                )
             except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
                 raise RequestTimeoutError(
                     f"request timed out: subject={sub.path} timeout={secs:.1f}s",
@@ -3619,7 +3945,7 @@ class NatsClient:
         :raises RequestError: on timeout, no responders, transport failure
         """
         try:
-            connection = await self._publishing_connection()
+            connection = await self._lifecycle.publishing_connection()
             msg = await connection.request(subject.path, payload, timeout=timeout.total_seconds())
         except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
             raise RequestTimeoutError(
@@ -3900,7 +4226,7 @@ class NatsClient:
         """
         seconds = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
         try:
-            await self._publishing_connection()
+            await self._lifecycle.publishing_connection()
             await publish_bounded(self.jetstream_context(), subject.path, payload, timeout=seconds, headers=headers)
         except PublishError:
             raise
@@ -4340,7 +4666,7 @@ class NatsClient:
             "payload_b64": payload.hex(),
         }
         try:
-            await (await self._publishing_connection()).publish(
+            await (await self._lifecycle.publishing_connection()).publish(
                 dl_subject.path,
                 json.dumps(envelope).encode("utf-8"),
             )

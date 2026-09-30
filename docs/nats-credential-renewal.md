@@ -86,6 +86,24 @@ connection was established (90s at TTL 300 with a 120s completion); the old conn
 `unsafe_renewal_reason` names it every cycle, and the Hub refuses to start with it
 (`MINIMUM_SAFE_NATS_USER_JWT_TTL_SECONDS`, the same inequality).
 
+### One lifecycle model
+
+Which connections a client holds, what each is for, and where the client is in its life are one
+state machine, `_ConnectionLifecycle` in `client.py`. Each connection has one role -- `candidate`
+(a renewal opened it; not yet current), `current`, or `retiring` (replaced; held for the work it
+carries) -- and the client one phase: `running`, `renewing` (one renewal at a time), `abandoned`
+or `closed`. Every transition is a method of that class and checks the whole state first:
+
+- a candidate is registered in the same step that opens it, so every sweep (abandon, shutdown, the
+  renewal's own exit) sees it and no cancellation can orphan it;
+- the step that makes a candidate current refuses once the client was abandoned or shut down, so a
+  renewal mid-handover when a refusal lands cannot leave an abandoned client with an open
+  connection;
+- the renewal's exit closes any candidate never made current, on every path, cancellation included.
+
+The callbacks each connection carries read its role: only the current connection's refusals count
+against `is_healthy`, and only its reconnects run the consumer's hooks.
+
 ## Three nats-py defects the handover works around
 
 The first two reproduced against a real nats-server.
