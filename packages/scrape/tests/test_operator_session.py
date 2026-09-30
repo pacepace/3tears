@@ -251,3 +251,42 @@ class TestTheKeyIsDerivedNotUsedRaw:
         """An empty id would collapse every unclaimed session onto one shared key."""
         with pytest.raises(ValueError, match="non-empty"):
             session_claim_key("")
+
+
+class TestAPodBindsTheLeaseBucketItNeverCreates:
+    """The lease a pod claims with binds the hub's ``leases`` bucket and never creates one.
+
+    A pod holds no stream-management verb, so a lease that asks to create its bucket is refused by
+    the broker -- as a JetStream deadline on the first claim, which reads as an unreachable broker.
+    These run the platform's own fake, which refuses a bind of a bucket nobody declared, exactly as
+    the real client's bind-only open does.
+    """
+
+    def test_the_lease_opens_the_bucket_a_tool_pod_is_granted(self) -> None:
+        from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
+        from threetears.scrape.operator_session import operator_session_lease
+
+        lease = operator_session_lease(DeclaringFake(), pod_id="pod-a")
+        # ``kv_bucket`` layers ``{ns}-`` on, so this is ``{ns}-leases``: the tool pod's grant
+        assert lease.bucket_name == "leases"
+        assert lease.pod_id == "pod-a"
+
+    async def test_a_claim_works_inside_the_bucket_the_hub_declared(self) -> None:
+        from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
+        from threetears.scrape.operator_session import operator_session_lease
+
+        lease = operator_session_lease(DeclaringFake(declared_buckets=("leases",)), pod_id="pod-a")
+        async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH) as claim:
+            assert claim.held
+
+    async def test_a_bucket_nobody_declared_is_refused_not_created(self) -> None:
+        from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
+        from threetears.scrape.operator_session import operator_session_lease
+
+        client = DeclaringFake()
+        lease = operator_session_lease(client, pod_id="pod-a")
+        with pytest.raises(KeyError):
+            async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH):
+                pass
+        with pytest.raises(KeyError):
+            await client.kv_bucket(name="leases", create_if_missing=False)
