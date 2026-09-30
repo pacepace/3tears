@@ -45,6 +45,8 @@ from threetears.agent.wake.events import (
 from threetears.agent.wake.hmac_util import verify_generic_hmac_sha256
 from threetears.agent.wake.metrics import get_wake_emitter
 from threetears.agent.wake.types import (
+    FireConversationHook,
+    FirePermit,
     HandlerCallback,
     WakeTrigger,
 )
@@ -111,6 +113,8 @@ async def webhook_receive(
     now: datetime | None = None,
     wake_config: WakeConfig = DEFAULT_WAKE_CONFIG,
     pre_verified: bool = False,
+    permit: FirePermit | None = None,
+    start_conversation: FireConversationHook | None = None,
 ) -> WebhookReceiveResult:
     """Verify, rate-limit, and dispatch an inbound webhook.
 
@@ -130,8 +134,8 @@ async def webhook_receive(
        exceeded.
     5. Render the Jinja2 template against the decoded payload to
        build the per-fire task prompt.
-    6. Build a :class:`WakeTrigger` with the subscription's
-       ``default_skill_id`` attached.
+    6. Mint the ``fire_id`` and build a :class:`WakeTrigger` carrying it,
+       with the subscription's ``default_skill_id`` attached.
     7. INSERT the ``wake_fires`` row in ``status='dispatching'`` via
        :meth:`WakeFireCollection.create_dispatching`.
     8. Hand off to :func:`dispatch_wake`; on success the dispatcher's
@@ -173,6 +177,12 @@ async def webhook_receive(
         / the subscription row override) so callers passing the default
         config still get full coverage.
     :ptype wake_config: WakeConfig
+    :param permit: forwarded to :func:`dispatch_wake`; decides per fire
+        whether the agent takes fires now and what its limits are
+    :ptype permit: FirePermit | None
+    :param start_conversation: forwarded to :func:`dispatch_wake`; starts
+        the conversation the fire runs in
+    :ptype start_conversation: FireConversationHook | None
     :param pre_verified: when ``True``, the caller (typically the
         channels-side :class:`~threetears.channels.webhook.WebhookReceiver`)
         has already dispatched via its verifier registry and confirmed
@@ -371,6 +381,7 @@ async def webhook_receive(
         )
 
     # Build trigger ---------------------------------------------------
+    fire_id = UUID(str(uuid7()))
     trigger = WakeTrigger(
         schedule_id=None,  # webhook fires carry no source schedule
         user_id=sub.user_id,
@@ -384,9 +395,10 @@ async def webhook_receive(
         task_prompt=rendered,
         context_from_schedule_id=None,
         skill_id=sub.default_skill_id,
+        fire_id=fire_id,
+        webhook_subscription_id=subscription_id,
     )
 
-    fire_id = UUID(str(uuid7()))
     try:
         await fires.create_dispatching(
             fire_id=fire_id,
@@ -417,6 +429,8 @@ async def webhook_receive(
             pool,
             handler=handler,
             wake_config=wake_config,
+            permit=permit,
+            start_conversation=start_conversation,
         )
     except Exception as exc:  # noqa: BLE001 - dispatch boundary
         log.exception(

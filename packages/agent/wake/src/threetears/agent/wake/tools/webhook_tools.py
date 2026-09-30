@@ -7,6 +7,11 @@ probes on ``default_skill_id`` attachments. The plaintext HMAC secret
 is shown ONCE on create + ONCE on rotate; otherwise the entity carries
 only the ciphertext per Implementation Note 8.
 
+As with the schedule tools, a subscription is the agent's: the tools reach
+it from any of the agent's conversations, and never reach another agent's.
+With the consumer's :class:`~threetears.agent.wake.types.WakeConversations`
+a subscription is created into a wake conversation, like a wake.
+
 Spec ref: ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``
 Requirements TOOL-02 / TOOL-09 / TOOL-13 / TOOL-14 + PLACEMENT §1.1 /
 §1.13.
@@ -17,7 +22,7 @@ from __future__ import annotations
 import re
 import secrets
 from datetime import UTC, datetime
-from typing import Any, Final, Literal
+from typing import Any, Final
 from uuid import UUID
 
 from jinja2.exceptions import TemplateError
@@ -28,7 +33,8 @@ from uuid_utils import uuid7
 
 from threetears.agent.wake.collections import WebhookSubscriptionCollection
 from threetears.agent.wake.entities import EncryptionService
-from threetears.agent.wake.tools.resolve import parse_subscription_id
+from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_subscription_id
+from threetears.agent.wake.types import WakeConversations
 from threetears.agent.wake.tools.schedule_tools import (
     WakeRegistryClient,
     _tool_error,
@@ -59,7 +65,6 @@ log = get_logger(__name__)
 PAYLOAD_TEMPLATE_MAX_BYTES: Final[int] = 4 * 1024  # 4 KB
 SECRET_BYTE_LEN: Final[int] = 32  # 32 bytes -> 64 hex chars
 
-_VALID_EXECUTION_MODES: frozenset[str] = frozenset({"inline", "spawn"})
 _VALID_VERIFICATION_SCHEMES: frozenset[str] = frozenset({"generic_hmac_sha256"})
 
 # SandboxedEnvironment is thread-safe + cheap to share. ``autoescape``
@@ -90,9 +95,12 @@ class WebhookSubscriptionCreateInput(BaseModel):
         default=None,
         description="Optional skill to use each time it fires: a [skill:<id>] or its id.",
     )
-    execution_mode: Literal["inline", "spawn"] = Field(
-        default="inline",
-        description="'inline' wakes you in this conversation; 'spawn' starts a new conversation.",
+    wake_conversation_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional [conversation:<id>] of one of your wake conversations, to add this subscription to it. "
+            "Leave it out to start a new wake conversation."
+        ),
     )
     allowed_source_pattern: str | None = Field(
         default=None,
@@ -133,7 +141,6 @@ class WebhookSubscriptionUpdateInput(BaseModel):
         default=False,
         description="True removes the attached skill. Do not also pass default_skill_id.",
     )
-    execution_mode: Literal["inline", "spawn"] | None = None
     allowed_source_pattern: str | None = None
     clear_allowed_source_pattern: bool = Field(
         default=False,
@@ -224,7 +231,7 @@ def _format_subscription_line(
     last = entity.last_fired_at.isoformat() if entity.last_fired_at is not None else "never"
     return (
         f"[webhook:{entity.subscription_id}] · {name} · "
-        f"mode: {entity.execution_mode} · {entity.status} · last_fired: {last}{skill_segment}"
+        f"{entity.status} · in [conversation:{entity.conversation_id}] · last_fired: {last}{skill_segment}"
     )
 
 
@@ -268,6 +275,7 @@ def load_webhook_subscription_create_tool(
     encryption_service: EncryptionService,
     registry: WakeRegistryClient,
     endpoint_base_url: str | None = None,
+    wake_conversations: WakeConversations | None = None,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_create`` tool.
 
@@ -276,7 +284,13 @@ def load_webhook_subscription_create_tool(
     once for the user to copy. The plaintext is NEVER persisted; only
     the ciphertext lands on ``webhook_subscriptions.secret_ciphertext``.
 
-    :param conversation_id: caller's conversation UUID
+    With ``wake_conversations`` the subscription lives in a wake
+    conversation: the one the agent names, or a new one made in the same
+    transaction as the row, whose parent is the caller's conversation.
+    Without it the subscription lives in the caller's conversation.
+
+    :param conversation_id: caller's conversation UUID; the parent of a new
+        wake conversation
     :ptype conversation_id: UUID
     :param user_id: caller's user UUID
     :ptype user_id: UUID
@@ -292,6 +306,8 @@ def load_webhook_subscription_create_tool(
     :param endpoint_base_url: optional product-supplied URL prefix
         rendered in the response so the user can copy the receive URL
     :ptype endpoint_base_url: str | None
+    :param wake_conversations: the consumer's wake-conversation hooks
+    :ptype wake_conversations: WakeConversations | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -301,11 +317,11 @@ def load_webhook_subscription_create_tool(
         task_prompt_template: str,
         name: str | None = None,
         default_skill_id: str | None = None,
-        execution_mode: Literal["inline", "spawn"] = "inline",
+        wake_conversation_id: str | None = None,
         allowed_source_pattern: str | None = None,
         rate_limit_per_minute: int | None = None,
     ) -> str:
-        """Create an inbound webhook subscription for this conversation."""
+        """Create an inbound webhook subscription."""
         for err in (
             _validate_name(name),
             _validate_template(task_prompt_template),
@@ -315,11 +331,24 @@ def load_webhook_subscription_create_tool(
             if err is not None:
                 return _tool_error("webhook_subscription_create", err)
 
-        if execution_mode not in _VALID_EXECUTION_MODES:
-            return _tool_error(
-                "webhook_subscription_create",
-                f"execution_mode must be 'inline' or 'spawn'; got {execution_mode!r}",
-            )
+        target_conversation_id: UUID | None = conversation_id if wake_conversations is None else None
+        if wake_conversation_id is not None:
+            if wake_conversations is None:
+                return _tool_error(
+                    "webhook_subscription_create",
+                    "subscriptions here live in this conversation; omit wake_conversation_id",
+                )
+            parsed_target = parse_conversation_id(wake_conversation_id)
+            if parsed_target is None:
+                return _tool_error(
+                    "webhook_subscription_create", f"invalid wake_conversation_id {wake_conversation_id!r}"
+                )
+            if not await wake_conversations.is_wake_conversation(agent_id=agent_id, conversation_id=parsed_target):
+                return _tool_error(
+                    "webhook_subscription_create",
+                    f"[conversation:{parsed_target}] is not one of your wake conversations",
+                )
+            target_conversation_id = parsed_target
 
         attached_skill: UUID | None = None
         if default_skill_id is not None and default_skill_id != "":
@@ -365,14 +394,14 @@ def load_webhook_subscription_create_tool(
         new_id = UUID(str(uuid7()))
         data: dict[str, Any] = {
             "subscription_id": new_id,
-            "conversation_id": conversation_id,
+            "conversation_id": target_conversation_id,
             "user_id": user_id,
             "agent_id": agent_id,
             "default_skill_id": attached_skill,
             "name": name,
             "secret_ciphertext": bytes(ciphertext),
             "allowed_source_pattern": allowed_source_pattern,
-            "execution_mode": execution_mode,
+            "execution_mode": "spawn",
             "task_prompt_template": task_prompt_template,
             "verification_scheme": "generic_hmac_sha256",
             "status": "active",
@@ -381,9 +410,14 @@ def load_webhook_subscription_create_tool(
             "date_created": now,
             "date_updated": now,
         }
-        entity = subscriptions_collection.create(data)
         try:
-            await subscriptions_collection.save_entity(entity)
+            entity = await _persist_subscription(
+                subscriptions_collection,
+                data,
+                wake_conversations if target_conversation_id is None else None,
+                parent_conversation_id=conversation_id,
+                name=name,
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "webhook_subscription_create persist failed",
@@ -408,7 +442,7 @@ def load_webhook_subscription_create_tool(
                 "extra_data": {
                     "subscription_id": str(new_id),
                     "default_skill_id": str(attached_skill) if attached_skill else None,
-                    "execution_mode": execution_mode,
+                    "wake_conversation_id": str(entity.conversation_id),
                 }
             },
         )
@@ -421,13 +455,59 @@ def load_webhook_subscription_create_tool(
         catalog = _format_subscription_line(entity, skill_name=skill_name)
         return f"{catalog}\nsecret (copy now; shown only once): {plaintext_secret}{endpoint_segment}"
 
-    wake_schedule_create_desc = (
-        "Give this conversation an address that other systems can send events to. Each event "
+    webhook_subscription_create.description = (
+        "Give yourself an address that other systems can send events to. It lives in a wake "
+        "conversation, and each event starts a new conversation with task_prompt_template filled in.\n"
+        if wake_conversations is not None
+        else "Give this conversation an address that other systems can send events to. Each event "
         "wakes you with task_prompt_template filled in.\n"
-        "Returns [webhook:<id>] and its secret. The secret is shown only once: copy it."
-    )
-    webhook_subscription_create.description = wake_schedule_create_desc
+    ) + "Returns [webhook:<id>] and its secret. The secret is shown only once: copy it."
     return [webhook_subscription_create]
+
+
+async def _persist_subscription(
+    collection: WebhookSubscriptionCollection,
+    data: dict[str, Any],
+    wake_conversations: WakeConversations | None,
+    *,
+    parent_conversation_id: UUID,
+    name: str | None,
+) -> Any:
+    """Insert a subscription, making its wake conversation in the same transaction when wanted.
+
+    :param collection: three-tier subscriptions collection
+    :ptype collection: WebhookSubscriptionCollection
+    :param data: the new row; ``conversation_id`` is set here when a wake
+        conversation is made
+    :ptype data: dict[str, Any]
+    :param wake_conversations: the hooks, when a new wake conversation is wanted
+    :ptype wake_conversations: WakeConversations | None
+    :param parent_conversation_id: the caller's conversation, the new one's parent
+    :ptype parent_conversation_id: UUID
+    :param name: the subscription's name
+    :ptype name: str | None
+    :return: the persisted subscription entity
+    :rtype: WebhookSubscriptionEntity
+    """
+    if wake_conversations is None:
+        entity = collection.create(data)
+        await collection.save_entity(entity)
+        return entity
+    pool = collection.l3_pool
+    if pool is None:
+        raise RuntimeError("the subscription collection has no database to write to")
+    async with pool.acquire() as conn, conn.transaction():
+        row = dict(data)
+        row["conversation_id"] = await wake_conversations.create(
+            parent_conversation_id=parent_conversation_id,
+            user_id=row["user_id"],
+            agent_id=row["agent_id"],
+            name=name,
+            conn=conn,
+        )
+        entity = collection.create(row)
+        await collection.save_entity(entity, conn=conn)
+    return entity
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +517,6 @@ def load_webhook_subscription_create_tool(
 
 def load_webhook_subscription_update_tool(
     *,
-    conversation_id: UUID,
     user_id: UUID,
     agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
@@ -448,8 +527,6 @@ def load_webhook_subscription_update_tool(
     Cannot change ``secret_ciphertext`` -- use
     :func:`load_webhook_subscription_rotate_secret_tool` for that.
 
-    :param conversation_id: caller's conversation UUID
-    :ptype conversation_id: UUID
     :param user_id: caller's user UUID
     :ptype user_id: UUID
     :param agent_id: caller's agent UUID
@@ -470,7 +547,6 @@ def load_webhook_subscription_update_tool(
         task_prompt_template: str | None = None,
         default_skill_id: str | None = None,
         detach_default_skill: bool = False,
-        execution_mode: Literal["inline", "spawn"] | None = None,
         allowed_source_pattern: str | None = None,
         clear_allowed_source_pattern: bool = False,
         rate_limit_per_minute: int | None = None,
@@ -502,8 +578,8 @@ def load_webhook_subscription_update_tool(
                 f"invalid subscription_id {subscription_id!r}",
             )
 
-        entity = await subscriptions_collection.get((conversation_id, parsed))
-        if entity is None or entity.user_id != user_id:
+        entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
             return _tool_error("webhook_subscription_update", "subscription not found")
 
         validation_errors: list[str | None] = [
@@ -515,12 +591,6 @@ def load_webhook_subscription_update_tool(
         for err in validation_errors:
             if err is not None:
                 return _tool_error("webhook_subscription_update", err)
-
-        if execution_mode is not None and execution_mode not in _VALID_EXECUTION_MODES:
-            return _tool_error(
-                "webhook_subscription_update",
-                f"execution_mode must be 'inline' or 'spawn'; got {execution_mode!r}",
-            )
 
         # default_skill_id handling via explicit attach/detach booleans.
         if detach_default_skill:
@@ -557,8 +627,6 @@ def load_webhook_subscription_update_tool(
             entity.name = name
         if task_prompt_template is not None:
             entity.task_prompt_template = task_prompt_template
-        if execution_mode is not None:
-            entity.execution_mode = execution_mode
         if clear_allowed_source_pattern:
             entity.allowed_source_pattern = None
         elif allowed_source_pattern is not None:
@@ -599,28 +667,26 @@ def load_webhook_subscription_update_tool(
 
 def load_webhook_subscription_list_tool(
     *,
-    conversation_id: UUID,
     user_id: UUID,
     agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
     registry: WakeRegistryClient,
 ) -> list[BaseTool]:
-    """Build a ``webhook_subscription_list`` tool scoped to the conversation."""
+    """Build a ``webhook_subscription_list`` tool listing the agent's subscriptions in every conversation."""
 
     class _ListInput(BaseModel):
         """No-arg list."""
 
     @tool("webhook_subscription_list", args_schema=_ListInput)
     async def webhook_subscription_list() -> str:
-        """List inbound webhook subscriptions for this conversation."""
+        """List your inbound webhook subscriptions."""
         try:
-            rows = await subscriptions_collection.list_for_conversation(conversation_id)
+            visible = await subscriptions_collection.list_for_agent(agent_id)
         except Exception as exc:  # noqa: BLE001
             return _tool_error("webhook_subscription_list", f"list failed: {exc}")
 
-        visible = [row for row in rows if row.user_id == user_id]
         if not visible:
-            return "No webhook subscriptions in this conversation."
+            return "You have no webhook subscriptions."
 
         lines: list[str] = [f"Found {len(visible)} subscriptions:"]
         for entity in visible:
@@ -637,7 +703,9 @@ def load_webhook_subscription_list_tool(
             lines.append("- " + _format_subscription_line(entity, skill_name=skill_name))
         return "\n".join(lines)
 
-    webhook_subscription_list.description = "List the webhook subscriptions in this conversation: id, name and status."
+    webhook_subscription_list.description = (
+        "List your webhook subscriptions, in every conversation: id, name, status and the conversation each lives in."
+    )
     return [webhook_subscription_list]
 
 
@@ -648,8 +716,7 @@ def load_webhook_subscription_list_tool(
 
 def load_webhook_subscription_pause_tool(
     *,
-    conversation_id: UUID,
-    user_id: UUID,
+    agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_pause`` tool (status -> 'paused')."""
@@ -663,11 +730,11 @@ def load_webhook_subscription_pause_tool(
                 "webhook_subscription_pause",
                 f"invalid subscription_id {subscription_id!r}",
             )
-        entity = await subscriptions_collection.get((conversation_id, parsed))
-        if entity is None or entity.user_id != user_id:
+        entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
             return _tool_error("webhook_subscription_pause", "subscription not found")
         try:
-            await subscriptions_collection.pause(conversation_id, parsed)
+            await subscriptions_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             return _tool_error("webhook_subscription_pause", f"persist failed: {exc}")
         return f"Paused [webhook:{parsed}]."
@@ -680,8 +747,7 @@ def load_webhook_subscription_pause_tool(
 
 def load_webhook_subscription_resume_tool(
     *,
-    conversation_id: UUID,
-    user_id: UUID,
+    agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_resume`` tool (status -> 'active')."""
@@ -695,11 +761,11 @@ def load_webhook_subscription_resume_tool(
                 "webhook_subscription_resume",
                 f"invalid subscription_id {subscription_id!r}",
             )
-        entity = await subscriptions_collection.get((conversation_id, parsed))
-        if entity is None or entity.user_id != user_id:
+        entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
             return _tool_error("webhook_subscription_resume", "subscription not found")
         try:
-            await subscriptions_collection.resume(conversation_id, parsed)
+            await subscriptions_collection.resume(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             return _tool_error("webhook_subscription_resume", f"persist failed: {exc}")
         return f"Resumed [webhook:{parsed}]."
@@ -710,8 +776,7 @@ def load_webhook_subscription_resume_tool(
 
 def load_webhook_subscription_delete_tool(
     *,
-    conversation_id: UUID,
-    user_id: UUID,
+    agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_delete`` tool (hard delete)."""
@@ -725,11 +790,11 @@ def load_webhook_subscription_delete_tool(
                 "webhook_subscription_delete",
                 f"invalid subscription_id {subscription_id!r}",
             )
-        entity = await subscriptions_collection.get((conversation_id, parsed))
-        if entity is None or entity.user_id != user_id:
+        entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
             return _tool_error("webhook_subscription_delete", "subscription not found")
         try:
-            await subscriptions_collection.delete((conversation_id, parsed))
+            await subscriptions_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
             return _tool_error("webhook_subscription_delete", f"persist failed: {exc}")
         return f"Deleted [webhook:{parsed}] ({entity.name or 'untitled'})."
@@ -745,8 +810,7 @@ def load_webhook_subscription_delete_tool(
 
 def load_webhook_subscription_rotate_secret_tool(
     *,
-    conversation_id: UUID,
-    user_id: UUID,
+    agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
     encryption_service: EncryptionService,
 ) -> list[BaseTool]:
@@ -757,10 +821,8 @@ def load_webhook_subscription_rotate_secret_tool(
     irrecoverable after rotation -- inbound webhooks signed with the
     old key will start failing HMAC verification at the next request.
 
-    :param conversation_id: caller's conversation UUID
-    :ptype conversation_id: UUID
-    :param user_id: caller's user UUID
-    :ptype user_id: UUID
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
     :param subscriptions_collection: three-tier subscriptions collection
     :ptype subscriptions_collection: WebhookSubscriptionCollection
     :param encryption_service: consumer-supplied encryption service
@@ -778,8 +840,8 @@ def load_webhook_subscription_rotate_secret_tool(
                 "webhook_subscription_rotate_secret",
                 f"invalid subscription_id {subscription_id!r}",
             )
-        entity = await subscriptions_collection.get((conversation_id, parsed))
-        if entity is None or entity.user_id != user_id:
+        entity = await subscriptions_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
             return _tool_error(
                 "webhook_subscription_rotate_secret",
                 "subscription not found",
@@ -805,7 +867,7 @@ def load_webhook_subscription_rotate_secret_tool(
 
         try:
             await subscriptions_collection.rotate_secret(
-                conversation_id,
+                entity.conversation_id,
                 parsed,
                 new_ciphertext=bytes(ciphertext),
             )

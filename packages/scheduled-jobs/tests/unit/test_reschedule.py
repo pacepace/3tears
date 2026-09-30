@@ -1,8 +1,8 @@
 """Unit tests for :func:`threetears.scheduled_jobs.reschedule.compute_next_fire_at`.
 
-Pure-function tests, mirroring agent-wake's reschedule suite (the math is
-identical -- this asserts the generalization preserved every branch). One
-case per schedule_type; ``coalesce`` vs ``catch_up`` missed-fire policy;
+Pure-function tests. One case per schedule_type; ``coalesce`` vs
+``catch_up`` missed-fire policy; ``coalesce`` holding the schedule's own
+slots across late ticks and outages;
 DST transitions for ``daily_at``; overnight-window wrap for
 ``random_within_window``; terminal one-shot semantics; malformed config /
 unknown type errors.
@@ -390,3 +390,95 @@ def test_unknown_schedule_type_raises() -> None:
     """An unknown ``schedule_type`` is a programming error."""
     with pytest.raises(ValueError, match="unknown schedule_type"):
         compute_next_fire_at("lunar_cycle", {}, "coalesce", None, _utc(2026, 5, 22))
+
+
+class TestCoalesceKeepsTheSchedulesOwnSlots:
+    """``coalesce`` fires once for a backlog and moves to the next slot of
+    the schedule's own grid, never ``tick + step``.
+
+    Each case drives the function the way the tick engine does: ``now`` is
+    the (late) tick instant, ``current_fire_at`` the claimed row's
+    ``next_fire_at``, and ``last_fired_at`` stamped to ``now`` on claim.
+    """
+
+    def test_late_ticks_do_not_drift_an_interval_job(self) -> None:
+        """Every tick lands late by a different amount; after 24 fires the
+        24th occurrence is exactly ``start + 24 * interval``."""
+        step = timedelta(hours=1)
+        config = {"seconds": int(step.total_seconds())}
+        start = _utc(2026, 5, 22, 0, 0)
+        rng = random.Random(20260522)
+        next_fire = compute_next_fire_at("interval", config, "coalesce", None, start)
+        assert next_fire == start + step
+        fired: list[datetime] = []
+        for _ in range(24):
+            assert next_fire is not None
+            tick = next_fire + timedelta(seconds=rng.randint(1, 50 * 60))
+            fired.append(next_fire)
+            next_fire = compute_next_fire_at("interval", config, "coalesce", tick, tick, next_fire)
+        assert fired == [start + step * k for k in range(1, 25)]
+        assert fired[23] == start + step * 24
+        assert next_fire == start + step * 25
+
+    def test_hourly_job_after_ten_hour_gap_fires_once_then_next_whole_slot(self) -> None:
+        """Due at 10:00, the scheduler is down until 20:17: one fire, and the
+        next is 21:00, the schedule's next slot -- not 21:17, and not the
+        ten missed slots in turn."""
+        due = _utc(2026, 5, 22, 10, 0)
+        now = datetime(2026, 5, 22, 20, 17, 42, tzinfo=UTC)
+        result = compute_next_fire_at("interval", {"seconds": 3600}, "coalesce", now, now, due)
+        assert result == _utc(2026, 5, 22, 21, 0)
+        # one fire: the new next_fire_at is no longer due at the same tick
+        assert result is not None
+        assert result > now
+
+    def test_every_n_hours_after_gap_lands_on_its_own_grid(self) -> None:
+        """A 3-hour job due at 04:00, next tick at 15:05: slots are 07, 10,
+        13, 16 -- the next is 16:00, not 18:05."""
+        result = compute_next_fire_at(
+            "every_n_hours",
+            {"n": 3},
+            "coalesce",
+            _utc(2026, 5, 22, 15, 5),
+            _utc(2026, 5, 22, 15, 5),
+            _utc(2026, 5, 22, 4, 0),
+        )
+        assert result == _utc(2026, 5, 22, 16, 0)
+
+    def test_tick_on_a_slot_boundary_moves_one_whole_step(self) -> None:
+        """A tick landing exactly on a later slot fires once and takes the
+        slot after it; a slot equal to ``now`` is not "in the future"."""
+        due = _utc(2026, 5, 22, 10, 0)
+        now = _utc(2026, 5, 22, 13, 0)
+        result = compute_next_fire_at("interval", {"seconds": 3600}, "coalesce", now, now, due)
+        assert result == _utc(2026, 5, 22, 14, 0)
+
+    def test_on_time_tick_steps_exactly_one_interval(self) -> None:
+        due = _utc(2026, 5, 22, 10, 0)
+        result = compute_next_fire_at("interval", {"seconds": 1800}, "coalesce", due, due, due)
+        assert result == _utc(2026, 5, 22, 10, 30)
+
+    def test_daily_at_after_gap_lands_on_its_own_slot(self) -> None:
+        """A 09:00 daily job down for three days, ticked at 14:20: next is
+        tomorrow 09:00."""
+        result = compute_next_fire_at(
+            "daily_at",
+            {"hour": 9, "minute": 0, "tz": "UTC"},
+            "coalesce",
+            _utc(2026, 5, 22, 14, 20),
+            _utc(2026, 5, 22, 14, 20),
+            _utc(2026, 5, 19, 9, 0),
+        )
+        assert result == _utc(2026, 5, 23, 9, 0)
+
+    def test_cron_after_gap_lands_on_its_own_slot(self) -> None:
+        """A three-hourly cron due at 03:00, ticked at 13:40: next is 15:00."""
+        result = compute_next_fire_at(
+            "cron",
+            {"expr": "0 */3 * * *"},
+            "coalesce",
+            _utc(2026, 5, 22, 13, 40),
+            _utc(2026, 5, 22, 13, 40),
+            _utc(2026, 5, 22, 3, 0),
+        )
+        assert result == _utc(2026, 5, 22, 15, 0)

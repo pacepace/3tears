@@ -246,7 +246,12 @@ class WakeScheduleEntity(BaseEntity):
 
     @property
     def execution_mode(self) -> str:
-        """Return the ``execution_mode`` enum value (``'inline'`` | ``'spawn'``)."""
+        """Return the ``execution_mode`` enum value.
+
+        ``'spawn'`` for every row written since v007: each fire starts a new
+        conversation. ``'inline'`` survives only on older rows, until their
+        consumer moves them.
+        """
         value: str = self._get_raw("execution_mode")
         return value
 
@@ -336,13 +341,29 @@ class WakeScheduleEntity(BaseEntity):
         BaseEntity.__setattr__(self, "include_conversation_history", value)
 
     @property
+    def protected(self) -> bool:
+        """Whether this wake is protected.
+
+        Set when the wake is created and never changed. A protected wake
+        cannot be deleted, paused, expired or retyped; the table's trigger
+        refuses it, so no code path can forget to. Its schedule changes
+        only through :func:`~threetears.agent.wake.protected.update_protected`,
+        and it is deleted only through
+        :func:`~threetears.agent.wake.protected.delete_protected`, which
+        exists for deleting its agent. Rows cached before v007 carry no
+        value and read as ``False``, which is what v007 gave them.
+        """
+        value = self._get_raw("protected")
+        return bool(value)
+
+    @property
     def context_from_schedule_id(self) -> UUID | None:
         """Return the optional context-source schedule id.
 
-        Single-hop, same-conversation only (PLACEMENT §1.6 lock). Cycle
-        detection lives in shard 04 (agent-tools layer). ``ON DELETE
-        SET NULL`` on the self-FK so deleting the context source
-        leaves the dependent schedule active but unbound.
+        Single-hop, and the source may be any wake of the same agent, in
+        any of its conversations. Cycle detection lives in the agent-tools
+        layer. ``ON DELETE SET NULL`` on the self-FK so deleting the
+        context source leaves the dependent schedule active but unbound.
         """
         value = self._get_raw("context_from_schedule_id")
         if value is None:
@@ -384,11 +405,11 @@ class WakeFireEntity(BaseEntity):
     column ``conversation_id``. One row per wake fire (scheduled or
     webhook-driven).
 
-    Lifecycle: a fire row starts in ``status='fired'`` /
-    ``'fired_silent'`` / ``'yielded'`` / ``'skipped_*'`` / ``'failed'``
-    -- the dispatcher computes the terminal status once and writes
-    once. The schema does NOT model a separate ``'dispatching'``
-    transient state because the row is only inserted post-decision.
+    Lifecycle: a fire row is inserted as ``'dispatching'`` when its
+    schedule is claimed (or its webhook accepted), and finalized once to
+    ``'fired'`` / ``'fired_silent'`` / ``'yielded'`` / ``'skipped_*'`` /
+    ``'failed'``. A finalize changes only a row still ``'dispatching'``,
+    so a fire the reaper has already failed stays failed.
 
     ``schedule_id`` and ``webhook_subscription_id`` are exclusive-OR
     (CHECK constraint): exactly one is non-null. ``conversation_id`` is
@@ -476,6 +497,20 @@ class WakeFireEntity(BaseEntity):
     def status(self, value: str) -> None:
         """Set the status (validated by DB CHECK)."""
         BaseEntity.__setattr__(self, "status", value)
+
+    @property
+    def started_conversation_id(self) -> UUID | None:
+        """The conversation this fire started, or ``None``.
+
+        Set by :meth:`WakeFireCollection.link_started_conversation` in the
+        transaction that creates that conversation, before the model runs.
+        ``None`` when the consumer supplies no conversation hook, when the
+        fire was skipped, or on rows written before v007.
+        """
+        value = self._get_raw("started_conversation_id")
+        if value is None:
+            return None
+        return _as_uuid(value)
 
     @property
     def display_suppressed(self) -> bool:
@@ -680,7 +715,12 @@ class WebhookSubscriptionEntity(BaseEntity):
 
     @property
     def execution_mode(self) -> str:
-        """Return the ``execution_mode`` enum value (``'inline'`` | ``'spawn'``)."""
+        """Return the ``execution_mode`` enum value.
+
+        ``'spawn'`` for every row written since v007: each fire starts a new
+        conversation. ``'inline'`` survives only on older rows, until their
+        consumer moves them.
+        """
         value: str = self._get_raw("execution_mode")
         return value
 

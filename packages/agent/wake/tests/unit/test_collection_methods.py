@@ -98,7 +98,8 @@ class TestScheduleInsertParams:
         }
         params = _schedule_insert_params(data)
         assert params[_SCHEDULE_INSERT_COLUMNS.index("status")] == "active"
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("execution_mode")] == "inline"
+        assert params[_SCHEDULE_INSERT_COLUMNS.index("execution_mode")] == "spawn"
+        assert params[_SCHEDULE_INSERT_COLUMNS.index("protected")] is False
         assert params[_SCHEDULE_INSERT_COLUMNS.index("missed_fire_policy")] == "coalesce"
         assert params[_SCHEDULE_INSERT_COLUMNS.index("schedule_config")] == {}
         assert params[_SCHEDULE_INSERT_COLUMNS.index("skill_id")] is None
@@ -160,6 +161,20 @@ class TestFireInsertParams:
         params = _fire_insert_params(data)
         assert params[_FIRE_INSERT_COLUMNS.index("display_suppressed")] is False
 
+    def test_a_missing_protected_flag_binds_false(self) -> None:
+        """a cached row with no flag (written before v007, or never read back) upserts as unprotected."""
+        data = {
+            "conversation_id": _new_uuid(),
+            "schedule_id": _new_uuid(),
+            "user_id": _new_uuid(),
+            "agent_id": _new_uuid(),
+            "schedule_type": "interval",
+            "protected": None,
+            "date_created": datetime.now(UTC),
+            "date_updated": datetime.now(UTC),
+        }
+        assert _schedule_insert_params(data)[_SCHEDULE_INSERT_COLUMNS.index("protected")] is False
+
 
 class TestSubscriptionInsertParams:
     """``_subscription_insert_params`` preserves column order + defaults."""
@@ -209,7 +224,7 @@ class TestSubscriptionInsertParams:
             "date_updated": datetime.now(UTC),
         }
         params = _subscription_insert_params(data)
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("execution_mode")] == "inline"
+        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("execution_mode")] == "spawn"
         assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("verification_scheme")] == "generic_hmac_sha256"
         assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("status")] == "active"
 

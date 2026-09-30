@@ -1,4 +1,4 @@
-"""Wake rate-limit helpers (per-conv + per-user) + active-schedule cap.
+"""Wake fire limits (per wake + per agent, or the older per-conv + per-user) + active-schedule cap.
 
 Both helpers are pure functions over the asyncpg pool + a
 :class:`WakeConfig` instance the consumer supplies. Pre-computed
@@ -30,6 +30,7 @@ from uuid import UUID
 from threetears.observe import get_logger
 
 from threetears.agent.wake.config import WakeConfig
+from threetears.agent.wake.types import FireLimits
 
 if TYPE_CHECKING:
     from threetears.agent.wake.collections import WakeScheduleCollection
@@ -40,50 +41,83 @@ __all__ = [
     "RATE_LIMIT_WINDOW_HOURS",
     "ScheduleCapExceeded",
     "RateLimitScope",
+    "WakeConversationMaker",
     "check_active_schedule_cap",
+    "check_fire_limits",
     "check_rate_limit",
     "create_schedule_serialized",
     "resume_schedule_serialized",
 ]
 
 
-# Active-schedule COUNT executed INSIDE the per-conversation advisory
-# lock (so the count + insert serialize). Identical predicate to
-# :meth:`WakeScheduleCollection.count_active_for_conversation`, but bound
-# to the caller's transaction connection rather than the collection's
-# pool -- the lock + count + insert MUST share one connection / txn for
-# the cap to hold under concurrency.
-_COUNT_ACTIVE_SQL = "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active'"
-
-
-# Active-schedule COUNT for the resume/activate path, EXCLUDING the
-# schedule being (re)activated. Excluding the target means an idempotent
-# replay (resuming an already-active schedule) cannot self-reject at
-# exactly cap -- the target's own row never counts against the cap it is
-# trying to (re)join. A genuinely-paused target is also excluded, which
-# is correct: the cap counts OTHER active schedules, then this one makes
-# it ``other + 1 <= cap`` iff ``other < cap``.
-_COUNT_ACTIVE_EXCLUDING_SQL = (
-    "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active' AND schedule_id != $2"
+# An agent's unprotected active schedules, across all its conversations,
+# counted INSIDE the per-agent advisory lock so the count and the insert
+# serialize. The lock + count + insert MUST share one connection / txn for
+# the cap to hold under concurrency. Protected wakes are not counted: they
+# exist for the agent's own sake and must never crowd out, or be refused by,
+# the cap.
+_COUNT_ACTIVE_SQL = (
+    "SELECT COUNT(*) FROM agent_wake_schedules WHERE agent_id = $1 AND status = 'active' AND NOT protected"
 )
 
 
-# Per-conversation advisory lock taken for the transaction's lifetime.
-# ``hashtext`` maps the conversation_id text to an int4; the ``::bigint``
-# cast selects the single-argument ``pg_advisory_xact_lock(bigint)`` form.
-# The lock auto-releases at COMMIT/ROLLBACK (xact-scoped), so no explicit
-# unlock is needed and a crashed/rolled-back create never strands the lock.
+# The same count for the resume path, EXCLUDING the schedule being
+# (re)activated, so re-resuming an already-active schedule cannot refuse
+# itself at exactly cap: the cap counts OTHER active schedules, then this one
+# makes it ``other + 1 <= cap`` iff ``other < cap``.
+_COUNT_ACTIVE_EXCLUDING_SQL = (
+    "SELECT COUNT(*) FROM agent_wake_schedules "
+    "WHERE agent_id = $1 AND status = 'active' AND NOT protected AND schedule_id != $2"
+)
+
+
+# Per-agent advisory lock taken for the transaction's lifetime. ``hashtext``
+# maps the agent_id text to an int4; the ``::bigint`` cast selects the
+# single-argument ``pg_advisory_xact_lock(bigint)`` form. It auto-releases at
+# COMMIT/ROLLBACK, so a crashed or rolled-back create never strands it.
 _ADVISORY_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)"
 
 
-# Which cap was hit by :func:`check_rate_limit`. ``None`` means
-# the fire may proceed; ``'conv'`` / ``'user'`` identify the per-conv
-# vs per-user cap so the caller can attach the scope to its log line
-# + Prometheus label. ``'webhook'`` is reserved for the webhook-side
-# per-subscription cap (enforced separately in
-# :mod:`threetears.agent.wake.webhook_adapter`) so the scope label set
-# stays bounded across both call sites.
-RateLimitScope = Literal["conv", "user", "webhook"]
+# Fires that ran, silent ones included, for one schedule / one webhook
+# subscription since a point in time. Both are keyed by the wake's own
+# conversation, the fire rows' partition.
+_COUNT_WAKE_FIRES_SQL = (
+    "SELECT COUNT(*) FROM wake_fires "
+    "WHERE conversation_id = $1 AND schedule_id = $2 AND actual_fired_at > $3 "
+    "AND status IN ('fired', 'fired_silent')"
+)
+_COUNT_SUBSCRIPTION_FIRES_SQL = (
+    "SELECT COUNT(*) FROM wake_fires "
+    "WHERE conversation_id = $1 AND webhook_subscription_id = $2 AND actual_fired_at > $3 "
+    "AND status IN ('fired', 'fired_silent')"
+)
+
+# Fires that ran for every wake and subscription of one agent, protected
+# wakes left out. The agent's wakes live in several conversations, so the
+# count joins the two source tables on the agent.
+_COUNT_AGENT_FIRES_SQL = (
+    "SELECT "
+    "(SELECT COUNT(*) FROM wake_fires wf "
+    " JOIN agent_wake_schedules ws ON wf.schedule_id = ws.schedule_id "
+    " WHERE ws.agent_id = $1 AND NOT ws.protected AND wf.actual_fired_at > $2 "
+    " AND wf.status IN ('fired', 'fired_silent')) "
+    "+ "
+    "(SELECT COUNT(*) FROM wake_fires wf "
+    " JOIN webhook_subscriptions ws ON wf.webhook_subscription_id = ws.subscription_id "
+    " WHERE ws.agent_id = $1 AND wf.actual_fired_at > $2 "
+    " AND wf.status IN ('fired', 'fired_silent')) "
+    "AS total"
+)
+
+
+# Which cap was hit. ``None`` means the fire may proceed.
+# :func:`check_fire_limits` answers ``'wake'`` / ``'agent'``; the older
+# :func:`check_rate_limit`, used when the consumer supplies no permit
+# callback, answers ``'conv'`` / ``'user'``. ``'webhook'`` is the webhook
+# receiver's own per-subscription-per-minute cap (enforced in
+# :mod:`threetears.agent.wake.webhook_adapter`). The set stays bounded
+# because it is a Prometheus label.
+RateLimitScope = Literal["wake", "agent", "conv", "user", "webhook"]
 
 
 log = get_logger(__name__)
@@ -211,58 +245,114 @@ async def check_rate_limit(
     return None
 
 
+async def check_fire_limits(
+    trigger: "WakeTrigger",
+    pool: Any,
+    limits: FireLimits,
+) -> RateLimitScope | None:
+    """Return the scope of the exceeded fire limit, or ``None`` if the fire may proceed.
+
+    The limits come from the consumer's :class:`~threetears.agent.wake.types.FirePermit`
+    for this fire. Fires that ran count, silent ones included, over the
+    trailing 24 hours:
+
+    - ``'wake'``: the fires of this wake (its schedule, or its webhook
+      subscription) against ``limits.per_wake``.
+    - ``'agent'``: the fires of every wake and subscription of the agent,
+      protected wakes left out, against ``limits.per_agent``.
+
+    A protected wake is not counted at all: this returns ``None`` for it
+    without a query. ``None`` pool returns ``None`` so unit tests without a
+    DB still exercise the call path.
+
+    :param trigger: the fire
+    :ptype trigger: WakeTrigger
+    :param pool: asyncpg-compatible pool (or ``None`` in unit tests)
+    :ptype pool: Any
+    :param limits: the agent's limits for this fire
+    :ptype limits: FireLimits
+    :return: ``'wake'`` or ``'agent'`` when that limit is reached, else ``None``
+    :rtype: RateLimitScope | None
+    """
+    if pool is None or trigger.protected:
+        return None
+    since = datetime.now(UTC) - timedelta(hours=RATE_LIMIT_WINDOW_HOURS)
+    # cache-bypass: aggregate COUNTs over a rolling window must read committed
+    # state at fire time; a cached count is a limit that silently over-fires.
+    if trigger.schedule_id is not None:
+        wake_count = await pool.fetchval(_COUNT_WAKE_FIRES_SQL, trigger.conversation_id, trigger.schedule_id, since)
+    else:
+        wake_count = await pool.fetchval(
+            _COUNT_SUBSCRIPTION_FIRES_SQL,
+            trigger.conversation_id,
+            trigger.webhook_subscription_id,
+            since,
+        )
+    if int(wake_count or 0) >= limits.per_wake:
+        _log_limit_reached(trigger, "wake", int(wake_count or 0), limits.per_wake)
+        return "wake"
+    agent_count = await pool.fetchval(_COUNT_AGENT_FIRES_SQL, trigger.agent_id, since)
+    if int(agent_count or 0) >= limits.per_agent:
+        _log_limit_reached(trigger, "agent", int(agent_count or 0), limits.per_agent)
+        return "agent"
+    return None
+
+
+def _log_limit_reached(trigger: "WakeTrigger", scope: RateLimitScope, count: int, cap: int) -> None:
+    """Log one reached fire limit with the fire's identity.
+
+    :param trigger: the fire
+    :ptype trigger: WakeTrigger
+    :param scope: which limit
+    :ptype scope: RateLimitScope
+    :param count: fires counted
+    :ptype count: int
+    :param cap: the limit
+    :ptype cap: int
+    """
+    log.info(
+        "rate-limit: fire limit reached",
+        extra={
+            "extra_data": {
+                "scope": scope,
+                "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
+                "agent_id": str(trigger.agent_id),
+                "conversation_id": str(trigger.conversation_id),
+                "fire_source": trigger.fire_source,
+                "count": count,
+                "cap": cap,
+                "window_hours": RATE_LIMIT_WINDOW_HOURS,
+            }
+        },
+    )
+
+
 async def check_active_schedule_cap(
     *,
-    conversation_id: UUID,
+    agent_id: UUID,
     cap: int,
     pool: Any | None = None,
     count_func: Callable[[], Awaitable[int]] | None = None,
 ) -> bool:
-    """Return ``True`` when the conversation is under its active-schedule cap.
+    """Return ``True`` when the agent is under its active-schedule cap.
 
-    Counts ``status='active'`` rows for ``conversation_id`` and
-    compares against ``cap`` (the default lives at
-    :data:`DEFAULT_MAX_SCHEDULES_PER_CONVERSATION` = 10 per PLACEMENT
-    §1.9; the consumer's :class:`WakeConfig` impl typically passes
-    ``config.max_schedules_per_conversation`` here). Returns ``False``
-    when at-or-over the cap.
+    Counts the agent's unprotected ``status='active'`` schedules across all
+    its conversations and compares against ``cap`` (the consumer's
+    :class:`WakeConfig` typically passes ``config.max_active_schedules_per_agent``).
+    This is the advisory check; the enforcing one is
+    :func:`create_schedule_serialized`, which counts under the agent's lock.
 
-    The single source of truth for the cap-check semantics lives in
-    this helper. ``wake_schedule_create`` calls it before INSERT (the
-    primary enforcement point) so future surfaces (a cleanup task that
-    re-asserts caps on user-initiated re-enables, say) share one rule.
-
-    Two count paths are supported so both call shapes can route through
-    the same enforcement:
-
-    - ``count_func`` (preferred for the tools layer): an async callable
-      returning the current count. Lets a caller that already owns a
-      :class:`WakeScheduleCollection` share the collection's tested
-      ``count_active_for_conversation`` method instead of duplicating
-      the SQL.
-    - ``pool`` (kept for direct-pool callers): runs the COUNT inline
-      against the pool.
-
-    When both are supplied, ``count_func`` wins. Supplying neither
-    returns ``True`` (parallels the ``pool=None`` short-circuit on
+    ``count_func`` wins over ``pool`` when both are supplied. Supplying
+    neither returns ``True`` (parallels the ``pool=None`` short-circuit on
     :func:`check_rate_limit`).
 
-    Why ``cap: int`` instead of ``config: WakeConfig``: callers that
-    already have an integer cap in hand (the tool factory closes over
-    ``max_schedules_per_conversation``) would otherwise have to build a
-    throwaway :class:`WakeConfig` shim to satisfy a single attribute
-    read. Taking the integer directly keeps the helper minimal; callers
-    holding a full :class:`WakeConfig` pass
-    ``config.max_schedules_per_conversation``.
-
-    :param conversation_id: conversation under test
-    :ptype conversation_id: UUID
-    :param cap: maximum allowed active schedules for the conversation
+    :param agent_id: the agent under test
+    :ptype agent_id: UUID
+    :param cap: maximum allowed active schedules for the agent
     :ptype cap: int
     :param pool: asyncpg-compatible pool (alternative to ``count_func``)
     :ptype pool: Any | None
     :param count_func: async callable returning the active count
-        (preferred when the caller already has a Collection handy)
     :ptype count_func: Callable[[], Awaitable[int]] | None
     :return: ``True`` if a new schedule may be created
     :rtype: bool
@@ -270,16 +360,9 @@ async def check_active_schedule_cap(
     if count_func is not None:
         count = int(await count_func())
     elif pool is not None:
-        # cache-bypass: aggregate COUNT not pk-addressable, and a cap read from cache is a cap
-        # that lets an extra schedule through. The Collection-routed path IS the preferred one
-        # and is the ``count_func`` branch above (callers pass
-        # WakeScheduleCollection.count_active_for_conversation); this branch exists only for
-        # callers holding a bare pool and no Collection, which is why it cannot route through
-        # one.
-        value = await pool.fetchval(
-            "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active'",
-            conversation_id,
-        )
+        # cache-bypass: aggregate COUNT not pk-addressable, and a cap read from
+        # cache is a cap that lets an extra schedule through.
+        value = await pool.fetchval(_COUNT_ACTIVE_SQL, agent_id)
         count = int(value or 0)
     else:
         return True
@@ -287,13 +370,7 @@ async def check_active_schedule_cap(
     if count >= cap:
         log.info(
             "rate-limit: active-schedule cap exceeded",
-            extra={
-                "extra_data": {
-                    "conversation_id": str(conversation_id),
-                    "count": count,
-                    "cap": cap,
-                }
-            },
+            extra={"extra_data": {"agent_id": str(agent_id), "count": count, "cap": cap}},
         )
         return False
     return True
@@ -302,193 +379,148 @@ async def check_active_schedule_cap(
 class ScheduleCapExceeded(Exception):
     """Raised by :func:`create_schedule_serialized` when the cap is hit.
 
-    Carries the conversation, the observed active count, and the cap so
-    both consumers (the agent ``wake_schedule_create`` tool and the
-    consumer's REST router) can render their own surface-appropriate error
-    (a ``[TOOL ERROR]`` string vs. an HTTP 400) without re-counting.
+    Carries the agent, the observed active count, and the cap so both
+    consumers (the agent ``wake_schedule_create`` tool and the consumer's
+    REST router) can render their own surface-appropriate error (a
+    ``[TOOL ERROR]`` string vs. an HTTP 400) without re-counting.
 
-    :ivar conversation_id: conversation whose cap was hit
+    :ivar agent_id: agent whose cap was hit
     :ivar count: active-schedule count observed under the lock
-    :ivar cap: the configured per-conversation cap
+    :ivar cap: the configured per-agent cap
     """
 
-    def __init__(self, *, conversation_id: UUID, count: int, cap: int) -> None:
-        self.conversation_id = conversation_id
+    def __init__(self, *, agent_id: UUID, count: int, cap: int) -> None:
+        self.agent_id = agent_id
         self.count = count
         self.cap = cap
         super().__init__(
-            f"active-schedule cap reached for conversation {conversation_id}: {count} >= {cap}",
+            f"active-schedule cap reached for agent {agent_id}: {count} >= {cap}",
         )
+
+
+# Makes the wake conversation a new schedule lives in, on the create
+# transaction's connection, and returns its id.
+WakeConversationMaker = Callable[[Any], Awaitable[UUID]]
 
 
 async def create_schedule_serialized(
     *,
     collection: WakeScheduleCollection,
-    entity: WakeScheduleEntity,
-    conversation_id: UUID,
+    data: dict[str, Any],
+    agent_id: UUID,
     cap: int,
     pool: Any,
-) -> None:
-    """Insert a wake schedule under a per-conversation advisory lock.
+    make_wake_conversation: WakeConversationMaker | None = None,
+) -> WakeScheduleEntity:
+    """Insert a wake schedule under a per-agent advisory lock.
 
-    Closes the check-then-insert TOCTOU race on the active-schedule cap
-    (PLACEMENT §1.9). Within a SINGLE transaction on one pooled
-    connection:
+    Closes the check-then-insert race on the active-schedule cap. Within a
+    SINGLE transaction on one pooled connection:
 
-    1. ``pg_advisory_xact_lock(hashtext(conversation_id::text))`` --
-       serializes every concurrent create for the SAME conversation;
-       creates for different conversations do not contend (distinct lock
-       keys). The lock is transaction-scoped, so it releases on
-       COMMIT/ROLLBACK with no explicit unlock.
-    2. Re-count ``status='active'`` rows for the conversation ON THE
-       SAME connection (so the count reflects rows committed by any
-       create that already released the lock).
-    3. Raise :class:`ScheduleCapExceeded` when ``count >= cap`` --
-       BEFORE the insert, so the cap holds exactly.
-    4. ``collection.save_entity(entity, conn=conn)`` -- the L3 INSERT
-       binds to the locked transaction; the L1/L2/invalidation tiers run
-       through the normal :meth:`save_entity` path.
+    1. ``pg_advisory_xact_lock(hashtext(agent_id::text))`` -- serializes
+       every concurrent create and resume for the SAME agent, whichever
+       conversation each targets; different agents do not contend. The lock
+       is transaction-scoped, so it releases on COMMIT/ROLLBACK.
+    2. Count the agent's unprotected active schedules ON THE SAME
+       connection, so the count reflects every create that already
+       released the lock.
+    3. Raise :class:`ScheduleCapExceeded` when ``count >= cap`` -- BEFORE
+       anything is written, so the cap holds exactly. A protected schedule
+       is not counted and is not refused.
+    4. When ``make_wake_conversation`` is given, make the schedule's wake
+       conversation on the same connection and put its id on the row, so a
+       refused or failed insert leaves no empty conversation.
+    5. ``collection.save_entity(entity, conn=conn)``.
 
-    Two concurrent creates against a full conversation thus serialize:
-    the first commits (releasing the lock), the second re-counts under
-    the lock, sees the cap, and raises. The cap can never be exceeded by
-    a race because the count + insert are atomic per conversation.
-
-    The single ``COUNT`` runs inside the lock rather than relying on a DB
-    trigger / CHECK constraint (which cannot express "count < cap" without
-    a subquery in the constraint, unsupported by PostgreSQL). The advisory
-    lock is the least-invasive race-proof primitive that needs no schema
-    change.
-
-    The caller owns entity construction (id, next_fire_at, skill ACL,
-    context_from validation all happen before this call) so the helper
-    stays agnostic of the create surface's validation order. Both the
-    agent tool and the REST router route their persist step through here.
+    The caller owns validation (schedule config, skill ACL, ``context_from``)
+    and builds ``data``; ``data["conversation_id"]`` is the wake
+    conversation to create into, and is replaced when
+    ``make_wake_conversation`` makes a new one.
 
     :param collection: three-tier wake-schedules collection
     :ptype collection: WakeScheduleCollection
-    :param entity: the fully-constructed (not-yet-persisted) schedule
-    :ptype entity: WakeScheduleEntity
-    :param conversation_id: partition column + advisory-lock key
-    :ptype conversation_id: UUID
-    :param cap: maximum allowed active schedules for the conversation
+    :param data: the new row, every column but a new wake conversation's id
+    :ptype data: dict[str, Any]
+    :param agent_id: the agent; the advisory-lock key and the cap's scope
+    :ptype agent_id: UUID
+    :param cap: maximum allowed active schedules for the agent
     :ptype cap: int
     :param pool: asyncpg-compatible pool exposing ``acquire()`` +
         per-connection ``transaction()`` / ``fetchval()`` / ``execute()``
     :ptype pool: Any
-    :return: nothing
-    :rtype: None
-    :raises ScheduleCapExceeded: when the conversation is at/over cap
+    :param make_wake_conversation: makes a new wake conversation on the
+        connection and returns its id; ``None`` creates into
+        ``data["conversation_id"]``
+    :ptype make_wake_conversation: WakeConversationMaker | None
+    :return: the persisted schedule
+    :rtype: WakeScheduleEntity
+    :raises ScheduleCapExceeded: when the agent is at/over cap
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                _ADVISORY_XACT_LOCK_SQL, str(conversation_id)
-            )  # convert at border: pg_advisory_xact_lock(hashtext($1)) text arg
-            value = await conn.fetchval(_COUNT_ACTIVE_SQL, conversation_id)
-            count = int(value or 0)
-            if count >= cap:
-                log.info(
-                    "rate-limit: active-schedule cap exceeded (serialized create)",
-                    extra={
-                        "extra_data": {
-                            "conversation_id": str(conversation_id),
-                            "count": count,
-                            "cap": cap,
-                        }
-                    },
-                )
-                raise ScheduleCapExceeded(
-                    conversation_id=conversation_id,
-                    count=count,
-                    cap=cap,
-                )
+            await _lock_agent(conn, agent_id)
+            if not data.get("protected", False):
+                await _refuse_at_cap(conn, _COUNT_ACTIVE_SQL, (agent_id,), agent_id=agent_id, cap=cap, action="create")
+            row = dict(data)
+            if make_wake_conversation is not None:
+                row["conversation_id"] = await make_wake_conversation(conn)
+            entity = collection.create(row)
             await collection.save_entity(entity, conn=conn)
+    return entity
 
 
 async def resume_schedule_serialized(
     *,
     collection: WakeScheduleCollection,
+    agent_id: UUID,
     conversation_id: UUID,
     schedule_id: UUID,
     next_fire_at: datetime,
     cap: int,
     pool: Any,
 ) -> None:
-    """Re-activate a schedule under a per-conversation advisory lock.
+    """Re-activate a schedule under the per-agent advisory lock.
 
-    The mirror of :func:`create_schedule_serialized` for transitions
-    INTO ``status='active'`` (the agent ``wake_schedule_resume`` tool and
-    the REST ``PATCH status=active``). Without this, a
-    pause -> create-to-fill -> resume sequence could push the active
-    count past the cap because the resume path never re-checked it
-    (PLACEMENT §1.9).
+    The mirror of :func:`create_schedule_serialized` for transitions INTO
+    ``status='active'``. Without it a pause -> create-to-fill -> resume
+    sequence could push the active count past the cap. Within a SINGLE
+    transaction: take the agent's lock, count the agent's other unprotected
+    active schedules (the target excluded, so re-resuming an active one
+    cannot refuse itself), raise :class:`ScheduleCapExceeded` at cap, then
+    flip the row with :meth:`WakeScheduleCollection.resume` on the same
+    connection.
 
-    Within a SINGLE transaction on one pooled connection:
-
-    1. ``pg_advisory_xact_lock(hashtext(conversation_id::text))`` --
-       serializes every concurrent create/resume for the SAME
-       conversation against the shared lock key (so a create and a resume
-       cannot both pass a stale count). Transaction-scoped: releases on
-       COMMIT/ROLLBACK.
-    2. Re-count ``status='active'`` rows for the conversation EXCLUDING
-       the target schedule, ON THE SAME connection. Excluding the target
-       makes an idempotent re-resume of an already-active schedule a
-       no-op-safe path instead of a spurious self-rejection at cap.
-    3. Raise :class:`ScheduleCapExceeded` when ``count >= cap`` -- BEFORE
-       the UPDATE, so re-activation can never exceed the cap.
-    4. ``collection.resume(..., conn=conn)`` -- the L3 UPDATE flips
-       paused -> active bound to the locked transaction.
-
-    The caller owns ``next_fire_at`` computation (the platform does not
-    own scheduling math) and any status/ownership pre-validation; this
-    helper only enforces the cap atomically and persists the flip.
+    The caller owns ``next_fire_at`` and the ownership check.
 
     :param collection: three-tier wake-schedules collection
     :ptype collection: WakeScheduleCollection
-    :param conversation_id: partition column + advisory-lock key
+    :param agent_id: the agent; lock key and cap scope
+    :ptype agent_id: UUID
+    :param conversation_id: the schedule's conversation (partition column)
     :ptype conversation_id: UUID
     :param schedule_id: schedule being re-activated (excluded from count)
     :ptype schedule_id: UUID
     :param next_fire_at: recomputed next fire instant for the resumed row
     :ptype next_fire_at: datetime
-    :param cap: maximum allowed active schedules for the conversation
+    :param cap: maximum allowed active schedules for the agent
     :ptype cap: int
-    :param pool: asyncpg-compatible pool exposing ``acquire()`` +
-        per-connection ``transaction()`` / ``fetchval()`` / ``execute()``
+    :param pool: asyncpg-compatible pool
     :ptype pool: Any
     :return: nothing
     :rtype: None
-    :raises ScheduleCapExceeded: when the conversation is at/over cap
+    :raises ScheduleCapExceeded: when the agent is at/over cap
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                _ADVISORY_XACT_LOCK_SQL, str(conversation_id)
-            )  # convert at border: pg_advisory_xact_lock(hashtext($1)) text arg
-            value = await conn.fetchval(
+            await _lock_agent(conn, agent_id)
+            await _refuse_at_cap(
+                conn,
                 _COUNT_ACTIVE_EXCLUDING_SQL,
-                conversation_id,
-                schedule_id,
+                (agent_id, schedule_id),
+                agent_id=agent_id,
+                cap=cap,
+                action="resume",
             )
-            count = int(value or 0)
-            if count >= cap:
-                log.info(
-                    "rate-limit: active-schedule cap exceeded (serialized resume)",
-                    extra={
-                        "extra_data": {
-                            "conversation_id": str(conversation_id),
-                            "schedule_id": str(schedule_id),  # convert at border: cap-exceeded log extra_data field
-                            "count": count,
-                            "cap": cap,
-                        }
-                    },
-                )
-                raise ScheduleCapExceeded(
-                    conversation_id=conversation_id,
-                    count=count,
-                    cap=cap,
-                )
             await collection.resume(
                 conversation_id,
                 schedule_id,
@@ -506,3 +538,50 @@ async def resume_schedule_serialized(
     # reflects the new ``status`` / ``next_fire_at`` onto its proxy via
     # field setters (which write through to L1) for the response; the
     # agent tool caller returns a string and re-reads on the next ``get``.
+
+
+async def _lock_agent(conn: Any, agent_id: UUID) -> None:
+    """Take the agent's transaction-scoped advisory lock.
+
+    :param conn: the transaction's connection
+    :ptype conn: Any
+    :param agent_id: the agent
+    :ptype agent_id: UUID
+    """
+    await conn.execute(
+        _ADVISORY_XACT_LOCK_SQL, str(agent_id)
+    )  # convert at border: pg_advisory_xact_lock(hashtext($1)) text arg
+
+
+async def _refuse_at_cap(
+    conn: Any,
+    sql: str,
+    args: tuple[Any, ...],
+    *,
+    agent_id: UUID,
+    cap: int,
+    action: str,
+) -> None:
+    """Count under the lock and raise when the agent is at its cap.
+
+    :param conn: the transaction's connection, holding the agent's lock
+    :ptype conn: Any
+    :param sql: the count to run
+    :ptype sql: str
+    :param args: its arguments
+    :ptype args: tuple[Any, ...]
+    :param agent_id: the agent
+    :ptype agent_id: UUID
+    :param cap: the cap
+    :ptype cap: int
+    :param action: ``'create'`` or ``'resume'``, for the log line
+    :ptype action: str
+    :raises ScheduleCapExceeded: when ``count >= cap``
+    """
+    count = int(await conn.fetchval(sql, *args) or 0)
+    if count >= cap:
+        log.info(
+            "rate-limit: active-schedule cap exceeded (serialized)",
+            extra={"extra_data": {"agent_id": str(agent_id), "action": action, "count": count, "cap": cap}},
+        )
+        raise ScheduleCapExceeded(agent_id=agent_id, count=count, cap=cap)

@@ -336,23 +336,13 @@ class TestAdmitCopy:
             is RefusalCode.OWNED_ELSEWHERE
         )
 
-    def test_an_unsigned_agent_scoped_copy_is_admitted_during_the_rollout(self) -> None:
-        """0.55.0 admits an unsigned agent's own copy -- still only where a signed one would be."""
+    @pytest.mark.parametrize("tool_name", ["threetears.calculator", "pentest.sqlmap"])
+    def test_an_unsigned_agent_scoped_copy_is_refused(self, tool_name: str) -> None:
+        """0.57.0 ended the rollout concession: an unverified publisher serves nobody, not even its own agent."""
         unsigned = self._standing(verified=False)
         assert (
-            admit_copy(
-                tool_name="threetears.calculator",
-                audience=CopyAudience.AGENT,
-                standing=unsigned,
-                provider_nodes=self._GRAPH,
-            )
-            is None
-        )
-        assert (
-            admit_copy(
-                tool_name="pentest.sqlmap", audience=CopyAudience.AGENT, standing=unsigned, provider_nodes=self._GRAPH
-            )
-            is RefusalCode.OWNED_ELSEWHERE
+            admit_copy(tool_name=tool_name, audience=CopyAudience.AGENT, standing=unsigned, provider_nodes=self._GRAPH)
+            is RefusalCode.UNVERIFIED_PUBLISHER
         )
 
     @pytest.mark.parametrize("audience", [CopyAudience.AGENT, CopyAudience.EVERYONE])

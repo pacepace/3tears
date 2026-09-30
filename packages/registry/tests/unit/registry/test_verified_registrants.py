@@ -322,28 +322,14 @@ class TestATokenlessManifestServesNobodyElse:
         assert catalog.get(_CALC) is None
 
     @pytest.mark.asyncio
-    async def test_an_unsigned_agent_manifest_registers_an_agent_scoped_copy(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """the 0.55.0 rollout: an older SDK's unsigned manifest keeps its own agent's tools.
-
-        Visible to that agent alone, and warned about ONCE per pod id so the rollout's progress
-        can be read off the registry log.
-        """
+    async def test_an_unsigned_agent_manifest_is_refused(self) -> None:
+        """0.57.0 ended the rollout concession: an agent registers signed, or not at all."""
         handler, catalog, nc = await _started(_default_directory())
-        with caplog.at_level(logging.WARNING, logger="threetears.registry.registration"):
-            first = await _register(handler, nc, _manifest(_A_POD, ("threetears.calculator", "A ONLY")))
-            await _register(handler, nc, _manifest(_A_POD, ("threetears.calculator", "A ONLY")))
+        reply = await _register(handler, nc, _manifest(_A_POD, ("threetears.calculator", "A ONLY")))
 
-        assert first.success is True
-        entry = catalog.get(_CALC)
-        assert entry is not None
-        assert entry.available_to(_AGENT_A) is True
-        assert entry.available_to(_AGENT_B) is False
-        assert entry.available_to(None) is False
-        unsigned = [r for r in caplog.records if "unsigned" in r.getMessage()]
-        assert len(unsigned) == 1
-        assert _A_POD in str(getattr(unsigned[0], "extra_data", {})) or _A_POD in unsigned[0].getMessage()
+        assert reply.success is False
+        assert reply.error_code == "UNVERIFIED_PUBLISHER"
+        assert catalog.get(_CALC) is None
 
 
 class TestAnAgentSignsWithItsOwnIdentity:
@@ -434,20 +420,19 @@ class TestARefusedToolWithdrawsOnlyItsPublishersCopy:
 
     @pytest.mark.asyncio
     async def test_an_unverified_refusal_withdraws_nothing(self) -> None:
-        """an unverified manifest cannot prove it IS the pod, so it cannot take that pod's copy.
+        """an unsigned manifest cannot prove it IS the pod, so it cannot take that pod's copy.
 
-        The same unsigned pod id is refused a tool it DOES hold a copy of (the graph has since
-        placed the name under somebody's node). A verified publisher would lose that copy; an
-        unverified one might be an impersonator, so the copy stays and only the refusal is told.
+        Agent A holds a signed copy. An unsigned manifest under A's pod id -- which might be an
+        impersonator -- is refused, and A's copy stays exactly as it was.
         """
-        directory = _Directory(agents={}, nodes=("tools.pentest",))
-        handler, catalog, nc = await _started(directory)
-        await _register(handler, nc, _manifest(_A_POD, ("threetears.calculator", "A")))
-        directory.set_nodes(("tools.pentest", "tools.threetears"))
+        handler, catalog, nc = await _started(_default_directory())
+        signed = await _register(handler, nc, _manifest(_A_POD, ("threetears.calculator", "A"), token="agent-a-token"))
+        assert signed.success is True
 
-        reply = await _register(handler, nc, _manifest(_A_POD, ("threetears.calculator", "A")))
+        reply = await _register(handler, nc, _manifest(_A_POD, ("threetears.calculator", "IMPOSTOR")))
 
-        assert [(r.name, r.code) for r in reply.refused_tools] == [("threetears.calculator", "OWNED_ELSEWHERE")]
+        assert reply.success is False
+        assert reply.error_code == "UNVERIFIED_PUBLISHER"
         assert _descriptions(catalog, _CALC, _A_POD) == ["A"]
 
 

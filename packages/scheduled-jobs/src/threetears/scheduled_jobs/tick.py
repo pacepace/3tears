@@ -453,9 +453,10 @@ async def _dispatch_one(
             missed_fire_policy=schedule.missed_fire_policy,
             last_fired_at=schedule.last_fired_at,
             now=tick_at,
-            # catch_up anchors on the occurrence being fired, NOT
-            # last_fired_at (the store stamps that to ``now`` on claim, so
-            # anchoring there collapses catch_up into coalesce).
+            # both policies anchor on the occurrence being fired, NOT
+            # last_fired_at (the store stamps that to ``now`` on claim):
+            # catch_up steps once past it, coalesce takes the first slot
+            # of its grid after the tick, so late ticks never drift it.
             current_fire_at=expected_next_fire,
         )
     new_status = "expired" if computed_next_fire is None else "active"

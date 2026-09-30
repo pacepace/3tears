@@ -131,6 +131,23 @@ def _qualify(table: str, schema: str | None) -> str:
     return result
 
 
+def _schema_literal(schema: str | None) -> str:
+    """
+    the schema a catalog lookup is limited to, as SQL.
+
+    agent schemas share a database and ``public`` is on every search path,
+    so a lookup by name alone can find another schema's object and skip
+    this schema's step.
+
+    :param schema: optional schema name
+    :ptype schema: str | None
+    :return: ``'<schema>'`` when supplied, else ``current_schema()``
+    :rtype: str
+    """
+    result = f"'{schema}'" if schema else "current_schema()"
+    return result
+
+
 def _backfill_replay_guard_clause(
     column: str,
     default: str | None,
@@ -281,8 +298,10 @@ async def add_check_constraint(
     :param expression: SQL boolean expression (without leading ``CHECK``)
     :ptype expression: str
     :param schema: optional schema name; when supplied, the ALTER TABLE
-        statement is schema-qualified and the existence probe
-        constrains by ``ns.nspname``
+        statement is schema-qualified. The existence probe is always
+        limited to one schema: this one, or ``current_schema()`` when it
+        is omitted, so another schema's constraint of the same name is
+        never mistaken for this table's
     :ptype schema: str | None
     :param if_not_exists: when true, wrap the ALTER in an existence
         probe so re-runs are no-ops; when false, the helper emits a
@@ -302,7 +321,6 @@ async def add_check_constraint(
         await store.execute(sql)
         return
 
-    schema_filter = f"\n           AND ns.nspname = '{schema}'" if schema else ""
     sql = f"""
 DO $$
 BEGIN
@@ -311,7 +329,8 @@ BEGIN
           JOIN pg_class cls ON cls.oid = pc.conrelid
           JOIN pg_namespace ns ON ns.oid = cls.relnamespace
          WHERE cls.relname = '{table}'
-           AND pc.conname = '{constraint_name}'{schema_filter}
+           AND pc.conname = '{constraint_name}'
+           AND ns.nspname = {_schema_literal(schema)}
     ) THEN
         ALTER TABLE {qualified}
           ADD CONSTRAINT {constraint_name} CHECK ({expression});
@@ -488,7 +507,8 @@ async def replace_check_constraint(
         ADD CONSTRAINT`` clause
     :ptype new_expression: str
     :param schema: optional schema name; when supplied, every emitted
-        statement is schema-qualified
+        statement is schema-qualified. The constraint lookups are always
+        limited to one schema: this one, or ``current_schema()``
     :ptype schema: str | None
     :param only_if_changed: when true (default), the compare-then-swap
         pattern is used; when false, an unconditional DROP + ADD is
@@ -515,8 +535,10 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_constraint pc
           JOIN pg_class cls ON cls.oid = pc.conrelid
+          JOIN pg_namespace ns ON ns.oid = cls.relnamespace
          WHERE cls.relname = '{table}'
            AND pc.conname = '{constraint_name}'
+           AND ns.nspname = {_schema_literal(schema)}
     ) THEN
         ALTER TABLE {qualified}
           DROP CONSTRAINT {constraint_name};
@@ -549,8 +571,10 @@ BEGIN
       INTO current_def
       FROM pg_constraint pc
       JOIN pg_class cls ON cls.oid = pc.conrelid
+      JOIN pg_namespace ns ON ns.oid = cls.relnamespace
      WHERE cls.relname = '{table}'
-       AND pc.conname = '{constraint_name}';
+       AND pc.conname = '{constraint_name}'
+       AND ns.nspname = {_schema_literal(schema)};
 
     IF current_def IS NOT NULL AND current_def = target_def THEN
         RETURN;
@@ -892,8 +916,12 @@ async def add_index(
     unique_clause = "UNIQUE " if unique else ""
     columns_csv = ", ".join(columns)
     where_clause = f" WHERE {where}" if where else ""
+    # By name within one schema, not ``to_regclass``: an unqualified name
+    # resolves through the search path, and ``public`` is on it.
     invalid_probe_sql = (
-        f"SELECT 1 FROM pg_index i WHERE i.indexrelid = to_regclass('{qualified_index}') AND NOT i.indisvalid"
+        "SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        f"WHERE c.relname = '{name}' AND n.nspname = {_schema_literal(schema)} AND NOT i.indisvalid"
     )
     sql = f"CREATE {unique_clause}INDEX IF NOT EXISTS {name} ON {qualified} ({columns_csv}){where_clause}"
     log.info(

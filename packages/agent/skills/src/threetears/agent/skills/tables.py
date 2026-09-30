@@ -24,7 +24,7 @@ construct the ``Table`` directly.
 
 **Drift protection.** A parallel hand-written DDL with no parity
 guarantee would be the embedded-DDL-drift smell. The factory output is
-pinned against the schema the canonical v001-v003 migrations produce by
+pinned against the schema the canonical v001-v004 migrations produce by
 ``tests/integration/test_sqlalchemy_table_parity.py``: it applies the
 migrations to one Postgres schema, emits each factory's ``CREATE
 TABLE`` into a second schema, and asserts the two are structurally
@@ -61,8 +61,15 @@ from sqlalchemy import (
     Boolean as SABoolean,
     DateTime as SADateTime,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
+
+from threetears.agent.skills.migrations.v004_add_tool_call_columns import (
+    ARGUMENTS_NEED_TOOL_CHECK,
+    ARGUMENTS_OBJECT_CHECK,
+    BODY_OR_TOOL_CHECK,
+    PAYLOAD_CHECK,
+)
 
 __all__ = [
     "agent_skill_invocations_table",
@@ -73,13 +80,16 @@ __all__ = [
 def agent_skills_table(metadata: MetaData) -> Table:
     """Register the ``agent_skills`` table on the given SA metadata.
 
-    Mirrors the canonical v001 migration DDL
-    (``migrations/v001_create_agent_skills.py``) exactly: composite
+    Mirrors the schema the canonical v001-v004 migrations produce
+    (``migrations/v001_create_agent_skills.py`` onward) exactly: composite
     primary key ``(agent_id, skill_id)``, standalone ``UNIQUE
     (skill_id)`` so cross-package FKs can reference the bare column, the
     three ``TEXT[]`` array columns, the trigger-maintained
-    ``search_vector`` TSVECTOR column, the two CHECK constraints
-    (``prompt_mode`` enum-by-app + the at-least-one-payload invariant),
+    ``search_vector`` TSVECTOR column, v004's ``tool`` / ``arguments``
+    columns, the CHECK constraints (``prompt_mode`` enum-by-app, the
+    at-least-one-payload invariant, and v004's never-both-body-and-tool,
+    arguments-need-a-tool and arguments-are-an-object rules, whose
+    expressions are imported from the migration so the two cannot differ),
     every NOT NULL DEFAULT, and the two btree indexes. v001's two GIN
     indexes (``search_vector``, ``tags``) are absent: v003 dropped them,
     because every predicate that could use them goes through
@@ -110,6 +120,8 @@ def agent_skills_table(metadata: MetaData) -> Table:
         Column("name", Text(), nullable=False),
         Column("summary", Text(), nullable=False),
         Column("body", Text(), nullable=True),
+        Column("tool", Text(), nullable=True),
+        Column("arguments", JSONB(), nullable=True),
         Column(
             "prompt_mode",
             Text(),
@@ -191,12 +203,10 @@ def agent_skills_table(metadata: MetaData) -> Table:
             "prompt_mode IN ('additive', 'replace')",
             name="agent_skills_prompt_mode_check",
         ),
-        CheckConstraint(
-            "body IS NOT NULL "
-            "OR array_length(tool_additions, 1) IS NOT NULL "
-            "OR array_length(tool_restrictions, 1) IS NOT NULL",
-            name="agent_skills_payload_check",
-        ),
+        CheckConstraint(PAYLOAD_CHECK[1], name=PAYLOAD_CHECK[0]),
+        CheckConstraint(BODY_OR_TOOL_CHECK[1], name=BODY_OR_TOOL_CHECK[0]),
+        CheckConstraint(ARGUMENTS_NEED_TOOL_CHECK[1], name=ARGUMENTS_NEED_TOOL_CHECK[0]),
+        CheckConstraint(ARGUMENTS_OBJECT_CHECK[1], name=ARGUMENTS_OBJECT_CHECK[0]),
         Index(
             "uq_skills_agent_user_name",
             "agent_id",
