@@ -90,7 +90,13 @@ class FakeKvBucket:
     fixtures exercise the same call shape production code uses.
     """
 
-    def __init__(self, bucket_name: str, ttl: timedelta | None = None, storage: str = "memory") -> None:
+    def __init__(
+        self,
+        bucket_name: str,
+        ttl: timedelta | None = None,
+        storage: str = "memory",
+        direct: bool | None = None,
+    ) -> None:
         """initialize empty fake bucket with zero revision counter.
 
         :param bucket_name: full bucket name (with namespace prefix)
@@ -108,12 +114,17 @@ class FakeKvBucket:
             state is not reliably readable by another replica -- and a double that cannot
             answer it hides the choice
         :ptype storage: str
+        :param direct: whether the bucket was opened with direct gets. Recorded and reported
+            by :attr:`direct` for the same reason: a pod granted ``DIRECT.GET`` on one key
+            and not ``STREAM.MSG.GET`` blocks on every read of a bucket opened without them
+        :ptype direct: bool | None
         :return: None
         :rtype: None
         """
         self._bucket_name = bucket_name
         self._ttl = ttl
         self._storage = storage
+        self._direct = direct
         self._entries: dict[str, _Entry] = {}
         # the revision of each deleted key's marker: its latest message once its value is gone.
         self._markers: dict[str, int] = {}
@@ -289,6 +300,15 @@ class FakeKvBucket:
         :rtype: str
         """
         return self._storage
+
+    @property
+    def direct(self) -> bool | None:
+        """whether this bucket was opened with direct gets; ``None`` means the caller left the default.
+
+        :return: the ``direct`` flag as the caller asked for it
+        :rtype: bool | None
+        """
+        return self._direct
 
     @property
     def name(self) -> str:
@@ -564,6 +584,7 @@ class FakeNatsClient:
         storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
+        direct: bool | None = None,
     ) -> FakeKvBucket:
         """return existing bucket or create one. idempotent.
 
@@ -580,6 +601,8 @@ class FakeNatsClient:
         :ptype create_if_missing: bool
         :param history: ignored by fake
         :ptype history: int
+        :param direct: recorded and reported by :attr:`FakeKvBucket.direct`; not applied
+        :ptype direct: bool | None
         :return: fake bucket
         :rtype: FakeKvBucket
         :raises KeyError: when ``create_if_missing=False`` and bucket absent
@@ -593,6 +616,7 @@ class FakeNatsClient:
                 bucket_name=name,
                 ttl=ttl if isinstance(ttl, timedelta) else None,
                 storage=storage,
+                direct=direct,
             )
             if self._bucket_age is not None:
                 # `wipe` is how a creation time is placed, and on a bucket with no entries it

@@ -1178,6 +1178,7 @@ class KvCapable(Protocol):
         storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
+        direct: bool | None = None,
     ) -> KvBucketLike: ...
 
 

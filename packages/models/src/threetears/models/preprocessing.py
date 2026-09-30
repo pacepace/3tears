@@ -272,7 +272,7 @@ def object_reference_block(object_id: UUID, mime_type: str) -> dict[str, str]:
     """
     return {
         "type": OBJECT_REFERENCE_BLOCK_TYPE,
-        "object_id": str(object_id),
+        "object_id": str(object_id),  # convert at border: JSON content block sent on the gateway wire
         "mime_type": mime_type,
     }
 
