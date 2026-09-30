@@ -25,6 +25,7 @@ from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
     DATA_VERSIONS_BUCKET_SUFFIX,
     MAX_COORDINATION_BUCKETS,
+    AgentTableGrant,
     JsCapability,
     JsResource,
     JsResourceKind,
@@ -1625,3 +1626,185 @@ class TestDataVersionKeyGrant:
 
     def test_the_key_grant_is_never_a_declaring_capability(self) -> None:
         assert not capability_declares(JsCapability.KV_KEY_READ)
+
+
+class TestAgentTableGrants:
+    """a tool pod granted an agent's data reaches that agent's L2 keys for exactly the granted tables.
+
+    The owner stack a tool pod builds for an agent's data keys every entry
+    ``{owner_scope}.{table}.{body}`` in the shared collections bucket, where ``owner_scope`` is the
+    AGENT's own scope -- so the agent's L1 sees the pod's writes. The pod's own ``{pod_scope}.>``
+    grant matches none of those keys, and an ungranted JetStream call blocks to its deadline rather
+    than raising. So each granted table becomes a grant narrowed to ``{owner_scope}.{table}.>``:
+    the direct read always, the ``$KV.`` publish only for a write grant, and nothing that reaches
+    another table, another owner, or the whole bucket.
+    """
+
+    _OWNER = uuid.UUID(_AGENT_A)
+    _OTHER_OWNER = uuid.UUID(_AGENT_B)
+    _STREAM = f"KV_{_COLLECTIONS}"
+
+    def _owner_scope(self, owner: uuid.UUID) -> str:
+        return kv_key_scope_for(Principal.AGENT_POD, agent_id=owner)
+
+    def _permissions(self, *grants: AgentTableGrant) -> PrincipalPermissions:
+        return build_permissions(Principal.TOOL_POD, pod_id=_POD_1, agent_table_grants=grants)
+
+    def _read_subject(self, owner: uuid.UUID, table: str) -> str:
+        return f"$JS.API.DIRECT.GET.{self._STREAM}.$KV.{_COLLECTIONS}.{self._owner_scope(owner)}.{table}.row-1"
+
+    def _write_subject(self, owner: uuid.UUID, table: str) -> str:
+        return f"$KV.{_COLLECTIONS}.{self._owner_scope(owner)}.{table}.row-1"
+
+    def test_the_owner_scope_is_the_agents_own_scope(self) -> None:
+        """one derivation: the scope the SDK's owner stack keys on, from the same function."""
+        grant = AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=False)
+        assert grant.owner_scope == kv_key_scope_for(Principal.AGENT_POD, agent_id=self._OWNER)
+
+    def test_a_read_grant_mints_exactly_the_direct_read_of_that_table(self) -> None:
+        scope = self._owner_scope(self._OWNER)
+        minted = _minted_publish(
+            self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=False))
+        )
+        owner_subjects = [s for s in minted if scope in s]
+        assert owner_subjects == [f"$JS.API.DIRECT.GET.{self._STREAM}.$KV.{_COLLECTIONS}.{scope}.responses.>"]
+
+    def test_a_write_grant_mints_the_direct_read_and_the_kv_publish_of_that_table(self) -> None:
+        scope = self._owner_scope(self._OWNER)
+        minted = _minted_publish(
+            self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True))
+        )
+        owner_subjects = sorted(s for s in minted if scope in s)
+        assert owner_subjects == sorted(
+            [
+                f"$KV.{_COLLECTIONS}.{scope}.responses.>",
+                f"$JS.API.DIRECT.GET.{self._STREAM}.$KV.{_COLLECTIONS}.{scope}.responses.>",
+            ]
+        )
+
+    def test_the_bind_is_minted_once_however_many_tables_are_granted(self) -> None:
+        """the pod's own grant already binds the stream; a table grant adds no second copy."""
+        minted = _minted_publish(
+            self._permissions(
+                AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True),
+                AgentTableGrant(owner_agent_id=self._OWNER, table="sessions", writable=False),
+            )
+        )
+        assert minted.count(f"$JS.API.STREAM.INFO.{self._STREAM}") == 1
+
+    def test_a_read_grant_cannot_write(self) -> None:
+        allow = _minted_publish(
+            self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=False))
+        )
+        assert any(_subject_matches(p, self._read_subject(self._OWNER, "responses")) for p in allow)
+        assert not any(_subject_matches(p, self._write_subject(self._OWNER, "responses")) for p in allow)
+
+    def test_a_write_grant_reads_and_writes_its_table(self) -> None:
+        allow = _minted_publish(
+            self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True))
+        )
+        assert any(_subject_matches(p, self._read_subject(self._OWNER, "responses")) for p in allow)
+        assert any(_subject_matches(p, self._write_subject(self._OWNER, "responses")) for p in allow)
+
+    def test_another_table_of_the_same_owner_is_not_covered(self) -> None:
+        """the agent's schema also holds its conversations and memory; a grant names tables."""
+        allow = _minted_publish(
+            self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True))
+        )
+        for table in ("conversations", "memories", "responses_archive"):
+            assert not any(_subject_matches(p, self._read_subject(self._OWNER, table)) for p in allow), table
+            assert not any(_subject_matches(p, self._write_subject(self._OWNER, table)) for p in allow), table
+
+    def test_another_owners_table_of_the_same_name_is_not_covered(self) -> None:
+        allow = _minted_publish(
+            self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True))
+        )
+        assert not any(_subject_matches(p, self._read_subject(self._OTHER_OWNER, "responses")) for p in allow)
+        assert not any(_subject_matches(p, self._write_subject(self._OTHER_OWNER, "responses")) for p in allow)
+
+    def test_no_route_reaches_the_owners_whole_scope_or_the_whole_bucket(self) -> None:
+        scope = self._owner_scope(self._OWNER)
+        allow = _minted_publish(
+            self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True))
+        )
+        for pattern in allow:
+            assert pattern not in (
+                f"$KV.{_COLLECTIONS}.>",
+                f"$KV.{_COLLECTIONS}.{scope}.>",
+                f"$JS.API.DIRECT.GET.{self._STREAM}.>",
+                f"$JS.API.DIRECT.GET.{self._STREAM}.$KV.{_COLLECTIONS}.>",
+                f"$JS.API.DIRECT.GET.{self._STREAM}.$KV.{_COLLECTIONS}.{scope}.>",
+            ), pattern
+        for subject in (
+            f"$JS.API.CONSUMER.CREATE.{self._STREAM}",
+            f"$JS.API.CONSUMER.CREATE.{self._STREAM}.w1.$KV.{_COLLECTIONS}.{scope}.responses.row-1",
+            f"$JS.API.CONSUMER.DURABLE.CREATE.{self._STREAM}.w1",
+            f"$JS.API.STREAM.MSG.GET.{self._STREAM}",
+            f"$JS.API.DIRECT.GET.{self._STREAM}",
+            f"$JS.API.STREAM.PURGE.{self._STREAM}",
+            f"$JS.API.STREAM.UPDATE.{self._STREAM}",
+            f"$JS.API.STREAM.CREATE.{self._STREAM}",
+        ):
+            assert not any(_subject_matches(p, subject) for p in allow), subject
+
+    def test_the_resource_record_is_table_scoped_on_the_shared_bucket(self) -> None:
+        permissions = self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=False))
+        granted = [r for r in permissions.js_resources if r.capability is JsCapability.KV_TABLE_SCOPED]
+        assert len(granted) == 1
+        assert granted[0].name == _COLLECTIONS
+        assert granted[0].scope == self._owner_scope(self._OWNER)
+        assert granted[0].table == "responses"
+        assert granted[0].writable is False
+        assert not capability_declares(granted[0].capability)
+
+    def test_the_pods_own_scope_is_unchanged_by_a_grant(self) -> None:
+        without = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
+        with_grant = self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True))
+        own = [r for r in with_grant.js_resources if r.capability is not JsCapability.KV_TABLE_SCOPED]
+        assert tuple(own) == without.js_resources
+
+    def test_no_grant_changes_nothing(self) -> None:
+        assert self._permissions().js_resources == build_permissions(Principal.TOOL_POD, pod_id=_POD_1).js_resources
+
+    @pytest.mark.parametrize("principal", [p for p in Principal if p is not Principal.TOOL_POD])
+    def test_only_a_tool_pod_reads_the_grants(self, principal: Principal) -> None:
+        """every resolver takes the same keywords; only the tool pod's widens on this one."""
+        grant = AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True)
+        with_grant = build_permissions(principal, **_IDS[principal], agent_table_grants=(grant,))
+        assert with_grant.js_resources == _build(principal).js_resources
+
+    @pytest.mark.parametrize("table", ["a.b", "resp*", "resp>", "", "has space", "$KV"])
+    def test_a_table_that_is_not_one_subject_token_is_refused(self, table: str) -> None:
+        """a dot would split the prefix and a wildcard would widen it; refuse at construction."""
+        with pytest.raises(ValueError, match="table"):
+            AgentTableGrant(owner_agent_id=self._OWNER, table=table, writable=False)
+
+    def test_one_table_granted_twice_is_refused(self) -> None:
+        """two answers to one question -- a read and a write -- must not silently merge."""
+        with pytest.raises(ValueError, match="more than once"):
+            self._permissions(
+                AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=False),
+                AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True),
+            )
+
+    def test_a_table_scoped_resource_requires_its_table(self) -> None:
+        with pytest.raises(ValueError, match="table"):
+            JsResource(
+                name=_COLLECTIONS,
+                kind=JsResourceKind.KV_BUCKET,
+                capability=JsCapability.KV_TABLE_SCOPED,
+                scope=self._owner_scope(self._OWNER),
+                writable=False,
+            )
+
+    def test_a_table_on_any_other_capability_is_refused(self) -> None:
+        """a table recorded but not enforced reads as narrowing that is not there."""
+        with pytest.raises(ValueError, match="table"):
+            JsResource(
+                name=_COLLECTIONS,
+                kind=JsResourceKind.KV_BUCKET,
+                capability=JsCapability.KV_SCOPED,
+                scope=self._owner_scope(self._OWNER),
+                writable=True,
+                table="responses",
+            )

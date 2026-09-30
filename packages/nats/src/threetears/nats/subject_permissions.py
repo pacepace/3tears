@@ -37,6 +37,11 @@ carry a key in a request BODY (``STREAM.MSG.GET``, the bare ``DIRECT.GET``, cons
 Scoping is per-resource OPT-IN: no other bucket writes a scope prefix, so narrowing them all would
 deny every read on all of them -- and a denied JetStream request is never answered, so it arrives as
 a ten-second deadline rather than as an error.
+
+A tool pod granted an AGENT's data additionally holds one :attr:`JsCapability.KV_TABLE_SCOPED`
+record per granted table (:class:`AgentTableGrant`), narrowed one token past the owning agent's
+scope to ``{owner_scope}.{table}.>`` -- never the agent's whole scope, which also keys its
+conversations and memory.
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ __all__ = [
     "KV_KEY_SCOPE_GRAMMAR",
     "MAX_COORDINATION_BUCKETS",
     "MAX_COORDINATION_BUCKET_SUFFIX_CHARS",
+    "AgentTableGrant",
     "JsCapability",
     "JsResource",
     "JsResourceKind",
@@ -183,18 +189,30 @@ class JsCapability(StrEnum):
         the form that names its filter in the SUBJECT (``CONSUMER.CREATE.{stream}.{name}.{filter}``,
         which the server checks against the body), so a watcher must create a NAMED consumer;
         nats-py's ``KeyValue.watch`` creates an unnamed one and is refused.
+    :cvar KV_TABLE_SCOPED: :attr:`KV_SCOPED` narrowed one token further, to ONE table of ANOTHER
+        principal's scope: bind plus a direct read of ``{scope}.{table}.>``, and a ``$KV.`` publish
+        of the same prefix only when the resource is writable. For a tool pod granted an agent's
+        data, whose owner stack keys every entry under the AGENT's scope so the agent's own cache
+        sees the pod's writes. The table rides in :attr:`JsResource.table` rather than in the scope,
+        because the scope is one subject token by contract. No watch and no consumer: the
+        collection layer's L2 path is key-addressed get, put, compare-and-set and delete, none of
+        which creates one.
     """
 
     FULL = "full"
     KV_SCOPED = "kv_scoped"
     KV_SCOPED_DECLARE = "kv_scoped_declare"
     KV_KEY_READ = "kv_key_read"
+    KV_TABLE_SCOPED = "kv_table_scoped"
 
 
 #: capabilities whose grants are narrowed to one key scope, and therefore REQUIRE a scope.
 _SCOPED_CAPABILITIES: Final[frozenset[JsCapability]] = frozenset(
-    {JsCapability.KV_SCOPED, JsCapability.KV_SCOPED_DECLARE, JsCapability.KV_KEY_READ}
+    {JsCapability.KV_SCOPED, JsCapability.KV_SCOPED_DECLARE, JsCapability.KV_KEY_READ, JsCapability.KV_TABLE_SCOPED}
 )
+
+#: capabilities narrowed to one TABLE within their scope, and therefore REQUIRE a table.
+_TABLE_CAPABILITIES: Final[frozenset[JsCapability]] = frozenset({JsCapability.KV_TABLE_SCOPED})
 
 #: capabilities that read and never write, and therefore REFUSE write intent.
 _READ_ONLY_CAPABILITIES: Final[frozenset[JsCapability]] = frozenset({JsCapability.KV_KEY_READ})
@@ -250,6 +268,9 @@ class JsResource:
         ``False`` yields a read-only grant -- a KV read is a ``$JS.API`` request, never a ``$KV.``
         publish, so the two are genuinely separable
     :ptype writable: bool
+    :param table: the one table within ``scope`` a :attr:`JsCapability.KV_TABLE_SCOPED` grant
+        covers; ``None`` for every other capability
+    :ptype table: str | None
     """
 
     name: str
@@ -257,17 +278,33 @@ class JsResource:
     capability: JsCapability
     scope: str | None
     writable: bool
+    table: str | None = None
 
     def __post_init__(self) -> None:
-        """refuse a record whose scope and capability disagree.
+        """refuse a record whose scope, table and capability disagree.
 
         :return: nothing
         :rtype: None
         :raises ValueError: if a scoped capability carries no scope, if an unscoped capability
             carries one, if the scope is not a single subject token, if a stream is given a KV
-            capability, if a read-only capability is declared writable, or if a plain stream is
-            declared writable
+            capability, if a read-only capability is declared writable, if a plain stream is
+            declared writable, or if a table is missing, malformed, or given to a capability that
+            does not narrow to one
         """
+        if self.capability in _TABLE_CAPABILITIES:
+            if self.table is None or not KV_KEY_SCOPE_GRAMMAR.match(self.table):
+                raise ValueError(
+                    f"KV bucket {self.name!r} is declared with {self.capability.value} but table "
+                    f"{self.table!r} is not one subject token matching {KV_KEY_SCOPE_GRAMMAR.pattern}; "
+                    f"a missing table would widen the grant to the whole scope, and a dot or wildcard "
+                    f"in it would split or widen the prefix"
+                )
+        elif self.table is not None:
+            raise ValueError(
+                f"resource {self.name!r} carries table {self.table!r} with capability "
+                f"{self.capability.value}, which does not narrow to a table; a table that is recorded "
+                f"but not enforced reads as narrowing that is not there"
+            )
         if capability_is_scoped(self.capability):
             if self.kind is not JsResourceKind.KV_BUCKET:
                 raise ValueError(f"{self.capability.value} applies to a KV bucket, not to stream {self.name!r}")
@@ -311,6 +348,47 @@ class JsResource:
         if self.kind is JsResourceKind.KV_BUCKET:
             return f"KV_{self.name}"
         return self.name
+
+    @property
+    def key_prefix(self) -> str | None:
+        """the key prefix every emitted grant on this resource is narrowed to.
+
+        The ONE value the minted ``$KV.`` publish tail and the direct-read tail are built from, so
+        the two can never narrow to different prefixes.
+
+        :return: ``{scope}.{table}`` for a table-scoped resource, the scope for any other scoped
+            one, ``None`` for an unscoped one
+        :rtype: str | None
+        """
+        if self.table is not None:
+            return f"{self.scope}.{self.table}"
+        return self.scope
+
+    @classmethod
+    def kv_table(cls, name: str, *, scope: str, table: str, writable: bool) -> JsResource:
+        """declare ONE table of ANOTHER principal's key scope in a shared KV bucket.
+
+        :param name: fully-qualified bucket name, prefix included
+        :ptype name: str
+        :param scope: the owning principal's L2 key scope, from :func:`kv_key_scope_for`
+        :ptype scope: str
+        :param table: the one table within ``scope`` the holder may reach; a single subject token
+        :ptype table: str
+        :param writable: whether the holder may write that table's keys as well as read them
+        :ptype writable: bool
+        :return: the resource record
+        :rtype: JsResource
+        :raises ValueError: if ``scope`` or ``table`` is not a single subject token matching
+            :data:`KV_KEY_SCOPE_GRAMMAR`
+        """
+        return cls(
+            name=name,
+            kind=JsResourceKind.KV_BUCKET,
+            capability=JsCapability.KV_TABLE_SCOPED,
+            scope=scope,
+            writable=writable,
+            table=table,
+        )
 
     @classmethod
     def kv(cls, name: str, *, scope: str | None, writable: bool, declare: bool = False) -> JsResource:
@@ -415,6 +493,55 @@ class PrincipalPermissions:
     allow_responses: bool
     inbox_prefix: str
     js_resources: tuple[JsResource, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentTableGrant:
+    """one table of one AGENT's data a tool pod may reach in the shared collections bucket.
+
+    A tool pod granted an agent's data builds its collections for that data under the AGENT's L2
+    key scope, so the agent's own cache sees the pod's writes and the two share one compare-and-set
+    fence. Its own ``{pod_scope}.>`` grant covers none of those keys. Each grant here becomes one
+    :attr:`JsCapability.KV_TABLE_SCOPED` resource narrowed to ``{owner_scope}.{table}.>``.
+
+    **The owner is an agent ID, never a scope string**, so the scope is derived here by
+    :func:`kv_key_scope_for` -- the function the pod's owner stack keys with -- and no caller can
+    point a grant at an infra principal's or another tool pod's keys.
+
+    :param owner_agent_id: the agent whose data is granted
+    :ptype owner_agent_id: UUID
+    :param table: the one table covered; a single subject token
+    :ptype table: str
+    :param writable: ``True`` to write that table's keys as well as read them
+    :ptype writable: bool
+    """
+
+    owner_agent_id: UUID
+    table: str
+    writable: bool
+
+    def __post_init__(self) -> None:
+        """refuse a table that is not one subject token.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: if ``table`` does not match :data:`KV_KEY_SCOPE_GRAMMAR`
+        """
+        if not KV_KEY_SCOPE_GRAMMAR.match(self.table):
+            raise ValueError(
+                f"agent table grant table {self.table!r} does not match {KV_KEY_SCOPE_GRAMMAR.pattern}; "
+                f"the table is ONE subject token of the granted key prefix, so a dot would split it "
+                f"and a wildcard would widen it"
+            )
+
+    @property
+    def owner_scope(self) -> str:
+        """the owning agent's L2 key scope.
+
+        :return: ``kv_key_scope_for(Principal.AGENT_POD, agent_id=owner_agent_id)``
+        :rtype: str
+        """
+        return kv_key_scope_for(Principal.AGENT_POD, agent_id=self.owner_agent_id)
 
 
 def kv_bucket_names(permissions: PrincipalPermissions) -> tuple[str, ...]:
@@ -720,6 +847,7 @@ def build_permissions(
     conn_id: str | None = None,
     tool_namespaces: Sequence[str] | None = None,
     coordination_buckets: Sequence[str] | None = None,
+    agent_table_grants: Sequence[AgentTableGrant] | None = None,
 ) -> PrincipalPermissions:
     """resolve the concrete allow-list for one connecting principal.
 
@@ -754,11 +882,18 @@ def build_permissions(
         Omitting it grants none of them, which is what every pre-existing caller does and
         therefore what every pre-existing caller still gets.
     :ptype coordination_buckets: Sequence[str] | None
+    :param agent_table_grants: the tables of AGENTS' data this tool pod was granted -- the
+        operator's declaration on its registry row, resolved by the auth callout exactly as
+        ``tool_namespaces`` is. Each becomes one grant on the shared collections bucket narrowed
+        to ``{owner_scope}.{table}.>``, writable only for a write grant; see
+        :func:`_agent_table_resources`. Read by :attr:`Principal.TOOL_POD` alone and ignored for
+        every other principal. Omitting it grants none.
+    :ptype agent_table_grants: Sequence[AgentTableGrant] | None
     :return: the resolved permissions
     :rtype: PrincipalPermissions
-    :raises ValueError: when a required id for the principal is missing, or when a declared
+    :raises ValueError: when a required id for the principal is missing, when a declared
         coordination bucket suffix is malformed or the declaration exceeds
-        :data:`MAX_COORDINATION_BUCKETS`
+        :data:`MAX_COORDINATION_BUCKETS`, or when one agent table is granted twice
     """
     resolver = _RESOLVERS[principal]
     return resolver(
@@ -767,6 +902,7 @@ def build_permissions(
         conn_id=conn_id,
         tool_namespaces=tool_namespaces,
         coordination_buckets=coordination_buckets,
+        agent_table_grants=agent_table_grants,
     )
 
 
@@ -843,6 +979,42 @@ def _coordination_resources(
     return tuple(JsResource.kv(f"{ns}-{scope}-{suffix}", scope=None, writable=True) for suffix in declared)
 
 
+def _agent_table_resources(
+    ns: str,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
+) -> tuple[JsResource, ...]:
+    """the collections-bucket grants for the agents' tables one tool pod was granted.
+
+    One :attr:`JsCapability.KV_TABLE_SCOPED` resource per grant, narrowed to
+    ``{owner_scope}.{table}.>``: never the owner's whole scope, because that scope also keys the
+    agent's conversations and memory, and never the bucket. Writable only for a write grant, so a
+    read grant mints the direct read and no ``$KV.`` publish.
+
+    :param ns: the subject namespace prefix
+    :ptype ns: str
+    :param agent_table_grants: the granted tables, or ``None``
+    :ptype agent_table_grants: Sequence[AgentTableGrant] | None
+    :return: one resource per grant, in grant order
+    :rtype: tuple[JsResource, ...]
+    :raises ValueError: if one owner's table is granted more than once -- a read and a write for
+        one table are two answers to one question, and whichever came first must not silently win
+    """
+    grants = tuple(agent_table_grants or ())
+    seen: set[tuple[UUID, str]] = set()
+    for grant in grants:
+        key = (grant.owner_agent_id, grant.table)
+        if key in seen:
+            raise ValueError(
+                f"agent {grant.owner_agent_id} table {grant.table!r} is granted more than once; one "
+                f"table takes one grant carrying one access"
+            )
+        seen.add(key)
+    return tuple(
+        JsResource.kv_table(f"{ns}-collections", scope=g.owner_scope, table=g.table, writable=g.writable)
+        for g in grants
+    )
+
+
 def _agent_pod(
     *,
     agent_id: str | None,
@@ -850,6 +1022,7 @@ def _agent_pod(
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
     coordination_buckets: Sequence[str] | None,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
 ) -> PrincipalPermissions:
     a = _require(agent_id, name="agent_id", principal=Principal.AGENT_POD)
     p = _require(pod_id, name="pod_id", principal=Principal.AGENT_POD)
@@ -1026,6 +1199,7 @@ def _tool_pod(
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
     coordination_buckets: Sequence[str] | None,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
 ) -> PrincipalPermissions:
     p = _require(pod_id, name="pod_id", principal=Principal.TOOL_POD)
     inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=conn_id or p)
@@ -1211,6 +1385,10 @@ def _tool_pod(
             # key id, as the collections scope above is -- so replicas share one key and no pod can
             # reach another's. READ-ONLY: the hub writes it.
             JsResource.kv_key_read(data_versions_bucket_name(ns), key=data_version_kv_key(p)),
+            # the AGENTS' tables an operator granted this pod, each under the owning agent's scope
+            # and narrowed to that one table. LAST, so a reader sees the pod's fixed grants above
+            # and its variable ones below.
+            *_agent_table_resources(ns, agent_table_grants),
         ),
     )
 
@@ -1222,6 +1400,7 @@ def _registry(
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
     coordination_buckets: Sequence[str] | None,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
 ) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.REGISTRY)
     inbox = inbox_prefix_for(Principal.REGISTRY, conn_id=c)
@@ -1302,6 +1481,7 @@ def _hub(
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
     coordination_buckets: Sequence[str] | None,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
 ) -> PrincipalPermissions:
     # the hub is the broadest principal: trust anchor + control plane + L3 broker + router. it owns
     # the whole {ns}.hub.*, {ns}.agents.*, {ns}.l3.*, and the platform-write event streams. it is
@@ -1457,6 +1637,7 @@ def _gateway(
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
     coordination_buckets: Sequence[str] | None,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
 ) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.GATEWAY)
     inbox = inbox_prefix_for(Principal.GATEWAY, conn_id=c)
@@ -1513,6 +1694,7 @@ def _channel_adapter(
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
     coordination_buckets: Sequence[str] | None,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
 ) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.CHANNEL_ADAPTER)
     inbox = inbox_prefix_for(Principal.CHANNEL_ADAPTER, conn_id=c)
@@ -1555,6 +1737,7 @@ def _agent_router(
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
     coordination_buckets: Sequence[str] | None,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
 ) -> PrincipalPermissions:
     # the sticky router: it drains the durable inbound-turn stream, forwards each turn to whichever
     # pod currently owns the conversation, and awaits the pod's completion signal before acking.
@@ -1632,6 +1815,7 @@ def _dataset_executor(
     conn_id: str | None,
     tool_namespaces: Sequence[str] | None,
     coordination_buckets: Sequence[str] | None,
+    agent_table_grants: Sequence[AgentTableGrant] | None,
 ) -> PrincipalPermissions:
     # D14's separate deployment of the hub image: it drains dataset build work, holds a KVLease for
     # the run it owns, and releases the admission slots the hub took.

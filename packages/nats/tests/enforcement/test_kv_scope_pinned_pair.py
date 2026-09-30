@@ -43,6 +43,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.nats.subject_permissions import (
+    AgentTableGrant,
     JsResource,
     JsResourceKind,
     Principal,
@@ -339,6 +340,60 @@ class TestTheGrantDoesNotMatchAnotherPrincipalsKey:
         read_subject = f"$JS.API.DIRECT.GET.{resource.stream_name}.$KV.{resource.name}.{foreign_key}"
         assert not any(_subject_matches(pattern, write_subject) for pattern in allow)
         assert not any(_subject_matches(pattern, read_subject) for pattern in allow)
+
+
+class TestAToolPodsAgentTableGrantMatchesTheOwnersKey:
+    """the pair for a tool pod granted one table of an agent's data.
+
+    The pod's owner stack keys that data under the AGENT's scope, so the key side is a registry
+    scoped through ``kv_key_scope_for(AGENT_POD, agent_id=owner)`` and the grant side is the tool
+    pod's :class:`AgentTableGrant`. Both halves derive the scope through the same function; this
+    asserts the composed subjects actually meet, and that a neighbouring table does not.
+    """
+
+    _OWNER: Final[uuid.UUID] = uuid.UUID("019470a8-b5c3-7def-8123-0000000000aa")
+
+    def _allow(self, *, writable: bool) -> list[str]:
+        token = mint_user_jwt(
+            account_seed=generate_account_seed(),
+            user_public_key="UTESTUSERPUBLICKEY",
+            permissions=build_permissions(
+                Principal.TOOL_POD,
+                pod_id=str(_POD_UUID),
+                agent_table_grants=(AgentTableGrant(owner_agent_id=self._OWNER, table=_TABLE, writable=writable),),
+            ),
+            name="tool_pod",
+            expires_in_seconds=300,
+        )
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        allow: list[str] = claims["nats"]["pub"]["allow"]
+        return allow
+
+    def _owner_key(self) -> str:
+        return _l2_key_for(kv_key_scope_for(Principal.AGENT_POD, agent_id=self._OWNER))
+
+    def test_the_owners_key_is_readable_and_writable_under_a_write_grant(self) -> None:
+        bucket = f"{_NS}-{_BUCKET_SUFFIX}"
+        key = self._owner_key()
+        allow = self._allow(writable=True)
+        assert any(_subject_matches(p, f"$KV.{bucket}.{key}") for p in allow)
+        assert any(_subject_matches(p, f"$JS.API.DIRECT.GET.KV_{bucket}.$KV.{bucket}.{key}") for p in allow)
+
+    def test_a_read_grant_reads_and_never_writes_the_owners_key(self) -> None:
+        bucket = f"{_NS}-{_BUCKET_SUFFIX}"
+        key = self._owner_key()
+        allow = self._allow(writable=False)
+        assert any(_subject_matches(p, f"$JS.API.DIRECT.GET.KV_{bucket}.$KV.{bucket}.{key}") for p in allow)
+        assert not any(_subject_matches(p, f"$KV.{bucket}.{key}") for p in allow)
+
+    def test_a_neighbouring_table_of_the_owner_is_not_matched(self) -> None:
+        bucket = f"{_NS}-{_BUCKET_SUFFIX}"
+        scope = kv_key_scope_for(Principal.AGENT_POD, agent_id=self._OWNER)
+        neighbour = f"{scope}.conversations.{_ENTITY_ID}"
+        allow = self._allow(writable=True)
+        assert not any(_subject_matches(p, f"$KV.{bucket}.{neighbour}") for p in allow)
+        assert not any(_subject_matches(p, f"$JS.API.DIRECT.GET.KV_{bucket}.$KV.{bucket}.{neighbour}") for p in allow)
 
 
 class TestThePairIsNotVacuous:

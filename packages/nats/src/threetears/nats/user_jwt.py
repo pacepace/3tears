@@ -148,6 +148,12 @@ def js_api_grants_for_stream(
       delivered messages land on the holder's own inbox, already covered by its ``{inbox}.>``
       subscribe grant; flow-control replies ride ``allow_responses``.
 
+    :attr:`JsCapability.KV_TABLE_SCOPED` emits the :attr:`JsCapability.KV_SCOPED` pair with
+    ``scope`` carrying the resource's whole ``{owner_scope}.{table}`` key prefix
+    (:attr:`~threetears.nats.subject_permissions.JsResource.key_prefix`), so the direct read is
+    ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{owner_scope}.{table}.>`` -- one table of another
+    principal's keys, and no consumer or watch route at all.
+
     JetStream consumer ACK/NAK is NOT listed: it publishes to the delivered message's ``$JS.ACK.*``
     reply subject and rides the principal's ``allow_responses`` grant (the same way it did under the
     old ``$JS.API.>``, which never covered ``$JS.ACK``), so it needs no standing control grant here.
@@ -159,7 +165,9 @@ def js_api_grants_for_stream(
     :ptype capability: JsCapability
     :param bucket: the KV bucket ``stream`` backs; required for a scoped capability
     :ptype bucket: str | None
-    :param scope: the holder's L2 key scope; required for a scoped capability
+    :param scope: the key prefix the grant narrows to -- the holder's L2 key scope, the one key
+        for :attr:`JsCapability.KV_KEY_READ`, or ``{owner_scope}.{table}`` for
+        :attr:`JsCapability.KV_TABLE_SCOPED`; required for a scoped capability
     :ptype scope: str | None
     :return: the per-stream JS-API control-plane allow-list (publish subjects)
     :rtype: list[str]
@@ -320,11 +328,15 @@ def mint_user_jwt(
     # ``{ns}_agent_config``, ``{ns}-epochs``, ``{ns}-ratelimits`` or ``{ns}-proxy_assertion_nonces``
     # would deny every read on all of them -- and a refused JetStream request is never answered, so
     # the failure arrives as a ten-second deadline that reads as an unreachable broker.
+    #
+    # ``key_prefix`` rather than ``scope`` for both tails: a table-scoped resource narrows one
+    # token past its scope (``{scope}.{table}``), and reading the prefix from one property is what
+    # keeps the publish tail and the read tail from ever naming different prefixes.
     kv_data: list[str] = []
     js_control: list[str] = []
     for resource in permissions.js_resources:
         if resource.kind is JsResourceKind.KV_BUCKET and resource.writable:
-            tail = ">" if resource.scope is None else f"{resource.scope}.>"
+            tail = ">" if resource.key_prefix is None else f"{resource.key_prefix}.>"
             kv_data.append(f"$KV.{resource.name}.{tail}")
         bucket = resource.name if resource.kind is JsResourceKind.KV_BUCKET else None
         js_control.extend(
@@ -332,11 +344,13 @@ def mint_user_jwt(
                 resource.stream_name,
                 capability=resource.capability,
                 bucket=bucket,
-                scope=resource.scope,
+                scope=resource.key_prefix,
             )
         )
     if permissions.js_resources:
-        js_control = [*_JS_API_ACCOUNT, *js_control]
+        # de-duplicated in first-seen order: several resources on ONE stream (a pod's own scope
+        # plus each table it was granted of an agent's) each emit the same ``STREAM.INFO`` bind.
+        js_control = list(dict.fromkeys([*_JS_API_ACCOUNT, *js_control]))
 
     nats_claim: dict[str, Any] = {
         "pub": {"allow": [*permissions.publish, *kv_data, *js_control]},
