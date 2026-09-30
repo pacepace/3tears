@@ -27,6 +27,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
+from threetears.core.collections import CallerTransaction
 from threetears.observe import get_logger
 
 from threetears.agent.wake.config import WakeConfig
@@ -346,8 +347,10 @@ async def create_schedule_serialized(
     3. Raise :class:`ScheduleCapExceeded` when ``count >= cap`` --
        BEFORE the insert, so the cap holds exactly.
     4. ``collection.save_entity(entity, conn=conn)`` -- the L3 INSERT
-       binds to the locked transaction; the L1/L2/invalidation tiers run
-       through the normal :meth:`save_entity` path.
+       binds to the locked transaction, opened through
+       :class:`~threetears.core.collections.CallerTransaction`, which
+       evicts the row from L1 and L2 and broadcasts the eviction once the
+       transaction has committed or rolled back.
 
     Two concurrent creates against a full conversation thus serialize:
     the first commits (releasing the lock), the second re-counts under
@@ -381,7 +384,7 @@ async def create_schedule_serialized(
     :raises ScheduleCapExceeded: when the conversation is at/over cap
     """
     async with pool.acquire() as conn:
-        async with conn.transaction():
+        async with CallerTransaction(conn):
             await conn.execute(
                 _ADVISORY_XACT_LOCK_SQL, str(conversation_id)
             )  # convert at border: pg_advisory_xact_lock(hashtext($1)) text arg

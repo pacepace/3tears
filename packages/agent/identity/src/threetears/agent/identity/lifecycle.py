@@ -132,7 +132,9 @@ async def _apply(
     When ``conn`` is passed, both writes bind to the caller's transaction,
     so the supersede + activate (and any coupled caller write on the same
     ``conn``) commit or roll back as one unit -- a crash between them leaves
-    neither, not a superseded-with-no-active gap. Without a ``conn`` the
+    neither, not a superseded-with-no-active gap. The caller opens that
+    transaction with :class:`threetears.core.collections.CallerTransaction`,
+    which settles both rows' caches once it ends. Without a ``conn`` the
     ordering above is the guarantee.
     """
     if prior_active is not None and prior_active.version_id != new_version.version_id:
@@ -162,9 +164,10 @@ async def propose(
     :func:`consent`. Tier-2 (routine) blocks auto-apply immediately. Identical
     content to the current active is a no-op (returns the active).
 
-    :param conn: optional transaction handle; when passed, every version write
-        binds to it so a tier-2 auto-apply is atomic with the caller's coupled
-        writes (see :func:`_apply`)
+    :param conn: optional connection whose transaction the caller opened with
+        ``CallerTransaction(conn)``; when passed, every version write binds to it
+        so a tier-2 auto-apply is atomic with the caller's coupled writes (see
+        :func:`_apply`)
     :ptype conn: Any
     :return: the new version (or the active on a dedup no-op)
     :rtype: IdentityVersionEntity | None
@@ -317,8 +320,9 @@ async def consent(
 ) -> IdentityVersionEntity | None:
     """Consent to a proposed version -> it becomes active (tier-1 apply).
 
-    :param conn: optional transaction handle; when passed, the apply binds to
-        it so it is atomic with the caller's coupled writes (see :func:`_apply`)
+    :param conn: optional connection whose transaction the caller opened with
+        ``CallerTransaction(conn)``; when passed, the apply binds to it so it is
+        atomic with the caller's coupled writes (see :func:`_apply`)
     :ptype conn: Any
     :return: the applied version, or ``None`` if not found / not owned / not
         currently ``proposed``
@@ -358,7 +362,8 @@ async def reject(
 ) -> IdentityVersionEntity | None:
     """Reject a proposed version (kept for history; no active change).
 
-    :param conn: optional transaction handle for the status write
+    :param conn: optional connection whose transaction the caller opened with
+        ``CallerTransaction(conn)``, for the status write
     :ptype conn: Any
     :return: the rejected version, or ``None`` if not found / not owned / not
         currently ``proposed``
@@ -398,8 +403,9 @@ async def rollback(
     the current head; the prior active is superseded. History is never
     mutated.
 
-    :param conn: optional transaction handle; when passed, the apply binds to
-        it so it is atomic with the caller's coupled writes (see :func:`_apply`)
+    :param conn: optional connection whose transaction the caller opened with
+        ``CallerTransaction(conn)``; when passed, the apply binds to it so it is
+        atomic with the caller's coupled writes (see :func:`_apply`)
     :ptype conn: Any
     :return: the new active (clone) version, or ``None`` if the target is not
         found / not owned

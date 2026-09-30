@@ -103,6 +103,18 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/base.py",
+        class_name="_L1Fence",
+        attr_name="_keys",
+        rationale=(
+            "the reads and writes of each key in flight in THIS process, ordering this process's "
+            "own L1 writes against each other: L1 is per-process, so the state ordering writes to "
+            "it is too, and a shared or durable copy would order writes to a cache no other pod "
+            "has. the L2 revision is the cross-pod half of the same fence. an entry lives only "
+            "while an operation on its key is in flight and is dropped when the last one ends"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/task_registry.py",
         class_name="KeyedTaskRegistry",
         attr_name="_tasks",

@@ -34,12 +34,63 @@ Unchanged:
 
 - A collection with no L3 pool, where L2 is the source of truth, keeps the unconditional put.
 - A write-behind save keeps the unconditional put.
-- A collection with no L2 caches in L1 as before.
+- A collection with no L2 caches in L1, subject to the in-process ordering in the next entry.
 
 **On upgrade:** a save on a three-tier collection now reads L2 once before its L3 write. A test
 harness that gives a collection an L2 client must also give its registry a `kv_key_scope`, and a
 bucket double must answer `get_latest` and `update`. `threetears.core.testing.kv.FakeNatsClient`
 already does both.
+
+### No cache tier is written ahead of L3, or after a newer write, on any write path
+
+The fence above covered one path. The same fault -- a cache tier written in an order, or at a time,
+that lets it disagree with L3 with nothing left to evict it -- had four more members:
+
+- `collection[id] = row` wrote L2 BEFORE L3. Two writers could leave L2 holding one row and L3 the
+  other.
+- `save_entity(entity, conn=conn)` wrote L1 and L2, and broadcast, before the caller's transaction
+  committed. A rollback left every tier holding a row L3 never had, and a reader in the meantime
+  was served it.
+- On a collection with an L3 pool and no L2, two overlapping saves of one key cached whichever
+  answered last, not whichever L3 kept.
+- A read that fetched a row from L2 or L3 cached it in L1 after a write or eviction of the key
+  landed in between -- this process's own save, or a peer's broadcast.
+
+A compare-and-swap whose L3 persist was cancelled also kept its won value in L2, because the
+withdrawal caught `Exception` and `CancelledError` is not one.
+
+**Contract, every write path of `threetears.core.collections.BaseCollection`:** L3 first; then L2 as
+a compare-and-swap at the revision read before the L3 write; L1 only when L2 took the row and no
+other write or eviction of the key overlapped this one in this process; then the broadcast. A write
+that cannot know it is the newest drops the key instead, and the next read takes whichever row L3
+kept. A write-behind collection still writes L1 and L2 first, by design, and a collection with no
+L3 pool is last-writer-wins as before.
+
+- **Subscript writes** (`collection[id] = row`, `collection[id, field] = value`) follow the contract.
+  The assignment still writes L1 synchronously; the propagation writes L3, then L2, then broadcasts.
+- **Overlapping writes in one process.** Each collection orders its own L1 writes per key: a read
+  or write caches only while no write of the key began, and no eviction of it landed, since it
+  started; and a write only while no other write of the key was in flight when it began. Two
+  overlapping saves both drop the key. This is the whole fence on a collection with no L2.
+- **Reads.** `get`, `ensure`, `collection[id]` and `reload_entity` cache what they read only under the
+  same rule. When they do not, the entity they return carries the row in its own change buffer and
+  L1 is left without it. A peer's invalidation now evicts through
+  `BaseCollection.evict_from_cache_sync`, so it reaches the ordering too.
+- **Added: `threetears.core.collections.CallerTransaction`.** `save_entity(..., conn=conn)` now
+  requires the connection's transaction to have been opened by `CallerTransaction(conn)`, and raises
+  `ValueError` otherwise. The save writes L3 inside the transaction and caches and broadcasts
+  nothing. When the transaction has committed or rolled back, `CallerTransaction` evicts every key
+  its writes touched from L1 and L2 and broadcasts the eviction. Eviction rather than writing the
+  committed row is correct whether the transaction committed, rolled back, or rolled back a
+  savepoint a save joined. Nested `CallerTransaction`s on one connection open savepoints and settle
+  once, at the outermost.
+- `save_entity(..., conn=conn)` on a collection that defers its L3 writes now raises `ValueError`.
+  It used to ignore `conn` and buffer the write outside the caller's transaction.
+
+**On upgrade:** replace `async with conn.transaction():` with
+`async with CallerTransaction(conn):` wherever a `save_entity(..., conn=conn)` runs inside it; any
+keyword the transaction took passes through. `threetears-agent-wake`'s serialized schedule create
+does so already. A test harness that builds a collection without running `__init__` needs no change.
 
 ### `TokenBucket` takes an injectable clock and sleep
 

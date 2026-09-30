@@ -20,6 +20,7 @@ from threetears.core.collections.bucket import (
     COLLECTIONS_BUCKET_SUFFIX,
     bind_collections_bucket,
 )
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
 from threetears.core.collections.merge import repoint_user_rows
@@ -74,6 +75,7 @@ __all__ = [
     "COLLECTIONS_BUCKET_SUFFIX",
     "BaseCollection",
     "CacheInvalidationMessage",
+    "CallerTransaction",
     "CollectionRegistry",
     "Column",
     "DATETIMETZ_TYPE",
