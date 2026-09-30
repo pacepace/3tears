@@ -1410,7 +1410,7 @@ class Subjects:
         return Subject(path=f"{ns}.audit.{TOOL_POD_AUDIT_TOKEN}.{pod_token}.>", kind="pattern")
 
     @classmethod
-    def audit_deadletter(cls) -> Subject:
+    def audit_deadletter(cls, *, namespace: str | None = None) -> Subject:
         """dead-letter subject for audit envelopes the consumer exhausted.
 
         an audit envelope that stays un-persistable after the durable
@@ -1420,10 +1420,13 @@ class Subjects:
         in the ``{ns}-audit`` stream (which is declared over this subject too)
         with no consumer draining it: inspectable, not lost, not looping.
 
+        :param namespace: the subject namespace; the bound default when omitted
+        :ptype namespace: str | None
         :return: subject ``{ns}.audit-deadletter``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.audit-deadletter", kind="point")
+        ns = namespace if namespace is not None else _ns()
+        return Subject(path=f"{ns}.audit-deadletter", kind="point")
 
     # ------------------------------------------------------------------
     # workspaces

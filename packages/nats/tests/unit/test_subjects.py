@@ -310,6 +310,7 @@ def test_audit_event_rejects_empty() -> None:
 def test_audit_event_takes_an_explicit_namespace() -> None:
     """a publisher or consumer routing audit on a per-call namespace names it, not the bound one."""
     assert Subjects.audit_event("tool.call", namespace="prod").path == "prod.audit.tool.call"
+    assert Subjects.audit_deadletter(namespace="prod").path == "prod.audit-deadletter"
 
 
 def test_l3_subjects() -> None:
