@@ -605,3 +605,39 @@ class TestCustomerIdNotNull:
             "media_content": "NO",
             "memory_chunks": "NO",
         }
+
+
+class TestAnAdoptedSchemaConverges:
+    """a schema a consumer built with its own chain, then adopted, reaches the declarations too."""
+
+    async def test_media_gets_the_composite_key_and_date_updated_its_not_null(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _migrate(conn, schema, target=27)
+            # the consumer's shape: media keyed to memories by memory_id alone, and a nullable
+            # memories.date_updated holding a NULL
+            await conn.execute("ALTER TABLE media DROP CONSTRAINT media_memory_fk")
+            await conn.execute(
+                "ALTER TABLE media ADD CONSTRAINT media_memory_id_fkey "
+                "FOREIGN KEY (memory_id) REFERENCES memories (memory_id) ON DELETE CASCADE"
+            )
+            await conn.execute("ALTER TABLE memories ALTER COLUMN date_updated DROP NOT NULL")
+            memory_id = await _insert_memory(conn, agent_id=uuid.uuid4(), user_id=uuid.uuid4())
+            await conn.execute("UPDATE memories SET date_updated = NULL WHERE memory_id = $1", memory_id)
+
+            await _migrate(conn, schema)
+
+            assert await _memory_foreign_keys_on_media(conn, schema) == [("agent_id", "memory_id")]
+            nullable = await conn.fetchval(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = $1 AND table_name = 'memories' AND column_name = 'date_updated'",
+                schema,
+            )
+            assert nullable == "NO"
+            filled = await conn.fetchval(
+                "SELECT date_updated = date_created FROM memories WHERE memory_id = $1", memory_id
+            )
+            assert filled is True
+        finally:
+            await conn.close()

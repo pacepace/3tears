@@ -134,11 +134,14 @@ checks refuse rows the old schema accepted.
 ### agent-memory: a schema holds what the collections declare
 
 - v028 removes indexes and unique constraints the chain built twice under two names, creates the
-  declared ones no migration built, and leaves `media` with only the composite key to `memories`.
+  declared ones no migration built, and leaves `media` with only the composite key to `memories`,
+  adding it where a schema adopted from a consumer's own chain lacks it. Adding it validates every
+  row: a media row whose memory is gone stops the migration.
 - v029 and v030 rank a chunk's heading above its content and summary in keyword search, and
   recompute existing chunks.
 - v031 sets `customer_id` NOT NULL on `media`, `media_content` and `memory_chunks` where no row
-  lacks one, and warns and leaves a table that holds one.
+  lacks one, and warns and leaves a table that holds one. It also sets `memories.date_updated` NOT
+  NULL, filling a NULL from the row's `date_created`.
 - v022's constraint guards look only in their own schema, so a second agent schema in one database
   gets its own constraints.
 

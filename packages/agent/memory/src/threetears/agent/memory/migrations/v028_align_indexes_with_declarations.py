@@ -47,7 +47,11 @@ so it binds to the declared constraint instead.
 
 The key from ``media`` to ``memories`` is the composite ``media_memory_fk`` that
 v017 built. A single-column foreign key on ``media.memory_id`` alone, whatever
-its name, is dropped.
+its name, is dropped, and the composite one is added where it is missing -- a
+schema adopted from a consumer's own chain never ran v017, and dropping its
+single-column key without adding the composite would leave ``media`` with no key
+to ``memories`` at all. Adding it validates every row: a media row whose memory
+is gone stops the migration and names the key.
 
 Every catalog lookup is scoped to ``current_schema()``, and every drop names the
 schema, so a database holding several agent schemas migrates each on its own.
@@ -262,6 +266,32 @@ $$
 """
 
 
+_ADD_COMPOSITE_MEDIA_MEMORY_FK_SQL = """
+DO $$
+DECLARE
+    ns oid := (SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema());
+    tbl oid;
+BEGIN
+    SELECT oid INTO tbl FROM pg_catalog.pg_class
+     WHERE relname = 'media' AND relnamespace = ns AND relkind IN ('r', 'p');
+    IF tbl IS NULL THEN
+        RETURN;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+         WHERE conrelid = tbl AND conname = 'media_memory_fk'
+    ) THEN
+        EXECUTE format(
+            'ALTER TABLE %I.media ADD CONSTRAINT media_memory_fk FOREIGN KEY (agent_id, memory_id) '
+            'REFERENCES %I.memories (agent_id, memory_id) ON DELETE CASCADE',
+            current_schema(), current_schema()
+        );
+    END IF;
+END
+$$
+"""
+
+
 def _rename_or_drop_index_sql(legacy: str, declared: str) -> str:
     """render the rename-or-drop block for one exact-duplicate index pair.
 
@@ -321,3 +351,4 @@ async def align_indexes_with_declarations(store: DataStore) -> None:
     for table, column, legacy, declared in _UNIQUE_CONSTRAINTS:
         await store.execute(_align_unique_constraint_sql(table, column, legacy, declared))
     await store.execute(_DROP_SINGLE_COLUMN_MEDIA_MEMORY_FK_SQL)
+    await store.execute(_ADD_COMPOSITE_MEDIA_MEMORY_FK_SQL)

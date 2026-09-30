@@ -97,8 +97,9 @@ version history:
 - v029 weights a chunk's ``search_vector`` heading A, content B, summary C,
   and fires the trigger on a ``heading_context`` update too.
 - v030 recomputes existing chunks' ``search_vector`` under v029's weighting.
-- v031 sets ``customer_id`` NOT NULL on media, media_content and
-  memory_chunks where no row lacks one, as the collections declare.
+- v031 sets the columns the collections declare NOT NULL: ``customer_id`` on
+  media, media_content and memory_chunks where no row lacks one, and
+  ``memories.date_updated`` (a NULL takes the row's ``date_created``).
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -198,8 +199,8 @@ from threetears.agent.memory.migrations.v029_memory_chunks_heading_weighted_sear
 from threetears.agent.memory.migrations.v030_recompute_memory_chunks_search_vector import (
     recompute_memory_chunks_search_vector,
 )
-from threetears.agent.memory.migrations.v031_customer_id_not_null import (
-    customer_id_not_null,
+from threetears.agent.memory.migrations.v031_declared_not_null_columns import (
+    declared_not_null_columns,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -259,7 +260,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(28)(align_indexes_with_declarations)
     pkg.version(29)(weight_memory_chunk_headings)
     pkg.version(30)(recompute_memory_chunks_search_vector)
-    pkg.version(31)(customer_id_not_null)
+    pkg.version(31)(declared_not_null_columns)
     runner.register(pkg)
     return pkg
 
@@ -282,7 +283,7 @@ __all__ = [
     "create_memories_table",
     "create_memory_chunks",
     "create_memory_consolidations",
-    "customer_id_not_null",
+    "declared_not_null_columns",
     "datetime_to_datetimetz",
     "drop_legacy_memory_columns",
     "drop_search_vector_gin_indexes",
