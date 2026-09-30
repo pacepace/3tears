@@ -7,7 +7,8 @@ refusal is never answered: it blocks to its deadline before the bind that would 
 is attempted. So a primitive over a bucket its process does not own must be able to skip the
 create entirely.
 
-The contract pinned, for :class:`DistributedCounter`, :class:`TokenBucket` and :class:`KVLease`:
+The contract pinned, for :class:`DistributedCounter`, :class:`TokenBucket`, :class:`KVLease` and
+:class:`ReplayGuard`:
 
 - the default is unchanged: the primitive DECLARES its bucket (``create_if_missing=True``);
 - ``create_if_missing=False`` reaches the client's opener as a bind;
@@ -25,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.core.coordination import DistributedCounter, KVLease, TokenBucket
+from threetears.core.coordination import DistributedCounter, KVLease, ReplayGuard, TokenBucket
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import NatsClient
 
@@ -79,10 +80,26 @@ def _lease(client: Any, create_if_missing: bool | None) -> Callable[[], Awaitabl
     return lambda: lease.acquire("k", ttl_seconds=30, max_wait_seconds=0)
 
 
+def _replay_guard(client: Any, create_if_missing: bool | None) -> Callable[[], Awaitable[object]]:
+    """a replay guard whose bind opens its bucket.
+
+    :param client: the KV-capable client
+    :ptype client: Any
+    :param create_if_missing: the flag to pass, or ``None`` to take the default
+    :ptype create_if_missing: bool | None
+    :return: a coroutine function that opens the bucket
+    :rtype: Callable[[], Awaitable[object]]
+    """
+    extra = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
+    guard = ReplayGuard(client, bucket_name="owned", ttl_seconds=60, verifier_future_tolerance=timedelta(0), **extra)
+    return guard.bind
+
+
 _PRIMITIVES: list[Any] = [
     pytest.param(_counter, id="DistributedCounter"),
     pytest.param(_token_bucket, id="TokenBucket"),
     pytest.param(_lease, id="KVLease"),
+    pytest.param(_replay_guard, id="ReplayGuard"),
 ]
 
 
