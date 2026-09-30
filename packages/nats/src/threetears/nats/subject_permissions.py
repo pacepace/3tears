@@ -59,12 +59,14 @@ from threetears.nats.result_delivery import result_stream_name
 from threetears.nats.subjects import Subjects, get_default_namespace, sanitize_subject_segment
 
 __all__ = [
+    "AGENT_POD_PLATFORM_BUCKET_SUFFIXES",
     "CROSS_PLATFORM_CACHE_INVALIDATE",
     "COORDINATION_BUCKET_SUFFIX_GRAMMAR",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
     "MAX_COORDINATION_BUCKETS",
     "MAX_COORDINATION_BUCKET_SUFFIX_CHARS",
+    "WORKSPACE_LOCKS_BUCKET_SUFFIX",
     "AgentBucketGrant",
     "AgentTableGrant",
     "JsCapability",
@@ -72,6 +74,9 @@ __all__ = [
     "JsResourceKind",
     "Principal",
     "PrincipalPermissions",
+    "agent_config_bucket_name",
+    "agent_config_kv_key",
+    "agent_platform_bucket_suffix",
     "build_permissions",
     "capability_declares",
     "capability_is_scoped",
@@ -129,6 +134,23 @@ MAX_COORDINATION_BUCKET_SUFFIX_CHARS: Final[int] = 64
 #: for a caller that opens the bucket directly. the hub creates the bucket and writes it; a pod
 #: binds it and reads and watches its own key (:attr:`JsCapability.KV_KEY_READ`).
 DATA_VERSIONS_BUCKET_SUFFIX: Final[str] = "data-versions"
+
+#: the suffix of the bucket that holds one agent's workspace file locks
+#: (:class:`threetears.agent.workspace.WorkspaceFileLease`). the bucket is the agent's OWN, composed
+#: ``{ns}-{scope}-workspace-locks`` exactly as a declared coordination bucket is: its keys name
+#: workspace ids and file paths, so a bucket every agent shared would let any agent list another
+#: customer's paths and create or delete any lock.
+WORKSPACE_LOCKS_BUCKET_SUFFIX: Final[str] = "workspace-locks"
+
+#: the per-agent buckets the PLATFORM gives every agent pod, whatever its row declares. each is
+#: composed under the agent's scope like a declared coordination bucket, granted by
+#: :func:`build_permissions` and declared by the hub; the pod binds it and never creates it.
+AGENT_POD_PLATFORM_BUCKET_SUFFIXES: Final[tuple[str, ...]] = (WORKSPACE_LOCKS_BUCKET_SUFFIX,)
+
+#: the suffix of the agent-config hot cache. platform-historical: underscore-joined to the
+#: namespace (``{ns}_agent_config``) rather than layered as ``{ns}-``, so it is opened by its FULL
+#: name (:func:`agent_config_bucket_name`) and never through ``kv_bucket``.
+_AGENT_CONFIG_BUCKET_SUFFIX: Final[str] = "_agent_config"
 
 
 class Principal(StrEnum):
@@ -216,9 +238,16 @@ class JsCapability(StrEnum):
         compare-and-set, delete) only when the resource is writable. A body-carried read or a
         filtered consumer reaches nothing the grant does not already cover. Never a stream-admin
         verb (see above), never the unnamed or durable consumer create.
-    :cvar STREAM_CONSUMER: a pod's grant on a plain stream: bind (``STREAM.INFO``) and the consumer
-        family pinned to the stream, and no other stream verb. Publishing into the stream is an
-        ordinary publish grant and needs nothing here.
+    :cvar STREAM_CONSUMER: a pod's grant on a plain stream it COLLECTS from: exactly one verb, the
+        NAMED consumer create with its filter in the subject
+        (``CONSUMER.CREATE.{stream}.*.{filter}``), where the filter is the resource's
+        :attr:`JsResource.filter_subject` -- a pattern inside the pod's OWN subjects. nats-server
+        refuses a create whose body filter differs from the subject's, so the consumer can deliver
+        nothing but the pod's own messages, and it delivers them PUSHED to the pod's own inbox. No
+        unnamed or durable create (their filter rides only in the body), no ``MSG.NEXT``, ``INFO``
+        or ``DELETE`` (each reaches a consumer by name, whoever created it), no stream verb at all.
+        A stream a pod only PUBLISHES to needs no JetStream grant: a JetStream publish is a core
+        publish acknowledged on the publisher's own inbox.
     """
 
     FULL = "full"
@@ -295,6 +324,10 @@ class JsResource:
     :param table: the one table within ``scope`` a :attr:`JsCapability.KV_TABLE_SCOPED` grant
         covers; ``None`` for every other capability
     :ptype table: str | None
+    :param filter_subject: the subject pattern a :attr:`JsCapability.STREAM_CONSUMER` holder's
+        consumers must filter on -- inside the holder's own subjects; ``None`` for every other
+        capability
+    :ptype filter_subject: str | None
     """
 
     name: str
@@ -303,6 +336,7 @@ class JsResource:
     scope: str | None
     writable: bool
     table: str | None = None
+    filter_subject: str | None = None
 
     def __post_init__(self) -> None:
         """refuse a record whose scope, table and capability disagree.
@@ -312,9 +346,18 @@ class JsResource:
         :raises ValueError: if a scoped capability carries no scope, if an unscoped capability
             carries one, if the scope is not a single subject token, if a stream is given a KV
             capability, if a read-only capability is declared writable, if a plain stream is
-            declared writable, or if a table is missing, malformed, or given to a capability that
-            does not narrow to one
+            declared writable, if a table is missing, malformed, or given to a capability that
+            does not narrow to one, or if a consumer filter is missing, could widen, or is given
+            to a capability that is not a consumer grant
         """
+        if self.capability is JsCapability.STREAM_CONSUMER:
+            _validate_consumer_filter(self.name, self.filter_subject)
+        elif self.filter_subject is not None:
+            raise ValueError(
+                f"resource {self.name!r} carries consumer filter {self.filter_subject!r} with capability "
+                f"{self.capability.value}, which is not a consumer grant; a filter that is recorded but "
+                f"not enforced reads as narrowing that is not there"
+            )
         if self.capability in _TABLE_CAPABILITIES:
             if self.table is None or not KV_KEY_SCOPE_GRAMMAR.match(self.table):
                 raise ValueError(
@@ -520,16 +563,64 @@ class JsResource:
         return cls(name=name, kind=JsResourceKind.STREAM, capability=JsCapability.FULL, scope=None, writable=False)
 
     @classmethod
-    def stream_consumer(cls, name: str) -> JsResource:
-        """declare a pod's use of one plain stream another identity declared.
+    def stream_consumer(cls, name: str, *, filter_subject: str) -> JsResource:
+        """declare a pod's collection of its OWN messages from one plain stream another identity declared.
+
+        ``filter_subject`` is keyword-only and has no default: a consumer grant is a read, and a
+        read must say what it reads. The holder may create only named consumers whose filter is
+        this pattern, so it must lie inside subjects that are the holder's own.
 
         :param name: the stream name, verbatim
         :ptype name: str
+        :param filter_subject: the subject pattern the holder's consumers filter on
+        :ptype filter_subject: str
         :return: the resource record, at :attr:`JsCapability.STREAM_CONSUMER`
         :rtype: JsResource
+        :raises ValueError: if the filter could widen (see :func:`_validate_consumer_filter`)
         """
         return cls(
-            name=name, kind=JsResourceKind.STREAM, capability=JsCapability.STREAM_CONSUMER, scope=None, writable=False
+            name=name,
+            kind=JsResourceKind.STREAM,
+            capability=JsCapability.STREAM_CONSUMER,
+            scope=None,
+            writable=False,
+            filter_subject=filter_subject,
+        )
+
+
+def _validate_consumer_filter(stream: str, filter_subject: str | None) -> None:
+    """refuse a consumer filter that is missing or could reach beyond one principal's subjects.
+
+    The filter is rendered into the grant ``CONSUMER.CREATE.{stream}.*.{filter}``, so its shape IS
+    the grant's reach. A full-wildcard ``>`` anywhere widens it to every subject below; a wildcard
+    in the namespace or area token widens it across every namespace or subject family; an empty or
+    blank token renders a grant nothing matches, which fails as a deadline rather than a refusal.
+
+    :param stream: the stream the filter is for, for the message
+    :ptype stream: str
+    :param filter_subject: the filter pattern
+    :ptype filter_subject: str | None
+    :return: nothing
+    :rtype: None
+    :raises ValueError: if the filter is missing or has any of the shapes above
+    """
+    if not filter_subject:
+        raise ValueError(
+            f"a consumer grant on stream {stream!r} needs a filter subject; with none, a consumer could "
+            f"filter on the whole stream, which is every principal's messages"
+        )
+    tokens = filter_subject.split(".")
+    widening = (
+        len(tokens) < 3
+        or any(not token or token != token.strip() or " " in token for token in tokens)
+        or any(token == ">" for token in tokens)
+        or "*" in tokens[:2]
+    )
+    if widening:
+        raise ValueError(
+            f"consumer filter {filter_subject!r} on stream {stream!r} could widen past one principal's "
+            f"subjects: a consumer filter is at least three literal-rooted tokens, names its namespace "
+            f"and area literally, carries no '>' and no empty or blank token"
         )
 
 
@@ -908,6 +999,72 @@ def data_version_kv_key(owner_id: str | UUID) -> str:
             f"anything else is not provably unique to its owner"
         ) from exc
     return parsed.hex
+
+
+def agent_config_bucket_name(ns: str | None = None) -> str:
+    """the full name of the agent-config hot cache, ``{ns}_agent_config``.
+
+    the ONE rendering the hub (which declares and writes the bucket), the agent pod's grant and
+    every reader use. The hub's ``agents`` table is the source of an agent's config; this bucket
+    is the cache the hub fills from it, and an agent pod only reads its own key.
+
+    :param ns: the subject namespace prefix; the process default when omitted
+    :ptype ns: str | None
+    :return: the bucket name, prefix included
+    :rtype: str
+    """
+    return f"{ns if ns is not None else _ns()}{_AGENT_CONFIG_BUCKET_SUFFIX}"
+
+
+def agent_config_kv_key(agent_id: str | UUID) -> str:
+    """the key one agent's config is cached under: its canonical hyphenated uuid.
+
+    the hub keys each entry by the agent's uuid in its canonical text form and the pod reads the
+    same, so the read grant names exactly this string as its literal final token. canonicalised here so an upper-case or brace-wrapped
+    spelling of the same id cannot mint a grant on a key nothing writes.
+
+    :param agent_id: the agent's id
+    :ptype agent_id: str | UUID
+    :return: the lower-case, hyphenated uuid
+    :rtype: str
+    :raises ValueError: if ``agent_id`` is not a uuid
+    """
+    if isinstance(agent_id, UUID):
+        return str(agent_id)  # convert at border: the KV key and the grant subject token
+    try:
+        parsed = UUID(str(agent_id))
+    except ValueError as exc:
+        raise ValueError(
+            f"agent-config kv key requires a uuid agent id, got {agent_id!r}; the hub keys the cache "
+            f"by the agent's uuid and a grant on any other string names a key nothing writes"
+        ) from exc
+    return str(parsed)  # convert at border: the KV key and the grant subject token
+
+
+def agent_platform_bucket_suffix(agent_id: str | UUID, suffix: str) -> str:
+    """the name, WITHOUT the ``{ns}-`` prefix, of one of an agent's platform buckets.
+
+    what a holder hands ``KvCapable.kv_bucket`` (which layers the prefix on) and what the hub
+    declares through ``ensure_kv_bucket``: ``{scope}-{suffix}``, where ``scope`` is
+    :func:`kv_key_scope_for` on the agent. the grant renders the same bucket through
+    :func:`coordination_bucket_name`, so the two cannot name different buckets.
+
+    :param agent_id: the owning agent
+    :ptype agent_id: str | UUID
+    :param suffix: one of :data:`AGENT_POD_PLATFORM_BUCKET_SUFFIXES`
+    :ptype suffix: str
+    :return: ``{scope}-{suffix}``
+    :rtype: str
+    :raises ValueError: if ``suffix`` is not a platform bucket suffix, or ``agent_id`` is not a uuid
+    """
+    if suffix not in AGENT_POD_PLATFORM_BUCKET_SUFFIXES:
+        raise ValueError(
+            f"{suffix!r} is not one of the platform's per-agent buckets {AGENT_POD_PLATFORM_BUCKET_SUFFIXES}; "
+            f"an agent's own declared buckets are composed with coordination_bucket_name"
+        )
+    scope = kv_key_scope_for(Principal.AGENT_POD, agent_id=agent_id)
+    _validate_coordination_suffix(suffix)
+    return f"{scope}-{suffix}"
 
 
 def _pod_scope(principal: Principal, scope_id: str) -> str:
@@ -1352,11 +1509,11 @@ def _agent_pod(
             # permission problem, so this is the kind of omission that costs a
             # day.
             JsResource.kv_bucket_keys(f"{ns}-epochs", writable=True),
-            # direct js.create_key_value in the hub; no transport prefix. UNSCOPED, and
-            # deliberately so: it is keyed by agent_id with no scope segment, so a scoped grant
-            # would match none of its keys. cross-agent and cross-customer, recorded as an
-            # accepted residual of this landing rather than closed by it.
-            JsResource.kv_bucket_keys(f"{ns}_agent_config", writable=True),
+            # the agent-config HOT CACHE. The hub's ``agents`` table is the source of an agent's config and
+            # the hub fills this bucket from it; the pod reads and watches its OWN key and writes
+            # nothing. A write would let a pod rewrite the cache the agent router reads its turn
+            # timeout from, and a whole-bucket read is every agent's prompt and access block.
+            JsResource.kv_key_read(agent_config_bucket_name(ns), key=agent_config_kv_key(a)),
             # THE scoped bucket. every principal shares it, and ``BaseCollection.l2_key`` writes
             # ``{scope}.{table}.{body}``, so this is the one resource where a per-principal grant
             # is expressible at all.
@@ -1386,19 +1543,25 @@ def _agent_pod(
             # in BOTH devx (``DevInProcessStrategy`` builtins) and production
             # (``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts`` tools).
             JsResource.kv_bucket_keys(f"{ns}-proxy_assertion_nonces", writable=True),
-            # the durable answer stream carries BOTH directions this pod touches: the results its
-            # in-process tool server delivers, and the replies the registry delivers back to it for
-            # the long calls it makes. one stream, so one JetStream control-plane grant.
-            JsResource.stream_consumer(f"{ns}-channels-deliver"),
-            JsResource.stream_consumer(result_stream_name()),
-            # the audit stream this pod PUBLISHES to (``audit.tool.call``, granted above). A publish
-            # needs no JetStream API grant; this one names the stream for a pod that also consumes
-            # it. It never creates or updates it: the hub declares the audit stream.
-            JsResource.stream_consumer(f"{ns}-audit"),
+            # the ONE stream this pod collects from: the replies the registry delivers back to it for
+            # the long calls it makes, on its OWN ``tools.reply.{agent}.*`` subjects. The results
+            # its in-process tool server delivers ride the same stream but are only PUBLISHED, and
+            # so are its channel answers (``{ns}-channels-deliver``) and audit events
+            # (``{ns}-audit``): a JetStream publish is a core publish acknowledged on this pod's
+            # own inbox, and needs no JetStream grant. A consumer grant on any of them would be a
+            # read of every agent's answers or audit trail.
+            JsResource.stream_consumer(result_stream_name(), filter_subject=str(Subjects.tools_reply_agent_subtree(a))),
             # the agent's OWN data-version entry, read and watched while it waits for an upgrade
             # of its ``data:`` tables to finish. keyed on the AUTHENTICATED agent id, so replicas
             # share one key and no agent can reach another's. READ-ONLY: the hub writes it.
             JsResource.kv_key_read(data_versions_bucket_name(ns), key=data_version_kv_key(a)),
+            # the platform's per-agent buckets -- the workspace file locks -- composed under
+            # ``scope`` exactly as a declared coordination bucket is, and declared by the hub for
+            # every agent whatever its row declares.
+            *(
+                JsResource.kv_bucket_keys(coordination_bucket_name(scope, suffix, ns=ns), writable=True)
+                for suffix in AGENT_POD_PLATFORM_BUCKET_SUFFIXES
+            ),
             # the agent's OWN coordination buckets, each composed under ``scope`` so a
             # declaration can only ever reach this agent's space. LAST, so a reader sees the
             # platform's fixed grants above and this agent's variable ones below.
@@ -1589,10 +1752,10 @@ def _tool_pod(
             # claim rather than a silent double-serve -- and because the open is deferred, a
             # platform cannot learn at construction time that it should downgrade.
             JsResource.kv_bucket_keys(f"{ns}-leases", writable=True),
-            # the stream backing the result grant above. a result rides JetStream rather than a
-            # core publish so a CONSUMER-side reconnect cannot lose an answer that took twenty
-            # minutes to compute -- fixing only the publisher's half would relocate the loss.
-            JsResource.stream_consumer(result_stream_name()),
+            # NO grant on the result stream. a result rides JetStream rather than a core publish so
+            # a CONSUMER-side reconnect cannot lose an answer that took twenty minutes to compute,
+            # but this pod only publishes it -- a core publish acknowledged on its own inbox -- and
+            # the registry collects it. a consumer grant here would read every pod's results.
             # THE SCOPED BUCKET (``coll-task-07c`` TP-01). A tool pod builds an L1+L2
             # ``BaseCollection`` stack through ``ToolServerBootstrap``, and every key it writes is
             # ``{scope}.{table}.{body}`` -- so this is the one resource on which a per-principal

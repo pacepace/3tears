@@ -68,6 +68,7 @@ import math
 import random
 import re
 import time
+import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -278,6 +279,25 @@ _RESULT_WAITER_REBUILD_BACKOFF_SECONDS: Final[float] = 1.0
 #: has nowhere to be delivered. The margin covers the gap between consecutive fetches plus any clock
 #: disagreement; it costs only how long an abandoned consumer lingers.
 _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS: Final[float] = 60.0
+
+#: the idle heartbeat a :class:`JetStreamResultWaiter`'s pushed consumer sends while it has nothing
+#: to deliver. its absence is how a waiter learns the server lost the consumer (a broker restart, a
+#: reap), since a pushed consumer that no longer exists delivers nothing and says nothing.
+_RESULT_WAITER_HEARTBEAT_SECONDS: Final[float] = 5.0
+
+#: consecutive heartbeats a waiter may miss before it replaces its consumer.
+_RESULT_WAITER_MISSED_HEARTBEATS: Final[int] = 3
+
+#: the prefix of every result waiter's consumer name, so an operator reading a stream's consumers
+#: can tell a waiter from anything else on it.
+_RESULT_WAITER_CONSUMER_PREFIX: Final[str] = "result-waiter-"
+
+#: the status a pushed consumer's idle heartbeat carries.
+_STATUS_IDLE_HEARTBEAT: Final[str] = "100"
+
+#: ceiling on one consumer create, so a create the grant refuses -- which is never answered --
+#: surfaces as a failure the wait retries rather than as a hang.
+_RESULT_WAITER_CREATE_TIMEOUT_SECONDS: Final[float] = 10.0
 
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
@@ -801,59 +821,82 @@ class JetStreamResultWaiter:
     - the RESPONDER can be recycled. It publishes to a subject it holds a standing grant on rather
       than to a per-request inbox right that dies with its connection.
     - the CALLER can be recycled. The answer is retained by the stream, and the consumer is
-      re-created against it on the next fetch, so a caller that reconnects mid-wait still collects an
-      answer published while it was away. Fixing only the publisher's half would move the loss rather
-      than end it, which is why the delivery is JetStream and not a core publish.
+      re-created against it when it goes quiet, so a caller that reconnects mid-wait still collects
+      an answer published while it was away. Fixing only the publisher's half would move the loss
+      rather than end it, which is why the delivery is JetStream and not a core publish.
 
-    The consumer is EPHEMERAL and filters on the exact subject with ``DeliverPolicy.ALL``. Both
-    choices matter. Ephemeral means nothing to clean up if this process dies. ``ALL`` on a
-    single-call subject means "the answer, whenever it was published" -- so the ordering between
-    opening the consumer and the answer arriving stops being a race at all.
+    **The consumer is NAMED, filtered in its create subject, and PUSHED to this connection's own
+    inbox**, because that is the one consumer shape a pod's grant admits
+    (:attr:`~threetears.nats.subject_permissions.JsCapability.STREAM_CONSUMER`): nats-py's
+    ``pull_subscribe`` creates the consumer and then pulls with ``CONSUMER.MSG.NEXT``, a verb that
+    reaches ANY consumer on the stream by name -- the registry's over every pod's results included.
+    A pushed consumer needs no verb after its create: the server delivers to the inbox, the answer
+    is acknowledged through the message's reply subject, and an idle heartbeat says the consumer is
+    still there.
 
-    :param js: nats-py JetStream context
+    The consumer filters on the exact subject with ``DeliverPolicy.ALL``. Both choices matter.
+    Ephemeral means nothing to clean up if this process dies -- the server reaps it once nothing has
+    listened for its inactivity threshold. ``ALL`` on a single-call subject means "the answer,
+    whenever it was published" -- so the ordering between opening the consumer and the answer
+    arriving stops being a race at all.
+
+    :param raw: the connected nats-py client, whose inbox receives the pushed answer
+    :ptype raw: Any
+    :param js: nats-py JetStream context on the same connection
     :ptype js: Any
     :param subject: the exact subject the answer will be published to
     :ptype subject: Subject
     :param stream: backing stream name, passed explicitly so the client never issues the
-        ``$JS.API.STREAM.NAMES`` subject lookup (which no principal is granted)
+        ``$JS.API.STREAM.NAMES`` subject lookup
     :ptype stream: str
-    :param inactive_threshold_seconds: how long the server keeps the ephemeral consumer alive
-        between fetches; must exceed the whole wait budget or the consumer evaporates mid-call
+    :param inactive_threshold_seconds: how long the server keeps the consumer with nothing listening;
+        must exceed the whole wait budget or the consumer evaporates mid-call
     :ptype inactive_threshold_seconds: float
-    :param poll_seconds: per-fetch wait, i.e. how often the loop re-checks its own deadline
+    :param poll_seconds: how often the wait re-checks its own deadline and its consumer's heartbeat
     :ptype poll_seconds: float
+    :param heartbeat_seconds: the consumer's idle heartbeat
+    :ptype heartbeat_seconds: float
     """
 
     def __init__(
         self,
         *,
+        raw: Any,
         js: Any,
         subject: Subject,
         stream: str,
         inactive_threshold_seconds: float,
         poll_seconds: float,
+        heartbeat_seconds: float = _RESULT_WAITER_HEARTBEAT_SECONDS,
     ) -> None:
         """bind the waiter to its subject; the consumer is created by :meth:`open`.
 
-        :param js: nats-py JetStream context
+        :param raw: the connected nats-py client
+        :ptype raw: Any
+        :param js: nats-py JetStream context on the same connection
         :ptype js: Any
         :param subject: the exact subject the answer will be published to
         :ptype subject: Subject
         :param stream: backing stream name
         :ptype stream: str
-        :param inactive_threshold_seconds: ephemeral-consumer keepalive, in seconds
+        :param inactive_threshold_seconds: consumer keepalive with nothing listening, in seconds
         :ptype inactive_threshold_seconds: float
-        :param poll_seconds: per-fetch wait, in seconds
+        :param poll_seconds: deadline and heartbeat re-check cadence, in seconds
         :ptype poll_seconds: float
+        :param heartbeat_seconds: the consumer's idle heartbeat, in seconds
+        :ptype heartbeat_seconds: float
         :return: nothing
         :rtype: None
         """
+        self._raw = raw
         self._js = js
         self._subject = subject
         self._stream = stream
         self._inactive_threshold_seconds = inactive_threshold_seconds
         self._poll_seconds = poll_seconds
-        self._psub: Any = None
+        self._heartbeat_seconds = heartbeat_seconds
+        self._sub: Any = None
+        self._consumer_name: str | None = None
 
     @property
     def subject(self) -> Subject:
@@ -869,38 +912,56 @@ class JetStreamResultWaiter:
 
         :return: nothing
         :rtype: None
+        :raises Exception: when the consumer cannot be created -- the caller has not dispatched yet
         """
-        self._psub = await self._subscribe()
+        await self._subscribe()
 
-    async def _subscribe(self) -> Any:
-        """create one ephemeral pull consumer filtered on this waiter's exact subject.
+    async def _subscribe(self) -> None:
+        """subscribe a fresh inbox, then create a freshly named consumer pushing to it.
 
-        :return: nats-py pull subscription handle
-        :rtype: Any
+        The inbox is subscribed FIRST so nothing the consumer delivers can arrive before anything is
+        listening. The create names the consumer and carries the filter, so nats-py issues
+        ``CONSUMER.CREATE.{stream}.{name}.{filter}`` -- the form the server checks against the body.
+
+        :return: nothing
+        :rtype: None
+        :raises Exception: when the create fails or is not answered within its ceiling
         """
+        name = f"{_RESULT_WAITER_CONSUMER_PREFIX}{uuid.uuid7().hex}"
+        inbox = self._raw.new_inbox()
+        sub = await self._raw.subscribe(inbox)
         config = _NatsConsumerConfig(
+            name=name,
+            deliver_subject=inbox,
+            filter_subject=self._subject.path,
             ack_policy=_NatsAckPolicy.EXPLICIT,
             deliver_policy=_NatsDeliverPolicy.ALL,
-            filter_subject=self._subject.path,
-            inactive_threshold=self._inactive_threshold_seconds,
             # one answer per subject: a larger window buys nothing and would let a redelivery sit
             # unacknowledged behind a message this waiter has already returned.
             max_ack_pending=1,
+            idle_heartbeat=self._heartbeat_seconds,
+            inactive_threshold=self._inactive_threshold_seconds,
         )
-        return await self._js.pull_subscribe(
-            self._subject.path,
-            stream=self._stream,
-            config=config,
-        )
+        try:
+            await asyncio.wait_for(
+                self._js.add_consumer(self._stream, config=config),
+                timeout=_RESULT_WAITER_CREATE_TIMEOUT_SECONDS,
+            )
+        except BaseException:
+            await _unsubscribe_quietly(sub, subject=self._subject)
+            raise
+        self._sub = sub
+        self._consumer_name = name
 
     async def wait(self, *, timeout: timedelta) -> bytes:
         """block until the answer arrives, or ``timeout`` elapses.
 
-        Rebuilds the consumer and keeps waiting when a fetch fails for anything other than "nothing
-        yet". That is the reconnect path: after the transport cycles, the server-side ephemeral
+        Replaces the consumer and keeps waiting when it goes quiet -- no delivery and no heartbeat
+        for :data:`_RESULT_WAITER_MISSED_HEARTBEATS` heartbeats -- when the server says it ended it,
+        or when the subscription fails. That is the reconnect path: after a broker restart the
         consumer may be gone, and giving up there would discard an answer the stream is still
-        holding -- the precise failure this class exists to prevent, merely moved to the other end of
-        the wire. The deadline is the only thing that ends the loop.
+        holding -- the precise failure this class exists to prevent, merely moved to the other end
+        of the wire. The deadline is the only thing that ends the loop.
 
         :param timeout: total budget for the answer to arrive
         :ptype timeout: timedelta
@@ -909,75 +970,123 @@ class JetStreamResultWaiter:
         :raises RuntimeError: when called before :meth:`open`
         :raises RequestTimeoutError: when no answer arrives within ``timeout``
         """
-        if self._psub is None:
+        if self._sub is None and self._consumer_name is None:
             raise RuntimeError("JetStreamResultWaiter.wait called before open()")
         deadline = time.monotonic() + timeout.total_seconds()
+        silence = self._heartbeat_seconds * _RESULT_WAITER_MISSED_HEARTBEATS
+        last_heard = time.monotonic()
         payload: bytes | None = None
         while payload is None and time.monotonic() < deadline:
+            if self._sub is None:
+                # a rebuild failed on the previous turn; the broker may still be coming back
+                await self._rebuild()
+                last_heard = time.monotonic()
+                continue
             poll = min(self._poll_seconds, max(deadline - time.monotonic(), _RESULT_WAITER_MIN_POLL_SECONDS))
             try:
-                msgs = await self._psub.fetch(1, timeout=poll)
+                msg = await self._sub.next_msg(timeout=poll)
             except _NatsTimeoutError:
-                # NOSILENT: an empty fetch is the ordinary case, not a failure -- it means the tool
-                # is still running. logging it would emit a line every poll for the whole call.
+                # NOSILENT: an empty poll is the ordinary case -- the tool is still running. only a
+                # consumer that has also stopped heartbeating is replaced, and that is logged.
+                if time.monotonic() - last_heard >= silence:
+                    log.warning(
+                        "result waiter consumer went quiet; replacing it (subject=%s stream=%s consumer=%s)",
+                        self._subject.path,
+                        self._stream,
+                        self._consumer_name,
+                    )
+                    await self._rebuild()
+                    last_heard = time.monotonic()
                 continue
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — a transport blip must not discard a live answer
                 log.warning(
-                    "result waiter fetch failed; rebuilding consumer (subject=%s stream=%s): %s",
+                    "result waiter delivery failed; replacing its consumer (subject=%s stream=%s): %s",
                     self._subject.path,
                     self._stream,
                     exc,
                 )
                 await self._rebuild()
+                last_heard = time.monotonic()
                 continue
-            if msgs:
-                await msgs[0].ack()
-                payload = bytes(msgs[0].data)
+            last_heard = time.monotonic()
+            headers = msg.headers or {}
+            status = headers.get("Status") if not msg.data else None
+            if status == _STATUS_IDLE_HEARTBEAT:
+                continue
+            if status is not None:
+                log.warning(
+                    "result waiter consumer ended by the server (%s %s); replacing it (subject=%s consumer=%s)",
+                    status,
+                    headers.get("Description", ""),
+                    self._subject.path,
+                    self._consumer_name,
+                )
+                await self._rebuild()
+                continue
+            await msg.ack()
+            payload = bytes(msg.data)
         if payload is None:
             raise RequestTimeoutError(f"no result delivered on {self._subject.path} within {timeout.total_seconds()}s")
         return payload
 
     async def _rebuild(self) -> None:
-        """drop and re-create the consumer after a failed fetch; never raises.
+        """drop the inbox and create a fresh consumer; never raises.
+
+        The abandoned consumer is left for the server to reap after its inactivity threshold: a pod
+        holds no ``CONSUMER.DELETE``, and nothing listens on its inbox any more.
 
         :return: nothing
         :rtype: None
         """
         await self.close()
         try:
-            self._psub = await self._subscribe()
-        except Exception as exc:  # noqa: BLE001 — the next poll retries; failing here would end the wait
+            await self._subscribe()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — the next turn retries; failing here would end the wait
             log.warning(
-                "result waiter could not rebuild its consumer (subject=%s); retrying on next poll: %s",
+                "result waiter could not replace its consumer (subject=%s); retrying: %s",
                 self._subject.path,
                 exc,
             )
             await asyncio.sleep(_RESULT_WAITER_REBUILD_BACKOFF_SECONDS)
 
     async def close(self) -> None:
-        """unsubscribe the consumer; idempotent and never raises.
+        """unsubscribe the inbox; idempotent and never raises.
 
-        the ephemeral consumer would also age out on its own inactivity threshold, so a failure here
+        the consumer ages out on its own inactivity threshold once nothing listens, so a failure here
         leaks nothing durable -- which is why it is logged at debug and not surfaced to a caller that
         is, by this point, already holding its answer.
 
         :return: nothing
         :rtype: None
         """
-        psub = self._psub
-        self._psub = None
-        if psub is None:
-            return
-        try:
-            await psub.unsubscribe()
-        except Exception as exc:  # noqa: BLE001 — the consumer ages out anyway; nothing durable leaks
-            log.debug(
-                "result waiter unsubscribe failed (subject=%s): %s",
-                self._subject.path,
-                exc,
-            )
+        sub = self._sub
+        self._sub = None
+        if sub is not None:
+            await _unsubscribe_quietly(sub, subject=self._subject)
+
+
+async def _unsubscribe_quietly(sub: Any, *, subject: Subject) -> None:
+    """unsubscribe a result waiter's inbox, logging rather than raising a failure.
+
+    :param sub: the core subscription on the waiter's inbox
+    :ptype sub: Any
+    :param subject: the awaited subject, for the log line
+    :ptype subject: Subject
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        await sub.unsubscribe()
+    except Exception as exc:  # noqa: BLE001 — the consumer ages out anyway; nothing durable leaks
+        log.debug(
+            "result waiter unsubscribe failed (subject=%s): %s",
+            subject.path,
+            exc,
+        )
 
 
 class _CredentialRenewal:
@@ -3104,6 +3213,7 @@ class NatsClient:
         :rtype: JetStreamResultWaiter
         """
         waiter = JetStreamResultWaiter(
+            raw=self._raw,
             js=self.jetstream_context(),
             subject=subject,
             stream=stream,

@@ -637,3 +637,49 @@ class TestNoPodManagesAStream:
         managing = {JsCapability.FULL, JsCapability.KV_SCOPED_DECLARE}
         held = [(r.name, r.capability) for r in permissions.js_resources if r.capability in managing]  # type: ignore[attr-defined]
         assert not held, f"{label} holds a stream-management capability: {held}"
+
+
+#: the consumer verbs that reach an EXISTING consumer by name, or enumerate them, whoever created it.
+#: a pod holding any of them could pull, inspect or delete the collector's consumer over every
+#: principal's messages, so none is ever minted for a pod.
+_CONSUMER_BY_NAME_VERBS: tuple[str, ...] = ("MSG.NEXT", "INFO", "DELETE", "PAUSE", "UNPIN")
+_CONSUMER_LISTING_VERBS: tuple[str, ...] = ("LIST", "NAMES")
+
+
+class TestAPodReadsOnlyItsOwnMessages:
+    """a pod creates only NAMED consumers whose filter rides in the subject, inside its own subjects.
+
+    The unnamed and durable creates carry their filter only in the request body, where no subject
+    permission can see it; the by-name verbs reach a consumer somebody else created. Asserted on the
+    MINTED grant, over every stream the pod declares and a stream nobody declared.
+    """
+
+    @pytest.mark.parametrize("index", [0, 1])
+    def test_no_unnamed_durable_or_by_name_consumer_verb(self, index: int) -> None:
+        label, permissions = _pod_permissions()[index]
+        allow = _minted_pod_publish(permissions)
+        streams = {r.stream_name for r in permissions.js_resources}  # type: ignore[attr-defined]
+        assert streams, f"{label} declares no stream; the probe below would be vacuous"
+        probes = [
+            subject
+            for stream in (*sorted(streams), _FOREIGN_STREAM)
+            for subject in (
+                f"$JS.API.CONSUMER.CREATE.{stream}",
+                f"$JS.API.CONSUMER.DURABLE.CREATE.{stream}.probe",
+                *(f"$JS.API.CONSUMER.{verb}.{stream}.probe" for verb in _CONSUMER_BY_NAME_VERBS),
+                *(f"$JS.API.CONSUMER.{verb}.{stream}" for verb in _CONSUMER_LISTING_VERBS),
+            )
+        ]
+        offenders = [(pattern, probe) for probe in probes for pattern in allow if _pattern_admits(pattern, probe)]
+        assert not offenders, f"{label} may reach a consumer it did not create or filter: {offenders}"
+
+    @pytest.mark.parametrize("index", [0, 1])
+    def test_every_consumer_create_names_its_filter_in_the_subject(self, index: int) -> None:
+        """the one consumer verb a pod holds: ``CREATE.{stream}.*.{filter}``, filter literal-rooted."""
+        label, permissions = _pod_permissions()[index]
+        creates = [s for s in _minted_pod_publish(permissions) if s.startswith("$JS.API.CONSUMER.")]
+        assert creates, f"{label} holds no consumer create; the check below would be vacuous"
+        for subject in creates:
+            tokens = subject.split(".")
+            assert tokens[3] == "CREATE" and tokens[5] == "*" and len(tokens) > 7, (label, subject)
+            assert ">" not in tokens[:-1] and tokens[6] not in {"*", ">"}, (label, subject)

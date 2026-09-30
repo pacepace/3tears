@@ -189,25 +189,28 @@ def test_the_checkpoint_l2_grant_matches_the_bucket_a_host_opens() -> None:
     )
 
 
-def test_the_audit_stream_an_agent_consumes_is_the_one_it_is_granted() -> None:
-    """An agent that runs an audit consumer must be granted the stream it declares.
+def test_an_agent_pod_publishes_audit_events_and_holds_no_grant_on_the_audit_stream() -> None:
+    """An agent pod EMITS audit events and consumes none, so it holds no grant on the stream.
 
     ``AGENT_POD`` is granted ``audit.tool.call`` as a PUBLISH subject, which is the
-    emitting half. A pod that also CONSUMES its own audit events calls
-    ``ensure_jetstream_stream`` on ``{ns}-audit``, and JetStream stream create/update
-    is a control-plane grant, not a subject grant -- so publish succeeding says
-    nothing about whether the consumer can bind.
+    emitting half, and a JetStream publish needs nothing more: it is a core publish
+    acknowledged on the publisher's own inbox. The audit stream is declared and
+    consumed by the hub (``start_audit_persister``), and no pod runs a consumer on it.
 
-    Pinned because the failure is silent from the emitting side: the publishes keep
-    returning, the stream is never created, and every envelope the consumer was meant
-    to durably record is dropped.
+    Least privilege, and the reason this pin changed: a consumer grant on
+    ``{ns}-audit`` let a pod create a consumer over EVERY agent's audit events --
+    other customers' included -- and a stream-management grant let it create the
+    stream it then read. The emitting half is pinned beside the absence so the
+    narrowing cannot be mistaken for dropping the publish.
     """
     granted = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_ID, pod_id=_POD_ID)
     streams = [r.stream_name for r in granted.js_resources]
-    assert f"KV_{_NAMESPACE}-audit" not in streams, "the audit stream is a plain stream, not a KV bucket"
-    assert f"{_NAMESPACE}-audit" in streams, (
-        f"an agent pod is not granted the audit stream it declares ('{_NAMESPACE}-audit'); it holds {streams}."
+    assert f"{_NAMESPACE}-audit" not in streams, (
+        f"an agent pod holds a JetStream grant on the audit stream ('{_NAMESPACE}-audit'), which it only "
+        f"publishes to; it holds {streams}."
     )
+    assert f"KV_{_NAMESPACE}-audit" not in streams, "the audit stream is a plain stream, not a KV bucket"
+    assert f"{_NAMESPACE}.audit.tool.call" in granted.publish, "the agent pod must still emit its audit events"
 
 
 #: representative ids per principal, so every member of the enum resolves to a concrete

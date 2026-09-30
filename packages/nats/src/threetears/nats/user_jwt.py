@@ -73,6 +73,7 @@ def js_api_grants_for_stream(
     capability: JsCapability = JsCapability.FULL,
     bucket: str | None = None,
     scope: str | None = None,
+    filter_subject: str | None = None,
 ) -> list[str]:
     """the JetStream control-plane subjects scoped to ONE stream ``stream``, pinned by literal name.
 
@@ -177,11 +178,21 @@ def js_api_grants_for_stream(
     ``$KV.`` publish for a writable grant is minted by :func:`mint_user_jwt` from the resource, not
     here.
 
-    :attr:`JsCapability.STREAM_CONSUMER` is a pod's grant on a plain stream: the bind
-    (``$JS.API.STREAM.INFO.{stream}``) and the consumer family pinned to the stream at each position
-    it occupies, exactly as :attr:`JsCapability.FULL` emits it -- and no ``STREAM`` verb besides
-    ``INFO``, no body-carried ``STREAM.MSG`` read and no ``DIRECT.GET``. Publishing into a stream is
-    an ordinary publish grant and needs nothing here.
+    :attr:`JsCapability.STREAM_CONSUMER` is a pod's grant on a plain stream it collects its OWN
+    messages from, and it is exactly ONE subject:
+
+    - ``$JS.API.CONSUMER.CREATE.{stream}.*.{filter}`` -- a NAMED consumer whose filter rides in the
+      subject, where nats-server checks it against the body's ``filter_subject``; ``filter`` is the
+      resource's ``filter_subject``, a pattern inside the pod's own subjects. The consumer PUSHES to
+      a deliver subject the pod names, and the pod can only subscribe its own inbox; acknowledgements
+      and flow control ride ``allow_responses``.
+
+    Nothing else, and each omission is a cross-principal read: the unnamed
+    ``CONSUMER.CREATE.{stream}`` and ``DURABLE.CREATE`` carry their filter only in the body;
+    ``MSG.NEXT``, ``INFO`` and ``DELETE`` reach an existing consumer BY NAME whoever created it, so a
+    pod holding them could pull, inspect or destroy the collector's consumer over every principal's
+    messages; ``STREAM.INFO`` and every read verb describe or return the whole stream. Publishing
+    into a stream is an ordinary publish grant and needs nothing here.
 
     JetStream consumer ACK/NAK is NOT listed: it publishes to the delivered message's ``$JS.ACK.*``
     reply subject and rides the principal's ``allow_responses`` grant (the same way it did under the
@@ -198,9 +209,13 @@ def js_api_grants_for_stream(
         for :attr:`JsCapability.KV_KEY_READ`, or ``{owner_scope}.{table}`` for
         :attr:`JsCapability.KV_TABLE_SCOPED`; required for a scoped capability
     :ptype scope: str | None
+    :param filter_subject: the pattern a :attr:`JsCapability.STREAM_CONSUMER` holder's consumers
+        filter on; required for that capability and ignored by every other
+    :ptype filter_subject: str | None
     :return: the per-stream JS-API control-plane allow-list (publish subjects)
     :rtype: list[str]
-    :raises ValueError: if a scoped capability is requested without both ``bucket`` and ``scope``
+    :raises ValueError: if a scoped capability is requested without both ``bucket`` and ``scope``,
+        or a consumer capability without ``filter_subject``
     """
     grants: list[str]
     if capability is JsCapability.KV_BUCKET_KEYS:
@@ -217,12 +232,13 @@ def js_api_grants_for_stream(
             f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.>",
         ]
     elif capability is JsCapability.STREAM_CONSUMER:
-        grants = [
-            f"$JS.API.STREAM.INFO.{stream}",
-            f"$JS.API.CONSUMER.*.{stream}",
-            f"$JS.API.CONSUMER.*.{stream}.>",
-            f"$JS.API.CONSUMER.*.*.{stream}.>",
-        ]
+        if not filter_subject:
+            raise ValueError(
+                f"{capability.value} grants for stream {stream!r} need the consumer filter: the grant is "
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.<filter>, and with no filter a consumer could read "
+                f"every principal's messages"
+            )
+        grants = [f"$JS.API.CONSUMER.CREATE.{stream}.*.{filter_subject}"]
     elif not capability_is_scoped(capability):
         grants = [
             f"$JS.API.STREAM.*.{stream}",
@@ -396,6 +412,7 @@ def mint_user_jwt(
                 capability=resource.capability,
                 bucket=bucket,
                 scope=resource.key_prefix,
+                filter_subject=resource.filter_subject,
             )
         )
     if permissions.js_resources:
