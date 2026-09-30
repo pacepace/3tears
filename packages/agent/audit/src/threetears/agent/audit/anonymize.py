@@ -102,6 +102,7 @@ SAFE_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "connection_id",  # identity.login.*, identity.connection.*, identity.principal.* (identity)
         "conversation_id",  # security.exploit.approval.* (hub)
         "customer_id",  # rbac.group.create, rbac.role.create (hub); identity.tenancy.platform_scope (identity)
+        "datasource_id",  # the renamed datasource a grant followed, rbac.assignment.move (hub)
         "entity_id",  # knowledge.candidate.*, knowledge.promotion.* (hub)
         "external_realm_id",  # chat platform's workspace id, channel_realm.* (hub)
         "grant_id",  # admin.action mcp_tool_grant (hub)
@@ -294,6 +295,8 @@ PERSONAL_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "schedule_config",  # an arbitrary caller-supplied dict, admin.action scheduled_job_update (hub)
         "schema_name",  # customer schema name, datasource.rollover (hub)
         "scope_namespace_name",  # user-supplied namespace name, rbac.assignment.create (hub)
+        "scope_namespace_name_after",  # the grant's node name after its rename, rbac.assignment.move (hub)
+        "scope_namespace_name_before",  # the grant's node name before its rename, rbac.assignment.move (hub)
         "sha256_after",  # digest of user content: pseudonymous, confirmable by guessing (3tears)
         "sha256_before",  # digest of user content: pseudonymous, confirmable by guessing (3tears)
         "sid",  # a raw session id, credential-adjacent; logs carry only its digest (identity)
@@ -351,6 +354,8 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "media.delivered": frozenset({"type"}),
         # fixed "operator_forced_owner_deletion" (hub)
         "rbac.assignment.delete": frozenset({"reason"}),
+        # fixed "datasource_renamed" (hub)
+        "rbac.assignment.move": frozenset({"reason"}),
         # allow / deny (hub)
         "rbac.introspect": frozenset({"decision"}),
         # the approval verdict, and the uuid of the user who approved or denied the paused tool

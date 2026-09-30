@@ -45,6 +45,12 @@ __all__ = [
 #: the publisher's validate-before-emit guard and by test
 #: parameterization. the unified envelope's ``event_type`` column is
 #: open ``str``; the closed set lives at the producer site.
+#:
+#: ``rbac.assignment.move`` is a grant that names its node BY NAME (a subtree
+#: grant) following that node to its new name when the node is renamed: the
+#: same assignment id, group, role and provenance, at the new name. it is not
+#: a re-scope -- an admin changing what a grant covers revokes it and grants
+#: anew, and is audited as ``delete`` and ``create``.
 RBAC_AUDIT_EVENT_TYPES: tuple[str, ...] = (
     "rbac.group.create",
     "rbac.group.update",
@@ -56,6 +62,7 @@ RBAC_AUDIT_EVENT_TYPES: tuple[str, ...] = (
     "rbac.role.delete",
     "rbac.assignment.create",
     "rbac.assignment.delete",
+    "rbac.assignment.move",
     "rbac.introspect.explain",
     "rbac.introspect.effective",
     "rbac.introspect.namespace_access",
@@ -74,6 +81,7 @@ RbacEventType = Literal[
     "rbac.role.delete",
     "rbac.assignment.create",
     "rbac.assignment.delete",
+    "rbac.assignment.move",
     "rbac.introspect.explain",
     "rbac.introspect.effective",
     "rbac.introspect.namespace_access",
@@ -102,6 +110,7 @@ RBAC_AUDIT_ACTIONS: tuple[str, ...] = (
     "delete",
     "add_member",
     "remove_member",
+    "move",
     "explain",
     "effective",
     "namespace_access",
@@ -115,6 +124,7 @@ RbacAuditAction = Literal[
     "delete",
     "add_member",
     "remove_member",
+    "move",
     "explain",
     "effective",
     "namespace_access",

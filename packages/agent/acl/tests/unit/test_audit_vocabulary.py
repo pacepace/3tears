@@ -13,21 +13,26 @@ publish-side guard rather than silently leaking through.
 
 from __future__ import annotations
 
+from typing import get_args
+
 from threetears.agent.acl.audit_vocabulary import (
     RBAC_AUDIT_ACTIONS,
     RBAC_AUDIT_EVENT_TYPES,
     RBAC_AUDIT_RESOURCE_TYPES,
+    RbacAuditAction,
+    RbacAuditResourceType,
+    RbacEventType,
 )
 
 
-def test_event_types_contain_exactly_fourteen_strings() -> None:
-    """the rbac event vocabulary stays at exactly 14 entries.
+def test_event_types_contain_exactly_fifteen_strings() -> None:
+    """the rbac event vocabulary stays at exactly 15 entries.
 
     new event types require explicit shard work (publisher emit + admin
     UI exposure + docs + audit-row taxonomy review). the cardinality
     check catches accidental additions in code review.
     """
-    assert len(RBAC_AUDIT_EVENT_TYPES) == 14
+    assert len(RBAC_AUDIT_EVENT_TYPES) == 15
 
 
 def test_event_types_match_expected_set() -> None:
@@ -48,6 +53,7 @@ def test_event_types_match_expected_set() -> None:
         "rbac.role.delete",
         "rbac.assignment.create",
         "rbac.assignment.delete",
+        "rbac.assignment.move",
         "rbac.introspect.explain",
         "rbac.introspect.effective",
         "rbac.introspect.namespace_access",
@@ -79,18 +85,26 @@ def test_resource_types_match_expected_set() -> None:
 
 
 def test_actions_match_expected_set() -> None:
-    """action verb vocabulary stays at the nine rbac verbs."""
+    """action verb vocabulary stays at the ten rbac verbs."""
     assert set(RBAC_AUDIT_ACTIONS) == {
         "create",
         "update",
         "delete",
         "add_member",
         "remove_member",
+        "move",
         "explain",
         "effective",
         "namespace_access",
         "dry_run",
     }
+
+
+def test_the_literal_aliases_name_exactly_the_closed_sets() -> None:
+    """the static fence and the runtime set are one vocabulary, not two lists that drift."""
+    assert set(get_args(RbacEventType)) == set(RBAC_AUDIT_EVENT_TYPES)
+    assert set(get_args(RbacAuditAction)) == set(RBAC_AUDIT_ACTIONS)
+    assert set(get_args(RbacAuditResourceType)) == set(RBAC_AUDIT_RESOURCE_TYPES)
 
 
 def test_event_types_tuple_is_immutable() -> None:
