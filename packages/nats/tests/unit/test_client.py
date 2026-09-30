@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -586,6 +587,84 @@ async def test_subscribe_max_in_flight_loop_crash_logs_real_error_type(
     assert logged["error_type"] == "RuntimeError"
     assert "nats transport went away" in logged["error"]
     await sub.unsubscribe()
+
+
+async def _stamped_behind_a_busy_callback(max_in_flight: int | None) -> tuple[float, float, float]:
+    """queue a second message behind a callback that holds the only slot, and date it.
+
+    the first callback parks until released; the second message is put on the connection
+    while it is parked, and the test waits until the client has taken it off the
+    connection before recording ``after_arrival``. the park then lasts a further
+    measurable stretch before the second callback can start.
+
+    :param max_in_flight: the cap to subscribe with; ``1`` or ``None`` both leave one slot
+    :ptype max_in_flight: int | None
+    :return: (``after_arrival``, the second message's ``monotonic_received``, when its callback started)
+    :rtype: tuple[float, float, float]
+    """
+    client, fake = _make_client()
+    release = asyncio.Event()
+    first_entered = asyncio.Event()
+    second: asyncio.Future[tuple[float, float]] = asyncio.get_running_loop().create_future()
+
+    async def handler(msg: IncomingMessage) -> None:
+        if msg.data == b"first":
+            first_entered.set()
+            await release.wait()
+            return
+        second.set_result((msg.monotonic_received, time.monotonic()))
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler, max_in_flight=max_in_flight)
+    raw = fake.subscribed[-1][2]
+    await raw.queue.put(_FakeMsg(data=b"first"))
+    await asyncio.wait_for(first_entered.wait(), timeout=2.0)
+
+    async def _taken_off_the_connection() -> None:
+        while not raw.queue.empty():
+            await asyncio.sleep(0)
+
+    await raw.queue.put(_FakeMsg(data=b"second"))
+    # a client that leaves the message on the connection while a callback holds the slot
+    # never takes it here, and cannot date its arrival.
+    await asyncio.wait_for(_taken_off_the_connection(), timeout=2.0)
+    after_arrival = time.monotonic()
+    await asyncio.sleep(0.2)  # the second message waits here, received but not started
+    release.set()
+
+    received, started = await asyncio.wait_for(second, timeout=2.0)
+    await raw.queue.put(None)
+    await sub.unsubscribe()
+    return after_arrival, received, started
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_in_flight", [1, None], ids=["bounded", "serial"])
+async def test_a_message_is_dated_when_it_arrives_not_when_its_callback_starts(max_in_flight: int | None) -> None:
+    """``monotonic_received`` counts the time a message waited for a callback slot.
+
+    a request/reply server holds each request to the deadline its caller set, and the
+    caller's clock started when it sent. dated from the callback's start instead, a
+    request that queued behind a busy subscription looks fresh however long it waited,
+    and the server runs work whose caller has already given up.
+    """
+    after_arrival, received, started = await _stamped_behind_a_busy_callback(max_in_flight)
+
+    assert received <= after_arrival, "the message was dated after the client had already taken it"
+    assert started - received >= 0.2, "the wait for a slot is missing from the message's age"
+
+
+def test_a_message_built_by_hand_is_dated_when_it_is_built() -> None:
+    """a hand-built envelope (a test, an in-process relay) was received when it was made."""
+    before = time.monotonic()
+    msg = IncomingMessage(data=b"{}", reply_subject=None, subject="3tears.tools.call")
+    assert before <= msg.monotonic_received <= time.monotonic()
+
+
+def test_the_receipt_time_is_not_part_of_a_messages_identity() -> None:
+    """the same message taken twice is still the same message."""
+    taken_early = IncomingMessage(data=b"{}", reply_subject=None, subject="s", monotonic_received=1.0)
+    taken_late = IncomingMessage(data=b"{}", reply_subject=None, subject="s", monotonic_received=2.0)
+    assert taken_early == taken_late
 
 
 @pytest.mark.asyncio

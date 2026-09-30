@@ -76,6 +76,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, T
 
 import nats
 from nats.aio.client import Client as _NatsPyClient
+from nats.aio.subscription import DEFAULT_SUB_PENDING_BYTES_LIMIT, DEFAULT_SUB_PENDING_MSGS_LIMIT
 from nats.js.api import (
     AckPolicy as _NatsAckPolicy,
     ConsumerConfig as _NatsConsumerConfig,
@@ -94,6 +95,7 @@ from threetears.observe import get_logger, representative_exception
 
 from threetears.nats._diagnostics import permissions_violation_remedy
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
+from threetears.nats._receipt import ReceiptBacklog
 from threetears.nats.credential_renewal import (
     REAUTH_RETRY_SECONDS,
     has_schedulable_ttl,
@@ -2151,7 +2153,7 @@ class NatsClient:
 
         **ordering.** left unset (the default), ``max_in_flight`` gives
         strictly serial, in-order dispatch: one callback runs to
-        completion before the next message is taken. **Setting it trades
+        completion before the next message is dispatched. **Setting it trades
         that ordering guarantee away** — capped callbacks run
         concurrently and may complete in any order. Only set it when the
         handler is safe to interleave with itself.
@@ -2289,7 +2291,7 @@ class NatsClient:
 
         semaphore: asyncio.Semaphore | None = asyncio.Semaphore(max_in_flight) if max_in_flight is not None else None
 
-        async def _dispatch_one(msg: "_NatsMsg") -> None:
+        async def _dispatch_one(msg: "_NatsMsg", received: float) -> None:
             """process one message; deadletter on failure when enabled."""
             try:
                 if typed_cb is not None and message_type is not None:
@@ -2301,6 +2303,7 @@ class NatsClient:
                         data=msg.data,
                         reply_subject=msg.reply or None,
                         subject=msg.subject,
+                        monotonic_received=received,
                     )
                     await raw_cb(incoming)
             except ValidationError as exc:
@@ -2334,9 +2337,9 @@ class NatsClient:
             """record a dispatch-loop failure with the originating error's own type.
 
             unwraps a ``BaseExceptionGroup`` first: an exception that escapes
-            into ``TaskGroup.__aexit__`` (the bounded-dispatch path) arrives
-            here wrapped, and logging the wrapper's type would name
-            ``ExceptionGroup`` instead of the real transport fault.
+            into ``TaskGroup.__aexit__`` would arrive here wrapped, and logging
+            the wrapper's type would name ``ExceptionGroup`` instead of the real
+            transport fault.
             """
             underlying = representative_exception(exc)
             log.error(
@@ -2350,62 +2353,71 @@ class NatsClient:
                 },
             )
 
-        async def _run_bounded(msg: "_NatsMsg", slot: asyncio.Semaphore) -> None:
+        async def _run_bounded(msg: "_NatsMsg", received: float, slot: asyncio.Semaphore) -> None:
             """process one message under the concurrency cap, freeing the slot when done."""
             try:
-                await _dispatch_one(msg)
+                await _dispatch_one(msg, received)
             finally:
                 slot.release()
 
-        async def _dispatch_serial() -> None:
-            """serial default (max_in_flight unset): one callback at a time.
+        async def _receive(backlog: ReceiptBacklog) -> None:
+            """take each message off the connection as it arrives and date it there.
 
-            preserves in-order processing for subscribers that rely on it, and keeps the
-            single in-flight callback inside this task so cancelling the dispatch task
-            cancels the callback with it.
+            nats-py's ``Msg`` carries no receipt time, and a message left in its pending
+            queue while every callback is busy is invisible; taken here instead, the time
+            it then waits for a callback counts toward its age (``monotonic_received``).
+            the backlog's bound stops this loop when the callbacks fall far enough behind,
+            so the excess waits on the connection under nats-py's own slow-consumer limit.
+
+            a stream failure is logged here rather than raised: an exception escaping into
+            the task group would cancel every in-flight callback and reach the outer
+            handler wrapped in an ``ExceptionGroup``. either way the backlog is closed, so
+            the dispatcher hands out what was already received and then ends.
             """
-            async for msg in raw_sub.messages:
-                await _dispatch_one(msg)
-
-        async def _dispatch_bounded(slots: asyncio.Semaphore) -> None:
-            """bounded concurrency: keep at most ``max_in_flight`` callbacks in flight.
-
-            each callback runs as its OWN task, so several progress at once; awaiting the
-            callback inline here instead would serialize every message despite the cap.
-            a slot is acquired before spawning, so once the cap is reached the loop parks
-            here (holding at most one already-received message) and back-pressures.
-
-            the task group owns the callback tasks' lifetime: leaving the block awaits
-            them on normal loop exit (the subscription's message stream ending), and
-            cancels *and awaits* them when unsubscribe cancels this task. without that
-            join, a callback could still be mid-flight after ``unsubscribe`` returned and
-            find the connection drained out from under it.
-            """
-            async with asyncio.TaskGroup() as group:
-                try:
-                    async for msg in raw_sub.messages:
-                        await slots.acquire()
-                        # _dispatch_one never lets an Exception escape, so a sibling callback
-                        # can never trip the group's cancel-all-on-child-error semantics.
-                        group.create_task(_run_bounded(msg, slots))
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 — diag only
-                    # log INSIDE the group. an exception allowed to escape into
-                    # TaskGroup.__aexit__ is re-raised wrapped in an ExceptionGroup, so the
-                    # outer handler would only ever record error_type=ExceptionGroup and lose
-                    # the transport error's real type and message. swallowing it here also
-                    # lets the group join the already-running callbacks on the way out
-                    # instead of abandoning them.
-                    _log_loop_crash(exc)
+            try:
+                async for msg in raw_sub.messages:
+                    await backlog.put(msg, received=time.monotonic())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — diag only
+                _log_loop_crash(exc)
+            finally:
+                await backlog.close()
 
         async def _dispatch() -> None:
-            """drive subscription message loop."""
+            """drive the subscription: one task receives, this one dispatches.
+
+            with ``max_in_flight`` unset, each callback is awaited here before the next
+            message is taken from the backlog: strictly serial and in arrival order, and
+            cancelling this task cancels the one callback in flight with it.
+
+            with it set, each callback runs as its OWN task, so several progress at once;
+            awaiting the callback inline instead would serialize every message despite the
+            cap. a slot is acquired before spawning, so once the cap is reached this loop
+            parks and the backlog fills behind it.
+
+            the task group owns the receiver's and the callbacks' lifetimes: leaving the
+            block awaits them on normal exit (the message stream ending), and cancels *and
+            awaits* them when unsubscribe cancels this task. without that join, a callback
+            could still be mid-flight after ``unsubscribe`` returned and find the
+            connection drained out from under it.
+            """
+            backlog = ReceiptBacklog(
+                msgs_limit=DEFAULT_SUB_PENDING_MSGS_LIMIT,
+                bytes_limit=DEFAULT_SUB_PENDING_BYTES_LIMIT,
+            )
             try:
-                if semaphore is None:
-                    await _dispatch_serial()
-                else:
-                    await _dispatch_bounded(semaphore)
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(_receive(backlog), name=f"nats-receive:{subject.path}")
+                    while (item := await backlog.get()) is not None:
+                        msg, received = item
+                        if semaphore is None:
+                            await _dispatch_one(msg, received)
+                        else:
+                            await semaphore.acquire()
+                            # _dispatch_one never lets an Exception escape, so a sibling
+                            # callback can never trip the group's cancel-all-on-child-error.
+                            group.create_task(_run_bounded(msg, received, semaphore))
             except asyncio.CancelledError:
                 # graceful unsubscribe path
                 raise
