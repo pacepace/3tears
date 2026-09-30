@@ -234,7 +234,10 @@ async def test_the_summary_log_counts_what_the_cascade_removed(caplog: pytest.Lo
             "FROM memories m WHERE": [{"agent_id": agent, "memory_id": memory_id}],
             "FROM media_content": [{"agent_id": agent, "content_id": uuid4()}],
             "FROM media WHERE": [{"agent_id": agent, "media_id": uuid4()}],
-            "FROM memory_chunks WHERE": [{"agent_id": agent, "chunk_id": uuid4()}, {"agent_id": agent, "chunk_id": uuid4()}],
+            "FROM memory_chunks WHERE": [
+                {"agent_id": agent, "chunk_id": uuid4()},
+                {"agent_id": agent, "chunk_id": uuid4()},
+            ],
             "FROM memory_consolidations": [],
             "UPDATE memories": [],
             "UPDATE media ": [],
