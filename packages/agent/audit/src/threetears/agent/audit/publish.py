@@ -26,6 +26,7 @@ redelivered envelope repeats its ``id``, which is the row's primary key.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from threetears.nats import Subject
 from threetears.observe import get_logger
@@ -38,10 +39,40 @@ if TYPE_CHECKING:
     # so the eager `kv` import here costs an L1 consumer nothing.
     from threetears.nats.kv import JetStreamPublisher
 
-__all__ = ["publish_audit"]
+__all__ = ["TOOL_POD_AUDIT_TOKEN", "publish_audit", "tool_pod_audit_subject"]
 
 
 log = get_logger(__name__)
+
+
+#: the subject token a TOOL POD's own audit events are published under, between ``audit`` and
+#: the pod id: ``{ns}.audit.tool_pod.{tool_pods.id}.{event_type}``.
+TOOL_POD_AUDIT_TOKEN = "tool_pod"
+
+
+def tool_pod_audit_subject(namespace: str, tool_pod_id: UUID, event_type: str) -> Subject:
+    """the subject one tool pod publishes one of its own audit events on.
+
+    a tool pod publishes under its OWN pod id rather than on the bare ``{ns}.audit.{event_type}``
+    an agent uses, so its grant can be exactly ``{ns}.audit.tool_pod.{its id}.>``: it may publish
+    any event type it produces, and can never pose as another pod or as an agent's audit stream.
+    the hub's unified consumer binds ``{ns}.audit.>`` and reads the event type off the envelope,
+    so it persists these unchanged; the event type is kept, never rewritten.
+
+    :param namespace: NATS subject namespace
+    :ptype namespace: str
+    :param tool_pod_id: the publishing pod's ``tool_pods.id``
+    :ptype tool_pod_id: UUID
+    :param event_type: the envelope's dotted event type, verbatim
+    :ptype event_type: str
+    :return: subject ``{namespace}.audit.tool_pod.{tool_pod_id}.{event_type}``
+    :rtype: Subject
+    :raises ValueError: if ``event_type`` is empty
+    """
+    if not event_type:
+        raise ValueError("event_type must be non-empty")
+    # convert at border: the pod id is a subject token
+    return Subject.raw(f"{namespace}.audit.{TOOL_POD_AUDIT_TOKEN}.{tool_pod_id}.{event_type}")
 
 
 async def publish_audit(
@@ -49,9 +80,13 @@ async def publish_audit(
     *,
     nats_client: JetStreamPublisher | None,
     namespace: str,
+    tool_pod_id: UUID | None = None,
 ) -> None:
     """
     publish one audit envelope on ``{namespace}.audit.{event_type}``.
+
+    a TOOL POD passes its ``tool_pods.id`` as ``tool_pod_id`` and the envelope rides
+    :func:`tool_pod_audit_subject` instead -- the one audit subject a tool pod is granted.
 
     durable transport: the envelope is JetStream-published (persisted to
     the ``{ns}-audit`` stream + ``PubAck`` awaited), so it survives a
@@ -79,13 +114,20 @@ async def publish_audit(
     :param namespace: NATS subject namespace (environment-scoped
         prefix from ``THREETEARS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str
+    :param tool_pod_id: the publishing tool pod's ``tool_pods.id``, or ``None`` for every
+        principal that is not a tool pod
+    :ptype tool_pod_id: UUID | None
     :return: nothing
     :rtype: None
     """
     if nats_client is None:
         # bootstrap / test scenario; explicit no-op
         return
-    subject = Subject.raw(f"{namespace}.audit.{event.event_type}")
+    subject = (
+        Subject.raw(f"{namespace}.audit.{event.event_type}")
+        if tool_pod_id is None
+        else tool_pod_audit_subject(namespace, tool_pod_id, event.event_type)
+    )
     try:
         # serialize at the border and JetStream-publish for durability:
         # the envelope is persisted to the ``{ns}-audit`` stream and the
