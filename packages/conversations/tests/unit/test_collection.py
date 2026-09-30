@@ -49,6 +49,9 @@ def _sample_data() -> dict[str, Any]:
         "message_count": 0,
         # v006: per-row FTS language column.
         "language": "english",
+        # v011: what started the conversation (both set or both None).
+        "parent_type": "wake",
+        "parent_id": uuid7(),
     }
 
 
@@ -89,7 +92,7 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
         generator): agent_id, conversation_id, customer_id, user_id,
         channel_type, conversation_ref, name, folder_id, status, summary,
         date_created, date_updated, date_last_message, metadata,
-        message_count, language.
+        message_count, language, parent_type, parent_id.
 
         :param query: SQL text
         :ptype query: str
@@ -119,6 +122,9 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
                 "message_count",
                 # v006: per-row FTS language column.
                 "language",
+                # v011: the parent pair, declared last.
+                "parent_type",
+                "parent_id",
             ]
             row = dict(zip(keys, args, strict=False))
             store[str(row["conversation_id"])] = row
@@ -144,6 +150,9 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
             # v006: language is a mutable column (changing it
             # re-tokenizes the search_vector via the trigger).
             existing["language"] = args[10]
+            # v011: the parent pair follows language.
+            existing["parent_type"] = args[11]
+            existing["parent_id"] = args[12]
             result = "UPDATE 1"
             return result
         if "DELETE" in query:
