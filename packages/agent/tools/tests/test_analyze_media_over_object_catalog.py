@@ -56,8 +56,16 @@ def _pdf_saying(text: str) -> bytes:
     return data
 
 
-def _catalog(monkeypatch: pytest.MonkeyPatch, objects: dict[UUID, tuple[bytes, str]]) -> None:
-    """stand the hub boundary up over ``objects``; any other id is not the caller's."""
+def _catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    objects: dict[UUID, tuple[bytes, str]],
+    *,
+    streamed: list[UUID] | None = None,
+) -> None:
+    """stand the hub boundary up over ``objects``; any other id is not the caller's.
+
+    ``streamed``, when given, records the id of every object whose bytes are opened.
+    """
 
     async def _resolve(object_id: UUID) -> ObjectHandle:
         if object_id not in objects:
@@ -67,6 +75,8 @@ def _catalog(monkeypatch: pytest.MonkeyPatch, objects: dict[UUID, tuple[bytes, s
 
     async def _stream(s3_key: str) -> AsyncIterator[bytes]:
         object_id = UUID(s3_key.rsplit("/", 1)[1])
+        if streamed is not None:
+            streamed.append(object_id)
         yield objects[object_id][0]
 
     monkeypatch.setattr(oms, "resolve_object", _resolve)
@@ -118,6 +128,55 @@ class TestCataloguedDocumentsAreAnalyzable:
         assert not result.success
         assert "application/octet-stream" in result.content
         assert text.prompts == []
+
+    async def test_a_large_object_no_parser_reads_is_never_downloaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a catalogued packet capture is refused from its type, before a byte of it moves.
+
+        the object store exists for artifacts that must never sit whole in a pod's memory, and every
+        type that is not image, audio or video is routed here as a document; downloading one only to
+        learn no parser reads it could take the tool pod down with nothing logged that names why.
+        """
+        mid = uuid4()
+        streamed: list[UUID] = []
+        _catalog(
+            monkeypatch,
+            {mid: (b"\xd4\xc3\xb2\xa1" * (16 * 1024 * 1024), "application/vnd.tcpdump.pcap")},
+            streamed=streamed,
+        )
+        text = _FakeTextProvider("never asked")
+        tool = AnalyzeMediaTool(
+            storage=ObjectCatalogMediaStorage(),
+            analyzers={"Reader": AnalyzerConfig(name="Reader", text=text, supported_categories={"document"})},
+        )
+
+        result = await tool.execute(media_ids=[str(mid)], question="Summarize", analyzer="Reader")
+
+        assert not result.success
+        assert "application/vnd.tcpdump.pcap" in result.content
+        assert streamed == []
+        assert text.prompts == []
+
+    async def test_a_readable_object_is_downloaded_and_read_within_the_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """a type a parser reads still downloads, and the analyzer still reads only its window."""
+        mid = uuid4()
+        streamed: list[UUID] = []
+        _catalog(monkeypatch, {mid: (b"The quarterly revenue was 42 widgets. " * 50, "text/plain")}, streamed=streamed)
+        text = _FakeTextProvider("Revenue was 42 widgets.")
+        tool = AnalyzeMediaTool(
+            storage=ObjectCatalogMediaStorage(),
+            analyzers={"Reader": AnalyzerConfig(name="Reader", text=text, supported_categories={"document"})},
+            doc_max_chars=100,
+        )
+
+        result = await tool.execute(media_ids=[str(mid)], question="What was the revenue?", analyzer="Reader")
+
+        assert result.success, result.content
+        assert streamed == [mid]
+        assert result.content.startswith("Revenue was 42 widgets.")
+        assert result.content != "Revenue was 42 widgets.", "the answer says it read only part of the document"
+        assert text.prompts[0].count("quarterly revenue") < 50
 
 
 class TestReferenceVisionSendsOnlyResolvedIds:

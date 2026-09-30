@@ -42,6 +42,7 @@ __all__ = [
     "OcrConfig",
     "ParseDocumentInput",
     "ParseDocumentTool",
+    "can_parse_document",
     "create_parse_document_tool",
     "detect_mime_from_filename",
     "parse_document",
@@ -157,6 +158,45 @@ def detect_mime_from_filename(filename: str) -> str | None:
     return ext_map.get(ext) or mimetypes.guess_type(filename)[0]
 
 
+def _parser_key_for(mime_type: str, filename: str | None) -> str | None:
+    """the parser that reads a document of this type, or ``None`` when none does.
+
+    The declared MIME type first, then the filename's extension -- the one dispatch rule both
+    :func:`parse_document` and :func:`can_parse_document` answer from.
+
+    :param mime_type: the document's declared MIME type
+    :ptype mime_type: str
+    :param filename: the document's filename, used for extension detection
+    :ptype filename: str | None
+    :return: the parser's key, or ``None``
+    :rtype: str | None
+    """
+    parser_key = _MIME_PARSERS.get(mime_type)
+    if parser_key is None and filename:
+        detected = detect_mime_from_filename(filename)
+        if detected:
+            parser_key = _MIME_PARSERS.get(detected)
+    return parser_key
+
+
+def can_parse_document(mime_type: str, filename: str | None = None) -> bool:
+    """whether :func:`parse_document` has a parser for a document of this type.
+
+    Answered from the type alone, so a caller holding only a document's metadata can refuse one
+    no parser reads BEFORE fetching its bytes -- a catalogued packet capture or database dump that
+    must never sit whole in memory only to be turned away. A ``True`` says a parser exists, not
+    that these particular bytes will parse.
+
+    :param mime_type: the document's declared MIME type
+    :ptype mime_type: str
+    :param filename: the document's filename, used for extension detection
+    :ptype filename: str | None
+    :return: True when a parser reads the type
+    :rtype: bool
+    """
+    return _parser_key_for(mime_type, filename) is not None
+
+
 @traced()
 async def parse_document(
     data: bytes,
@@ -189,13 +229,7 @@ async def parse_document(
     :raises DocumentParseError: no parser reads the document's type, or its parser failed
         (the parser's exception chained as ``__cause__``)
     """
-    parser_key = _MIME_PARSERS.get(mime_type)
-
-    # Fallback to filename extension
-    if parser_key is None and filename:
-        detected = detect_mime_from_filename(filename)
-        if detected:
-            parser_key = _MIME_PARSERS.get(detected)
+    parser_key = _parser_key_for(mime_type, filename)
 
     if parser_key is None:
         log.warning(

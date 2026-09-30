@@ -18,6 +18,7 @@ from threetears.agent.tools.document import (
     _extract_pdf_tables,
     _merge_wrapped_table_rows,
     _ocr_page,
+    can_parse_document,
     create_parse_document_tool,
     detect_mime_from_filename,
     parse_document,
@@ -345,6 +346,27 @@ class TestUnsupported:
         result = await parse_document(b"hello", "application/octet-stream", "test.txt")
         # Should fall back to filename detection and parse as text
         assert "hello" in result.text
+
+    @pytest.mark.parametrize(
+        ("mime_type", "filename", "readable"),
+        [
+            ("application/pdf", None, True),
+            ("text/plain", None, True),
+            ("application/octet-stream", None, False),
+            ("application/vnd.tcpdump.pcap", None, False),
+            ("application/octet-stream", "notes.txt", True),
+            ("application/octet-stream", "capture.pcap", False),
+        ],
+    )
+    async def test_can_parse_document_answers_as_parse_document_dispatches(
+        self, mime_type: str, filename: str | None, readable: bool
+    ):
+        """the type-only answer a caller uses before fetching bytes agrees with the parse itself."""
+        assert can_parse_document(mime_type, filename) is readable
+        if not readable:
+            with pytest.raises(DocumentParseError) as caught:
+                await parse_document(b"data", mime_type, filename)
+            assert caught.value.reason == "unsupported_type"
 
 
 # -- parse_document: a parser that fails ---------------------------------------

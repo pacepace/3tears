@@ -30,7 +30,7 @@ from uuid import UUID
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.document import DocumentParseError, parse_document
+from threetears.agent.tools.document import DocumentParseError, can_parse_document, parse_document
 from threetears.agent.tools.protocols import (
     MediaInfo,
     MediaStorage,
@@ -448,7 +448,10 @@ class AnalyzeMediaTool(TearsTool):
 
         the text is the storage's cached extraction when it has one, otherwise
         the document's own bytes parsed by :func:`parse_document` -- a storage
-        with no extraction cache (the object catalog) is still readable.
+        with no extraction cache (the object catalog) is still readable. those
+        bytes are fetched only for a type a parser reads
+        (:func:`can_parse_document`); any other type is answered from its
+        metadata without downloading it.
 
         :param mid: media UUID
         :ptype mid: UUID
@@ -473,6 +476,19 @@ class AnalyzeMediaTool(TearsTool):
             # a storage with no extraction cache (the object catalog has no
             # content column) still serves the document's bytes; read the text
             # from them rather than reporting a readable document unreadable.
+            # but only a type a parser reads: every type that is not image, audio
+            # or video lands here, and the object store holds artifacts (packet
+            # captures, database dumps) that must never be pulled whole into this
+            # pod's memory only to be turned away.
+            if not can_parse_document(info.mime_type):
+                _log.warning(
+                    "document not downloaded: no parser reads its type",
+                    extra={"extra_data": {"media_id": mid_str, "mime_type": info.mime_type}},
+                )
+                return _tool_error(
+                    "document analysis",
+                    f"This document could not be read (unsupported_type): no parser reads {info.mime_type!r}",
+                )
             extracted, parse_error = await self._extract_from_bytes(mid, mid_str)
             if parse_error is not None:
                 return _tool_error("document analysis", parse_error)
