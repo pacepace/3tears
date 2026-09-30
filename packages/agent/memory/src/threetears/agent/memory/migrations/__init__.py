@@ -86,6 +86,17 @@ version history:
   columns and their triggers stay; ``idx_memories_tags`` stays because
   ``tags @>`` containment reads it. ``DROP INDEX IF EXISTS``, so replay is a
   no-op.
+- v028 brings every agent schema's indexes and unique constraints on
+  ``memories``, ``media``, ``media_content``, ``memory_chunks`` and
+  ``conversation_memory_refs`` to the collections' ``TableSchema``
+  declarations: exact duplicates are renamed to the declared name or dropped,
+  declared indexes no migration built are created, indexes another index
+  already serves are dropped, the legacy ``<table>_<id>_unique`` constraints
+  give way to the declared ``uq_*`` ones, and a single-column
+  ``media.memory_id`` key gives way to the composite ``media_memory_fk``.
+- v029 weights a chunk's ``search_vector`` heading A, content B, summary C,
+  and fires the trigger on a ``heading_context`` update too.
+- v030 recomputes existing chunks' ``search_vector`` under v029's weighting.
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -176,6 +187,15 @@ from threetears.agent.memory.migrations.v026_create_memory_consolidations import
 from threetears.agent.memory.migrations.v027_drop_search_vector_gin_indexes import (
     drop_search_vector_gin_indexes,
 )
+from threetears.agent.memory.migrations.v028_align_indexes_with_declarations import (
+    align_indexes_with_declarations,
+)
+from threetears.agent.memory.migrations.v029_memory_chunks_heading_weighted_search import (
+    weight_memory_chunk_headings,
+)
+from threetears.agent.memory.migrations.v030_recompute_memory_chunks_search_vector import (
+    recompute_memory_chunks_search_vector,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -231,6 +251,9 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(25)(add_memory_tags)
     pkg.version(26)(create_memory_consolidations)
     pkg.version(27)(drop_search_vector_gin_indexes)
+    pkg.version(28)(align_indexes_with_declarations)
+    pkg.version(29)(weight_memory_chunk_headings)
+    pkg.version(30)(recompute_memory_chunks_search_vector)
     runner.register(pkg)
     return pkg
 
@@ -245,6 +268,7 @@ __all__ = [
     "add_memories_alias",
     "add_memory_fts",
     "add_memory_tags",
+    "align_indexes_with_declarations",
     "add_unified_memory_columns",
     "backfill_memory_ids",
     "create_conversation_memory_refs",
@@ -261,8 +285,10 @@ __all__ = [
     "media_content_composite_fk",
     "memories_media_composite_fk",
     "memory_chunks_composite_fk",
+    "recompute_memory_chunks_search_vector",
     "reconcile_memory_columns",
     "register",
     "rename_memory_refs_date_columns",
     "restore_memories_agent_customer_not_null",
+    "weight_memory_chunk_headings",
 ]
