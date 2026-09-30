@@ -535,3 +535,14 @@ def test_knowledge_draft_subject_honors_namespace() -> None:
     assert Subjects.knowledge_draft().path == "staging.knowledge.draft"
     set_default_namespace("3tears")
     assert Subjects.knowledge_draft().path == "3tears.knowledge.draft"
+
+
+def test_credential_refusal_sits_under_the_principals_own_inbox() -> None:
+    assert Subjects.credential_refusal("_INBOX_agent_pod_a1").path == "_INBOX_agent_pod_a1.credential-refused"
+
+
+@pytest.mark.parametrize("inbox_prefix", ["", "_INBOX_agent_pod_*", "_INBOX.>", "_INBOX a"])
+def test_credential_refusal_needs_a_literal_inbox_prefix(inbox_prefix: str) -> None:
+    """a wildcard would publish one principal's refusal to every inbox it matched."""
+    with pytest.raises(ValueError, match="literal inbox prefix"):
+        Subjects.credential_refusal(inbox_prefix)

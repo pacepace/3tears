@@ -467,3 +467,27 @@ async def test_an_ordinary_denial_tells_nobody() -> None:
 
     assert len(nc.replies) == 1
     assert nc.published == []
+
+
+# parity-exempt: narrow offline double for the NATS wire client whose publish fails, as a broken connection's does
+class _FakeNatsPublishFails(_FakeNats):
+    async def publish(self, *, subject: Any, message: Any) -> None:
+        raise RuntimeError("nats: connection closed")
+
+
+async def test_a_refusal_that_cannot_be_sent_never_raises_and_the_denial_still_stands(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the notice is best-effort: the principal falls back to retrying until its credential expires."""
+    from threetears.nats.credential_refusal import CredentialRefusal, CredentialRefusalReason, RefusedPrincipal
+
+    refusal = CredentialRefusal(reason=CredentialRefusalReason.SUPERSEDED, pod_id="pod-7", identity_generation="g-3")
+    resolver = _FakeResolver(RefusedPrincipal(inbox_prefix="_INBOX_agent_pod_a1", refusal=refusal))  # type: ignore[arg-type]
+    nc = _FakeNatsPublishFails()
+    responder = _responder(nc, resolver=resolver, policy=_FakePolicy(_perms()))
+
+    await responder.publish_refusal(RefusedPrincipal(inbox_prefix="_INBOX_agent_pod_a1", refusal=refusal))
+    await responder.handle_request(_FakeMsg(_request_jwt().encode(), "_INBOX.srv.1"))
+
+    assert len(nc.replies) == 1, "the server still gets its signed deny"
+    assert "could not tell a refused principal why" in caplog.text
