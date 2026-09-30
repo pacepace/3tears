@@ -17,6 +17,7 @@ exhausted pool, an unreachable broker -- raises :class:`DataLayerUnavailableErro
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from collections.abc import Callable
@@ -281,26 +282,198 @@ def _format_execute_tag(operation: str, row_count: Any) -> str:
     return f"{verb} {count}"
 
 
+#: a dollar-quote opener: ``$$`` or ``$tag$``. ``$1`` is a parameter, not a quote.
+_DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$")
+
+#: an unquoted word: a keyword or an identifier.
+_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9$]*")
+
+#: the verbs a statement's label is drawn from, by the word that opens its main clause.
+_MAIN_VERBS = {"SELECT": "select", "INSERT": "insert", "UPDATE": "update", "DELETE": "delete"}
+
+
+def _end_of_quoted(query: str, start: int, quote: str, *, backslash_escapes: bool) -> int:
+    """the index just past a quoted literal or identifier opening at ``start``.
+
+    :param query: the statement
+    :ptype query: str
+    :param start: the index of the opening quote
+    :ptype start: int
+    :param quote: the quote character, doubled inside the text to escape it
+    :ptype quote: str
+    :param backslash_escapes: whether a backslash escapes the next character
+        (an ``E'...'`` string)
+    :ptype backslash_escapes: bool
+    :return: the index after the closing quote, or the end of the text when unclosed
+    :rtype: int
+    """
+    index = start + 1
+    end = len(query)
+    while index < end:
+        char = query[index]
+        if backslash_escapes and char == "\\":
+            index += 2
+        elif char == quote and query.startswith(quote * 2, index):
+            index += 2
+        elif char == quote:
+            end = index
+        else:
+            index += 1
+    return min(end + 1, len(query))
+
+
+def _end_of_block_comment(query: str, start: int) -> int:
+    """the index just past a block comment opening at ``start``; Postgres nests them.
+
+    :param query: the statement
+    :ptype query: str
+    :param start: the index of the opening ``/*``
+    :ptype start: int
+    :return: the index after the matching ``*/``, or the end of the text when unclosed
+    :rtype: int
+    """
+    depth = 0
+    index = start
+    result = len(query)
+    while index < len(query) and result == len(query):
+        if query.startswith("/*", index):
+            depth += 1
+            index += 2
+        elif query.startswith("*/", index):
+            depth -= 1
+            index += 2
+            if depth == 0:
+                result = index
+        else:
+            index += 1
+    return result
+
+
+def _code_tokens(query: str) -> list[str]:
+    """the statement's code as tokens: upper-cased words, ``(``, ``)``, ``,`` and other marks.
+
+    literals, quoted identifiers, dollar-quoted text and comments are consumed
+    whole, so a parenthesis or a keyword inside one is never read as code. A quoted
+    identifier is one ``"`` token: it is a name, never a keyword.
+
+    :param query: the statement
+    :ptype query: str
+    :return: the tokens, in order
+    :rtype: list[str]
+    """
+    tokens: list[str] = []
+    index = 0
+    while index < len(query):
+        char = query[index]
+        dollar = _DOLLAR_QUOTE_RE.match(query, index)
+        word = _WORD_RE.match(query, index)
+        if char.isspace():
+            index += 1
+        elif query.startswith("--", index):
+            newline = query.find("\n", index)
+            index = len(query) if newline == -1 else newline + 1
+        elif query.startswith("/*", index):
+            index = _end_of_block_comment(query, index)
+        elif char == "'":
+            index = _end_of_quoted(query, index, "'", backslash_escapes=False)
+            tokens.append("'")
+        elif char in "Ee" and query.startswith("'", index + 1):
+            index = _end_of_quoted(query, index + 1, "'", backslash_escapes=True)
+            tokens.append("'")
+        elif char == '"':
+            index = _end_of_quoted(query, index, '"', backslash_escapes=False)
+            tokens.append('"')
+        elif dollar is not None:
+            closing = query.find(dollar.group(0), dollar.end())
+            index = len(query) if closing == -1 else closing + len(dollar.group(0))
+            tokens.append("'")
+        elif word is not None:
+            tokens.append(word.group(0).upper())
+            index = word.end()
+        else:
+            tokens.append(char)
+            index += 1
+    return tokens
+
+
+def _after_parens(tokens: list[str], start: int) -> int:
+    """the index just past the parenthesised group opening at ``start``.
+
+    :param tokens: the statement's tokens
+    :ptype tokens: list[str]
+    :param start: the index of a ``(`` token
+    :ptype start: int
+    :return: the index after its matching ``)``, or past the end when unclosed
+    :rtype: int
+    """
+    depth = 0
+    index = start
+    result = len(tokens) + 1
+    while index < len(tokens) and result > len(tokens):
+        if tokens[index] == "(":
+            depth += 1
+        elif tokens[index] == ")":
+            depth -= 1
+            if depth == 0:
+                result = index + 1
+        index += 1
+    return result
+
+
+def _main_clause_index(tokens: list[str]) -> int:
+    """the index of the token opening the statement's main clause, past any ``WITH`` list.
+
+    ``WITH [RECURSIVE] name [(columns)] AS [NOT] [MATERIALIZED] (body) [, ...]``
+    is walked by its grammar, so a CTE whose name is a verb (``WITH update AS ...``)
+    is read as the name it is.
+
+    :param tokens: the statement's tokens
+    :ptype tokens: list[str]
+    :return: the index of the main clause's first token; past the end when the
+        ``WITH`` list does not close
+    :rtype: int
+    """
+    index = 0
+    if tokens[:1] == ["WITH"]:
+        index = 2 if tokens[1:2] == ["RECURSIVE"] else 1
+        more = True
+        while more and index < len(tokens):
+            index += 1  # the CTE's name
+            if tokens[index : index + 1] == ["("]:
+                index = _after_parens(tokens, index)
+            index += 1 if tokens[index : index + 1] == ["AS"] else 0
+            index += 1 if tokens[index : index + 1] == ["NOT"] else 0
+            index += 1 if tokens[index : index + 1] == ["MATERIALIZED"] else 0
+            if tokens[index : index + 1] == ["("]:
+                index = _after_parens(tokens, index)
+            more = tokens[index : index + 1] == [","]
+            index += 1 if more else 0
+    return index
+
+
 def _detect_operation(query: str) -> str:
-    """detect SQL operation type from query string.
+    """label a statement with its SQL operation, from the verb of its main clause.
+
+    The label tells the broker how to run the statement -- a ``select`` is fetched
+    for rows, anything else executed for a count -- and names it in logs. It is the
+    verb Postgres's own command tag would carry: a ``WITH ... INSERT`` is an
+    ``insert``, and a data-modifying CTE under a ``SELECT`` is a ``select``. It is
+    never what authorizes the statement; the broker reads that off the statement.
 
     :param query: SQL query string
     :ptype query: str
-    :return: operation type (select, insert, update, delete, upsert)
+    :return: operation type (select, insert, update, delete, upsert); ``select``
+        when the main clause opens with no verb this backend labels
     :rtype: str
     """
-    stripped = query.strip().upper()
-    if stripped.startswith("SELECT"):
-        return "select"
-    if stripped.startswith("INSERT"):
-        if "ON CONFLICT" in stripped:
-            return "upsert"
-        return "insert"
-    if stripped.startswith("UPDATE"):
-        return "update"
-    if stripped.startswith("DELETE"):
-        return "delete"
-    return "select"
+    tokens = _code_tokens(query)
+    index = _main_clause_index(tokens)
+    result = _MAIN_VERBS.get(tokens[index], "select") if index < len(tokens) else "select"
+    if result == "insert" and any(
+        tokens[position : position + 2] == ["ON", "CONFLICT"] for position in range(index, len(tokens))
+    ):
+        result = "upsert"
+    return result
 
 
 class NatsProxyL3Backend:

@@ -136,6 +136,62 @@ class TestDetectOperation:
     def test_unknown_defaults_to_select(self) -> None:
         assert _detect_operation("WITH cte AS (SELECT 1)") == "select"
 
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [
+            pytest.param("WITH s AS (SELECT id FROM src) INSERT INTO foo (a) SELECT id FROM s", "insert", id="insert"),
+            pytest.param(
+                "WITH s AS (SELECT 1 AS a) INSERT INTO foo (a) SELECT a FROM s ON CONFLICT (a) DO NOTHING",
+                "upsert",
+                id="upsert",
+            ),
+            pytest.param("WITH s AS (SELECT 1) UPDATE foo SET a = 1 FROM s", "update", id="update"),
+            pytest.param("WITH s AS (SELECT 1) DELETE FROM foo USING s", "delete", id="delete"),
+            pytest.param("with s as (select 1) delete from foo", "delete", id="lower-case"),
+            pytest.param(
+                "WITH RECURSIVE r (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) DELETE FROM foo",
+                "delete",
+                id="recursive-with-columns",
+            ),
+            pytest.param(
+                "WITH a AS MATERIALIZED (SELECT 1), b AS NOT MATERIALIZED (SELECT 2) UPDATE foo SET a = 1",
+                "update",
+                id="several-ctes-materialized",
+            ),
+            pytest.param(
+                "WITH d AS (DELETE FROM foo RETURNING id) INSERT INTO bar (id) SELECT id FROM d",
+                "insert",
+                id="data-modifying-cte-then-insert",
+            ),
+            pytest.param("WITH s AS (SELECT ')' AS p) UPDATE foo SET a = 1", "update", id="paren-in-a-literal"),
+            pytest.param('WITH "update" AS (SELECT 1) SELECT * FROM "update"', "select", id="a-cte-named-update"),
+            pytest.param("WITH update AS (SELECT 1) DELETE FROM foo", "delete", id="an-unquoted-cte-named-update"),
+            pytest.param("WITH s AS (SELECT $$(unbalanced$$) DELETE FROM foo", "delete", id="dollar-quoted"),
+            pytest.param("WITH s AS (SELECT 1 /* ) */) DELETE FROM foo", "delete", id="block-comment"),
+            pytest.param("WITH s AS (SELECT 1 -- )\n) DELETE FROM foo", "delete", id="line-comment"),
+            pytest.param("-- leading comment\nDELETE FROM foo", "delete", id="leading-line-comment"),
+            pytest.param("/* leading */ UPDATE foo SET a = 1", "update", id="leading-block-comment"),
+            pytest.param(
+                "WITH d AS (DELETE FROM foo RETURNING id) SELECT id FROM d",
+                "select",
+                id="data-modifying-cte-under-a-select",
+            ),
+        ],
+    )
+    def test_a_statement_led_by_a_with_clause_is_labelled_by_its_main_verb(self, query: str, expected: str) -> None:
+        """the verb after the CTE list is the statement's, as Postgres's own command tag names it.
+
+        A ``WITH ... INSERT`` used to be labelled ``select``, so ``execute`` sent it to
+        be fetched for rows and reported ``SELECT 0`` for a write. A data-modifying CTE
+        under a ``SELECT`` stays ``select``: Postgres tags it ``SELECT``, and the broker
+        reads the write off the statement, never off this label.
+        """
+        assert _detect_operation(query) == expected
+
+    def test_an_unterminated_with_clause_defaults_to_select(self) -> None:
+        """a WITH whose CTE list never closes names no main verb."""
+        assert _detect_operation("WITH s AS (SELECT 1") == "select"
+
 
 # ------------------------------------------------------------------
 # default namespace
