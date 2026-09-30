@@ -7,8 +7,11 @@ this transparently without knowing queries are proxied.
 errors keep the drop-in contract where the database itself refused the statement: a
 constraint violation (SQLSTATE class 23) raises the asyncpg exception a direct pool raises
 (``asyncpg.UniqueViolationError`` and its siblings), rebuilt from the fields the broker
-forwards. every other failed reply -- a broker refusal, a timeout, an exhausted pool, an
-unreachable broker -- raises :class:`DataLayerUnavailableError`.
+forwards. a refusal on the pod's data version raises one of two subclasses of
+:class:`DataLayerUnavailableError`: :class:`DataVersionSupersededError` (the pod is older than its
+space's target and must exit) or :class:`DataVersionNotReadyError` (the pod is at the target and
+the upgrade has not finished; wait). every other failed reply -- a broker refusal, a timeout, an
+exhausted pool, an unreachable broker -- raises :class:`DataLayerUnavailableError`.
 """
 
 from __future__ import annotations
@@ -22,7 +25,11 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
-from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.core.exceptions import (
+    DataLayerUnavailableError,
+    DataVersionNotReadyError,
+    DataVersionSupersededError,
+)
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
 
 # Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
@@ -38,7 +45,12 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
-__all__ = ["CONSTRAINT_VIOLATION_ERROR_CODE", "NatsProxyL3Backend"]
+__all__ = [
+    "CONSTRAINT_VIOLATION_ERROR_CODE",
+    "DATA_VERSION_NOT_READY_ERROR_CODE",
+    "DATA_VERSION_SUPERSEDED_ERROR_CODE",
+    "NatsProxyL3Backend",
+]
 
 _logger = get_logger(__name__)
 
@@ -48,6 +60,16 @@ _logger = get_logger(__name__)
 #: optionally, ``detail`` -- from which the proxy rebuilds the asyncpg exception a direct pool
 #: raises. the hub imports this name, so the two halves of the contract spell it once.
 CONSTRAINT_VIOLATION_ERROR_CODE = "CONSTRAINT_VIOLATION"
+
+#: the broker's ``error_code`` for a pod whose identity token carries a data version OLDER than
+#: its space's target. fatal: the proxy raises :class:`DataVersionSupersededError` and hands it to
+#: the backend's ``on_superseded`` callback first. the hub imports this name.
+DATA_VERSION_SUPERSEDED_ERROR_CODE = "DATA_VERSION_SUPERSEDED"
+
+#: the broker's ``error_code`` for a pod AT its space's target while the upgrade to that target
+#: has not finished. transient: the proxy raises :class:`DataVersionNotReadyError` and the pod
+#: waits. the hub imports this name.
+DATA_VERSION_NOT_READY_ERROR_CODE = "DATA_VERSION_NOT_READY"
 
 #: SQLSTATE class 23, integrity constraint violation: a deterministic refusal of this statement,
 #: never an infrastructure fault, so it is the one class rebuilt as its asyncpg error rather than
@@ -66,8 +88,20 @@ _VIOLATION_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _raise_for_failed_reply(response: dict[str, Any], what: str) -> NoReturn:
+def _raise_for_failed_reply(
+    response: dict[str, Any],
+    what: str,
+    *,
+    report_superseded: Callable[[DataVersionSupersededError], None],
+) -> NoReturn:
     """raise the error a failed broker reply stands for.
+
+    a data-version refusal is typed by its code, and only by its code: the broker answers
+    :data:`DATA_VERSION_SUPERSEDED_ERROR_CODE` or :data:`DATA_VERSION_NOT_READY_ERROR_CODE`, and
+    the pod must respond to the two in opposite ways -- exit, or wait -- so neither may arrive as a
+    bare :class:`DataLayerUnavailableError` the caller cannot tell apart. a supersession is passed
+    to ``report_superseded`` before it is raised, so the pod runtime learns of it whichever caller
+    issued the refused request.
 
     a constraint violation -- :data:`CONSTRAINT_VIOLATION_ERROR_CODE` with a class-23
     ``sqlstate`` -- is rebuilt as the asyncpg exception a direct pool raises for that SQLSTATE
@@ -85,11 +119,28 @@ def _raise_for_failed_reply(response: dict[str, Any], what: str) -> NoReturn:
     :ptype response: dict[str, Any]
     :param what: the operation that failed, for the unavailability message
     :ptype what: str
+    :param report_superseded: told of a supersession before it is raised; the backend's once-only
+        hand-off to its ``on_superseded`` callback
+    :ptype report_superseded: Callable[[DataVersionSupersededError], None]
     :return: never returns
     :rtype: NoReturn
+    :raises DataVersionSupersededError: for :data:`DATA_VERSION_SUPERSEDED_ERROR_CODE`
+    :raises DataVersionNotReadyError: for :data:`DATA_VERSION_NOT_READY_ERROR_CODE`
     :raises asyncpg.IntegrityConstraintViolationError: for a well-formed constraint violation
     :raises DataLayerUnavailableError: for every other failed reply
     """
+    error_code = response.get("error_code")
+    message = f"{what} failed: {error_code or 'UNKNOWN'}: {response.get('error_message', 'no details')}"
+    if error_code == DATA_VERSION_SUPERSEDED_ERROR_CODE:
+        superseded = DataVersionSupersededError(message)
+        report_superseded(superseded)
+        raise superseded
+    if error_code == DATA_VERSION_NOT_READY_ERROR_CODE:
+        _logger.debug(
+            "broker reported this pod's data version is not ready",
+            extra={"extra_data": {"operation": what}},
+        )
+        raise DataVersionNotReadyError(message)
     sqlstate = response.get("sqlstate")
     if (
         response.get("error_code") == CONSTRAINT_VIOLATION_ERROR_CODE
@@ -104,9 +155,7 @@ def _raise_for_failed_reply(response: dict[str, Any], what: str) -> NoReturn:
             },
         )
         raise asyncpg.PostgresError.new(fields)
-    raise DataLayerUnavailableError(
-        f"{what} failed: {response.get('error_code', 'UNKNOWN')}: {response.get('error_message', 'no details')}"
-    )
+    raise DataLayerUnavailableError(message)
 
 
 def _serialize_param(value: Any) -> Any:
@@ -307,6 +356,7 @@ class NatsProxyL3Backend:
         default_namespace: str | None = None,
         timeout_ms: int | None = None,
         identity_token: Callable[[], str | None] | None = None,
+        on_superseded: Callable[[DataVersionSupersededError], None] | None = None,
     ) -> None:
         """initialize NatsProxyL3Backend.
 
@@ -366,6 +416,15 @@ class NatsProxyL3Backend:
             side and the models are ``extra="forbid"`` -- so this raises at the
             call site rather than sending a request that cannot be authorized.
         :ptype identity_token: Callable[[], str | None] | None
+        :param on_superseded: called with the :class:`DataVersionSupersededError` the FIRST time
+            the broker refuses this principal's data version as older than its space's target,
+            immediately before that error is raised. The pod runtime passes its exit here, so
+            the exit is the runtime's to own rather than whichever caller's query happened to be
+            refused. At most ONCE per backend: every request in flight is refused the same way
+            once a pod is superseded, and one exit is what the runtime needs. A callback that
+            raises is logged and does not replace the error the caller receives. ``None`` means
+            no one is told, and the error is still raised.
+        :ptype on_superseded: Callable[[DataVersionSupersededError], None] | None
         :raises ValueError: when neither an agent id nor an owned namespace was
             supplied, so there is no namespace to send anything to
         """
@@ -389,6 +448,8 @@ class NatsProxyL3Backend:
         self.ns = namespace_prefix
         self.agent_id = agent_id
         self._identity_token = identity_token
+        self._on_superseded = on_superseded
+        self._superseded_reported = False
         self.default_namespace = resolved_namespace
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
@@ -550,6 +611,53 @@ class NatsProxyL3Backend:
             )
         return token
 
+    def raise_for_failed_reply(self, response: dict[str, Any], what: str) -> NoReturn:
+        """raise the error a failed broker reply stands for, telling the runtime of a supersession.
+
+        the ONE failure path for every reply this backend and its connection and transaction
+        proxies read, so a data-version refusal on any of them -- a query, a batch, ``tx.begin``,
+        a statement inside a transaction, ``tx.commit`` -- is typed the same way and reaches the
+        ``on_superseded`` callback the same way.
+
+        :param response: the parsed failed reply
+        :ptype response: dict[str, Any]
+        :param what: the operation that failed, for the error message
+        :ptype what: str
+        :return: never returns
+        :rtype: NoReturn
+        :raises DataVersionSupersededError: when the broker refuses this principal's data version
+            as older than its space's target
+        :raises DataVersionNotReadyError: when the broker refuses it as current but not yet applied
+        :raises asyncpg.IntegrityConstraintViolationError: for a well-formed constraint violation
+        :raises DataLayerUnavailableError: for every other failed reply
+        """
+        _raise_for_failed_reply(response, what, report_superseded=self._report_superseded)
+
+    def _report_superseded(self, error: DataVersionSupersededError) -> None:
+        """hand the first supersession to ``on_superseded``, once, and never let it mask the error.
+
+        :param error: the error about to be raised
+        :ptype error: DataVersionSupersededError
+        :return: nothing
+        :rtype: None
+        """
+        if self._superseded_reported:
+            return
+        self._superseded_reported = True
+        _logger.error(
+            "broker refused this principal's data version as superseded; the pod must be replaced",
+            extra={"extra_data": {"namespace": self.default_namespace, "error": str(error)}},
+        )
+        if self._on_superseded is None:
+            return
+        try:
+            self._on_superseded(error)
+        except Exception:  # prawduct:allow prawduct/broad-except -- a runtime exit hook that fails must not replace the refusal the caller is owed
+            _logger.exception(
+                "on_superseded callback raised; the supersession error is still raised to the caller",
+                extra={"extra_data": {"namespace": self.default_namespace}},
+            )
+
     async def execute_batch(
         self,
         queries: list[dict[str, Any]],
@@ -588,7 +696,7 @@ class NatsProxyL3Backend:
         response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "batch query")
+            self.raise_for_failed_reply(response, "batch query")
 
         results: list[Any] = response.get("results", [])
         return results
@@ -638,7 +746,7 @@ class NatsProxyL3Backend:
         response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "L3 query")
+            self.raise_for_failed_reply(response, "L3 query")
 
         return response
 
@@ -936,7 +1044,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.execute"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "tx.execute")
+            self._backend.raise_for_failed_reply(response, "tx.execute")
         return _format_execute_tag(
             _detect_operation(query),
             response.get("row_count"),
@@ -987,7 +1095,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.fetchrow"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "tx.fetchrow")
+            self._backend.raise_for_failed_reply(response, "tx.fetchrow")
         row = response.get("row")
         if row is None:
             return None
@@ -1082,7 +1190,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.fetch"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "tx.fetch")
+            self._backend.raise_for_failed_reply(response, "tx.fetch")
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
         return [_deserialize_row(r) for r in raw_rows]
 
@@ -1192,7 +1300,7 @@ class _ProxyTransaction:
         subject = f"{self._backend.ns}.l3.tx.begin"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "tx.begin")
+            self._backend.raise_for_failed_reply(response, "tx.begin")
         raw_tx_id = response.get("tx_id")
         if not isinstance(raw_tx_id, str):
             raise DataLayerUnavailableError(
@@ -1240,7 +1348,7 @@ class _ProxyTransaction:
                 # commit path so the caller learns the DB did not
                 # persist their work.
                 if action == "commit":
-                    _raise_for_failed_reply(response, "tx.commit")
+                    self._backend.raise_for_failed_reply(response, "tx.commit")
                 _logger.warning(
                     "proxy tx.rollback reported failure: %s",
                     response.get("error_message"),

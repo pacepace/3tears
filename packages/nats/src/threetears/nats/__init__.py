@@ -152,6 +152,7 @@ from threetears.nats.result_delivery import (
 )
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
+    DATA_VERSIONS_BUCKET_SUFFIX,
     KV_KEY_SCOPE_GRAMMAR,
     JsCapability,
     JsResource,
@@ -161,6 +162,8 @@ from threetears.nats.subject_permissions import (
     build_permissions,
     capability_declares,
     capability_is_scoped,
+    data_version_kv_key,
+    data_versions_bucket_name,
     inbox_prefix_for,
     kv_bucket_names,
     kv_key_scope_for,
@@ -373,6 +376,7 @@ __all__ = [
     "result_subject_prefix_for_pod",
     # subject permissions (decentralized-auth allow-lists)
     "CROSS_PLATFORM_CACHE_INVALIDATE",
+    "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
     "JsCapability",
     "JsResource",
@@ -382,6 +386,8 @@ __all__ = [
     "build_permissions",
     "capability_declares",
     "capability_is_scoped",
+    "data_version_kv_key",
+    "data_versions_bucket_name",
     "inbox_prefix_for",
     "kv_bucket_names",
     "kv_key_scope_for",

@@ -134,6 +134,20 @@ def js_api_grants_for_stream(
     - plus ``$JS.API.STREAM.CREATE.{stream}`` and ``$JS.API.STREAM.UPDATE.{stream}`` for
       :attr:`JsCapability.KV_SCOPED_DECLARE` alone.
 
+    :attr:`JsCapability.KV_KEY_READ` narrows further, to ONE whole key carried in ``scope``:
+
+    - ``$JS.API.STREAM.INFO.{stream}`` -- the bind.
+    - ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{key}`` -- the read, with the key as the LITERAL
+      final token. A ``{key}.>`` tail needs at least one more token and matches nothing a
+      single-token key produces. Reachable only on a bucket created with ``allow_direct: true``.
+    - ``$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{key}`` -- the watch, as a NAMED consumer
+      whose filter rides in the SUBJECT, where nats-server checks it against the body's
+      ``filter_subject``. The unnamed ``CONSUMER.CREATE.{stream}`` is NOT granted: its filter rides
+      only in the body and could name the whole bucket. nats-py's ``KeyValue.watch`` creates an
+      unnamed consumer, so a watcher on this grant subscribes with an explicit consumer name. The
+      delivered messages land on the holder's own inbox, already covered by its ``{inbox}.>``
+      subscribe grant; flow-control replies ride ``allow_responses``.
+
     JetStream consumer ACK/NAK is NOT listed: it publishes to the delivered message's ``$JS.ACK.*``
     reply subject and rides the principal's ``allow_responses`` grant (the same way it did under the
     old ``$JS.API.>``, which never covered ``$JS.ACK``), so it needs no standing control grant here.
@@ -170,10 +184,17 @@ def js_api_grants_for_stream(
                 f"in which $KV and the bucket are separate tokens. "
                 f"got bucket={bucket!r} scope={scope!r}"
             )
-        grants = [
-            f"$JS.API.STREAM.INFO.{stream}",
-            f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>",
-        ]
+        if capability is JsCapability.KV_KEY_READ:
+            grants = [
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}",
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{scope}",
+            ]
+        else:
+            grants = [
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>",
+            ]
         if capability_declares(capability):
             grants.extend([f"$JS.API.STREAM.CREATE.{stream}", f"$JS.API.STREAM.UPDATE.{stream}"])
     return grants

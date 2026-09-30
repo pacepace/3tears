@@ -15,22 +15,31 @@ user JWT from :func:`build_permissions`:
 
 from __future__ import annotations
 
+import base64
+import json
+import uuid
+
 import pytest
 
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
+    DATA_VERSIONS_BUCKET_SUFFIX,
     MAX_COORDINATION_BUCKETS,
     JsCapability,
+    JsResource,
     JsResourceKind,
     Principal,
     PrincipalPermissions,
     build_permissions,
     capability_declares,
+    data_version_kv_key,
+    data_versions_bucket_name,
     kv_bucket_names,
     kv_key_scope_for,
     kv_key_scope_for_service,
 )
 from threetears.nats.subjects import Subjects, set_default_namespace
+from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
 _NS = "3tears"
 
@@ -65,6 +74,9 @@ _IDS: dict[Principal, dict[str, str]] = {
 #: the ONE bucket every principal shares, and therefore the only one a per-principal grant can be
 #: expressed on at all.
 _COLLECTIONS = f"{_NS}-collections"
+
+#: the bucket each pod principal watches for its own data version.
+_DATA_VERSIONS = f"{_NS}-data-versions"
 
 #: the two principals whose identity is a POD rather than a service.
 _POD_PRINCIPALS = (Principal.AGENT_POD, Principal.TOOL_POD)
@@ -973,8 +985,11 @@ class TestScopedCollectionsGrant:
 
     @pytest.mark.parametrize("principal", list(Principal))
     def test_no_other_bucket_is_scoped(self, principal: Principal) -> None:
+        # the data-versions bucket is narrowed to ONE whole key rather than to a key-scope
+        # prefix, and its key IS the principal's key, so the narrowing matches the reads it
+        # exists for; ``TestDataVersionKeyGrant`` pins that bucket's grant on its own.
         for resource in _build(principal).js_resources:
-            if resource.kind is not JsResourceKind.KV_BUCKET or resource.name == _COLLECTIONS:
+            if resource.kind is not JsResourceKind.KV_BUCKET or resource.name in {_COLLECTIONS, _DATA_VERSIONS}:
                 continue
             assert resource.scope is None, f"{principal}: {resource.name} would deny its own reads"
             assert resource.capability is JsCapability.FULL, f"{principal}: {resource.name}"
@@ -1423,3 +1438,190 @@ class TestDeclaredCoordinationBuckets:
             "a pod must not hold a DECLARING capability; STREAM.UPDATE is a read-all "
             "primitive on any stream it is held against"
         )
+
+
+def _subject_matches(pattern: str, subject: str) -> bool:
+    """NATS subject matching: ``*`` spans one token, ``>`` spans one or more trailing tokens.
+
+    :param pattern: the granted subject pattern
+    :ptype pattern: str
+    :param subject: the concrete subject under test
+    :ptype subject: str
+    :return: whether the pattern admits the subject
+    :rtype: bool
+    """
+    pattern_tokens = pattern.split(".")
+    subject_tokens = subject.split(".")
+    result = len(pattern_tokens) == len(subject_tokens)
+    for index, token in enumerate(pattern_tokens):
+        if token == ">":
+            result = index < len(subject_tokens)
+            break
+        if index >= len(subject_tokens):
+            result = False
+            break
+        if token != "*" and token != subject_tokens[index]:
+            result = False
+            break
+    return result
+
+
+def _minted_publish(permissions: PrincipalPermissions) -> list[str]:
+    """the ``pub.allow`` list of a REAL minted user JWT for ``permissions``.
+
+    :param permissions: the resolved permissions to mint
+    :ptype permissions: PrincipalPermissions
+    :return: every subject the principal may publish to
+    :rtype: list[str]
+    """
+
+    token = mint_user_jwt(
+        account_seed=generate_account_seed(),
+        user_public_key="UTESTUSERPUBLICKEY",
+        permissions=permissions,
+        name="data-version-test",
+        expires_in_seconds=300,
+    )
+    payload = token.split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    allow: list[str] = claims["nats"]["pub"]["allow"]
+    return allow
+
+
+class TestDataVersionKeyGrant:
+    """a pod reads and watches ITS OWN data-version entry, and nobody else's, and writes none.
+
+    The hub owns ``{ns}-data-versions``: it creates the bucket and writes one key per owning
+    principal -- the agent id for an agent pod, the ``tool_pods.id`` for a tool pod, each as 32
+    lowercase hex characters. A pod waiting for an upgrade's all-clear watches its own key.
+
+    **The key is ONE whole token, so the grant is a literal, never a ``{key}.>`` tail.** A
+    ``>`` needs at least one more token, so ``$KV.{b}.{key}.>`` matches nothing the hub writes --
+    and an ungranted JetStream request is never answered: it blocks to its deadline and reads as
+    an unreachable broker. The watch is pinned the same way: a consumer created with the filter
+    in its SUBJECT (``CONSUMER.CREATE.{stream}.{name}.{filter}``), which the server checks against
+    the body. An unnamed ``CONSUMER.CREATE.{stream}`` carries its filter only in the body, where
+    it could name every key in the bucket, so it is not granted.
+    """
+
+    _POD_PRINCIPAL_IDS = (
+        (Principal.AGENT_POD, _AGENT_1),
+        (Principal.TOOL_POD, _POD_1),
+    )
+
+    def _resource(self, permissions: PrincipalPermissions) -> JsResource:
+        found = [r for r in permissions.js_resources if r.name == _DATA_VERSIONS]
+        assert len(found) == 1, f"expected one {_DATA_VERSIONS} resource, found {len(found)}"
+        return found[0]
+
+    def test_the_bucket_name_and_its_suffix(self) -> None:
+        assert DATA_VERSIONS_BUCKET_SUFFIX == "data-versions"
+        assert data_versions_bucket_name() == _DATA_VERSIONS
+        assert data_versions_bucket_name("prod7") == "prod7-data-versions"
+
+    def test_the_key_is_the_owner_uuid_as_32_hex(self) -> None:
+
+        owner = uuid.UUID(_AGENT_1)
+        assert data_version_kv_key(owner) == owner.hex
+        assert data_version_kv_key(_AGENT_1) == owner.hex
+        assert data_version_kv_key(_AGENT_1.upper()) == owner.hex
+        assert len(owner.hex) == 32 and "." not in owner.hex
+
+    def test_a_non_uuid_owner_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="uuid"):
+            data_version_kv_key("agent-A")
+
+    @pytest.mark.parametrize(("principal", "owner"), _POD_PRINCIPAL_IDS, ids=lambda v: str(v))
+    def test_each_pod_principal_holds_its_own_key_read_only(self, principal: Principal, owner: str) -> None:
+        resource = self._resource(_build(principal))
+        assert resource.kind is JsResourceKind.KV_BUCKET
+        assert resource.capability is JsCapability.KV_KEY_READ
+        assert resource.scope == data_version_kv_key(owner)
+        assert resource.writable is False
+
+    def test_replicas_of_one_agent_watch_one_key(self) -> None:
+        one = self._resource(build_permissions(Principal.AGENT_POD, agent_id=_AGENT_1, pod_id=_POD_1))
+        two = self._resource(build_permissions(Principal.AGENT_POD, agent_id=_AGENT_1, pod_id=_POD_2))
+        assert one.scope == two.scope == data_version_kv_key(_AGENT_1)
+
+    @pytest.mark.parametrize(("principal", "owner"), _POD_PRINCIPAL_IDS, ids=lambda v: str(v))
+    def test_the_minted_grant_is_exactly_bind_read_and_named_watch(self, principal: Principal, owner: str) -> None:
+        key = data_version_kv_key(owner)
+        stream = f"KV_{_DATA_VERSIONS}"
+        minted = [s for s in _minted_publish(_build(principal)) if stream in s or f"$KV.{_DATA_VERSIONS}" in s]
+        assert sorted(minted) == sorted(
+            [
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{_DATA_VERSIONS}.{key}",
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{_DATA_VERSIONS}.{key}",
+            ]
+        )
+
+    @pytest.mark.parametrize(("principal", "owner"), _POD_PRINCIPAL_IDS, ids=lambda v: str(v))
+    def test_own_key_is_readable_and_watchable(self, principal: Principal, owner: str) -> None:
+        key = data_version_kv_key(owner)
+        stream = f"KV_{_DATA_VERSIONS}"
+        allow = _minted_publish(_build(principal))
+        for subject in (
+            f"$JS.API.STREAM.INFO.{stream}",
+            f"$JS.API.DIRECT.GET.{stream}.$KV.{_DATA_VERSIONS}.{key}",
+            f"$JS.API.CONSUMER.CREATE.{stream}.watcher1.$KV.{_DATA_VERSIONS}.{key}",
+        ):
+            assert any(_subject_matches(p, subject) for p in allow), subject
+
+    @pytest.mark.parametrize(("principal", "owner"), _POD_PRINCIPAL_IDS, ids=lambda v: str(v))
+    def test_another_principals_key_is_neither_readable_nor_watchable(self, principal: Principal, owner: str) -> None:
+        del owner
+        stream = f"KV_{_DATA_VERSIONS}"
+        allow = _minted_publish(_build(principal))
+        for other in (_AGENT_2, _POD_2):
+            foreign = data_version_kv_key(other)
+            for subject in (
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{_DATA_VERSIONS}.{foreign}",
+                f"$JS.API.CONSUMER.CREATE.{stream}.watcher1.$KV.{_DATA_VERSIONS}.{foreign}",
+            ):
+                assert not any(_subject_matches(p, subject) for p in allow), subject
+
+    @pytest.mark.parametrize(("principal", "owner"), _POD_PRINCIPAL_IDS, ids=lambda v: str(v))
+    def test_no_route_reaches_the_whole_bucket(self, principal: Principal, owner: str) -> None:
+        del owner
+        stream = f"KV_{_DATA_VERSIONS}"
+        allow = _minted_publish(_build(principal))
+        for subject in (
+            f"$JS.API.CONSUMER.CREATE.{stream}",  # unnamed: the filter rides the body only
+            f"$JS.API.CONSUMER.CREATE.{stream}.watcher1.$KV.{_DATA_VERSIONS}.>",
+            f"$JS.API.CONSUMER.DURABLE.CREATE.{stream}.watcher1",
+            f"$JS.API.STREAM.MSG.GET.{stream}",  # body-carried read
+            f"$JS.API.DIRECT.GET.{stream}",  # get by sequence, body-carried
+            f"$JS.API.STREAM.PURGE.{stream}",
+            f"$JS.API.STREAM.SNAPSHOT.{stream}",
+            f"$JS.API.STREAM.UPDATE.{stream}",
+            f"$JS.API.STREAM.CREATE.{stream}",  # the hub creates the bucket; a pod only binds it
+            f"$JS.API.STREAM.DELETE.{stream}",
+        ):
+            assert not any(_subject_matches(p, subject) for p in allow), subject
+
+    @pytest.mark.parametrize(("principal", "owner"), _POD_PRINCIPAL_IDS, ids=lambda v: str(v))
+    def test_the_pod_cannot_write_even_its_own_key(self, principal: Principal, owner: str) -> None:
+        key = data_version_kv_key(owner)
+        allow = _minted_publish(_build(principal))
+        assert not any(_subject_matches(p, f"$KV.{_DATA_VERSIONS}.{key}") for p in allow)
+        subscribe = _build(principal).subscribe
+        assert not any(s.startswith(f"$KV.{_DATA_VERSIONS}") for s in subscribe)
+
+    def test_the_key_grant_refuses_write_intent(self) -> None:
+        with pytest.raises(ValueError, match="read"):
+            JsResource(
+                name=_DATA_VERSIONS,
+                kind=JsResourceKind.KV_BUCKET,
+                capability=JsCapability.KV_KEY_READ,
+                scope=data_version_kv_key(_AGENT_1),
+                writable=True,
+            )
+
+    def test_the_key_grant_refuses_a_multi_token_key(self) -> None:
+        with pytest.raises(ValueError, match="token"):
+            JsResource.kv_key_read(_DATA_VERSIONS, key="a.b")
+
+    def test_the_key_grant_is_never_a_declaring_capability(self) -> None:
+        assert not capability_declares(JsCapability.KV_KEY_READ)

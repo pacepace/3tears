@@ -54,6 +54,7 @@ from threetears.nats.subjects import Subjects, get_default_namespace, sanitize_s
 __all__ = [
     "CROSS_PLATFORM_CACHE_INVALIDATE",
     "COORDINATION_BUCKET_SUFFIX_GRAMMAR",
+    "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
     "MAX_COORDINATION_BUCKETS",
     "MAX_COORDINATION_BUCKET_SUFFIX_CHARS",
@@ -65,6 +66,8 @@ __all__ = [
     "build_permissions",
     "capability_declares",
     "capability_is_scoped",
+    "data_version_kv_key",
+    "data_versions_bucket_name",
     "inbox_prefix_for",
     "kv_bucket_names",
     "kv_key_scope_for",
@@ -110,6 +113,13 @@ MAX_COORDINATION_BUCKETS: Final[int] = 16
 #: while leaving room for a name that says what the bucket is for.
 MAX_COORDINATION_BUCKET_SUFFIX_CHARS: Final[int] = 64
 
+#: the suffix of the KV bucket that holds each pod-owned data space's version state, one key per
+#: owning principal. the bucket is ``{ns}-data-versions``: ``NatsClient.kv_bucket`` layers the
+#: ``{ns}-`` prefix over this suffix, and :func:`data_versions_bucket_name` renders the whole name
+#: for a caller that opens the bucket directly. the hub creates the bucket and writes it; a pod
+#: binds it and reads and watches its own key (:attr:`JsCapability.KV_KEY_READ`).
+DATA_VERSIONS_BUCKET_SUFFIX: Final[str] = "data-versions"
+
 
 class Principal(StrEnum):
     """a connection identity class the bus authenticates and scopes permissions for.
@@ -150,7 +160,7 @@ class JsResourceKind(StrEnum):
 class JsCapability(StrEnum):
     """what one principal may do against one JetStream stream.
 
-    Deliberately three values, not five, and the omission is recorded rather than accidental. A
+    Deliberately few values, and the omission is recorded rather than accidental. A
     finer split (read-only KV / KV watch / durable consumer) would be better least-privilege, but
     every non-scoped bucket on this platform runs ``allow_direct: false``, where nats-py reads a key
     by publishing ``$JS.API.STREAM.MSG.GET`` with the key in the request BODY -- so trimming verbs
@@ -166,17 +176,28 @@ class JsCapability(StrEnum):
         DECLARING identity alone; never a pod. ``UPDATE`` is a read-all primitive on a shared stream
         (``republish`` / ``sources`` mirror every key to a subject the caller names), which is why
         this is a distinct capability rather than a softening of :attr:`KV_SCOPED`.
+    :cvar KV_KEY_READ: bind, direct read and WATCH of exactly ONE whole key, carried in the
+        resource's ``scope``, and nothing else -- never a write, never another key. For a bucket
+        whose keys are single tokens owned one per principal (``{ns}-data-versions``), where a
+        :attr:`KV_SCOPED` ``{scope}.>`` tail would match none of them. The watch is granted only in
+        the form that names its filter in the SUBJECT (``CONSUMER.CREATE.{stream}.{name}.{filter}``,
+        which the server checks against the body), so a watcher must create a NAMED consumer;
+        nats-py's ``KeyValue.watch`` creates an unnamed one and is refused.
     """
 
     FULL = "full"
     KV_SCOPED = "kv_scoped"
     KV_SCOPED_DECLARE = "kv_scoped_declare"
+    KV_KEY_READ = "kv_key_read"
 
 
 #: capabilities whose grants are narrowed to one key scope, and therefore REQUIRE a scope.
 _SCOPED_CAPABILITIES: Final[frozenset[JsCapability]] = frozenset(
-    {JsCapability.KV_SCOPED, JsCapability.KV_SCOPED_DECLARE}
+    {JsCapability.KV_SCOPED, JsCapability.KV_SCOPED_DECLARE, JsCapability.KV_KEY_READ}
 )
+
+#: capabilities that read and never write, and therefore REFUSE write intent.
+_READ_ONLY_CAPABILITIES: Final[frozenset[JsCapability]] = frozenset({JsCapability.KV_KEY_READ})
 
 #: capabilities that may create or update the resource. never granted to a pod principal.
 _DECLARING_CAPABILITIES: Final[frozenset[JsCapability]] = frozenset({JsCapability.KV_SCOPED_DECLARE})
@@ -244,7 +265,8 @@ class JsResource:
         :rtype: None
         :raises ValueError: if a scoped capability carries no scope, if an unscoped capability
             carries one, if the scope is not a single subject token, if a stream is given a KV
-            capability, or if a plain stream is declared writable
+            capability, if a read-only capability is declared writable, or if a plain stream is
+            declared writable
         """
         if capability_is_scoped(self.capability):
             if self.kind is not JsResourceKind.KV_BUCKET:
@@ -266,6 +288,12 @@ class JsResource:
                 f"resource {self.name!r} carries scope {self.scope!r} with capability "
                 f"{self.capability.value}, which emits an UNSCOPED grant; a scope that is recorded but "
                 f"not enforced reads as isolation that is not there"
+            )
+        if self.capability in _READ_ONLY_CAPABILITIES and self.writable:
+            raise ValueError(
+                f"KV bucket {self.name!r} is declared with {self.capability.value}, which grants a read "
+                f"and a watch of one key and never a write; write intent here would mint a $KV. "
+                f"publish grant the capability exists to withhold"
             )
         if self.kind is JsResourceKind.STREAM and self.writable:
             raise ValueError(
@@ -318,6 +346,31 @@ class JsResource:
                 f"buys nothing the FULL capability does not already carry"
             )
         return cls(name=name, kind=JsResourceKind.KV_BUCKET, capability=capability, scope=scope, writable=writable)
+
+    @classmethod
+    def kv_key_read(cls, name: str, *, key: str) -> JsResource:
+        """declare a read and watch of exactly ONE key of one KV bucket, and nothing else.
+
+        The key rides in ``scope`` -- the field every scoped capability's grants read -- and is
+        the WHOLE key rather than a prefix: :attr:`JsCapability.KV_KEY_READ` emits it as a literal
+        final token, never followed by ``.>``. Always read-only.
+
+        :param name: fully-qualified bucket name, prefix included
+        :ptype name: str
+        :param key: the one key the holder may read and watch; a single subject token
+        :ptype key: str
+        :return: the resource record
+        :rtype: JsResource
+        :raises ValueError: if ``key`` is not a single subject token matching
+            :data:`KV_KEY_SCOPE_GRAMMAR`
+        """
+        return cls(
+            name=name,
+            kind=JsResourceKind.KV_BUCKET,
+            capability=JsCapability.KV_KEY_READ,
+            scope=key,
+            writable=False,
+        )
 
     @classmethod
     def stream(cls, name: str) -> JsResource:
@@ -561,6 +614,48 @@ def kv_key_scope_for_service(service: str) -> str:
     if not KV_KEY_SCOPE_GRAMMAR.match(scope):
         raise ValueError(f"kv key scope {scope!r} does not match {KV_KEY_SCOPE_GRAMMAR.pattern}")
     return scope
+
+
+def data_versions_bucket_name(ns: str | None = None) -> str:
+    """the full name of the data-versions KV bucket, ``{ns}-data-versions``.
+
+    the ONE rendering both halves use: the hub creates and writes the bucket under this name, and
+    the pod resolvers below grant it under this name. a grant naming any other spelling is a
+    JetStream call that blocks to its deadline rather than a refusal anyone reads.
+
+    :param ns: the subject namespace prefix; the process default when omitted
+    :ptype ns: str | None
+    :return: the bucket name, prefix included
+    :rtype: str
+    """
+    return f"{ns if ns is not None else _ns()}-{DATA_VERSIONS_BUCKET_SUFFIX}"
+
+
+def data_version_kv_key(owner_id: str | UUID) -> str:
+    """the key one owning principal's data-version entry is stored under.
+
+    the owner's uuid as 32 lowercase hex characters, no dashes (``UUID.hex``): the agent id for
+    an agent pod, the ``tool_pods.id`` for a tool pod. uuid7 ids are unique across both, so the
+    key needs no principal prefix. ONE subject token by construction, which is what lets
+    :attr:`JsCapability.KV_KEY_READ` grant it as a literal: a key with a dot in it would render two
+    tokens and the grant would match nothing.
+
+    :param owner_id: the owning principal's id
+    :ptype owner_id: str | UUID
+    :return: 32-character lowercase hex key
+    :rtype: str
+    :raises ValueError: if ``owner_id`` is not a uuid
+    """
+    if isinstance(owner_id, UUID):
+        return owner_id.hex
+    try:
+        parsed = UUID(str(owner_id))
+    except ValueError as exc:
+        raise ValueError(
+            f"data-version kv key requires a uuid owner id, got {owner_id!r}; a key derived from "
+            f"anything else is not provably unique to its owner"
+        ) from exc
+    return parsed.hex
 
 
 def _pod_scope(principal: Principal, scope_id: str) -> str:
@@ -912,6 +1007,10 @@ def _agent_pod(
             # it was meant to durably record is dropped. That failure is quiet: the
             # publish side keeps succeeding, so audit looks healthy from the emitter.
             JsResource.stream(f"{ns}-audit"),
+            # the agent's OWN data-version entry, read and watched while it waits for an upgrade
+            # of its ``data:`` tables to finish. keyed on the AUTHENTICATED agent id, so replicas
+            # share one key and no agent can reach another's. READ-ONLY: the hub writes it.
+            JsResource.kv_key_read(data_versions_bucket_name(ns), key=data_version_kv_key(a)),
             # the agent's OWN coordination buckets, each composed under ``scope`` so a
             # declaration can only ever reach this agent's space. LAST, so a reader sees the
             # platform's fixed grants above and this agent's variable ones below.
@@ -1107,6 +1206,11 @@ def _tool_pod(
             # that reason, since a refused ``STREAM.CREATE`` is never answered and costs a
             # JetStream deadline at every startup before falling through to the bind anyway.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
+            # the pod's OWN data-version entry, read and watched while it waits for an upgrade of
+            # the tables it owns to finish. keyed on ``tool_pods.id`` -- pinned from the verified
+            # key id, as the collections scope above is -- so replicas share one key and no pod can
+            # reach another's. READ-ONLY: the hub writes it.
+            JsResource.kv_key_read(data_versions_bucket_name(ns), key=data_version_kv_key(p)),
         ),
     )
 
