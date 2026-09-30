@@ -4,6 +4,43 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### A save answered late no longer caches a row older than L3's
+
+`save_entity` committed to L3, then cached the row in L1 and wrote it to L2 with an
+unconditional put. A later save of the same row could complete inside that L3 round trip: this
+replica's own, or a peer's, whose broadcast had already evicted this replica's L1 and deleted the
+shared key. The earlier row then sat in L1, and with no peer left to delete it in L2, behind L3
+with nothing to evict it. The replica served the older value until the row was written again.
+
+**Contract change, `threetears.core.collections.BaseCollection.save_entity`:** on a collection with
+an L3 pool and an L2 bucket, the L2 write is now conditional.
+
+- Before the L3 write, the save reads the revision of the key's latest L2 message, a deletion
+  included.
+- After the commit, the row is written to L2 as a compare-and-swap at that revision, not as a put.
+- When the swap is refused, the key is deleted from L2 and from this replica's L1. The next read
+  takes whichever row L3 committed last.
+- L1 caches the row only when L2 took it.
+- When L2 cannot be read or written, nothing is cached and the save still succeeds.
+- When the row is not cached, the entity's own change buffer carries it, so the handle still reads
+  what it saved.
+
+The fence is the L2 revision, so it needs no `l2_epoch` / `l2_revision` columns and applies to
+every three-tier collection.
+
+Unchanged:
+
+- A collection with no L3 pool, where L2 is the source of truth, keeps the unconditional put.
+- A write-behind save keeps the unconditional put.
+- A collection with no L2 caches in L1 as before.
+
+**On upgrade:** a save on a three-tier collection now reads L2 once before its L3 write. A test
+harness that gives a collection an L2 client must also give its registry a `kv_key_scope`, and a
+bucket double must answer `get_latest` and `update`. `threetears.core.testing.kv.FakeNatsClient`
+already does both.
+
 ## v0.56.3 -- 2026-09-28
 
 Nothing to do on upgrade; no API changes. A consumer that strips this syntax itself can delete its

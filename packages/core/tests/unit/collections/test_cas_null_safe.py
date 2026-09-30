@@ -42,6 +42,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.testing.kv import FakeNatsClient
 
 # ---------------------------------------------------------------------------
 # fixtures / stubs
@@ -137,7 +138,10 @@ class _RecordingPool:
 
 
 def _registry(pool: Any) -> CollectionRegistry:
-    """build a registry wired with a single pool for all tables.
+    """build a registry wired with a single pool for all tables, and the L2 key scope.
+
+    the collections here are built with an L2 client, and a save reads its L2 key before its L3
+    write, so the registry carries the principal scope every L2 key is built under.
 
     :param pool: recording pool
     :ptype pool: Any
@@ -145,7 +149,7 @@ def _registry(pool: Any) -> CollectionRegistry:
     :rtype: CollectionRegistry
     """
     reg = CollectionRegistry()
-    reg.configure(l3_pool=pool)
+    reg.configure(l3_pool=pool, kv_key_scope="cas-null-safe-principal")
     return reg
 
 
@@ -162,22 +166,13 @@ def _config(**overrides: Any) -> DefaultCoreConfig:
     return DefaultCoreConfig(**kwargs)
 
 
-def _nats() -> AsyncMock:
-    """build a no-op NATS wrapper mock.
+def _nats() -> FakeNatsClient:
+    """build the shipped in-memory NATS double, whose bucket carries the whole KV surface a save uses.
 
-    :return: mock nats wrapper
-    :rtype: AsyncMock
+    :return: in-memory nats wrapper
+    :rtype: FakeNatsClient
     """
-    bucket = AsyncMock()
-    bucket.get = AsyncMock(return_value=None)
-    bucket.put = AsyncMock(return_value=1)
-    bucket.delete = AsyncMock(return_value=True)
-
-    nats = AsyncMock()
-    nats.kv_bucket = AsyncMock(return_value=bucket)
-    nats.publish = AsyncMock()
-    nats.subscribe_typed = AsyncMock()
-    return nats
+    return FakeNatsClient()
 
 
 def _row(**overrides: Any) -> dict[str, Any]:

@@ -145,6 +145,20 @@ class _L2Lookup:
     revision: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _L2BeforeWrite:
+    """L2's state for one key as a save read it, before its L3 write.
+
+    :ivar fenced: whether the save's L2 write is conditional -- ``False`` when there is no L2
+        bucket, or no L3 pool (L2 is then the source of truth, and its writes are last-writer-wins)
+    :ivar revision: the revision of the key's latest message, a deletion included, or ``0`` for a
+        key with no message; ``None`` when the save is unfenced or L2 could not be read
+    """
+
+    fenced: bool
+    revision: int | None
+
+
 class _NatsClientFromRegistry:
     """sentinel type for :data:`NATS_CLIENT_FROM_REGISTRY`."""
 
@@ -2031,6 +2045,22 @@ class BaseCollection(ABC, Generic[EntityT]):
     ) -> None:
         """save entity through the three-tier write path.
 
+        **Cached only while still the newest write.** On a collection with an L3 pool
+        and an L2 bucket, the key's latest L2 revision is read before the L3 write, and the
+        committed row is written to L2 as a compare-and-swap at that revision rather than as an
+        unconditional put. L3 is a round trip, and a later save of the same row -- this
+        replica's own, or a peer's -- can complete inside it; when it has, the swap is refused,
+        the key is deleted from L2 and from this replica's L1, and the next read takes whichever
+        row L3 committed last. L1 caches the row only when L2 took it. The ordering needs no
+        order columns: the L2 revision read before the write is the fence, on every collection.
+        The save itself never fails for it; an unreadable L2 caches nothing and the save still
+        succeeds. When the row is not cached, the entity's change buffer carries it, so the
+        handle still reads what it saved.
+
+        Unchanged elsewhere: a collection with no L3 pool (L2 is its source of truth) and a
+        write-behind collection keep the unconditional put, and a collection with no L2 caches in
+        L1 as before.
+
         :param entity: entity instance to persist
         :ptype entity: BaseEntity
         :param conn: optional **backend-specific transaction handle** (e.g. an
@@ -2111,6 +2141,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
         else:
+            # L2's state BEFORE the L3 write: the row reaches L2 below only if nothing has touched
+            # the key since (see _cache_committed_row).
+            before = await self._l2_revision_before_write(entity_id)
             try:
                 if conn is not None:
                     rows_affected = await self.save_to_store(
@@ -2139,13 +2172,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             generation_failure = await self._advance_generation()
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
-            if self._l1 is not None:
-                self._l1.upsert(self.table_name, data, self.primary_key_columns)
-            else:
-                # No L1 backend: repopulate _changes so entity fields remain accessible
-                object.__setattr__(entity, "_changes", dict(data))
-            self._clear_l1_marker(entity_id)
-            await self._save_to_l2(entity_id, data)
+            await self._cache_committed_row(entity, entity_id, data, before)
 
         await self._publish_invalidation(entity_id)
         if generation_failure is not None:
@@ -2185,6 +2212,126 @@ class BaseCollection(ABC, Generic[EntityT]):
             "L3 write did not land; its working copy was withdrawn from L1",
             extra={"extra_data": {"table": self.table_name, "entity_id": str(entity_id)}},
         )
+
+    async def _l2_revision_before_write(self, entity_id: Any) -> _L2BeforeWrite:
+        """read the revision of the key's latest L2 message before a save writes L3.
+
+        The fence :meth:`_cache_committed_row` writes L2 at. Only a collection with an L3 pool and
+        an L2 bucket is fenced: without L3, L2 is the source of truth and a save's put is
+        last-writer-wins by contract; without L2 there is nothing to write.
+
+        A failed read leaves the save fenced with no revision, so the committed row is never
+        cached: the save itself still succeeds, since L3 is the durable record and a miss is
+        always correct. It degrades to a warning as every L2 access on a three-tier path does.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: whether the save's L2 write is fenced, and the revision to fence it at
+        :rtype: _L2BeforeWrite
+        """
+        before = _L2BeforeWrite(fenced=False, revision=None)
+        if self.l3_pool is not None:
+            try:
+                kv = await self._ensure_kv()
+                if kv is not None:
+                    _, revision = await kv.get_latest(key=self.l2_key(entity_id))
+                    before = _L2BeforeWrite(fenced=True, revision=revision)
+            except KvError as exc:
+                before = _L2BeforeWrite(fenced=True, revision=None)
+                log.warning(
+                    "L2 read before a save failed; the saved row is not cached and the next read goes to L3",
+                    extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+                )
+        return before
+
+    async def _cache_committed_row(
+        self, entity: BaseEntity, entity_id: Any, data: dict[str, Any], before: _L2BeforeWrite
+    ) -> None:
+        """cache a row whose L3 write committed, in L2 and L1, only while no later write has touched the key.
+
+        The L3 write is a round trip, and a later save of the same row can complete inside it:
+        this replica's own, or a peer's, whose broadcast has already evicted this replica's L1 and
+        deleted the shared key. An unconditional put of this row after that would leave it in L2,
+        and in L1, behind L3 with nothing left to evict it.
+
+        So on a fenced collection the row is written to L2 at ``before.revision`` -- the key's
+        latest message as read before the L3 write -- and lands only while the key's history is
+        exactly as that read found it. A write that lands was the newest when it landed: any save
+        that committed after this one read the key after this one did, so it either finds this
+        write and replaces it, or finds the key changed and evicts it. A refused write does not
+        know whether the key now holds a newer row or an older one, so it deletes the key and
+        every reader goes to L3, which holds whichever write committed last. L1 takes the row only
+        when L2 took it, with no await between the two; otherwise the key is dropped from L1 too.
+
+        An unfenced collection keeps the unconditional put: L1 first, then L2.
+
+        When the row is not cached, the entity's own change buffer carries it, so the caller's
+        handle still reads what it saved -- as it does on a collection with no L1.
+
+        :param entity: the entity whose save committed
+        :ptype entity: BaseEntity
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param data: the row as committed
+        :ptype data: dict[str, Any]
+        :param before: L2's state for the key as read before the L3 write
+        :ptype before: _L2BeforeWrite
+        :return: nothing
+        :rtype: None
+        """
+        self._clear_l1_marker(entity_id)
+        cached = self._l1 is not None
+        if not before.fenced:
+            if self._l1 is not None:
+                self._l1.upsert(self.table_name, data, self.primary_key_columns)
+            await self._save_to_l2(entity_id, data)
+        elif await self._write_l2_at(entity_id, data, before.revision):
+            if self._l1 is not None:
+                self._l1.upsert(self.table_name, data, self.primary_key_columns)
+        else:
+            cached = False
+            if self._l1 is not None:
+                self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        if not cached:
+            object.__setattr__(entity, "_changes", dict(data))
+
+    async def _write_l2_at(self, entity_id: Any, data: dict[str, Any], revision: int | None) -> bool:
+        """write a committed row to L2 at ``revision``, or delete the key when that is refused.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param data: the row as committed
+        :ptype data: dict[str, Any]
+        :param revision: the key's latest revision as read before the L3 write, ``0`` when it had
+            no message; ``None`` when that read failed, which writes nothing and deletes the key
+        :ptype revision: int | None
+        :return: whether L2 now holds this row
+        :rtype: bool
+        """
+        written = False
+        try:
+            kv = await self._ensure_kv()
+            if kv is not None and revision is not None:
+                payload = self.serialize(self._normalise_datetimes_for_write(data))
+                lifetime = self._l2_entry_lifetime(data)
+                timed = {} if lifetime is None else {"ttl": lifetime}
+                written = (
+                    await kv.update(key=self.l2_key(entity_id), value=payload, revision=revision, **timed) is not None
+                )
+        except KvError as exc:
+            log.warning(
+                "L2 write after a save failed; the key is dropped and the next read goes to L3",
+                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            )
+        if not written:
+            # the key may hold a row older than the one L3 now has; a delete is always correct,
+            # since the next read seeds L2 from L3 at the deletion's revision.
+            await self._delete_from_l2(entity_id)
+            log.debug(
+                "a saved row did not reach L2 at the revision read before its L3 write; the key is dropped",
+                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
+            )
+        return written
 
     async def persist_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
         """Persist a write-buffer entry to L3. Used by ``flush_pending``.

@@ -125,6 +125,9 @@ class _CoherentConversationsCollection(ConversationsCollection):
         """
         self.l3_pool = postgres_pool
         self._l1 = None
+        # no L2 bucket: ``save_entity`` then takes its unfenced L2 write, which is the
+        # ``_save_to_l2`` seam this harness records.
+        self._nats_client = None
         self._write_buffer = None
         self._flush_strategy = FlushStrategy.ALWAYS
         self._flush_tables = frozenset()
