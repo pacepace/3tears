@@ -19,6 +19,7 @@ deployment.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -29,6 +30,7 @@ from uuid_utils import uuid7
 from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
+    SkillShapeError,
 )
 from threetears.agent.skills.migrations import register as register_skills
 from threetears.agent.skills.tools import (
@@ -44,6 +46,7 @@ from threetears.agent.skills.tools import (
     load_skill_update_tool,
 )
 from threetears.conversations.migrations import register as register_conversations
+from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
@@ -192,11 +195,14 @@ async def pool_with_schema(
     finally:
         await conn.close()
 
+    # ``init_connection`` is the pool hook every production consumer uses: it registers the
+    # jsonb codec the ``arguments`` column binds through.
     pool: asyncpg.Pool = await asyncpg.create_pool(
         url,
         min_size=1,
         max_size=2,
         server_settings={"search_path": f"{schema}, public"},
+        init=init_connection,
     )
     try:
         yield pool
@@ -648,3 +654,101 @@ class TestSkillListUnion:
         out = await list_tool.ainvoke({})
         assert "loki.query" in out
         assert "kind=tool" in out
+
+
+# --- a skill that is one tool call ---
+
+
+def _tool_skill_row(agent_id: UUID, user_id: UUID, **fields: Any) -> dict[str, Any]:
+    """Return a minimal skill row; ``fields`` override or extend it."""
+    return {
+        "agent_id": agent_id,
+        "skill_id": _new_uuid(),
+        "user_id": user_id,
+        "name": f"skill-{_new_uuid()}",
+        "summary": "summary",
+        # ``skill_create`` writes both; ``save_entity`` stamps them only when present.
+        "date_created": datetime.now(UTC),
+        "date_updated": datetime.now(UTC),
+    } | fields
+
+
+class TestToolCallSkillPersistence:
+    """``tool`` / ``arguments`` persist through the real collection, and a both-kinds row never lands."""
+
+    @pytest.mark.parametrize("with_l1", [False, True])
+    async def test_tool_only_skill_round_trips(self, pool_with_schema: asyncpg.Pool, with_l1: bool) -> None:
+        """Saved through ``save_entity``, read back cold from L3 by pk and by name, arguments intact."""
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        build = _build_collections_with_l1 if with_l1 else _build_collections
+        skills, _ = build(pool_with_schema)
+        arguments = {"q": "error", "limit": 5, "labels": {"app": "api"}, "tags": ["a", None]}
+        entity = skills.create(_tool_skill_row(agent_id, user_id, tool="loki.query", arguments=arguments))
+        await skills.save_entity(entity)
+
+        stored = await pool_with_schema.fetchrow(
+            "SELECT body, tool, arguments FROM agent_skills WHERE skill_id = $1", entity.skill_id
+        )
+        assert stored is not None
+        assert (stored["body"], stored["tool"], stored["arguments"]) == (None, "loki.query", arguments)
+
+        cold, _ = _build_collections(pool_with_schema)
+        by_pk = await cold.get((agent_id, entity.skill_id))
+        assert by_pk is not None
+        assert (by_pk.body, by_pk.tool, by_pk.arguments) == (None, "loki.query", arguments)
+        by_name = await cold.find_by_name_for_user(agent_id, user_id, entity.name)
+        assert by_name is not None
+        assert (by_name.tool, by_name.arguments) == ("loki.query", arguments)
+        [listed] = await cold.list_for_user(agent_id, user_id)
+        assert (listed.tool, listed.arguments) == ("loki.query", arguments)
+
+    async def test_body_and_tool_refused_at_save(self, pool_with_schema: asyncpg.Pool) -> None:
+        """The collection refuses the row with the clear error; the database never sees it."""
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        skills, _ = _build_collections_with_l1(pool_with_schema)
+        entity = skills.create(_tool_skill_row(agent_id, user_id, body="steps", tool="loki.query"))
+        with pytest.raises(SkillShapeError, match="not both"):
+            await skills.save_entity(entity)
+        assert await pool_with_schema.fetchval("SELECT COUNT(*) FROM agent_skills") == 0
+        # the working copy left L1 with the refusal: nothing serves it as stored.
+        assert await skills.get((agent_id, entity.skill_id)) is None
+
+    async def test_arguments_without_tool_refused_at_save(self, pool_with_schema: asyncpg.Pool) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        skills, _ = _build_collections(pool_with_schema)
+        entity = skills.create(_tool_skill_row(agent_id, user_id, body="steps", arguments={"q": 1}))
+        with pytest.raises(SkillShapeError, match="arguments need a tool"):
+            await skills.save_entity(entity)
+        assert await pool_with_schema.fetchval("SELECT COUNT(*) FROM agent_skills") == 0
+
+    async def test_tools_create_and_convert_a_tool_skill(self, pool_with_schema: asyncpg.Pool) -> None:
+        """``skill_create`` writes a tool skill; ``skill_update`` turns a body skill into one, on Postgres."""
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        skills, _ = _build_collections_with_l1(pool_with_schema)
+        registry = _FakeRegistry(permitted_tools={"loki.query"})
+        [create_tool] = load_skill_create_tool(
+            agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=registry
+        )
+        [update_tool] = load_skill_update_tool(
+            agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=registry
+        )
+
+        made = await create_tool.ainvoke(
+            {"name": "errors", "summary": "s", "tool": "loki.query", "arguments": {"q": "error"}}
+        )
+        assert made.startswith("[skill:"), made
+        refused = await create_tool.ainvoke({"name": "both", "summary": "s", "body": "x", "tool": "loki.query"})
+        assert "not both" in refused
+
+        body_skill = await create_tool.ainvoke({"name": "steps", "summary": "s", "body": "do it"})
+        body_id = body_skill.split("[skill:")[1].split("]")[0]
+        converted = await update_tool.ainvoke(
+            {"skill_id": body_id, "body": "", "tool": "loki.query", "arguments": {"q": "warn"}}
+        )
+        assert "[TOOL ERROR]" not in converted, converted
+
+        rows = await pool_with_schema.fetch("SELECT name, body, tool, arguments FROM agent_skills ORDER BY name")
+        assert [(r["name"], r["body"], r["tool"], r["arguments"]) for r in rows] == [
+            ("errors", None, "loki.query", {"q": "error"}),
+            ("steps", None, "loki.query", {"q": "warn"}),
+        ]

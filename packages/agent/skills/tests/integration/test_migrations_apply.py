@@ -1,6 +1,6 @@
 """Integration test: agent-skills migrations apply cleanly.
 
-Verifies that running v001-v003 against a fresh schema:
+Verifies that running v001-v004 against a fresh schema:
 
 - Creates ``agent_skills`` + ``agent_skill_invocations`` with the
   expected column inventory and indexes.
@@ -19,7 +19,8 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
-from threetears.agent.skills.migrations import drop_gin_indexes
+from threetears.agent.skills.migrations import add_tool_call_columns, drop_gin_indexes
+from threetears.agent.skills.migrations.v004_add_tool_call_columns import PAYLOAD_CHECK_ENGINE_DEF
 from threetears.agent.skills.migrations import register as register_skills
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.data.migrations import MigrationRunner
@@ -109,7 +110,7 @@ async def _trigger_exists(
 
 
 class TestSchemaShape:
-    """The v001-v003 chain produces the documented schema."""
+    """The v001-v004 chain produces the documented schema."""
 
     async def test_migration_applies_and_creates_tables(
         self,
@@ -133,6 +134,8 @@ class TestSchemaShape:
                 "name",
                 "summary",
                 "body",
+                "tool",
+                "arguments",
                 "prompt_mode",
                 "tool_additions",
                 "tool_restrictions",
@@ -312,4 +315,113 @@ class TestIdempotency:
             second = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
             assert second == 0
         finally:
+            await conn.close()
+
+
+#: the constraints v004 adds or replaces.
+_V004_CHECKS: tuple[str, ...] = (
+    "agent_skills_body_or_tool_check",
+    "agent_skills_arguments_need_tool_check",
+    "agent_skills_arguments_object_check",
+    "agent_skills_payload_check",
+)
+
+
+async def _check_oids(conn: asyncpg.Connection, schema: str) -> dict[str, tuple[int, str]]:
+    """Return ``name -> (oid, definition)`` for v004's checks in ``schema``."""
+    rows = await conn.fetch(
+        """
+        SELECT c.conname, c.oid::bigint AS oid, pg_get_constraintdef(c.oid) AS def
+          FROM pg_constraint c
+          JOIN pg_namespace ns ON ns.oid = c.connamespace
+         WHERE ns.nspname = $1 AND c.conname = ANY($2::text[])
+        """,
+        schema,
+        list(_V004_CHECKS),
+    )
+    return {r["conname"]: (r["oid"], r["def"]) for r in rows}
+
+
+class TestV004ToolCallColumns:
+    """v004 adds ``tool`` / ``arguments`` and the checks, safely and repeatably."""
+
+    async def test_upgrade_leaves_existing_skills_untouched(self, pg_schema: tuple[str, str]) -> None:
+        """A skill written at v003 reads back identical after v004, with no tool and no arguments."""
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store, target=3)  # type: ignore[arg-type]
+            assert "tool" not in await _columns(conn, schema, "agent_skills")
+            await conn.execute(
+                "INSERT INTO agent_skills (agent_id, skill_id, user_id, name, summary, body, tool_additions) "
+                "VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'old', 'sum', 'steps', '{a.b}'), "
+                "(gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'bare', 'sum', NULL, '{a.b}')"
+            )
+            before = [dict(r) for r in await conn.fetch("SELECT * FROM agent_skills ORDER BY name")]
+
+            assert await runner.apply_for_agent_schema(store) >= 1  # type: ignore[arg-type]
+
+            after = [dict(r) for r in await conn.fetch("SELECT * FROM agent_skills ORDER BY name")]
+            assert [{k: v for k, v in r.items() if k not in {"tool", "arguments"}} for r in after] == before
+            assert all(r["tool"] is None and r["arguments"] is None for r in after)
+            columns = await _columns(conn, schema, "agent_skills")
+            assert columns["tool"] == "text"
+            assert columns["arguments"] == "jsonb"
+        finally:
+            await conn.close()
+
+    async def test_applies_twice_without_change(self, pg_schema: tuple[str, str]) -> None:
+        """Running v004's body again keeps every check, with the same OID and definition."""
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            first = await _check_oids(conn, schema)
+            assert set(first) == set(_V004_CHECKS)
+            assert "tool IS NOT NULL" in first["agent_skills_payload_check"][1]
+
+            await add_tool_call_columns(store)  # type: ignore[arg-type]
+            assert await _check_oids(conn, schema) == first
+        finally:
+            await conn.close()
+
+    async def test_payload_check_stored_as_declared(self, pg_schema: tuple[str, str]) -> None:
+        """The swap's short-circuit compares against the definition Postgres actually stores."""
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+            stored = (await _check_oids(conn, schema))["agent_skills_payload_check"][1]
+            assert stored == PAYLOAD_CHECK_ENGINE_DEF
+        finally:
+            await conn.close()
+
+    async def test_each_agent_schema_gets_its_own_checks(self, pg_url: str) -> None:
+        """A sibling schema already at v004 does not make this schema's probes skip.
+
+        Every catalog probe is ``current_schema()``-scoped. Unscoped, the
+        second schema would see the first one's constraints and add none.
+        """
+        schemas = [f"sk_v004_{_i}_{id(object())}" for _i in range(2)]
+        conn = await asyncpg.connect(pg_url)
+        try:
+            for schema in schemas:
+                await conn.execute(f'CREATE SCHEMA "{schema}"')
+                await conn.execute(f'SET search_path TO "{schema}", public')
+                await _build_runner().apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+            for schema in schemas:
+                checks = await _check_oids(conn, schema)
+                assert set(checks) == set(_V004_CHECKS), schema
+                assert "tool IS NOT NULL" in checks["agent_skills_payload_check"][1], schema
+        finally:
+            for schema in schemas:
+                await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
             await conn.close()

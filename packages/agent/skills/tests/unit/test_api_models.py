@@ -315,3 +315,47 @@ class TestUpdateSkillRequest:
         assert "user_id" not in UpdateSkillRequest.model_fields
         assert "agent_id" not in UpdateSkillRequest.model_fields
         assert "skill_id" not in UpdateSkillRequest.model_fields
+
+
+class TestToolCallFields:
+    """A skill that is one tool call crosses the REST surface with ``tool`` / ``arguments``."""
+
+    def test_create_request_carries_tool_and_arguments(self) -> None:
+        req = CreateSkillRequest(name="errors", summary="s", tool="loki.query", arguments={"q": "error"})
+        assert req.tool == "loki.query"
+        assert req.arguments == {"q": "error"}
+        assert req.body is None
+
+    def test_update_request_carries_tool_and_arguments(self) -> None:
+        req = UpdateSkillRequest(tool="", arguments={"q": 1})
+        assert req.tool == ""
+        assert req.arguments == {"q": 1}
+
+    def test_response_defaults_and_values(self) -> None:
+        base = {
+            "skill_id": "s",
+            "agent_id": "a",
+            "user_id": "u",
+            "kind": "prose",
+            "name": "n",
+            "summary": "sum",
+            "body": None,
+            "prompt_mode": "additive",
+            "tool_additions": [],
+            "tool_restrictions": [],
+            "trigger_keywords": "",
+            "tags": [],
+            "source": "manual",
+            "enabled": True,
+            "use_count": 0,
+            "last_used_at": None,
+            "success_count": 0,
+            "failure_count": 0,
+            "last_failure_at": None,
+            "date_created": "2026-05-01T00:00:00+00:00",
+            "date_updated": "2026-05-01T00:00:00+00:00",
+        }
+        plain = SkillResponse(**base)
+        assert (plain.tool, plain.arguments) == (None, None)
+        tooled = SkillResponse(**base, tool="loki.query", arguments={"q": "error"})
+        assert (tooled.tool, tooled.arguments) == ("loki.query", {"q": "error"})

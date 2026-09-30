@@ -36,6 +36,8 @@ from threetears.agent.skills.api_models import (
 from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
+    SkillShapeError,
+    skill_shape_error,
 )
 from threetears.agent.skills.entities import (
     AgentSkillEntity,
@@ -110,6 +112,7 @@ __all__ = [
     "SkillRegistryClient",
     "SkillReportOutcomeInput",
     "SkillResponse",
+    "SkillShapeError",
     "SkillSource",
     "SkillSummary",
     "SkillToolIntrospect",
@@ -128,4 +131,5 @@ __all__ = [
     "load_skill_update_tool",
     "register",
     "render_skill_body_block",
+    "skill_shape_error",
 ]

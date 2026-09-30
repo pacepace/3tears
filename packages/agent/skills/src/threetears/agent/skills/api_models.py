@@ -39,6 +39,8 @@ real invocation row.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
 from threetears.agent.skills.tools import SkillCreateInput
@@ -99,6 +101,10 @@ class SkillResponse(BaseModel):
     last_failure_at: str | None
     date_created: str
     date_updated: str
+    # a skill that is one tool call carries these instead of a body. They
+    # default to None so a router built before they existed still constructs.
+    tool: str | None = None
+    arguments: dict[str, Any] | None = None
 
 
 class SkillSummary(BaseModel):
@@ -172,7 +178,8 @@ class CreateSkillRequest(SkillCreateInput):
     the editable field set (``name`` / ``summary`` / ``body`` /
     ``prompt_mode`` / ``tool_additions`` / ``tool_restrictions`` /
     ``trigger_keywords`` / ``tags`` / ``enabled``) is single-sourced with
-    the agent tool schema. ``user_id`` / ``agent_id`` are NOT fields here
+    the agent tool schema, which includes ``tool`` / ``arguments`` for a
+    skill that is one tool call. ``user_id`` / ``agent_id`` are NOT fields here
     and ``extra='forbid'`` rejects any attempt to send them -- the router
     derives identity from the authenticated principal.
     """
@@ -200,6 +207,8 @@ class UpdateSkillRequest(BaseModel):
     name: str | None = None
     summary: str | None = None
     body: str | None = None
+    tool: str | None = None
+    arguments: dict[str, Any] | None = None
     prompt_mode: PromptMode | None = None
     tool_additions: list[str] | None = None
     tool_restrictions: list[str] | None = None
