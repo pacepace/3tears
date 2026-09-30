@@ -37,6 +37,7 @@ from nkeys import PREFIX_BYTE_ACCOUNT, NkeysError
 
 from threetears.nats.auth_callout import AuthCalloutRequest, decode_auth_request, mint_auth_response
 from threetears.nats.credential_refusal import RefusedPrincipal
+from threetears.nats.credential_renewal import PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
 from threetears.nats.subject_permissions import PrincipalPermissions
 from threetears.nats.subjects import Subject, Subjects
 from threetears.nats.user_jwt import account_public_key, mint_user_jwt
@@ -46,6 +47,7 @@ __all__ = [
     "AUTH_CALLOUT_SUBJECT",
     "DEFAULT_AUTH_CALLOUT_QUEUE_GROUP",
     "DEFAULT_NATS_USER_JWT_TTL_SECONDS",
+    "AdmissionRecorder",
     "AuthAccountKeyError",
     "AuthCalloutDecision",
     "AuthCalloutResponder",
@@ -63,12 +65,16 @@ AUTH_CALLOUT_SUBJECT = "$SYS.REQ.USER.AUTH"
 #: request when a consumer runs several (e.g. one per pod). Override per deployment.
 DEFAULT_AUTH_CALLOUT_QUEUE_GROUP = "auth-callout"
 
-#: canonical default TTL (seconds) for each minted NATS user JWT -- the connection-auth credential
-#: lifetime. A SHORT TTL bounds how long a since-revoked principal keeps access; because a client
-#: re-auths a margin before expiry (a proactive reconnect), a short TTL just means more frequent
-#: transparent reconnects, not downtime. The consumer that reports a re-auth margin to its clients
-#: should pass the SAME value here so the minted TTL and the reported TTL can never drift.
-DEFAULT_NATS_USER_JWT_TTL_SECONDS = 3600
+#: default TTL (seconds) for each minted NATS user JWT: the platform's backstop,
+#: :data:`~threetears.nats.credential_renewal.PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS`, and not a
+#: second number. The TTL is not how access is taken away -- nats-server closes a connection only at
+#: its JWT's ``exp``, and every renewal is a handover a client would rather not make -- so it is long,
+#: and a principal that must lose access now has its connection kicked
+#: (:func:`threetears.nats.kick_connection`, fed by an :class:`AdmissionRecorder`) and its reconnect
+#: refused. It is one number with the renewal side's default because a client that assumed a LONGER
+#: lifetime than the one minted would renew after its credential expired, which nats-py treats as a
+#: terminal close. A consumer that reports a TTL to its clients passes the SAME value here.
+DEFAULT_NATS_USER_JWT_TTL_SECONDS = PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
 
 
 class AuthAccountKeyError(ValueError):
@@ -168,6 +174,30 @@ class GrantPolicy(Protocol):
         ...
 
 
+@runtime_checkable
+class AdmissionRecorder(Protocol):
+    """keeps what it takes to close an admitted connection later.
+
+    Every admission the responder grants is handed here before the server is answered: the request
+    names the connection (:attr:`AuthCalloutRequest.connection`), the principal says whose it is.
+    A recorder that raises DENIES the connection -- an admission nobody could revoke would keep
+    its credential until the credential expires.
+    """
+
+    async def record_admission(self, request: AuthCalloutRequest, principal: ResolvedPrincipal) -> None:
+        """record that ``request``'s connection was admitted as ``principal``.
+
+        :param request: the admitted authorization request
+        :ptype request: AuthCalloutRequest
+        :param principal: the principal it was admitted as
+        :ptype principal: ResolvedPrincipal
+        :return: nothing
+        :rtype: None
+        :raises Exception: any failure, which denies the connection
+        """
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class AuthCalloutDecision:
     """what the responder answers one authorization request with.
@@ -209,9 +239,14 @@ class AuthCalloutResponder:
     :ptype issuer_account: str | None
     :param queue_group: the callout subscription's queue group (one responder per group answers).
     :ptype queue_group: str
-    :param user_jwt_ttl_seconds: TTL on each minted user JWT; a reconnect re-mints, so a short TTL
-        bounds how long a since-revoked principal keeps access.
+    :param user_jwt_ttl_seconds: TTL on each minted user JWT: the backstop that bounds how long a
+        connection keeps its credential when nothing closed it sooner. Taking access away NOW is a
+        kick (:func:`threetears.nats.kick_connection`) of the connection the ``admission_recorder``
+        recorded, then a refusal of its reconnect.
     :ptype user_jwt_ttl_seconds: int
+    :param admission_recorder: records every admission, so its connection can be closed later;
+        ``None`` records nothing. A recorder that raises denies the connection
+    :ptype admission_recorder: AdmissionRecorder | None
     """
 
     def __init__(
@@ -225,6 +260,7 @@ class AuthCalloutResponder:
         issuer_account: str | None = None,
         queue_group: str = DEFAULT_AUTH_CALLOUT_QUEUE_GROUP,
         user_jwt_ttl_seconds: int = DEFAULT_NATS_USER_JWT_TTL_SECONDS,
+        admission_recorder: AdmissionRecorder | None = None,
     ) -> None:
         self._nc = nc
         self._account_seed = _validated_seed(account_seed)
@@ -234,6 +270,7 @@ class AuthCalloutResponder:
         self._issuer_account = _validated_issuer_account(issuer_account) if issuer_account is not None else None
         self._queue_group = queue_group
         self._ttl_seconds = user_jwt_ttl_seconds
+        self._admission_recorder = admission_recorder
         self._subscription: Any = None
 
     @classmethod
@@ -248,6 +285,7 @@ class AuthCalloutResponder:
         issuer_account: str | None = None,
         queue_group: str = DEFAULT_AUTH_CALLOUT_QUEUE_GROUP,
         user_jwt_ttl_seconds: int = DEFAULT_NATS_USER_JWT_TTL_SECONDS,
+        admission_recorder: AdmissionRecorder | None = None,
     ) -> AuthCalloutResponder:
         """build a responder from the account signing seed, FAILING CLOSED on a bad key.
 
@@ -256,6 +294,8 @@ class AuthCalloutResponder:
         :param issuer_account: the account's public IDENTITY key (``A...``) when ``account_seed`` is a
             subordinate signing seed; ``None`` when the identity seed signs. See :class:`AuthCalloutResponder`.
         :ptype issuer_account: str | None
+        :param admission_recorder: records every admission; see :class:`AuthCalloutResponder`.
+        :ptype admission_recorder: AdmissionRecorder | None
         :return: a ready responder.
         :rtype: AuthCalloutResponder
         :raises AuthAccountKeyError: when the seed is not a usable NATS account nkey seed, or
@@ -272,6 +312,7 @@ class AuthCalloutResponder:
             issuer_account=issuer_account,
             queue_group=queue_group,
             user_jwt_ttl_seconds=user_jwt_ttl_seconds,
+            admission_recorder=admission_recorder,
         )
 
     async def start(self) -> None:
@@ -429,8 +470,42 @@ class AuthCalloutResponder:
                 audience=self._account_name,
                 issuer_account=self._issuer_account,
             )
-            log.info("auth-callout: admitted name=%s conn_id=%s", resolved.name, resolved.conn_id)
-            return user_jwt
         except Exception as exc:  # noqa: BLE001 - auth boundary: any resolver/policy/mint fault denies (fail closed)
             log.warning("auth-callout: denied -- resolve/grant/mint raised (%s)", type(exc).__name__)
             return None
+        if not await self._record(request, resolved):
+            return None
+        log.info("auth-callout: admitted name=%s conn_id=%s", resolved.name, resolved.conn_id)
+        return user_jwt
+
+    async def _record(self, request: AuthCalloutRequest, principal: ResolvedPrincipal) -> bool:
+        """hand an admission to the :class:`AdmissionRecorder`, if one is wired; ``False`` denies.
+
+        The recorder is what lets the consumer close this connection later
+        (:func:`threetears.nats.kick_connection`), so an admission it could not record is denied
+        rather than admitted unreachable: the connection would otherwise hold its credential until
+        the credential expires, whatever happens to the principal meanwhile. The denial is not
+        deliberate, so nothing is published to the principal; it retries as for any refused connect.
+
+        :param request: the request being admitted
+        :ptype request: AuthCalloutRequest
+        :param principal: the principal it was admitted as
+        :ptype principal: ResolvedPrincipal
+        :return: ``True`` when there is no recorder or it recorded the admission
+        :rtype: bool
+        """
+        recorded = True
+        if self._admission_recorder is not None:
+            try:
+                await self._admission_recorder.record_admission(request, principal)
+            except Exception as exc:  # noqa: BLE001 - auth boundary: an admission that cannot be recorded is denied (fail closed)
+                log.error(
+                    "auth-callout: DENIED name=%s conn_id=%s -- the admission could not be recorded, so the "
+                    "connection could not be closed later: %s: %s",
+                    principal.name,
+                    principal.conn_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                recorded = False
+        return recorded

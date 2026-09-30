@@ -1,6 +1,8 @@
 """when to renew a connection whose credential expires, and when that cadence is unsafe.
 
-The auth-callout mints each connection's user JWT with a finite TTL. At expiry the NATS
+The auth-callout mints each connection's user JWT with a finite TTL -- a long one, 24 hours by
+default (:data:`PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS`), because the TTL is a backstop rather
+than how access is taken away. At expiry the NATS
 server closes the connection (``client.authExpired`` sends ``-ERR 'User Authentication
 Expired'`` and closes it), and nats-py routes that ``-ERR`` STRAIGHT to a terminal ``_close``
 -- it never enters ``_attempt_reconnect``, so forever-reconnect (which governs only the
@@ -86,18 +88,24 @@ REAUTH_UNKNOWN_TTL_RECHECK_SECONDS: Final[float] = 60.0
 #: auth-callout responder mints with, so both sides agree without a handshake.
 NATS_USER_JWT_TTL_ENV: Final[str] = "FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS"
 #: the TTL the platform's auth-callout mints when :data:`NATS_USER_JWT_TTL_ENV` is unset, and
-#: so the TTL a connection with no handshake assumes.
+#: so the TTL a connection with no handshake assumes: 24 hours.
 #:
-#: ONE owner: the platform's minting responder takes its default from this constant, so the
-#: mint and the renewal cannot drift apart. it is deliberately NOT
-#: :data:`~threetears.nats.auth_callout_responder.DEFAULT_NATS_USER_JWT_TTL_SECONDS`, the generic
-#: responder's hour-long default. the error is not symmetric: assuming LESS than the minted TTL
-#: costs only churn (a still-valid credential is replaced early), while assuming MORE is fatal
-#: (the JWT expires first, and nats-py routes the auth ``-ERR`` to a terminal close
-#: forever-reconnect does not cover). so the assumption is the shortest default any minter here
-#: uses, and a test pins it at or below the generic one. a deployment that tunes the minted TTL
-#: sets :data:`NATS_USER_JWT_TTL_ENV` on both sides.
-PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS: Final[int] = 300
+#: A BACKSTOP, not the fence. nats-server takes a credential away from a live connection only at
+#: its ``exp``, so a short TTL used to be how a revoked or superseded principal was cut off -- at
+#: the price of a renewal handover on every pod every few minutes. Access is now taken away when it
+#: must be: the consumer kicks the connection (:func:`threetears.nats.kick_connection`) and its
+#: auth-callout refuses the reconnect. The TTL remains only to bound a kick that was lost, and to
+#: re-verify each principal once a day; the renewal it forces is the same make-before-break
+#: handover (:meth:`threetears.nats.NatsClient.renew_connection`).
+#:
+#: ONE owner: the generic responder's
+#: :data:`~threetears.nats.auth_callout_responder.DEFAULT_NATS_USER_JWT_TTL_SECONDS` is this
+#: constant, so no minter's default can be shorter than what a client assumes. the error is not
+#: symmetric: assuming LESS than the minted TTL costs only churn (a still-valid credential is
+#: replaced early), while assuming MORE is fatal (the JWT expires first, and nats-py routes the
+#: auth ``-ERR`` to a terminal close forever-reconnect does not cover). a deployment that tunes the
+#: minted TTL sets :data:`NATS_USER_JWT_TTL_ENV` on both sides.
+PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS: Final[int] = 86_400
 
 
 def has_schedulable_ttl(ttl_seconds: int | None) -> TypeIs[int]:

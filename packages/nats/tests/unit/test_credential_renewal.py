@@ -100,8 +100,9 @@ class TestTheEnvironmentTtl:
     """a connection with no handshake reads the TTL the platform mints with."""
 
     def test_unset_is_the_platform_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a day: the TTL is the backstop, and a kick is what takes access away now (owner ruling Q17)."""
         monkeypatch.delenv(_TTL_ENV, raising=False)
-        assert nats_user_jwt_ttl_seconds() == 300
+        assert nats_user_jwt_ttl_seconds() == 86_400
 
     def test_the_default_carries_the_synchronous_reply_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a default that could not hold a synchronous reply across a renewal would cut it off."""
@@ -152,6 +153,10 @@ class TestOneDefaultTtl:
     def test_the_assumed_ttl_never_exceeds_the_generic_mint(self) -> None:
         """assuming more than a minter mints is fatal; assuming less is only churn."""
         assert PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS <= DEFAULT_NATS_USER_JWT_TTL_SECONDS
+
+    def test_the_generic_mint_is_the_platform_backstop(self) -> None:
+        """one number: a responder built without a TTL mints exactly what a client assumes."""
+        assert DEFAULT_NATS_USER_JWT_TTL_SECONDS == PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
 
 
 def _client() -> NatsClient:

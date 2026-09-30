@@ -207,15 +207,31 @@ class TestTheTwoBudgetsAreRelated:
 
         assert hold >= SYNC_REPLY_BUDGET_SECONDS
 
-    def test_the_platform_default_cannot_carry_a_long_tool_call(self) -> None:
-        """Pins the incoherence this fix exists for: at the platform's default TTL, a scan tool's
-        1200s budget is far past what a renewal can hold one connection open for, so a long call
-        must take the durable path. Asked of the renewal's own judge with the real default, so
-        raising the default is where someone finds out the relationship is deliberate."""
+    def test_the_backstop_default_renews_make_before_break_even_under_a_long_tool_call(self) -> None:
+        """The platform's default TTL is the day-long backstop (owner ruling Q17): access is taken
+        away by a kick, and the TTL only bounds a kick that was lost. At that TTL a renewal happens
+        about once a day and is still the make-before-break handover, which can hold the replaced
+        connection open for a scan tool's whole 1200s budget. Asked of the renewal's own judge and
+        schedule with the real default, so shortening the default is where someone finds out the
+        relationship is deliberate. What sends a long call to the durable path is the synchronous
+        budget, not the TTL (``test_the_scan_tool_that_started_this_takes_the_durable_path``)."""
+        from threetears.nats import REAUTH_MARGIN_SECONDS, seconds_until_reauth
+
         scan_tool_timeout = 1200.0
         ttl = PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
 
-        assert unsafe_renewal_reason(ttl, longest_request_seconds=scan_tool_timeout) is not None
+        assert unsafe_renewal_reason(ttl, longest_request_seconds=scan_tool_timeout) is None
+        swap = seconds_until_reauth(ttl, longest_request_seconds=scan_tool_timeout)
+        assert swap == ttl - REAUTH_MARGIN_SECONDS - scan_tool_timeout, "one renewal per TTL, late in it"
+        hold = seconds_until_retirement(ttl, connection_age_seconds=swap, longest_request_seconds=scan_tool_timeout)
+        assert hold == scan_tool_timeout, "the replaced connection is held for the whole long call"
+
+    def test_a_short_configured_ttl_still_cannot_carry_a_long_tool_call(self) -> None:
+        """The incoherence the durable path was built for is still named when a deployment shortens
+        the TTL: the renewal's judge refuses a TTL that cannot hold a scan tool's budget."""
+        scan_tool_timeout = 1200.0
+
+        assert unsafe_renewal_reason(300, longest_request_seconds=scan_tool_timeout) is not None
 
     def test_the_scan_tool_that_started_this_takes_the_durable_path(self) -> None:
         """Non-vacuous: the concrete call that lost 68KB of results is on the other path now."""

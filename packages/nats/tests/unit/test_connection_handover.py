@@ -787,3 +787,170 @@ async def test_every_reply_path_leaves_on_the_receiving_connection_and_forgets_i
     assert current.published == [("_INBOX.requester.1", b"done-1"), ("_INBOX.requester.2", b"done-2")]
     assert successor.published == [("_INBOX.requester.1", b"again")]
     await client.shutdown()
+
+
+async def _connected_capturing(
+    monkeypatch: pytest.MonkeyPatch, *connections: _Conn | BaseException
+) -> tuple[NatsClient, dict[_Conn, dict[str, Any]]]:
+    """like :func:`_connected`, also returning the nats-py options each connection was opened with.
+
+    :param monkeypatch: pytest's patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param connections: each connection the client opens, in order; an exception is raised instead
+    :ptype connections: _Conn | BaseException
+    :return: the connected client, and each opened connection's options
+    :rtype: tuple[NatsClient, dict[_Conn, dict[str, Any]]]
+    """
+    queue = list(connections)
+    options_of: dict[_Conn, dict[str, Any]] = {}
+
+    async def _establish(servers: list[str], options: dict[str, Any], url: str) -> Any:
+        step = queue.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        options_of[step] = options
+        return step
+
+    monkeypatch.setattr(client_module, "_establish_connection", _establish)
+    client = await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
+        client_name="lame-duck-test",
+        verify_jetstream=False,
+    )
+    return client, options_of
+
+
+async def _until(condition: Any, *, seconds: float = 2.0) -> None:
+    """wait for ``condition()`` to hold, polling.
+
+    :param condition: a zero-argument predicate
+    :ptype condition: Any
+    :param seconds: how long to wait
+    :ptype seconds: float
+    :return: nothing
+    :rtype: None
+    """
+    for _ in range(int(seconds / 0.01)):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the condition never held")
+
+
+async def test_a_server_in_lame_duck_mode_moves_the_client_to_a_successor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """a rolling restart is a handover, not a reconnect: the old connection keeps its work."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client, options_of = await _connected_capturing(monkeypatch, current, successor)
+    received: list[bytes] = []
+
+    async def _cb(msg: IncomingMessage) -> None:
+        received.append(bytes(msg.data))
+
+    await client.subscribe(Subject.raw("events.>"), cb=_cb)
+
+    await options_of[current]["lame_duck_mode_cb"]()
+    await _until(lambda: client.raw is successor)
+    await _settle()
+
+    assert [s.subject for s in successor.subs] == ["events.>"]
+    assert not current.is_closed, "the connection leaving is held for its work, not dropped"
+    await successor.subs[0].queue_in.put(_Msg(b"after the move"))
+    await _settle()
+    assert received == [b"after the move"]
+    await client.shutdown()
+
+
+async def test_a_move_that_cannot_open_a_successor_is_retried_until_it_lands(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(client_module, "REAUTH_RETRY_SECONDS", 0.01)
+    current, successor = _Conn("current"), _Conn("successor")
+    client, options_of = await _connected_capturing(monkeypatch, current, RuntimeError("no server free"), successor)
+
+    await options_of[current]["lame_duck_mode_cb"]()
+    await _until(lambda: client.raw is successor)
+
+    assert not current.is_closed
+    await client.shutdown()
+
+
+async def test_a_move_ends_once_the_server_closed_the_connection_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """once nats-py's own reconnect owns the connection there is nothing left to move."""
+    monkeypatch.setattr(client_module, "REAUTH_RETRY_SECONDS", 0.01)
+    current = _Conn("current")
+    client, options_of = await _connected_capturing(monkeypatch, current, RuntimeError("no server free"))
+
+    await options_of[current]["lame_duck_mode_cb"]()
+    current.is_closed = True
+    await asyncio.sleep(0.1)
+
+    assert client.raw is current
+    await client.shutdown()
+
+
+async def test_lame_duck_under_a_connection_already_replaced_moves_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    current, successor = _Conn("current"), _Conn("successor")
+    client, options_of = await _connected_capturing(monkeypatch, current, successor)
+    await client.renew_connection(retire_after=timedelta(seconds=30))
+
+    await options_of[current]["lame_duck_mode_cb"]()
+    await _settle()
+
+    assert client.raw is successor
+    await client.shutdown()
+
+
+async def test_shutdown_stops_a_move_under_way(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(client_module, "REAUTH_RETRY_SECONDS", 3600.0)
+    current = _Conn("current")
+    client, options_of = await _connected_capturing(monkeypatch, current, RuntimeError("no server free"))
+
+    await options_of[current]["lame_duck_mode_cb"]()
+    await _settle()
+    await asyncio.wait_for(client.shutdown(), timeout=2.0)
+
+    assert current.is_closed
+
+
+async def test_a_pinned_run_stays_on_the_connection_it_started_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """two connections are two publishers: a run split across them can arrive out of order."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    pin = client.publish_pin()
+    stream = Subject.raw("hub.stream.agent.corr")
+
+    await client.publish_raw(subject=stream, payload=b"token-1", pin=pin)
+    await client.renew_connection(retire_after=timedelta(seconds=30))
+    await client.publish_raw(subject=stream, payload=b"token-2", pin=pin)
+    await client.publish_raw(subject=Subject.raw("unpinned"), payload=b"other")
+
+    assert current.published == [("hub.stream.agent.corr", b"token-1"), ("hub.stream.agent.corr", b"token-2")]
+    assert successor.published == [("unpinned", b"other")]
+    await client.shutdown()
+
+
+async def test_a_run_pinned_after_the_handover_starts_on_the_successor(monkeypatch: pytest.MonkeyPatch) -> None:
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    await client.renew_connection(retire_after=timedelta(seconds=30))
+    pin = client.publish_pin()
+
+    await client.publish_raw(subject=Subject.raw("s"), payload=b"t", pin=pin)
+
+    assert successor.published == [("s", b"t")]
+    assert current.published == []
+    await client.shutdown()
+
+
+async def test_a_run_that_outlives_its_connection_continues_on_the_current_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    pin = client.publish_pin()
+    await client.publish_raw(subject=Subject.raw("s"), payload=b"t1", pin=pin)
+
+    await client.renew_connection(retire_after=timedelta(seconds=0.01))
+    await _until(lambda: current.drained)
+    await client.publish_raw(subject=Subject.raw("s"), payload=b"t2", pin=pin)
+
+    assert current.published == [("s", b"t1")]
+    assert successor.published == [("s", b"t2")]
+    await client.shutdown()

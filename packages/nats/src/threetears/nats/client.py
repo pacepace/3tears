@@ -158,6 +158,7 @@ __all__ = [
     "JetStreamPushConsumer",
     "JetStreamResultWaiter",
     "NatsClient",
+    "PublishPin",
     "ReconnectCallback",
     "Subscription",
 ]
@@ -1565,6 +1566,34 @@ async def _unsubscribe_quietly(sub: Any, *, subject: Subject) -> None:
         )
 
 
+class PublishPin:
+    """keeps a run of publishes on the connection its first one used, so they arrive in order.
+
+    NATS orders messages per publisher, and a publisher is a connection. A client that hands over
+    to a successor connection mid-run -- a credential renewal, a move off a server in lame-duck
+    mode -- becomes two publishers, and when the successor sits on a different server of the
+    cluster the two halves of the run travel different routes: a later message can arrive first.
+    A run whose order is its meaning (a stream of tokens, which carry no sequence number) takes a
+    pin from :meth:`NatsClient.publish_pin` and passes it to every publish of the run, and every
+    one of them leaves on the connection the first one did. The replaced connection is kept open
+    for the longest request the client makes, which bounds any run a caller should be holding one
+    for.
+
+    Owned by the :class:`NatsClient` that made it; nothing else reads or sets what it holds.
+    """
+
+    __slots__ = ("connection",)
+
+    def __init__(self) -> None:
+        """an unpinned pin: the run's first publish sets its connection.
+
+        :return: nothing
+        :rtype: None
+        """
+        #: the connection the run publishes on, once its first publish chose it
+        self.connection: _NatsPyClient | None = None
+
+
 class _Role(StrEnum):
     """what one connection is to the client that holds it.
 
@@ -1894,7 +1923,15 @@ class _ConnectionOpener:
     :ptype client_name: str
     """
 
-    __slots__ = ("_servers", "_options", "_primary_url", "_client_name", "reconnect_callbacks", "health_state")
+    __slots__ = (
+        "_servers",
+        "_options",
+        "_primary_url",
+        "_client_name",
+        "reconnect_callbacks",
+        "health_state",
+        "lame_duck_handler",
+    )
 
     def __init__(self, *, servers: list[str], options: dict[str, object], primary_url: str, client_name: str) -> None:
         """hold what every connection is opened with.
@@ -1923,6 +1960,10 @@ class _ConnectionOpener:
         # :attr:`NatsClient.is_healthy`. resilience-task-03: ``overflow_events`` beside
         # ``auth_violations``.
         self.health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
+        # what the client does when the server under its current connection enters lame-duck mode
+        # (:meth:`NatsClient._move_off_lame_duck_server`). the first connection is opened before the
+        # client exists, so each connection's callback reads this when the server says so.
+        self.lame_duck_handler: Callable[[], None] | None = None
 
     async def open(self, state: _ConnectionState) -> _NatsPyClient:
         """open one connection whose callbacks answer to ``state``.
@@ -1937,6 +1978,7 @@ class _ConnectionOpener:
         options["reconnected_cb"] = self._reconnected_callback(state)
         options["disconnected_cb"] = self._disconnected_callback(state)
         options["error_cb"] = self._error_callback(state)
+        options["lame_duck_mode_cb"] = self._lame_duck_callback(state)
         raw = await _establish_connection(self._servers, options, self._primary_url)
         state.connected_at = time.monotonic()
         return raw
@@ -2007,6 +2049,41 @@ class _ConnectionOpener:
             await _on_disconnected()
 
         return _dispatch_disconnected
+
+    def _lame_duck_callback(self, state: _ConnectionState) -> Callable[[], Awaitable[None]]:
+        """the ``lame_duck_mode_cb`` for one connection.
+
+        nats-py awaits it inside the connection's read loop, so it only hands the event to the
+        client's handler, which schedules the move and returns.
+
+        :param state: the connection's state
+        :ptype state: _ConnectionState
+        :return: the callback
+        :rtype: Callable[[], Awaitable[None]]
+        """
+        client_name = self._client_name
+
+        async def _dispatch_lame_duck() -> None:
+            """move the client off a server that is shutting down, if this connection is the current one."""
+            if state.role is not _Role.CURRENT:
+                # NOSILENT: a connection being retired or not yet current carries no new work, and
+                # is closed either way; the server shutting down under it moves nothing.
+                log.info(
+                    "a NATS server entered lame-duck mode under a connection that is not current",
+                    extra={"extra_data": {"client_name": client_name, "role": state.role}},
+                )
+                return
+            handler = self.lame_duck_handler
+            if handler is None:
+                log.warning(
+                    "a NATS server entered lame-duck mode and this client cannot move first; it will "
+                    "reconnect when the server closes it, and what is in flight then is lost",
+                    extra={"extra_data": {"client_name": client_name}},
+                )
+                return
+            handler()
+
+        return _dispatch_lame_duck
 
     def _error_callback(self, state: _ConnectionState) -> Callable[[Exception], Awaitable[None]]:
         """the ``error_cb`` for one connection.
@@ -2137,6 +2214,80 @@ class _CredentialRenewal:
             return
 
 
+class _LameDuckMove:
+    """the loop a move off a lame-duck server runs: hand over until done, or until it is moot.
+
+    its own class, like :class:`_CredentialRenewal`, so the client does not carry a periodic loop
+    beside the state it accumulates; this holds only what it reads.
+    """
+
+    def __init__(
+        self,
+        *,
+        renew: Callable[[timedelta], Awaitable[None]],
+        still_leaving: Callable[[], bool],
+        retire_after: timedelta,
+        client_name: str,
+    ) -> None:
+        """bind the move to the client and the connection it leaves.
+
+        :param renew: the client's :meth:`NatsClient.renew_connection`, taking how long to keep
+            the replaced connection open
+        :ptype renew: Callable[[timedelta], Awaitable[None]]
+        :param still_leaving: whether the connection whose server is shutting down is still the
+            client's current, open connection, and the client still serves
+        :ptype still_leaving: Callable[[], bool]
+        :param retire_after: how long to keep the connection it leaves for the work it carries
+        :ptype retire_after: timedelta
+        :param client_name: the client's name, for the log
+        :ptype client_name: str
+        :return: nothing
+        :rtype: None
+        """
+        self._renew = renew
+        self._still_leaving = still_leaving
+        self._retire_after = retire_after
+        self._client_name = client_name
+
+    async def run(self) -> None:
+        """hand over to a successor, retrying while the connection is still leaving.
+
+        Retried because the alternative is the reconnect this exists to avoid: a successor that could
+        not open (every other server busy, a callout that did not answer) is tried again after
+        :data:`~threetears.nats.credential_renewal.REAUTH_RETRY_SECONDS`. It stops being worth
+        trying once something else replaced the connection (a renewal did) or the server closed it
+        (nats-py's reconnect owns it then).
+
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            while self._still_leaving():
+                try:
+                    await self._renew(self._retire_after)
+                except Exception as exc:  # noqa: BLE001 -- retried while the connection is still leaving; the reason is logged
+                    log.warning(
+                        "could not move off a NATS server in lame-duck mode (retrying in %ss): %s",
+                        REAUTH_RETRY_SECONDS,
+                        exc,
+                        extra={"extra_data": {"client_name": self._client_name}},
+                    )
+                    await asyncio.sleep(REAUTH_RETRY_SECONDS)
+                else:
+                    log.info(
+                        "moved off a NATS server in lame-duck mode; the old connection retires with its work",
+                        extra={
+                            "extra_data": {
+                                "client_name": self._client_name,
+                                "retire_after_seconds": self._retire_after.total_seconds(),
+                            }
+                        },
+                    )
+        # NOSILENT: cancellation is how shutdown and abandon stop the move
+        except asyncio.CancelledError:
+            return
+
+
 class NatsClient:
     """canonical NATS client wrapper.
 
@@ -2167,6 +2318,8 @@ class NatsClient:
         "_reply_routes",
         "_push_consumers",
         "_abandonment",
+        "_lame_duck_move",
+        "_longest_request_seconds",
     )
 
     def __init__(
@@ -2200,6 +2353,13 @@ class NatsClient:
         # the abandonment a deliberate credential refusal started (:meth:`abandon_on_refusal`), held so
         # the task is not collected mid-flight.
         self._abandonment: asyncio.Task[None] | None = None
+        # the move off a server that entered lame-duck mode (:meth:`_move_off_lame_duck_server`),
+        # held so it is not collected mid-flight and so shutdown and abandon can stop it.
+        self._lame_duck_move: asyncio.Task[None] | None = None
+        # how long a replaced connection is kept for the work it carries when a move is not the
+        # renewal loop's own: the longest request this client makes, which :meth:`renew_credential`
+        # states when the owner arms it.
+        self._longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS
         self._subscriptions: list[Subscription] = []
         self._buckets: dict[str, NatsKvBucket] = {}
         self._kv_lock = asyncio.Lock()
@@ -2408,6 +2568,9 @@ class NatsClient:
         client = cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
         client._opener = opener
         client._lifecycle = _ConnectionLifecycle(raw_client, state)
+        # a server shutting down (a rolling restart) tells its clients first; this one moves to a
+        # successor then, the way a renewal does, instead of losing what is in flight to a reconnect.
+        opener.lame_duck_handler = client._move_off_lame_duck_server
         # adopt the SAME list and dict every connection's callbacks close over, so an
         # ``add_reconnect_callback`` append is dispatched on the next reconnect and
         # :attr:`is_healthy` reads the live counts.
@@ -2895,6 +3058,29 @@ class NatsClient:
             return via
         return await self._lifecycle.publishing_connection()
 
+    async def _pinned_connection(self, pin: PublishPin) -> _NatsPyClient:
+        """the connection a pinned run publishes on, pinning it at the run's first publish.
+
+        :param pin: the run's pin
+        :ptype pin: PublishPin
+        :return: the connection to publish on
+        :rtype: nats.aio.client.Client
+        """
+        connection = pin.connection
+        if connection is None:
+            connection = await self._lifecycle.publishing_connection()
+            pin.connection = connection
+        elif connection.is_closed or self._lifecycle.state_of(connection) is None:
+            log.warning(
+                "a pinned run of publishes outlived the connection it started on; it continues on the "
+                "current connection, and a message published after this point may arrive before one "
+                "published before it",
+                extra={"extra_data": {"client_name": self._client_name}},
+            )
+            connection = await self._lifecycle.publishing_connection()
+            pin.connection = connection
+        return connection
+
     async def _settle_publishes(self, previous: _NatsPyClient) -> None:
         """prove that everything published on a replaced connection has reached the server.
 
@@ -2972,6 +3158,7 @@ class NatsClient:
             )
         if self._renewal_task is not None:
             self._renewal_task.cancel()
+        self._longest_request_seconds = longest_request_seconds
         renewal = _CredentialRenewal(
             renew=lambda retire_after: self.renew_connection(retire_after=retire_after),
             client_name=self._client_name,
@@ -2980,6 +3167,61 @@ class NatsClient:
             longest_request_seconds=longest_request_seconds,
         )
         self._renewal_task = asyncio.create_task(renewal.run(), name=f"nats-credential-renewal:{self._client_name}")
+
+    def _move_off_lame_duck_server(self) -> None:
+        """start moving to a successor connection, because the current one's server is shutting down.
+
+        A server in lame-duck mode -- a rolling restart -- stops accepting connections, tells its
+        clients, and closes them over its lame-duck duration. Left to nats-py, that close is a
+        reconnect: a real disconnect that drops the replies, owed replies and messages in flight
+        (:meth:`reconnect`). So the client moves first, exactly as a credential renewal does
+        (:meth:`renew_connection`): a successor opens on another server, takes every subscription,
+        and becomes current, and the old connection is kept for the work it already carries until
+        the server closes it or the longest request has had its time.
+
+        Called from the connection's read loop, so it only schedules the move. A move already
+        running, or a renewal already in progress -- which opens the same successor -- is left to
+        finish.
+
+        :return: nothing
+        :rtype: None
+        """
+        running = self._lame_duck_move is not None and not self._lame_duck_move.done()
+        if running or not self._lifecycle.is_live:
+            log.info(
+                "a NATS server entered lame-duck mode; a move is already under way or the client is not serving",
+                extra={"extra_data": {"client_name": self._client_name, "phase": self._lifecycle.phase.value}},
+            )
+            return
+        log.warning(
+            "the NATS server under this client entered lame-duck mode; moving to a successor connection "
+            "before it closes this one",
+            extra={"extra_data": {"client_name": self._client_name}},
+        )
+        leaving = self._raw
+        move = _LameDuckMove(
+            renew=lambda retire_after: self.renew_connection(retire_after=retire_after),
+            still_leaving=lambda: self._lifecycle.is_live and self._raw is leaving and not leaving.is_closed,
+            retire_after=timedelta(seconds=self._longest_request_seconds),
+            client_name=self._client_name,
+        )
+        self._lame_duck_move = asyncio.create_task(move.run(), name=f"nats-lame-duck-move:{self._client_name}")
+
+    async def _stop_lame_duck_move(self) -> None:
+        """cancel a move off a lame-duck server, if one runs, and wait for it to end.
+
+        :return: nothing
+        :rtype: None
+        """
+        task = self._lame_duck_move
+        self._lame_duck_move = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested on the line above
+                pass
 
     async def _stop_renewal(self) -> None:
         """cancel the credential-renewal loop, if one runs, and wait for it to end.
@@ -3019,6 +3261,10 @@ class NatsClient:
         self._renewal_task = None
         if renewal is not None and renewal is not asyncio.current_task():
             renewal.cancel()
+        move = self._lame_duck_move
+        self._lame_duck_move = None
+        if move is not None and move is not asyncio.current_task():
+            move.cancel()
         for connection in connections:
             await _close_quietly(connection)
 
@@ -3125,6 +3371,7 @@ class NatsClient:
         # loop must not outlive its client, nor a connection it replaced or a candidate it opened.
         self._lifecycle.close()
         await self._stop_renewal()
+        await self._stop_lame_duck_move()
         await self._close_replaced_connections()
         if self._raw.is_closed:
             return
@@ -3351,6 +3598,7 @@ class NatsClient:
         subject: Subject,
         payload: bytes,
         reply_to: Subject | None = None,
+        pin: PublishPin | None = None,
     ) -> None:
         """publish raw bytes to subject.
 
@@ -3364,11 +3612,28 @@ class NatsClient:
         :ptype payload: bytes
         :param reply_to: optional reply subject
         :ptype reply_to: Subject | None
+        :param pin: keeps this publish on the connection the first publish of its run used
+            (:meth:`publish_pin`); ``None`` publishes on the current connection
+        :ptype pin: PublishPin | None
         :return: nothing
         :rtype: None
         :raises PublishError: if underlying publish fails
         """
-        await self._publish_bytes(subject=subject, payload=payload, reply_to=reply_to)
+        await self._publish_bytes(subject=subject, payload=payload, reply_to=reply_to, pin=pin)
+
+    def publish_pin(self) -> PublishPin:
+        """a pin for a run of publishes that must arrive in the order they were made.
+
+        See :class:`PublishPin`. The run's first publish chooses the connection -- the current one,
+        once any handover has settled -- and every later publish carrying the pin leaves on it for
+        as long as the client holds it open. One that outlives it (held past the longest request)
+        moves to the current connection and says so, since order across that step is no longer
+        guaranteed.
+
+        :return: a fresh, unpinned pin
+        :rtype: PublishPin
+        """
+        return PublishPin()
 
     async def publish_reply(
         self,
@@ -3448,6 +3713,7 @@ class NatsClient:
         subject: Subject,
         payload: bytes,
         reply_to: Subject | None,
+        pin: PublishPin | None = None,
     ) -> None:
         """common publish path used by :meth:`publish` / :meth:`publish_raw`.
 
@@ -3463,12 +3729,16 @@ class NatsClient:
         :ptype payload: bytes
         :param reply_to: optional reply subject
         :ptype reply_to: Subject | None
+        :param pin: the run this publish belongs to, whose connection it leaves on; ``None`` for none
+        :ptype pin: PublishPin | None
         :return: nothing
         :rtype: None
         :raises PublishError: if underlying publish fails
         """
         try:
-            connection = await self._reply_connection(subject.path)
+            connection = (
+                await self._pinned_connection(pin) if pin is not None else await self._reply_connection(subject.path)
+            )
             if reply_to is None:
                 await connection.publish(subject.path, payload)
             else:
