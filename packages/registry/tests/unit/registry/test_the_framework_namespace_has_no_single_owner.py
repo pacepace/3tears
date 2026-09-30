@@ -184,15 +184,14 @@ class _Directory:
         return None
 
     async def verify_agent(self, token: str) -> UUID | None:
-        """refuse every token; the in-process pod under test registers unsigned.
+        """verify the in-process pod's own token as its agent, and nothing else.
 
         :param token: the presented token
         :ptype token: str
-        :return: always ``None``
+        :return: the agent, or ``None``
         :rtype: UUID | None
         """
-        del token
-        return None
+        return _AGENT if token == _AGENT_TOKEN else None
 
     async def provider_nodes(self) -> tuple[str, ...]:
         """the whole inventory this graph holds.
@@ -201,6 +200,11 @@ class _Directory:
         :rtype: tuple[str, ...]
         """
         return self._nodes
+
+
+#: the agent whose in-process server registers, and the token it signs with.
+_AGENT = UUID("01948a00-aaaa-7000-8000-00000000000a")
+_AGENT_TOKEN = "the-agents-own-token"
 
 
 def _probing_nc() -> AsyncMock:
@@ -220,7 +224,7 @@ def _probing_nc() -> AsyncMock:
 
 
 def _in_process_manifest() -> bytes:
-    """the manifest an agent's in-process ToolServer publishes, tokenless.
+    """the manifest an agent's in-process ToolServer publishes, signed with its agent's token.
 
     Every name comes from the upstream factory maps, so this is the real offer
     rather than a sample of it.
@@ -239,8 +243,8 @@ def _in_process_manifest() -> bytes:
     ]
     # the pod id an agent's in-process server actually registers under: the agent id and an
     # instance. a single-token id would be a Tool Pod's, whose copies serve every caller.
-    pod_id = Subjects.agent_inprocess_pod_id(UUID("01948a00-aaaa-7000-8000-00000000000a"), "inst-1")
-    manifest = RegistrationManifest(pod_id=pod_id, tools=entries, bootstrap_token=None)
+    pod_id = Subjects.agent_inprocess_pod_id(_AGENT, "inst-1")
+    manifest = RegistrationManifest(pod_id=pod_id, tools=entries, bootstrap_token=_AGENT_TOKEN)
     return manifest.model_dump_json().encode("utf-8")
 
 
