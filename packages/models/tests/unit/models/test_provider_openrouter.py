@@ -1358,3 +1358,19 @@ class TestAProviderFailureIsNamedAsOne:
     @pytest.mark.parametrize("exc", [KeyError("reply"), ValueError("bad field"), TimeoutError()])
     def test_a_bug_or_the_callers_own_timeout_is_not(self, exc: Exception) -> None:
         assert not is_provider_error(exc)
+
+
+class TestOpenRouterToolChoice:
+    """A ``tool_choice`` naming a dotted tool names it by the wire name the tool was bound under."""
+
+    def test_a_named_tool_is_chosen_by_its_wire_name(self) -> None:
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        bound = model.bind_tools([_DottedTool()], tool_choice="threetears.calculator")
+        choice = bound.kwargs["tool_choice"]  # type: ignore[attr-defined]
+        assert "threetears.calculator" not in str(choice)
+        assert "threetears_calculator" in str(choice)
+
+    def test_required_passes_through(self) -> None:
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        bound = model.bind_tools([_DottedTool()], tool_choice="required")
+        assert bound.kwargs["tool_choice"] == "required"  # type: ignore[attr-defined]

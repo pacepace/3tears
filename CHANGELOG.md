@@ -145,6 +145,14 @@ checks refuse rows the old schema accepted.
 - v022's constraint guards look only in their own schema, so a second agent schema in one database
   gets its own constraints.
 
+### models: `tool_choice` reaches the provider in its own words
+
+`tool_choice="required"` is the OpenAI spelling, and `ChatAnthropic.bind_tools` treats any string
+but `any` and `auto` as a tool's name, so an Anthropic API call with it was refused with a 400
+("Tool 'required' not found"). The Anthropic chat model now sends it as `any`. And a `tool_choice`
+that names a dotted tool now names it by the wire name the tool was bound under, on every provider
+that translates names; it named a tool the provider was never given.
+
 ### core: migration catalog lookups name their schema
 
 `add_check_constraint`, `replace_check_constraint` and `add_index` limit their lookups to the given
