@@ -17,6 +17,7 @@ docker skips cleanly via the fixture's ``check_docker_available`` gate.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -30,14 +31,20 @@ class TestTokenBucketRoundTrip:
     """TokenBucket against a real NATS broker, one connection per simulated pod."""
 
     async def test_claim_and_refill_round_trip(self, nats_container: str) -> None:
-        """A claimed token is gone; after refill time elapses, a further claim succeeds."""
+        """A claimed token is gone; after refill time elapses, a further claim succeeds.
+
+        The broker is real and the clock is driven: at 20 tokens a second a whole token refills in
+        50ms, which two broker round trips on a loaded machine can spend, so the claim that must
+        find the bucket empty is not left to race the wall clock.
+        """
         set_default_namespace("ratelimit-itest")
+        now = [datetime(2026, 9, 29, 12, 0, tzinfo=UTC)]
         async with await NatsClient.connect(
             nats_url=nats_container,
             nats_subject_namespace="ratelimit-itest",
             client_name="bucket-rr",
         ) as nc:
-            bucket = TokenBucket(nc, bucket_name="rt-tokenbucket", refill_rate=20.0, capacity=1.0)
+            bucket = TokenBucket(nc, bucket_name="rt-tokenbucket", refill_rate=20.0, capacity=1.0, clock=lambda: now[0])
 
             first = await bucket.claim("k")
             assert first.claimed is True
@@ -45,7 +52,7 @@ class TestTokenBucketRoundTrip:
             immediately = await bucket.claim("k")
             assert immediately.claimed is False
 
-            await asyncio.sleep(0.1)  # 20 tokens/sec * 0.1s == 2 tokens refilled
+            now[0] += timedelta(seconds=0.1)  # 20 tokens/sec * 0.1s == 2 tokens refilled
             later = await bucket.claim("k")
             assert later.claimed is True
 

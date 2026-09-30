@@ -35,6 +35,7 @@ import asyncio
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -78,6 +79,15 @@ _CAS_MAX_RETRIES: Final[int] = 30
 
 #: full-jitter backoff bound between CAS retries, seconds.
 _CAS_RETRY_BACKOFF_SECONDS: Final[float] = 0.02
+
+
+def _utc_now() -> datetime:
+    """the wall clock, timezone-aware UTC: :class:`TokenBucket`'s default clock.
+
+    :return: the current instant
+    :rtype: datetime
+    """
+    return datetime.now(UTC)
 
 
 class TokenBucketConflict(RuntimeError):
@@ -186,6 +196,8 @@ class TokenBucket:
         capacity: float,
         kv_ttl: timedelta | None = _DEFAULT_KV_TTL,
         create_if_missing: bool = True,
+        clock: Callable[[], datetime] = _utc_now,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         """configure the bucket; defer KV bucket binding until first use.
 
@@ -215,6 +227,17 @@ class TokenBucket:
             issues STREAM.CREATE -- for a process whose grant on the bucket is key-addressed
             only, where a refused create would cost the full JetStream deadline first
         :ptype create_if_missing: bool
+        :param clock: timezone-aware UTC wall clock every refill and deadline is read from.
+            A wall clock, not a monotonic one: the refill instant is stored in the shared KV
+            value and read by every pod, so it must be a time every pod agrees on. Injectable
+            so a test can drive time rather than wait for it
+        :ptype clock: Callable[[], datetime]
+        :param sleep: how a blocking claim, and a retry after a lost compare-and-swap, waits.
+            ``asyncio.sleep`` by default; a replacement must yield to the loop rather than
+            block it. Injected alongside ``clock``: a test that drives the clock must also own
+            the sleeping, or a blocking claim would sleep in real time against a clock that
+            never moves
+        :ptype sleep: Callable[[float], Awaitable[None]]
         :return: none
         :rtype: None
         :raises ValueError: if refill_rate or capacity is not positive
@@ -229,6 +252,8 @@ class TokenBucket:
         self._capacity = capacity
         self._kv_ttl = kv_ttl
         self._create_if_missing = create_if_missing
+        self._clock = clock
+        self._sleep = sleep
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -277,17 +302,17 @@ class TokenBucket:
         if tokens > self._capacity:
             raise ValueError(f"cannot claim {tokens} tokens: exceeds bucket capacity {self._capacity}")
         bucket = await self._ensure_bucket()
-        deadline = datetime.now(UTC) + timedelta(seconds=max_wait_seconds) if max_wait_seconds > 0 else None
+        deadline = self._clock() + timedelta(seconds=max_wait_seconds) if max_wait_seconds > 0 else None
         while True:
             result = await self._attempt(bucket, key, tokens)
             if result.claimed:
                 return result
             if deadline is None:
                 return result
-            remaining = (deadline - datetime.now(UTC)).total_seconds()
+            remaining = (deadline - self._clock()).total_seconds()
             if remaining <= 0:
                 return result
-            await asyncio.sleep(max(0.0, min(result.retry_after_seconds, remaining)))
+            await self._sleep(max(0.0, min(result.retry_after_seconds, remaining)))
 
     async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
         """Put back tokens claimed for work that never happened. Returns the resulting count.
@@ -322,7 +347,7 @@ class TokenBucket:
         try:
             bucket = await self._ensure_bucket()
             for attempt in range(_CAS_MAX_RETRIES):
-                now = datetime.now(UTC)
+                now = self._clock()
                 entry = await bucket.get_entry(key=key)
                 if entry is None:
                     # No key means nothing was ever consumed from it; a refund would be
@@ -337,7 +362,7 @@ class TokenBucket:
                     return restored
                 if attempt < _CAS_MAX_RETRIES - 1:
                     backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security
-                    await asyncio.sleep(backoff)
+                    await self._sleep(backoff)
             log.warning("token bucket: exhausted CAS retries refunding %s tokens to %r", tokens, key)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a refund runs while the caller is already unwinding; raising would turn a self-healing throughput dip into a lost error. Logged with its traceback below
             log.exception("token bucket: could not refund %s tokens to %r; it will refill instead", tokens, key)
@@ -363,7 +388,7 @@ class TokenBucket:
         :raises TokenBucketConflict: if the CAS retry budget is exhausted
         """
         for attempt in range(_CAS_MAX_RETRIES):
-            now = datetime.now(UTC)
+            now = self._clock()
             entry = await bucket.get_entry(key=key)
             if entry is None:
                 current_tokens = self._capacity
@@ -395,7 +420,7 @@ class TokenBucket:
                 return TokenClaimResult(claimed=True, tokens_remaining=new_tokens, retry_after_seconds=0.0)
             if attempt < _CAS_MAX_RETRIES - 1:
                 backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security
-                await asyncio.sleep(backoff)
+                await self._sleep(backoff)
         raise TokenBucketConflict(f"exhausted {_CAS_MAX_RETRIES} CAS retries claiming from bucket {key!r}")
 
     async def _ensure_bucket(self) -> "KvBucketLike":

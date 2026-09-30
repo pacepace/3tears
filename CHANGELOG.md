@@ -41,6 +41,20 @@ harness that gives a collection an L2 client must also give its registry a `kv_k
 bucket double must answer `get_latest` and `update`. `threetears.core.testing.kv.FakeNatsClient`
 already does both.
 
+### `TokenBucket` takes an injectable clock and sleep
+
+**Added:** `TokenBucket(..., clock=..., sleep=...)`.
+
+- `clock` returns a timezone-aware UTC `datetime`, and every refill and deadline is read from it. It
+  defaults to the wall clock, as before. It stays a wall clock rather than a monotonic one, because
+  the refill instant is stored in the shared KV value and every pod reads it.
+- `sleep` is how a blocking claim, and a retry after a lost compare-and-swap, waits. It defaults to
+  `asyncio.sleep`.
+
+A caller that passes neither gets exactly the bucket it got before. A test can now drive time
+instead of waiting for it; the unit tests that asserted refills against the wall clock failed on a
+loaded machine.
+
 ## v0.56.3 -- 2026-09-28
 
 Nothing to do on upgrade; no API changes. A consumer that strips this syntax itself can delete its
