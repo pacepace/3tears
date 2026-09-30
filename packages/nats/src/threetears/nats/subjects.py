@@ -1328,11 +1328,15 @@ class Subjects:
     # ------------------------------------------------------------------
 
     @classmethod
-    def audit_event(cls, event_type: str) -> Subject:
+    def audit_event(cls, event_type: str, *, namespace: str | None = None) -> Subject:
         """publish subject for one audit event.
 
         :param event_type: dotted event type (e.g. ``workspace.doc_set``)
         :ptype event_type: str
+        :param namespace: the subject namespace; the bound default when omitted. explicit for a
+            publisher or consumer that routes audit on a per-call namespace, as ``publish_audit``
+            and the hub's collector do
+        :ptype namespace: str | None
         :return: subject ``{ns}.audit.{event_type}`` (event_type passed through verbatim — its dots are part of the addressable subject hierarchy)
         :rtype: Subject
         :raises ValueError: if event_type is empty
@@ -1342,7 +1346,8 @@ class Subjects:
         # NOTE: event_type intentionally NOT sanitized — its dots are
         # the namespace separators audit consumers subscribe against
         # (e.g. wildcard `3tears.audit.workspace.>` for workspace events).
-        return Subject(path=f"{_ns()}.audit.{event_type}", kind="point")
+        ns = namespace if namespace is not None else _ns()
+        return Subject(path=f"{ns}.audit.{event_type}", kind="point")
 
     @classmethod
     def audit_wildcard(cls, *, area: str | None = None) -> Subject:

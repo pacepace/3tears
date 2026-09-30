@@ -307,6 +307,11 @@ def test_audit_event_rejects_empty() -> None:
         Subjects.audit_event("")
 
 
+def test_audit_event_takes_an_explicit_namespace() -> None:
+    """a publisher or consumer routing audit on a per-call namespace names it, not the bound one."""
+    assert Subjects.audit_event("tool.call", namespace="prod").path == "prod.audit.tool.call"
+
+
 def test_l3_subjects() -> None:
     """l3 broker subject builders produce documented shapes.
 

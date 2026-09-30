@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from threetears.nats import Subject, Subjects
+from threetears.nats import Subjects
 from threetears.observe import get_logger
 
 from threetears.agent.audit.envelope import AuditEvent
@@ -97,7 +97,7 @@ async def publish_audit(
         # bootstrap / test scenario; explicit no-op
         return
     subject = (
-        Subject.raw(f"{namespace}.audit.{event.event_type}")
+        Subjects.audit_event(event.event_type, namespace=namespace)
         if tool_pod_id is None
         else Subjects.tool_pod_audit_event(tool_pod_id, event.event_type, namespace=namespace)
     )
