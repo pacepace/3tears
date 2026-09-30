@@ -189,6 +189,13 @@ class IdentityClaims:
     pod of the same agent (horizontal scaling stays intact). ``None`` on a pre-handshake bootstrap
     connect (which has not yet been stamped a generation) and on tokens that do not participate in
     connection fencing (the Hub identity token / user-assertion).
+    ``data_version`` is the version of the table list the pod stated at its handshake, a fencing claim
+    for pod-managed tables: the L3 broker compares it with its space's target version and refuses a pod
+    on an older one, so an old pod is cut off on its next database request. a non-negative ``int``
+    when present; ``None`` on a token minted without one (a principal managing no tables, or a token
+    issued before the claim existed), which the claim's consumer decides how to treat. a present claim
+    that is not a non-negative integer fails verification rather than reading as absent, since absent
+    must never be what a malformed fencing claim buys.
     """
 
     sub: str  # the agent_id the token authenticates
@@ -202,6 +209,7 @@ class IdentityClaims:
     cnf: str | None = None  # holder-key thumbprint (jkt) for proof-of-possession
     conversation_id: str | None = None  # the conversation a user-assertion is bound to
     identity_generation: str | None = None  # single-writer fencing generation for the pod-session
+    data_version: int | None = None  # table-list version the pod stated at handshake (fencing)
 
 
 def generate_signing_keypair() -> tuple[Ed25519PrivateKey, Ed25519PublicKey]:
@@ -241,6 +249,9 @@ def sign_identity_token(claims: IdentityClaims, *, signing_key: Ed25519PrivateKe
 
     The caller sets ``iat``/``exp`` on the claims (the minter owns the TTL policy); this signs
     exactly what it is given.
+
+    :raises IdentityTokenError: when ``data_version`` is set to anything but a non-negative ``int``
+        -- a claim every verifier would refuse is refused here, at the issuer.
     """
     payload: dict[str, object] = {
         "iss": claims.iss,
@@ -259,6 +270,8 @@ def sign_identity_token(claims: IdentityClaims, *, signing_key: Ed25519PrivateKe
         payload["conversation_id"] = claims.conversation_id
     if claims.identity_generation is not None:
         payload["identity_generation"] = claims.identity_generation
+    if claims.data_version is not None:
+        payload["data_version"] = _require_data_version(claims.data_version)
     return jwt.encode(payload, key=signing_key, algorithm=_ALG, headers={"kid": kid})
 
 
@@ -357,6 +370,11 @@ def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:
     # not a usable generation and is normalized to ``None`` so the auth-callout's admission rule reads
     # it as "no generation presented" (bootstrap grant) rather than an unmatchable empty string.
     identity_generation = payload.get("identity_generation")
+    # data_version is an OPTIONAL fencing claim (only a pod that manages tables states one). unlike the
+    # string claims above, a present-but-malformed value is REJECTED, not normalized to None: the broker
+    # cuts off a pod whose version is below its space's target, and a normalized None would hand a
+    # malformed claim whatever treatment "stated no version" gets instead.
+    data_version = _require_data_version(payload["data_version"]) if "data_version" in payload else None
     return IdentityClaims(
         sub=_require_nonempty_str(payload, "sub"),
         customer_id=_require_nonempty_str(payload, "customer_id"),
@@ -371,7 +389,19 @@ def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:
         identity_generation=(
             identity_generation if isinstance(identity_generation, str) and identity_generation else None
         ),
+        data_version=data_version,
     )
+
+
+def _require_data_version(value: object) -> int:
+    """return ``value`` iff it is a non-negative ``int`` (never a ``bool``), else reject.
+
+    shared by signing and verification, so the issuer cannot emit a ``data_version`` the verifier
+    refuses. the message names the claim, never the value.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _reject("identity claim 'data_version' must be a non-negative integer.")
+    return value
 
 
 def _require_nonempty_str(payload: dict[str, Any], claim: str) -> str:

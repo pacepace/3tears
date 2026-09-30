@@ -50,6 +50,13 @@ class PackageMigrations:
     an async callable receiving a DataStore and keys it by integer
     version. versions are unique within one package.
 
+    every registration carries a description, the text the runner writes
+    to ``_schema_migrations.description`` and compares on every later run
+    to prove the ledger names the migration the code has at that version.
+    ``version`` describes a migration by its function's ``__name__``;
+    ``step`` takes the description explicitly, for generated step bodies
+    whose closures all share one ``__name__``.
+
     :param name: unique package identifier
     :ptype name: str
     :param scope: platform-scope or agent-scope migrations
@@ -78,6 +85,8 @@ class PackageMigrations:
         self._scope = scope
         self._depends_on = tuple(depends_on)
         self._versions: dict[int, MigrationFunc] = {}
+        self._descriptions: dict[int, str] = {}
+        self._step_names: set[str] = set()
         self._downgrades: dict[int, MigrationFunc] = {}
 
     @property
@@ -121,6 +130,22 @@ class PackageMigrations:
         return dict(self._versions)
 
     @property
+    def descriptions(self) -> dict[int, str]:
+        """
+        return the ledger description of every registered migration keyed by version.
+
+        the description is what the runner records in
+        ``_schema_migrations.description`` when it applies a version and
+        what it compares against the recorded row on every later run: the
+        function's ``__name__`` for a :meth:`version` registration, the
+        explicit name for a :meth:`step` registration.
+
+        :return: copy of the version-to-description mapping
+        :rtype: dict[int, str]
+        """
+        return dict(self._descriptions)
+
+    @property
     def downgrades(self) -> dict[int, MigrationFunc]:
         """
         return the dict of registered downgrade callables keyed by version.
@@ -156,13 +181,73 @@ class PackageMigrations:
             :rtype: MigrationFunc
             :raises DuplicateVersionError: if version already registered
             """
-            if n in self._versions:
-                msg = f"package {self._name!r}: migration version {n} already registered"
-                raise DuplicateVersionError(msg)
-            self._versions[n] = func
+            self._register(n, func, func.__name__)
             return func
 
         return decorator
+
+    def step(self, n: int, *, name: str) -> Callable[[MigrationFunc], MigrationFunc]:
+        """
+        decorator registering a migration callable at version n under an explicit name.
+
+        for step bodies built at run time, such as the steps a pod's table
+        upgrade is generated into. such bodies are closures sharing one
+        ``__name__``, so the name the ledger records and verifies has to be
+        given: a stable one such as ``v4_step2_rename_title_to_name``, the
+        same every time the same step is generated, so a resumed run can
+        tell a step it already applied from a different step now at that
+        number. steps and :meth:`version` registrations share one numbering,
+        and a step name is unique within the package.
+
+        :param n: unique version number within this package
+        :ptype n: int
+        :param name: stable ledger description for this step; not blank
+        :ptype name: str
+        :return: decorator that records the callable and returns it
+        :rtype: Callable[[MigrationFunc], MigrationFunc]
+        :raises ValueError: if name is blank
+        :raises DuplicateVersionError: if version or step name already registered
+        """
+        if not name.strip():
+            msg = f"package {self._name!r}: step {n} needs a non-blank name, the ledger records nothing else"
+            raise ValueError(msg)
+
+        def decorator(func: MigrationFunc) -> MigrationFunc:
+            """
+            register callable at version n under the enclosing step name.
+
+            :param func: async callable taking a DataStore
+            :ptype func: MigrationFunc
+            :return: input callable unchanged
+            :rtype: MigrationFunc
+            :raises DuplicateVersionError: if version or step name already registered
+            """
+            if name in self._step_names:
+                msg = f"package {self._name!r}: step name {name!r} already registered"
+                raise DuplicateVersionError(msg)
+            self._register(n, func, name)
+            self._step_names.add(name)
+            return func
+
+        return decorator
+
+    def _register(self, n: int, func: MigrationFunc, description: str) -> None:
+        """
+        record a migration callable and its ledger description at version n.
+
+        :param n: unique version number within this package
+        :ptype n: int
+        :param func: async callable taking a DataStore
+        :ptype func: MigrationFunc
+        :param description: text the ledger records and verifies for version n
+        :ptype description: str
+        :raises DuplicateVersionError: if version already registered
+        """
+        if n in self._versions:
+            msg = f"package {self._name!r}: migration version {n} already registered"
+            raise DuplicateVersionError(msg)
+        self._versions[n] = func
+        self._descriptions[n] = description
 
     def downgrade(self, n: int) -> Callable[[MigrationFunc], MigrationFunc]:
         """
