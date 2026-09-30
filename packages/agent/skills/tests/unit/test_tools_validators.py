@@ -21,7 +21,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.skills.collections import skill_shape_error
 from threetears.agent.skills.tools import (
+    ARGUMENTS_MAX_BYTES,
     BODY_MAX_BYTES,
     NAME_MAX_LEN,
     SUMMARY_MAX_LEN,
@@ -35,6 +37,7 @@ from threetears.agent.skills.tools import (
     _at_least_one_payload,
     _parse_skill_id,
     _tool_error,
+    _validate_arguments,
     _validate_body,
     _validate_name,
     _validate_summary,
@@ -306,3 +309,45 @@ def test_parse_skill_id_returns_uuid_type() -> None:
     u = uuid4()
     parsed = _parse_skill_id(str(u))
     assert isinstance(parsed, UUID)
+
+
+class TestToolCallShape:
+    """A skill is a body skill or a tool-call skill, never both; the tools add a size cap."""
+
+    def test_tool_counts_as_payload(self) -> None:
+        assert _at_least_one_payload(body=None, tool_additions=[], tool_restrictions=[], tool="loki.query")
+
+    @pytest.mark.parametrize(
+        ("body", "tool", "arguments", "fragment"),
+        [
+            ("steps", "loki.query", None, "not both"),
+            ("", "loki.query", None, "not both"),
+            (None, None, {"q": 1}, "arguments need a tool"),
+            (None, "loki.query", ["q"], "JSON object"),
+            (None, "loki.query", {1: "q"}, "every key a string"),
+            (None, "loki.query", {"q": object()}, "plain JSON"),
+            (None, "   ", None, "not blank"),
+        ],
+    )
+    def test_refused_shapes(self, body: str | None, tool: str | None, arguments: object, fragment: str) -> None:
+        error = skill_shape_error(body=body, tool=tool, arguments=arguments)
+        assert error is not None
+        assert fragment in error
+
+    @pytest.mark.parametrize(
+        ("body", "tool", "arguments"),
+        [
+            ("steps", None, None),
+            (None, "loki.query", None),
+            (None, "loki.query", {}),
+            (None, "loki.query", {"q": "error", "limit": 5, "nested": {"a": [1, None]}}),
+            (None, None, None),
+        ],
+    )
+    def test_accepted_shapes(self, body: str | None, tool: str | None, arguments: object) -> None:
+        assert skill_shape_error(body=body, tool=tool, arguments=arguments) is None
+
+    def test_arguments_cap(self) -> None:
+        assert _validate_arguments({"q": "x" * ARGUMENTS_MAX_BYTES}) == "arguments exceed 32 KB cap"
+        assert _validate_arguments({"q": "x"}) is None
+        assert _validate_arguments(None) is None

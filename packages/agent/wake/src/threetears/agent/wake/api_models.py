@@ -63,7 +63,6 @@ _ScheduleType = Literal[
     "relative_delay",
     "interval",
 ]
-_ExecutionMode = Literal["inline", "spawn"]
 _MissedFirePolicy = Literal["coalesce", "catch_up"]
 _ScheduleStatus = Literal["active", "paused", "expired"]
 _WebhookStatus = Literal["active", "paused"]
@@ -76,6 +75,7 @@ _FireStatus = Literal[
     "skipped_rate_limit",
     "skipped_cap",
     "skipped_no_handler",
+    "skipped_life_off",
     "failed",
 ]
 _FireSource = Literal["scheduled_tick", "webhook"]
@@ -106,14 +106,14 @@ class CreateWakeScheduleRequest(BaseModel):
 
     Maps onto the agent-tool layer's ``wake_schedule_create`` (shard
     04). Fields are validated by the consumer's router against the
-    same ``validate_schedule_config`` helper the tool layer uses.
+    same ``validate_schedule_config`` helper the tool layer uses. There
+    is no ``execution_mode``: every fire starts a new conversation.
     """
 
     model_config = _STRICT
 
     schedule_type: _ScheduleType
     schedule_config: dict[str, Any]
-    execution_mode: _ExecutionMode = "inline"
     missed_fire_policy: _MissedFirePolicy = "coalesce"
     task_prompt: str | None = None
     name: str | None = None
@@ -138,7 +138,6 @@ class UpdateWakeScheduleRequest(BaseModel):
     task_prompt: str | None = None
     schedule_type: _ScheduleType | None = None
     schedule_config: dict[str, Any] | None = None
-    execution_mode: _ExecutionMode | None = None
     missed_fire_policy: _MissedFirePolicy | None = None
     skill_id: UUID | None = None
     detach_skill: bool = False
@@ -168,6 +167,7 @@ class WakeScheduleResponse(BaseModel):
     skill_id: UUID | None
     context_from_schedule_id: UUID | None
     include_conversation_history: bool
+    protected: bool = False
     date_created: datetime
     date_updated: datetime
 
@@ -210,6 +210,7 @@ class WakeFireResponse(BaseModel):
     latency_ms: int | None
     error: str | None
     display_suppressed: bool
+    started_conversation_id: UUID | None = None
     date_created: datetime
 
 
@@ -240,7 +241,6 @@ class CreateWebhookSubscriptionRequest(BaseModel):
 
     name: str | None = None
     task_prompt_template: str
-    execution_mode: _ExecutionMode = "inline"
     default_skill_id: UUID | None = None
     allowed_source_pattern: str | None = None
     rate_limit_per_minute: int | None = None
@@ -254,7 +254,6 @@ class UpdateWebhookSubscriptionRequest(BaseModel):
     status: _WebhookStatus | None = None
     name: str | None = None
     task_prompt_template: str | None = None
-    execution_mode: _ExecutionMode | None = None
     default_skill_id: UUID | None = None
     detach_default_skill: bool = False
     allowed_source_pattern: str | None = None

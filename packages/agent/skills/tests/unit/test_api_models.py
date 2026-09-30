@@ -25,7 +25,7 @@ from threetears.agent.skills import (
     SkillSummary,
     UpdateSkillRequest,
 )
-from threetears.agent.skills.tools import SkillCreateInput, SkillUpdateInput
+from threetears.agent.skills.tools import SkillCreateInput, ToolSkillCreateInput, ToolSkillUpdateInput
 
 
 # --- Response models ---
@@ -257,6 +257,7 @@ class TestCreateSkillRequest:
 
     def test_subclasses_tool_input(self) -> None:
         assert issubclass(CreateSkillRequest, SkillCreateInput)
+        assert issubclass(CreateSkillRequest, ToolSkillCreateInput)
 
     def test_rejects_user_id(self) -> None:
         with pytest.raises(ValidationError):
@@ -272,7 +273,7 @@ class TestCreateSkillRequest:
 
 
 class TestUpdateSkillRequest:
-    """``UpdateSkillRequest`` mirrors ``SkillUpdateInput`` minus identity."""
+    """``UpdateSkillRequest`` mirrors ``ToolSkillUpdateInput`` minus identity."""
 
     def test_all_fields_optional(self) -> None:
         req = UpdateSkillRequest()
@@ -282,7 +283,7 @@ class TestUpdateSkillRequest:
         assert req.enabled is None
 
     def test_field_parity_with_tool_input(self) -> None:
-        """Editable fields stay in lock-step with ``SkillUpdateInput``.
+        """Editable fields stay in lock-step with ``ToolSkillUpdateInput``.
 
         ``UpdateSkillRequest`` is standalone (the tool's required
         ``skill_id`` cannot be widened to optional in a subclass), so a
@@ -290,7 +291,7 @@ class TestUpdateSkillRequest:
         ``skill_id`` is the only tool field intentionally absent (it is a
         path parameter on the REST route).
         """
-        tool_editable = set(SkillUpdateInput.model_fields) - {"skill_id"}
+        tool_editable = set(ToolSkillUpdateInput.model_fields) - {"skill_id"}
         assert set(UpdateSkillRequest.model_fields) == tool_editable
 
     def test_applies_partial_fields(self) -> None:
@@ -315,3 +316,47 @@ class TestUpdateSkillRequest:
         assert "user_id" not in UpdateSkillRequest.model_fields
         assert "agent_id" not in UpdateSkillRequest.model_fields
         assert "skill_id" not in UpdateSkillRequest.model_fields
+
+
+class TestToolCallFields:
+    """A skill that is one tool call crosses the REST surface with ``tool`` / ``arguments``."""
+
+    def test_create_request_carries_tool_and_arguments(self) -> None:
+        req = CreateSkillRequest(name="errors", summary="s", tool="loki.query", arguments={"q": "error"})
+        assert req.tool == "loki.query"
+        assert req.arguments == {"q": "error"}
+        assert req.body is None
+
+    def test_update_request_carries_tool_and_arguments(self) -> None:
+        req = UpdateSkillRequest(tool="", arguments={"q": 1})
+        assert req.tool == ""
+        assert req.arguments == {"q": 1}
+
+    def test_response_defaults_and_values(self) -> None:
+        base = {
+            "skill_id": "s",
+            "agent_id": "a",
+            "user_id": "u",
+            "kind": "prose",
+            "name": "n",
+            "summary": "sum",
+            "body": None,
+            "prompt_mode": "additive",
+            "tool_additions": [],
+            "tool_restrictions": [],
+            "trigger_keywords": "",
+            "tags": [],
+            "source": "manual",
+            "enabled": True,
+            "use_count": 0,
+            "last_used_at": None,
+            "success_count": 0,
+            "failure_count": 0,
+            "last_failure_at": None,
+            "date_created": "2026-05-01T00:00:00+00:00",
+            "date_updated": "2026-05-01T00:00:00+00:00",
+        }
+        plain = SkillResponse(**base)
+        assert (plain.tool, plain.arguments) == (None, None)
+        tooled = SkillResponse(**base, tool="loki.query", arguments={"q": "error"})
+        assert (tooled.tool, tooled.arguments) == ("loki.query", {"q": "error"})

@@ -28,11 +28,13 @@ this package, so the factories below construct the ``Table`` directly.
 
 **Drift protection.** A parallel hand-written DDL with no parity
 guarantee would be the embedded-DDL-drift smell. The factory output is
-pinned against the canonical migration DDL (the FINAL post-v005 shape:
+pinned against the canonical migration DDL (the FINAL post-v007 shape:
 v001-v003 create the tables, v004 extends the ``wake_fires.status``
 CHECK to add ``'dispatching'``, v005 replaces the
 ``webhook_subscriptions.verification_scheme`` hardcoded-value CHECK
-with a slug-format guard) by
+with a slug-format guard, v006 adds ``include_conversation_history``, v007
+adds ``protected`` and its CHECK, ``started_conversation_id``, the agent
+indexes, ``'skipped_life_off'`` and the ``'spawn'`` default) by
 ``tests/integration/test_sqlalchemy_table_parity.py``: it applies the
 migrations to one Postgres schema, emits each factory's ``CREATE
 TABLE`` + indexes into a second schema, and asserts the two are
@@ -152,7 +154,7 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             "execution_mode",
             Text(),
             nullable=False,
-            server_default=sa_text("'inline'"),
+            server_default=sa_text("'spawn'"),
         ),
         Column(
             "status",
@@ -175,6 +177,12 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             SABoolean(),
             nullable=False,
             server_default=sa_text("true"),
+        ),
+        Column(
+            "protected",
+            SABoolean(),
+            nullable=False,
+            server_default=sa_text("false"),
         ),
         Column(
             "date_created",
@@ -214,6 +222,10 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             "missed_fire_policy IN ('coalesce', 'catch_up')",
             name="agent_wake_schedules_missed_fire_policy_check",
         ),
+        CheckConstraint(
+            "NOT protected OR schedule_type NOT IN ('one_shot_at', 'relative_delay')",
+            name="agent_wake_schedules_protected_type_check",
+        ),
         Index(
             "idx_wake_schedules_next_fire",
             "next_fire_at",
@@ -235,13 +247,18 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
             "context_from_schedule_id",
             postgresql_where=sa_text("context_from_schedule_id IS NOT NULL"),
         ),
+        Index(
+            "idx_wake_schedules_agent_status",
+            "agent_id",
+            "status",
+        ),
     )
 
 
 def wake_fires_table(metadata: MetaData) -> Table:
     """Register the ``wake_fires`` table on the given SA metadata.
 
-    Mirrors the canonical migration DDL in its FINAL post-v004 shape
+    Mirrors the canonical migration DDL in its FINAL post-v007 shape
     (``migrations/v002_create_wake_fires.py`` for the table + the v003
     retro-added webhook FK + the v004 extended ``status`` CHECK):
     composite primary key ``(conversation_id, fire_id)``, standalone
@@ -297,6 +314,7 @@ def wake_fires_table(metadata: MetaData) -> Table:
         Column("output_text", Text(), nullable=True),
         Column("latency_ms", Integer(), nullable=True),
         Column("error", Text(), nullable=True),
+        Column("started_conversation_id", PgUUID(as_uuid=True), nullable=True),
         Column(
             "date_created",
             SADateTime(timezone=True),
@@ -331,6 +349,7 @@ def wake_fires_table(metadata: MetaData) -> Table:
             "'skipped_rate_limit', "
             "'skipped_cap', "
             "'skipped_no_handler', "
+            "'skipped_life_off', "
             "'failed'"
             ")",
             name="wake_fires_status_check",
@@ -352,13 +371,18 @@ def wake_fires_table(metadata: MetaData) -> Table:
             "conversation_id",
             sa_text("actual_fired_at DESC"),
         ),
+        Index(
+            "idx_wake_fires_started_conversation",
+            "started_conversation_id",
+            postgresql_where=sa_text("started_conversation_id IS NOT NULL"),
+        ),
     )
 
 
 def webhook_subscriptions_table(metadata: MetaData) -> Table:
     """Register the ``webhook_subscriptions`` table on the given SA metadata.
 
-    Mirrors the canonical migration DDL in its FINAL post-v005 shape
+    Mirrors the canonical migration DDL in its FINAL post-v007 shape
     (``migrations/v003_create_webhook_subscriptions.py`` for the table +
     the v005 opened ``verification_scheme`` CHECK): composite primary key
     ``(conversation_id, subscription_id)``, standalone ``UNIQUE
@@ -401,7 +425,7 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
             "execution_mode",
             Text(),
             nullable=False,
-            server_default=sa_text("'inline'"),
+            server_default=sa_text("'spawn'"),
         ),
         Column("task_prompt_template", Text(), nullable=True),
         Column(
@@ -458,5 +482,9 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
         Index(
             "idx_webhook_subs_user",
             "user_id",
+        ),
+        Index(
+            "idx_webhook_subs_agent",
+            "agent_id",
         ),
     )

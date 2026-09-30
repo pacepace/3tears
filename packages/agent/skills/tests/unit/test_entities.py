@@ -290,3 +290,33 @@ class TestAgentSkillInvocationEntity:
         assert entity.outcome is None
         assert entity.outcome_source is None
         assert entity.notes is None
+
+
+class TestAgentSkillEntityToolCall:
+    """``tool`` / ``arguments`` accessors on :class:`AgentSkillEntity`."""
+
+    @staticmethod
+    def _entity(**fields: object) -> AgentSkillEntity:
+        return AgentSkillEntity(
+            {"agent_id": _new_uuid(), "skill_id": _new_uuid(), "user_id": _new_uuid(), "name": "n", "summary": "s"}
+            | fields,
+        )
+
+    def test_absent_reads_none(self) -> None:
+        entity = self._entity(body="steps")
+        assert entity.tool is None
+        assert entity.arguments is None
+
+    def test_round_trip(self) -> None:
+        entity = self._entity(tool="loki.query", arguments={"q": "error"})
+        assert entity.tool == "loki.query"
+        assert entity.arguments == {"q": "error"}
+        entity.tool = "loki.tail"
+        entity.arguments = {"q": "warn"}
+        assert entity.tool == "loki.tail"
+        assert entity.arguments == {"q": "warn"}
+
+    def test_arguments_decoded_from_json_text(self) -> None:
+        """A pool without the jsonb codec hands the object back as JSON text."""
+        entity = self._entity(tool="loki.query", arguments='{"q": "error"}')
+        assert entity.arguments == {"q": "error"}

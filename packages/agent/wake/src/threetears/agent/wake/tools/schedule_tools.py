@@ -4,8 +4,16 @@ Factory functions mint LangChain ``BaseTool`` instances bound to a
 ``(conversation_id, user_id, agent_id)`` actor triple plus the wake
 Collections + a consumer-supplied :class:`WakeRegistryClient` for ACL
 probes on ``skill_id`` attachments. The LLM never sees the actor IDs
-in the input schema -- the factory closes over them so cross-conv /
-cross-user writes are structurally impossible.
+in the input schema -- the factory closes over them.
+
+The tools are scoped to the agent, not to the conversation they run in:
+an agent's wakes live in its wake conversations, and a tool in any of the
+agent's conversations lists and changes all of them. A wake of another
+agent is never found. ``conversation_id`` is where the tool runs; a new
+wake conversation made by ``wake_schedule_create`` has it as its parent.
+
+A protected wake is refused by the pause, delete and update tools with a
+plain message; the table's trigger refuses it from anywhere else.
 
 Tools:
 
@@ -39,16 +47,18 @@ from uuid_utils import uuid7
 
 from threetears.agent.wake.collections import WakeScheduleCollection
 from threetears.agent.wake.config import (
-    DEFAULT_MAX_SCHEDULES_PER_CONVERSATION as _CONFIG_DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+    DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT as _CONFIG_DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
 )
 from threetears.agent.wake.rate_limit import (
     ScheduleCapExceeded,
+    WakeConversationMaker,
     create_schedule_serialized,
     resume_schedule_serialized,
 )
+from threetears.agent.wake.types import WakeConversations
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.scheduled_jobs import compute_next_fire_at
-from threetears.agent.wake.tools.resolve import parse_schedule_id
+from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_schedule_id
 from threetears.agent.wake.tools.validators import (
     _ChainNode,
     validate_context_from_chain,
@@ -57,7 +67,8 @@ from threetears.agent.wake.tools.validators import (
 from threetears.observe import get_logger
 
 __all__ = [
-    "DEFAULT_MAX_SCHEDULES_PER_CONVERSATION",
+    "DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT",
+    "PROTECTED_REFUSAL",
     "NAME_MAX_LEN",
     "TASK_PROMPT_MAX_LEN",
     "ScheduleCreateInput",
@@ -89,12 +100,15 @@ log = get_logger(__name__)
 NAME_MAX_LEN = 256
 TASK_PROMPT_MAX_LEN = 4000
 # Re-exported from :mod:`threetears.agent.wake.config` so the tool
-# layer and the shard-05 ``WakeConfig`` Protocol share a single source
-# of truth for the per-conv cap default (PLACEMENT §1.9 / §3.5 = 10).
-DEFAULT_MAX_SCHEDULES_PER_CONVERSATION = _CONFIG_DEFAULT_MAX_SCHEDULES_PER_CONVERSATION
+# layer and the ``WakeConfig`` Protocol share a single source of truth
+# for the per-agent cap default.
+DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT = _CONFIG_DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT
+
+# What the tools say about a protected wake. It is the agent's own; it keeps
+# running whatever the agent does with its other wakes.
+PROTECTED_REFUSAL = "this wake is protected: it cannot be paused, deleted or changed with this tool"
 
 
-_VALID_EXECUTION_MODES: frozenset[str] = frozenset({"inline", "spawn"})
 _VALID_MISSED_FIRE_POLICIES: frozenset[str] = frozenset({"coalesce", "catch_up"})
 
 
@@ -213,9 +227,12 @@ class ScheduleCreateInput(BaseModel):
         default=None,
         description="Optional skill to use when it fires: a [skill:<id>] or its id.",
     )
-    execution_mode: Literal["inline", "spawn"] = Field(
-        default="inline",
-        description="'inline' wakes you in this conversation; 'spawn' starts a new conversation.",
+    wake_conversation_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional [conversation:<id>] of one of your wake conversations, to add this wake to it. "
+            "Leave it out to start a new wake conversation."
+        ),
     )
     missed_fire_policy: Literal["coalesce", "catch_up"] = Field(
         default="coalesce",
@@ -231,11 +248,11 @@ class ScheduleCreateInput(BaseModel):
     )
     context_from_schedule_id: str | None = Field(
         default=None,
-        description="Optional [schedule:<id>]. When this one fires, you are given that one's last output.",
+        description="Optional [schedule:<id>] of any of your wakes. When this one fires, you are given that one's last output.",
     )
     include_conversation_history: bool = Field(
         default=True,
-        description="True (default): wake with this conversation's recent messages. False: wake without them.",
+        description="True (default): wake with its wake conversation's recent messages. False: wake without them.",
     )
 
 
@@ -264,7 +281,6 @@ class ScheduleUpdateInput(BaseModel):
         default=False,
         description="True removes the attached skill. Do not also pass skill_id.",
     )
-    execution_mode: Literal["inline", "spawn"] | None = None
     missed_fire_policy: Literal["coalesce", "catch_up"] | None = None
     task_prompt: str | None = None
     name: str | None = None
@@ -279,7 +295,7 @@ class ScheduleUpdateInput(BaseModel):
     )
     include_conversation_history: bool | None = Field(
         default=None,
-        description="Change whether it wakes with this conversation's recent messages (true) or without them (false).",
+        description="Change whether it wakes with its wake conversation's recent messages (true) or without them (false).",
     )
 
 
@@ -354,10 +370,12 @@ def _format_schedule_line(
     # Surface the history switch only when OFF -- the default (on) is the
     # common case and would add noise to every catalog line.
     history_segment = "" if entity.include_conversation_history else " · history: off"
+    protected_segment = " · protected" if entity.protected else ""
     return (
         f"[schedule:{entity.schedule_id}] · {name} · {entity.schedule_type}"
         f" · next: {_format_next_fire(entity.next_fire_at)}"
-        f" · mode: {entity.execution_mode} · {entity.status}{skill_segment}{history_segment}"
+        f" · {entity.status} · in [conversation:{entity.conversation_id}]"
+        f"{skill_segment}{history_segment}{protected_segment}"
     )
 
 
@@ -389,28 +407,21 @@ async def _check_skill_acl(
 
 def _make_chain_resolver(
     schedules_collection: WakeScheduleCollection,
-    conversation_id: UUID,
+    agent_id: UUID,
 ) -> Callable[[UUID], Any]:
     """Build the closure :func:`validate_context_from_chain` consumes.
 
-    Wraps :meth:`WakeScheduleCollection.get` so the validator stays
-    free of DB knowledge. Returns ``None`` when the row is absent.
+    Wraps :meth:`WakeScheduleCollection.find_for_agent` so the validator
+    stays free of DB knowledge. Another agent's schedule is not found, so
+    a chain can never reach outside the agent.
     """
 
     async def resolver(schedule_id: UUID) -> _ChainNode | None:
-        entity = await schedules_collection.get((conversation_id, schedule_id))
+        entity = await schedules_collection.find_for_agent(agent_id, schedule_id)
         if entity is None:
-            # Try cross-conversation lookup so the validator can flag
-            # "different conversation" -- the cycle walker treats a
-            # different-conv hit as a same-conv miss currently
-            # because the Collection's get() partitions by conv_id.
-            # We can't surface the cross-conv error without a wider
-            # query, so we report "not found" -- which is the right
-            # outcome from the caller's perspective: the schedule isn't
-            # in the caller's conversation, so the chain is invalid.
             return None
         return _ChainNode(
-            conversation_id=entity.conversation_id,
+            agent_id=entity.agent_id,
             context_from_schedule_id=entity.context_from_schedule_id,
         )
 
@@ -429,7 +440,8 @@ def load_wake_schedule_create_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     registry: WakeRegistryClient,
-    max_schedules_per_conversation: int = DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+    max_active_schedules_per_agent: int = DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
+    wake_conversations: WakeConversations | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_create`` tool bound to the actor triple.
 
@@ -437,7 +449,13 @@ def load_wake_schedule_create_tool(
     to include this tool in the loaded set (e.g. a consumer suppresses it
     on wake-driven turns to prevent recursive cron creation).
 
-    :param conversation_id: caller's conversation UUID (partition key)
+    With ``wake_conversations`` a wake lives in a wake conversation: the
+    one the agent names, which must be one of its wake conversations, or a
+    new one made in the create's transaction with the caller's conversation
+    as its parent. Without it the wake lives in the caller's conversation.
+
+    :param conversation_id: caller's conversation UUID; the parent of a new
+        wake conversation
     :ptype conversation_id: UUID
     :param user_id: caller's user UUID
     :ptype user_id: UUID
@@ -447,9 +465,11 @@ def load_wake_schedule_create_tool(
     :ptype schedules_collection: WakeScheduleCollection
     :param registry: consumer-supplied registry for ACL probes
     :ptype registry: WakeRegistryClient
-    :param max_schedules_per_conversation: cap on active+paused
-        schedules per conversation (default 10 per PLACEMENT §1.9)
-    :ptype max_schedules_per_conversation: int
+    :param max_active_schedules_per_agent: cap on the agent's unprotected
+        active schedules, across all its conversations
+    :ptype max_active_schedules_per_agent: int
+    :param wake_conversations: the consumer's wake-conversation hooks
+    :ptype wake_conversations: WakeConversations | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -459,14 +479,14 @@ def load_wake_schedule_create_tool(
         schedule_type: str,
         schedule_config: dict[str, Any],
         skill_id: str | None = None,
-        execution_mode: Literal["inline", "spawn"] = "inline",
+        wake_conversation_id: str | None = None,
         missed_fire_policy: Literal["coalesce", "catch_up"] = "coalesce",
         task_prompt: str | None = None,
         name: str | None = None,
         context_from_schedule_id: str | None = None,
         include_conversation_history: bool = True,
     ) -> str:
-        """Create a wake schedule for this conversation."""
+        """Create a wake schedule."""
         for err in (
             _validate_name(name),
             _validate_task_prompt(task_prompt),
@@ -475,24 +495,33 @@ def load_wake_schedule_create_tool(
             if err is not None:
                 return _tool_error("wake_schedule_create", err)
 
-        if execution_mode not in _VALID_EXECUTION_MODES:
-            return _tool_error(
-                "wake_schedule_create",
-                f"execution_mode must be 'inline' or 'spawn'; got {execution_mode!r}",
-            )
+        target_conversation_id = conversation_id
+        if wake_conversation_id is not None:
+            if wake_conversations is None:
+                return _tool_error(
+                    "wake_schedule_create", "wakes here live in this conversation; omit wake_conversation_id"
+                )
+            parsed_target = parse_conversation_id(wake_conversation_id)
+            if parsed_target is None:
+                return _tool_error("wake_schedule_create", f"invalid wake_conversation_id {wake_conversation_id!r}")
+            if not await wake_conversations.is_wake_conversation(agent_id=agent_id, conversation_id=parsed_target):
+                return _tool_error(
+                    "wake_schedule_create",
+                    f"[conversation:{parsed_target}] is not one of your wake conversations",
+                )
+            target_conversation_id = parsed_target
+
         if missed_fire_policy not in _VALID_MISSED_FIRE_POLICIES:
             return _tool_error(
                 "wake_schedule_create",
                 f"missed_fire_policy must be 'coalesce' or 'catch_up'; got {missed_fire_policy!r}",
             )
 
-        # Per-conversation cap (PLACEMENT §1.9) is enforced RACE-PROOF at
-        # the persist step below via :func:`create_schedule_serialized`,
-        # which takes a per-conversation advisory lock, re-counts, and
-        # inserts inside one transaction -- so two concurrent creates can
-        # never both pass a stale count and exceed the cap. The previous
-        # non-atomic ``count -> insert`` check-then-act here had a TOCTOU
-        # race; the cap-reject event + metric now fire on the
+        # The per-agent cap is enforced RACE-PROOF at the persist step below
+        # via :func:`create_schedule_serialized`, which takes the agent's
+        # advisory lock, re-counts, and inserts inside one transaction -- so
+        # two concurrent creates can never both pass a stale count and exceed
+        # the cap. The cap-reject event + metric fire on the
         # ``ScheduleCapExceeded`` branch at insert time.
 
         attached_skill: UUID | None = None
@@ -567,26 +596,41 @@ def load_wake_schedule_create_tool(
         # Run cycle detection AFTER the new id is minted so the walker
         # can seed visited={new_id} and catch self-references / loops.
         if parsed_context_from is not None:
-            resolver = _make_chain_resolver(schedules_collection, conversation_id)
+            resolver = _make_chain_resolver(schedules_collection, agent_id)
             err = await validate_context_from_chain(
                 new_schedule_id=new_schedule_id,
                 proposed_context_from=parsed_context_from,
-                conversation_id=conversation_id,
+                agent_id=agent_id,
                 resolver=resolver,
             )
             if err is not None:
                 return _tool_error("wake_schedule_create", err)
 
+        make_wake_conversation: WakeConversationMaker | None = None
+        if wake_conversations is not None and wake_conversation_id is None:
+            hooks = wake_conversations
+
+            async def _make(conn: Any) -> UUID:
+                return await hooks.create(
+                    parent_conversation_id=conversation_id,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    name=name,
+                    conn=conn,
+                )
+
+            make_wake_conversation = _make
+
         data: dict[str, Any] = {
             "schedule_id": new_schedule_id,
-            "conversation_id": conversation_id,
+            "conversation_id": target_conversation_id,
             "user_id": user_id,
             "agent_id": agent_id,
             "skill_id": attached_skill,
             "schedule_type": schedule_type,
             "schedule_config": dict(schedule_config),
             "task_prompt": task_prompt,
-            "execution_mode": execution_mode,
+            "execution_mode": "spawn",
             "status": "active",
             "next_fire_at": next_fire_at,
             "last_fired_at": None,
@@ -594,21 +638,22 @@ def load_wake_schedule_create_tool(
             "missed_fire_policy": missed_fire_policy,
             "context_from_schedule_id": parsed_context_from,
             "include_conversation_history": include_conversation_history,
+            "protected": False,
             "date_created": now,
             "date_updated": now,
         }
-        entity = schedules_collection.create(data)
         try:
-            # Race-proof cap + insert: the helper takes a per-conversation
-            # advisory lock, re-counts active schedules, and inserts inside
-            # one transaction (PLACEMENT §1.9). The collection's pool is the
-            # serialization substrate.
-            await create_schedule_serialized(
+            # Race-proof cap + insert: the helper takes the agent's advisory
+            # lock, re-counts active schedules, makes the wake conversation
+            # when one is wanted, and inserts, inside one transaction. The
+            # collection's pool is the serialization substrate.
+            entity = await create_schedule_serialized(
                 collection=schedules_collection,
-                entity=entity,
-                conversation_id=conversation_id,
-                cap=max_schedules_per_conversation,
+                data=data,
+                agent_id=agent_id,
+                cap=max_active_schedules_per_agent,
                 pool=schedules_collection.l3_pool,
+                make_wake_conversation=make_wake_conversation,
             )
         except ScheduleCapExceeded:
             # local import keeps the tool layer's cold-import cost the
@@ -630,13 +675,13 @@ def load_wake_schedule_create_tool(
                         "conversation_id": str(conversation_id),
                         "user_id": log_user_id,
                         "agent_id": log_agent_id,
-                        "cap": max_schedules_per_conversation,
+                        "cap": max_active_schedules_per_agent,
                     }
                 },
             )
             return _tool_error(
                 "wake_schedule_create",
-                f"max {max_schedules_per_conversation} active schedules per conversation (pause or delete one first)",
+                f"you have {max_active_schedules_per_agent} active wakes, the most allowed (pause or delete one first)",
             )
         except Exception as exc:  # noqa: BLE001 - surface persistence failure
             log.warning(
@@ -666,7 +711,7 @@ def load_wake_schedule_create_tool(
                 "extra_data": {
                     "schedule_id": str(new_schedule_id),
                     "schedule_type": schedule_type,
-                    "execution_mode": execution_mode,
+                    "wake_conversation_id": str(entity.conversation_id),
                     "skill_id": str(attached_skill) if attached_skill else None,
                     "next_fire_at": next_fire_at.isoformat() if next_fire_at else None,
                 }
@@ -675,12 +720,17 @@ def load_wake_schedule_create_tool(
         return _format_schedule_line(entity, skill_name=skill_name)
 
     wake_schedule_create.description = (
-        "Wake yourself in this conversation at a set time or on a repeat.\n"
-        "schedule_config keys for each schedule_type: daily_at {hour, minute, tz}; "
+        (
+            "Wake yourself at a set time or on a repeat. Each wake lives in a wake conversation, "
+            "and each time it fires it starts a new conversation.\n"
+            if wake_conversations is not None
+            else "Wake yourself in this conversation at a set time or on a repeat.\n"
+        )
+        + "schedule_config keys for each schedule_type: daily_at {hour, minute, tz}; "
         "every_n_hours {n}; random_within_window {start_hour, end_hour, tz, fires_per_day}; "
         "one_shot_at {fire_at_iso}; cron {expr}; relative_delay {delay, e.g. '30m'}; "
         "interval {seconds}.\n"
-        f"Returns [schedule:<id>]. At most {max_schedules_per_conversation} active schedules per conversation."
+        f"Returns [schedule:<id>]. At most {max_active_schedules_per_agent} active wakes."
     )
 
     return [wake_schedule_create]
@@ -693,7 +743,6 @@ def load_wake_schedule_create_tool(
 
 def load_wake_schedule_update_tool(
     *,
-    conversation_id: UUID,
     user_id: UUID,
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
@@ -707,10 +756,9 @@ def load_wake_schedule_update_tool(
     ``clear_name``) because LangChain ``@tool`` decoration cannot
     distinguish "field absent from JSON input" from "explicit null in
     JSON input". Passing the attach value AND the detach flag together
-    is contradictory and rejected.
+    is contradictory and rejected. Changes any of the agent's wakes,
+    whichever conversation it lives in; a protected wake is refused.
 
-    :param conversation_id: caller's conversation UUID
-    :ptype conversation_id: UUID
     :param user_id: caller's user UUID
     :ptype user_id: UUID
     :param agent_id: caller's agent UUID
@@ -730,7 +778,6 @@ def load_wake_schedule_update_tool(
         schedule_config: dict[str, Any] | None = None,
         skill_id: str | None = None,
         detach_skill: bool = False,
-        execution_mode: Literal["inline", "spawn"] | None = None,
         missed_fire_policy: Literal["coalesce", "catch_up"] | None = None,
         task_prompt: str | None = None,
         name: str | None = None,
@@ -765,13 +812,11 @@ def load_wake_schedule_update_tool(
         if parsed is None:
             return _tool_error("wake_schedule_update", f"invalid schedule_id {schedule_id!r}")
 
-        entity = await schedules_collection.get((conversation_id, parsed))
+        entity = await schedules_collection.find_for_agent(agent_id, parsed)
         if entity is None:
             return _tool_error("wake_schedule_update", "schedule not found")
-        if entity.user_id != user_id:
-            # Cross-user isolation: surface as not found so existence
-            # isn't leaked.
-            return _tool_error("wake_schedule_update", "schedule not found")
+        if entity.protected:
+            return _tool_error("wake_schedule_update", PROTECTED_REFUSAL)
 
         merged_type = schedule_type if schedule_type is not None else entity.schedule_type
         merged_config = dict(schedule_config) if schedule_config is not None else dict(entity.schedule_config)
@@ -789,11 +834,6 @@ def load_wake_schedule_update_tool(
             if err is not None:
                 return _tool_error("wake_schedule_update", err)
 
-        if execution_mode is not None and execution_mode not in _VALID_EXECUTION_MODES:
-            return _tool_error(
-                "wake_schedule_update",
-                f"execution_mode must be 'inline' or 'spawn'; got {execution_mode!r}",
-            )
         if missed_fire_policy is not None and missed_fire_policy not in _VALID_MISSED_FIRE_POLICIES:
             return _tool_error(
                 "wake_schedule_update",
@@ -860,11 +900,11 @@ def load_wake_schedule_update_tool(
             new_context_from = entity.context_from_schedule_id
 
         if context_from_changed and new_context_from is not None:
-            resolver = _make_chain_resolver(schedules_collection, conversation_id)
+            resolver = _make_chain_resolver(schedules_collection, agent_id)
             err = await validate_context_from_chain(
                 new_schedule_id=entity.schedule_id,
                 proposed_context_from=new_context_from,
-                conversation_id=conversation_id,
+                agent_id=agent_id,
                 resolver=resolver,
             )
             if err is not None:
@@ -880,8 +920,6 @@ def load_wake_schedule_update_tool(
             recompute_next_fire = True
         if missed_fire_policy is not None:
             entity.missed_fire_policy = missed_fire_policy
-        if execution_mode is not None:
-            entity.execution_mode = execution_mode
         if task_prompt is not None:
             entity.task_prompt = task_prompt if task_prompt else None
         if clear_name:
@@ -965,16 +1003,13 @@ def load_wake_schedule_update_tool(
 
 def load_wake_schedule_list_tool(
     *,
-    conversation_id: UUID,
     user_id: UUID,
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     registry: WakeRegistryClient,
 ) -> list[BaseTool]:
-    """Build a ``wake_schedule_list`` tool scoped to the conversation.
+    """Build a ``wake_schedule_list`` tool listing the agent's wakes in every conversation.
 
-    :param conversation_id: caller's conversation UUID
-    :ptype conversation_id: UUID
     :param user_id: caller's user UUID
     :ptype user_id: UUID
     :param agent_id: caller's agent UUID
@@ -989,19 +1024,14 @@ def load_wake_schedule_list_tool(
 
     @tool("wake_schedule_list", args_schema=ScheduleListInput)
     async def wake_schedule_list(include_paused: bool = True) -> str:
-        """List wake schedules for the current conversation."""
+        """List your wake schedules."""
         try:
-            if include_paused:
-                rows = await schedules_collection.list_for_conversation(conversation_id)
-            else:
-                rows = await schedules_collection.list_active_for_conversation(conversation_id)
+            visible = await schedules_collection.list_for_agent(agent_id, include_paused=include_paused)
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_list", f"list failed: {exc}")
 
-        # Cross-user isolation: filter to the caller's rows.
-        visible = [row for row in rows if row.user_id == user_id]
         if not visible:
-            return "No wake schedules in this conversation."
+            return "You have no wake schedules."
 
         lines: list[str] = [f"Found {len(visible)} schedules:"]
         for entity in visible:
@@ -1019,7 +1049,8 @@ def load_wake_schedule_list_tool(
         return "\n".join(lines)
 
     wake_schedule_list.description = (
-        "List the wake schedules in this conversation: id, name, type, next time and status."
+        "List your wake schedules, in every conversation: id, name, type, next time, status "
+        "and the wake conversation each lives in."
     )
 
     return [wake_schedule_list]
@@ -1032,16 +1063,16 @@ def load_wake_schedule_list_tool(
 
 def load_wake_schedule_pause_tool(
     *,
-    conversation_id: UUID,
-    user_id: UUID,
+    agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_pause`` tool (status -> 'paused', clear next_fire_at).
 
-    :param conversation_id: caller's conversation UUID
-    :ptype conversation_id: UUID
-    :param user_id: caller's user UUID
-    :ptype user_id: UUID
+    Pauses any of the agent's wakes, whichever conversation it lives in. A
+    protected wake is refused with a plain message.
+
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
     :param schedules_collection: three-tier schedules collection
     :ptype schedules_collection: WakeScheduleCollection
     :return: list with one LangChain tool
@@ -1055,9 +1086,11 @@ def load_wake_schedule_pause_tool(
         if parsed is None:
             return _tool_error("wake_schedule_pause", f"invalid schedule_id {schedule_id!r}")
 
-        entity = await schedules_collection.get((conversation_id, parsed))
-        if entity is None or entity.user_id != user_id:
+        entity = await schedules_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
             return _tool_error("wake_schedule_pause", "schedule not found")
+        if entity.protected:
+            return _tool_error("wake_schedule_pause", PROTECTED_REFUSAL)
         if entity.status == "expired":
             return _tool_error(
                 "wake_schedule_pause",
@@ -1065,7 +1098,7 @@ def load_wake_schedule_pause_tool(
             )
 
         try:
-            await schedules_collection.pause(conversation_id, parsed)
+            await schedules_collection.pause(entity.conversation_id, parsed)
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_pause", f"persist failed: {exc}")
         return f"Paused [schedule:{parsed}]."
@@ -1081,29 +1114,27 @@ def load_wake_schedule_pause_tool(
 
 def load_wake_schedule_resume_tool(
     *,
-    conversation_id: UUID,
-    user_id: UUID,
+    agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
-    max_schedules_per_conversation: int = DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+    max_active_schedules_per_agent: int = DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_resume`` tool (status -> 'active'; recompute next_fire_at).
 
-    Re-activation is RACE-PROOF cap-checked (PLACEMENT §1.9): the persist
-    step routes through :func:`resume_schedule_serialized`, which takes
-    the per-conversation advisory lock, re-counts active schedules
-    (excluding the one being resumed), and flips paused -> active inside
-    one transaction. Without this a pause -> create-to-fill -> resume
-    sequence could push the active count past the cap.
+    Resumes any of the agent's wakes, whichever conversation it lives in.
+    Re-activation is RACE-PROOF cap-checked: the persist step routes
+    through :func:`resume_schedule_serialized`, which takes the agent's
+    advisory lock, re-counts active schedules (excluding the one being
+    resumed), and flips paused -> active inside one transaction. Without
+    this a pause -> create-to-fill -> resume sequence could push the active
+    count past the cap.
 
-    :param conversation_id: caller's conversation UUID
-    :ptype conversation_id: UUID
-    :param user_id: caller's user UUID
-    :ptype user_id: UUID
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
     :param schedules_collection: three-tier schedules collection
     :ptype schedules_collection: WakeScheduleCollection
-    :param max_schedules_per_conversation: cap on active schedules per
-        conversation (default 10 per PLACEMENT §1.9)
-    :ptype max_schedules_per_conversation: int
+    :param max_active_schedules_per_agent: cap on the agent's unprotected
+        active schedules
+    :ptype max_active_schedules_per_agent: int
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -1115,8 +1146,8 @@ def load_wake_schedule_resume_tool(
         if parsed is None:
             return _tool_error("wake_schedule_resume", f"invalid schedule_id {schedule_id!r}")
 
-        entity = await schedules_collection.get((conversation_id, parsed))
-        if entity is None or entity.user_id != user_id:
+        entity = await schedules_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
             return _tool_error("wake_schedule_resume", "schedule not found")
         if entity.status == "expired":
             return _tool_error(
@@ -1146,16 +1177,16 @@ def load_wake_schedule_resume_tool(
             )
 
         try:
-            # Race-proof cap + flip: the helper takes a per-conversation
-            # advisory lock, re-counts active schedules (excluding this
-            # one), and flips paused -> active inside one transaction
-            # (PLACEMENT §1.9).
+            # Race-proof cap + flip: the helper takes the agent's advisory
+            # lock, re-counts active schedules (excluding this one), and
+            # flips paused -> active inside one transaction.
             await resume_schedule_serialized(
                 collection=schedules_collection,
-                conversation_id=conversation_id,
+                agent_id=agent_id,
+                conversation_id=entity.conversation_id,
                 schedule_id=parsed,
                 next_fire_at=next_fire_at,
-                cap=max_schedules_per_conversation,
+                cap=max_active_schedules_per_agent,
                 pool=schedules_collection.l3_pool,
             )
         except ScheduleCapExceeded:
@@ -1167,16 +1198,17 @@ def load_wake_schedule_resume_tool(
                 EVENT_SCHEDULE_CAP_REJECT,
                 extra={
                     "extra_data": {
-                        "conversation_id": str(conversation_id),
-                        "user_id": str(user_id),  # convert at border: schedule-cap-reject (resume) log extra_data field
+                        "agent_id": str(
+                            agent_id
+                        ),  # convert at border: schedule-cap-reject (resume) log extra_data field
                         "schedule_id": str(parsed),
-                        "cap": max_schedules_per_conversation,
+                        "cap": max_active_schedules_per_agent,
                     }
                 },
             )
             return _tool_error(
                 "wake_schedule_resume",
-                f"max {max_schedules_per_conversation} active schedules per conversation (pause or delete one first)",
+                f"you have {max_active_schedules_per_agent} active wakes, the most allowed (pause or delete one first)",
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_resume", f"persist failed: {exc}")
@@ -1193,16 +1225,16 @@ def load_wake_schedule_resume_tool(
 
 def load_wake_schedule_delete_tool(
     *,
-    conversation_id: UUID,
-    user_id: UUID,
+    agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_delete`` tool (hard delete; cascades fires).
 
-    :param conversation_id: caller's conversation UUID
-    :ptype conversation_id: UUID
-    :param user_id: caller's user UUID
-    :ptype user_id: UUID
+    Deletes any of the agent's wakes, whichever conversation it lives in. A
+    protected wake is refused with a plain message.
+
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
     :param schedules_collection: three-tier schedules collection
     :ptype schedules_collection: WakeScheduleCollection
     :return: list with one LangChain tool
@@ -1216,12 +1248,14 @@ def load_wake_schedule_delete_tool(
         if parsed is None:
             return _tool_error("wake_schedule_delete", f"invalid schedule_id {schedule_id!r}")
 
-        entity = await schedules_collection.get((conversation_id, parsed))
-        if entity is None or entity.user_id != user_id:
+        entity = await schedules_collection.find_for_agent(agent_id, parsed)
+        if entity is None:
             return _tool_error("wake_schedule_delete", "schedule not found")
+        if entity.protected:
+            return _tool_error("wake_schedule_delete", PROTECTED_REFUSAL)
 
         try:
-            await schedules_collection.delete((conversation_id, parsed))
+            await schedules_collection.delete((entity.conversation_id, parsed))
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_delete", f"persist failed: {exc}")
         return f"Deleted [schedule:{parsed}] ({entity.name or 'untitled'})."

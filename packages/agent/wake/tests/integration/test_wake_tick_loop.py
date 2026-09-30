@@ -287,12 +287,16 @@ class TestMissedFirePolicy:
 
             await _tick(pool, dispatch)
             row = await _read_schedule(pool, sched)
-            # coalesce anchors on now -> next_fire_at = now + 60s, which
-            # is well into the future (NOT backlog_anchor + 60s in the past)
+            # coalesce fires once for the backlog, then re-arms on the
+            # schedule's own next slot after the tick: backlog_anchor + k*60s,
+            # in the future (NOT backlog_anchor + 60s in the past, and not
+            # tick + 60s, which would drift the schedule later each outage)
             assert row["next_fire_at"] is not None
             next_fire = row["next_fire_at"]
             assert isinstance(next_fire, datetime)
             assert next_fire > now
+            assert (next_fire - backlog_anchor).total_seconds() % 60 == 0
+            assert next_fire - now <= timedelta(seconds=60)
         finally:
             await pool.close()
 

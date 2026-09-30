@@ -187,6 +187,59 @@ class TestConversationNameProperty:
         assert changes["name"] is None
 
 
+class TestConversationParentProperties:
+    """the parent pair added in conversations v011: what started the conversation."""
+
+    def test_parent_is_none_when_unset(self) -> None:
+        """a row without the pair reads ``None`` for both."""
+        data = _sample_data()
+        assert "parent_type" not in data and "parent_id" not in data
+        entity = Conversation(data)
+
+        assert entity.parent_type is None
+        assert entity.parent_id is None
+
+    def test_parent_returns_stored_values(self) -> None:
+        """the getters return the stored type word and id."""
+        data = _sample_data()
+        parent = uuid7()
+        data["parent_type"] = "wake"
+        data["parent_id"] = parent
+        entity = Conversation(data)
+
+        assert entity.parent_type == "wake"
+        assert entity.parent_id == parent
+        assert isinstance(entity.parent_id, UUID)
+
+    def test_parent_id_coerces_string(self) -> None:
+        """a cache-serialized string id comes back as a UUID."""
+        data = _sample_data()
+        parent = uuid7()
+        data["parent_type"] = "conversation"
+        data["parent_id"] = str(parent)
+        entity = Conversation(data)
+
+        assert entity.parent_id == parent
+        assert isinstance(entity.parent_id, UUID)
+
+    def test_parent_setters_track_changes(
+        self,
+        mock_collection: tuple[MagicMock, dict[str, dict[str, object]]],
+    ) -> None:
+        """setting the pair records both mutations in get_changes."""
+        coll, _ = mock_collection
+        data = _sample_data()
+        entity = Conversation(data, is_new=False, collection=coll)
+        parent = uuid7()
+
+        entity.parent_type = "person"
+        entity.parent_id = parent
+
+        changes = entity.get_changes()
+        assert changes["parent_type"] == "person"
+        assert changes["parent_id"] == parent
+
+
 class TestConversationChannelProperties:
     """verify channel-type and channel-reference properties."""
 

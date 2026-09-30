@@ -154,6 +154,15 @@ _EXEMPT_LITERAL_FRAGMENTS: tuple[tuple[str, str], ...] = (
         "JOIN agent_wake_schedules ws ON wf.schedule_id = ws.schedule_id",
         "per-user-rate-limit-aggregate",
     ),
+    # rationale: the active-schedule cap is per agent (agent-wake 0.57.0).
+    # An agent's wakes live in several wake conversations, so the count
+    # under the agent's advisory lock must span them; a per-conversation
+    # count would let an agent exceed its cap one conversation at a time.
+    # The fragment covers both the create count and the resume count.
+    (
+        "FROM agent_wake_schedules WHERE agent_id = $1 AND status = 'active' AND NOT protected",
+        "per-agent-active-schedule-cap",
+    ),
     # rationale: sizing the operator-facing scheduled-job listing, which
     # is cross-partition by construction -- a seeder mints one partition
     # per schedule, so a partition-scoped count would report 1 for a

@@ -388,9 +388,17 @@ class TestAddIndex:
         statements = [sql for sql, _ in store.executed]
         assert len(statements) == 2
         assert "NOT i.indisvalid" in statements[0]
-        assert "to_regclass('s.idx_t_c')" in statements[0]
+        assert "c.relname = 'idx_t_c' AND n.nspname = 's'" in statements[0]
         assert not any(sql.startswith("DROP INDEX") for sql in statements)
         assert "CREATE INDEX IF NOT EXISTS idx_t_c ON s.t" in statements[1]
+
+    async def test_without_a_schema_the_probe_looks_only_in_the_current_one(self) -> None:
+        """an unqualified name would resolve through the search path, public included."""
+        store = FakeDataStore()
+        await add_index(store, table="t", name="idx_t_c", columns=("c",))
+        probe = store.executed[0][0]
+        assert "n.nspname = current_schema()" in probe
+        assert "to_regclass" not in probe
 
     async def test_an_invalid_leftover_is_logged_dropped_then_created(self, caplog: pytest.LogCaptureFixture) -> None:
         """a probe that finds an invalid index drops it, says so at WARNING, then creates."""
@@ -568,3 +576,35 @@ class TestEnableRowLevelSecurity:
         store = FakeDataStore()
         await enable_row_level_security(store, table="t", schema="agent_abc")
         assert all("agent_abc.t" in sql for sql, _ in store.executed)
+
+
+class TestConstraintLookupsNameTheirSchema:
+    """Every constraint lookup is limited to one schema, given or current."""
+
+    async def test_add_check_constraint_without_a_schema_probes_the_current_one(self) -> None:
+        store = FakeDataStore()
+        await add_check_constraint(store, table="t", constraint_name="t_ok", expression="true")
+        assert "ns.nspname = current_schema()" in store.executed[0][0]
+
+    async def test_add_check_constraint_with_a_schema_probes_that_one(self) -> None:
+        store = FakeDataStore()
+        await add_check_constraint(store, table="t", constraint_name="t_ok", expression="true", schema="agent_abc")
+        assert "ns.nspname = 'agent_abc'" in store.executed[0][0]
+
+    @pytest.mark.parametrize("only_if_changed", [True, False])
+    async def test_replace_check_constraint_probes_one_schema(self, only_if_changed: bool) -> None:
+        store = FakeDataStore()
+        await replace_check_constraint(
+            store, table="t", constraint_name="t_ok", new_expression="true", only_if_changed=only_if_changed
+        )
+        assert "ns.nspname = current_schema()" in store.executed[0][0]
+        store = FakeDataStore()
+        await replace_check_constraint(
+            store,
+            table="t",
+            constraint_name="t_ok",
+            new_expression="true",
+            only_if_changed=only_if_changed,
+            schema="agent_abc",
+        )
+        assert "ns.nspname = 'agent_abc'" in store.executed[0][0]

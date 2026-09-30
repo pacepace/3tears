@@ -213,7 +213,7 @@ class WakeMetricsEmitter:
         )
         self._schedule_cap = Counter(
             WAKE_SCHEDULE_CAP_REJECTIONS_TOTAL,
-            "Wake per-conv active-schedule cap rejections",
+            "Wake per-agent active-schedule cap rejections",
             **_kwargs(()),
         )
         self._drift = Histogram(
@@ -349,7 +349,7 @@ class WakeMetricsEmitter:
     def inc_rate_limit_rejection(self, *, scope: str) -> None:
         """Increment :data:`WAKE_RATE_LIMIT_REJECTIONS_TOTAL`.
 
-        :param scope: ``'conv'`` | ``'user'`` | ``'webhook'``
+        :param scope: ``'wake'`` | ``'agent'`` | ``'conv'`` | ``'user'`` | ``'webhook'``
         :ptype scope: str
         """
         if not self._available:

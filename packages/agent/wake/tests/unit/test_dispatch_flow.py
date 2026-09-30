@@ -30,6 +30,8 @@ Covered branches:
 
 from __future__ import annotations
 
+import dataclasses
+
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -142,7 +144,8 @@ class TestHappyPathFiredStatus:
         prepared = handler.invocations[0][1]
         assert prepared.attached_skill is None
         assert prepared.context_blocks == ()
-        assert prepared.trigger is trigger
+        # the handler's trigger is the caller's, carrying the fire it runs as
+        assert prepared.trigger == dataclasses.replace(trigger, fire_id=fire_id)
 
 
 class TestSilentPromotion:

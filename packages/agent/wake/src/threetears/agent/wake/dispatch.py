@@ -18,18 +18,26 @@ through the handler's regular tool loop. There is no
 ``pre_check_output`` field on :class:`PreparedWakeContext`; there is
 no parallel executor framework here.
 
-Flow (revised per PLACEMENT §1.6 / §1.4 / §1.3):
+Flow:
 
-1. Resolve ``context_from`` chain (single hop) -> ``context_blocks``.
-2. Resolve attached skill (single ``(agent_id, skill_id)`` lookup) ->
+1. Ask the consumer's :class:`FirePermit` (when given) whether the agent
+   takes fires now and what its limits are; "not now" ends the fire as
+   ``'skipped_life_off'``. Then check the limits (or, with no permit, the
+   older per-conversation / per-user caps).
+2. Start the fire's conversation through the consumer's
+   :class:`FireConversationHook` (when given), linking the fire row to it
+   in the same transaction.
+3. Resolve ``context_from`` (single hop, any wake of the same agent) ->
+   ``context_blocks``.
+4. Resolve attached skill (single ``(agent_id, skill_id)`` lookup) ->
    ``attached_skill`` (or ``None``).
-3. Build :class:`PreparedWakeContext`.
-4. Invoke the consumer's :class:`HandlerCallback`.
-5. Determine silent treatment: ``[SILENT]`` marker on the assistant
+5. Build :class:`PreparedWakeContext` and invoke the consumer's
+   :class:`HandlerCallback`.
+6. Determine silent treatment: ``[SILENT]`` marker on the assistant
    text OR an explicit handler ``status='fired_silent'`` is enough
    (either signal alone is authoritative). When silent, flip
    ``display_suppressed=True`` on the dispatch result.
-6. Build + return :class:`WakeDispatchResult`.
+7. Build + return :class:`WakeDispatchResult`.
 
 The per-conv NATS lock is acquired by the CALLER (tick / webhook
 receiver), not here -- the lock spans claim + dispatch so the row
@@ -41,21 +49,26 @@ returns a typed result and the tick writes the terminal status.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import time
 from typing import Any, Final
 from uuid import UUID
 
+from threetears.core.collections import CallerTransaction
 from threetears.observe import get_logger
 
 from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG, WakeConfig
 from threetears.agent.wake.events import (
+    EVENT_FIRE_LIFE_OFF,
     EVENT_FIRE_RATE_LIMITED,
     EVENT_FIRE_SILENT,
 )
 from threetears.agent.wake.metrics import get_wake_emitter
-from threetears.agent.wake.rate_limit import check_rate_limit
+from threetears.agent.wake.rate_limit import RateLimitScope, check_fire_limits, check_rate_limit
 from threetears.agent.wake.types import (
+    FireConversationHook,
+    FirePermit,
     FireStatus,
     HandlerCallback,
     PreparedWakeContext,
@@ -64,9 +77,18 @@ from threetears.agent.wake.types import (
 )
 
 __all__ = [
+    "FireNoLongerInFlight",
     "detect_silent_prefix",
     "dispatch_wake",
 ]
+
+
+class FireNoLongerInFlight(RuntimeError):
+    """The fire's row left ``'dispatching'`` before its conversation was started.
+
+    The reaper failed it while it waited. The conversation made for it is
+    rolled back with the link, and the handler does not run.
+    """
 
 
 log = get_logger(__name__)
@@ -118,6 +140,8 @@ async def dispatch_wake(
     *,
     handler: HandlerCallback,
     wake_config: WakeConfig = DEFAULT_WAKE_CONFIG,
+    permit: FirePermit | None = None,
+    start_conversation: FireConversationHook | None = None,
 ) -> WakeDispatchResult:
     """Drive one wake fire end-to-end and return the typed result.
 
@@ -133,25 +157,35 @@ async def dispatch_wake(
 
     This function:
 
-    1. Runs the rate-limit check via
-       :func:`threetears.agent.wake.rate_limit.check_rate_limit`.
-       When either the per-conv or per-user cap is exceeded, emits
-       :data:`EVENT_FIRE_RATE_LIMITED`, increments the matching
+    1. With a ``permit``: asks it for the agent's limits. ``None`` ("not
+       now") returns ``status='skipped_life_off'`` at once; it is logged as
+       :data:`EVENT_FIRE_LIFE_OFF` and is not a failure. Otherwise the fire
+       is checked against the limits with
+       :func:`~threetears.agent.wake.rate_limit.check_fire_limits`, per wake
+       and per agent, a protected wake uncounted. Without a ``permit``, the
+       older per-conv / per-user caps in ``wake_config`` apply through
+       :func:`~threetears.agent.wake.rate_limit.check_rate_limit`. A reached
+       limit emits :data:`EVENT_FIRE_RATE_LIMITED`, increments the matching
        Prometheus rejection counter, and returns
-       ``WakeDispatchResult(status='skipped_rate_limit', ...)``
-       without invoking the handler.
-    2. Resolves the ``context_from`` chain (single hop) into
-       :attr:`PreparedWakeContext.context_blocks`.
-    3. Resolves the attached skill from
+       ``status='skipped_rate_limit'`` without invoking the handler.
+    2. With a ``start_conversation`` hook: calls it inside a transaction,
+       links the fire row to the conversation it returns on the same
+       connection, and hands the handler a trigger whose
+       ``started_conversation_id`` is that conversation. A fire the reaper
+       has already failed raises :class:`FireNoLongerInFlight` and the
+       conversation is rolled back.
+    3. Resolves ``context_from`` (single hop; the source may be any wake
+       of the same agent) into :attr:`PreparedWakeContext.context_blocks`.
+    4. Resolves the attached skill from
        ``(trigger.agent_id, trigger.skill_id)``. Missing or disabled
        skills resolve to ``None`` with a warning log; the handler
        sees ``attached_skill=None`` and decides how to proceed.
-    4. Invokes the consumer's :class:`HandlerCallback`. Exceptions
+    5. Invokes the consumer's :class:`HandlerCallback`. Exceptions
        propagate to the caller (the generic tick engine's per-fire
        ``try / except`` in
        :func:`threetears.scheduled_jobs.scheduled_tick_job` records them
        as a failed fire).
-    5. Determines silent treatment from the handler's outcome:
+    6. Determines silent treatment from the handler's outcome:
        ``is_silent`` is true when EITHER the ``[SILENT]`` marker
        (PLACEMENT §1.4) is detected OR the handler explicitly
        returned ``status='fired_silent'``. Either signal alone is
@@ -170,30 +204,61 @@ async def dispatch_wake(
     :param handler: consumer-supplied :class:`HandlerCallback`
     :ptype handler: HandlerCallback
     :param wake_config: consumer's :class:`WakeConfig` impl supplying
-        rate-limit caps; defaults to :data:`DEFAULT_WAKE_CONFIG` so
-        the platform invariants are enforced even when the consumer
-        forgets to plumb a config
+        the per-conv / per-user caps used when there is no ``permit``;
+        defaults to :data:`DEFAULT_WAKE_CONFIG` so the platform invariants
+        are enforced even when the consumer forgets to plumb a config
     :ptype wake_config: WakeConfig
+    :param permit: decides per fire whether the agent takes fires now and
+        what its limits are; ``None`` keeps the ``wake_config`` caps
+    :ptype permit: FirePermit | None
+    :param start_conversation: starts the conversation the fire runs in;
+        ``None`` starts none
+    :ptype start_conversation: FireConversationHook | None
     :return: typed dispatch result the caller writes onto
         ``wake_fires``
     :rtype: WakeDispatchResult
+    :raises FireNoLongerInFlight: when the reaper failed the fire before its
+        conversation was started
     """
     started = time.monotonic()
     emitter = get_wake_emitter()
+    if trigger.fire_id is None:
+        trigger = dataclasses.replace(trigger, fire_id=fire_id)
 
-    # Step 1 (per OBS-13 / PLACEMENT §1.9): rate-limit check BEFORE
-    # any handler work runs. Rejection short-circuits to a
-    # ``skipped_rate_limit`` terminal result; the caller writes it
-    # onto the ``wake_fires`` row via the usual finalize path. With
-    # ``pool=None`` (unit tests without a DB) the helper returns
-    # ``None`` so existing handler-flow tests are unchanged.
-    rate_limit_scope = await check_rate_limit(trigger, pool, wake_config)
-    if rate_limit_scope is not None:
+    # Step 1: the permit and the limits, BEFORE any other work runs. A
+    # refusal short-circuits to a terminal result the caller writes onto the
+    # ``wake_fires`` row via the usual finalize path. With ``pool=None``
+    # (unit tests without a DB) the counts are skipped.
+    rate_limit_scope: RateLimitScope | None
+    if permit is not None:
+        limits = await permit(trigger)
+        if limits is None:
+            log.info(
+                EVENT_FIRE_LIFE_OFF,
+                extra={
+                    "extra_data": {
+                        "fire_id": str(fire_id),
+                        "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
+                        "agent_id": str(trigger.agent_id),
+                        "conversation_id": str(trigger.conversation_id),
+                        "fire_source": trigger.fire_source,
+                    }
+                },
+            )
+            return WakeDispatchResult(
+                status="skipped_life_off",
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+        rate_limit_scope = await check_fire_limits(trigger, pool, limits)
+        cap = limits.per_wake if rate_limit_scope == "wake" else limits.per_agent
+    else:
+        rate_limit_scope = await check_rate_limit(trigger, pool, wake_config)
         cap = (
             wake_config.max_fires_per_conv_per_day
             if rate_limit_scope == "conv"
             else wake_config.max_fires_per_user_per_day
         )
+    if rate_limit_scope is not None:
         log.info(
             EVENT_FIRE_RATE_LIMITED,
             extra={
@@ -215,6 +280,9 @@ async def dispatch_wake(
             error=f"rate limit exceeded ({rate_limit_scope}); cap={cap}",
             latency_ms=int((time.monotonic() - started) * 1000),
         )
+
+    if start_conversation is not None:
+        trigger = await _start_fire_conversation(pool, trigger, fire_id, start_conversation)
 
     context_blocks = await _resolve_context_from(pool, trigger)
     attached_skill = await _resolve_attached_skill(pool, trigger)
@@ -298,18 +366,74 @@ async def dispatch_wake(
     )
 
 
+async def _start_fire_conversation(
+    pool: Any,
+    trigger: WakeTrigger,
+    fire_id: UUID,
+    start_conversation: FireConversationHook,
+) -> WakeTrigger:
+    """Start the fire's conversation and link the fire row to it, in one transaction.
+
+    :param pool: asyncpg-compatible pool
+    :ptype pool: Any
+    :param trigger: the fire
+    :ptype trigger: WakeTrigger
+    :param fire_id: the fire's row
+    :ptype fire_id: UUID
+    :param start_conversation: the consumer's hook
+    :ptype start_conversation: FireConversationHook
+    :return: the trigger carrying ``started_conversation_id``
+    :rtype: WakeTrigger
+    :raises FireNoLongerInFlight: when the row is no longer ``'dispatching'``
+    """
+    # local imports keep the registry plumbing off the no-hook path.
+    from threetears.agent.wake.collections import WakeFireCollection  # noqa: PLC0415
+    from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
+    from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
+
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    fires = WakeFireCollection(
+        registry=registry, config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    )
+    # CallerTransaction, not conn.transaction(): a hook that saves the new conversation through its
+    # collection (``save_entity(conn=conn)``) joins it, and every row such a write touched is
+    # evicted from every cache tier once the transaction has ended.
+    async with pool.acquire() as conn, CallerTransaction(conn):
+        started_conversation_id = await start_conversation(trigger, conn)
+        linked = await fires.link_started_conversation(
+            trigger.conversation_id, fire_id, started_conversation_id, conn=conn
+        )
+        if not linked:
+            raise FireNoLongerInFlight(f"fire {fire_id} is no longer dispatching; its conversation was not started")
+    log.info(
+        "dispatch_wake: fire conversation started",
+        extra={
+            "extra_data": {
+                "fire_id": str(fire_id),
+                "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
+                "started_conversation_id": str(
+                    started_conversation_id
+                ),  # convert at border: fire-conversation-started log extra_data field
+            }
+        },
+    )
+    return dataclasses.replace(trigger, started_conversation_id=started_conversation_id)
+
+
 async def _resolve_context_from(
     pool: Any,
     trigger: WakeTrigger,
 ) -> tuple[str, ...]:
     """Resolve the ``context_from`` chain into a tuple of labeled blocks.
 
-    Per PLACEMENT §1.6 the chain is **single-hop, same-conversation
-    only** -- if schedule A's ``context_from = B`` and B's
-    ``context_from = C``, A receives B's most recent successful fire
-    output, NEVER C's. Cycle detection lives at the agent-tools layer
-    (shard 04) where wakes are authored; this resolver simply reads
-    the upstream row.
+    The chain is **single-hop**: if schedule A's ``context_from = B`` and
+    B's ``context_from = C``, A receives B's most recent successful fire
+    output, NEVER C's. B may be any wake of the same agent, in any of its
+    conversations: an agent's wakes live in several wake conversations, and
+    one wake reading another's last word is the point. A wake of another
+    agent is never read. Cycle detection lives at the agent-tools layer
+    where wakes are authored; this resolver simply reads the upstream row.
 
     Returns an empty tuple when:
 
@@ -353,10 +477,13 @@ async def _resolve_context_from(
 
     fires = WakeFireCollection(registry=registry, config=cfg)
     schedules = WakeScheduleCollection(registry=registry, config=cfg)
-    upstream_fire = await fires.latest_for_schedule(
-        conversation_id=trigger.conversation_id,
-        schedule_id=upstream_id,
-    )
+    upstream_schedule = await schedules.find_for_agent(trigger.agent_id, upstream_id)
+    upstream_fire = None
+    if upstream_schedule is not None:
+        upstream_fire = await fires.latest_for_schedule(
+            conversation_id=upstream_schedule.conversation_id,
+            schedule_id=upstream_id,
+        )
     if upstream_fire is None or upstream_fire.status not in {"fired", "fired_silent"}:
         log_upstream_id = str(upstream_id)  # convert at border: context_from no-fire log extra_data field
         log.warning(
@@ -374,14 +501,7 @@ async def _resolve_context_from(
     if not payload.strip():
         return ()
 
-    upstream_name: str | None = None
-    upstream_schedule = await schedules.get(
-        (trigger.conversation_id, upstream_id),
-    )
-    if upstream_schedule is not None:
-        upstream_name = upstream_schedule.name
-
-    label = upstream_name or f"schedule {upstream_id}"
+    label = (upstream_schedule.name if upstream_schedule is not None else None) or f"schedule {upstream_id}"
     fired_at_iso = upstream_fire.actual_fired_at.isoformat()
     block = f'What your schedule "{label}" said when it last fired, at {fired_at_iso}:\n{payload}'
     encoded = block.encode("utf-8")

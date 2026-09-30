@@ -380,6 +380,57 @@ class Conversation(BaseEntity):
         BaseEntity.__setattr__(self, "folder_id", value)
 
     @property
+    def parent_type(self) -> str | None:
+        """
+        return the type word of what started this conversation.
+
+        the vocabulary is the consumer's (``conversation``, ``wake``,
+        ``person``, ``webhook``, ``agent``, ...); the platform stores
+        any short type word and interprets none. ``None`` when nothing
+        was recorded. set together with :attr:`parent_id`: the table's
+        CHECK refuses one without the other.
+
+        :return: parent type word or ``None``
+        :rtype: str | None
+        """
+        value: str | None = self._get_raw("parent_type")
+        return value
+
+    @parent_type.setter
+    def parent_type(self, value: str | None) -> None:
+        """
+        set the type word of what started this conversation.
+
+        :param value: parent type word, or ``None`` to clear
+        :ptype value: str | None
+        """
+        BaseEntity.__setattr__(self, "parent_type", value)
+
+    @property
+    def parent_id(self) -> UUID | None:
+        """
+        return the id of what started this conversation.
+
+        read together with :attr:`parent_type`, which says what kind of
+        object the id names. ``None`` when nothing was recorded.
+
+        :return: parent UUID or ``None``
+        :rtype: UUID | None
+        """
+        value = self._get_raw("parent_id")
+        return _as_uuid(value) if value is not None else None
+
+    @parent_id.setter
+    def parent_id(self, value: UUID | None) -> None:
+        """
+        set the id of what started this conversation.
+
+        :param value: parent UUID, or ``None`` to clear
+        :ptype value: UUID | None
+        """
+        BaseEntity.__setattr__(self, "parent_id", value)
+
+    @property
     def metadata(self) -> dict[str, Any] | None:
         """
         return the free-form metadata JSONB blob.

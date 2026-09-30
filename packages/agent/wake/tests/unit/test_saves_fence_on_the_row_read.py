@@ -1,6 +1,6 @@
 """a save of a wake row lands only on the row it was read from.
 
-The schedule and webhook tools read a row with ``get``, change the fields the model asked for,
+The schedule and webhook tools read a row (``find_for_agent``, or ``get``), change the fields the model asked for,
 and save the WHOLE row back. Between the read and the save the row can change underneath them:
 the tick claims a schedule and expires a one-shot, another replica pauses it, a webhook fire
 stamps ``last_fired_at``, a rotation replaces the secret. A save that ignored the version it read
@@ -63,11 +63,21 @@ class _Store:
 
     def __init__(self) -> None:
         self.rows: dict[tuple[str, UUID, UUID], dict[str, Any]] = {}
+        # another writer's change, applied once, right after the next read answers
+        self.after_next_read: dict[str, Any] | None = None
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         table = "webhook_subscriptions" if "FROM webhook_subscriptions" in sql else "agent_wake_schedules"
-        row = self.rows.get((table, args[0], args[1]))
-        return None if row is None else dict(row)
+        where = {col: args[int(pos) - 1] for col, pos in re.findall(r"(\w+) = \$(\d+)", sql.split("WHERE", 1)[1])}
+        found: dict[str, Any] | None = None
+        for (row_table, _, _), row in self.rows.items():
+            if row_table == table and all(row.get(col) == value for col, value in where.items()):
+                found = row
+        answer = None if found is None else dict(found)
+        if found is not None and self.after_next_read is not None:
+            found.update(self.after_next_read)
+            self.after_next_read = None
+        return answer
 
     async def execute(self, sql: str, *args: Any) -> str:
         insert = re.match(r"INSERT INTO (\w+) \(([^)]*)\)", sql)
@@ -222,12 +232,10 @@ class TestAScheduleSaveIsFencedOnTheRowItRead:
         conv, sid, user_id, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
         key = ("agent_wake_schedules", conv, sid)
         store.rows[key] = _schedule_row(conv, sid, user_id, agent_id)
-        # the tool reads through the cache; seed it the way an earlier turn's read would.
-        assert await schedules.get((conv, sid)) is not None
-        store.rows[key].update(status="paused", next_fire_at=None, date_updated=_CHANGED_AT)
+        # another replica pauses the schedule between the tool's read and its save.
+        store.after_next_read = {"status": "paused", "next_fire_at": None, "date_updated": _CHANGED_AT}
 
         tool = load_wake_schedule_update_tool(
-            conversation_id=conv,
             user_id=user_id,
             agent_id=agent_id,
             schedules_collection=schedules,
@@ -266,12 +274,10 @@ class TestASubscriptionSaveIsFencedOnTheRowItRead:
         conv, sub, user_id, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
         key = ("webhook_subscriptions", conv, sub)
         store.rows[key] = _subscription_row(conv, sub, user_id, agent_id)
-        assert await subscriptions.get((conv, sub)) is not None
-        # a webhook fire on another replica stamps last_fired_at.
-        store.rows[key].update(last_fired_at=_CHANGED_AT, date_updated=_CHANGED_AT)
+        # a webhook fire on another replica stamps last_fired_at between the tool's read and its save.
+        store.after_next_read = {"last_fired_at": _CHANGED_AT, "date_updated": _CHANGED_AT}
 
         tool = load_webhook_subscription_update_tool(
-            conversation_id=conv,
             user_id=user_id,
             agent_id=agent_id,
             subscriptions_collection=subscriptions,

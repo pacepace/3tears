@@ -159,6 +159,8 @@ class NameTranslatingChatMixin:
         wire_tools, reverse_map = build_name_translation(list(tools))
         self._name_reverse_map.clear()
         self._name_reverse_map.update(reverse_map)
+        if "tool_choice" in kwargs:
+            kwargs["tool_choice"] = _wire_tool_choice(kwargs["tool_choice"], reverse_map)
         bound: Runnable[LanguageModelInput, AIMessage] = super().bind_tools(wire_tools, **kwargs)  # type: ignore[misc]
         return bound
 
@@ -431,3 +433,32 @@ class NameTranslatingChatMixin:
         drop_junk_invalid_tool_calls(result)
         translated: AIMessage = result
         return translated
+
+
+def _wire_tool_choice(tool_choice: Any, reverse_map: dict[str, str]) -> Any:
+    """A ``tool_choice`` that names one tool, naming it by its wire name.
+
+    The bound tools carry wire names, so a choice naming the canonical dotted
+    name would name a tool the provider was never given. Keywords (``auto``,
+    ``any``, ``required``, ``none``) and every other shape pass through.
+
+    :param tool_choice: the caller's choice: a keyword, a tool name, or a
+        provider dict (``{"type": "tool", "name": ...}`` or
+        ``{"type": "function", "function": {"name": ...}}``)
+    :ptype tool_choice: Any
+    :param reverse_map: wire name -> canonical name, from this bind
+    :ptype reverse_map: dict[str, str]
+    :return: the choice, with a canonical tool name swapped for its wire name
+    :rtype: Any
+    """
+    forward = {canonical: wire for wire, canonical in reverse_map.items()}
+    result = tool_choice
+    if isinstance(tool_choice, str) and tool_choice in forward:
+        result = forward[tool_choice]
+    elif isinstance(tool_choice, dict):
+        if tool_choice.get("name") in forward:
+            result = {**tool_choice, "name": forward[tool_choice["name"]]}
+        function = tool_choice.get("function")
+        if isinstance(function, dict) and function.get("name") in forward:
+            result = {**tool_choice, "function": {**function, "name": forward[function["name"]]}}
+    return result

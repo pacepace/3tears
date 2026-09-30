@@ -15,6 +15,7 @@ Naming follows the agent-skills precedent
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -25,15 +26,21 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ExecutionMode",
+    "FireConversationHook",
+    "FireLimits",
+    "FirePermit",
     "FireSource",
     "FireStatus",
     "HandlerCallback",
     "HandlerCallbackResult",
     "MissedFirePolicy",
     "PreparedWakeContext",
+    "ReapedFire",
+    "ReapedFiresHook",
     "ScheduleStatus",
     "ScheduleType",
     "VerificationScheme",
+    "WakeConversations",
     "WakeDispatchResult",
     "WakeTrigger",
     "WebhookSubscriptionStatus",
@@ -64,9 +71,11 @@ ScheduleStatus = Literal["active", "paused", "expired"]
 
 
 # ``execution_mode`` column on both ``agent_wake_schedules`` and
-# ``webhook_subscriptions``. ``'inline'`` (default) injects the wake
-# turn into the originating conversation; ``'spawn'`` creates a new
-# conversation per fire. CHECK-pinned in the L3 schema.
+# ``webhook_subscriptions``. Every fire starts a new conversation, so every
+# row written since v007 is ``'spawn'`` and no surface offers a choice.
+# ``'inline'`` (the wake turn injected into the wake's own conversation)
+# survives only on rows written before v007, until their consumer moves
+# them. CHECK-pinned in the L3 schema.
 ExecutionMode = Literal["inline", "spawn"]
 
 
@@ -100,6 +109,9 @@ MissedFirePolicy = Literal["coalesce", "catch_up"]
 #   (PLACEMENT §1.9).
 # - ``'skipped_no_handler'`` -- product did not register a handler
 #   callback at dispatch time.
+# - ``'skipped_life_off'`` -- the consumer's :class:`FirePermit` answered
+#   "not now" (v007). Not a failure: the wake is fine, its agent is not
+#   taking fires at the moment.
 # - ``'failed'`` -- exception raised during dispatch / handler.
 FireStatus = Literal[
     "dispatching",
@@ -110,6 +122,7 @@ FireStatus = Literal[
     "skipped_rate_limit",
     "skipped_cap",
     "skipped_no_handler",
+    "skipped_life_off",
     "failed",
 ]
 
@@ -166,6 +179,15 @@ class WakeTrigger:
     ``agent_id`` is carried so :func:`dispatch_wake` can resolve the
     attached skill (composite ``(agent_id, skill_id)`` PK on
     ``agent_skills``) without re-fetching the schedule row.
+
+    ``fire_id`` is the ``wake_fires`` row this fire writes, minted before
+    the trigger on both the tick and the webhook path. ``protected`` is the
+    schedule's flag: a protected wake is exempt from counting against the
+    fire caps. ``started_conversation_id`` is the conversation the
+    :class:`FireConversationHook` started for this fire; :func:`dispatch_wake`
+    sets it before the handler runs, and it is ``None`` when the consumer
+    supplies no hook. ``webhook_subscription_id`` is the subscription a
+    webhook fire came through, ``None`` on scheduled fires.
     """
 
     schedule_id: UUID | None
@@ -181,6 +203,152 @@ class WakeTrigger:
     context_from_schedule_id: UUID | None = None
     skill_id: UUID | None = None
     include_conversation_history: bool = True
+    fire_id: UUID | None = None
+    protected: bool = False
+    started_conversation_id: UUID | None = None
+    webhook_subscription_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class FireLimits:
+    """How many fires an agent may make in the trailing day.
+
+    Returned by the consumer's :class:`FirePermit` for each fire, so a
+    change to the agent's settings takes effect on its next fire. Fires
+    that ran count, silent ones included; skipped and failed ones do not.
+
+    :ivar per_wake: fires one wake (or one webhook subscription) may make
+    :ivar per_agent: fires all the agent's wakes and subscriptions may make
+        together; protected wakes' fires are not counted
+    """
+
+    per_wake: int
+    per_agent: int
+
+
+@runtime_checkable
+class FirePermit(Protocol):
+    """Consumer callback that decides, per fire, whether and how much the agent may fire.
+
+    Called for every fire before anything else runs, protected wakes
+    included. Return the agent's :class:`FireLimits` to let the fire go on
+    to the cap check, or ``None`` for "not now": the fire is recorded as
+    ``'skipped_life_off'``, nothing else runs, and it is not a failure.
+    A protected wake is not counted against the limits, but "not now"
+    still applies to it.
+    """
+
+    async def __call__(self, trigger: WakeTrigger) -> FireLimits | None:
+        """Decide for one fire.
+
+        :param trigger: the fire
+        :ptype trigger: WakeTrigger
+        :return: the agent's limits, or ``None`` for "not now"
+        :rtype: FireLimits | None
+        """
+        ...
+
+
+@runtime_checkable
+class FireConversationHook(Protocol):
+    """Consumer callback that starts the conversation a fire runs in.
+
+    Called by :func:`dispatch_wake` after the fire is permitted and before
+    the handler runs, inside a transaction on ``conn``. It creates the
+    conversation on that connection and returns its id; the platform then
+    links the fire row to it in the same transaction, so the two commit
+    together. The handler receives the id as
+    ``trigger.started_conversation_id``. The transaction is a
+    :class:`~threetears.core.collections.CallerTransaction`, so the hook may
+    save through a collection with ``save_entity(entity, conn=conn)``.
+    """
+
+    async def __call__(self, trigger: WakeTrigger, conn: Any) -> UUID:
+        """Create the fire's conversation.
+
+        :param trigger: the fire
+        :ptype trigger: WakeTrigger
+        :param conn: the transaction's connection
+        :ptype conn: Any
+        :return: the new conversation's id
+        :rtype: UUID
+        """
+        ...
+
+
+@runtime_checkable
+class WakeConversations(Protocol):
+    """Consumer hooks for the conversations wakes live in.
+
+    A wake lives in a wake conversation. Creating a wake either names one
+    of the agent's existing wake conversations or has a new one made, whose
+    parent is the conversation the wake was created from. Several wakes may
+    share one wake conversation.
+    """
+
+    async def create(
+        self,
+        *,
+        parent_conversation_id: UUID,
+        user_id: UUID,
+        agent_id: UUID,
+        name: str | None,
+        conn: Any,
+    ) -> UUID:
+        """Create a wake conversation on ``conn`` and return its id.
+
+        Runs inside the transaction that inserts the wake, so a refused
+        insert leaves no empty conversation behind. That transaction is a
+        :class:`~threetears.core.collections.CallerTransaction`, so the hook
+        may save through a collection with ``save_entity(entity, conn=conn)``.
+
+        :param parent_conversation_id: the conversation the wake was created from
+        :ptype parent_conversation_id: UUID
+        :param user_id: the agent's owner
+        :ptype user_id: UUID
+        :param agent_id: the agent
+        :ptype agent_id: UUID
+        :param name: the wake's name, if it has one
+        :ptype name: str | None
+        :param conn: the transaction's connection
+        :ptype conn: Any
+        :return: the new wake conversation's id
+        :rtype: UUID
+        """
+        ...
+
+    async def is_wake_conversation(self, *, agent_id: UUID, conversation_id: UUID) -> bool:
+        """Whether ``conversation_id`` is one of ``agent_id``'s wake conversations.
+
+        :param agent_id: the agent
+        :ptype agent_id: UUID
+        :param conversation_id: the conversation the caller named
+        :ptype conversation_id: UUID
+        :return: ``True`` when a wake may be created into it
+        :rtype: bool
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class ReapedFire:
+    """A fire the reaper failed because its dispatcher was lost.
+
+    :ivar conversation_id: the wake's conversation (the fire row's partition)
+    :ivar fire_id: the fire
+    :ivar started_conversation_id: the conversation the fire had started, or
+        ``None`` when it was lost before starting one
+    """
+
+    conversation_id: UUID
+    fire_id: UUID
+    started_conversation_id: UUID | None
+
+
+# Consumer callback the tick calls with the fires each reaper sweep failed,
+# so it can close whatever it opened for them (the conversation a fire
+# started, the entry that says the fire is running).
+ReapedFiresHook = Callable[[Sequence[ReapedFire]], Awaitable[None]]
 
 
 @dataclass(frozen=True)

@@ -17,8 +17,10 @@ callers (wake-side ``skill_id`` FK, MCP tool args) need.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
+from threetears.core.backends.schema_sql import decode_jsonb
 from threetears.core.entities.base import BaseEntity
 
 __all__ = [
@@ -134,6 +136,38 @@ class AgentSkillEntity(BaseEntity):
     def body(self, value: str | None) -> None:
         """Set the prose body."""
         BaseEntity.__setattr__(self, "body", value)
+
+    @property
+    def tool(self) -> str | None:
+        """Return the canonical name of the tool this skill calls, or ``None``.
+
+        A skill with a ``tool`` and no ``body`` runs by calling that tool with
+        no model. A row never carries both: the collection refuses the save and
+        ``agent_skills_body_or_tool_check`` backs it.
+        """
+        value: str | None = self._get_raw("tool")
+        return value
+
+    @tool.setter
+    def tool(self, value: str | None) -> None:
+        """Set the tool name."""
+        BaseEntity.__setattr__(self, "tool", value)
+
+    @property
+    def arguments(self) -> dict[str, Any] | None:
+        """Return the JSON object passed to :attr:`tool`, or ``None``.
+
+        Fixed when the skill is written. Set only alongside a ``tool``. The
+        value is decoded here because a pool without the JSONB codec, and the
+        L1 cache, hand it back as JSON text.
+        """
+        value: dict[str, Any] | None = decode_jsonb(self._get_raw("arguments"))
+        return value
+
+    @arguments.setter
+    def arguments(self, value: dict[str, Any] | None) -> None:
+        """Set the tool arguments."""
+        BaseEntity.__setattr__(self, "arguments", None if value is None else dict(value))
 
     @property
     def prompt_mode(self) -> str:
