@@ -736,8 +736,11 @@ class TableSchema:
         increment, a set-member append) loses the first writer's work
         with nothing raised anywhere.
 
-        with ``cas_null_safe=True`` every save on the table -- first
-        write included -- emits ONE statement::
+        with ``cas_null_safe=True`` a save carrying
+        ``original_timestamp=None`` -- a first write -- emits ONE
+        statement (a save carrying a value read off an existing row takes
+        the update-only CAS path every ``cas_column`` schema takes, so a
+        row deleted since that read is never re-created)::
 
             INSERT INTO t (...) VALUES (...)
             ON CONFLICT (pk) DO UPDATE SET <mutable> = EXCLUDED....

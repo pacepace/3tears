@@ -497,7 +497,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             :attr:`primary_key_columns` MUST be present
         :ptype data: dict[str, Any]
         :param original_timestamp: pre-modification ``date_updated``
-            for optimistic-lock validation, ``None`` for inserts
+            for optimistic-lock validation, ``None`` for inserts. a
+            non-``None`` value means the row was read as existing, so a
+            backend MUST write it update-only: a row deleted since the read
+            answers 0, never a re-insert
         :ptype original_timestamp: datetime | None
         :param conn: optional **backend-specific transaction handle** (e.g. an
             asyncpg connection for the SQL backend) that overrides
@@ -507,7 +510,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             backends MUST honor this so the framework's transactional
             save_entity path stays atomic.
         :ptype conn: Any
-        :return: rows affected (0 on optimistic-lock failure, 1 on success)
+        :return: rows affected (0 on optimistic-lock failure or a row deleted
+            since it was read, 1 on success)
         :rtype: int
         """
         ...

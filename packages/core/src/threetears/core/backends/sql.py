@@ -404,15 +404,59 @@ class SqlL3Backend:
                 await self._execute(f"{insert} ON CONFLICT ({pk_sql}) DO NOTHING", *params, conn=conn)
             )
 
-        # "update": upsert the mutable (non-pk) columns. Optionally fence on the CAS value.
+        # "update": upsert the mutable (non-pk) columns.
         mutable = [c for c in cols if c not in set(pk)]
+        if cas is not None and "date_updated" in row:
+            # a fence value means the caller read the row as EXISTING, so this is an
+            # update and never an insert. an upsert fenced in its DO UPDATE branch would
+            # re-create a row deleted since that read, because a missing row reaches the
+            # INSERT and the fence never runs.
+            return await self._update_fenced(table, row, pk=pk, mutable=mutable, cas=cas, conn=conn)
         set_sql = (
             ", ".join(f"{_quote_ident(c)} = EXCLUDED.{_quote_ident(c)}" for c in mutable) or pk_sql + " = " + pk_sql
         )
         sql = f"{insert} ON CONFLICT ({pk_sql}) DO UPDATE SET {set_sql}"
-        if cas is not None and "date_updated" in row:
-            params.append(cas)
-            sql += f" WHERE {_quote_ident(table)}.{_quote_ident('date_updated')} = ${len(params)}"
+        return parse_rowcount(await self._execute(sql, *params, conn=conn))
+
+    async def _update_fenced(
+        self,
+        table: str,
+        row: Mapping[str, Any],
+        *,
+        pk: Sequence[str],
+        mutable: Sequence[str],
+        cas: datetime,
+        conn: Any,
+    ) -> int:
+        """Update one existing row only while its ``date_updated`` still equals ``cas``.
+
+        The generic (schema-less) half of the update-only rule: 0 rows when the row
+        changed OR no longer exists, never an insert.
+
+        :param table: table name
+        :ptype table: str
+        :param row: the row, pk columns included
+        :ptype row: Mapping[str, Any]
+        :param pk: the pk column names
+        :ptype pk: Sequence[str]
+        :param mutable: the non-pk columns to write
+        :ptype mutable: Sequence[str]
+        :param cas: the ``date_updated`` value the caller read
+        :ptype cas: datetime
+        :param conn: optional caller-supplied connection
+        :ptype conn: Any
+        :return: rows affected, 0 on a fence miss or a vanished row
+        :rtype: int
+        """
+        params: list[Any] = [row[c] for c in mutable]
+        set_sql = ", ".join(f"{_quote_ident(c)} = ${i + 1}" for i, c in enumerate(mutable))
+        where_parts: list[str] = []
+        for c in pk:
+            params.append(row[c])
+            where_parts.append(f"{_quote_ident(c)} = ${len(params)}")
+        params.append(cas)
+        where_parts.append(f"{_quote_ident('date_updated')} = ${len(params)}")
+        sql = f"UPDATE {_quote_ident(table)} SET {set_sql} WHERE {' AND '.join(where_parts)}"
         return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
     async def _upsert_schema(
@@ -425,16 +469,24 @@ class SqlL3Backend:
     ) -> int:
         """Schema-aware upsert: byte-identical to the collection's old ``save_to_store``.
 
-        Three generated shapes, selected by the schema (never by the caller):
+        Three generated shapes, selected by the schema and by whether the caller
+        read a version (a non-``None`` ``cas``):
 
-        * ``cas_null_safe=True`` -- ONE statement for create and update alike:
+        * ``cas_column`` set, ``on_conflict='update'`` and a non-``None`` ``cas``
+          -- the fenced ``UPDATE ... WHERE pk AND <cas> = $N``, on EVERY such
+          schema, ``cas_null_safe`` included. a fence value means the caller read
+          the row as existing, so the write is update-only: a row deleted since
+          that read (a respondent erasure, a relocation retire) affects 0 rows and
+          the caller gets ``ConcurrentModificationError``. the NULL-safe upsert
+          used to serve this case too, and because a missing row reaches its
+          INSERT with the fence never evaluated, a save racing a delete
+          re-created the row the delete had just removed.
+        * ``cas_null_safe=True`` and ``cas=None`` -- ONE statement:
           ``INSERT ... ON CONFLICT (pk) DO UPDATE SET ... WHERE t.<cas> IS NOT
           DISTINCT FROM $N``. ``cas=None`` is FENCE-ELIGIBLE here, which is the
           whole point: a derived (non-random) primary key means two concurrent
           FIRST writers compute the same id, and NULL-safe equality is what lets
           the loser affect 0 rows instead of silently overwriting the winner.
-        * ``cas_column`` set, ``on_conflict='update'`` and a non-``None`` ``cas``
-          -- the historical fenced ``UPDATE ... WHERE pk AND <cas> = $N``.
         * everything else -- the unfenced ``INSERT ... ON CONFLICT`` from
           ``build_insert_sql``. Unchanged, and still what ``cas=None`` selects on
           every schema that has not opted in.
@@ -444,12 +496,12 @@ class SqlL3Backend:
         ``TableSchema`` descriptor without the attribute keeps the old behaviour.
         """
         cas_declared = schema.cas_column is not None and schema.on_conflict == "update"
-        if cas_declared and getattr(schema, "cas_null_safe", False):
-            sql = schema_sql.build_cas_upsert_sql(schema, data)
-            params = schema_sql.build_cas_upsert_params(schema, data, cas)
-        elif cas_declared and cas is not None:
+        if cas_declared and cas is not None:
             sql = schema_sql.build_cas_update_sql(schema, data)
             params = schema_sql.build_cas_params(schema, data, cas)
+        elif cas_declared and getattr(schema, "cas_null_safe", False):
+            sql = schema_sql.build_cas_upsert_sql(schema, data)
+            params = schema_sql.build_cas_upsert_params(schema, data, cas)
         else:
             sql = schema_sql.build_insert_sql(schema, data)
             params = schema_sql.build_insert_params(schema, data)

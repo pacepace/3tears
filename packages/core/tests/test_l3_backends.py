@@ -206,13 +206,15 @@ async def test_sql_durable_store_generates_expected_sql() -> None:
     )
     assert params == ("e1", "Bob")
 
-    # upsert with a CAS fence → adds WHERE table.date_updated = $n
+    # upsert with a CAS fence → UPDATE only, fenced on pk AND date_updated. a fence value
+    # means the row was read as existing, so a row deleted since then is NOT re-inserted
     pool = _RecordingPool()
     ts = datetime(2026, 1, 1, tzinfo=UTC)
     await SqlL3Backend(pool).upsert("widgets", {"id": "e1", "date_updated": ts}, pk=["id"], cas=ts)
     sql, params = pool.calls[-1]
-    assert sql.endswith('WHERE "widgets"."date_updated" = $3')
-    assert params == ("e1", ts, ts)
+    assert sql == 'UPDATE "widgets" SET "date_updated" = $1 WHERE "id" = $2 AND "date_updated" = $3'
+    assert "INSERT" not in sql
+    assert params == (ts, "e1", ts)
 
     # delete → DELETE … WHERE pk (composite)
     pool = _RecordingPool()
@@ -267,8 +269,8 @@ class _InMemoryDurableStore:
     ) -> int:
         t = self.tables.setdefault(table, {})
         key = tuple(row[c] for c in sorted(pk))
-        if cas is not None and key in t and t[key].get("date_updated") != cas:
-            return 0  # optimistic-lock miss
+        if cas is not None and (key not in t or t[key].get("date_updated") != cas):
+            return 0  # optimistic-lock miss, or the row read as existing is gone
         t[key] = dict(row)
         return 1
 
