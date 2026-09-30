@@ -4,10 +4,68 @@ Decision record, 2026-09-30. Code: `packages/nats/src/threetears/nats/credential
 schedule) and `NatsClient.renew_connection` in `packages/nats/src/threetears/nats/client.py` (the
 handover). Live proof: `packages/nats/tests/integration/test_credential_renewal_live.py`.
 
+## Long logins, and a kick for "now" (owner ruling Q17)
+
+nats-server takes authority away from a live connection in exactly one way: it closes the
+connection when its user JWT's `exp` passes (`client.authExpired`). There is no in-place
+re-authorization -- a second `CONNECT` drops every subscription on 2.14 -- and no refresh of a live
+connection's permissions. So a short TTL used to be the fence: every pod renewed every few minutes
+so that a revoked or superseded one would be cut off within one TTL, and every renewal was a
+handover carrying its own residual risk.
+
+The TTL is now a **backstop**: `PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS` is a day. Access is
+taken away when it must be:
+
+- **Kick.** Every auth-callout request carries the requesting server's id and the client's id
+  (`AuthCalloutRequest.connection`). The consumer records them for every admission
+  (`AdmissionRecorder`; a recorder that raises denies the connection) and, when a principal must
+  lose access, closes the connection through the server's system account --
+  `kick_connection(system_client, connection)`, `$SYS.REQ.SERVER.<server_id>.KICK {"cid": N}`.
+  Measured live: the connection closes about a millisecond after the kick is sent, on 2.12.6 and
+  2.14.2 (`test_connection_kick_live.py`).
+- **Refuse the reconnect.** A kicked nats-py client sees EOF and reconnects through the callout,
+  which is what decides whether it comes back. A kick without a refusing callout only costs the
+  principal a reconnect.
+- **The system account.** Only a SYSTEM-account user can send a kick; a client of any other
+  account finds no responder, which a kick would read as a server that is gone.
+  `require_system_account` proves the login before the first kick. A system user in
+  server-config callout mode must be listed in `auth_callout.auth_users`, or it goes through the
+  callout like any other connection -- verified live on both versions.
+- **The backstop renewal** is the make-before-break handover below, about once a day per pod.
+
+What a kick cannot bound: a connection whose kick is lost for good, or whose server is unreachable
+from the kicking client (a partition makes it answer "no responders", indistinguishable from a
+server that restarted). Those keep their credential until the backstop expiry, and are refused at
+their next connect.
+
+## A rolling restart is a handover too
+
+A server in lame-duck mode stops accepting connections, sends its clients a lame-duck notice, and
+closes them over its lame-duck duration. nats-py only calls `lame_duck_mode_cb`; the close that
+follows is its ordinary reconnect, which drops what is in flight exactly as the old renewal did.
+Every connection a `NatsClient` opens now carries that callback: on the current connection it
+starts a move to a successor through `renew_connection`, retried every `REAUTH_RETRY_SECONDS`
+while the connection is still current and open (another renewal, or the server's own close, ends
+it). The old connection is kept for `longest_request_seconds` or until the server closes it.
+Proven live on a two-node 2.14.2 cluster (`test_lame_duck_handover_live.py`): the pod moved about
+90ms after the notice, and not one request or subscribed message was lost, where the reconnect
+lost several requests and most of the feed.
+
+## A run whose order is its meaning stays on one connection
+
+NATS orders messages per publisher, and a publisher is a connection: a client mid-handover is two
+publishers, and on two nodes of a cluster they travel two routes. `_settle_publishes` orders the old
+connection's publishes on its own server only. A run whose order is its meaning -- a token stream,
+whose tokens carry no sequence number -- takes a `PublishPin` (`NatsClient.publish_pin()`) and
+passes it to every `publish_raw` of the run; every publish then leaves on the connection the first
+one used, held open for the longest request. Reproduced live: after a handover onto the other node,
+a publish on the successor overtook the tail of a run still leaving on the old connection; the
+pinned run itself arrived in order.
+
 ## The problem
 
-A pod that connects through the auth-callout holds a user JWT with a finite TTL (300s on the
-platform). At its `exp` the server closes the connection (`client.authExpired`: `-ERR 'User
+A pod that connects through the auth-callout holds a user JWT with a finite TTL (a day by default
+since Q17; five minutes when this handover was built). At its `exp` the server closes the connection (`client.authExpired`: `-ERR 'User
 Authentication Expired'`, then `closeConnection`), and nats-py routes that error to a terminal
 close that forever-reconnect never sees. So the client must renew before then.
 
@@ -148,8 +206,9 @@ The first two reproduced against a real nats-server.
   a request received on the bridge cannot be answered from the main connection.
 - **Idempotent retry of reads across a reconnect.** Covers reads only; a write whose reply was lost
   was applied, and retrying it applies it twice. The handover removes the loss instead.
-- **Longer TTLs.** Fewer renewals, the same loss at each one, and a wider window before a revoked
-  or superseded principal is cut off.
+- **Longer TTLs alone.** Fewer renewals, the same loss at each one, and a wider window before a
+  revoked or superseded principal is cut off. Adopted with the kick (above), which closes that
+  window, and with this handover, which removes the loss.
 
 ## What a renewal can still lose
 
@@ -162,7 +221,7 @@ The first two reproduced against a real nats-server.
   (key watches, result waiters) recover from their streams.
 - In a NATS cluster that places the successor on a different server than the old connection, a
   message published just before the handover and one just after travel different routes; the
-  settle orders them on one server only.
+  settle orders them on one server only. A run that must stay ordered is pinned (above).
 
 ## A renewal refused on purpose, and one that is not
 

@@ -6,6 +6,47 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Long logins, an instant kick, and a lossless move off a restarting server
+
+Owner ruling Q17 (2026-09-30). nats-server takes a credential away from a live connection only at
+its user JWT's `exp`, so a short TTL was the only way to cut a revoked or superseded principal off
+-- and cost a renewal handover on every pod every few minutes. The TTL is now a day-long backstop;
+access is taken away when it must be, by closing the connection and refusing its reconnect.
+
+- **Breaking default:** `PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS` is 86400 (was 300), and the
+  generic responder's `DEFAULT_NATS_USER_JWT_TTL_SECONDS` is now that same constant (was 3600), so
+  no minter's default is shorter than what a client assumes. A deployment that set
+  `FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS` keeps its value; the renewal is still the
+  make-before-break handover.
+- New `threetears.nats.system_account` (re-exported): `kick_connection(system_client, connection)`
+  closes one connection through `$SYS.REQ.SERVER.<server_id>.KICK` and answers a `KickOutcome` --
+  `KICKED`, `NOT_CONNECTED` (the server no longer holds that client id), `SERVER_GONE` (no running
+  server has that id) -- or raises `ConnectionKickError` when the outcome is unknown.
+  `require_system_account(system_client)` proves the client reaches the system account (a client of
+  any other account finds no responder, which a kick would read as a gone server) and raises
+  `SystemAccountUnavailableError` otherwise. `NatsConnectionRef` (server id + client id) names one
+  connection; `KickClientRequest`, `ServerApiResponse`, `ServerApiError` and `ServerIdentity` type
+  the wire. Verified live against nats-server 2.12.6 and 2.14.2: a kick closes the connection in
+  about a millisecond.
+- `AuthCalloutRequest.connection`: the connection a callout request authorizes (the request's
+  server id and client id), or `None` when it names none.
+- `AuthCalloutResponder(admission_recorder=...)` and the new `AdmissionRecorder` protocol: every
+  admission is handed to the recorder before the server is answered; a recorder that raises
+  DENIES the connection, since an admission nobody could close would keep its credential until it
+  expires.
+- A server entering lame-duck mode (a rolling restart) no longer drops what is in flight: the
+  client moves to a successor connection with `renew_connection`, keeping the old one for the work
+  it carries, and retries the move until it lands or the server closes the connection first.
+  Proven live on a two-node cluster: no request failed and no subscribed message was lost, where
+  the reconnect it replaces lost both.
+- `NatsClient.publish_pin()` and `publish_raw(..., pin=...)`: a run of publishes whose order is its
+  meaning (a token stream) stays on the connection its first publish used, across a renewal or a
+  lame-duck move. Two connections are two publishers, and on two nodes of a cluster a later publish
+  on the successor can overtake the run's tail -- reproduced live.
+- `IdentityMinter.mint(..., cnf=...)` (core): a connect credential can carry the thumbprint of the
+  runner's proof-of-possession key, so a verifier can tell two runners of one pod-session apart
+  before either has handshaken.
+
 ### NatsClient's connections have one lifecycle model; a round trip holds its timeout
 
 - `NatsClient` keeps each connection's role (candidate, current, retiring) and its own phase
