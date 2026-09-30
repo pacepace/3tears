@@ -86,6 +86,23 @@ class _FakeMsg:
         self.subject = subject
 
 
+# parity-exempt: stands in for nats-py's transport; the round trip hands it the pending buffer and a PING
+class _FakeTransport:
+    """records what the round trip writes, and answers each PING's PONG unless the server is slow."""
+
+    def __init__(self, owner: _FakeNatsPyClient) -> None:
+        self._owner = owner
+
+    def writelines(self, payload: list[bytes]) -> None:
+        self._owner.wire.extend(chunk.decode().strip() for chunk in payload)
+
+    def write(self, payload: bytes) -> None:
+        self._owner.wire.append(payload.decode().strip())
+        if self._owner.answers_pings:
+            # the server answers the oldest PING first, exactly as nats-py pairs PONGs
+            self._owner.pongs.pop(0).set_result(True)
+
+
 # parity-exempt: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
 class _FakeNatsPyClient:
     """minimal fake of nats.aio.client.Client used by tests."""
@@ -100,10 +117,17 @@ class _FakeNatsPyClient:
         # records errors passed to the nats-py op-error reconnect entry point that
         # :meth:`NatsClient.reconnect` drives.
         self.op_err_calls: list[Exception] = []
-        # the round trip's protocol, and the PONG futures it handed nats-py
+        # the round trip's protocol, in the order it reached the transport, and the PONG futures
+        # queued for it. these are the fields of nats-py's own the round trip reads and writes.
         self.wire: list[str] = []
-        self.pongs: list[asyncio.Future[bool]] = []
         self.answers_pings = True
+        self._pongs: list[asyncio.Future[bool]] = []
+        self._pending: list[bytes] = []
+        self._pending_data_size = 0
+        self._transport = _FakeTransport(self)
+        self._flush_queue: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
+        # a socket the server stopped reading: nats-py's flusher sits in ``transport.drain()``
+        self.backpressured = False
 
     async def _process_op_err(self, e: Exception) -> None:
         self.op_err_calls.append(e)
@@ -126,16 +150,31 @@ class _FakeNatsPyClient:
     async def close(self) -> None:
         self.is_closed = True
 
+    @property
+    def pongs(self) -> list[asyncio.Future[bool]]:
+        """the PONG futures still waiting for their PONG, oldest first."""
+        return self._pongs
+
+    def queue_pending(self, command: bytes) -> None:
+        """a command nats-py has buffered but its flusher has not yet written out."""
+        self._pending.append(command)
+        self._pending_data_size += len(command)
+
     async def _flush_pending(self, force_flush: bool = False) -> None:
-        # the wrapper's round trip writes the pending buffer out before its PING
+        # what nats-py does on a backpressured socket: wait on the flusher with no bound
+        # (flush_timeout defaults to none), and swallow a cancellation of that wait. bounded to one
+        # swallow so a test against the defect fails rather than hanging the suite.
+        if force_flush and self.backpressured:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass
         self.wire.append("flush-pending")
 
     async def _send_ping(self, future: asyncio.Future[bool]) -> None:
-        # a PING whose PONG this fake answers at once, unless told the server is slow
-        self.wire.append("PING")
-        self.pongs.append(future)
-        if self.answers_pings:
-            future.set_result(True)
+        # nats-py writes the PING straight to the transport, ahead of anything still pending
+        self._pongs.append(future)
+        self._transport.write(b"PING\r\n")
 
     async def flush(self, timeout: float = 2.0) -> None:
         self.flush_calls: list[float]
@@ -1212,9 +1251,50 @@ async def test_ping_round_trips_after_the_pending_buffer() -> None:
     """ping writes out what is pending, THEN pings: its PONG must answer for what came before."""
     client, fake = _make_client()
     fake.is_connected = True
+    fake.queue_pending(b"UNSUB 1\r\n")
     result = await client.ping(timeout=1.5)
     assert result is True
-    assert fake.wire == ["flush-pending", "PING"]
+    assert fake.wire == ["UNSUB 1", "PING"]
+    assert fake._pending == [] and fake._pending_data_size == 0  # noqa: SLF001 -- the fake's own buffer
+
+
+@pytest.mark.asyncio
+async def test_a_ping_on_a_backpressured_socket_answers_false_within_its_timeout() -> None:
+    """a socket the server stopped reading is what a health probe exists to catch.
+
+    nats-py's forced flush waits on the flusher with no bound and swallows a cancellation, so a
+    round trip that went through it outlived the probe's timeout by as long as the socket stayed
+    wedged. The PING queued behind the buffer never reaches the server, so no PONG comes.
+    """
+    client, fake = _make_client()
+    fake.is_connected = True
+    fake.backpressured = True
+    fake.answers_pings = False
+    fake.queue_pending(b"PUB tokens 1\r\nA\r\n")
+
+    started = time.monotonic()
+    result = await asyncio.wait_for(client.ping(timeout=0.05), timeout=2.0)
+
+    assert result is False
+    assert time.monotonic() - started < 1.0
+    assert fake.wire == ["PUB tokens 1\r\nA", "PING"]  # handed to the transport in order, never waited on
+
+
+@pytest.mark.asyncio
+async def test_a_round_trip_that_is_cancelled_stays_cancelled() -> None:
+    """a shutdown or a bounded drain cancels a round trip; the cancellation must not be discarded."""
+    client, fake = _make_client()
+    fake.is_connected = True
+    fake.backpressured = True
+    fake.answers_pings = False
+    flushing = asyncio.create_task(client.flush(timeout=30.0))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    flushing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(flushing, timeout=2.0)
 
 
 @pytest.mark.asyncio

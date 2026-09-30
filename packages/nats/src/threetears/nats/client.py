@@ -74,7 +74,11 @@ from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, TypeVar
 
-from nats.aio.client import DEFAULT_FLUSH_TIMEOUT as _NATS_FLUSH_TIMEOUT_SECONDS, Client as _NatsPyClient
+from nats.aio.client import (
+    DEFAULT_FLUSH_TIMEOUT as _NATS_FLUSH_TIMEOUT_SECONDS,
+    PING_PROTO as _PING_PROTO,
+    Client as _NatsPyClient,
+)
 from nats.aio.subscription import DEFAULT_SUB_PENDING_BYTES_LIMIT, DEFAULT_SUB_PENDING_MSGS_LIMIT
 from nats.js.api import (
     AckPolicy as _NatsAckPolicy,
@@ -1436,10 +1440,10 @@ class JetStreamResultWaiter:
 
 
 async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SECONDS) -> None:
-    """prove the server has processed everything this connection sent before now.
+    """prove the server has processed everything this connection sent before now, within ``timeout``.
 
-    nats-py's ``Client.flush`` is unsafe for this, in two ways, both reproduced against a real
-    server (``test_a_timed_out_ping_leaves_the_connection_reading_live``):
+    nats-py's ``Client.flush`` is unsafe for this, in three ways, the first two reproduced against a
+    real server (``test_a_timed_out_ping_leaves_the_connection_reading_live``):
 
     - it writes its ``PING`` straight to the socket (``Client._send_ping``) while a ``SUB``,
       ``UNSUB`` or ``PUB`` sent just before may still sit in the pending buffer, so the ``PONG``
@@ -1449,15 +1453,26 @@ async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_S
       ``InvalidStateError`` in ``_process_pong``, and ``_read_loop``'s catch-all ends the read loop.
       The connection still reports itself connected and never reads again -- and a later
       ``flush`` then returns at once without a round trip, because it falls back to writing when
-      the read loop is gone, so a health probe built on it reports that dead connection healthy.
+      the read loop is gone, so a health probe built on it reports that dead connection healthy;
+    - writing the pending buffer out first through nats-py (``_flush_pending(force_flush=True)``)
+      waits for the flusher's ``transport.drain()`` with no bound (``flush_timeout`` defaults to
+      none) and swallows ``CancelledError``. On a backpressured socket -- the half-open or
+      slow-reading connection a health probe exists to catch -- the round trip then outlives its
+      ``timeout``, and a cancellation (a shutdown, a bounded drain) is silently discarded.
 
-    So the pending buffer is written out first, then the ``PING``, and the wait for its ``PONG`` is
-    shielded: a timeout or cancellation abandons the wait, never the future, which the late
-    ``PONG`` then resolves harmlessly, keeping every later ``PONG`` paired with its own ``PING``.
+    So the pending buffer and the ``PING`` are handed to the transport in ONE synchronous step,
+    buffer first, with the ``PONG`` future queued in the same step: nothing can be written between
+    them, and ``Client._pongs`` stays in the order the ``PING`` s were written, so every ``PONG``
+    still resolves the future of its own ``PING``. The transport buffers the bytes and writes them as
+    the socket accepts them; nothing here waits for that. The flusher is then woken without waiting
+    (a transport that sends only when drained, the websocket one, needs it), and the only wait is
+    for the ``PONG``: bounded by ``timeout`` and shielded, so a timeout or cancellation abandons the
+    wait, never the future, which the late ``PONG`` then resolves harmlessly. Cancellation
+    propagates.
 
     :param connection: the nats-py connection
     :ptype connection: Any
-    :param timeout: seconds to wait for the ``PONG``
+    :param timeout: seconds to wait for the ``PONG``; the whole round trip is bounded by it
     :ptype timeout: float
     :return: nothing
     :rtype: None
@@ -1469,11 +1484,25 @@ async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_S
         raise _NatsConnectionClosedError
     if not connection.is_connected:
         raise NatsClientError("cannot round-trip a NATS connection that is not currently connected")
-    # rationale: nats-py exposes no round trip that is ordered after the pending buffer and safe to
-    # time out; see the docstring. both calls are the ones nats-py's own flush makes.
-    await connection._flush_pending(force_flush=True)  # noqa: SLF001 -- see rationale above
-    pong: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-    await connection._send_ping(pong)  # noqa: SLF001 -- see rationale above
+    loop = asyncio.get_running_loop()
+    pong: asyncio.Future[bool] = loop.create_future()
+    # rationale: nats-py exposes no round trip that is ordered after the pending buffer, bounded,
+    # and safe to cancel or time out; see the docstring. these are the fields its own flusher and
+    # _send_ping use, touched in the same order and with no await between them.
+    pending: list[bytes] = connection._pending  # noqa: SLF001 -- see rationale above
+    transport = connection._transport  # noqa: SLF001 -- see rationale above
+    if pending:
+        transport.writelines(pending[:])
+        connection._pending = []  # noqa: SLF001 -- see rationale above
+        connection._pending_data_size = 0  # noqa: SLF001 -- see rationale above
+    connection._pongs.append(pong)  # noqa: SLF001 -- see rationale above
+    transport.write(_PING_PROTO)
+    wake: asyncio.Future[None] = loop.create_future()
+    try:
+        connection._flush_queue.put_nowait(wake)  # noqa: SLF001 -- see rationale above
+    except asyncio.QueueFull:
+        # NOSILENT: the flusher already holds wake-ups it has not taken, and each one drains the transport
+        pass
     try:
         await asyncio.wait_for(asyncio.shield(pong), timeout=timeout)
     except TimeoutError:

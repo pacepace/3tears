@@ -86,9 +86,9 @@ connection was established (90s at TTL 300 with a 120s completion); the old conn
 `unsafe_renewal_reason` names it every cycle, and the Hub refuses to start with it
 (`MINIMUM_SAFE_NATS_USER_JWT_TTL_SECONDS`, the same inequality).
 
-## Two nats-py defects the handover works around
+## Three nats-py defects the handover works around
 
-Both reproduced against a real nats-server.
+The first two reproduced against a real nats-server.
 
 - **`Subscription.drain()` can lose messages.** `_send_unsubscribe` queues the `UNSUB` in the
   pending buffer, but `Client._send_ping` writes the `PING` straight to the transport, so the `PING`
@@ -106,6 +106,14 @@ Both reproduced against a real nats-server.
   (`ping`, `flush`, the handover's) goes through `_round_trip`, which shields the `PONG` future, so a
   timeout abandons the wait and never the future. The one flush left inside nats-py's own `drain`
   is bounded by its own timeout and never cancelled by the handover.
+- **A forced flush has no bound and swallows cancellation.** `Client._flush_pending(force_flush=True)`
+  waits for the flusher's `transport.drain()` under `flush_timeout`, which defaults to none, inside
+  `except asyncio.CancelledError: pass`. On a backpressured socket a round trip built on it outlived
+  its timeout -- `ping(timeout)` did not answer, the handover's settle held the publish gate shut --
+  and a cancellation from shutdown or a bounded drain was discarded. `_round_trip` never awaits the
+  flusher: it hands the pending buffer and its `PING` to the transport in one synchronous step,
+  queues the `PONG` future in the same step, wakes the flusher without waiting, and waits only for
+  the `PONG`, under the caller's timeout.
 
 ## Alternatives rejected
 

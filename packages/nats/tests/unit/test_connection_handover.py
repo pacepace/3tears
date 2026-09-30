@@ -74,6 +74,29 @@ class _Sub:
         await self.queue_in.put(None)
 
 
+# parity-exempt: stands in for nats-py's transport; a round trip hands it the pending buffer and a PING
+class _Wire:
+    def __init__(self, conn: _Conn) -> None:
+        self._conn = conn
+
+    def writelines(self, payload: list[bytes]) -> None:
+        self._conn.calls.extend(chunk.decode().strip() for chunk in payload)
+
+    def write(self, payload: bytes) -> None:
+        # the round trip's PING, answered at once -- or once the test opens the pong gate
+        self._conn.calls.append("round-trip")
+        future = self._conn.pongs.pop(0)
+        if self._conn.pong_gate is None:
+            future.set_result(True)
+            return
+
+        async def _pong_later(gate: asyncio.Event) -> None:
+            await gate.wait()
+            future.set_result(True)
+
+        self._conn.late_pongs.append(asyncio.create_task(_pong_later(self._conn.pong_gate)))
+
+
 # parity-exempt: stands in for a nats-py connection; the handover calls subscribe, flush, publish, drain and close
 class _Conn:
     def __init__(self, name: str, *, subscribe_fails: bool = False) -> None:
@@ -89,8 +112,22 @@ class _Conn:
         # set by a test to hold every PONG until it opens the gate
         self.pong_gate: asyncio.Event | None = None
         self.late_pongs: list[asyncio.Task[None]] = []
+        # set by a test to hold a subscribe until it opens the gate
+        self.subscribe_gate: asyncio.Event | None = None
+        # the fields of nats-py's own a round trip reads and writes
+        self._pongs: list[asyncio.Future[bool]] = []
+        self._pending: list[bytes] = []
+        self._pending_data_size = 0
+        self._transport = _Wire(self)
+        self._flush_queue: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
+
+    @property
+    def pongs(self) -> list[asyncio.Future[bool]]:
+        return self._pongs
 
     async def subscribe(self, subject: str, queue: str = "") -> _Sub:
+        if self.subscribe_gate is not None:
+            await self.subscribe_gate.wait()
         if self._subscribe_fails:
             raise RuntimeError(f"{self.name}: subscribe refused")
         sub = _Sub(subject, queue, len(self.subs) + 1, self.calls)
@@ -99,22 +136,6 @@ class _Conn:
 
     async def _send_unsubscribe(self, sid: int, limit: int = 0) -> None:
         self.calls.append(f"unsub {sid}")
-
-    async def _flush_pending(self, force_flush: bool = False) -> None:
-        return None
-
-    async def _send_ping(self, future: asyncio.Future[bool]) -> None:
-        # the round trip's PING, answered at once -- or once the test opens the pong gate
-        self.calls.append("round-trip")
-        if self.pong_gate is None:
-            future.set_result(True)
-            return
-
-        async def _pong_later(gate: asyncio.Event) -> None:
-            await gate.wait()
-            future.set_result(True)
-
-        self.late_pongs.append(asyncio.create_task(_pong_later(self.pong_gate)))
 
     async def publish(self, subject: str, payload: bytes, reply: str = "", headers: Any = None) -> None:
         self.published.append((subject, payload))
