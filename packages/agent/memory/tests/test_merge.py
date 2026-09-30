@@ -62,11 +62,11 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
     assert conn.order.index("DELETE FROM memories") < conn.order.index(
         "UPDATE memories",
     )
-    assert len(result.alias_collisions_deleted) == 1
-    assert len(result.memories) == 1
-    assert len(result.media) == 1
-    assert len(result.media_content) == 1
-    assert len(result.memory_chunks) == 1
+    assert len(result.removed["memories"]) == 1
+    assert len(result.repointed["memories"]) == 1
+    assert len(result.repointed["media"]) == 1
+    assert len(result.repointed["media_content"]) == 1
+    assert len(result.repointed["memory_chunks"]) == 1
 
 
 @pytest.mark.asyncio
@@ -149,12 +149,109 @@ async def test_the_children_an_alias_collision_cascades_to_are_named() -> None:
 
     result = await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4())
 
-    assert result.alias_collisions_deleted == [(agent, memory_id)]
-    assert result.alias_collision_media == [(agent, media_id)]
-    assert result.alias_collision_media_content == [(agent, content_id)]
-    assert result.alias_collision_memory_chunks == [(agent, chunk_id)]
-    assert result.alias_collision_memory_consolidations == [(agent, gist_id, memory_id)]
+    assert result.removed == {
+        "memories": [(agent, memory_id)],
+        "media": [(agent, media_id)],
+        "media_content": [(agent, content_id)],
+        "memory_chunks": [(agent, chunk_id)],
+        "memory_consolidations": [(agent, gist_id, memory_id)],
+    }
     # every child is named before the DELETE takes it, inside the same transaction.
     delete_at = conn.order.index("DELETE FROM memories")
     for lookup in ("FROM media WHERE", "FROM media_content", "FROM memory_chunks WHERE", "FROM memory_consolidations"):
         assert conn.order.index(lookup) < delete_at, f"{lookup} ran after the DELETE had cascaded"
+
+
+@pytest.mark.asyncio
+async def test_evict_names_every_touched_key_by_table_in_one_map() -> None:
+    """the caller evicts with one loop over ``evict``: repointed and removed keys, grouped by table."""
+    agent = uuid4()
+    deleted, cascaded_media, moved, moved_media = uuid4(), uuid4(), uuid4(), uuid4()
+    conn = _RoutingConn(
+        {
+            "DELETE FROM memories": [{"agent_id": agent, "memory_id": deleted}],
+            "FROM memories m WHERE": [{"agent_id": agent, "memory_id": deleted}],
+            "FROM media_content": [],
+            "FROM media WHERE": [{"agent_id": agent, "media_id": cascaded_media}],
+            "FROM memory_chunks WHERE": [],
+            "FROM memory_consolidations": [],
+            "UPDATE memories": [{"agent_id": agent, "memory_id": moved}],
+            "UPDATE media ": [{"agent_id": agent, "media_id": moved_media}],
+            "UPDATE media_content": [],
+            "UPDATE memory_chunks": [],
+        }
+    )
+
+    result = await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4())
+
+    assert result.evict == {
+        "memories": [(agent, moved), (agent, deleted)],
+        "media": [(agent, moved_media), (agent, cascaded_media)],
+        "media_content": [],
+        "memory_chunks": [],
+        "memory_consolidations": [],
+    }
+
+
+def _cascade_closure(root: str) -> set[str]:
+    """every table an ``ON DELETE CASCADE`` chain reaches from ``root``, root included, per the declared schemas."""
+    from threetears.agent.memory import collections as memory_collections
+    from threetears.core.collections.schema_backed import SchemaBackedCollection
+
+    schemas = [
+        value.schema
+        for value in vars(memory_collections).values()
+        if isinstance(value, type) and issubclass(value, SchemaBackedCollection) and "schema" in vars(value)
+    ]
+    assert schemas, "found no memory table schema to read the cascade from"
+    reached = {root}
+    grew = True
+    while grew:
+        grew = False
+        for schema in schemas:
+            for fk in schema.foreign_keys:
+                if fk.on_delete == "CASCADE" and fk.ref_table in reached and schema.name not in reached:
+                    reached.add(schema.name)
+                    grew = True
+    return reached
+
+
+def test_the_removed_tables_are_exactly_what_a_memory_delete_cascades_to() -> None:
+    """a new ``ON DELETE CASCADE`` onto memories (or media) must be named by the merge, or this fails."""
+    closure = _cascade_closure("memories")
+    assert closure != {"memories"}, "read no cascade at all: the schema walk is broken, not the merge"
+    assert set(MemoryRepointResult().removed) == closure
+
+
+@pytest.mark.asyncio
+async def test_the_summary_log_counts_what_the_cascade_removed(caplog: pytest.LogCaptureFixture) -> None:
+    """an operator chasing a stale row after a merge can tell from the log whether the cascade removed it."""
+    agent = uuid4()
+    memory_id = uuid4()
+    conn = _RoutingConn(
+        {
+            "DELETE FROM memories": [{"agent_id": agent, "memory_id": memory_id}],
+            "FROM memories m WHERE": [{"agent_id": agent, "memory_id": memory_id}],
+            "FROM media_content": [{"agent_id": agent, "content_id": uuid4()}],
+            "FROM media WHERE": [{"agent_id": agent, "media_id": uuid4()}],
+            "FROM memory_chunks WHERE": [{"agent_id": agent, "chunk_id": uuid4()}, {"agent_id": agent, "chunk_id": uuid4()}],
+            "FROM memory_consolidations": [],
+            "UPDATE memories": [],
+            "UPDATE media ": [],
+            "UPDATE media_content": [],
+            "UPDATE memory_chunks": [],
+        }
+    )
+
+    with caplog.at_level("INFO", logger="threetears.agent.memory.merge"):
+        await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4())
+
+    [record] = [r for r in caplog.records if r.name == "threetears.agent.memory.merge" and r.levelname == "INFO"]
+    assert record.extra_data["removed"] == {  # type: ignore[attr-defined]
+        "memories": 1,
+        "media": 1,
+        "media_content": 1,
+        "memory_chunks": 2,
+        "memory_consolidations": 0,
+    }
+    assert "cascading to 1 media, 1 media_content, 2 memory_chunks, 0 memory_consolidations" in record.getMessage()

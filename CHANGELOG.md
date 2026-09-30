@@ -73,12 +73,27 @@ the hub could not evict them, and a pod that had read one kept serving it by id 
 
 **Contract changes:**
 
-- `MemoryRepointResult` gains `alias_collision_media`, `alias_collision_media_content`,
-  `alias_collision_memory_chunks` and `alias_collision_memory_consolidations`: the keys of every
-  row the collision delete cascaded to.
+- **BREAKING:** `MemoryRepointResult` groups its keys by table. `repointed: dict[str, list[tuple]]`
+  holds the keys moved from source to master (`memories`, `media`, `media_content`,
+  `memory_chunks`); `removed: dict[str, list[tuple]]` holds the colliding memories deleted (under
+  `memories`) and every row that delete cascaded to (`media`, `media_content`, `memory_chunks`,
+  `memory_consolidations`). `evict` merges the two by table: every key the caller evicts. The
+  per-table fields `alias_collisions_deleted`, `memories`, `media`, `media_content` and
+  `memory_chunks` are gone. The removed tables are pinned against the declared schemas'
+  `ON DELETE CASCADE` foreign keys, so a new cascade onto `memories` or `media` fails the memory
+  tests until the merge names it.
 - The colliding memories and their media are locked `FOR UPDATE` before their children are read,
   so no child can be added under them before the delete, and the delete removes exactly the
   locked memories: the children named are exactly the children cascaded.
+- `repoint_user`'s INFO line counts what the cascade removed per table, beside what it moved, in
+  its message and in `extra_data` (`removed`, `repointed`).
+
+**On upgrade:** the hub merge orchestrator (`aibots.hub.customers.user_merge._invalidate_committed`)
+evicts with one loop, `for table, keys in result.evict.items()`, publishing each key's invalidation
+on that table, in place of one call per named field -- a field-by-field eviction would miss the
+cascaded `media`, `media_content`, `memory_chunks` and `memory_consolidations` rows, and pods would
+keep serving them by id. Its audit counts read `len(result.repointed["memories"])` and
+`len(result.removed["memories"])`.
 
 ### A wake write reaches every replica, and never lands on a row it did not read
 

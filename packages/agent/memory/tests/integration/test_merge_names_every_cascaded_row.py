@@ -150,12 +150,14 @@ async def test_every_row_the_collision_cascade_removed_is_named(pg_schema: tuple
         async with conn.transaction():
             result = await repoint_user(conn, from_user_id=source, to_user_id=master)
 
-        assert result.alias_collisions_deleted == [(agent, colliding)]
-        assert result.alias_collision_media == [(agent, media)]
-        assert result.alias_collision_media_content == [(agent, content)]
-        assert sorted(result.alias_collision_memory_chunks) == sorted([(agent, first_chunk), (agent, second_chunk)])
-        assert result.alias_collision_memory_consolidations == [(agent, gist, colliding)]
-        assert (agent, kept_media) in result.media
+        assert result.removed["memories"] == [(agent, colliding)]
+        assert result.removed["media"] == [(agent, media)]
+        assert result.removed["media_content"] == [(agent, content)]
+        assert sorted(result.removed["memory_chunks"]) == sorted([(agent, first_chunk), (agent, second_chunk)])
+        assert result.removed["memory_consolidations"] == [(agent, gist, colliding)]
+        assert (agent, kept_media) in result.repointed["media"]
+        # the one map the caller evicts from names both.
+        assert {(agent, media), (agent, kept_media)} <= set(result.evict["media"])
 
         # and the cascade removed exactly what was named.
         assert await conn.fetchval("SELECT count(*) FROM media WHERE media_id = $1", media) == 0
@@ -194,10 +196,7 @@ async def test_a_merge_with_no_collision_deletes_and_names_nothing(pg_schema: tu
         async with conn.transaction():
             result = await repoint_user(conn, from_user_id=source, to_user_id=master)
 
-        assert result.alias_collisions_deleted == []
-        assert result.alias_collision_media == []
-        assert result.alias_collision_memory_chunks == []
-        assert result.alias_collision_memory_consolidations == []
-        assert result.memories == [(agent, moved)]
+        assert all(keys == [] for keys in result.removed.values())
+        assert result.repointed["memories"] == [(agent, moved)]
     finally:
         await conn.close()

@@ -24,11 +24,15 @@ a locked parent until the transaction ends -- every child key the cascade
 will remove is read, and only then are exactly the locked memories
 deleted. the result names every one of them for the caller to evict.
 
+the result groups every key by the table it belongs to
+(:attr:`MemoryRepointResult.evict`), so the caller evicts with one loop
+over that map and a table added to the cascade needs no edit on its side.
+
 every owned ``user_id`` column is ``immutable=True`` (the collection
 upsert path refuses to write it), so the repoint is a raw scoped UPDATE
 via :func:`threetears.core.collections.repoint_user_rows`. the caller
-invalidates the returned keys after commit and reconciles the master's
-``memory-owner`` RBAC group on the platform schema.
+invalidates every key in :attr:`MemoryRepointResult.evict` after commit and
+reconciles the master's ``memory-owner`` RBAC group on the platform schema.
 """
 
 from __future__ import annotations
@@ -45,51 +49,61 @@ __all__ = ["MemoryRepointResult", "repoint_user"]
 log = get_logger(__name__)
 
 
+#: the tables the repoint moves from source to master: each carries its own ``user_id``.
+_REPOINTED_TABLES: tuple[str, ...] = ("memories", "media", "media_content", "memory_chunks")
+
+#: the tables the alias-collision delete removes rows from: the colliding memories, and every
+#: table an ``ON DELETE CASCADE`` chain reaches from them. pinned against the declared schemas'
+#: foreign keys by the merge tests, so a new cascade onto ``memories`` or ``media`` fails there
+#: until it is named here and read below.
+_REMOVED_TABLES: tuple[str, ...] = ("memories", "media", "media_content", "memory_chunks", "memory_consolidations")
+
+
+def _per_table(tables: tuple[str, ...]) -> dict[str, list[tuple[Any, ...]]]:
+    """an empty key list for each of ``tables``.
+
+    :param tables: the table names
+    :ptype tables: tuple[str, ...]
+    :return: ``{table: []}`` for every table, in the given order
+    :rtype: dict[str, list[tuple[Any, ...]]]
+    """
+    return {table: [] for table in tables}
+
+
 @dataclass
 class MemoryRepointResult:
-    """primary keys touched by a memory-table user merge in one agent schema.
+    """primary keys touched by a memory-table user merge in one agent schema, grouped by table.
 
-    ``alias_collisions_deleted`` are ``(agent_id, memory_id)`` keys of
-    source memories hard-deleted because their alias collided with a
-    master memory; the ``alias_collision_*`` lists are the keys of the
-    children that delete cascaded to. the remaining lists are the keys
-    repointed from source to master per table. the caller sums these for
-    the merge audit event and evicts every one of them post-commit.
+    the caller evicts every key in :attr:`evict` post-commit -- one loop, routed by table -- and
+    sums the counts for the merge audit event.
 
-    :param alias_collisions_deleted: deleted colliding source memory keys
-    :ptype alias_collisions_deleted: list[tuple[Any, ...]]
-    :param alias_collision_media: ``(agent_id, media_id)`` keys cascaded
-        with the deleted memories
-    :ptype alias_collision_media: list[tuple[Any, ...]]
-    :param alias_collision_media_content: ``(agent_id, content_id)`` keys
-        cascaded with that media
-    :ptype alias_collision_media_content: list[tuple[Any, ...]]
-    :param alias_collision_memory_chunks: ``(agent_id, chunk_id)`` keys
-        cascaded with the deleted memories
-    :ptype alias_collision_memory_chunks: list[tuple[Any, ...]]
-    :param alias_collision_memory_consolidations: ``(agent_id,
-        consolidated_memory_id, source_memory_id)`` edge keys cascaded with
-        either endpoint
-    :ptype alias_collision_memory_consolidations: list[tuple[Any, ...]]
-    :param memories: repointed ``memories`` keys
-    :ptype memories: list[tuple[Any, ...]]
-    :param media: repointed ``media`` keys
-    :ptype media: list[tuple[Any, ...]]
-    :param media_content: repointed ``media_content`` keys
-    :ptype media_content: list[tuple[Any, ...]]
-    :param memory_chunks: repointed ``memory_chunks`` keys
-    :ptype memory_chunks: list[tuple[Any, ...]]
+    :param repointed: per table, the keys repointed from source to master: ``(agent_id, memory_id)``,
+        ``(agent_id, media_id)``, ``(agent_id, content_id)``, ``(agent_id, chunk_id)``
+    :ptype repointed: dict[str, list[tuple[Any, ...]]]
+    :param removed: per table, the keys the alias-collision delete removed: under ``memories`` the
+        colliding source memories deleted because the master holds their alias, under every other
+        table the rows that delete cascaded to (``memory_consolidations`` keys are
+        ``(agent_id, consolidated_memory_id, source_memory_id)``)
+    :ptype removed: dict[str, list[tuple[Any, ...]]]
     """
 
-    alias_collisions_deleted: list[tuple[Any, ...]] = field(default_factory=list)
-    alias_collision_media: list[tuple[Any, ...]] = field(default_factory=list)
-    alias_collision_media_content: list[tuple[Any, ...]] = field(default_factory=list)
-    alias_collision_memory_chunks: list[tuple[Any, ...]] = field(default_factory=list)
-    alias_collision_memory_consolidations: list[tuple[Any, ...]] = field(default_factory=list)
-    memories: list[tuple[Any, ...]] = field(default_factory=list)
-    media: list[tuple[Any, ...]] = field(default_factory=list)
-    media_content: list[tuple[Any, ...]] = field(default_factory=list)
-    memory_chunks: list[tuple[Any, ...]] = field(default_factory=list)
+    repointed: dict[str, list[tuple[Any, ...]]] = field(default_factory=lambda: _per_table(_REPOINTED_TABLES))
+    removed: dict[str, list[tuple[Any, ...]]] = field(default_factory=lambda: _per_table(_REMOVED_TABLES))
+
+    @property
+    def evict(self) -> dict[str, list[tuple[Any, ...]]]:
+        """every key the merge touched, grouped by table: what the caller evicts after commit.
+
+        a row repointed is served by id with the old owner until evicted; a row removed is served by
+        id after L3 lost it. both are evicted the same way, so they are one map.
+
+        :return: ``{table: [key, ...]}``, the repointed keys of a table before its removed ones
+        :rtype: dict[str, list[tuple[Any, ...]]]
+        """
+        merged: dict[str, list[tuple[Any, ...]]] = {}
+        for table in (*self.repointed, *self.removed):
+            merged[table] = [*self.repointed.get(table, []), *self.removed.get(table, [])]
+        return merged
 
 
 # the collision predicate: a source memory whose alias a master memory under the same agent
@@ -161,11 +175,12 @@ async def _delete_alias_collisions(
     :ptype from_user_id: UUID
     :param to_user_id: master user whose memories win the alias
     :ptype to_user_id: UUID
-    :return: the deleted memories and every child their deletion cascaded to, in the
-        ``alias_collision*`` fields; the repoint fields are empty
+    :return: the deleted memories and every child their deletion cascaded to, in
+        :attr:`MemoryRepointResult.removed`; nothing repointed yet
     :rtype: MemoryRepointResult
     """
     result = MemoryRepointResult()
+    removed = result.removed
     locked = await conn.fetch(
         f"SELECT m.agent_id, m.memory_id FROM memories m WHERE {_COLLISION_PREDICATE} FOR UPDATE OF m",
         from_user_id,
@@ -181,22 +196,22 @@ async def _delete_alias_collisions(
         memory_agents,
         memory_ids,
     )
-    result.alias_collision_media = [(row["agent_id"], row["media_id"]) for row in media_rows]
-    media_agents, media_ids = _columns(result.alias_collision_media)
+    removed["media"] = [(row["agent_id"], row["media_id"]) for row in media_rows]
+    media_agents, media_ids = _columns(removed["media"])
 
     content_rows = await conn.fetch(
         f"SELECT agent_id, content_id FROM media_content WHERE (agent_id, media_id) IN {_key_set('$1', '$2')}",
         media_agents,
         media_ids,
     )
-    result.alias_collision_media_content = [(row["agent_id"], row["content_id"]) for row in content_rows]
+    removed["media_content"] = [(row["agent_id"], row["content_id"]) for row in content_rows]
 
     chunk_rows = await conn.fetch(
         f"SELECT agent_id, chunk_id FROM memory_chunks WHERE (agent_id, memory_id) IN {memories}",
         memory_agents,
         memory_ids,
     )
-    result.alias_collision_memory_chunks = [(row["agent_id"], row["chunk_id"]) for row in chunk_rows]
+    removed["memory_chunks"] = [(row["agent_id"], row["chunk_id"]) for row in chunk_rows]
 
     edge_rows = await conn.fetch(
         "SELECT agent_id, consolidated_memory_id, source_memory_id FROM memory_consolidations WHERE "
@@ -204,7 +219,7 @@ async def _delete_alias_collisions(
         memory_agents,
         memory_ids,
     )
-    result.alias_collision_memory_consolidations = [
+    removed["memory_consolidations"] = [
         (row["agent_id"], row["consolidated_memory_id"], row["source_memory_id"]) for row in edge_rows
     ]
 
@@ -217,7 +232,7 @@ async def _delete_alias_collisions(
         memory_agents,
         memory_ids,
     )
-    result.alias_collisions_deleted = [(row["agent_id"], row["memory_id"]) for row in deleted]
+    removed["memories"] = [(row["agent_id"], row["memory_id"]) for row in deleted]
     return result
 
 
@@ -235,8 +250,8 @@ async def repoint_user(
     source to master across ``memories``, ``media``, ``media_content``,
     and ``memory_chunks`` against ``conn`` (a transaction connection whose
     ``search_path`` the caller has set to the target agent schema).
-    returns the keys touched per table for post-commit invalidation and
-    the merge audit event. idempotent: a re-run finds no source-owned
+    returns the keys touched, grouped by table, for post-commit invalidation
+    (:attr:`MemoryRepointResult.evict`) and the merge audit event. idempotent: a re-run finds no source-owned
     rows and is a no-op.
 
     the four tables each carry their own ``user_id`` (denormalized for
@@ -249,7 +264,7 @@ async def repoint_user(
     :ptype from_user_id: UUID
     :param to_user_id: master user the memories move to
     :ptype to_user_id: UUID
-    :return: keys deleted + repointed per table
+    :return: keys removed + repointed, grouped by table
     :rtype: MemoryRepointResult
     """
     result = await _delete_alias_collisions(
@@ -257,8 +272,8 @@ async def repoint_user(
         from_user_id=from_user_id,
         to_user_id=to_user_id,
     )
-    deleted = result.alias_collisions_deleted
-    result.memories = await repoint_user_rows(
+    repointed = result.repointed
+    repointed["memories"] = await repoint_user_rows(
         conn,
         table="memories",
         user_column="user_id",
@@ -266,7 +281,7 @@ async def repoint_user(
         from_user_id=from_user_id,
         to_user_id=to_user_id,
     )
-    result.media = await repoint_user_rows(
+    repointed["media"] = await repoint_user_rows(
         conn,
         table="media",
         user_column="user_id",
@@ -275,7 +290,7 @@ async def repoint_user(
         to_user_id=to_user_id,
         touch_column=None,
     )
-    result.media_content = await repoint_user_rows(
+    repointed["media_content"] = await repoint_user_rows(
         conn,
         table="media_content",
         user_column="user_id",
@@ -284,7 +299,7 @@ async def repoint_user(
         to_user_id=to_user_id,
         touch_column=None,
     )
-    result.memory_chunks = await repoint_user_rows(
+    repointed["memory_chunks"] = await repoint_user_rows(
         conn,
         table="memory_chunks",
         user_column="user_id",
@@ -293,16 +308,27 @@ async def repoint_user(
         to_user_id=to_user_id,
         touch_column=None,
     )
+    removed = result.removed
     log.info(
-        "repointed memories from user %s to %s (deleted %d alias "
-        "collision(s); moved %d memories, %d media, %d media_content, "
-        "%d memory_chunks)",
+        "repointed memories from user %s to %s (deleted %d alias collision(s), cascading to %d media, "
+        "%d media_content, %d memory_chunks, %d memory_consolidations; moved %d memories, %d media, "
+        "%d media_content, %d memory_chunks)",
         from_user_id,
         to_user_id,
-        len(deleted),
-        len(result.memories),
-        len(result.media),
-        len(result.media_content),
-        len(result.memory_chunks),
+        len(removed["memories"]),
+        len(removed["media"]),
+        len(removed["media_content"]),
+        len(removed["memory_chunks"]),
+        len(removed["memory_consolidations"]),
+        len(repointed["memories"]),
+        len(repointed["media"]),
+        len(repointed["media_content"]),
+        len(repointed["memory_chunks"]),
+        extra={
+            "extra_data": {
+                "removed": {table: len(keys) for table, keys in removed.items()},
+                "repointed": {table: len(keys) for table, keys in repointed.items()},
+            }
+        },
     )
     return result
