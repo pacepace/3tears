@@ -68,6 +68,11 @@ _WRAPPER_MODULES: set[str] = {
     # string-matching a message is the same legitimate reason client.py and
     # forward.py consume nats-py.
     "threetears.nats._publish",
+    # _receipt.py is the wrapper's own subscription backlog: client.py's subscribe takes each
+    # nats-py Msg off the connection on arrival, dates it, and holds it here until a callback
+    # is free. It names nats-py's Msg type (annotation-only) because the Msg is exactly what it
+    # holds; nothing outside the wrapper ever sees it.
+    "threetears.nats._receipt",
 }
 
 
