@@ -63,7 +63,6 @@ from threetears.core.security.identity_token import (
 )
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
-    REAUTH_BUFFER_SECONDS,
     SYNC_REPLY_BUDGET_SECONDS,
     IncomingMessage,
     NatsClient,
@@ -218,11 +217,6 @@ _RESULT_DELIVERY_ATTEMPTS = 3
 # pace between those attempts -- long enough for a reconnect to complete, short enough to fit several
 # tries inside any caller's timeout.
 _RESULT_DELIVERY_RETRY_SECONDS = 2.0
-#: how long a credential renewal waits for the replies the pod still owes. the renewal is scheduled
-#: REAUTH_BUFFER_SECONDS before the point the reconnect must start to beat expiry, so that buffer is
-#: exactly the slack a drain may spend; the renewal loop credits the same value to the window a
-#: synchronous call has, so the wait and the safety judgement cannot disagree.
-DRAIN_BEFORE_RENEWAL_SECONDS: Final[float] = float(REAUTH_BUFFER_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -1978,17 +1972,15 @@ class ToolServer:
 
         # credential renewal: ONLY on the self-owned connection the auth-callout minted a user JWT
         # for. an injected (agent-owned) connection is renewed by its owner, so the pod must not
-        # race a second reconnect against it. a static user/password or anonymous connection holds
-        # a credential that never expires, so renewing it would drop its requests in flight and
-        # re-register the manifest every cycle for nothing. the client runs the loop, and stops it
-        # when this pod shuts the client down; it also judges whether the cadence can carry a
-        # synchronous call, crediting the drain the pod holds the connection open for.
+        # race a second renewal against it. a static user/password or anonymous connection holds
+        # a credential that never expires. the client runs the loop, and stops it when this pod
+        # shuts the client down. the longest request is the synchronous reply budget: a renewal
+        # keeps the replaced connection open that long, so a reply owed for a call that arrived
+        # on it still leaves on it -- NATS lets only the receiving connection answer.
         if self._owns_nats_connection and self._auth_token is not None and self._nc is not None:
             self._nc.renew_credential(
                 ttl_seconds=self._current_nats_jwt_ttl_seconds,
-                before_renewal=self.drain_before_reauth,
                 longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS,
-                drain_grace_seconds=DRAIN_BEFORE_RENEWAL_SECONDS,
             )
 
         await self._shutdown_event.wait()
@@ -2881,20 +2873,20 @@ class ToolServer:
         # count and a failed call never strands the counter above baseline.
         with self._inflight_gauge.track():
             # The reply obligation starts here. While it is outstanding the
-            # connection must survive: `allow_responses` lives on the connection
-            # that received this message, so a proactive reconnect in the middle
+            # connection that received this message must survive:
+            # `allow_responses` lives on that connection, so losing it mid-call
             # silently converts a completed tool call into a permissions
             # violation on publish -- observed as a 92-second scan that finished
-            # with exit 0 and could never deliver its 68KB of results.
+            # with exit 0 and could never deliver its 68KB of results. A
+            # credential renewal keeps it open for the synchronous reply budget
+            # and the reply leaves on it (NatsClient.renew_connection).
             #
             # A call routed to durable delivery DISCHARGES that obligation as
-            # soon as it is acknowledged, long before the tool finishes. It has
-            # to: otherwise a 20-minute scan would hold the connection against
-            # re-auth for 20 minutes, the bounded drain would give up anyway, and
-            # it would log a reply about to be lost that is in fact perfectly
-            # safe on a subject this pod holds a standing grant on. The flag is a
-            # single-element list rather than instance state because dispatches
-            # run concurrently on one server.
+            # soon as it is acknowledged, long before the tool finishes: its
+            # answer goes to a subject this pod holds a standing grant on, which
+            # no connection change can strand. The flag is a single-element list
+            # rather than instance state because dispatches run concurrently on
+            # one server.
             owes_sync_reply = [True]
             self._calls_in_flight += 1
             self._calls_idle.clear()
@@ -2908,11 +2900,10 @@ class ToolServer:
     def sync_replies_in_flight(self) -> int:
         """how many dispatches still owe an answer on the request/reply INBOX.
 
-        The question this answers is "may this connection be recycled", which is correctness rather
+        The question this answers is "may this connection be closed", which is correctness rather
         than telemetry: ``allow_responses`` belongs to the connection that received a request, so
-        rebuilding the connection while this is non-zero permanently revokes the right to answer
-        those calls. The re-auth loop reads it before reconnecting, and shutdown paths can read it
-        for the same reason.
+        closing it while this is non-zero permanently revokes the right to answer those calls. A
+        shutdown path reads it for that reason.
 
         A durably-delivered call is NOT counted once it has been acknowledged: its answer goes to a
         subject the pod holds a standing grant on, so it no longer cares which connection is current.
@@ -2928,9 +2919,8 @@ class ToolServer:
     async def await_sync_replies(self, *, timeout: float) -> bool:
         """wait until nothing owes an inbox answer, bounded by ``timeout``.
 
-        Reports whether it settled rather than raising, because both outcomes are ordinary here: the
-        caller (the re-auth loop) proceeds either way -- waiting past the JWT's real deadline would
-        trade a lost reply for a dead connection, which is strictly worse -- and only differs in what
+        Reports whether it settled rather than raising, because both outcomes are ordinary here: a
+        caller bounded by something it cannot wait past proceeds either way, and only differs in what
         it says about it.
 
         :param timeout: longest to wait, in seconds
@@ -2943,7 +2933,7 @@ class ToolServer:
             await asyncio.wait_for(self._calls_idle.wait(), timeout=timeout)
         except TimeoutError:
             # NOSILENT: reported to the caller as False; the caller owns the log line, because what
-            # an unsettled wait MEANS differs by caller (re-auth loses replies, shutdown does not).
+            # an unsettled wait MEANS differs by caller.
             result = False
         return result
 
@@ -2952,7 +2942,7 @@ class ToolServer:
 
         called once per dispatch: at the acknowledgement for a durably-delivered call, and at
         dispatch end for every other. the floor at zero is deliberate -- a double settle would
-        otherwise drive the count negative and permanently defeat the drain.
+        otherwise drive the count negative and permanently defeat a wait on it.
 
         :return: nothing
         :rtype: None
@@ -3715,67 +3705,6 @@ class ToolServer:
         :rtype: int | None
         """
         return nats_user_jwt_ttl_seconds()
-
-    async def drain_before_reauth(self, ttl_seconds: int | None) -> None:
-        """wait for outstanding replies before recycling the connection.
-
-        Public because it is a lifecycle operation on the server rather than an implementation
-        detail of the re-auth loop: "hold this connection open until it owes nothing" is the same
-        question a graceful shutdown asks, and the loop is only its first caller.
-
-        NATS scopes ``allow_responses`` to the CONNECTION that received a
-        request: the server remembers *this* connection may answer *that*
-        message. A proactive reconnect mid-call therefore does not merely
-        interrupt the work -- it permanently revokes the right to deliver the
-        answer, and the pod discovers this only when it tries to publish, after
-        the tool has already run to completion. Observed in production: a
-        92-second scan finished with exit 0 and 68KB of results that could never
-        be sent, because the connection had been recycled 56 seconds earlier.
-
-        So the re-auth waits for the pod to owe nothing. The wait is BOUNDED by
-        the JWT's real deadline, not open-ended: the schedule fires at
-        ``ttl - leeway - buffer``, leaving :data:`threetears.nats.REAUTH_BUFFER_SECONDS`
-        of slack before the point where the reconnect itself must begin to beat
-        expiry. Waiting past that would trade a lost reply for a dead
-        connection, which is strictly worse -- so on timeout it reconnects
-        anyway and says plainly that a reply is about to be lost.
-
-        A call longer than that slack cannot be rescued here, and no amount of
-        deferral fixes it -- which is why draining is the mitigation and not the
-        remedy. The remedy is that such calls never take this path: past
-        :data:`threetears.nats.SYNC_REPLY_BUDGET_SECONDS` the caller routes the
-        answer to a durable subject the pod holds a standing grant on, the
-        acknowledgement settles the inbox obligation immediately, and the count
-        this method waits on never includes it. So what is left here is exactly
-        the short calls the grace can genuinely cover.
-
-        :param ttl_seconds: the connection JWT TTL, or ``None`` when unknown
-        :ptype ttl_seconds: int | None
-        :return: nothing
-        :rtype: None
-        """
-        if self.sync_replies_in_flight == 0:
-            return
-        grace = DRAIN_BEFORE_RENEWAL_SECONDS
-        log.info(
-            "NATS re-auth deferred: waiting up to %ss for %d in-flight call(s) to reply",
-            grace,
-            self.sync_replies_in_flight,
-            extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self.sync_replies_in_flight}},
-        )
-        if not await self.await_sync_replies(timeout=grace):
-            # NOSILENT: the reconnect proceeds because the JWT is about to
-            # expire; the reply that is about to be lost is named here so it is
-            # never a silent discard.
-            log.error(
-                "NATS re-auth can wait no longer: %d short call(s) still owe a reply on the inbox "
-                "and the connection JWT is near expiry, so those replies will be refused. Long "
-                "calls are unaffected (they deliver on the pod's own durable subject); a call "
-                "stuck here means a tool declared a timeout inside the synchronous budget and then "
-                "ran past it.",
-                self.sync_replies_in_flight,
-                extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self.sync_replies_in_flight}},
-            )
 
     @traced()
     async def shutdown(self) -> None:

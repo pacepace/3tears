@@ -1,14 +1,13 @@
-"""A connection that owes a reply must not be recycled underneath it.
+"""A connection that owes a reply must not be closed underneath it.
 
 NATS scopes ``allow_responses`` to the CONNECTION that received a request: the
 server remembers *this* connection may answer *that* message. The tool pod also
-runs a proactive re-auth loop that reconnects before its user JWT expires --
-every ``ttl - leeway - buffer`` seconds, which at the platform default TTL of
-150s is every 60 seconds.
+renews its credential before its user JWT expires.
 
-Nothing related those two numbers to the tool timeout, which is 1200s for a scan
-tool. So any call taking longer than about a minute ran to completion and then
-lost the right to deliver its answer, discovering this only at publish:
+That renewal used to be a reconnect of the one connection, and nothing related
+its cadence to the tool timeout, which is 1200s for a scan tool. So any call
+taking longer than the cadence ran to completion and then lost the right to
+deliver its answer, discovering this only at publish:
 
     scanner finished {"tool": "testssl", "exit_code": 0,
                       "duration_seconds": 91.964, "timed_out": false,
@@ -18,6 +17,14 @@ lost the right to deliver its answer, discovering this only at publish:
 The scan worked. 68KB of results existed. The connection that was allowed to
 send them had been rebuilt 56 seconds earlier, so nobody ever saw them -- which
 reads as the tool being broken rather than the connection being recycled.
+
+The renewal is now make-before-break: the connection that received a call stays
+open for the synchronous reply budget after its successor takes over, and the
+reply leaves on it (proven live in
+``packages/nats/tests/integration/test_credential_renewal_live.py``). A call
+longer than that budget answers on the pod's durable result subject instead.
+These tests pin the pod's own half: it knows exactly what it owes, and the two
+budgets stay related.
 """
 
 from __future__ import annotations
@@ -29,17 +36,15 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
-from threetears.agent.tools import server as tool_server_module
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
 from threetears.nats import (
     PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS,
-    REAUTH_BUFFER_SECONDS,
-    REAUTH_LEEWAY_SECONDS,
+    SYNC_REPLY_BUDGET_SECONDS,
     IncomingMessage,
-    seconds_until_reauth,
+    seconds_until_retirement,
     set_default_namespace,
-    unsafe_reauth_delay_reason,
+    unsafe_renewal_reason,
 )
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
@@ -142,10 +147,11 @@ async def _owed_reply(server: ToolServer, tool: _BlockingTool) -> AsyncIterator[
         await asyncio.wait_for(dispatch, timeout=1.0)
 
 
-class TestTheConnectionSurvivesAnUnansweredCall:
-    async def test_reauth_waits_while_a_call_is_in_flight(self) -> None:
-        """THE PRODUCTION BUG. The reconnect must not happen while the pod still
-        owes an answer."""
+class TestThePodKnowsWhatItOwes:
+    """the count a shutdown -- or any caller about to close the connection -- reads."""
+
+    async def test_a_call_in_flight_is_owed(self) -> None:
+        """THE PRODUCTION BUG'S precondition: while the call runs, the pod owes its answer."""
         server, tool = _idle_server()
         async with _owed_reply(server, tool):
             assert server.sync_replies_in_flight == 1
@@ -153,17 +159,15 @@ class TestTheConnectionSurvivesAnUnansweredCall:
 
         assert await server.await_sync_replies(timeout=0.5) is True
 
-    async def test_reauth_is_immediate_when_nothing_is_owed(self) -> None:
-        """Non-vacuous: the common case must not pay for the guard. A pod with
-        no work waits for nothing."""
+    async def test_nothing_is_owed_when_nothing_runs(self) -> None:
+        """Non-vacuous: a pod with no work waits for nothing."""
         server, _tool = _idle_server()
 
         assert server.sync_replies_in_flight == 0
         assert await asyncio.wait_for(server.await_sync_replies(timeout=5.0), timeout=0.2) is True
 
-    async def test_it_waits_for_every_outstanding_call_not_just_one(self) -> None:
-        """Concurrent dispatches each own a reply; draining one proves nothing
-        about the rest."""
+    async def test_every_outstanding_call_is_counted_not_just_one(self) -> None:
+        """Concurrent dispatches each own a reply; settling one proves nothing about the rest."""
         server, tool = _idle_server()
         async with _owed_reply(server, tool):
             assert server.sync_replies_in_flight == 1
@@ -174,84 +178,44 @@ class TestTheConnectionSurvivesAnUnansweredCall:
         assert await server.await_sync_replies(timeout=0.5) is True
 
 
-class TestTheWaitIsBounded:
-    """Deferring forever would trade a lost reply for a dead connection.
-
-    The JWT expires whether or not a tool is still running. Past the point where
-    the reconnect must begin to beat expiry, waiting longer does not save the
-    reply -- it loses the connection as well. So the wait is bounded, and the
-    reply about to be discarded is named rather than dropped silently.
-    """
-
-    async def test_a_call_that_outlasts_the_grace_does_not_block_forever(self) -> None:
-        server, tool = _idle_server()
-        async with _owed_reply(server, tool):
-            # The real grace is DRAIN_BEFORE_RENEWAL_SECONDS; patched down, where the server
-            # reads it, so the test does not sit for 30 seconds proving a timeout fires.
-            original = tool_server_module.DRAIN_BEFORE_RENEWAL_SECONDS
-            try:
-                tool_server_module.DRAIN_BEFORE_RENEWAL_SECONDS = 0.05  # type: ignore[misc]
-                await asyncio.wait_for(server.drain_before_reauth(150), timeout=2.0)
-            finally:
-                tool_server_module.DRAIN_BEFORE_RENEWAL_SECONDS = original  # type: ignore[misc]
-
-
 class TestTheTwoBudgetsAreRelated:
     """The mismatch that caused this must be visible before it costs a result.
 
-    A tool timeout longer than the connection's usable life is not a runtime
-    condition to detect once it has already discarded an answer -- it is a
-    configuration fact knowable at startup.
+    A tool timeout longer than a renewal can hold the replaced connection open is not a runtime
+    condition to detect once it has already discarded an answer -- it is a configuration fact
+    knowable at startup. The two numbers live in different packages and nothing else relates them,
+    which is exactly how the original mismatch (a 60-second connection carrying a 1200-second tool)
+    got in.
     """
 
-    def test_the_usable_connection_life_is_shorter_than_the_jwt_ttl(self) -> None:
-        """The reconnect fires early by design, so the window a call can survive
-        in is the TTL minus that margin -- not the TTL."""
-        ttl = 150
-        usable = ttl - REAUTH_LEEWAY_SECONDS
+    def test_a_call_chosen_for_the_sync_path_rides_a_renewal_at_the_default_ttl(self) -> None:
+        """the pod declares the synchronous budget as its longest request, and the default TTL
+        lets a renewal hold the replaced connection that long."""
+        ttl = PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
 
-        assert usable < ttl
-        assert seconds_until_reauth(ttl) < usable
+        assert unsafe_renewal_reason(ttl, longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS) is None
+
+    def test_the_hold_covers_the_whole_synchronous_budget(self) -> None:
+        """the replaced connection stays open for every reply the budget admits, on schedule."""
+        from threetears.nats import seconds_until_reauth
+
+        ttl = PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
+        swap = seconds_until_reauth(ttl, longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS)
+        hold = seconds_until_retirement(
+            ttl, connection_age_seconds=swap, longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS
+        )
+
+        assert hold >= SYNC_REPLY_BUDGET_SECONDS
 
     def test_the_platform_default_cannot_carry_a_long_tool_call(self) -> None:
-        """Pins the incoherence this fix exists for: at the platform's default TTL, a
-        scan tool's 1200s budget is far past what one connection survives even with
-        the drain, so a long call must take the durable path. Asked of the renewal
-        loop's own judge with the real default, so raising the default is where
-        someone finds out the relationship is deliberate."""
+        """Pins the incoherence this fix exists for: at the platform's default TTL, a scan tool's
+        1200s budget is far past what a renewal can hold one connection open for, so a long call
+        must take the durable path. Asked of the renewal's own judge with the real default, so
+        raising the default is where someone finds out the relationship is deliberate."""
         scan_tool_timeout = 1200.0
         ttl = PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS
 
-        reason = unsafe_reauth_delay_reason(
-            seconds_until_reauth(ttl),
-            ttl,
-            longest_request_seconds=scan_tool_timeout,
-            drain_grace_seconds=REAUTH_BUFFER_SECONDS,
-        )
-
-        assert reason is not None
-
-
-class TestTheSynchronousBudgetFitsInsideTheDrainGrace:
-    """The drain rescues a short call; durable delivery carries the rest.
-
-    Draining is a mitigation, not the fix: it can only hold the connection open for the slack the
-    re-auth schedule leaves, so a call longer than that grace still completes into a refused publish.
-    The remedy is that such calls never take the reply-inbox path at all -- but that only holds if the
-    threshold deciding which calls are "short" is no larger than the window the responder is actually
-    willing to wait.
-
-    The two numbers live in different packages and nothing else relates them, which is exactly how the
-    original mismatch (a 60-second connection carrying a 1200-second tool) got in.
-    """
-
-    def test_a_call_chosen_for_the_sync_path_fits_in_the_grace(self) -> None:
-        from threetears.nats import SYNC_REPLY_BUDGET_SECONDS
-
-        assert SYNC_REPLY_BUDGET_SECONDS <= REAUTH_BUFFER_SECONDS, (
-            "a call the caller chose to answer synchronously can outlast the drain grace, so the "
-            "responder will reconnect out from under it and refuse the reply"
-        )
+        assert unsafe_renewal_reason(ttl, longest_request_seconds=scan_tool_timeout) is not None
 
     def test_the_scan_tool_that_started_this_takes_the_durable_path(self) -> None:
         """Non-vacuous: the concrete call that lost 68KB of results is on the other path now."""
