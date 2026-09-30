@@ -361,19 +361,26 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "knowledge.candidate": frozenset({"delta", "regression"}),
         # http verb and status code (hub)
         "admin.request.refused": frozenset({"method", "status"}),
-        # backup, scheduled-job, mcp-grant and pii-rotation admin actions: enums, database names, counts (hub)
+        # backup, scheduled-job, mcp-grant and pii-rotation admin actions: enums, database names, counts;
+        # data-space limit and reset-target actions: a limit's code-supplied name, integer limits and
+        # data versions (hub)
         "admin.action": frozenset(
             {
+                "applied_version",
                 "databases",
                 "database",
                 "failed_databases",
                 "identical",
                 "inserts",
                 "kind",
+                "limit_after",
+                "limit_before",
+                "limit_name",
                 "mode",
                 "ok",
                 "permission",
                 "status",
+                "target_version_before",
                 "total_stale",
                 "updates",
             }
