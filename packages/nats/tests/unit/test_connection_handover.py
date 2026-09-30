@@ -751,3 +751,39 @@ async def test_an_abandoned_or_shut_down_client_arms_no_renewal(monkeypatch: pyt
     for client in (abandoned, shut_down):
         with pytest.raises(NatsClientError, match="cannot renew"):
             client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=30.0)
+
+
+async def test_every_reply_path_leaves_on_the_receiving_connection_and_forgets_its_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """a reply sent with the positional shorthand or publish_raw is still a reply.
+
+    it used to leave on the CURRENT connection -- the one NATS refuses under allow_responses for a
+    request received before the handover -- and its route lingered until retirement.
+    """
+    monkeypatch.setattr(client_module, "seconds_until_reauth", lambda _ttl, **_kw: 3600.0)
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=30.0)
+    owed: list[IncomingMessage] = []
+
+    async def _cb(msg: IncomingMessage) -> None:
+        owed.append(msg)
+
+    await client.subscribe(Subject.raw("calls"), cb=_cb)
+    await current.subs[0].queue_in.put(_Msg(b"call-1", reply="_INBOX.requester.1", subject="calls"))
+    await current.subs[0].queue_in.put(_Msg(b"call-2", reply="_INBOX.requester.2", subject="calls"))
+    await _settle()
+    await client.renew_connection(retire_after=timedelta(seconds=30))
+    await _settle()
+
+    first, second = (msg.reply_subject for msg in owed)
+    assert first is not None and second is not None
+    await client.publish(first, b"done-1")
+    await client.publish_raw(subject=Subject.raw(second), payload=b"done-2")
+    # the routes are gone: the same subjects published again are ordinary publishes on the current one
+    await client.publish(first, b"again")
+
+    assert current.published == [("_INBOX.requester.1", b"done-1"), ("_INBOX.requester.2", b"done-2")]
+    assert successor.published == [("_INBOX.requester.1", b"again")]
+    await client.shutdown()

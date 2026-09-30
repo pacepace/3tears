@@ -2863,7 +2863,8 @@ class NatsClient:
 
         Recorded only while a renewal is armed: only then can the connection that received a
         request stop being the current one before the reply is sent. An entry leaves when the
-        reply is sent (:meth:`_reply_connection`), or when its connection is retired.
+        reply is sent -- by any publish method, all of which go through :meth:`_reply_connection`
+        -- or when its connection is retired.
 
         :param reply_subject: the request's reply subject
         :ptype reply_subject: str
@@ -3297,12 +3298,12 @@ class NatsClient:
         serialization happens via ``model_dump_json()``.
 
         positional shorthand ``nc.publish(subject_str, payload_bytes)``
-        is also accepted for parity with raw nats-py — every
-        integration test (and several legacy fanout sites) calls this
-        shape after a raw ``msg.reply`` lookup. callers needing the
-        kw-only typed form keep working unchanged; the shorthand
-        routes through :meth:`publish_raw_reply` semantics
-        (str subject, bytes payload, no Pydantic in the loop).
+        is also accepted for parity with raw nats-py; integration tests
+        call this shape, including after a raw ``msg.reply`` lookup.
+        callers needing the kw-only typed form keep working unchanged.
+        like every publish, a publish to a request's reply subject
+        leaves on the connection that received the request (see
+        :meth:`_publish_bytes`).
 
         :param args: optional positional ``(subject_str, payload_bytes)``
             shorthand for raw publishes
@@ -3450,6 +3451,12 @@ class NatsClient:
     ) -> None:
         """common publish path used by :meth:`publish` / :meth:`publish_raw`.
 
+        A publish to the reply subject of a request this client received is a reply, whichever
+        method sent it, so it leaves the way :meth:`publish_raw_reply` sends one: on the connection
+        that received the request, which is the only one NATS lets answer it, and its route is
+        forgotten (:meth:`_reply_connection`). Any other subject has no route and goes out on the
+        current connection.
+
         :param subject: target subject
         :ptype subject: Subject
         :param payload: serialized bytes
@@ -3461,7 +3468,7 @@ class NatsClient:
         :raises PublishError: if underlying publish fails
         """
         try:
-            connection = await self._lifecycle.publishing_connection()
+            connection = await self._reply_connection(subject.path)
             if reply_to is None:
                 await connection.publish(subject.path, payload)
             else:
