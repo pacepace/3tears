@@ -7,7 +7,7 @@ strings can't quietly grow them past the human-readability budget.
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -70,6 +70,15 @@ _user = uuid4()
 _agent = uuid4()
 
 
+# parity-with: threetears.agent.wake.types.WakeConversations (never called at load time)
+class _StubWakeConversations:
+    async def create(self, **kwargs: object) -> UUID:
+        raise AssertionError("not called when describing tools")
+
+    async def is_wake_conversation(self, *, agent_id: UUID, conversation_id: UUID) -> bool:
+        raise AssertionError("not called when describing tools")
+
+
 def _all_schedule_tools():  # type: ignore[no-untyped-def]
     registry = _StubRegistry()
     tools = []
@@ -82,33 +91,36 @@ def _all_schedule_tools():  # type: ignore[no-untyped-def]
         schedules_collection=None,  # type: ignore[arg-type]
         registry=registry,
     )
-    tools += load_wake_schedule_update_tool(
+    tools += load_wake_schedule_create_tool(
         conversation_id=_conv,
+        user_id=_user,
+        agent_id=_agent,
+        schedules_collection=None,  # type: ignore[arg-type]
+        registry=registry,
+        wake_conversations=_StubWakeConversations(),
+    )
+    tools += load_wake_schedule_update_tool(
         user_id=_user,
         agent_id=_agent,
         schedules_collection=None,  # type: ignore[arg-type]
         registry=registry,
     )
     tools += load_wake_schedule_list_tool(
-        conversation_id=_conv,
         user_id=_user,
         agent_id=_agent,
         schedules_collection=None,  # type: ignore[arg-type]
         registry=registry,
     )
     tools += load_wake_schedule_pause_tool(
-        conversation_id=_conv,
-        user_id=_user,
+        agent_id=_agent,
         schedules_collection=None,  # type: ignore[arg-type]
     )
     tools += load_wake_schedule_resume_tool(
-        conversation_id=_conv,
-        user_id=_user,
+        agent_id=_agent,
         schedules_collection=None,  # type: ignore[arg-type]
     )
     tools += load_wake_schedule_delete_tool(
-        conversation_id=_conv,
-        user_id=_user,
+        agent_id=_agent,
         schedules_collection=None,  # type: ignore[arg-type]
     )
     return tools
@@ -126,38 +138,41 @@ def _all_webhook_tools():  # type: ignore[no-untyped-def]
         encryption_service=enc,
         registry=registry,
     )
-    tools += load_webhook_subscription_update_tool(
+    tools += load_webhook_subscription_create_tool(
         conversation_id=_conv,
+        user_id=_user,
+        agent_id=_agent,
+        subscriptions_collection=None,  # type: ignore[arg-type]
+        encryption_service=enc,
+        registry=registry,
+        wake_conversations=_StubWakeConversations(),
+    )
+    tools += load_webhook_subscription_update_tool(
         user_id=_user,
         agent_id=_agent,
         subscriptions_collection=None,  # type: ignore[arg-type]
         registry=registry,
     )
     tools += load_webhook_subscription_list_tool(
-        conversation_id=_conv,
         user_id=_user,
         agent_id=_agent,
         subscriptions_collection=None,  # type: ignore[arg-type]
         registry=registry,
     )
     tools += load_webhook_subscription_pause_tool(
-        conversation_id=_conv,
-        user_id=_user,
+        agent_id=_agent,
         subscriptions_collection=None,  # type: ignore[arg-type]
     )
     tools += load_webhook_subscription_resume_tool(
-        conversation_id=_conv,
-        user_id=_user,
+        agent_id=_agent,
         subscriptions_collection=None,  # type: ignore[arg-type]
     )
     tools += load_webhook_subscription_delete_tool(
-        conversation_id=_conv,
-        user_id=_user,
+        agent_id=_agent,
         subscriptions_collection=None,  # type: ignore[arg-type]
     )
     tools += load_webhook_subscription_rotate_secret_tool(
-        conversation_id=_conv,
-        user_id=_user,
+        agent_id=_agent,
         subscriptions_collection=None,  # type: ignore[arg-type]
         encryption_service=enc,
     )

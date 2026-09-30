@@ -25,11 +25,13 @@ Spec ref: ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``
 from __future__ import annotations
 
 from threetears.agent.wake.tools.resolve import (
+    parse_conversation_id,
     parse_schedule_id,
     parse_subscription_id,
 )
 from threetears.agent.wake.tools.schedule_tools import (
-    DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+    DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
+    PROTECTED_REFUSAL,
     NAME_MAX_LEN,
     TASK_PROMPT_MAX_LEN,
     ScheduleCreateInput,
@@ -71,7 +73,8 @@ from threetears.agent.wake.tools.webhook_tools import (
 
 __all__ = [
     "CONTEXT_FROM_MAX_DEPTH",
-    "DEFAULT_MAX_SCHEDULES_PER_CONVERSATION",
+    "DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT",
+    "PROTECTED_REFUSAL",
     "NAME_MAX_LEN",
     "PAYLOAD_TEMPLATE_MAX_BYTES",
     "SECRET_BYTE_LEN",
@@ -102,6 +105,7 @@ __all__ = [
     "load_webhook_subscription_resume_tool",
     "load_webhook_subscription_rotate_secret_tool",
     "load_webhook_subscription_update_tool",
+    "parse_conversation_id",
     "parse_schedule_id",
     "parse_subscription_id",
     "validate_context_from_chain",

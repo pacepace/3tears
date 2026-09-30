@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -26,7 +27,6 @@ from threetears.agent.wake.collections import (
 )
 from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tools import (
-    DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
     WakeRegistryClient,
     load_wake_schedule_create_tool,
     load_wake_schedule_delete_tool,
@@ -177,25 +177,21 @@ async def test_schedule_lifecycle_create_list_pause_resume_delete(
             registry=registry,
         )[0]
         list_tool = load_wake_schedule_list_tool(
-            conversation_id=conv_id,
             user_id=user_id,
             agent_id=agent_id,
             schedules_collection=schedules,
             registry=registry,
         )[0]
         pause_tool = load_wake_schedule_pause_tool(
-            conversation_id=conv_id,
-            user_id=user_id,
+            agent_id=agent_id,
             schedules_collection=schedules,
         )[0]
         resume_tool = load_wake_schedule_resume_tool(
-            conversation_id=conv_id,
-            user_id=user_id,
+            agent_id=agent_id,
             schedules_collection=schedules,
         )[0]
         delete_tool = load_wake_schedule_delete_tool(
-            conversation_id=conv_id,
-            user_id=user_id,
+            agent_id=agent_id,
             schedules_collection=schedules,
         )[0]
 
@@ -258,7 +254,6 @@ async def test_schedule_include_conversation_history_persists_and_updates(
             registry=registry,
         )[0]
         update_tool = load_wake_schedule_update_tool(
-            conversation_id=conv_id,
             user_id=user_id,
             agent_id=agent_id,
             schedules_collection=schedules,
@@ -302,27 +297,30 @@ async def test_schedule_include_conversation_history_persists_and_updates(
 
 
 @pytest.mark.asyncio
-async def test_schedule_create_enforces_cap_of_10(
+async def test_schedule_create_enforces_the_agent_cap_across_conversations(
     pg_schema: tuple[str, str],
 ) -> None:
+    """The cap counts the agent's active wakes in every conversation, under the agent's lock."""
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
     try:
         schedules, _ = _build_collections(pool)
-        conv_id = _new_uuid()
         user_id = _new_uuid()
         agent_id = _new_uuid()
+        cap = 3
 
-        create_tool = load_wake_schedule_create_tool(
-            conversation_id=conv_id,
-            user_id=user_id,
-            agent_id=agent_id,
-            schedules_collection=schedules,
-            registry=_PermissiveRegistry(),
-        )[0]
+        def create_in(conversation_id: UUID) -> Any:
+            return load_wake_schedule_create_tool(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                schedules_collection=schedules,
+                registry=_PermissiveRegistry(),
+                max_active_schedules_per_agent=cap,
+            )[0]
 
-        for i in range(DEFAULT_MAX_SCHEDULES_PER_CONVERSATION):
-            res = await create_tool.ainvoke(
+        for i in range(cap):
+            res = await create_in(_new_uuid()).ainvoke(
                 {
                     "schedule_type": "interval",
                     "schedule_config": {"seconds": 600 + i},
@@ -331,32 +329,43 @@ async def test_schedule_create_enforces_cap_of_10(
             )
             assert res.startswith("[schedule:"), res
 
-        rejected = await create_tool.ainvoke(
+        rejected = await create_in(_new_uuid()).ainvoke(
             {
                 "schedule_type": "interval",
                 "schedule_config": {"seconds": 999},
             },
         )
         assert rejected.startswith("[TOOL ERROR]")
-        assert "max" in rejected
+        assert f"{cap} active wakes" in rejected
+        # another agent is not affected by this agent's count
+        other = load_wake_schedule_create_tool(
+            conversation_id=_new_uuid(),
+            user_id=user_id,
+            agent_id=_new_uuid(),
+            schedules_collection=schedules,
+            registry=_PermissiveRegistry(),
+            max_active_schedules_per_agent=cap,
+        )[0]
+        assert (await other.ainvoke({"schedule_type": "interval", "schedule_config": {"seconds": 60}})).startswith(
+            "[schedule:"
+        )
     finally:
         await pool.close()
 
 
 @pytest.mark.asyncio
-async def test_schedule_cross_conversation_isolation(
+async def test_schedule_list_reaches_across_the_agents_conversations(
     pg_schema: tuple[str, str],
 ) -> None:
+    """A wake created in one conversation is listed from another of the same agent, and by no other agent."""
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
     try:
         schedules, _ = _build_collections(pool)
         conv_a = _new_uuid()
-        conv_b = _new_uuid()
         user_id = _new_uuid()
         agent_id = _new_uuid()
 
-        # Create one schedule under conv_a.
         create_tool_a = load_wake_schedule_create_tool(
             conversation_id=conv_a,
             user_id=user_id,
@@ -365,20 +374,27 @@ async def test_schedule_cross_conversation_isolation(
             registry=_PermissiveRegistry(),
         )[0]
         res = await create_tool_a.ainvoke(
-            {"schedule_type": "interval", "schedule_config": {"seconds": 600}},
+            {"schedule_type": "interval", "schedule_config": {"seconds": 600}, "name": "from-a"},
         )
         assert res.startswith("[schedule:")
 
-        # conv_b's list tool sees nothing.
-        list_tool_b = load_wake_schedule_list_tool(
-            conversation_id=conv_b,
+        list_tool = load_wake_schedule_list_tool(
             user_id=user_id,
             agent_id=agent_id,
             schedules_collection=schedules,
             registry=_PermissiveRegistry(),
         )[0]
-        list_result = await list_tool_b.ainvoke({})
-        assert "No wake schedules" in list_result
+        list_result = await list_tool.ainvoke({})
+        assert "from-a" in list_result
+        assert f"[conversation:{conv_a}]" in list_result
+
+        stranger_list = load_wake_schedule_list_tool(
+            user_id=user_id,
+            agent_id=_new_uuid(),
+            schedules_collection=schedules,
+            registry=_PermissiveRegistry(),
+        )[0]
+        assert "no wake schedules" in await stranger_list.ainvoke({})
     finally:
         await pool.close()
 
@@ -404,7 +420,6 @@ async def test_schedule_update_rejects_self_context_from_cycle(
             registry=registry,
         )[0]
         update_tool = load_wake_schedule_update_tool(
-            conversation_id=conv_id,
             user_id=user_id,
             agent_id=agent_id,
             schedules_collection=schedules,
@@ -458,7 +473,6 @@ async def test_schedule_create_acl_denied_skill_does_not_persist(
             registry=_RestrictiveRegistry(),
         )[0]
         list_tool = load_wake_schedule_list_tool(
-            conversation_id=conv_id,
             user_id=user_id,
             agent_id=agent_id,
             schedules_collection=schedules,
@@ -478,21 +492,20 @@ async def test_schedule_create_acl_denied_skill_does_not_persist(
 
         # No row landed in Postgres.
         list_result = await list_tool.ainvoke({})
-        assert "No wake schedules" in list_result, list_result
+        assert "no wake schedules" in list_result, list_result
     finally:
         await pool.close()
 
 
 @pytest.mark.asyncio
-async def test_schedule_update_cross_user_returns_not_found(
+async def test_schedule_update_cross_agent_returns_not_found(
     pg_schema: tuple[str, str],
 ) -> None:
-    """User B cannot read or mutate a schedule owned by user A.
+    """Agent B cannot read or mutate a schedule owned by agent A.
 
-    Seeds via user A's create tool against real Postgres, then attempts
-    update via user B's update tool. The cross-user attempt MUST
-    surface as "not found" (existence is not leaked) and MUST NOT
-    mutate the row.
+    Seeds via agent A's create tool against real Postgres, then attempts
+    update via agent B's update tool. The attempt MUST surface as "not
+    found" (existence is not leaked) and MUST NOT mutate the row.
     """
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
@@ -523,9 +536,8 @@ async def test_schedule_update_cross_user_returns_not_found(
 
         # User B tries to update it.
         update_b = load_wake_schedule_update_tool(
-            conversation_id=conv_id,
             user_id=user_b,
-            agent_id=agent_id,
+            agent_id=_new_uuid(),
             schedules_collection=schedules,
             registry=_PermissiveRegistry(),
         )[0]
@@ -548,10 +560,10 @@ async def test_schedule_update_cross_user_returns_not_found(
 
 
 @pytest.mark.asyncio
-async def test_webhook_update_cross_user_returns_not_found(
+async def test_webhook_update_cross_agent_returns_not_found(
     pg_schema: tuple[str, str],
 ) -> None:
-    """User B cannot read or mutate a webhook subscription owned by user A."""
+    """Agent B cannot read or mutate a webhook subscription owned by agent A."""
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
     try:
@@ -580,9 +592,8 @@ async def test_webhook_update_cross_user_returns_not_found(
         sub_id = UUID(create_result.split("[webhook:")[1].split("]")[0])
 
         update_b = load_webhook_subscription_update_tool(
-            conversation_id=conv_id,
             user_id=user_b,
-            agent_id=agent_id,
+            agent_id=_new_uuid(),
             subscriptions_collection=subs,
             registry=_PermissiveRegistry(),
         )[0]
@@ -626,25 +637,21 @@ async def test_webhook_lifecycle_create_list_rotate_delete(
             registry=registry,
         )[0]
         list_tool = load_webhook_subscription_list_tool(
-            conversation_id=conv_id,
             user_id=user_id,
             agent_id=agent_id,
             subscriptions_collection=subs,
             registry=registry,
         )[0]
         rotate_tool = load_webhook_subscription_rotate_secret_tool(
-            conversation_id=conv_id,
-            user_id=user_id,
+            agent_id=agent_id,
             subscriptions_collection=subs,
             encryption_service=enc,
         )[0]
         delete_tool = load_webhook_subscription_delete_tool(
-            conversation_id=conv_id,
-            user_id=user_id,
+            agent_id=agent_id,
             subscriptions_collection=subs,
         )[0]
         update_tool = load_webhook_subscription_update_tool(
-            conversation_id=conv_id,
             user_id=user_id,
             agent_id=agent_id,
             subscriptions_collection=subs,

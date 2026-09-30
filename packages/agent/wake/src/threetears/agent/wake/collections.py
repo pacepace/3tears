@@ -50,6 +50,7 @@ from threetears.agent.wake.entities import (
     WakeScheduleEntity,
     WebhookSubscriptionEntity,
 )
+from threetears.agent.wake.types import ReapedFire
 from threetears.core.collections.base import BaseCollection
 from threetears.core.serialization import (
     deserialize_from_json,
@@ -89,6 +90,7 @@ _SCHEDULE_FIELD_TYPES: dict[str, Any] = {
     "missed_fire_policy": str,
     "context_from_schedule_id": UUID | None,
     "include_conversation_history": bool,
+    "protected": bool,
     "date_created": datetime,
     "date_updated": datetime,
 }
@@ -106,6 +108,7 @@ _FIRE_FIELD_TYPES: dict[str, Any] = {
     "output_text": str | None,
     "latency_ms": int | None,
     "error": str | None,
+    "started_conversation_id": UUID | None,
     "date_created": datetime,
 }
 
@@ -148,16 +151,23 @@ _SCHEDULE_INSERT_COLUMNS: tuple[str, ...] = (
     "missed_fire_policy",
     "context_from_schedule_id",
     "include_conversation_history",
+    "protected",
     "date_created",
     "date_updated",
 )
 
 
 # columns updated on ON CONFLICT (partition + pk excluded;
-# ``date_created`` immutable).
+# ``date_created`` immutable; ``protected`` is set once, at insert, and the
+# table's trigger refuses any change to it).
 _SCHEDULE_UPDATE_COLUMNS: tuple[str, ...] = tuple(
-    c for c in _SCHEDULE_INSERT_COLUMNS if c not in {"conversation_id", "schedule_id", "date_created"}
+    c for c in _SCHEDULE_INSERT_COLUMNS if c not in {"conversation_id", "schedule_id", "date_created", "protected"}
 )
+
+
+# Every column a schedule read selects, in one place so the pk fetch, the
+# tick scan and the listings cannot drift apart.
+_SCHEDULE_SELECT_COLUMNS = ", ".join(_SCHEDULE_INSERT_COLUMNS)
 
 
 _FIRE_INSERT_COLUMNS: tuple[str, ...] = (
@@ -172,8 +182,13 @@ _FIRE_INSERT_COLUMNS: tuple[str, ...] = (
     "output_text",
     "latency_ms",
     "error",
+    "started_conversation_id",
     "date_created",
 )
+
+
+# Every column a fire read selects.
+_FIRE_SELECT_COLUMNS = ", ".join(_FIRE_INSERT_COLUMNS)
 
 
 # fires are immutable post-finalize; the update set covers only the
@@ -212,6 +227,10 @@ _SUBSCRIPTION_INSERT_COLUMNS: tuple[str, ...] = (
 _SUBSCRIPTION_UPDATE_COLUMNS: tuple[str, ...] = tuple(
     c for c in _SUBSCRIPTION_INSERT_COLUMNS if c not in {"conversation_id", "subscription_id", "date_created"}
 )
+
+
+# Every column a subscription read selects.
+_SUBSCRIPTION_SELECT_COLUMNS = ", ".join(_SUBSCRIPTION_INSERT_COLUMNS)
 
 
 def _build_upsert_sql(
@@ -271,36 +290,22 @@ _WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL = _build_upsert_sql(
 
 
 _AGENT_WAKE_SCHEDULES_FETCH_SQL = (
-    "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
-    "schedule_type, schedule_config, task_prompt, execution_mode, status, "
-    "next_fire_at, last_fired_at, name, missed_fire_policy, "
-    "context_from_schedule_id, include_conversation_history, "
-    "date_created, date_updated "
-    "FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2"
+    f"SELECT {_SCHEDULE_SELECT_COLUMNS} FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2"
 )
 
 
 _AGENT_WAKE_SCHEDULES_DELETE_SQL = "DELETE FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2"
 
 
-_WAKE_FIRES_FETCH_SQL = (
-    "SELECT conversation_id, fire_id, schedule_id, webhook_subscription_id, "
-    "scheduled_fire_at, actual_fired_at, status, display_suppressed, "
-    "output_text, latency_ms, error, date_created "
-    "FROM wake_fires WHERE conversation_id = $1 AND fire_id = $2"
-)
+_WAKE_FIRES_FETCH_SQL = f"SELECT {_FIRE_SELECT_COLUMNS} FROM wake_fires WHERE conversation_id = $1 AND fire_id = $2"
 
 
 _WAKE_FIRES_DELETE_SQL = "DELETE FROM wake_fires WHERE conversation_id = $1 AND fire_id = $2"
 
 
 _WEBHOOK_SUBSCRIPTIONS_FETCH_SQL = (
-    "SELECT conversation_id, subscription_id, user_id, agent_id, "
-    "default_skill_id, name, secret_ciphertext, allowed_source_pattern, "
-    "execution_mode, task_prompt_template, "
-    "verification_scheme, status, rate_limit_per_minute, last_fired_at, "
-    "date_created, date_updated "
-    "FROM webhook_subscriptions WHERE conversation_id = $1 AND subscription_id = $2"
+    f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} FROM webhook_subscriptions "
+    "WHERE conversation_id = $1 AND subscription_id = $2"
 )
 
 
@@ -456,11 +461,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         # apply here by construction. Same shape as agent-tools'
         # cross-partition LRU scan.
         rows = await self.l3_pool.fetch(
-            "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
-            "schedule_type, schedule_config, task_prompt, execution_mode, status, "
-            "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, include_conversation_history, "
-            "date_created, date_updated "
+            f"SELECT {_SCHEDULE_SELECT_COLUMNS} "
             "FROM agent_wake_schedules "
             "WHERE status = 'active' AND next_fire_at IS NOT NULL AND next_fire_at <= $1 "
             "ORDER BY next_fire_at ASC LIMIT $2",
@@ -489,11 +490,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         # cache-bypass: multi-row scan by conversation_id is not pk-
         # addressable; L1 row cache cannot serve.
         rows = await self.l3_pool.fetch(
-            "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
-            "schedule_type, schedule_config, task_prompt, execution_mode, status, "
-            "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, include_conversation_history, "
-            "date_created, date_updated "
+            f"SELECT {_SCHEDULE_SELECT_COLUMNS} "
             "FROM agent_wake_schedules "
             "WHERE conversation_id = $1 AND status = 'active' "
             "ORDER BY next_fire_at ASC NULLS LAST",
@@ -518,11 +515,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             return []
         # cache-bypass: multi-row scan.
         rows = await self.l3_pool.fetch(
-            "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
-            "schedule_type, schedule_config, task_prompt, execution_mode, status, "
-            "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, include_conversation_history, "
-            "date_created, date_updated "
+            f"SELECT {_SCHEDULE_SELECT_COLUMNS} "
             "FROM agent_wake_schedules "
             "WHERE conversation_id = $1 "
             "ORDER BY date_created DESC",
@@ -554,6 +547,74 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             conversation_id,
         )
         return int(value or 0)
+
+    async def find_for_agent(
+        self,
+        agent_id: UUID,
+        schedule_id: UUID,
+    ) -> WakeScheduleEntity | None:
+        """Return one of an agent's schedules, in whichever conversation it lives.
+
+        An agent's wakes live in its wake conversations, and a tool running in
+        any conversation of that agent acts on them. The lookup is by the
+        agent and the bare id, so another agent's schedule is not found: its
+        existence does not leak.
+
+        :param agent_id: the agent that must own the schedule
+        :ptype agent_id: UUID
+        :param schedule_id: the schedule
+        :ptype schedule_id: UUID
+        :return: the schedule, or ``None`` when the agent has no such schedule
+        :rtype: WakeScheduleEntity | None
+        """
+        if self.l3_pool is None:
+            return None
+        # spans-partitions: an agent's wakes live in several conversations and
+        # the caller names the wake, not its conversation; the standalone
+        # UNIQUE (schedule_id) makes the lookup exact and the agent_id
+        # predicate keeps it to the caller's own. conversation_id is read off
+        # the row.
+        row = await self.l3_pool.fetchrow(
+            f"SELECT {_SCHEDULE_SELECT_COLUMNS} FROM agent_wake_schedules WHERE agent_id = $1 AND schedule_id = $2",
+            agent_id,
+            schedule_id,
+        )
+        if row is None:
+            return None
+        return WakeScheduleEntity(dict(row), is_new=False, collection=self)
+
+    async def list_for_agent(
+        self,
+        agent_id: UUID,
+        *,
+        include_paused: bool = True,
+    ) -> list[WakeScheduleEntity]:
+        """Return an agent's schedules across all its conversations.
+
+        Expired one-shots are left out: they never fire again and would bury
+        the live ones. Hits ``idx_wake_schedules_agent_status``.
+
+        :param agent_id: the agent
+        :ptype agent_id: UUID
+        :param include_paused: include paused schedules
+        :ptype include_paused: bool
+        :return: schedules, the next to fire first
+        :rtype: list[WakeScheduleEntity]
+        """
+        if self.l3_pool is None:
+            return []
+        statuses = ["active", "paused"] if include_paused else ["active"]
+        # spans-partitions: the agent's listing covers every conversation it
+        # holds wakes in; agent_id is the scope. conversation_id is read off
+        # each row.
+        rows = await self.l3_pool.fetch(
+            f"SELECT {_SCHEDULE_SELECT_COLUMNS} FROM agent_wake_schedules "
+            "WHERE agent_id = $1 AND status = ANY($2::text[]) "
+            "ORDER BY next_fire_at ASC NULLS LAST, date_created ASC",
+            agent_id,
+            statuses,
+        )
+        return [WakeScheduleEntity(dict(row), is_new=False, collection=self) for row in rows]
 
     async def update_next_fire_at(
         self,
@@ -931,9 +992,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             return []
         # cache-bypass: per-schedule history scan.
         rows = await self.l3_pool.fetch(
-            "SELECT conversation_id, fire_id, schedule_id, webhook_subscription_id, "
-            "scheduled_fire_at, actual_fired_at, status, display_suppressed, "
-            "output_text, latency_ms, error, date_created "
+            f"SELECT {_FIRE_SELECT_COLUMNS} "
             "FROM wake_fires "
             "WHERE conversation_id = $1 AND schedule_id = $2 "
             "ORDER BY actual_fired_at DESC LIMIT $3",
@@ -965,9 +1024,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             return []
         # cache-bypass: per-conversation scan.
         rows = await self.l3_pool.fetch(
-            "SELECT conversation_id, fire_id, schedule_id, webhook_subscription_id, "
-            "scheduled_fire_at, actual_fired_at, status, display_suppressed, "
-            "output_text, latency_ms, error, date_created "
+            f"SELECT {_FIRE_SELECT_COLUMNS} "
             "FROM wake_fires "
             "WHERE conversation_id = $1 "
             "ORDER BY actual_fired_at DESC LIMIT $2",
@@ -999,9 +1056,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         # cache-bypass: lookup by (conv_id, schedule_id) is not pk-
         # addressable for the row cache (the pk is (conv_id, fire_id)).
         row = await self.l3_pool.fetchrow(
-            "SELECT conversation_id, fire_id, schedule_id, webhook_subscription_id, "
-            "scheduled_fire_at, actual_fired_at, status, display_suppressed, "
-            "output_text, latency_ms, error, date_created "
+            f"SELECT {_FIRE_SELECT_COLUMNS} "
             "FROM wake_fires "
             "WHERE conversation_id = $1 AND schedule_id = $2 "
             "ORDER BY actual_fired_at DESC LIMIT 1",
@@ -1095,6 +1150,43 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         )
         return None
 
+    async def link_started_conversation(
+        self,
+        conversation_id: UUID,
+        fire_id: UUID,
+        started_conversation_id: UUID,
+        *,
+        conn: Any,
+    ) -> bool:
+        """Record the conversation a fire started.
+
+        Runs on the connection, and inside the transaction, that created the
+        conversation, so the conversation and its link commit together or not
+        at all. It happens before the model runs: a fire the reaper later
+        fails is still linked to what it started.
+
+        :param conversation_id: partition column (the wake's conversation)
+        :ptype conversation_id: UUID
+        :param fire_id: the fire
+        :ptype fire_id: UUID
+        :param started_conversation_id: the conversation the fire started
+        :ptype started_conversation_id: UUID
+        :param conn: the transaction's connection
+        :ptype conn: Any
+        :return: ``True`` when the fire was still in flight and is now linked
+        :rtype: bool
+        """
+        # cache-bypass: a targeted UPDATE inside the caller's transaction.
+        linked = await conn.fetchval(
+            "UPDATE wake_fires SET started_conversation_id = $3 "
+            "WHERE conversation_id = $1 AND fire_id = $2 AND status = 'dispatching' "
+            "RETURNING fire_id",
+            conversation_id,
+            fire_id,
+            started_conversation_id,
+        )
+        return linked is not None
+
     async def finalize_success(
         self,
         conversation_id: UUID,
@@ -1107,10 +1199,10 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
     ) -> None:
         """Stamp a successful dispatch result onto the fire row.
 
-        Called by the dispatch callback in shard 03 after the LLM /
-        handler returns. Idempotent: replaying the same finalization
-        on a row already in the terminal state overwrites with the
-        same values.
+        Called after the handler returns. Changes only a row still
+        ``'dispatching'``: a fire the reaper already failed stays failed, so
+        the fire row and whatever the consumer recorded when the reaper told
+        it the fire was lost cannot disagree.
 
         Takes ``conversation_id`` first (partition column) so the SQL
         carries the partition predicate -- pinned by
@@ -1140,7 +1232,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             "UPDATE wake_fires "
             "SET status = $1, output_text = $2, latency_ms = $3, "
             "    display_suppressed = $4 "
-            "WHERE conversation_id = $5 AND fire_id = $6",
+            "WHERE conversation_id = $5 AND fire_id = $6 AND status = 'dispatching'",
             status,
             output_text,
             latency_ms,
@@ -1160,9 +1252,10 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
     ) -> None:
         """Stamp a failed-dispatch result onto the fire row.
 
-        Called by the tick body in shard 02 when the dispatch callback
-        raises -- the per-schedule try/except keeps one bad fire from
-        poisoning the rest of the tick.
+        Called by the tick body when the dispatch callback raises -- the
+        per-schedule try/except keeps one bad fire from poisoning the rest of
+        the tick. Changes only a row still ``'dispatching'``, as
+        :meth:`finalize_success` does.
 
         Takes ``conversation_id`` first (partition column) so the SQL
         carries the partition predicate -- pinned by
@@ -1186,7 +1279,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         # cache-bypass: targeted UPDATE on the failure columns.
         await self.l3_pool.execute(
             "UPDATE wake_fires SET status = 'failed', error = $1, latency_ms = $2 "
-            "WHERE conversation_id = $3 AND fire_id = $4",
+            "WHERE conversation_id = $3 AND fire_id = $4 AND status = 'dispatching'",
             error,
             latency_ms,
             conversation_id,
@@ -1199,7 +1292,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         now: datetime,
         *,
         older_than: timedelta,
-    ) -> int:
+    ) -> list[ReapedFire]:
         """Reap ``'dispatching'`` ``wake_fires`` rows abandoned mid-dispatch.
 
         Satisfies :meth:`FireStore.reap_stale_dispatching
@@ -1213,11 +1306,11 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         :ptype now: datetime
         :param older_than: minimum in-flight age before a row is reaped
         :ptype older_than: timedelta
-        :return: number of rows reaped
-        :rtype: int
+        :return: each reaped fire, with the conversation it started (if any)
+        :rtype: list[ReapedFire]
         """
         if self.l3_pool is None:
-            return 0
+            return []
         cutoff = now - older_than
         # __SPANS_PARTITIONS__: reclaiming abandoned in-flight fires is a
         # global sweep across every conversation; the partition predicate
@@ -1229,11 +1322,18 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         rows = await self.l3_pool.fetch(
             "UPDATE wake_fires SET status = 'failed', error = $1 "
             "WHERE status = 'dispatching' AND actual_fired_at < $2 "
-            "RETURNING conversation_id, fire_id",
+            "RETURNING conversation_id, fire_id, started_conversation_id",
             REAPED_DISPATCH_ERROR,
             cutoff,
         )
-        return len(rows)
+        return [
+            ReapedFire(
+                conversation_id=row["conversation_id"],
+                fire_id=row["fire_id"],
+                started_conversation_id=row["started_conversation_id"],
+            )
+            for row in rows
+        ]
 
     async def count_in_window(
         self,
@@ -1407,17 +1507,67 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         # until it resolves the subscription row. The UNIQUE constraint
         # makes the cross-partition lookup safe + fast.
         row = await self.l3_pool.fetchrow(
-            "SELECT conversation_id, subscription_id, user_id, agent_id, "
-            "default_skill_id, name, secret_ciphertext, allowed_source_pattern, "
-            "execution_mode, task_prompt_template, "
-            "verification_scheme, status, rate_limit_per_minute, last_fired_at, "
-            "date_created, date_updated "
-            "FROM webhook_subscriptions WHERE subscription_id = $1",
+            f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} FROM webhook_subscriptions WHERE subscription_id = $1",
             subscription_id,
         )
         if row is None:
             return None
         return WebhookSubscriptionEntity(dict(row), is_new=False, collection=self)
+
+    async def find_for_agent(
+        self,
+        agent_id: UUID,
+        subscription_id: UUID,
+    ) -> WebhookSubscriptionEntity | None:
+        """Return one of an agent's subscriptions, in whichever conversation it lives.
+
+        The agent-scoped counterpart of :meth:`find_by_id`: another agent's
+        subscription is not found, so its existence does not leak.
+
+        :param agent_id: the agent that must own the subscription
+        :ptype agent_id: UUID
+        :param subscription_id: the subscription
+        :ptype subscription_id: UUID
+        :return: the subscription, or ``None``
+        :rtype: WebhookSubscriptionEntity | None
+        """
+        if self.l3_pool is None:
+            return None
+        # spans-partitions: the caller names the subscription, not its
+        # conversation; the standalone UNIQUE (subscription_id) makes the
+        # lookup exact and agent_id keeps it to the caller's own.
+        row = await self.l3_pool.fetchrow(
+            f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} FROM webhook_subscriptions "
+            "WHERE agent_id = $1 AND subscription_id = $2",
+            agent_id,
+            subscription_id,
+        )
+        if row is None:
+            return None
+        return WebhookSubscriptionEntity(dict(row), is_new=False, collection=self)
+
+    async def list_for_agent(
+        self,
+        agent_id: UUID,
+    ) -> list[WebhookSubscriptionEntity]:
+        """Return an agent's subscriptions across all its conversations.
+
+        Hits ``idx_webhook_subs_agent``.
+
+        :param agent_id: the agent
+        :ptype agent_id: UUID
+        :return: subscriptions ordered by ``date_created`` DESC
+        :rtype: list[WebhookSubscriptionEntity]
+        """
+        if self.l3_pool is None:
+            return []
+        # spans-partitions: the agent's listing covers every conversation.
+        rows = await self.l3_pool.fetch(
+            f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} FROM webhook_subscriptions "
+            "WHERE agent_id = $1 ORDER BY date_created DESC",
+            agent_id,
+        )
+        return [WebhookSubscriptionEntity(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_for_conversation(
         self,
@@ -1434,11 +1584,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
             return []
         # cache-bypass: per-conversation scan.
         rows = await self.l3_pool.fetch(
-            "SELECT conversation_id, subscription_id, user_id, agent_id, "
-            "default_skill_id, name, secret_ciphertext, allowed_source_pattern, "
-            "execution_mode, task_prompt_template, "
-            "verification_scheme, status, rate_limit_per_minute, last_fired_at, "
-            "date_created, date_updated "
+            f"SELECT {_SUBSCRIPTION_SELECT_COLUMNS} "
             "FROM webhook_subscriptions WHERE conversation_id = $1 "
             "ORDER BY date_created DESC",
             conversation_id,
@@ -1593,13 +1739,15 @@ def _schedule_value_for_column(col: str, data: dict[str, Any]) -> Any:
     if col == "schedule_config":
         return {}
     if col == "execution_mode":
-        return "inline"
+        return "spawn"
     if col == "status":
         return "active"
     if col == "missed_fire_policy":
         return "coalesce"
     if col == "include_conversation_history":
         return True
+    if col == "protected":
+        return False
     return None
 
 
@@ -1660,7 +1808,7 @@ def _subscription_value_for_column(col: str, data: dict[str, Any]) -> Any:
             return bytes(value)
         return value
     if col == "execution_mode":
-        return "inline"
+        return "spawn"
     if col == "verification_scheme":
         return "generic_hmac_sha256"
     if col == "status":

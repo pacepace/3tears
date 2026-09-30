@@ -98,7 +98,8 @@ class TestScheduleInsertParams:
         }
         params = _schedule_insert_params(data)
         assert params[_SCHEDULE_INSERT_COLUMNS.index("status")] == "active"
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("execution_mode")] == "inline"
+        assert params[_SCHEDULE_INSERT_COLUMNS.index("execution_mode")] == "spawn"
+        assert params[_SCHEDULE_INSERT_COLUMNS.index("protected")] is False
         assert params[_SCHEDULE_INSERT_COLUMNS.index("missed_fire_policy")] == "coalesce"
         assert params[_SCHEDULE_INSERT_COLUMNS.index("schedule_config")] == {}
         assert params[_SCHEDULE_INSERT_COLUMNS.index("skill_id")] is None
@@ -209,7 +210,7 @@ class TestSubscriptionInsertParams:
             "date_updated": datetime.now(UTC),
         }
         params = _subscription_insert_params(data)
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("execution_mode")] == "inline"
+        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("execution_mode")] == "spawn"
         assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("verification_scheme")] == "generic_hmac_sha256"
         assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("status")] == "active"
 

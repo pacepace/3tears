@@ -17,6 +17,7 @@ from uuid import UUID
 from threetears.observe import get_logger
 
 __all__ = [
+    "parse_conversation_id",
     "parse_schedule_id",
     "parse_subscription_id",
 ]
@@ -33,6 +34,17 @@ def parse_schedule_id(raw: str) -> UUID | None:
     :rtype: UUID | None
     """
     return _parse_tagged(raw, "schedule")
+
+
+def parse_conversation_id(raw: str) -> UUID | None:
+    """Parse ``[conversation:<uuid>]`` or a bare UUID string into :class:`UUID`.
+
+    :param raw: candidate id string supplied by the LLM
+    :ptype raw: str
+    :return: parsed UUID or ``None`` on failure
+    :rtype: UUID | None
+    """
+    return _parse_tagged(raw, "conversation")
 
 
 def parse_subscription_id(raw: str) -> UUID | None:

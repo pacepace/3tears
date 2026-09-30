@@ -61,6 +61,11 @@ Version history:
   whether a fire carries the conversation's recent history into the
   wake's LLM context. Default ``true`` preserves the prior always-on
   behavior; independent of the attached skill's persona setting.
+- v007 adds ``agent_wake_schedules.protected`` with the trigger that
+  refuses deleting, pausing, expiring or retyping a protected wake, the
+  agent-scoped indexes, ``wake_fires.started_conversation_id``, the
+  ``'skipped_life_off'`` fire status, and the ``'spawn'`` default for
+  ``execution_mode``.
 """
 
 from __future__ import annotations
@@ -82,6 +87,10 @@ from threetears.agent.wake.migrations.v005_open_verification_scheme_check import
 )
 from threetears.agent.wake.migrations.v006_add_include_conversation_history import (
     add_include_conversation_history,
+)
+from threetears.agent.wake.migrations.v007_agent_scope_protection_and_fire_links import (
+    PROTECTED_GATE_SETTING,
+    agent_scope_protection_and_fire_links,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -116,14 +125,17 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(4)(add_dispatching_status)
     pkg.version(5)(open_verification_scheme_check)
     pkg.version(6)(add_include_conversation_history)
+    pkg.version(7)(agent_scope_protection_and_fire_links)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "PROTECTED_GATE_SETTING",
     "add_dispatching_status",
     "add_include_conversation_history",
+    "agent_scope_protection_and_fire_links",
     "create_agent_wake_schedules",
     "create_wake_fires",
     "create_webhook_subscriptions",

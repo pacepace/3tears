@@ -181,30 +181,30 @@ def test_interval_zero_rejected() -> None:
 class _InMemoryResolver:
     """Tiny resolver feeding the chain walker chain nodes."""
 
-    def __init__(self, conv_id: UUID, edges: dict[UUID, UUID | None]) -> None:
-        self._conv = conv_id
+    def __init__(self, agent_id: UUID, edges: dict[UUID, UUID | None]) -> None:
+        self._agent = agent_id
         self._edges = edges
 
     async def __call__(self, schedule_id: UUID) -> _ChainNode | None:
         if schedule_id not in self._edges:
             return None
         return _ChainNode(
-            conversation_id=self._conv,
+            agent_id=self._agent,
             context_from_schedule_id=self._edges[schedule_id],
         )
 
 
 @pytest.mark.asyncio
 async def test_context_from_clean_chain_accepted() -> None:
-    conv = uuid4()
+    agent = uuid4()
     target = uuid4()
     upstream = uuid4()
     new = uuid4()
-    resolver = _InMemoryResolver(conv, {target: upstream, upstream: None})
+    resolver = _InMemoryResolver(agent, {target: upstream, upstream: None})
     err = await validate_context_from_chain(
         new_schedule_id=new,
         proposed_context_from=target,
-        conversation_id=conv,
+        agent_id=agent,
         resolver=resolver,
     )
     assert err is None
@@ -212,13 +212,13 @@ async def test_context_from_clean_chain_accepted() -> None:
 
 @pytest.mark.asyncio
 async def test_context_from_self_reference_rejected() -> None:
-    conv = uuid4()
+    agent = uuid4()
     new = uuid4()
-    resolver = _InMemoryResolver(conv, {})
+    resolver = _InMemoryResolver(agent, {})
     err = await validate_context_from_chain(
         new_schedule_id=new,
         proposed_context_from=new,
-        conversation_id=conv,
+        agent_id=agent,
         resolver=resolver,
     )
     assert err is not None and "cycle" in err
@@ -226,16 +226,16 @@ async def test_context_from_self_reference_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_context_from_cycle_rejected() -> None:
-    conv = uuid4()
+    agent = uuid4()
     a = uuid4()
     b = uuid4()
     # A -> B -> A
-    resolver = _InMemoryResolver(conv, {a: b, b: a})
+    resolver = _InMemoryResolver(agent, {a: b, b: a})
     new = uuid4()
     err = await validate_context_from_chain(
         new_schedule_id=new,
         proposed_context_from=a,
-        conversation_id=conv,
+        agent_id=agent,
         resolver=resolver,
     )
     assert err is not None and "cycle" in err
@@ -243,53 +243,54 @@ async def test_context_from_cycle_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_context_from_missing_target_rejected() -> None:
-    conv = uuid4()
-    resolver = _InMemoryResolver(conv, {})
+    agent = uuid4()
+    resolver = _InMemoryResolver(agent, {})
     err = await validate_context_from_chain(
         new_schedule_id=uuid4(),
         proposed_context_from=uuid4(),
-        conversation_id=conv,
+        agent_id=agent,
         resolver=resolver,
     )
     assert err is not None and "not found" in err
 
 
 @pytest.mark.asyncio
-async def test_context_from_cross_conversation_rejected() -> None:
-    conv_a = uuid4()
-    conv_b = uuid4()
+async def test_context_from_another_agents_wake_rejected() -> None:
+    """A hop that belongs to another agent reads as not found: its existence does not leak."""
+    agent_a = uuid4()
+    agent_b = uuid4()
     target = uuid4()
 
-    class _CrossConvResolver:
+    class _OtherAgentResolver:
         async def __call__(self, schedule_id: UUID) -> _ChainNode | None:
             del schedule_id
             return _ChainNode(
-                conversation_id=conv_b,
+                agent_id=agent_b,
                 context_from_schedule_id=None,
             )
 
     err = await validate_context_from_chain(
         new_schedule_id=uuid4(),
         proposed_context_from=target,
-        conversation_id=conv_a,
-        resolver=_CrossConvResolver(),
+        agent_id=agent_a,
+        resolver=_OtherAgentResolver(),
     )
-    assert err is not None and "different conversation" in err
+    assert err is not None and "not found" in err
 
 
 @pytest.mark.asyncio
 async def test_context_from_max_depth_exceeded() -> None:
-    conv = uuid4()
+    agent = uuid4()
     # build a chain that exceeds the max depth
     nodes = [uuid4() for _ in range(CONTEXT_FROM_MAX_DEPTH + 2)]
     edges: dict[UUID, UUID | None] = {}
     for i, nid in enumerate(nodes):
         edges[nid] = nodes[i + 1] if i + 1 < len(nodes) else None
-    resolver = _InMemoryResolver(conv, edges)
+    resolver = _InMemoryResolver(agent, edges)
     err = await validate_context_from_chain(
         new_schedule_id=uuid4(),
         proposed_context_from=nodes[0],
-        conversation_id=conv,
+        agent_id=agent,
         resolver=resolver,
     )
     assert err is not None and "max depth" in err
