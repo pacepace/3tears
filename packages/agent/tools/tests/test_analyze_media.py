@@ -13,6 +13,7 @@ from threetears.agent.tools.builtin.analyze_media import (
     create_analyze_media_tool,
 )
 from threetears.agent.tools.protocols import MediaInfo
+from threetears.media.contracts import MediaSizeLimitExceeded
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,7 @@ class FakeMediaStorage:
         self._downloads: dict[UUID, tuple[bytes, str]] = {}
         self._content: dict[tuple[UUID, str, str | None], str] = {}
         self.store_calls: list[dict[str, Any]] = []
+        self.download_limits: list[int | None] = []
 
     def add_media(
         self,
@@ -103,8 +105,12 @@ class FakeMediaStorage:
     async def get_media(self, media_id: UUID) -> MediaInfo | None:
         return self._media.get(media_id)
 
-    async def download_media(self, media_id: UUID) -> tuple[bytes, str] | None:
-        return self._downloads.get(media_id)
+    async def download_media(self, media_id: UUID, *, max_bytes: int | None = None) -> tuple[bytes, str] | None:
+        self.download_limits.append(max_bytes)
+        found = self._downloads.get(media_id)
+        if found is not None and max_bytes is not None and len(found[0]) > max_bytes:
+            raise MediaSizeLimitExceeded(media_id, limit_bytes=max_bytes, size_bytes=None)
+        return found
 
     async def get_content(
         self,
@@ -524,6 +530,63 @@ class TestDocumentRouting:
         )
 
         assert "no text QA capability" in result
+
+
+class TestDocumentSizeLimit:
+    """a document is read from its bytes only up to MAX_DOCUMENT_BYTES."""
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_DOCUMENT_BYTES
+
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(
+            mid,
+            MediaInfo(mid, "document", "text/plain", size_bytes=MAX_DOCUMENT_BYTES + 1),
+            b"small in this double",
+            "text/plain",
+        )
+        text = FakeTextProvider()
+        tool = _make_tool(storage, text=text, categories={"document"})
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Summarize", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert storage.download_limits == [], "a document whose recorded size is over the limit was downloaded"
+        assert text.answer_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_DOCUMENT_BYTES
+
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", "text/plain"), b"The revenue was 42.", "text/plain")
+        text = FakeTextProvider("42.")
+        tool = _make_tool(storage, text=text, categories={"document"})
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Revenue?", "analyzer": "TestVision"})
+
+        assert result == "42."
+        assert storage.download_limits == [MAX_DOCUMENT_BYTES]
+
+    @pytest.mark.asyncio
+    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch):
+        from threetears.agent.tools.builtin import analyze_media
+
+        monkeypatch.setattr(analyze_media, "MAX_DOCUMENT_BYTES", 8)
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", "text/plain"), b"more than eight bytes", "text/plain")
+        text = FakeTextProvider()
+        tool = _make_tool(storage, text=text, categories={"document"})
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Summarize", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert "passed that size while being read" in result
+        assert text.answer_calls == []
 
 
 class TestAudioVideoRouting:

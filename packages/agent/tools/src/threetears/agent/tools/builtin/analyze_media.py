@@ -28,6 +28,7 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from langchain_core.tools import StructuredTool
+from threetears.media.contracts import MediaSizeLimitExceeded
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.document import DocumentParseError, can_parse_document, parse_document
@@ -44,6 +45,7 @@ from threetears.langgraph.fence import explained_fence, mint_nonce
 from threetears.observe import get_logger
 
 __all__ = [
+    "MAX_DOCUMENT_BYTES",
     "AnalyzeMediaTool",
     "AnalyzerConfig",
     "OnAnalysisCallback",
@@ -60,6 +62,18 @@ _DEFAULT_RESPONSE_SUFFIX = "Respond using markdown formatting."
 _PLAIN_RESPONSE_SUFFIX = "Answer in plain sentences."
 _DEFAULT_DOC_MAX_CHARS = 12_000
 _DEFAULT_TRANSCRIPT_MAX_CHARS = 10_000
+
+#: The largest document this tool downloads to read its text: 20 MiB. A
+#: document with no cached extraction is read from its own bytes, and every
+#: parser needs the whole file in memory at once -- in a tool pod whose memory
+#: every other call it is serving shares. The model is sent at most
+#: ``doc_max_chars`` of the text anyway, so a document past this size cannot be
+#: answered any better by reading all of it, and reading it is what takes the
+#: pod down. 20 MiB holds any ordinary report, contract or text file and is the
+#: same bound the model gateway puts on a referenced object. A document the
+#: catalog records as larger is refused without a byte moving; the read itself
+#: stops at this bound too, because a recorded size can be absent or wrong.
+MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 
 
 @dataclass
@@ -85,6 +99,21 @@ OnAnalysisCallback = Callable[[str, str, str], Awaitable[None]]
 
 def _tool_error(step: str, detail: str) -> str:
     return f"[analyze_media/{step}] Error: {detail}"
+
+
+def _too_large(size_bytes: int | None) -> str:
+    """what the model is told about a document over :data:`MAX_DOCUMENT_BYTES`.
+
+    :param size_bytes: the document's size when known, or ``None`` when the read passed the limit
+    :ptype size_bytes: int | None
+    :return: the sentence
+    :rtype: str
+    """
+    size = f"it is {size_bytes:,} bytes" if size_bytes is not None else "it passed that size while being read"
+    return (
+        f"This document is too large to read (too_large): {size}, and documents over "
+        f"{MAX_DOCUMENT_BYTES:,} bytes are not read. Ask for a smaller document or a specific excerpt."
+    )
 
 
 def create_analyze_media_tool(
@@ -406,11 +435,12 @@ class AnalyzeMediaTool(TearsTool):
                 )
 
     async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None]:
-        """read a document's text from its stored bytes.
+        """read a document's text from its stored bytes, never more than :data:`MAX_DOCUMENT_BYTES`.
 
         the fallback for a storage that serves bytes but caches no extracted
-        text. an absent download is no text (the caller answers that); a type no
-        parser reads, or a parser failure, is an error naming why.
+        text. an absent download is no text (the caller answers that); a document
+        past the size bound, a type no parser reads, or a parser failure, is an
+        error naming why.
 
         :param mid: media UUID
         :ptype mid: UUID
@@ -421,7 +451,16 @@ class AnalyzeMediaTool(TearsTool):
         """
         text: str | None = None
         error: str | None = None
-        dl = await self._storage.download_media(mid)
+        try:
+            dl = await self._storage.download_media(mid, max_bytes=MAX_DOCUMENT_BYTES)
+        except MediaSizeLimitExceeded as exc:
+            _log.warning(
+                "document not read: over the document size limit",
+                extra={
+                    "extra_data": {"media_id": mid_str, "limit_bytes": exc.limit_bytes, "size_bytes": exc.size_bytes}
+                },
+            )
+            return None, _too_large(exc.size_bytes)
         if dl is not None:
             data, mime_type = dl
             try:
@@ -450,8 +489,9 @@ class AnalyzeMediaTool(TearsTool):
         the document's own bytes parsed by :func:`parse_document` -- a storage
         with no extraction cache (the object catalog) is still readable. those
         bytes are fetched only for a type a parser reads
-        (:func:`can_parse_document`); any other type is answered from its
-        metadata without downloading it.
+        (:func:`can_parse_document`) and only up to :data:`MAX_DOCUMENT_BYTES`;
+        any other type, and a document whose recorded size is over the limit,
+        is answered from its metadata without downloading it.
 
         :param mid: media UUID
         :ptype mid: UUID
@@ -479,7 +519,9 @@ class AnalyzeMediaTool(TearsTool):
             # but only a type a parser reads: every type that is not image, audio
             # or video lands here, and the object store holds artifacts (packet
             # captures, database dumps) that must never be pulled whole into this
-            # pod's memory only to be turned away.
+            # pod's memory only to be turned away. and a readable type is still
+            # only read up to MAX_DOCUMENT_BYTES: refused here from its recorded
+            # size, and bounded on the read for a size that is unknown or wrong.
             if not can_parse_document(info.mime_type):
                 _log.warning(
                     "document not downloaded: no parser reads its type",
@@ -489,6 +531,18 @@ class AnalyzeMediaTool(TearsTool):
                     "document analysis",
                     f"This document could not be read (unsupported_type): no parser reads {info.mime_type!r}",
                 )
+            if info.size_bytes is not None and info.size_bytes > MAX_DOCUMENT_BYTES:
+                _log.warning(
+                    "document not downloaded: its recorded size is over the document size limit",
+                    extra={
+                        "extra_data": {
+                            "media_id": mid_str,
+                            "size_bytes": info.size_bytes,
+                            "limit_bytes": MAX_DOCUMENT_BYTES,
+                        }
+                    },
+                )
+                return _tool_error("document analysis", _too_large(info.size_bytes))
             extracted, parse_error = await self._extract_from_bytes(mid, mid_str)
             if parse_error is not None:
                 return _tool_error("document analysis", parse_error)

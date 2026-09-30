@@ -61,7 +61,7 @@ class FakeMediaStorage:
     async def get_media(self, media_id: UUID) -> Any:
         return None
 
-    async def download_media(self, media_id: UUID) -> tuple[bytes, str] | None:
+    async def download_media(self, media_id: UUID, *, max_bytes: int | None = None) -> tuple[bytes, str] | None:
         return None
 
     async def get_content(

@@ -24,6 +24,7 @@ __all__ = [
     "GeneratedImage",
     "ImageGenerationBackend",
     "MediaInfo",
+    "MediaSizeLimitExceeded",
     "MediaStorage",
     "ReferenceVisionProvider",
     "ObjectHandle",
@@ -109,6 +110,12 @@ class MediaInfo:
     recorded rather than reconciled -- collapsing it is a migration, not a
     contract edit -- so a consumer testing for "nothing has happened yet"
     must accept both.
+
+    ``size_bytes`` is the stored object's size as the storage's catalog
+    records it, or ``None`` when the storage does not know it. It lets a
+    consumer refuse an object that is too large BEFORE downloading it. It is
+    what was recorded, not a measurement, so a consumer that must bound its
+    memory still bounds the read itself (``download_media(max_bytes=...)``).
     """
 
     media_id: UUID
@@ -116,6 +123,43 @@ class MediaInfo:
     mime_type: str
     extraction_status: str | None = None
     has_downloadable_data: bool = True
+    size_bytes: int | None = None
+
+
+class MediaSizeLimitExceeded(Exception):
+    """A bounded download stopped: the media is larger than the limit its caller set.
+
+    Raised by :meth:`MediaStorage.download_media` when called with
+    ``max_bytes``, either before anything is read (the recorded size is over
+    the limit) or as soon as the bytes read pass it. Whatever was read is
+    discarded; the caller never holds more than the limit plus one chunk.
+
+    :param media_id: the media item that was too large
+    :ptype media_id: UUID
+    :param limit_bytes: the limit the caller set
+    :ptype limit_bytes: int
+    :param size_bytes: the recorded size when that is what refused it, or
+        ``None`` when the read passed the limit and the full size is unknown
+    :ptype size_bytes: int | None
+    """
+
+    def __init__(self, media_id: UUID, *, limit_bytes: int, size_bytes: int | None) -> None:
+        """Record which media item passed which limit.
+
+        :param media_id: the media item that was too large
+        :ptype media_id: UUID
+        :param limit_bytes: the limit the caller set
+        :ptype limit_bytes: int
+        :param size_bytes: the recorded size, or ``None`` when unknown
+        :ptype size_bytes: int | None
+        :return: nothing
+        :rtype: None
+        """
+        self.media_id = media_id
+        self.limit_bytes = limit_bytes
+        self.size_bytes = size_bytes
+        detail = f"it is {size_bytes:,} bytes" if size_bytes is not None else "it passed the limit while being read"
+        super().__init__(f"media {media_id} is over the {limit_bytes:,}-byte limit: {detail}")
 
 
 @runtime_checkable
@@ -170,13 +214,24 @@ class MediaStorage(Protocol):
     async def download_media(
         self,
         media_id: UUID,
+        *,
+        max_bytes: int | None = None,
     ) -> tuple[bytes, str] | None:
-        """Download raw media bytes.
+        """Download raw media bytes, bounded when the caller sets a limit.
+
+        With ``max_bytes`` the implementation refuses an item whose recorded
+        size is over it without reading any of it, and stops reading as soon
+        as the bytes read pass it -- counting as they arrive, because a
+        recorded size can be absent or wrong -- releasing its stream and
+        raising :class:`MediaSizeLimitExceeded`. ``None`` reads the whole item.
 
         :param media_id: media item UUID
         :ptype media_id: UUID
+        :param max_bytes: the most bytes the caller will hold, or ``None`` for no limit
+        :ptype max_bytes: int | None
         :return: (data, mime_type) or None if unavailable
         :rtype: tuple[bytes, str] | None
+        :raises MediaSizeLimitExceeded: when ``max_bytes`` is set and the item is larger
         """
         ...
 

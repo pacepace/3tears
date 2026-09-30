@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
-from threetears.media.contracts import MediaInfo, MediaStorage, ObjectHandle
+import pytest
+from threetears.media.contracts import MediaInfo, MediaSizeLimitExceeded, MediaStorage, ObjectHandle
 
 from threetears.agent.tools import object_media_storage as oms
 from threetears.agent.tools.consume import ConsumeObjectError
@@ -55,6 +56,7 @@ class TestGetMedia:
             mime_type="image/png",
             extraction_status=None,
             has_downloadable_data=True,
+            size_bytes=3,
         )
 
     async def test_unresolvable_object_is_none(self, monkeypatch) -> None:
@@ -94,6 +96,68 @@ class TestDownloadMedia:
 
         monkeypatch.setattr(oms, "resolve_object", _resolve)
         assert await ObjectCatalogMediaStorage().download_media(uuid4()) is None
+
+
+class TestBoundedDownload:
+    """download_media(max_bytes=) never holds more than the limit plus one chunk."""
+
+    async def test_a_catalogued_size_over_the_limit_refuses_before_opening(self, monkeypatch) -> None:
+        """the recorded size answers first; the store is never opened."""
+        mid = uuid4()
+        opened: list[str] = []
+
+        async def _resolve(object_id):
+            return ObjectHandle(object_id=object_id, s3_key="k", mime_type="text/plain", size_bytes=11)
+
+        async def _stream(s3_key: str) -> AsyncIterator[bytes]:
+            opened.append(s3_key)
+            yield b"x"
+
+        monkeypatch.setattr(oms, "resolve_object", _resolve)
+        monkeypatch.setattr(oms, "open_object_stream", _stream)
+        with pytest.raises(MediaSizeLimitExceeded) as caught:
+            await ObjectCatalogMediaStorage().download_media(mid, max_bytes=10)
+        assert opened == []
+        assert (caught.value.media_id, caught.value.limit_bytes, caught.value.size_bytes) == (mid, 10, 11)
+
+    async def test_the_read_stops_past_the_limit_and_releases_the_stream(self, monkeypatch) -> None:
+        """a size the catalog understates is caught on the read, which stops and closes the stream."""
+        mid = uuid4()
+        pulled: list[int] = []
+        closed: list[bool] = []
+
+        async def _resolve(object_id):
+            return ObjectHandle(object_id=object_id, s3_key="k", mime_type="text/plain", size_bytes=0)
+
+        async def _stream(s3_key: str) -> AsyncIterator[bytes]:
+            try:
+                for _ in range(100):
+                    pulled.append(4)
+                    yield b"abcd"
+            finally:
+                closed.append(True)
+
+        monkeypatch.setattr(oms, "resolve_object", _resolve)
+        monkeypatch.setattr(oms, "open_object_stream", _stream)
+        with pytest.raises(MediaSizeLimitExceeded) as caught:
+            await ObjectCatalogMediaStorage().download_media(mid, max_bytes=10)
+        assert sum(pulled) == 12, "the read went on past the chunk that crossed the limit"
+        assert closed == [True]
+        assert caught.value.size_bytes is None
+
+    async def test_an_object_at_the_limit_is_read_whole(self, monkeypatch) -> None:
+        """the limit is inclusive: exactly max_bytes is not over it."""
+
+        async def _resolve(object_id):
+            return ObjectHandle(object_id=object_id, s3_key="k", mime_type="text/plain", size_bytes=4)
+
+        async def _stream(s3_key: str) -> AsyncIterator[bytes]:
+            yield b"ab"
+            yield b"cd"
+
+        monkeypatch.setattr(oms, "resolve_object", _resolve)
+        monkeypatch.setattr(oms, "open_object_stream", _stream)
+        assert await ObjectCatalogMediaStorage().download_media(uuid4(), max_bytes=4) == (b"abcd", "text/plain")
 
 
 class TestContentIsUncached:

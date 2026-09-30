@@ -27,7 +27,7 @@ class _FakeMediaStorage:
     async def get_media(self, media_id):  # noqa: ANN001, ANN201
         return None
 
-    async def download_media(self, media_id):  # noqa: ANN001, ANN201
+    async def download_media(self, media_id, *, max_bytes=None):  # noqa: ANN001, ANN201
         return None
 
     async def get_content(self, media_id, content_type, *, model_name=None):  # noqa: ANN001, ANN201

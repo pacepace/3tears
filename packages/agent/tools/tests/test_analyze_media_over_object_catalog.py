@@ -213,3 +213,114 @@ class TestReferenceVisionSendsOnlyResolvedIds:
         assert not result.success
         assert "No valid media found" in result.content
         assert vision.calls == []
+
+
+class _EndlessDocument:
+    """a catalogued readable document whose bytes are produced as they are pulled.
+
+    nothing is allocated up front, so a test can stand for an object far larger than the pod could
+    hold and still prove how much of it was read: ``pulled`` counts every byte handed to the reader,
+    and ``closed`` says whether the reader released the stream.
+    """
+
+    def __init__(self, *, catalogued_size: int, chunk_size: int, chunks: int) -> None:
+        self.catalogued_size = catalogued_size
+        self.chunk_size = chunk_size
+        self.chunks = chunks
+        self.pulled = 0
+        self.opened = 0
+        self.closed = False
+
+    def install(self, monkeypatch: pytest.MonkeyPatch, mid: UUID) -> None:
+        """stand the hub boundary up over this one object, of type ``text/plain``."""
+
+        async def _resolve(object_id: UUID) -> ObjectHandle:
+            if object_id != mid:
+                raise ConsumeObjectError("not owned by the caller")
+            return ObjectHandle(
+                object_id=object_id, s3_key=f"k/{object_id}", mime_type="text/plain", size_bytes=self.catalogued_size
+            )
+
+        async def _stream(s3_key: str) -> AsyncIterator[bytes]:
+            self.opened += 1
+            try:
+                for _ in range(self.chunks):
+                    self.pulled += self.chunk_size
+                    yield b"a" * self.chunk_size
+            finally:
+                self.closed = True
+
+        monkeypatch.setattr(oms, "resolve_object", _resolve)
+        monkeypatch.setattr(oms, "open_object_stream", _stream)
+
+
+class TestAReadableDocumentIsSizeCapped:
+    """a type a parser reads is still never pulled whole into the pod past the document limit."""
+
+    async def test_a_catalogued_size_over_the_limit_is_refused_before_a_byte_moves(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the catalog's size answers first: the object is never opened, and the model is told it is too large."""
+        from threetears.agent.tools.builtin.analyze_media import MAX_DOCUMENT_BYTES
+
+        mid = uuid4()
+        document = _EndlessDocument(catalogued_size=MAX_DOCUMENT_BYTES + 1, chunk_size=1024 * 1024, chunks=64)
+        document.install(monkeypatch, mid)
+        text = _FakeTextProvider("never asked")
+        tool = AnalyzeMediaTool(
+            storage=ObjectCatalogMediaStorage(),
+            analyzers={"Reader": AnalyzerConfig(name="Reader", text=text, supported_categories={"document"})},
+        )
+
+        result = await tool.execute(media_ids=[str(mid)], question="Summarize", analyzer="Reader")
+
+        assert not result.success
+        assert "too large" in result.content
+        assert f"{MAX_DOCUMENT_BYTES + 1:,}" in result.content, "the answer names the document's size"
+        assert document.opened == 0, "the object store was opened for a document the catalog says is too large"
+        assert text.prompts == []
+
+    async def test_an_unknown_size_stops_reading_at_the_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a catalog that does not know the size (or understates it) cannot make the read unbounded.
+
+        the stream is three times the limit; the read must stop within one chunk past the limit,
+        release the stream, and answer that the document is too large.
+        """
+        from threetears.agent.tools.builtin.analyze_media import MAX_DOCUMENT_BYTES
+
+        mid = uuid4()
+        chunk = 1024 * 1024
+        document = _EndlessDocument(catalogued_size=0, chunk_size=chunk, chunks=3 * MAX_DOCUMENT_BYTES // chunk)
+        document.install(monkeypatch, mid)
+        text = _FakeTextProvider("never asked")
+        tool = AnalyzeMediaTool(
+            storage=ObjectCatalogMediaStorage(),
+            analyzers={"Reader": AnalyzerConfig(name="Reader", text=text, supported_categories={"document"})},
+        )
+
+        result = await tool.execute(media_ids=[str(mid)], question="Summarize", analyzer="Reader")
+
+        assert not result.success
+        assert "too large" in result.content
+        assert document.pulled <= MAX_DOCUMENT_BYTES + chunk, (
+            f"the read pulled {document.pulled} bytes; it must stop within one chunk of the {MAX_DOCUMENT_BYTES}-byte limit"
+        )
+        assert document.closed, "the stream was not released when the read stopped"
+        assert text.prompts == []
+
+    async def test_a_document_under_the_limit_is_read_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a normal document, its size catalogued, is downloaded and answered as before."""
+        mid = uuid4()
+        document = _EndlessDocument(catalogued_size=4 * 1024, chunk_size=1024, chunks=4)
+        document.install(monkeypatch, mid)
+        text = _FakeTextProvider("It is all a's.")
+        tool = AnalyzeMediaTool(
+            storage=ObjectCatalogMediaStorage(),
+            analyzers={"Reader": AnalyzerConfig(name="Reader", text=text, supported_categories={"document"})},
+        )
+
+        result = await tool.execute(media_ids=[str(mid)], question="What is in it?", analyzer="Reader")
+
+        assert result.success, result.content
+        assert document.pulled == 4 * 1024
+        assert len(text.prompts) == 1

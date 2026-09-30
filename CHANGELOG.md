@@ -30,6 +30,26 @@ packages (bumped in lock-step).
   downloads it -- a catalogued packet capture or database dump is no longer pulled whole into the
   tool pod only to be turned away.
 
+### analyze_media reads a document only up to 20 MiB
+
+- `MediaInfo` (media-contracts) gains `size_bytes: int | None = None`: the stored object's size as
+  the storage's catalog records it, or `None` when the storage does not know it.
+  `ObjectCatalogMediaStorage.get_media` fills it from the object catalog.
+- `MediaStorage.download_media(media_id, *, max_bytes=None)`: with a limit, an implementation
+  refuses an item whose recorded size is over it without reading any of it, and stops reading as
+  soon as the bytes read pass it -- counting as they arrive, since a recorded size can be absent
+  or wrong -- releasing its stream and raising the new `MediaSizeLimitExceeded`
+  (`media_id`, `limit_bytes`, `size_bytes`; `size_bytes` is `None` when the read passed the limit).
+  **Breaking for implementers:** every `MediaStorage` must accept the keyword.
+  `ObjectCatalogMediaStorage` implements both halves.
+- New `threetears.agent.tools.builtin.analyze_media.MAX_DOCUMENT_BYTES` (20 MiB). A document with
+  no cached extraction is read from its own bytes, and every parser needs the whole file in the
+  tool pod's memory; the model reads at most `doc_max_chars` of it anyway. A readable document
+  recorded as larger is refused before a byte moves; one whose size is unknown or understated is
+  read with `max_bytes=MAX_DOCUMENT_BYTES` and stopped within one chunk of it. Either way the
+  model is told plainly: "This document is too large to read (too_large): ...". A type no parser
+  reads is still answered as unreadable first.
+
 ### A credential the auth-callout refuses ON PURPOSE stops the client at once; any other refusal does not
 
 Owner ruling Q16 (2026-09-30). nats-server tells a refused connection only
