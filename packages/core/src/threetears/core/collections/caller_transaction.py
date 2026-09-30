@@ -92,6 +92,32 @@ class CallerTransaction:
                 break
         return found
 
+    @staticmethod
+    def join(conn: Any, *, writer: str) -> CallerTransaction:
+        """the :class:`CallerTransaction` a write handed ``conn`` joins; refuse a connection none opened.
+
+        The one refusal every collection write that takes ``conn=`` makes: a row written inside a
+        transaction the caller ends later is not final when the write returns, and only the
+        transaction's end is where every cache of it can be settled. A connection whose transaction
+        this class did not open has no such end to settle at.
+
+        :param conn: the connection the write was handed
+        :ptype conn: Any
+        :param writer: the refusing call, as the caller wrote it (``"Schedules.resume"``)
+        :ptype writer: str
+        :return: the outermost :class:`CallerTransaction` open on ``conn``
+        :rtype: CallerTransaction
+        :raises ValueError: when no :class:`CallerTransaction` is open on ``conn`` in this context
+        """
+        found = CallerTransaction.enclosing(conn)
+        if found is None:
+            raise ValueError(
+                f"{writer}(conn=...) needs the connection's transaction opened by "
+                f"threetears.core.collections.CallerTransaction(conn): the row is not final until the "
+                f"caller's transaction ends, and only that is where every cache of it can be settled"
+            )
+        return found
+
     def enroll(self, collection: BaseCollection[Any], entity_id: Any) -> None:
         """record that ``collection`` wrote ``entity_id`` in this transaction, to be evicted when it ends.
 

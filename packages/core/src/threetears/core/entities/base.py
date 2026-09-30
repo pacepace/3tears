@@ -1,11 +1,14 @@
 """Base entity class — thin cache proxy with change tracking.
 
-Entities hold _id + _collection reference. All field data lives in the L1 cache,
-accessed via collection.get_field_sync() / set_field_sync(). No in-memory
-data dicts.
+Entities hold _id + _collection reference. A NEW entity's field data lives in the
+L1 cache, accessed via collection.get_field_sync() / set_field_sync(); the
+_changes dict tracks individual field mutations (write path).
 
-When a collection is present, entity data MUST live in L1. The _changes dict
-tracks individual field mutations (write path). Entities without a collection
+A LOADED entity (``is_new=False``) with a collection holds its own row and writes
+no cache tier on construction; _changes still tracks only its edits. Whoever read
+the row decides whether L1 takes it: a by-key read does, under the collection's
+per-key fence, and a multi-row scan does not, since it read L3 outside that fence
+and a write of the key may have landed meanwhile. Entities without a collection
 (factory-created) use _changes as transient storage until saved.
 """
 
@@ -34,6 +37,7 @@ _INTERNAL_ATTRS = frozenset(
         "_is_new",
         "_dirty",
         "_changes",
+        "_held",
         "original_date_updated",
         "_column_names",
     }
@@ -95,18 +99,27 @@ class BaseEntity:
     """Thin cache proxy — holds _id + _collection reference, no data dict.
 
     Read path:
-        _get_raw(field, default) checks _changes first, then reads from
-        the L1 cache via collection.get_field_sync(). __getattr__ dispatches
+        _get_raw(field, default) checks _changes first, then the entity's
+        held row when it holds one (:meth:`hold_row`), then reads from the
+        L1 cache via collection.get_field_sync(). __getattr__ dispatches
         to _get_raw() for attributes not found via normal Python lookup.
 
     Write path:
-        __setattr__ writes to the L1 cache via collection.set_field_sync()
-        and records the change in _changes for dirty tracking.
+        __setattr__ records the change in _changes for dirty tracking and,
+        for an entity that reads through L1 (a new one), writes it to the
+        L1 cache via collection.set_field_sync(). An entity holding its own
+        row leaves L1 alone: the row L1 holds for the key may be another
+        version.
 
     Serialization:
-        to_dict() returns the full row from the L1 cache via
-        collection.get_row_sync(), filtered to columns that belong to
-        this entity.
+        to_dict() returns the held row with the entity's edits, or the full
+        row from the L1 cache via collection.get_row_sync(), filtered to
+        columns that belong to this entity.
+
+    A loaded entity (``is_new=False``) with a collection holds its own row
+    and writes no cache tier on construction: only the read that produced
+    the row may decide whether L1 takes it, under the collection's per-key
+    fence.
 
     Entities created without a collection use _changes as temporary
     in-memory storage until they are attached to a collection via save().
@@ -166,15 +179,22 @@ class BaseEntity:
             None if is_new else data.get("date_updated"),
         )
         object.__setattr__(self, "_column_names", frozenset(data.keys()))
-        if collection is not None:
-            wrote = collection.write_to_cache_sync(data)
-            if wrote:
-                object.__setattr__(self, "_changes", {})
-            else:
-                # No L1 backend — store data in _changes as fallback
-                object.__setattr__(self, "_changes", dict(data))
-        else:
+        # A loaded entity never writes L1 here. Its row came from a read, and only the read knows
+        # whether L1 may take it: a by-key read caches under the collection's per-key fence
+        # before building the entity, while a scan read L3 outside that fence, and a row it
+        # cached could be older than a write that landed meanwhile, with nothing left to evict
+        # it. Writing here would bypass the fence for every scan in every package.
+        object.__setattr__(self, "_held", None)
+        if collection is None:
             # No collection — transient dict storage for factory-created entities.
+            object.__setattr__(self, "_changes", dict(data))
+        elif not is_new:
+            object.__setattr__(self, "_changes", {})
+            self.hold_row(data)
+        elif collection.write_to_cache_sync(data):
+            object.__setattr__(self, "_changes", {})
+        else:
+            # No L1 backend — store data in _changes as fallback
             object.__setattr__(self, "_changes", dict(data))
 
     @property
@@ -219,11 +239,41 @@ class BaseEntity:
         is_new_flag: bool = self._is_new
         return is_new_flag
 
+    @property
+    def holds_row(self) -> bool:
+        """whether the entity holds its own row rather than reading it through L1.
+
+        :return: ``True`` when the entity answers from a row it holds
+        :rtype: bool
+        """
+        return object.__getattribute__(self, "_held") is not None
+
+    def hold_row(self, data: dict[str, Any]) -> None:
+        """keep ``data`` as this entity's own row, detached from L1.
+
+        Reads and :meth:`to_dict` answer from it with the entity's edits on top, and attribute
+        writes change the entity without touching L1: the row L1 holds for the key, if any, may be
+        another version of it. A loaded entity starts this way; a collection calls this when it
+        withholds a row from L1 -- a save that did not cache, a reload that did not -- so the handle
+        still reads what it saved or read. Unsaved edits stay tracked.
+
+        :param data: the row, keyed by column name
+        :ptype data: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        """
+        object.__setattr__(self, "_held", dict(data))
+        columns = object.__getattribute__(self, "_column_names")
+        object.__setattr__(self, "_column_names", columns | frozenset(data.keys()))
+
     def _get_raw(self, field: str, default: Any = None) -> Any:
-        """Read a single field. Checks _changes first, then L1 cache via collection."""
+        """Read a single field: the entity's edits, then its held row, then L1 via the collection."""
         changes = object.__getattribute__(self, "_changes")
         if field in changes:
             return changes[field]
+        held = object.__getattribute__(self, "_held")
+        if held is not None:
+            return held.get(field, default)
         collection = object.__getattribute__(self, "_collection")
         if collection is None:
             return default
@@ -244,7 +294,7 @@ class BaseEntity:
             object.__setattr__(self, name, value)
             return
         collection = object.__getattribute__(self, "_collection")
-        if collection is not None:
+        if collection is not None and object.__getattribute__(self, "_held") is None:
             entity_id = object.__getattribute__(self, "_id")
             collection.set_field_sync(entity_id, name, value)
         changes = object.__getattribute__(self, "_changes")
@@ -262,7 +312,7 @@ class BaseEntity:
         return dict(object.__getattribute__(self, "_changes"))
 
     def to_dict(self) -> dict[str, Any]:
-        """Export entity data as dictionary from L1 cache or _changes fallback.
+        """Export entity data as dictionary: its held row with its edits, L1, or the _changes fallback.
 
         Only returns columns that belong to this entity (tracked via
         _column_names).
@@ -271,6 +321,9 @@ class BaseEntity:
         changes = object.__getattribute__(self, "_changes")
         if collection is None:
             return dict(changes)
+        held = object.__getattribute__(self, "_held")
+        if held is not None:
+            return {**held, **changes}
         entity_id = object.__getattribute__(self, "_id")
         row = collection.get_row_sync(entity_id)
         if row is None:
@@ -284,9 +337,13 @@ class BaseEntity:
         return result
 
     def mark_clean(self) -> None:
-        """Reset dirty state and clear change tracking."""
+        """Reset dirty state and clear change tracking; a held row takes the edits into itself."""
         object.__setattr__(self, "_dirty", False)
         object.__setattr__(self, "_is_new", False)
+        held = object.__getattribute__(self, "_held")
+        if held is not None:
+            # a held row stays held: the edits just persisted become part of it.
+            object.__setattr__(self, "_held", {**held, **object.__getattribute__(self, "_changes")})
         object.__setattr__(self, "_changes", {})
         log.debug(
             "Entity marked clean",
@@ -311,7 +368,10 @@ class BaseEntity:
         """replace entity data with freshly-loaded row; called by collection reload.
 
         rewrites the L1 cache with the given row (when the entity is
-        attached to a collection), resets the per-field change buffer,
+        attached to a collection and reads through L1), or takes it as
+        the entity's held row (when it holds one, :meth:`hold_row`:
+        whether L1 takes the row is its reader's decision, under the
+        collection's fence), resets the per-field change buffer,
         clears the dirty/new flags, and refreshes the optimistic-
         concurrency token so subsequent saves check against the new
         persisted timestamp. name is public because the collection
@@ -327,7 +387,8 @@ class BaseEntity:
             backend that rejected the row)
         """
         collection = object.__getattribute__(self, "_collection")
-        if collection is not None:
+        holding = object.__getattribute__(self, "_held") is not None
+        if collection is not None and not holding:
             wrote = collection.write_to_cache_sync(data)
             if not wrote:
                 raise RuntimeError(f"L1 cache write failed in set_data() for {type(self).__name__} id={self._id}")
@@ -344,6 +405,7 @@ class BaseEntity:
         object.__setattr__(self, "_id", derive_addressing_id(row_id, data, collection))
         object.__setattr__(self, "_column_names", frozenset(data.keys()))
         object.__setattr__(self, "_changes", {})
+        object.__setattr__(self, "_held", dict(data) if holding else None)
         object.__setattr__(self, "_dirty", False)
         object.__setattr__(self, "_is_new", False)
         object.__setattr__(self, "original_date_updated", data.get("date_updated"))

@@ -21,8 +21,8 @@ import random
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
@@ -33,6 +33,7 @@ from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import _CACHED_AT_COLUMN
+from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.l2_order import (
@@ -2008,14 +2009,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         return entity
 
     def _entity_from_read(self, entity_id: Any, row: dict[str, Any]) -> EntityT:
-        """build the entity a read answers with, caching its row only where the read did.
+        """build the entity a read answers with, from L1's copy when the read cached one.
 
-        An entity keeps its data in L1, so building one writes its row there. That is right when
-        the read cached the row, and wrong when the read declined to (:class:`_L1Fence`: a write or
-        eviction of the key overlapped it): the entity would cache the row the read withheld, and
-        L1 would serve it after the newer write with nothing left to evict it. When L1 holds the
-        row after the read, the entity is built from L1's copy; otherwise its data moves into the
-        entity's own change buffer and L1 is left without the row, as on a collection with no L1.
+        A loaded entity holds its own row and writes no tier (:class:`BaseEntity`), so the read
+        alone decides what L1 holds: when it declined to cache (:class:`_L1Fence`: a write or
+        eviction of the key overlapped it), L1 is left without the row. When L1 holds the row
+        after the read, the entity is built from that copy.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
@@ -2026,9 +2025,6 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         cached = self._select_from_l1(entity_id)
         entity: EntityT = self.entity_class(cached if cached is not None else row, is_new=False, collection=self)
-        if cached is None and self._l1 is not None:
-            self._evict_l1(entity_id)
-            object.__setattr__(entity, "_changes", dict(row))
         return entity
 
     def __setitem__(self, key: Any, value: Any) -> None:
@@ -2419,13 +2415,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         caller_transaction: CallerTransaction | None = None
         if conn is not None:
-            caller_transaction = CallerTransaction.enclosing(conn)
-            if caller_transaction is None:
-                raise ValueError(
-                    f"{type(self).__name__}.save_entity(conn=...) needs the connection's transaction opened "
-                    f"by threetears.core.collections.CallerTransaction(conn): the row is not final until the "
-                    f"caller's transaction ends, and only that is where every cache of it can be settled"
-                )
+            caller_transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.save_entity")
         generation_failure: GenerationUnavailableError | None = None
 
         if defer:
@@ -2439,6 +2429,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             await self._write_buffer.add(self.table_name, entity_id, data)
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
+            if entity.holds_row:
+                entity.hold_row(data)
         elif caller_transaction is not None:
             # enrolled before the write, so a write whose outcome is unknown -- it raised, but the
             # caller may still commit what reached L3 -- is settled with the rest.
@@ -2472,9 +2464,11 @@ class BaseCollection(ABC, Generic[EntityT]):
                 generation_failure = await self._advance_generation()
                 entity.mark_clean()
                 entity.original_date_updated = data.get("date_updated")
-                if not await self._cache_committed_row(entity_id, data, before, ticket):
-                    # the handle still reads what it saved, as on a collection with no L1.
-                    object.__setattr__(entity, "_changes", dict(data))
+                cached = await self._cache_committed_row(entity_id, data, before, ticket)
+                if not cached or entity.holds_row:
+                    # the handle still reads what it saved, as on a collection with no L1; an
+                    # entity that holds its row keeps holding it, now the row as stored.
+                    entity.hold_row(data)
 
         await self._publish_invalidation(entity_id)
         if generation_failure is not None:
@@ -2528,7 +2522,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity.mark_clean()
         entity.original_date_updated = data.get("date_updated")
         self._evict_l1(entity_id)
-        object.__setattr__(entity, "_changes", dict(data))
+        entity.hold_row(data)
 
     def _withdraw_unstored(self, entity: BaseEntity, entity_id: Any, working: dict[str, Any]) -> None:
         """take an entity's working copy out of L1 after its L3 write did not land.
@@ -2558,7 +2552,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: None
         """
         self._evict_l1(entity_id)
-        object.__setattr__(entity, "_changes", working)
+        entity.hold_row(working)
         log.info(
             "L3 write did not land; its working copy was withdrawn from L1",
             extra={"extra_data": {"table": self.table_name, "entity_id": str(entity_id)}},
@@ -2743,7 +2737,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # a write or eviction of the key overlapped the read, so the row may already be
                     # older than L3's: the handle keeps it, L1 does not.
                     self._evict_l1(entity_id)
-                    object.__setattr__(entity, "_changes", dict(data))
+                    entity.hold_row(data)
         if before is not None:
             live, revision = before
             # a live L2 value is refreshed only where L3 is never behind L2: a collection whose L3
@@ -3435,6 +3429,66 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
+
+    @asynccontextmanager
+    async def bypassing_write(self, *entity_ids: Any, conn: Any = None) -> AsyncIterator[BypassingWrite]:
+        """run a write that bypasses :meth:`save_entity`, then settle every cache of the rows it touched.
+
+        The one owner of the rule for a targeted UPDATE or DELETE on a table :meth:`get` serves: the
+        statement leaves L1 and L2 on every replica holding the row it replaced, so every row it may
+        have changed is evicted from both and the eviction broadcast.
+
+        - **On the collection's own pool** (``conn`` is ``None``): the rows are evicted once the
+          body ends, however it ended -- a statement that raised may still have reached L3, and a
+          cancelled one's outcome is as unknown. The eviction is shielded, so a cancellation
+          arriving meanwhile cannot stop it partway. A body that knows it changed nothing (a
+          compare-and-swap that lost) calls :meth:`BypassingWrite.unchanged` and evicts nothing,
+          unless it then raises.
+        - **Joined to a caller's transaction** (``conn`` given): the rows are not final until that
+          transaction ends, so they are enrolled in the enclosing
+          :class:`~threetears.core.collections.caller_transaction.CallerTransaction` and settled
+          there. A connection no ``CallerTransaction`` opened is refused before the body runs.
+
+        Usage::
+
+            async with self.bypassing_write((conversation_id, schedule_id)):
+                # cache-bypass: targeted UPDATE; the row is evicted from every tier once it lands.
+                await self.l3_pool.execute("UPDATE ...", ...)
+
+        :param entity_ids: the rows the write may change, when known before it -- pk values
+            (single-pk) or tuples of pk values in declared column order; more can be named during
+            the write with :meth:`BypassingWrite.touches`
+        :ptype entity_ids: Any
+        :param conn: the caller's connection the write joins, or ``None`` for the collection's pool
+        :ptype conn: Any
+        :return: the write's handle
+        :rtype: AsyncIterator[BypassingWrite]
+        :raises ValueError: when ``conn`` is given and its transaction was not opened by
+            ``CallerTransaction``
+        """
+        transaction = (
+            None if conn is None else CallerTransaction.join(conn, writer=f"{type(self).__name__}.bypassing_write")
+        )
+        write = BypassingWrite(self, transaction)
+        write.touches(*entity_ids)
+        completed = False
+        try:
+            yield write
+            completed = True
+        finally:
+            if transaction is None and not (completed and write.is_unchanged):
+                await asyncio.shield(self._evict_every(write.keys))
+
+    async def _evict_every(self, entity_ids: tuple[Any, ...]) -> None:
+        """evict each row in ``entity_ids`` from L1 and L2 and broadcast it (:meth:`invalidate_cache`).
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared column order
+        :ptype entity_ids: tuple[Any, ...]
+        :return: nothing
+        :rtype: None
+        """
+        for entity_id in entity_ids:
+            await self.invalidate_cache(entity_id)
 
     def create(self, data: dict[str, Any]) -> EntityT:
         """Create new entity (not persisted until save)."""

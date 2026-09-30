@@ -20,6 +20,7 @@ from threetears.core.collections.bucket import (
     COLLECTIONS_BUCKET_SUFFIX,
     bind_collections_bucket,
 )
+from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
@@ -74,6 +75,7 @@ __all__ = [
     "BYTES_TYPE",
     "COLLECTIONS_BUCKET_SUFFIX",
     "BaseCollection",
+    "BypassingWrite",
     "CacheInvalidationMessage",
     "CallerTransaction",
     "CollectionRegistry",

@@ -79,7 +79,8 @@ class TestMemoryEntityAgentId:
     def test_agent_id_setter_with_collection(self, mock_collection: tuple) -> None:
         coll, cache = mock_collection
         data = _sample_data()
-        entity = MemoryEntity(data, is_new=False, collection=coll)
+        # a new entity lives in L1, so its setters write through, addressed by the composite key.
+        entity = MemoryEntity(data, is_new=True, collection=coll)
         new_agent = uuid7()
 
         entity.agent_id = new_agent
@@ -139,7 +140,8 @@ class TestMemoryEntityCustomerId:
     def test_customer_id_setter_with_collection(self, mock_collection: tuple) -> None:
         coll, cache = mock_collection
         data = _sample_data()
-        entity = MemoryEntity(data, is_new=False, collection=coll)
+        # a new entity lives in L1, so its setters write through, addressed by the composite key.
+        entity = MemoryEntity(data, is_new=True, collection=coll)
         new_customer = uuid7()
 
         entity.customer_id = new_customer

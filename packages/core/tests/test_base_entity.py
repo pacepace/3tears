@@ -67,11 +67,11 @@ class TestBaseEntity:
         assert entity.name == "Caroline"
 
     def test_getattr_reads_from_l1_cache(self, stub_collection: StubCollection) -> None:
-        """Unmodified field reads from L1 cache."""
+        """Unmodified field of an entity that lives in L1 (a new one) reads from L1 cache."""
         coll, _cache = stub_collection
         entity = BaseEntity(
             {"id": "e3", "name": "Dan", "role": "admin"},
-            is_new=False,
+            is_new=True,
             collection=coll,
         )
 
@@ -87,9 +87,9 @@ class TestBaseEntity:
             _ = entity.missing_field
 
     def test_setattr_records_change_and_updates_l1(self, stub_collection: StubCollection) -> None:
-        """Setting a field updates both _changes and L1."""
+        """Setting a field of an entity that lives in L1 (a new one) updates both _changes and L1."""
         coll, cache = stub_collection
-        entity = BaseEntity({"id": "e5", "name": "Frank"}, is_new=False, collection=coll)
+        entity = BaseEntity({"id": "e5", "name": "Frank"}, is_new=True, collection=coll)
 
         entity.name = "Franklin"
 
@@ -150,10 +150,10 @@ class TestBaseEntity:
         assert object.__getattribute__(entity, "_changes") == {}
 
     def test_to_dict_from_l1(self, stub_collection: StubCollection) -> None:
-        """Returns full state from L1."""
+        """An entity that lives in L1 (a new one) returns full state from L1."""
         coll, _cache = stub_collection
         data = {"id": "e10", "name": "Kate", "active": True}
-        entity = BaseEntity(data, is_new=False, collection=coll)
+        entity = BaseEntity(data, is_new=True, collection=coll)
 
         result = entity.to_dict()
 
@@ -414,3 +414,48 @@ class TestAttachedButWithoutL1:
 
         assert cache[("e1",)]["name"] == "Robert"
         assert entity.is_dirty is False
+
+
+class TestALoadedEntityHoldsItsOwnRow:
+    """a loaded entity writes no cache tier on construction; it answers from the row it was built with.
+
+    Only the read that produced the row may decide whether L1 takes it: a by-key read caches under
+    the collection's per-key fence, and a multi-row scan read L3 outside that fence. An entity that
+    wrote its row into L1 on construction bypassed the fence for every scan in every package.
+    """
+
+    def test_construction_writes_no_l1_row(self, stub_collection: StubCollection) -> None:
+        coll, cache = stub_collection
+
+        entity = BaseEntity({"id": "s1", "name": "Ada"}, is_new=False, collection=coll)
+
+        coll.write_to_cache_sync.assert_not_called()
+        assert cache == {}
+        assert entity.holds_row
+        assert entity.name == "Ada"
+        assert entity.to_dict() == {"id": "s1", "name": "Ada"}
+
+    def test_it_answers_from_its_row_whatever_l1_holds_for_the_key(self, stub_collection: StubCollection) -> None:
+        """L1 may hold another version of the key; the entity reads, edits and exports its own."""
+        coll, cache = stub_collection
+        coll.write_to_cache_sync({"id": "s2", "name": "newer"})
+        entity = BaseEntity({"id": "s2", "name": "scanned", "role": "admin"}, is_new=False, collection=coll)
+
+        entity.role = "owner"
+
+        assert entity.name == "scanned"
+        assert entity.to_dict() == {"id": "s2", "name": "scanned", "role": "owner"}
+        assert cache[("s2",)] == {"id": "s2", "name": "newer"}, "an edit reached a cached row of another version"
+        assert entity.get_changes() == {"role": "owner"}
+        assert entity.is_dirty
+
+    def test_mark_clean_keeps_the_row_with_its_edits(self, stub_collection: StubCollection) -> None:
+        coll, _cache = stub_collection
+        entity = BaseEntity({"id": "s3", "name": "Ada"}, is_new=False, collection=coll)
+        entity.name = "Grace"
+
+        entity.mark_clean()
+
+        assert entity.holds_row
+        assert entity.name == "Grace"
+        assert entity.get_changes() == {}

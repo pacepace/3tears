@@ -34,13 +34,15 @@ edit path then saved that old row back over L3: a paused schedule resumed, a
 tick-expired one-shot re-armed, a rotated webhook secret restored. The
 eviction runs however the UPDATE ended, since one that raised may still have
 reached L3. An UPDATE joined to a caller's transaction is settled by the
-:class:`~threetears.core.collections.CallerTransaction` when it ends instead.
+:class:`~threetears.core.collections.CallerTransaction` when it ends instead. Both
+are :meth:`~threetears.core.collections.BaseCollection.bypassing_write`, the core
+owner of the rule.
 
 **A multi-row scan caches nothing.** ``list_*``, ``find_by_id`` and
-``latest_for_schedule`` read L3 outside the per-key fence ``get`` reads under, so the
-entities they return hold their own rows (see :func:`_scanned`) rather than writing them into
-L1 where a concurrent write could leave them stale, or an eviction could empty them under a
-caller still reading them.
+``latest_for_schedule`` read L3 outside the per-key fence ``get`` reads under. The entities
+they return are loaded entities, which hold their own rows and write no cache tier
+(:class:`~threetears.core.entities.base.BaseEntity`), so a concurrent write cannot leave L1
+stale behind them and an eviction cannot empty them under a caller still reading them.
 
 **Fire rows are the exception, and why is a claim about their readers.** No
 code reads a ``wake_fires`` row by primary key:
@@ -67,9 +69,7 @@ lives in the agent-tools shard, not at the DB layer):
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
@@ -81,8 +81,6 @@ from threetears.agent.wake.entities import (
 )
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.collections.base import BaseCollection
-from threetears.core.collections.caller_transaction import CallerTransaction
-from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import (
     deserialize_from_json,
     serialize_to_json,
@@ -98,49 +96,6 @@ __all__ = [
 
 
 log = get_logger(__name__)
-
-
-@asynccontextmanager
-async def _evicting(collection: BaseCollection[Any], entity_id: tuple[Any, ...]) -> AsyncIterator[None]:
-    """evict ``entity_id`` from every cache tier, on every replica, once the body's L3 write ends.
-
-    The eviction runs however the body ended: an UPDATE that raised may still have reached L3,
-    and a cache left holding the row it replaced is exactly what this exists to prevent. It is
-    shielded so a cancellation arriving mid-eviction cannot leave it half done.
-
-    :param collection: the collection whose row the body writes
-    :ptype collection: BaseCollection[Any]
-    :param entity_id: the row's composite primary key, in declared column order
-    :ptype entity_id: tuple[Any, ...]
-    :return: an async context manager wrapping the write
-    :rtype: AsyncIterator[None]
-    """
-    try:
-        yield
-    finally:
-        await asyncio.shield(collection.invalidate_cache(entity_id))
-
-
-def _scanned[EntityT: BaseEntity](entity_class: type[EntityT], row: Any) -> EntityT:
-    """build the entity a multi-row scan answers with, holding its own row and caching nothing.
-
-    An entity built with its collection writes its row into L1 and reads every field back
-    through it. A scan read L3 outside the per-key fence :meth:`BaseCollection.get` reads under,
-    so the row it caches can be older than a write that landed while the scan ran, with nothing
-    left to evict it; and once any write or peer broadcast evicts the key, the entity reads every
-    field as absent -- the webhook receiver's own ``record_fire`` did exactly that to the
-    subscription it had just looked up. A scanned entity therefore keeps its row in its change
-    buffer. It still carries the ``date_updated`` it was read with, so a save of it through
-    :meth:`BaseCollection.save_entity` is fenced like any other.
-
-    :param entity_class: the entity type to build
-    :ptype entity_class: type[EntityT]
-    :param row: one row the scan returned
-    :ptype row: Any
-    :return: the entity, detached from every cache tier
-    :rtype: EntityT
-    """
-    return entity_class(dict(row), is_new=False, collection=None)
 
 
 # Field-type hints used when L2 cache rounds a row through JSON. The
@@ -601,7 +556,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             now,
             limit,
         )
-        return [_scanned(WakeScheduleEntity, row) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_active_for_conversation(
         self,
@@ -633,7 +588,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "ORDER BY next_fire_at ASC NULLS LAST",
             conversation_id,
         )
-        return [_scanned(WakeScheduleEntity, row) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_for_conversation(
         self,
@@ -662,7 +617,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "ORDER BY date_created DESC",
             conversation_id,
         )
-        return [_scanned(WakeScheduleEntity, row) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def count_active_for_conversation(
         self,
@@ -717,7 +672,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """
         if self.l3_pool is None:
             return None
-        async with _evicting(self, (conversation_id, schedule_id)):
+        async with self.bypassing_write((conversation_id, schedule_id)):
             if last_fired_at is None:
                 # cache-bypass: targeted UPDATE on the next_fire_at column; the row is evicted
                 # from every tier once it lands.
@@ -761,7 +716,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """
         if self.l3_pool is None:
             return None
-        async with _evicting(self, (conversation_id, schedule_id)):
+        async with self.bypassing_write((conversation_id, schedule_id)):
             # cache-bypass: targeted UPDATE on status column; the row is evicted from every
             # tier once it lands.
             await self.l3_pool.execute(
@@ -820,25 +775,15 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "SET status = 'active', next_fire_at = $3, date_updated = now() "
             "WHERE conversation_id = $1 AND schedule_id = $2 AND status != 'expired'"
         )
-        entity_id = (conversation_id, schedule_id)
-        if conn is not None:
-            caller_transaction = CallerTransaction.enclosing(conn)
-            if caller_transaction is None:
-                raise ValueError(
-                    "WakeScheduleCollection.resume(conn=...) needs the connection's transaction opened by "
-                    "threetears.core.collections.CallerTransaction(conn): the row is not final until the "
-                    "caller's transaction ends, and only that is where every cache of it can be settled"
-                )
-            # enrolled before the write, so an UPDATE whose outcome is unknown is settled too.
-            caller_transaction.enroll(self, entity_id)
-            # cache-bypass: targeted UPDATE flipping paused -> active; the caller's transaction
-            # evicts the row from every tier when it ends.
-            await conn.execute(sql, conversation_id, schedule_id, next_fire_at)
-        elif self.l3_pool is not None:
-            async with _evicting(self, entity_id):
-                # cache-bypass: targeted UPDATE flipping paused -> active; the row is evicted
-                # from every tier once it lands.
-                await self.l3_pool.execute(sql, conversation_id, schedule_id, next_fire_at)
+        target = conn if conn is not None else self.l3_pool
+        if target is None:
+            return None
+        # joined to ``conn``, the row is enrolled in the caller's transaction before the write and
+        # settled when it ends; on the pool it is evicted once the UPDATE lands, however it ended.
+        async with self.bypassing_write((conversation_id, schedule_id), conn=conn):
+            # cache-bypass: targeted UPDATE flipping paused -> active; the row is evicted from
+            # every tier once it is final.
+            await target.execute(sql, conversation_id, schedule_id, next_fire_at)
         return None
 
     async def claim_and_reschedule(
@@ -889,12 +834,12 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """
         if self.l3_pool is None:
             return False
-        entity_id = (conversation_id, schedule_id)
-        # cache-bypass: atomic CAS UPDATE. A won claim evicts the row from every tier: nothing
-        # reads a cached row back into place otherwise, and the schedule tools save the row they
-        # read -- a stale one re-arms an expired one-shot. A lost claim changed nothing and
-        # evicts nothing; one that raised may have landed, so it evicts.
-        try:
+        # A won claim evicts the row from every tier: nothing reads a cached row back into place
+        # otherwise, and the schedule tools save the row they read -- a stale one re-arms an
+        # expired one-shot. A lost claim changed nothing and evicts nothing; one that raised may
+        # have landed, so it evicts.
+        async with self.bypassing_write((conversation_id, schedule_id)) as write:
+            # cache-bypass: atomic CAS UPDATE; the row is evicted from every tier once it lands.
             claimed = await self.l3_pool.fetchval(
                 "UPDATE agent_wake_schedules "
                 "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
@@ -907,13 +852,8 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
                 schedule_id,
                 expected_next_fire,
             )
-        # BaseException, not Exception: a cancelled UPDATE's outcome is as unknown as a failed
-        # one's, and CancelledError is not an Exception.
-        except BaseException:
-            await asyncio.shield(self.invalidate_cache(entity_id))
-            raise
-        if claimed is not None:
-            await self.invalidate_cache(entity_id)
+            if claimed is None:
+                write.unchanged()
         return claimed is not None
 
     async def mark_expired(
@@ -936,7 +876,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """
         if self.l3_pool is None:
             return None
-        async with _evicting(self, (conversation_id, schedule_id)):
+        async with self.bypassing_write((conversation_id, schedule_id)):
             # cache-bypass: targeted UPDATE on status column; the row is evicted from every
             # tier once it lands.
             await self.l3_pool.execute(
@@ -1113,7 +1053,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             schedule_id,
             limit,
         )
-        return [_scanned(WakeFireEntity, row) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_for_conversation(
         self,
@@ -1146,7 +1086,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             conversation_id,
             limit,
         )
-        return [_scanned(WakeFireEntity, row) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def latest_for_schedule(
         self,
@@ -1182,7 +1122,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         )
         if row is None:
             return None
-        return _scanned(WakeFireEntity, row)
+        return self.entity_class(dict(row), is_new=False, collection=self)
 
     async def create_dispatching(
         self,
@@ -1608,7 +1548,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         )
         if row is None:
             return None
-        return _scanned(WebhookSubscriptionEntity, row)
+        return self.entity_class(dict(row), is_new=False, collection=self)
 
     async def list_for_conversation(
         self,
@@ -1634,7 +1574,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
             "ORDER BY date_created DESC",
             conversation_id,
         )
-        return [_scanned(WebhookSubscriptionEntity, row) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def rotate_secret(
         self,
@@ -1661,7 +1601,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         """
         if self.l3_pool is None:
             return None
-        async with _evicting(self, (conversation_id, subscription_id)):
+        async with self.bypassing_write((conversation_id, subscription_id)):
             # cache-bypass: targeted UPDATE on a single bytes column; the row is evicted from
             # every tier once it lands. A cached pre-rotation row would otherwise be saved back
             # by the next edit, restoring the secret this replaced.
@@ -1683,7 +1623,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         """Flip ``status`` to ``'paused'``. Idempotent."""
         if self.l3_pool is None:
             return None
-        async with _evicting(self, (conversation_id, subscription_id)):
+        async with self.bypassing_write((conversation_id, subscription_id)):
             # cache-bypass: targeted UPDATE on status; the row is evicted from every tier once
             # it lands.
             await self.l3_pool.execute(
@@ -1703,7 +1643,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         """Flip ``status`` to ``'active'``. Idempotent."""
         if self.l3_pool is None:
             return None
-        async with _evicting(self, (conversation_id, subscription_id)):
+        async with self.bypassing_write((conversation_id, subscription_id)):
             # cache-bypass: targeted UPDATE on status; the row is evicted from every tier once
             # it lands.
             await self.l3_pool.execute(
@@ -1740,7 +1680,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         """
         if self.l3_pool is None:
             return None
-        async with _evicting(self, (conversation_id, subscription_id)):
+        async with self.bypassing_write((conversation_id, subscription_id)):
             # cache-bypass: targeted UPDATE on the timestamp column; the row is evicted from
             # every tier once it lands.
             await self.l3_pool.execute(

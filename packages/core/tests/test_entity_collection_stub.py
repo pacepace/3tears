@@ -353,8 +353,9 @@ class TestStubbedEntityAgreesWithRealEntity:
         does.
         """
         stub, cache = entity_collection_stub(("id",))
-        stubbed = BaseEntity({"id": "e1", "name": "Ada"}, is_new=False, collection=stub)
-        real = BaseEntity({"id": "e1", "name": "Ada"}, is_new=False, collection=real_collection)
+        # new entities: a loaded one holds its own row and writes no L1 row to orphan.
+        stubbed = BaseEntity({"id": "e1", "name": "Ada"}, is_new=True, collection=stub)
+        real = BaseEntity({"id": "e1", "name": "Ada"}, is_new=True, collection=real_collection)
 
         stubbed.id_column_probe = "unused"  # keeps _column_names honest
         stub.set_field_sync("e1", "id", "e2")

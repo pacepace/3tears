@@ -27,7 +27,6 @@ from uuid import UUID
 
 from sqlalchemy import MetaData, Table
 
-from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -94,28 +93,6 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
-
-
-async def _evict_rows(collection: BaseCollection[Any], entity_ids: Sequence[Any]) -> None:
-    """evict every row in ``entity_ids`` from every cache tier and broadcast it, to completion.
-
-    Shielded: the rows were written to L3 before this runs, so a cancellation that stopped
-    the loop partway left the rest cached with the value L3 no longer holds -- and
-    ``asyncio.CancelledError`` is not an ``Exception``, so nothing on the way out caught it.
-
-    :param collection: the collection whose rows were written
-    :ptype collection: BaseCollection[Any]
-    :param entity_ids: the written rows' primary keys, in declared column order
-    :ptype entity_ids: Sequence[Any]
-    :return: nothing
-    :rtype: None
-    """
-
-    async def _evict_each() -> None:
-        for entity_id in entity_ids:
-            await collection.invalidate_cache(entity_id)
-
-    await asyncio.shield(_evict_each())
 
 
 #: the keyword-match predicate every memory FTS query filters on. ``websearch_to_tsquery``
@@ -1862,21 +1839,20 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # pool holds. The SQL literal lives in the shared helper (which
         # carries no ``memories`` literal), so the partition-enforcement
         # walker is satisfied and this method holds no raw table SQL.
-        result = await apply_salience_decay(
-            self.l3_pool,
-            table="memories",
-            half_life_seconds=half_life_days * 86400.0,
-            floor=floor,
-            returning_columns=self.primary_key_columns,
-        )
-        decayed_pks = result if isinstance(result, list) else []
-        # invalidate each decayed row's L1/L2 entry so a subsequent get()
-        # re-reads fresh salience from L3. A bulk sweep issues one
-        # invalidation per decayed row; acceptable for a maintenance pass
-        # (revisit with a coarser generation-bump if a huge corpus makes
-        # the per-row publish a bottleneck). The decay has committed, so the
-        # eviction runs to completion even if this task is cancelled.
-        await _evict_rows(self, decayed_pks)
+        # each decayed row is evicted from L1/L2 so a subsequent get() re-reads fresh salience
+        # from L3. A bulk sweep issues one invalidation per decayed row; acceptable for a
+        # maintenance pass (revisit with a coarser generation-bump if a huge corpus makes the
+        # per-row publish a bottleneck).
+        async with self.bypassing_write() as write:
+            result = await apply_salience_decay(
+                self.l3_pool,
+                table="memories",
+                half_life_seconds=half_life_days * 86400.0,
+                floor=floor,
+                returning_columns=self.primary_key_columns,
+            )
+            decayed_pks = result if isinstance(result, list) else []
+            write.touches(*decayed_pks)
         return len(decayed_pks)
 
     async def bump_salience(
@@ -1912,8 +1888,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             return None
         # bulk reinforcement UPDATE keyed by a memory_id set; salience /
         # last_accessed are immutable to the entity-UPDATE generator, so
-        # this raw pass is the only writer.
-        try:
+        # this raw pass is the only writer. Each bumped row is evicted so a
+        # subsequent get() re-reads the fresh salience from L3 (a bounded set --
+        # the ids surfaced this retrieval).
+        async with self.bypassing_write(*[(agent_id, memory_id) for memory_id in memory_ids]):
             await self.l3_pool.execute(
                 "UPDATE memories SET salience = LEAST(1.0, salience + $1), "
                 "last_accessed = now() "
@@ -1922,12 +1900,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 agent_id,
                 memory_ids,
             )
-        finally:
-            # cache coherence: invalidate each bumped row so a subsequent get()
-            # re-reads the fresh salience from L3 rather than serving a stale
-            # cached row (a bounded set -- the ids surfaced this retrieval).
-            # Runs however the UPDATE ended: one that raised may have landed.
-            await _evict_rows(self, [(agent_id, memory_id) for memory_id in memory_ids])
         return None
 
     async def find_active_for_consolidation(
@@ -2049,8 +2021,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             return None
         # bulk supersession UPDATE keyed by a memory_id set; superseded_by
         # is immutable to the entity-UPDATE generator, so this raw pass is
-        # the only writer (an entity save can't revert it).
-        try:
+        # the only writer (an entity save can't revert it). Each superseded
+        # source is evicted so a subsequent get() re-reads the fresh
+        # superseded_by + date_updated (the ambient-retrieval filter reads L3
+        # directly, but a later entity save must see the advanced CAS fence).
+        async with self.bypassing_write(*[(agent_id, source_memory_id) for source_memory_id in source_memory_ids]):
             await self.l3_pool.execute(
                 "UPDATE memories SET superseded_by = $1, date_updated = now() "
                 "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[])",
@@ -2058,13 +2033,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 agent_id,
                 source_memory_ids,
             )
-        finally:
-            # cache coherence: invalidate each superseded source so a
-            # subsequent get() re-reads the fresh superseded_by + date_updated
-            # from L3 (the ambient-retrieval filter reads L3 directly, but a
-            # later entity save must see the advanced CAS fence). Runs however
-            # the UPDATE ended: one that raised may have landed.
-            await _evict_rows(self, [(agent_id, source_memory_id) for source_memory_id in source_memory_ids])
         return None
 
 

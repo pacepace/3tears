@@ -6,6 +6,46 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### One core owner for a cache-bypassing write; no scan writes L1 outside the per-key fence
+
+Evicting after a targeted UPDATE was hand-rolled four times in three packages (memory, intention,
+wake), and wake re-implemented `save_entity`'s `CallerTransaction` join. And every scan that built
+its entities with `collection=self` wrote the scanned row into L1 outside the per-key fence `get`
+reads under: a row older than a write that landed while the scan ran stayed cached with nothing
+left to evict it. Wake had closed that for its own scans privately; intention's `find_by_user` /
+`find_open_for_deliberation`, memory's `find_by_user`, and the other packages' scans had not.
+
+**Contract changes:**
+
+- New `BaseCollection.bypassing_write(*entity_ids, conn=None)`, an async context manager yielding
+  a `BypassingWrite` (exported from `threetears.core.collections`). On the collection's pool it
+  evicts every touched row from L1 and L2 and broadcasts it once the body ends, however it ended,
+  shielded against cancellation; `BypassingWrite.touches(...)` names rows only the statement
+  reveals, and `BypassingWrite.unchanged()` skips the eviction for a write known to have changed
+  nothing, unless the body then raises. With `conn`, the rows are enrolled in the enclosing
+  `CallerTransaction` and settled when it ends. memory's and intention's salience and supersession
+  UPDATEs and every wake targeted UPDATE (the tick's claim included) run inside it.
+- New `CallerTransaction.join(conn, *, writer=)`: the enclosing transaction, or `ValueError`.
+  `save_entity(conn=)` and `bypassing_write(conn=)` refuse through it.
+  `WakeScheduleCollection.resume(conn=)` now names `WakeScheduleCollection.bypassing_write` in its
+  refusal.
+- **BREAKING (behaviour):** a `BaseEntity` constructed `is_new=False` with a collection holds its
+  own row (`BaseEntity.holds_row`, `BaseEntity.hold_row(data)`) and writes no cache tier on
+  construction. Its reads and `to_dict()` answer from that row with its edits on top; attribute
+  writes no longer write through to L1, since the row L1 holds for the key may be another version.
+  `get_changes()` still returns only the edits. Only the read that produced the row decides whether
+  L1 takes it. Code that relied on building a loaded entity to warm L1 now reads through `get`. A
+  new entity (`is_new=True`) is unchanged: it lives in L1 and writes through.
+- wake's scans build entities with their collection again, so `.save()` / `.reload()` work on them
+  and a composite-pk entity's `addressing_id` is the `(conversation_id, id)` tuple.
+
+### A datasource origin-link change evicts the knowledge scans that read it
+
+`ConceptCollection` / `PlaybookEntryCollection` `list_visible_to_user(..., datasource_id=)` read
+`datasources` for the KNW-77 origin link, but neither scan declared the table, so linking or
+unlinking a customer datasource served the old knowledge set until the 60-second TTL. Both scans
+now depend on `datasources`, which the hub broadcasts through `CapabilitySourceCollection`.
+
 ### analyze_media reads a catalogued document, and sends the gateway only ids the caller owns
 
 Over `ObjectCatalogMediaStorage`, which caches no extracted text, every document analysis

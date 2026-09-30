@@ -609,3 +609,44 @@ class TestMemoriesCollectionCountByUser:
 
         result = await coll.count_by_user(uuid.uuid7(), agent_id=uuid.uuid7())
         assert result is False
+
+
+class TestAScanCachesNothing:
+    """find_by_user reads L3 outside the per-key fence, so its entities hold their rows and L1 is untouched.
+
+    An entity that wrote the scanned row into L1 left it there even when a write of the key
+    landed while the scan was in flight -- the older row, with nothing left to evict it.
+    """
+
+    async def test_find_by_user_leaves_l1_alone_and_its_entity_holds_the_row(
+        self,
+        registry: CollectionRegistry,
+        config_always: DefaultCoreConfig,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        data = _sample_data()
+        key = (data["agent_id"], data["memory_id"])
+        holder: dict[str, MemoriesCollection] = {}
+
+        # a one-method L3 whose scan is overtaken by a write of the row it returns
+        class _WriteLandsDuringScan:
+            async def fetch(self, sql: str, *args: object) -> list[dict]:
+                del sql, args
+                holder["coll"].evict_from_cache_sync(key)
+                return [dict(data)]
+
+        _rebind_pool(registry, _WriteLandsDuringScan())  # type: ignore[arg-type]
+        coll = MemoriesCollection(
+            registry,
+            config_always,
+            authorizer=permissive_memory_authorizer,
+            nats_client=_make_nats_mock(),
+        )
+        holder["coll"] = coll
+
+        entities = await coll.find_by_user(data["user_id"], agent_id=data["agent_id"], customer_id=data["customer_id"])
+
+        assert coll.get_row_sync(key) is None, "the scan cached a row a write had already replaced"
+        [entity] = entities
+        assert entity.content == "User prefers dark mode"
+        assert entity.addressing_id == key
