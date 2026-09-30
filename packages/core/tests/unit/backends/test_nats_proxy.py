@@ -87,6 +87,27 @@ class TestSerializeParam:
     def test_none_passthrough(self) -> None:
         assert _serialize_param(None) is None
 
+    def test_list_of_datetimes_serializes_each_element(self) -> None:
+        """an array parameter (``unnest($1::timestamptz[])``) converts every element."""
+        first = datetime(2026, 9, 2, 13, 0, 0, tzinfo=UTC)
+        second = datetime(2026, 9, 2, 14, 0, 0, tzinfo=UTC)
+        assert _serialize_param([first, second]) == [first.isoformat(), second.isoformat()]
+
+    def test_tuple_of_mixed_scalars_serializes_to_a_list(self) -> None:
+        """a tuple is an array parameter too; JSON has no tuple, so it leaves as a list."""
+        uid = UUID("12345678-1234-5678-1234-567812345678")
+        assert _serialize_param((uid, Decimal("1.5"), b"\x01", None)) == [str(uid), "1.5", "\\x01", None]
+
+    def test_nested_list_serializes_every_level(self) -> None:
+        """a multi-dimensional array converts its inner elements too."""
+        uid = UUID("12345678-1234-5678-1234-567812345678")
+        assert _serialize_param([[uid], []]) == [[str(uid)], []]
+
+    def test_list_parameter_is_json_serializable(self) -> None:
+        """the whole converted array survives the JSON envelope."""
+        stamps = [datetime(2026, 9, 2, 13, 0, 0, tzinfo=UTC)]
+        assert json.loads(json.dumps(_serialize_param(stamps))) == [stamps[0].isoformat()]
+
 
 # ------------------------------------------------------------------
 # _detect_operation

@@ -112,14 +112,19 @@ def _raise_for_failed_reply(response: dict[str, Any], what: str) -> NoReturn:
 def _serialize_param(value: Any) -> Any:
     """serialize parameter value for NATS transport.
 
-    converts UUID, datetime, Decimal to string representations.
-    other types passed through unchanged.
+    converts UUID, datetime, Decimal to string representations and bytes to
+    ``\\x``-prefixed hex. a list or tuple is an array parameter (``= ANY($1::uuid[])``,
+    ``unnest($1::timestamptz[])``) and is converted element by element, at every
+    depth, into a list, so the broker can restore each element as it restores a
+    scalar. other types passed through unchanged.
 
     :param value: parameter value to serialize
     :ptype value: Any
     :return: serialized value suitable for JSON transport
     :rtype: Any
     """
+    if isinstance(value, (list, tuple)):
+        return [_serialize_param(element) for element in value]
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, datetime):
