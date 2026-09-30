@@ -156,14 +156,22 @@ class ServerApiResponse(BaseModel):
 
 
 class KickOutcome(StrEnum):
-    """what became of a kick. Every member means the connection no longer holds its credential."""
+    """what became of a kick.
+
+    :attr:`KICKED` and :attr:`NOT_CONNECTED` mean the connection no longer holds its credential.
+    :attr:`SERVER_GONE` does NOT prove that on its own; see it.
+    """
 
     #: the server held the connection and closed it.
     KICKED = "kicked"
     #: the server does not hold that client id: the connection had already closed.
     NOT_CONNECTED = "not_connected"
-    #: no running server has that id. A server id is fresh on every start, so the server that held
-    #: the connection has restarted or left, and the connection died with it.
+    #: no server answered for that id. A server id is fresh on every start, so either the server
+    #: that held the connection restarted or left -- and the connection died with it -- or it is
+    #: cut off from the kicking client while its own clients still reach it, and the connection is
+    #: open and keeps its credential. The silence cannot tell the two apart: a caller that must know
+    #: keeps the kick and retries it, or proves the restart some other way (a later connection
+    #: attributed to a server of the same configured name under a new id).
     SERVER_GONE = "server_gone"
 
 
