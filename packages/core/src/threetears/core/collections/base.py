@@ -524,6 +524,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         return result
 
     @property
+    def broadcasts_invalidations(self) -> bool:
+        """whether this collection's evictions reach other replicas.
+
+        ``False`` when it was built with no NATS client: a write or eviction then drops the key on
+        this replica only, and every other replica keeps serving the row it cached. A host that
+        runs shared work over a collection -- a tick under a cross-pod lock -- checks this to refuse
+        a collection wired without the bus rather than let it evict locally in silence.
+
+        :return: ``True`` when the collection holds a NATS client to broadcast through
+        :rtype: bool
+        """
+        return self._nats_client is not None
+
+    @property
     def required_l3_pool(self) -> L3Backend:
         """:attr:`l3_pool`, or a clear failure saying why it had to be there.
 

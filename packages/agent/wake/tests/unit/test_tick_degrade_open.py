@@ -80,11 +80,14 @@ def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any) -> None:
 
 
 def _collections() -> tuple[_NoDbScheduleCollection, WakeFireCollection]:
-    """the no-DB schedule collection and an unreached fire collection the tick runs on."""
+    """the no-DB schedule collection and an unreached fire collection the tick runs on.
+
+    The schedule collection carries a NATS client, as the tick requires when it is given one.
+    """
     registry = CollectionRegistry()
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return (
-        _NoDbScheduleCollection(registry=registry, config=config),
+        _NoDbScheduleCollection(registry=registry, config=config, nats_client=object()),  # type: ignore[arg-type]
         WakeFireCollection(registry=registry, config=config),
     )
 

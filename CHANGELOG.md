@@ -121,6 +121,9 @@ with no NATS client, so their evictions never reached another replica.
   their own. Build them once on the registry that carries the process's NATS client and runs its
   invalidation listener (`start_invalidation_listener` / `stop_invalidation_listener`); a registry
   with no client broadcasts nothing, and every other replica keeps the pre-write row.
+  `wake_tick_job` given a `nats_client` raises `ValueError` for `schedules=` built with none,
+  before it claims anything. New `BaseCollection.broadcasts_invalidations` says whether a
+  collection's evictions reach other replicas.
 - A multi-row wake scan (`list_*`, `find_by_id`, `latest_for_schedule`) returns entities holding
   their own rows and caches nothing. They wrote the scanned row into L1 outside the per-key read
   fence, and read every field back through it, so an eviction of the key -- the receiver's own

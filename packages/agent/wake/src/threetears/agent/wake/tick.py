@@ -526,8 +526,9 @@ async def wake_tick_job(
 ) -> None:
     """Run one tick pass of the agent-wake scheduler.
 
-    Builds the adapter stores over ``pool`` + an adapter dispatch callback that
-    bridges the consumer's wake-shaped callback to the generic engine, registers
+    Wraps ``schedules`` / ``fires`` in the adapter stores, builds an adapter
+    dispatch callback that bridges the consumer's wake-shaped callback to the
+    generic engine (``pool`` is forwarded to it unchanged), registers
     it against the single ``"agent_wake"`` kind, and delegates to
     :func:`threetears.scheduled_jobs.scheduled_tick_job` under the
     preserved ``"agent_wake_tick"`` cross-pod lock. The callback is awaited
@@ -544,7 +545,8 @@ async def wake_tick_job(
     integration tests pin the real asyncpg shape). Same for ``nats_client``
     (:class:`threetears.nats.NatsClient` or ``None``) -- a ``None`` skips lock
     acquisition for single-pod dev environments (the per-schedule optimistic-CAS
-    still guards against double fires).
+    still guards against double fires). Given a ``nats_client``, the tick refuses
+    ``schedules`` built with none: its claims would evict on this replica only.
 
     :param pool: asyncpg-compatible connection pool (or proxy)
     :ptype pool: Any
@@ -564,7 +566,16 @@ async def wake_tick_job(
     :ptype fires: WakeFireCollection
     :return: nothing
     :rtype: None
+    :raises ValueError: when ``nats_client`` is given and ``schedules`` has no NATS client, so a
+        won claim's eviction would reach no other replica
     """
+    if nats_client is not None and not schedules.broadcasts_invalidations:
+        raise ValueError(
+            "wake_tick_job was given a nats_client but its schedules collection has no NATS client: a "
+            "claim would evict the schedule on this replica only, and every other replica would keep "
+            "serving the pre-claim row. build schedules / fires on the registry that carries the "
+            "process's NATS client and runs its invalidation listener"
+        )
     schedule_store = _WakeScheduleStore(schedules)
     fire_store = _WakeFireStore(fires)
     emitter = get_wake_emitter()

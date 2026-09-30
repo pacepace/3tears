@@ -144,3 +144,30 @@ async def test_a_claim_evicts_the_schedule_on_every_replica() -> None:
     fresh = await reader.get((conv, sid))
     assert store.reads == reads_before + 1, "the other replica answered from a cache L3 no longer agrees with"
     assert fresh is not None and fresh.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_a_tick_given_a_nats_client_refuses_schedules_that_cannot_broadcast() -> None:
+    """a tick running under the cross-pod lock on a registry with no client claims rows no replica hears of.
+
+    Its nats_client proves the process has a bus; schedules built on a registry without one would
+    evict only locally, and every other replica would keep the pre-claim row. Refused before the
+    pass claims anything.
+    """
+    conv, sid = uuid.uuid4(), uuid.uuid4()
+    store = _Store(_due_one_shot(conv, sid, datetime.now(UTC) - timedelta(minutes=1)))
+    l1 = SQLiteBackend(db_name=f"wake_tick_bare_{uuid.uuid4().hex[:8]}")
+    l1.initialize(_metadata())
+    bare = CollectionRegistry()
+    bare.configure(l1_backend=l1, l3_pool=store)  # type: ignore[arg-type]
+    schedules = WakeScheduleCollection(registry=bare, config=_config())
+    fires = WakeFireCollection(registry=bare, config=_config())
+
+    async def _fired(trigger: WakeTrigger, fire_id: UUID, pool: Any) -> WakeDispatchResult:
+        del trigger, fire_id, pool
+        return WakeDispatchResult(status="fired", output_text="ok", latency_ms=3)
+
+    with pytest.raises(ValueError, match="no NATS client"):
+        await wake_tick_job(store, FakeNatsClient(), _fired, schedules=schedules, fires=fires)
+
+    assert store.row["status"] == "active", "the refused tick claimed the schedule anyway"

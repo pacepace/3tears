@@ -84,14 +84,18 @@ def _make_schedule_entity(**overrides: Any) -> WakeScheduleEntity:
     return WakeScheduleEntity(data, is_new=False)
 
 
-def _empty_schedule_collection() -> WakeScheduleCollection:
-    """A WakeScheduleCollection with no pool (methods are overridden / unused)."""
+def _empty_schedule_collection(nats_client: Any = None) -> WakeScheduleCollection:
+    """A WakeScheduleCollection with no pool (methods are overridden / unused).
+
+    ``nats_client`` is the client its evictions broadcast through: a tick given one refuses a
+    schedule collection without one.
+    """
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
 
     registry = CollectionRegistry()
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-    return WakeScheduleCollection(registry=registry, config=cfg)
+    return WakeScheduleCollection(registry=registry, config=cfg, nats_client=nats_client)
 
 
 def _empty_fire_collection() -> WakeFireCollection:
@@ -487,7 +491,9 @@ class TestWakeTickJobWiring:
         async def _cb(_t: WakeTrigger, _f: UUID, _p: Any) -> WakeDispatchResult:
             return WakeDispatchResult(status="fired")
 
-        await wake_tick_job(object(), nats, _cb, schedules=_empty_schedule_collection(), fires=_empty_fire_collection())
+        await wake_tick_job(
+            object(), nats, _cb, schedules=_empty_schedule_collection(nats), fires=_empty_fire_collection()
+        )
 
         assert isinstance(captured["schedule_store"], _WakeScheduleStore)
         assert isinstance(captured["fire_store"], _WakeFireStore)
