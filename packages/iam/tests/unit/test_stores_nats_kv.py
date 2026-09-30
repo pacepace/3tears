@@ -315,3 +315,73 @@ async def test_the_factories_open_a_bucket_and_wrap_it(nats: FakeNatsClient) -> 
     assert await tickets.redeem(issued.secret) == {"user": "u1"}
     await states.put("k", {"v": 1}, ttl=timedelta(minutes=5))
     assert await states.take("k") == {"v": 1}
+
+
+class _RecordingClient(FakeNatsClient):
+    """the shipped in-memory client, recording the create flag of every bucket open."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.create_flags: list[bool] = []
+
+    async def kv_bucket(self, **kwargs: Any) -> Any:  # type: ignore[override]
+        self.create_flags.append(kwargs.get("create_if_missing", True))
+        return await super().kv_bucket(**kwargs)
+
+
+async def test_the_factories_declare_their_bucket_by_default() -> None:
+    nats = _RecordingClient()
+    await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))
+    await state_store(nats, name="state", ttl=timedelta(hours=1))
+    assert nats.create_flags == [True, True]
+
+
+async def test_a_bind_only_factory_binds_a_bucket_somebody_else_declared() -> None:
+    # a process whose grant on the bucket is key-addressed only holds no STREAM.CREATE; a refused
+    # create is never answered, so asking for one costs the whole JetStream deadline first.
+    nats = _RecordingClient()
+    await nats.kv_bucket(name="tickets")
+    await nats.kv_bucket(name="state")
+    nats.create_flags.clear()
+
+    tickets = await ticket_store(nats, name="tickets", ttl=timedelta(hours=1), create_if_missing=False)
+    states = await state_store(nats, name="state", ttl=timedelta(hours=1), create_if_missing=False)
+
+    assert nats.create_flags == [False, False]
+    issued = await tickets.issue({"user": "u1"}, ttl=timedelta(minutes=5))
+    assert await tickets.redeem(issued.secret) == {"user": "u1"}
+    await states.put("k", {"v": 1}, ttl=timedelta(minutes=5))
+    assert await states.take("k") == {"v": 1}
+
+
+async def test_a_bind_only_factory_never_creates_an_absent_bucket(nats: FakeNatsClient) -> None:
+    with pytest.raises(KeyError):
+        await ticket_store(nats, name="tickets", ttl=timedelta(hours=1), create_if_missing=False)
+    with pytest.raises(KeyError):
+        await state_store(nats, name="state", ttl=timedelta(hours=1), create_if_missing=False)
+    assert nats._buckets == {}  # noqa: SLF001 -- the fake's recorded opens ARE the subject
+
+
+async def test_a_bind_only_factory_never_issues_stream_create_through_the_real_opener() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from threetears.nats import NatsClient
+
+    js = MagicMock()
+    js.add_stream = AsyncMock()
+    js.update_stream = AsyncMock()
+    js.key_value = AsyncMock(return_value=MagicMock())
+    raw = MagicMock()
+    raw.jetstream = MagicMock(return_value=js)
+    client = NatsClient(raw=raw, namespace="ns", client_name="bind-only-test")
+
+    await ticket_store(client, name="tickets", ttl=timedelta(hours=1), create_if_missing=False)
+    await state_store(client, name="state", ttl=timedelta(hours=1), create_if_missing=False)
+
+    js.add_stream.assert_not_awaited()
+    js.update_stream.assert_not_awaited()
+    assert [call.args[0] for call in js.key_value.await_args_list] == ["ns-tickets", "ns-state"]
+
+    # the positive control: the same harness sees the create the default open makes.
+    await ticket_store(client, name="declared", ttl=timedelta(hours=1))
+    js.add_stream.assert_awaited_once()

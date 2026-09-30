@@ -512,6 +512,8 @@ class KVLease:
         nats_client: "KvCapable",
         bucket_name: str | None = None,
         pod_id: str | None = None,
+        *,
+        create_if_missing: bool = True,
     ) -> None:
         """configure factory; defer bucket creation until first acquire.
 
@@ -534,12 +536,18 @@ class KVLease:
         :ptype bucket_name: str | None
         :param pod_id: explicit holder identifier; None auto-generates one
         :ptype pod_id: str | None
+        :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it
+            when absent; ``False`` only BINDS a bucket another identity declared, and never
+            issues STREAM.CREATE -- for a process whose grant on the bucket is key-addressed
+            only, where a refused create would cost the full JetStream deadline first
+        :ptype create_if_missing: bool
         :return: None
         :rtype: None
         """
         self._client = nats_client
         self._bucket_name = bucket_name if bucket_name is not None else self._default_bucket_name()
         self._pod_id = pod_id if pod_id is not None else f"pod-{uuid7().hex}"
+        self._create_if_missing = create_if_missing
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -583,7 +591,7 @@ class KVLease:
         return "leases"
 
     async def _ensure_bucket(self) -> "KvBucketLike":
-        """open existing bucket or create it with history=1 on first call.
+        """open the bucket with history=1 on first call: declare it, or bind only when so configured.
 
         lazy, async-safe: an ``asyncio.Lock`` serializes first-call setup
         so two concurrent acquires do not race to create the same
@@ -603,9 +611,13 @@ class KVLease:
                 self._bucket = await self._client.kv_bucket(
                     name=self._bucket_name,
                     history=1,
-                    create_if_missing=True,
+                    create_if_missing=self._create_if_missing,
                 )
-                log.info("KVLease bound bucket %s", self._bucket_name)
+                log.info(
+                    "KVLease bound bucket %s (create_if_missing=%s)",
+                    self._bucket_name,
+                    self._create_if_missing,
+                )
         return self._bucket
 
     async def acquire(

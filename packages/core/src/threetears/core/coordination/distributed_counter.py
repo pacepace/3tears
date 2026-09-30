@@ -123,7 +123,14 @@ class DistributedCounter:
     :class:`KVLease`'s construction style within this package.
     """
 
-    def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl: timedelta | None = None) -> None:
+    def __init__(
+        self,
+        nats_client: "KvCapable",
+        *,
+        bucket_name: str,
+        ttl: timedelta | None = None,
+        create_if_missing: bool = True,
+    ) -> None:
         """configure the counter; defer bucket binding until first use.
 
         :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`;
@@ -143,12 +150,20 @@ class DistributedCounter:
             generous safety margin (a decrement that never runs -- crash,
             forgotten call -- must not leak the slot forever)
         :ptype ttl: timedelta | None
+        :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it when
+            absent; ``False`` only BINDS a bucket another identity declared, and never issues
+            STREAM.CREATE. a process granted key-addressed access to a bucket it does not own
+            (a tool pod over an agent's coordination bucket) holds no stream-admin verb, and a
+            refused create is never answered -- it costs the full JetStream deadline before
+            the bind that would have succeeded
+        :ptype create_if_missing: bool
         :return: none
         :rtype: None
         """
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = ttl
+        self._create_if_missing = create_if_missing
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -262,8 +277,12 @@ class DistributedCounter:
                     name=self._bucket_name,
                     ttl=self._ttl,
                     storage="memory",
-                    create_if_missing=True,
+                    create_if_missing=self._create_if_missing,
                     history=1,
                 )
-                log.info("DistributedCounter bound bucket %s", self._bucket_name)
+                log.info(
+                    "DistributedCounter bound bucket %s (create_if_missing=%s)",
+                    self._bucket_name,
+                    self._create_if_missing,
+                )
         return self._bucket

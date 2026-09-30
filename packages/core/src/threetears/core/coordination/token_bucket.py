@@ -185,6 +185,7 @@ class TokenBucket:
         refill_rate: float,
         capacity: float,
         kv_ttl: timedelta | None = _DEFAULT_KV_TTL,
+        create_if_missing: bool = True,
     ) -> None:
         """configure the bucket; defer KV bucket binding until first use.
 
@@ -209,6 +210,11 @@ class TokenBucket:
             unbounded (e.g. per-user keys), since an abandoned key then
             lingers in the KV bucket forever
         :ptype kv_ttl: timedelta | None
+        :param create_if_missing: ``True`` (the default) DECLARES the KV bucket, creating it
+            when absent; ``False`` only BINDS a bucket another identity declared, and never
+            issues STREAM.CREATE -- for a process whose grant on the bucket is key-addressed
+            only, where a refused create would cost the full JetStream deadline first
+        :ptype create_if_missing: bool
         :return: none
         :rtype: None
         :raises ValueError: if refill_rate or capacity is not positive
@@ -222,6 +228,7 @@ class TokenBucket:
         self._refill_rate = refill_rate
         self._capacity = capacity
         self._kv_ttl = kv_ttl
+        self._create_if_missing = create_if_missing
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -401,8 +408,12 @@ class TokenBucket:
                     name=self._bucket_name,
                     ttl=self._kv_ttl,
                     storage="memory",
-                    create_if_missing=True,
+                    create_if_missing=self._create_if_missing,
                     history=1,
                 )
-                log.info("TokenBucket bound bucket %s", self._bucket_name)
+                log.info(
+                    "TokenBucket bound bucket %s (create_if_missing=%s)",
+                    self._bucket_name,
+                    self._create_if_missing,
+                )
         return self._bucket
