@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A user merge names every row its alias-collision cascade removed
+
+`threetears.agent.memory.merge.repoint_user` deletes a source memory whose alias the master
+already holds, and the delete cascades to the memory's media, that media's media_content, the
+memory's chunks and every consolidation edge touching it. The DELETE returns none of those, so
+the hub could not evict them, and a pod that had read one kept serving it by id after L3 lost it.
+
+**Contract changes:**
+
+- `MemoryRepointResult` gains `alias_collision_media`, `alias_collision_media_content`,
+  `alias_collision_memory_chunks` and `alias_collision_memory_consolidations`: the keys of every
+  row the collision delete cascaded to.
+- The colliding memories and their media are locked `FOR UPDATE` before their children are read,
+  so no child can be added under them before the delete, and the delete removes exactly the
+  locked memories: the children named are exactly the children cascaded.
+
 ### A wake write reaches every replica, and never lands on a row it did not read
 
 The wake schedule and webhook tools read a row, change the fields the model asked for, and save

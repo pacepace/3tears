@@ -35,9 +35,15 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
     agent = uuid4()
     from_id = uuid4()
     to_id = uuid4()
+    colliding = uuid4()
     conn = _RoutingConn(
         {
-            "DELETE FROM memories": [{"agent_id": agent, "memory_id": uuid4()}],
+            "DELETE FROM memories": [{"agent_id": agent, "memory_id": colliding}],
+            "FROM memories m WHERE": [{"agent_id": agent, "memory_id": colliding}],
+            "FROM media_content": [],
+            "FROM media WHERE": [],
+            "FROM memory_chunks WHERE": [],
+            "FROM memory_consolidations": [],
             "UPDATE memories": [{"agent_id": agent, "memory_id": uuid4()}],
             "UPDATE media ": [{"agent_id": agent, "media_id": uuid4()}],
             "UPDATE media_content": [{"agent_id": agent, "content_id": uuid4()}],
@@ -50,7 +56,9 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
     assert isinstance(result, MemoryRepointResult)
     # the DELETE must run before the memories repoint or the unique index
     # on (agent_id, user_id, alias) would reject the flipped survivor.
-    assert conn.order[0] == "DELETE FROM memories"
+    # the DELETE is the first write: only the lookups that name what it will cascade to precede it.
+    delete_at = conn.order.index("DELETE FROM memories")
+    assert all(not step.startswith("UPDATE") for step in conn.order[:delete_at])
     assert conn.order.index("DELETE FROM memories") < conn.order.index(
         "UPDATE memories",
     )
@@ -95,6 +103,9 @@ async def test_alias_delete_is_scoped_to_source_and_master() -> None:
         async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
             if sql.startswith("DELETE"):
                 captured["delete"] = sql
+            if "FROM memories m WHERE" in sql and sql.startswith("SELECT"):
+                # one colliding memory, so the DELETE runs.
+                return [{"agent_id": uuid4(), "memory_id": uuid4()}]
             return []
 
     from_id = uuid4()
@@ -107,3 +118,43 @@ async def test_alias_delete_is_scoped_to_source_and_master() -> None:
     assert "m2.user_id = $2" in delete_sql  # collide with master
     assert "m2.alias = m.alias" in delete_sql
     assert "m2.agent_id = m.agent_id" in delete_sql
+
+
+@pytest.mark.asyncio
+async def test_the_children_an_alias_collision_cascades_to_are_named() -> None:
+    """the collision DELETE cascades to children it does not return; the result names them.
+
+    The hub evicts every key the merge removed from every pod's cache. A child the cascade took
+    and nobody named stayed cached on every pod that had read it, served by id after L3 lost it.
+    """
+    agent = uuid4()
+    memory_id, media_id = uuid4(), uuid4()
+    content_id, chunk_id, gist_id = uuid4(), uuid4(), uuid4()
+    conn = _RoutingConn(
+        {
+            "DELETE FROM memories": [{"agent_id": agent, "memory_id": memory_id}],
+            "FROM memories m WHERE": [{"agent_id": agent, "memory_id": memory_id}],
+            "FROM media_content": [{"agent_id": agent, "content_id": content_id}],
+            "FROM media WHERE": [{"agent_id": agent, "media_id": media_id}],
+            "FROM memory_chunks WHERE": [{"agent_id": agent, "chunk_id": chunk_id}],
+            "FROM memory_consolidations": [
+                {"agent_id": agent, "consolidated_memory_id": gist_id, "source_memory_id": memory_id}
+            ],
+            "UPDATE memories": [],
+            "UPDATE media ": [],
+            "UPDATE media_content": [],
+            "UPDATE memory_chunks": [],
+        }
+    )
+
+    result = await repoint_user(conn, from_user_id=uuid4(), to_user_id=uuid4())
+
+    assert result.alias_collisions_deleted == [(agent, memory_id)]
+    assert result.alias_collision_media == [(agent, media_id)]
+    assert result.alias_collision_media_content == [(agent, content_id)]
+    assert result.alias_collision_memory_chunks == [(agent, chunk_id)]
+    assert result.alias_collision_memory_consolidations == [(agent, gist_id, memory_id)]
+    # every child is named before the DELETE takes it, inside the same transaction.
+    delete_at = conn.order.index("DELETE FROM memories")
+    for lookup in ("FROM media WHERE", "FROM media_content", "FROM memory_chunks WHERE", "FROM memory_consolidations"):
+        assert conn.order.index(lookup) < delete_at, f"{lookup} ran after the DELETE had cascaded"
