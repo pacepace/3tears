@@ -25,7 +25,7 @@ from threetears.agent.skills import (
     SkillSummary,
     UpdateSkillRequest,
 )
-from threetears.agent.skills.tools import SkillCreateInput, SkillUpdateInput
+from threetears.agent.skills.tools import SkillCreateInput, ToolSkillCreateInput, ToolSkillUpdateInput
 
 
 # --- Response models ---
@@ -257,6 +257,7 @@ class TestCreateSkillRequest:
 
     def test_subclasses_tool_input(self) -> None:
         assert issubclass(CreateSkillRequest, SkillCreateInput)
+        assert issubclass(CreateSkillRequest, ToolSkillCreateInput)
 
     def test_rejects_user_id(self) -> None:
         with pytest.raises(ValidationError):
@@ -272,7 +273,7 @@ class TestCreateSkillRequest:
 
 
 class TestUpdateSkillRequest:
-    """``UpdateSkillRequest`` mirrors ``SkillUpdateInput`` minus identity."""
+    """``UpdateSkillRequest`` mirrors ``ToolSkillUpdateInput`` minus identity."""
 
     def test_all_fields_optional(self) -> None:
         req = UpdateSkillRequest()
@@ -282,7 +283,7 @@ class TestUpdateSkillRequest:
         assert req.enabled is None
 
     def test_field_parity_with_tool_input(self) -> None:
-        """Editable fields stay in lock-step with ``SkillUpdateInput``.
+        """Editable fields stay in lock-step with ``ToolSkillUpdateInput``.
 
         ``UpdateSkillRequest`` is standalone (the tool's required
         ``skill_id`` cannot be widened to optional in a subclass), so a
@@ -290,7 +291,7 @@ class TestUpdateSkillRequest:
         ``skill_id`` is the only tool field intentionally absent (it is a
         path parameter on the REST route).
         """
-        tool_editable = set(SkillUpdateInput.model_fields) - {"skill_id"}
+        tool_editable = set(ToolSkillUpdateInput.model_fields) - {"skill_id"}
         assert set(UpdateSkillRequest.model_fields) == tool_editable
 
     def test_applies_partial_fields(self) -> None:

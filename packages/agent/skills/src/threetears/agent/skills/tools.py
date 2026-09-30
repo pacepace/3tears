@@ -56,6 +56,9 @@ __all__ = [
     "ActiveSkillSetter",
     "ConversationIdResolver",
     "SkillCreateInput",
+    "TOOL_SKILLS_NOT_OFFERED",
+    "ToolSkillCreateInput",
+    "ToolSkillUpdateInput",
     "SkillDeleteInput",
     "SkillEligibleTool",
     "SkillGetInput",
@@ -94,6 +97,10 @@ SUMMARY_MIN_LEN = 1
 SUMMARY_MAX_LEN = 256
 BODY_MAX_BYTES = 32 * 1024  # 32 KB hard cap (Implementation note 2)
 ARGUMENTS_MAX_BYTES = 32 * 1024  # same cap as a body: a tool skill's whole payload
+
+# What skill_create / skill_update say when a tool-call skill is asked for and
+# the consumer does not offer them: it cannot run one yet.
+TOOL_SKILLS_NOT_OFFERED = "a skill cannot be one tool call here yet; give it steps in body"
 TRIGGER_KEYWORDS_MAX_LEN = 512
 TAGS_MAX_ENTRIES = 8
 TOOL_LIST_MAX_ENTRIES = 32
@@ -266,14 +273,6 @@ class SkillCreateInput(BaseModel):
         default=None,
         description="Optional. The steps to follow, in plain words, up to 32KB.",
     )
-    tool: str | None = Field(
-        default=None,
-        description="Optional. Instead of steps, the name of one tool this skill calls. Not with body.",
-    )
-    arguments: dict[str, Any] | None = Field(
-        default=None,
-        description="Optional. The arguments that tool is called with, as named values. Only with tool.",
-    )
     prompt_mode: PromptMode = Field(
         default="additive",
         description="'additive' adds the steps to your instructions; 'replace' uses them instead of your instructions.",
@@ -295,6 +294,24 @@ class SkillCreateInput(BaseModel):
         description="Up to 8 labels to sort skills by.",
     )
     enabled: bool = Field(default=True)
+
+
+class ToolSkillCreateInput(SkillCreateInput):
+    """``skill_create``'s input when the consumer offers tool-call skills.
+
+    Offered only when the consumer can run one (``offer_tool_skills``):
+    a skill the agent can save but that does nothing when used is worse
+    than no such skill.
+    """
+
+    tool: str | None = Field(
+        default=None,
+        description="Optional. Instead of steps, the name of one tool this skill calls. Not with body.",
+    )
+    arguments: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional. The arguments that tool is called with, as named values. Only with tool.",
+    )
 
 
 class SkillListInput(BaseModel):
@@ -338,17 +355,22 @@ class SkillUpdateInput(BaseModel):
     name: str | None = None
     summary: str | None = None
     body: str | None = Field(default=None, description="New steps. An empty string removes them.")
-    tool: str | None = Field(
-        default=None,
-        description="New tool to call. An empty string removes the tool and its arguments.",
-    )
-    arguments: dict[str, Any] | None = Field(default=None, description="New arguments for the tool.")
     prompt_mode: PromptMode | None = None
     tool_additions: list[str] | None = None
     tool_restrictions: list[str] | None = None
     trigger_keywords: str | None = None
     tags: list[str] | None = None
     enabled: bool | None = None
+
+
+class ToolSkillUpdateInput(SkillUpdateInput):
+    """``skill_update``'s input when the consumer offers tool-call skills."""
+
+    tool: str | None = Field(
+        default=None,
+        description="New tool to call. An empty string removes the tool and its arguments.",
+    )
+    arguments: dict[str, Any] | None = Field(default=None, description="New arguments for the tool.")
 
 
 class SkillDeleteInput(BaseModel):
@@ -795,8 +817,14 @@ def load_skill_create_tool(
     skills_collection: AgentSkillCollection,
     registry: SkillRegistryClient,
     max_prose_skills_per_user: int = DEFAULT_MAX_PROSE_SKILLS_PER_USER,
+    offer_tool_skills: bool = False,
 ) -> list[BaseTool]:
     """Build a ``skill_create`` tool bound to ``(agent_id, user_id)``.
+
+    ``offer_tool_skills`` adds ``tool`` and ``arguments`` to the input, so
+    the agent can save a skill that is one tool call. Leave it off until
+    the consumer runs such a skill: without it the agent never sees the
+    fields, and a call that passes them anyway is refused.
 
     Validates payload (name regex, bounded sizes, ACL on tool lists),
     enforces the 200-prose-skill cap (SK-14), enforces the at-least-one-
@@ -813,11 +841,13 @@ def load_skill_create_tool(
     :param max_prose_skills_per_user: cap on prose skills per
         ``(agent_id, user_id)``; default 200 (SK-14)
     :ptype max_prose_skills_per_user: int
+    :param offer_tool_skills: whether the agent may save a tool-call skill
+    :ptype offer_tool_skills: bool
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
 
-    @tool("skill_create", args_schema=SkillCreateInput)
+    @tool("skill_create", args_schema=ToolSkillCreateInput if offer_tool_skills else SkillCreateInput)
     async def skill_create(
         name: str,
         summary: str,
@@ -835,6 +865,8 @@ def load_skill_create_tool(
         additions = list(tool_additions or [])
         restrictions = list(tool_restrictions or [])
         tag_values = list(tags or [])
+        if not offer_tool_skills and (tool is not None or arguments is not None):
+            return _tool_error("skill_create", TOOL_SKILLS_NOT_OFFERED)
         # an empty body or tool is none at all, as it is when stored.
         stored_body = body if body else None
         stored_tool = tool if tool else None
@@ -978,8 +1010,9 @@ def load_skill_create_tool(
 
     skill_create.description = (
         "Save a way of doing something as a skill you can use again. Give it steps in body, "
-        "tools in tool_additions or tool_restrictions, or both. Or make it one tool call: "
-        "tool and arguments, with no body.\n"
+        "tools in tool_additions or tool_restrictions, or both."
+        + (" Or make it one tool call: tool and arguments, with no body." if offer_tool_skills else "")
+        + "\n"
         f"Returns [skill:<id>]. You can keep up to {max_prose_skills_per_user} skills you wrote."
     )
 
@@ -1181,11 +1214,14 @@ def load_skill_update_tool(
     user_id: UUID,
     skills_collection: AgentSkillCollection,
     registry: SkillRegistryClient,
+    offer_tool_skills: bool = False,
 ) -> list[BaseTool]:
     """Build a ``skill_update`` tool with partial-update semantics.
 
     Only fields the LLM passes get applied; the at-least-one-payload
     check + ACL re-validation run on the merged shape (SK-09 / SK-11).
+    ``offer_tool_skills`` gates ``tool`` and ``arguments`` as it does on
+    :func:`load_skill_create_tool`.
 
     :param agent_id: caller's agent UUID
     :ptype agent_id: UUID
@@ -1195,11 +1231,13 @@ def load_skill_update_tool(
     :ptype skills_collection: AgentSkillCollection
     :param registry: consumer-supplied registry client for ACL probes
     :ptype registry: SkillRegistryClient
+    :param offer_tool_skills: whether the agent may make a skill a tool call
+    :ptype offer_tool_skills: bool
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
 
-    @tool("skill_update", args_schema=SkillUpdateInput)
+    @tool("skill_update", args_schema=ToolSkillUpdateInput if offer_tool_skills else SkillUpdateInput)
     async def skill_update(
         skill_id: str,
         name: str | None = None,
@@ -1215,6 +1253,8 @@ def load_skill_update_tool(
         enabled: bool | None = None,
     ) -> str:
         """Edit a skill in place."""
+        if not offer_tool_skills and (tool is not None or arguments is not None):
+            return _tool_error("skill_update", TOOL_SKILLS_NOT_OFFERED)
         parsed = _parse_skill_id(skill_id)
         if parsed is None:
             return _tool_error("skill_update", f"invalid skill_id {skill_id!r}")

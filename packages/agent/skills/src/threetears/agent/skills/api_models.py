@@ -43,7 +43,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from threetears.agent.skills.tools import SkillCreateInput
+from threetears.agent.skills.tools import ToolSkillCreateInput
 from threetears.agent.skills.types import (
     InvocationSource,
     OutcomeSource,
@@ -171,15 +171,16 @@ class SkillInvocationListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class CreateSkillRequest(SkillCreateInput):
+class CreateSkillRequest(ToolSkillCreateInput):
     """Request body for ``POST /skills``.
 
-    Subclasses :class:`~threetears.agent.skills.tools.SkillCreateInput` so
-    the editable field set (``name`` / ``summary`` / ``body`` /
-    ``prompt_mode`` / ``tool_additions`` / ``tool_restrictions`` /
-    ``trigger_keywords`` / ``tags`` / ``enabled``) is single-sourced with
-    the agent tool schema, which includes ``tool`` / ``arguments`` for a
-    skill that is one tool call. ``user_id`` / ``agent_id`` are NOT fields here
+    Subclasses :class:`~threetears.agent.skills.tools.ToolSkillCreateInput` so
+    the editable field set (``name`` / ``summary`` / ``body`` / ``tool`` /
+    ``arguments`` / ``prompt_mode`` / ``tool_additions`` /
+    ``tool_restrictions`` / ``trigger_keywords`` / ``tags`` / ``enabled``)
+    is single-sourced with the agent tool schema. The agent tool offers
+    ``tool`` / ``arguments`` only when its consumer asks; this model always
+    carries them, and the consumer's router decides what it accepts. ``user_id`` / ``agent_id`` are NOT fields here
     and ``extra='forbid'`` rejects any attempt to send them -- the router
     derives identity from the authenticated principal.
     """
@@ -191,12 +192,12 @@ class UpdateSkillRequest(BaseModel):
     """Request body for ``PATCH /skills/{id}``.
 
     Mirrors the editable field set of
-    :class:`~threetears.agent.skills.tools.SkillUpdateInput` (all
+    :class:`~threetears.agent.skills.tools.ToolSkillUpdateInput` (all
     optional) but is standalone rather than a subclass: the tool schema
     carries a *required* ``skill_id`` and pydantic/mypy forbid a subclass
     from widening that to optional. On the REST surface the id is a path
     parameter, not part of the body, so it's dropped entirely. The
-    remaining fields are kept in lock-step with ``SkillUpdateInput`` --
+    remaining fields are kept in lock-step with ``ToolSkillUpdateInput`` --
     a parity test asserts the two field sets stay aligned.
     ``extra='forbid'`` rejects ``user_id`` / ``agent_id`` (router-derived
     identity) and ``skill_id`` (path-only).

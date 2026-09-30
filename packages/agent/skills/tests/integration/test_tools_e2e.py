@@ -727,10 +727,10 @@ class TestToolCallSkillPersistence:
         skills, _ = _build_collections_with_l1(pool_with_schema)
         registry = _FakeRegistry(permitted_tools={"loki.query"})
         [create_tool] = load_skill_create_tool(
-            agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=registry
+            agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=registry, offer_tool_skills=True
         )
         [update_tool] = load_skill_update_tool(
-            agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=registry
+            agent_id=agent_id, user_id=user_id, skills_collection=skills, registry=registry, offer_tool_skills=True
         )
 
         made = await create_tool.ainvoke(

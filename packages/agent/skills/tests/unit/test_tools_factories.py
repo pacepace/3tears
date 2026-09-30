@@ -28,6 +28,7 @@ from threetears.agent.skills.entities import (
 from threetears.agent.skills.tools import (
     SkillEligibleTool,
     SkillToolIntrospect,
+    TOOL_SKILLS_NOT_OFFERED,
     load_skill_create_tool,
     load_skill_delete_tool,
     load_skill_get_tool,
@@ -1246,8 +1247,12 @@ def _tool_factories(
     user_id: UUID,
 ) -> tuple[Any, Any, Any]:
     """Return the create, update and get tools bound to one actor."""
-    [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
-    [update] = load_skill_update_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
+    [create] = load_skill_create_tool(
+        agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg, offer_tool_skills=True
+    )
+    [update] = load_skill_update_tool(
+        agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg, offer_tool_skills=True
+    )
     [get] = load_skill_get_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll)
     return create, update, get
 
@@ -1366,3 +1371,27 @@ class TestToolCallSkill:
         assert (row["tool"], row["arguments"]) == ("loki.query", {"q": "y"})
         # the tool did not change, so its grant is not asked again.
         assert reg.acl_calls == []
+
+
+class TestToolSkillsAreOfferedOnlyWhenTheyCanRun:
+    """Without ``offer_tool_skills`` the agent never sees ``tool`` / ``arguments``, and passing them is refused."""
+
+    async def test_the_fields_are_not_in_the_schema_by_default(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        reg = _FakeRegistry(permitted_tools={"loki.query"})
+        [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
+        [update] = load_skill_update_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
+        for tool_obj in (create, update):
+            fields = tool_obj.args_schema.model_fields  # type: ignore[union-attr]
+            assert "tool" not in fields and "arguments" not in fields
+            assert "tool call" not in tool_obj.description
+
+    async def test_a_tool_skill_passed_anyway_is_refused_and_nothing_is_written(self) -> None:
+        agent_id, user_id = _new_uuid(), _new_uuid()
+        coll = _FakeSkillsCollection()
+        reg = _FakeRegistry(permitted_tools={"loki.query"})
+        [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
+        out = await create.coroutine(name="errors", summary="s", tool="loki.query", arguments={"q": "error"})  # type: ignore[misc]
+        assert out == f"[TOOL ERROR] skill_create: {TOOL_SKILLS_NOT_OFFERED}"
+        assert coll.rows == {}
