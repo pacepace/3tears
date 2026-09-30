@@ -40,7 +40,7 @@ from threetears.nats.subject_permissions import (
     kv_key_scope_for_service,
 )
 from threetears.nats.subjects import Subjects, set_default_namespace
-from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+from threetears.nats.user_jwt import generate_account_seed, js_api_grants_for_stream, mint_user_jwt
 
 _NS = "3tears"
 
@@ -1682,15 +1682,22 @@ class TestAgentTableGrants:
             ]
         )
 
-    def test_the_bind_is_minted_once_however_many_tables_are_granted(self) -> None:
-        """the pod's own grant already binds the stream; a table grant adds no second copy."""
-        minted = _minted_publish(
-            self._permissions(
-                AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True),
-                AgentTableGrant(owner_agent_id=self._OWNER, table="sessions", writable=False),
-            )
-        )
-        assert minted.count(f"$JS.API.STREAM.INFO.{self._STREAM}") == 1
+    def test_each_table_grant_carries_its_own_bind(self) -> None:
+        """a table-scoped record is complete on its own: it binds the stream it reads.
+
+        The pod's own scope binds the same stream, so the minted list repeats the subject; NATS
+        treats a repeated allow entry as one, and the list is left undeduplicated because the
+        static-user confs are rendered from the same composition and must not shift under it.
+        """
+        permissions = self._permissions(AgentTableGrant(owner_agent_id=self._OWNER, table="responses", writable=True))
+        for resource in permissions.js_resources:
+            if resource.capability is JsCapability.KV_TABLE_SCOPED:
+                assert f"$JS.API.STREAM.INFO.{self._STREAM}" in js_api_grants_for_stream(
+                    resource.stream_name,
+                    capability=resource.capability,
+                    bucket=resource.name,
+                    scope=resource.key_prefix,
+                )
 
     def test_a_read_grant_cannot_write(self) -> None:
         allow = _minted_publish(

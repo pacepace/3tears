@@ -331,7 +331,9 @@ def mint_user_jwt(
     #
     # ``key_prefix`` rather than ``scope`` for both tails: a table-scoped resource narrows one
     # token past its scope (``{scope}.{table}``), and reading the prefix from one property is what
-    # keeps the publish tail and the read tail from ever naming different prefixes.
+    # keeps the publish tail and the read tail from ever naming different prefixes. Several
+    # resources on one stream each emit its ``STREAM.INFO`` bind; the repeats are left in, because
+    # the hub renders its static-user confs from this same composition.
     kv_data: list[str] = []
     js_control: list[str] = []
     for resource in permissions.js_resources:
@@ -348,9 +350,7 @@ def mint_user_jwt(
             )
         )
     if permissions.js_resources:
-        # de-duplicated in first-seen order: several resources on ONE stream (a pod's own scope
-        # plus each table it was granted of an agent's) each emit the same ``STREAM.INFO`` bind.
-        js_control = list(dict.fromkeys([*_JS_API_ACCOUNT, *js_control]))
+        js_control = [*_JS_API_ACCOUNT, *js_control]
 
     nats_claim: dict[str, Any] = {
         "pub": {"allow": [*permissions.publish, *kv_data, *js_control]},
