@@ -132,6 +132,18 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/data/migrations/registry.py",
         class_name="PackageMigrations",
+        attr_name="_descriptions",
+        rationale=(
+            "static config written in lockstep with _versions: the ledger description of each "
+            "registered version, fixed by the code at import time (a function __name__ or a "
+            "step's explicit text). Every pod derives the same map from the same code, so there "
+            "is nothing for pods to disagree about and nothing a restart can lose; the durable "
+            "copy is already the _schema_migrations.description column the runner compares it to"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/data/migrations/registry.py",
+        class_name="PackageMigrations",
         attr_name="_downgrades",
         rationale=("static config, downgrade callables registered once at startup"),
     ),
