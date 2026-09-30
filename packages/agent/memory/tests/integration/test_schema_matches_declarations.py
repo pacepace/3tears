@@ -229,6 +229,14 @@ async def _assert_matches_declarations(conn: asyncpg.Connection, schema: str) ->
         declared_indexes = {ix.name for ix in declared.indexes} | declared_unique
         assert await _index_names(conn, schema, declared.name) == declared_indexes, declared.name
         assert await _unique_constraint_names(conn, schema, declared.name) == declared_unique, declared.name
+        rows = await conn.fetch(
+            "SELECT column_name, is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2",
+            schema,
+            declared.name,
+        )
+        built_nullable = {r["column_name"]: r["is_nullable"] == "YES" for r in rows}
+        declared_nullable = {c.name: c.nullable for c in declared.columns if c.name in built_nullable}
+        assert declared_nullable == {k: built_nullable[k] for k in declared_nullable}, declared.name
 
 
 @pytest.fixture
@@ -560,3 +568,40 @@ class TestChunkHeadingWeight:
             assert "'summari':6C" in weighted
         finally:
             await conn.close()
+
+
+class TestCustomerIdNotNull:
+    """v031 tightens ``customer_id`` where it can, and leaves a table holding a NULL as it is."""
+
+    async def test_a_table_holding_a_null_customer_id_is_left_nullable(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _migrate(conn, schema, target=30)
+            agent_id, user_id = uuid.uuid4(), uuid.uuid4()
+            memory_id = await _insert_memory(conn, agent_id=agent_id, user_id=user_id)
+            now = datetime.now(UTC)
+            await conn.execute(
+                "INSERT INTO media (media_id, memory_id, agent_id, customer_id, user_id, "
+                "media_category, metadata_json, date_created, date_updated) "
+                "VALUES ($1, $2, $3, NULL, $4, 'document', '{}'::jsonb, $5, $5)",
+                uuid.uuid4(),
+                memory_id,
+                agent_id,
+                user_id,
+                now,
+            )
+            await _migrate(conn, schema)
+            rows = await conn.fetch(
+                "SELECT table_name, is_nullable FROM information_schema.columns "
+                "WHERE table_schema = $1 AND column_name = 'customer_id' "
+                "AND table_name IN ('media', 'media_content', 'memory_chunks')",
+                schema,
+            )
+        finally:
+            await conn.close()
+        assert {r["table_name"]: r["is_nullable"] for r in rows} == {
+            "media": "YES",
+            "media_content": "NO",
+            "memory_chunks": "NO",
+        }
