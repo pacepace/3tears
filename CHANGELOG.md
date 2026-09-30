@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NatsClient's connections have one lifecycle model; a round trip holds its timeout
+
+- `NatsClient` keeps each connection's role (candidate, current, retiring) and its own phase
+  (running, renewing, abandoned, closed) in one state machine. A renewal's successor is owned from
+  the step that opens it and closed on every way out that does not make it current, cancellation
+  included; a renewal refuses to make it current once the client was abandoned or shut down.
+  Behaviour changes: `renew_connection` raises `NatsClientError` while another renewal is in
+  progress, and `renew_credential` raises it on an abandoned or shut-down client. `is_closed` is
+  `True` for an abandoned client.
+- `ping(timeout)`, `flush(timeout)` and every internal round trip no longer wait on nats-py's
+  flusher: on a backpressured socket they answer within their timeout, and a cancellation
+  propagates instead of being swallowed.
+- A publish to a request's reply subject leaves on the connection that received the request
+  whichever method sends it (the positional `publish(subject, payload)` shorthand and
+  `publish_raw` included), and forgets its route.
+
+### analyze_media refuses an unreadable document before downloading it
+
+- New `threetears.agent.tools.document.can_parse_document(mime_type, filename=None)`: whether
+  `parse_document` has a parser for the type, answered without the bytes.
+- analyze_media's document fallback answers a type no parser reads from its metadata, and never
+  downloads it -- a catalogued packet capture or database dump is no longer pulled whole into the
+  tool pod only to be turned away.
+
 ### A credential the auth-callout refuses ON PURPOSE stops the client at once; any other refusal does not
 
 Owner ruling Q16 (2026-09-30). nats-server tells a refused connection only
