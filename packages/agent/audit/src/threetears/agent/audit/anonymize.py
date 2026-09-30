@@ -402,6 +402,10 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "agent.update_access": frozenset({"failure", "warning"}),
         # a registered provider's name (hub)
         "gateway.provider.create": frozenset({"provider_name"}),
+        # a tool pod changing an agent's data under its grant: the tables the statement
+        # names (developer-declared names from the agent's table list, never customer
+        # typed), the affected-row count, and the broker-minted transaction id (hub)
+        "l3.write": frozenset({"tables", "row_count", "tx_id"}),
     }
 )
 
