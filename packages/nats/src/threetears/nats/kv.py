@@ -757,9 +757,13 @@ class NatsKvBucket:
     :ptype kv: KeyValue
     :param ttl: configured time-to-live, or ``None`` for no expiry
     :ptype ttl: timedelta | None
+    :param bound_to: the client's nats-py connection ``kv`` was bound through, which the handle
+        follows across a credential renewal; ``None`` for a handle the client does not move
+    :ptype bound_to: Any
     """
 
     __slots__ = (
+        "_bound_to",
         "_client",
         "_create_if_missing",
         "_direct",
@@ -783,10 +787,17 @@ class NatsKvBucket:
         history: int = 1,
         direct: bool | None = None,
         entry_ttl: timedelta | None = None,
+        bound_to: Any = None,
     ) -> None:
         self._client = client
         self._full_name = full_name
         self._kv = kv
+        # the nats-py connection ``kv`` issues its operations on. a credential renewal replaces the
+        # client's connection and later retires this one, so every operation first checks it is
+        # still the current one (:meth:`_follow_connection`). :meth:`open` -- the only way the
+        # client builds a bucket -- always records it; ``None`` is a handle built around a caller's
+        # own KeyValue, which is not the client's to move.
+        self._bound_to = bound_to
         self._ttl = ttl
         # Retained for self-heal: if the underlying stream/bucket vanishes (a NATS restart
         # on ephemeral storage wipes JetStream), an op can re-open the bucket with its
@@ -873,6 +884,9 @@ class NatsKvBucket:
             bucket-wide expiry that would expire its entries at the wrong age
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
+        # the connection is read with the context, with no await between, so the handle records
+        # the connection it was actually bound on even when a renewal lands while it opens.
+        bound_to = client.raw
         js = client.jetstream_context()
         storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
         ttl_seconds = int(ttl.total_seconds()) if ttl is not None else 0
@@ -903,6 +917,7 @@ class NatsKvBucket:
             history=history,
             direct=direct,
             entry_ttl=entry_ttl,
+            bound_to=bound_to,
         )
 
     # ------------------------------------------------------------------
@@ -935,6 +950,30 @@ class NatsKvBucket:
         )
         self._kv = rebound._kv  # noqa: SLF001 - sibling instance of the same class
         self._entry_ttl = rebound._entry_ttl  # noqa: SLF001 - sibling instance of the same class
+        self._bound_to = rebound._bound_to  # noqa: SLF001 - sibling instance of the same class
+
+    async def _follow_connection(self) -> None:
+        """rebind the handle when a credential renewal has replaced the connection it was bound on.
+
+        The nats-py handle issues every operation on the connection it was bound through, and a
+        renewal retires that connection once the work it carries has finished. Rebinding before
+        the next operation moves the bucket without an operation ever failing on the retired
+        connection. A bind is one ``STREAM.INFO``, which every principal that opened the bucket
+        holds, and it changes nothing about the bucket -- unlike :meth:`_reopen`, which declares.
+
+        :return: nothing
+        :rtype: None
+        :raises Exception: when the bind fails; :meth:`_run_with_reopen` treats it as the transport
+            failure it is
+        """
+        if self._bound_to is None:
+            return
+        current = self._client.raw
+        if current is self._bound_to:
+            return
+        js = self._client.jetstream_context()
+        self._kv = await self._bounded(lambda: js.key_value(self._full_name))
+        self._bound_to = current
 
     async def _run_with_reopen(self, op: Any, *, passthrough: tuple[type[BaseException], ...]) -> Any:
         """Run a KV op; on a TRANSPORT failure, re-open the bucket once and retry.
@@ -945,6 +984,7 @@ class NatsKvBucket:
         propagates to the caller's ``KvError`` wrap.
         """
         try:
+            await self._follow_connection()
             return await self._bounded(op)
         except passthrough:
             raise
@@ -1496,15 +1536,26 @@ class _KeyWatchConsumer:
     :ptype subject: str
     :param heartbeat: the consumer's idle heartbeat
     :ptype heartbeat: timedelta
+    :param client: the wrapper client, asked whether it outlives the consumer's connection
+    :ptype client: NatsClient
     """
 
-    __slots__ = ("_heartbeat", "_name", "_subject", "_subscription")
+    __slots__ = ("_client", "_heartbeat", "_name", "_subject", "_subscription")
 
-    def __init__(self, *, subscription: _NatsSubscription, name: str, subject: str, heartbeat: timedelta) -> None:
+    def __init__(
+        self,
+        *,
+        subscription: _NatsSubscription,
+        name: str,
+        subject: str,
+        heartbeat: timedelta,
+        client: NatsClient,
+    ) -> None:
         self._subscription = subscription
         self._name = name
         self._subject = subject
         self._heartbeat = heartbeat
+        self._client = client
 
     @classmethod
     async def open(
@@ -1559,7 +1610,7 @@ class _KeyWatchConsumer:
                 timeout=_KV_OP_TIMEOUT_SECONDS,
                 what=f"key watch consumer create on {stream}",
             )
-            consumer = cls(subscription=subscription, name=name, subject=subject, heartbeat=heartbeat)
+            consumer = cls(subscription=subscription, name=name, subject=subject, heartbeat=heartbeat, client=client)
         # NOSILENT: logged naming the grant to check; the caller pauses and creates another
         except Exception as exc:  # noqa: BLE001 -- a failed create is retried, never raised
             log.warning(
@@ -1596,7 +1647,18 @@ class _KeyWatchConsumer:
             try:
                 msg = await self._subscription.next_msg(timeout=silence)
             except _NatsConnectionClosedError as exc:
-                raise KvError(f"key watch on {self._subject} ended: the NATS connection is closed") from exc
+                if self._client.is_closed:
+                    raise KvError(f"key watch on {self._subject} ended: the NATS connection is closed") from exc
+                # NOSILENT: the consumer's connection was retired by a credential renewal while the
+                # client lives on a successor; the caller replaces the consumer there, and the
+                # replacement redelivers the key's latest message.
+                log.info(
+                    "key watch consumer %s on %s lost its connection to a credential renewal; replacing it",
+                    self._name,
+                    self._subject,
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name}},
+                )
+                return
             except TimeoutError:
                 # NOSILENT: a consumer that stopped heartbeating is replaced by the caller
                 log.info(

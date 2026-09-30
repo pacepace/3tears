@@ -116,8 +116,8 @@ class _Js:
 
 def _waiter(raw: _Raw, js: _Js, *, poll: float = 0.01, heartbeat: float = 60.0) -> JetStreamResultWaiter:
     return JetStreamResultWaiter(
-        raw=raw,
-        js=js,
+        connection=lambda: raw,
+        jetstream=lambda: js,
         subject=_SUBJECT,
         stream=_STREAM,
         inactive_threshold_seconds=600.0,
@@ -215,9 +215,10 @@ async def test_the_consumer_outlives_the_call_it_is_waiting_for() -> None:
     from threetears.nats.client import NatsClient, _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS
 
     js = _Js()
+    raw = _Raw([_Sub([])])
     waiter = JetStreamResultWaiter(
-        raw=_Raw([_Sub([])]),
-        js=js,
+        connection=lambda: raw,
+        jetstream=lambda: js,
         subject=_SUBJECT,
         stream=_STREAM,
         inactive_threshold_seconds=1200.0 + _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS,
@@ -360,3 +361,34 @@ async def test_cancellation_is_not_swallowed_as_a_transport_blip() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_a_credential_renewal_mid_wait_moves_the_consumer_to_the_successor() -> None:
+    """a renewal retires the connection the waiter's consumer was made on; the answer is still collected.
+
+    the replacement is made on whichever connection is current when it is made -- the successor --
+    and reads the stream from the start, so an answer published while the move happened is there.
+    """
+    from nats.errors import ConnectionClosedError
+
+    answer = _Msg(b"the answer")
+    replaced = _Raw([_Sub([None, ConnectionClosedError()])])
+    successor = _Raw([_Sub([answer])])
+    current = {"connection": replaced}
+    js = _Js()
+    waiter = JetStreamResultWaiter(
+        connection=lambda: current["connection"],
+        jetstream=lambda: js,
+        subject=_SUBJECT,
+        stream=_STREAM,
+        inactive_threshold_seconds=600.0,
+        poll_seconds=0.01,
+        heartbeat_seconds=60.0,
+    )
+    await waiter.open()
+    current["connection"] = successor  # the renewal: the client's connection is now the successor
+
+    assert await waiter.wait(timeout=timedelta(seconds=2)) == b"the answer"
+    assert answer.acked
+    assert len(successor.subscribed) == 1
+    assert len(js.creates) == 2

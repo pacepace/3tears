@@ -74,8 +74,7 @@ from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, TypeVar
 
-import nats
-from nats.aio.client import Client as _NatsPyClient
+from nats.aio.client import DEFAULT_FLUSH_TIMEOUT as _NATS_FLUSH_TIMEOUT_SECONDS, Client as _NatsPyClient
 from nats.aio.subscription import DEFAULT_SUB_PENDING_BYTES_LIMIT, DEFAULT_SUB_PENDING_MSGS_LIMIT
 from nats.js.api import (
     AckPolicy as _NatsAckPolicy,
@@ -97,11 +96,15 @@ from threetears.nats._diagnostics import permissions_violation_remedy
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
 from threetears.nats._receipt import ReceiptBacklog
 from threetears.nats.credential_renewal import (
+    REAUTH_CONNECT_TIMEOUT_SECONDS,
+    REAUTH_MIN_SLEEP_SECONDS,
+    REAUTH_RETIRE_DRAIN_SECONDS,
     REAUTH_RETRY_SECONDS,
     has_schedulable_ttl,
     nats_user_jwt_ttl_seconds,
     seconds_until_reauth,
-    unsafe_reauth_delay_reason,
+    seconds_until_retirement,
+    unsafe_renewal_reason,
 )
 from threetears.nats.errors import (
     NamespaceNotConfiguredError,
@@ -301,6 +304,20 @@ _STATUS_IDLE_HEARTBEAT: Final[str] = "100"
 #: surfaces as a failure the wait retries rather than as a hang.
 _RESULT_WAITER_CREATE_TIMEOUT_SECONDS: Final[float] = 10.0
 
+#: bound on handing a superseded subscription over during a renewal. It must NEVER cut nats-py's
+#: drain off inside the flush it starts: nats-py leaves the cancelled PING future in its PONG queue,
+#: the next PONG then raises ``InvalidStateError`` in ``_process_pong``, and the read loop's catch-all
+#: ends the loop -- the connection reports itself connected and never reads again. The flush bounds
+#: itself (``DEFAULT_FLUSH_TIMEOUT``), and a handover makes three of them (:func:`_stop_routing_then_drain`),
+#: so this bound exceeds all three: when it fires, the drain is past its flushes and waiting for queued
+#: messages to be taken, where a cancellation harms nothing.
+_HANDOVER_DRAIN_BOUND_SECONDS: Final[float] = REAUTH_RETIRE_DRAIN_SECONDS + 3 * _NATS_FLUSH_TIMEOUT_SECONDS
+
+#: the prefix of the queue group a subscription joins when its caller names none. Each such
+#: subscription gets a group of its OWN, of which it is the only member -- see
+#: :class:`Subscription` for why a subscription is never plain.
+_SOLE_MEMBER_QUEUE_PREFIX: Final[str] = "_solo."
+
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
 
@@ -489,6 +506,160 @@ def _make_reconnect_to_server_handler(
     return _handler
 
 
+class _SubscriptionFeed:
+    """takes a subscription's messages off whichever connection currently carries it.
+
+    A subscription outlives the connection it was made on: a credential renewal moves it onto
+    the successor connection (:meth:`NatsClient.renew_connection`). So the receiving half is
+    its own object, which can hold a receiver per connection at once -- the successor's,
+    attached first, and the predecessor's, draining what the server had already routed to it
+    -- feeding ONE backlog the subscription's callbacks read. Only the CURRENT receiver's end
+    closes the backlog: a superseded receiver ending is the handover, not the stream ending.
+
+    :param backlog: the subscription's received-but-undispatched messages
+    :ptype backlog: ReceiptBacklog
+    :param subject: the subscribed subject, for log lines
+    :ptype subject: Subject
+    :param note_reply: records which connection received a request, so the reply leaves on it;
+        ``None`` for a subscription whose callback cannot reply
+    :ptype note_reply: Callable[[str, Any], None] | None
+    """
+
+    __slots__ = ("_backlog", "_subject", "_note_reply", "_current", "_receivers")
+
+    def __init__(
+        self,
+        *,
+        backlog: ReceiptBacklog,
+        subject: Subject,
+        note_reply: Callable[[str, Any], None] | None,
+    ) -> None:
+        """bind the feed to its backlog; no receiver runs until :meth:`attach`.
+
+        :param backlog: the subscription's received-but-undispatched messages
+        :ptype backlog: ReceiptBacklog
+        :param subject: the subscribed subject, for log lines
+        :ptype subject: Subject
+        :param note_reply: records which connection received a request, or ``None``
+        :ptype note_reply: Callable[[str, Any], None] | None
+        :return: nothing
+        :rtype: None
+        """
+        self._backlog = backlog
+        self._subject = subject
+        self._note_reply = note_reply
+        self._current: Any = None
+        self._receivers: set[asyncio.Task[None]] = set()
+
+    def attach(self, raw_subscription: Any, connection: Any) -> None:
+        """start receiving from ``raw_subscription`` and make it the current receiver.
+
+        :param raw_subscription: the nats-py subscription on ``connection``
+        :ptype raw_subscription: Any
+        :param connection: the nats-py connection that carries it
+        :ptype connection: Any
+        :return: nothing
+        :rtype: None
+        """
+        self._current = raw_subscription
+        task = asyncio.create_task(
+            self._receive(raw_subscription, connection),
+            name=f"nats-receive:{self._subject.path}",
+        )
+        self._receivers.add(task)
+        task.add_done_callback(self._receivers.discard)
+
+    async def release(self, raw_subscription: Any, connection: Any) -> None:
+        """hand over a superseded receiver: stop the server routing to it, keep what it already has.
+
+        :func:`_stop_routing_then_drain` removes the server's interest, proves by round trip that
+        everything routed there has arrived, and waits for the receiver to have taken each of
+        those messages into the backlog -- so nothing already in flight to the old connection is
+        dropped. Never raises: a connection that closed first has nothing left to hand over.
+
+        :param raw_subscription: the superseded nats-py subscription
+        :ptype raw_subscription: Any
+        :param connection: the nats-py connection that carries it
+        :ptype connection: Any
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            # bounded: the drain waits for the receiver to take each message, and a subscription
+            # dropped mid-handover has no receiver left to take them. see the bound's own comment
+            # for why it is longer than the flushes inside the drain.
+            await asyncio.wait_for(
+                _stop_routing_then_drain(raw_subscription, connection),
+                timeout=_HANDOVER_DRAIN_BOUND_SECONDS,
+            )
+        # NOSILENT: logged; the successor is already receiving, so the only loss is whatever the
+        # closed connection had not yet handed over, and a closed connection cannot hand it over.
+        except Exception as exc:  # noqa: BLE001 -- handover is best-effort once the successor receives
+            log.warning(
+                "superseded subscription could not be drained",
+                extra={"extra_data": {"subject": self._subject.path, "error": str(exc)}},
+            )
+
+    async def cancel(self) -> None:
+        """stop every receiver and wait for them to end.
+
+        :return: nothing
+        :rtype: None
+        """
+        receivers = list(self._receivers)
+        for task in receivers:
+            task.cancel()
+        for task in receivers:
+            try:
+                await task
+            except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested above
+                pass
+
+    async def _receive(self, raw_subscription: Any, connection: Any) -> None:
+        """take each message off one connection as it arrives and date it there.
+
+        nats-py's ``Msg`` carries no receipt time, and a message left in its pending
+        queue while every callback is busy is invisible; taken here instead, the time
+        it then waits for a callback counts toward its age (``monotonic_received``).
+        the backlog's bound stops this loop when the callbacks fall far enough behind,
+        so the excess waits on the connection under nats-py's own slow-consumer limit.
+
+        a stream failure is logged here rather than raised. when this receiver is the
+        current one, its end closes the backlog, so the dispatcher hands out what was
+        already received and then ends; a superseded receiver's end closes nothing.
+
+        :param raw_subscription: the nats-py subscription to read
+        :ptype raw_subscription: Any
+        :param connection: the connection carrying it, recorded against each request received
+        :ptype connection: Any
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            async for msg in raw_subscription.messages:
+                if self._note_reply is not None and msg.reply:
+                    self._note_reply(msg.reply, connection)
+                await self._backlog.put(msg, received=time.monotonic())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — diag only
+            underlying = representative_exception(exc)
+            log.error(
+                "subscription dispatch loop crashed",
+                extra={
+                    "extra_data": {
+                        "subject": self._subject.path,
+                        "error_type": type(underlying).__name__,
+                        "error": str(underlying),
+                    }
+                },
+            )
+        finally:
+            if raw_subscription is self._current:
+                await self._backlog.close()
+
+
 class Subscription:
     """opaque handle returned by :meth:`NatsClient.subscribe`.
 
@@ -500,15 +671,35 @@ class Subscription:
     bindable from outside the wrapper, and the wrapper itself
     manipulates them when unsubscribing.
 
+    **A subscription is never plain on the wire.** One made without a queue group joins a group
+    of its own (:data:`_SOLE_MEMBER_QUEUE_PREFIX`), of which it is the only member. To every
+    other subscriber that is indistinguishable from a plain subscription -- the server delivers
+    each message to every plain subscriber and to one member of every group, and this group has
+    one member -- but it is what lets a credential renewal move the subscription between
+    connections without losing or doubling a message. The move subscribes the successor
+    connection BEFORE unsubscribing the old one, so something is always listening; with a plain
+    subscription the two would each receive every message published while both are live, and
+    with one shared group the server picks exactly one of them for each. A caller-named group
+    already has that property. The price is ordering across the move: while both are members,
+    two consecutive messages may be handed to different connections, and so dispatched in
+    either order. Core NATS promises order only per publisher per connection, and a handover
+    is two connections.
+
     :param raw_subscription: underlying nats-py subscription
     :ptype raw_subscription: Any
     :param subject: subject this subscription was registered against
     :ptype subject: Subject
     :param dispatch_task: background task driving the message loop
     :ptype dispatch_task: asyncio.Task[None]
+    :param queue: the queue group the subscription holds on the wire
+    :ptype queue: str
+    :param feed: the receiving half, which a renewal re-attaches to the successor connection
+    :ptype feed: _SubscriptionFeed
+    :param connection: the nats-py connection ``raw_subscription`` is on
+    :ptype connection: Any
     """
 
-    __slots__ = ("raw_subscription", "_subject", "dispatch_task", "_closed")
+    __slots__ = ("raw_subscription", "_subject", "dispatch_task", "_closed", "_queue", "_feed", "_connection")
 
     def __init__(
         self,
@@ -516,11 +707,66 @@ class Subscription:
         raw_subscription: Any,
         subject: Subject,
         dispatch_task: asyncio.Task[None],
+        queue: str,
+        feed: _SubscriptionFeed,
+        connection: Any,
     ) -> None:
         self.raw_subscription = raw_subscription
         self._subject = subject
         self.dispatch_task = dispatch_task
         self._closed = False
+        self._queue = queue
+        self._feed = feed
+        self._connection = connection
+
+    @property
+    def queue(self) -> str:
+        """the queue group this subscription holds on the wire.
+
+        :return: the caller's group, or the subscription's own sole-member group
+        :rtype: str
+        """
+        return self._queue
+
+    async def subscribe_on(self, connection: Any) -> Any:
+        """subscribe this subscription's subject and group on a successor connection.
+
+        The first half of a move; nothing receives from it until :meth:`move_to`.
+
+        :param connection: the successor nats-py connection
+        :ptype connection: Any
+        :return: the nats-py subscription on it
+        :rtype: Any
+        """
+        return await connection.subscribe(self._subject.path, queue=self._queue)
+
+    def move_to(self, raw_subscription: Any, connection: Any) -> asyncio.Task[None]:
+        """make the successor's subscription current, and hand over the old one's backlog.
+
+        The successor receives from here on; the old subscription is drained in the background
+        so whatever the server had already routed to it still reaches the callbacks.
+
+        :param raw_subscription: the successor's nats-py subscription, from :meth:`subscribe_on`
+        :ptype raw_subscription: Any
+        :param connection: the successor nats-py connection
+        :ptype connection: Any
+        :return: the task draining the old subscription
+        :rtype: asyncio.Task[None]
+        """
+        if self._closed:
+            # dropped while the successor was being subscribed: nothing is left to receive for.
+            return asyncio.create_task(
+                _unsubscribe_quietly(raw_subscription, subject=self._subject),
+                name=f"nats-handover:{self._subject.path}",
+            )
+        previous, previous_connection = self.raw_subscription, self._connection
+        self._feed.attach(raw_subscription, connection)
+        self.raw_subscription = raw_subscription
+        self._connection = connection
+        return asyncio.create_task(
+            self._feed.release(previous, previous_connection),
+            name=f"nats-handover:{self._subject.path}",
+        )
 
     @property
     def subject(self) -> Subject:
@@ -570,6 +816,9 @@ class Subscription:
         """
         if self._closed:
             return
+        # closed FIRST: a renewal moving this subscription checks it, and must not attach a
+        # successor to a subscription being dropped under it.
+        self._closed = True
         try:
             await self.raw_subscription.unsubscribe()
         except Exception as exc:  # noqa: BLE001 -- diag only; teardown continues regardless
@@ -588,7 +837,6 @@ class Subscription:
                 "dispatch task raised while unwinding",
                 extra={"extra_data": {"subject": self.subject.path, "error": str(exc)}},
             )
-        self._closed = True
 
 
 class JetStreamPushConsumer:
@@ -617,15 +865,26 @@ class JetStreamPushConsumer:
     wrapper-owned ``dispatch_task`` to cancel here — :meth:`stop` only
     needs to drop the raw nats-py subscription.
 
+    a credential renewal moves the handle to the successor connection (:meth:`move_to`): the
+    durable is released on the old connection -- its callbacks finish and their acks leave on the
+    connection that received each message -- and bound again on the new one. the durable holds
+    every message published meanwhile, so nothing is lost; a push consumer with no deliver group
+    admits one bound subscription at a time, so the two cannot overlap.
+
     :param raw_subscription: underlying nats-py JetStream push subscription
     :ptype raw_subscription: Any
     :param subject: subject this subscription was registered against
     :ptype subject: Subject
     :param durable: durable consumer name (diagnostics)
     :ptype durable: str
+    :param resubscribe: binds the durable again through a JetStream context, returning the new
+        nats-py subscription
+    :ptype resubscribe: Callable[[Any], Awaitable[Any]]
+    :param connection: the nats-py connection ``raw_subscription`` is on
+    :ptype connection: Any
     """
 
-    __slots__ = ("raw_subscription", "_subject", "_durable", "_closed")
+    __slots__ = ("raw_subscription", "_subject", "_durable", "_closed", "_resubscribe", "_connection")
 
     def __init__(
         self,
@@ -633,11 +892,64 @@ class JetStreamPushConsumer:
         raw_subscription: Any,
         subject: Subject,
         durable: str,
+        resubscribe: Callable[[Any], Awaitable[Any]],
+        connection: Any,
     ) -> None:
         self.raw_subscription = raw_subscription
         self._subject = subject
         self._durable = durable
         self._closed = False
+        self._resubscribe = resubscribe
+        self._connection = connection
+
+    async def move_to(self, js: Any, connection: Any) -> None:
+        """release the durable on its current connection and bind it again through ``js``.
+
+        retried until it binds or the handle is stopped: a durable left unbound delivers nothing,
+        with nothing to say so, and the server may still report the durable bound for a moment
+        after the release. never raises.
+
+        :param js: a JetStream context on the successor connection
+        :ptype js: Any
+        :param connection: the successor nats-py connection ``js`` is on
+        :ptype connection: Any
+        :return: nothing
+        :rtype: None
+        """
+        previous = self.raw_subscription
+        try:
+            await asyncio.wait_for(
+                _stop_routing_then_drain(previous, self._connection),
+                timeout=_HANDOVER_DRAIN_BOUND_SECONDS,
+            )
+        # NOSILENT: logged; the durable redelivers anything unacknowledged, so the rebind below
+        # loses nothing even when the release could not finish.
+        except Exception as exc:  # noqa: BLE001 -- the rebind proceeds either way
+            log.warning(
+                "durable push consumer could not be released from the replaced connection: durable=%s: %s",
+                self._durable,
+                exc,
+            )
+        while not self._closed:
+            try:
+                bound = await self._resubscribe(js)
+            except Exception as exc:  # noqa: BLE001 -- retried: an unbound durable delivers nothing
+                log.warning(
+                    "durable push consumer could not be bound on the successor connection; retrying in %.1fs: "
+                    "durable=%s: %s",
+                    _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
+                    self._durable,
+                    exc,
+                )
+                await asyncio.sleep(_PULL_CONSUMER_ERROR_BACKOFF_SECONDS)
+                continue
+            if self._closed:
+                # stopped while it was being bound: release what was just bound.
+                await _unsubscribe_quietly(bound, subject=self._subject)
+            else:
+                self.raw_subscription = bound
+                self._connection = connection
+            break
 
     @property
     def subject(self) -> Subject:
@@ -710,6 +1022,12 @@ class JetStreamPullConsumer:
     :ptype batch: int
     :param fetch_timeout_seconds: idle poll cadence (per-fetch wait)
     :ptype fetch_timeout_seconds: float
+    :param bound_to: the nats-py connection ``psub`` was made on
+    :ptype bound_to: Any
+    :param current_connection: reads the client's current connection
+    :ptype current_connection: Callable[[], Any]
+    :param resubscribe: binds the durable again on the client's current connection
+    :ptype resubscribe: Callable[[], Awaitable[Any]]
     """
 
     def __init__(
@@ -722,6 +1040,9 @@ class JetStreamPullConsumer:
         subject: Subject,
         batch: int,
         fetch_timeout_seconds: float,
+        bound_to: Any,
+        current_connection: Callable[[], Any],
+        resubscribe: Callable[[], Awaitable[Any]],
     ) -> None:
         """initialize the pull consumer over its subscription + handlers.
 
@@ -739,6 +1060,12 @@ class JetStreamPullConsumer:
         :ptype batch: int
         :param fetch_timeout_seconds: idle poll cadence (per-fetch wait)
         :ptype fetch_timeout_seconds: float
+        :param bound_to: the nats-py connection ``psub`` was made on
+        :ptype bound_to: Any
+        :param current_connection: reads the client's current connection
+        :ptype current_connection: Callable[[], Any]
+        :param resubscribe: binds the durable again on the client's current connection
+        :ptype resubscribe: Callable[[], Awaitable[Any]]
         :return: nothing
         :rtype: None
         """
@@ -750,6 +1077,32 @@ class JetStreamPullConsumer:
         self._batch = batch
         self._fetch_timeout_seconds = fetch_timeout_seconds
         self._stopped = False
+        self._bound_to = bound_to
+        self._current_connection = current_connection
+        self._resubscribe = resubscribe
+
+    async def _follow_connection(self) -> None:
+        """rebind the durable when a credential renewal has replaced the connection it was bound on.
+
+        a pull fetch is a request on the connection the subscription was made on, and a renewal
+        retires that connection; checked before every fetch, so the consumer moves at its next
+        cycle rather than failing on a closed connection. the durable, not the subscription,
+        holds the backlog, so the rebind loses nothing.
+
+        :return: nothing
+        :rtype: None
+        :raises Exception: when the rebind fails; :meth:`run` logs it and retries
+        """
+        current = self._current_connection()
+        if current is self._bound_to:
+            return
+        previous = self._psub
+        self._psub = await self._resubscribe()
+        self._bound_to = current
+        await _unsubscribe_quietly(previous, subject=self._subject)
+        log.info(
+            "durable pull consumer followed a credential renewal to the successor connection: durable=%s", self._durable
+        )
 
     async def fetch_and_process(self) -> int:
         """pull one batch and dispatch each message; return the count processed.
@@ -762,6 +1115,7 @@ class JetStreamPullConsumer:
         :return: number of messages fetched this cycle
         :rtype: int
         """
+        await self._follow_connection()
         try:
             msgs = await self._psub.fetch(self._batch, timeout=self._fetch_timeout_seconds)
         except _NatsTimeoutError:
@@ -842,10 +1196,16 @@ class JetStreamResultWaiter:
     whenever it was published" -- so the ordering between opening the consumer and the answer
     arriving stops being a race at all.
 
-    :param raw: the connected nats-py client, whose inbox receives the pushed answer
-    :ptype raw: Any
-    :param js: nats-py JetStream context on the same connection
-    :ptype js: Any
+    **The consumer is made on whichever connection is current when it is made.** A credential
+    renewal replaces the connection mid-wait and later retires the old one; the waiter then sees
+    its subscription end, and the replacement it makes lands on the successor -- where
+    ``DeliverPolicy.ALL`` still finds the answer.
+
+    :param connection: reads the client's current nats-py connection, whose inbox receives the
+        pushed answer
+    :ptype connection: Callable[[], Any]
+    :param jetstream: reads a JetStream context on the client's current connection
+    :ptype jetstream: Callable[[], Any]
     :param subject: the exact subject the answer will be published to
     :ptype subject: Subject
     :param stream: backing stream name, passed explicitly so the client never issues the
@@ -863,8 +1223,8 @@ class JetStreamResultWaiter:
     def __init__(
         self,
         *,
-        raw: Any,
-        js: Any,
+        connection: Callable[[], Any],
+        jetstream: Callable[[], Any],
         subject: Subject,
         stream: str,
         inactive_threshold_seconds: float,
@@ -873,10 +1233,10 @@ class JetStreamResultWaiter:
     ) -> None:
         """bind the waiter to its subject; the consumer is created by :meth:`open`.
 
-        :param raw: the connected nats-py client
-        :ptype raw: Any
-        :param js: nats-py JetStream context on the same connection
-        :ptype js: Any
+        :param connection: reads the client's current nats-py connection
+        :ptype connection: Callable[[], Any]
+        :param jetstream: reads a JetStream context on the client's current connection
+        :ptype jetstream: Callable[[], Any]
         :param subject: the exact subject the answer will be published to
         :ptype subject: Subject
         :param stream: backing stream name
@@ -890,8 +1250,8 @@ class JetStreamResultWaiter:
         :return: nothing
         :rtype: None
         """
-        self._raw = raw
-        self._js = js
+        self._connection = connection
+        self._jetstream = jetstream
         self._subject = subject
         self._stream = stream
         self._inactive_threshold_seconds = inactive_threshold_seconds
@@ -930,8 +1290,9 @@ class JetStreamResultWaiter:
         :raises Exception: when the create fails or is not answered within its ceiling
         """
         name = f"{_RESULT_WAITER_CONSUMER_PREFIX}{uuid.uuid7().hex}"
-        inbox = self._raw.new_inbox()
-        sub = await self._raw.subscribe(inbox)
+        connection = self._connection()
+        inbox = connection.new_inbox()
+        sub = await connection.subscribe(inbox)
         config = _NatsConsumerConfig(
             name=name,
             deliver_subject=inbox,
@@ -946,7 +1307,7 @@ class JetStreamResultWaiter:
         )
         try:
             await asyncio.wait_for(
-                self._js.add_consumer(self._stream, config=config),
+                self._jetstream().add_consumer(self._stream, config=config),
                 timeout=_RESULT_WAITER_CREATE_TIMEOUT_SECONDS,
             )
         except BaseException:
@@ -1071,24 +1432,230 @@ class JetStreamResultWaiter:
             await _unsubscribe_quietly(sub, subject=self._subject)
 
 
-async def _unsubscribe_quietly(sub: Any, *, subject: Subject) -> None:
-    """unsubscribe a result waiter's inbox, logging rather than raising a failure.
+async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> None:
+    """end a subscription the server may still be routing to, without dropping what it routed.
 
-    :param sub: the core subscription on the waiter's inbox
+    nats-py's own ``Subscription.drain`` cannot be trusted with this. It queues its ``UNSUB`` in the
+    connection's pending buffer but writes the ``PING`` of its round trip straight to the socket
+    (``Client._send_ping``), so the ``PING`` reaches the server FIRST. The ``PONG`` it waits for
+    therefore proves nothing about the ``UNSUB``; the drain then forgets the subscription while the
+    server is still routing to it, and ``_process_msg`` drops whatever arrives for a subscription
+    it no longer knows. For a subscription sharing a queue group with its successor, a message the
+    server hands to the old member in that gap is lost outright -- no other member ever sees it.
+    Found by the live renewal test: 1 of 11858 streamed messages, across a few dozen renewals.
+
+    So the ``UNSUB`` goes out on its own first, and the connection is round-tripped TWICE: the first
+    ``PING`` may still overtake it, but it hands control to the flusher, which writes the ``UNSUB``
+    before the second ``PING`` is written. The second ``PONG`` proves the server processed the
+    ``UNSUB`` and has sent every message it routed here before it. Only then does nats-py's drain run
+    -- its own round trip now harmless -- to wait for each of those messages to be taken, and forget
+    the subscription.
+
+    :param raw_subscription: the nats-py subscription to end
+    :ptype raw_subscription: Any
+    :param connection: the nats-py connection carrying it
+    :ptype connection: Any
+    :return: nothing
+    :rtype: None
+    :raises Exception: whatever the connection raises; the caller logs it
+    """
+    # rationale: nats-py exposes no way to remove a subscription's interest without also forgetting
+    # the subscription (unsubscribe) or racing its own round trip (drain); see the docstring.
+    await connection._send_unsubscribe(raw_subscription._id)  # noqa: SLF001 -- see rationale above
+    await connection.flush()
+    await connection.flush()
+    await raw_subscription.drain()
+
+
+async def _unsubscribe_quietly(sub: Any, *, subject: Subject) -> None:
+    """unsubscribe a nats-py subscription nothing will read again, logging rather than raising.
+
+    for a result waiter's inbox, a superseded subscription, or a durable's released binding: in
+    each case the server-side state ages out or is held by the durable, so nothing leaks.
+
+    :param sub: the nats-py subscription
     :ptype sub: Any
-    :param subject: the awaited subject, for the log line
+    :param subject: the subject it served, for the log line
     :ptype subject: Subject
     :return: nothing
     :rtype: None
     """
     try:
         await sub.unsubscribe()
-    except Exception as exc:  # noqa: BLE001 — the consumer ages out anyway; nothing durable leaks
+    except Exception as exc:  # noqa: BLE001 — nothing durable leaks; see the docstring
         log.debug(
-            "result waiter unsubscribe failed (subject=%s): %s",
+            "unsubscribe of an abandoned subscription failed (subject=%s): %s",
             subject.path,
             exc,
         )
+
+
+class _ConnectionState:
+    """what the client knows about one of its connections beyond what nats-py tracks.
+
+    :ivar retiring: set once a renewal has replaced the connection; its callbacks then stop
+        speaking for the client (no health counting, no reconnect hooks, no disconnect warning)
+    :ivar connected_at: ``time.monotonic()`` of the connection's latest successful
+        (re)connect, which is when its current credential was minted
+    """
+
+    __slots__ = ("retiring", "connected_at")
+
+    def __init__(self) -> None:
+        """a connection that is current and was established now.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.retiring = False
+        self.connected_at = time.monotonic()
+
+
+class _ConnectionOpener:
+    """opens a connection the way :meth:`NatsClient.connect` opened the first one.
+
+    Kept by the client so a credential renewal can open the successor with the same servers,
+    credentials provider, inbox prefix and bounds. The callbacks nats-py takes are built per
+    connection, bound to that connection's :class:`_ConnectionState`: a replaced connection's
+    disconnect is its planned retirement, not an outage, and must not read as one.
+
+    :param servers: the server URLs, primary first
+    :ptype servers: list[str]
+    :param options: the nats-py connect options every connection shares
+    :ptype options: dict[str, object]
+    :param primary_url: the primary URL, for error messages
+    :ptype primary_url: str
+    :param client_name: the client's name, for log lines
+    :ptype client_name: str
+    """
+
+    __slots__ = ("_servers", "_options", "_primary_url", "_client_name", "reconnect_callbacks", "health_state")
+
+    def __init__(self, *, servers: list[str], options: dict[str, object], primary_url: str, client_name: str) -> None:
+        """hold what every connection is opened with.
+
+        :param servers: the server URLs, primary first
+        :ptype servers: list[str]
+        :param options: the nats-py connect options every connection shares
+        :ptype options: dict[str, object]
+        :param primary_url: the primary URL, for error messages
+        :ptype primary_url: str
+        :param client_name: the client's name, for log lines
+        :ptype client_name: str
+        :return: nothing
+        :rtype: None
+        """
+        self._servers = servers
+        self._options = options
+        self._primary_url = primary_url
+        self._client_name = client_name
+        # nats-py reads its single ``reconnected_cb`` slot at reconnect time; the dispatcher below
+        # closes over this list, which the client adopts, so a consumer callback registered through
+        # :meth:`NatsClient.add_reconnect_callback` is dispatched on every reconnect of every
+        # current connection.
+        self.reconnect_callbacks: list[ReconnectCallback] = []
+        # shared by every connection's error/reconnect dispatchers and read by
+        # :attr:`NatsClient.is_healthy`. resilience-task-03: ``overflow_events`` beside
+        # ``auth_violations``.
+        self.health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
+
+    async def open(self, state: _ConnectionState) -> _NatsPyClient:
+        """open one connection whose callbacks answer to ``state``.
+
+        :param state: the new connection's state, which its callbacks read
+        :ptype state: _ConnectionState
+        :return: the connected nats-py client
+        :rtype: nats.aio.client.Client
+        :raises NatsClientError: if the connection fails
+        """
+        options = dict(self._options)
+        options["reconnected_cb"] = self._reconnected_callback(state)
+        options["disconnected_cb"] = self._disconnected_callback(state)
+        options["error_cb"] = self._error_callback(state)
+        raw = await _establish_connection(self._servers, options, self._primary_url)
+        state.connected_at = time.monotonic()
+        return raw
+
+    def _reconnected_callback(self, state: _ConnectionState) -> Callable[[], Awaitable[None]]:
+        """the ``reconnected_cb`` for one connection.
+
+        :param state: the connection's state
+        :ptype state: _ConnectionState
+        :return: the callback
+        :rtype: Callable[[], Awaitable[None]]
+        """
+        health_state = self.health_state
+        reconnect_callbacks = self.reconnect_callbacks
+
+        async def _dispatch_reconnected() -> None:
+            """fan a reconnect out to the wrapper log + every consumer-registered callback."""
+            # a (re)connect mints the connection a fresh credential: the renewal schedule restarts.
+            state.connected_at = time.monotonic()
+            if state.retiring:
+                # NOSILENT: a replaced connection outlived a network drop while it finished its
+                # work. it no longer speaks for the client: the current connection's health and
+                # the consumer's reconnect hooks are not its business.
+                log.info("a replaced NATS connection reconnected while it is being retired")
+                return
+            health_state["auth_violations"] = 0  # a successful (re)connect clears the wedged-auth signal
+            # resilience-task-03: a successful (re)connect also clears the outbound-overflow signal --
+            # the transport is healthy again, so any buffered-full streak is stale.
+            health_state["overflow_events"] = 0
+            await _on_reconnected()
+            for callback in list(reconnect_callbacks):
+                try:
+                    await callback()
+                except Exception as exc:  # noqa: BLE001 — one bad hook must not abort the others
+                    # NOSILENT: a failing reconnect hook is logged so a recurring failure surfaces;
+                    # it must never break the reconnect callback chain or the nats-py reconnect path.
+                    log.warning("reconnect callback failed: %s", exc)
+
+        return _dispatch_reconnected
+
+    def _disconnected_callback(self, state: _ConnectionState) -> Callable[[], Awaitable[None]]:
+        """the ``disconnected_cb`` for one connection.
+
+        :param state: the connection's state
+        :ptype state: _ConnectionState
+        :return: the callback
+        :rtype: Callable[[], Awaitable[None]]
+        """
+        client_name = self._client_name
+
+        async def _dispatch_disconnected() -> None:
+            """warn of an outage, or record a planned retirement as the ordinary event it is."""
+            if state.retiring:
+                log.info(
+                    "a NATS connection replaced by a credential renewal was retired",
+                    extra={"extra_data": {"client_name": client_name}},
+                )
+                return
+            await _on_disconnected()
+
+        return _dispatch_disconnected
+
+    def _error_callback(self, state: _ConnectionState) -> Callable[[Exception], Awaitable[None]]:
+        """the ``error_cb`` for one connection.
+
+        :param state: the connection's state
+        :ptype state: _ConnectionState
+        :return: the callback
+        :rtype: Callable[[Exception], Awaitable[None]]
+        """
+        health_state = self.health_state
+
+        async def _dispatch_error(exc: Exception) -> None:
+            """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
+            # count the violation BEFORE the await: _on_error may suspend, and if a _dispatch_reconnected
+            # reset interleaves at that suspension point a post-reset stale += 1 could survive, leaving a
+            # phantom count after a healthy reconnect. Incrementing first keeps the counter honest within a
+            # run of failures; the next successful reconnect always resets it to 0. A retiring connection's
+            # refusals say nothing about whether the CURRENT credential is wedged, so they are not counted.
+            if not state.retiring and _is_authorization_violation(exc):
+                health_state["auth_violations"] += 1
+            await _on_error(exc)
+
+        return _dispatch_error
 
 
 class _CredentialRenewal:
@@ -1102,36 +1669,33 @@ class _CredentialRenewal:
     def __init__(
         self,
         *,
-        reconnect: Callable[[], Awaitable[None]],
+        renew: Callable[[timedelta], Awaitable[None]],
         client_name: str,
         ttl_seconds: Callable[[], int | None],
-        before_renewal: Callable[[int], Awaitable[None]] | None,
+        connection_age_seconds: Callable[[], float],
         longest_request_seconds: float,
-        drain_grace_seconds: float,
     ) -> None:
         """bind the loop to the client it renews.
 
-        :param reconnect: the client's reconnect, which re-runs the auth-callout
-        :ptype reconnect: Callable[[], Awaitable[None]]
+        :param renew: the client's :meth:`NatsClient.renew_connection`, taking how long to keep
+            the replaced connection open
+        :ptype renew: Callable[[timedelta], Awaitable[None]]
         :param client_name: the client's name, for the log
         :ptype client_name: str
         :param ttl_seconds: reads the current TTL
         :ptype ttl_seconds: Callable[[], int | None]
-        :param before_renewal: awaited with the TTL before each renewal, or ``None``
-        :ptype before_renewal: Callable[[int], Awaitable[None]] | None
+        :param connection_age_seconds: reads how long ago the current connection was established
+        :ptype connection_age_seconds: Callable[[], float]
         :param longest_request_seconds: the longest request the connection makes
         :ptype longest_request_seconds: float
-        :param drain_grace_seconds: how long ``before_renewal`` holds the connection open
-        :ptype drain_grace_seconds: float
         :return: None
         :rtype: None
         """
-        self._reconnect = reconnect
+        self._renew = renew
         self._client_name = client_name
         self._ttl_seconds = ttl_seconds
-        self._before_renewal = before_renewal
+        self._connection_age_seconds = connection_age_seconds
         self._longest_request_seconds = longest_request_seconds
-        self._drain_grace_seconds = drain_grace_seconds
 
     async def run(self) -> None:
         """renew before every expiry until cancelled; a failed renewal retries fast.
@@ -1140,8 +1704,10 @@ class _CredentialRenewal:
         IS TAKEN, because a failure has to change it: after one the next attempt comes
         :data:`~threetears.nats.credential_renewal.REAUTH_RETRY_SECONDS` later, never a full
         cycle -- a failure after the scheduled sleep leaves the credential one retry from
-        expiry, and a second full cycle would land after it. the TTL is re-read every cycle;
-        an unknown one is re-checked on a short cadence without reconnecting on a guess.
+        expiry, and a second full cycle would land after it. the TTL is re-read every cycle,
+        and the wait is measured from when the current connection was established, so a
+        connection that reconnected on its own restarts the schedule; an unknown TTL is
+        re-checked on a short cadence without renewing on a guess.
 
         :return: nothing
         :rtype: None
@@ -1152,15 +1718,12 @@ class _CredentialRenewal:
                 try:
                     ttl = self._ttl_seconds()
                     if retry_in is None:
-                        delay = seconds_until_reauth(ttl)
-                        unsafe = unsafe_reauth_delay_reason(
-                            delay,
-                            ttl,
-                            longest_request_seconds=self._longest_request_seconds,
-                            drain_grace_seconds=self._drain_grace_seconds,
-                        )
+                        delay = seconds_until_reauth(ttl, longest_request_seconds=self._longest_request_seconds)
+                        if has_schedulable_ttl(ttl):
+                            delay = max(REAUTH_MIN_SLEEP_SECONDS, delay - self._connection_age_seconds())
+                        unsafe = unsafe_renewal_reason(ttl, longest_request_seconds=self._longest_request_seconds)
                         if unsafe is not None:
-                            # every cycle, on purpose: this breaks every long request on the connection.
+                            # every cycle, on purpose: this can cut off the longest request on the connection.
                             log.error("UNSAFE NATS credential renewal cadence: %s", unsafe)
                     else:
                         delay = retry_in
@@ -1168,12 +1731,22 @@ class _CredentialRenewal:
                     await asyncio.sleep(delay)
                     if not has_schedulable_ttl(ttl):
                         continue
-                    if self._before_renewal is not None:
-                        await self._before_renewal(ttl)
-                    await self._reconnect()
+                    retire_after = seconds_until_retirement(
+                        ttl,
+                        connection_age_seconds=self._connection_age_seconds(),
+                        longest_request_seconds=self._longest_request_seconds,
+                    )
+                    await self._renew(timedelta(seconds=retire_after))
                     log.info(
-                        "NATS credential renewed by a proactive reconnect before it expired",
-                        extra={"extra_data": {"client_name": self._client_name, "ttl_seconds": ttl}},
+                        "NATS credential renewed on a successor connection before it expired; the replaced "
+                        "connection retires once the work it carries has finished",
+                        extra={
+                            "extra_data": {
+                                "client_name": self._client_name,
+                                "ttl_seconds": ttl,
+                                "retire_after_seconds": retire_after,
+                            }
+                        },
                     )
                 except Exception as exc:  # noqa: BLE001 -- the loop must outlive any one failed renewal
                     retry_in = REAUTH_RETRY_SECONDS
@@ -1213,6 +1786,13 @@ class NatsClient:
         "_reconnect_callbacks",
         "_health_state",
         "_renewal_task",
+        "_opener",
+        "_connections",
+        "_handover_lock",
+        "_reply_routes",
+        "_retirements",
+        "_push_consumers",
+        "_publish_gate",
     )
 
     def __init__(
@@ -1228,6 +1808,28 @@ class NatsClient:
         # the credential-renewal loop, when the owner asked for one (:meth:`renew_credential`);
         # cancelled by :meth:`shutdown`.
         self._renewal_task: asyncio.Task[None] | None = None
+        # how to open another connection like the current one -- set by :meth:`connect`, and
+        # what :meth:`renew_connection` opens the successor with. ``None`` for a client built
+        # around a connection it did not open, which therefore cannot renew it.
+        self._opener: _ConnectionOpener | None = None
+        # every connection this client still holds, current and retiring, with its state.
+        self._connections: dict[_NatsPyClient, _ConnectionState] = {raw: _ConnectionState()}
+        # serializes a renewal's handover against a subscribe that would otherwise land on the
+        # connection being replaced after the handover enumerated the subscriptions.
+        self._handover_lock = asyncio.Lock()
+        # request reply subject -> the connection that received the request, recorded while a
+        # renewal is armed so a reply owed across a handover leaves on the connection NATS lets
+        # answer it. an entry leaves when the reply is sent, or when its connection is retired.
+        self._reply_routes: dict[str, _NatsPyClient] = {}
+        # replaced connections waiting out the work they carry, then drained (:meth:`_retire`).
+        self._retirements: set[asyncio.Task[None]] = set()
+        # durable push consumers, which a handover moves by rebinding the durable on the successor.
+        self._push_consumers: list[JetStreamPushConsumer] = []
+        # closed for the instant a handover takes to prove that everything already published on the
+        # replaced connection reached the server, so nothing published on the successor overtakes it
+        # (:meth:`_settle_publishes`). open the rest of the time.
+        self._publish_gate = asyncio.Event()
+        self._publish_gate.set()
         self._subscriptions: list[Subscription] = []
         self._buckets: dict[str, NatsKvBucket] = {}
         self._kv_lock = asyncio.Lock()
@@ -1351,49 +1953,13 @@ class NatsClient:
         if cluster_urls:
             servers.extend(u.strip() for u in cluster_urls if u.strip())
 
-        # nats-py reads its single ``reconnected_cb`` slot at reconnect time, but the wrapper instance
-        # does not exist yet (it is built after ``nats.connect`` returns). bridge the gap with a list
-        # the dispatcher closes over now and the instance adopts below, so consumer callbacks
-        # registered post-connect via :meth:`add_reconnect_callback` are dispatched on every reconnect.
-        reconnect_callbacks: list[ReconnectCallback] = []
-        # bridged like reconnect_callbacks: the error/reconnect dispatchers below close over this dict
-        # now; the instance adopts it after construction so :attr:`is_healthy` reads the live count.
-        # resilience-task-03: seed ``overflow_events`` alongside ``auth_violations``.
-        health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
-
-        async def _dispatch_reconnected() -> None:
-            """fan a reconnect out to the wrapper log + every consumer-registered callback."""
-            health_state["auth_violations"] = 0  # a successful (re)connect clears the wedged-auth signal
-            # resilience-task-03: a successful (re)connect also clears the outbound-overflow signal --
-            # the transport is healthy again, so any buffered-full streak is stale.
-            health_state["overflow_events"] = 0
-            await _on_reconnected()
-            for callback in list(reconnect_callbacks):
-                try:
-                    await callback()
-                except Exception as exc:  # noqa: BLE001 — one bad hook must not abort the others
-                    # NOSILENT: a failing reconnect hook is logged so a recurring failure surfaces;
-                    # it must never break the reconnect callback chain or the nats-py reconnect path.
-                    log.warning("reconnect callback failed: %s", exc)
-
-        async def _dispatch_error(exc: Exception) -> None:
-            """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
-            # count the violation BEFORE the await: _on_error may suspend, and if a _dispatch_reconnected
-            # reset interleaves at that suspension point a post-reset stale += 1 could survive, leaving a
-            # phantom count after a healthy reconnect. Incrementing first keeps the counter honest within a
-            # run of failures; the next successful reconnect always resets it to 0.
-            if _is_authorization_violation(exc):
-                health_state["auth_violations"] += 1
-            await _on_error(exc)
-
+        # the options every connection this client opens shares; the per-connection callbacks are
+        # added by the opener, bound to that connection's own state (see _ConnectionOpener).
         options: dict[str, object] = {
             "name": client_name,
             "allow_reconnect": True,
             "max_reconnect_attempts": RUNTIME_MAX_RECONNECT_ATTEMPTS,
             "reconnect_time_wait": 2,
-            "reconnected_cb": _dispatch_reconnected,
-            "disconnected_cb": _on_disconnected,
-            "error_cb": _dispatch_error,
             # resilience-task-03: bound the outbound/pending buffer EXPLICITLY (not the untuned
             # nats-py default). overflow raises OutboundBufferLimitError at the publish boundary,
             # caught below and folded into is_healthy.
@@ -1427,12 +1993,11 @@ class NatsClient:
             # inboxes never share the global `_INBOX` tree across principals.
             options["inbox_prefix"] = inbox_prefix.encode("ascii")
 
+        opener = _ConnectionOpener(servers=servers, options=options, primary_url=nats_url, client_name=client_name)
+        state = _ConnectionState()
         started_at = time.monotonic()
         try:
-            raw_client = await asyncio.wait_for(
-                _establish_connection(servers, options, nats_url),
-                timeout=startup_timeout.total_seconds(),
-            )
+            raw_client = await asyncio.wait_for(opener.open(state), timeout=startup_timeout.total_seconds())
         except TimeoutError as exc:
             elapsed = time.monotonic() - started_at
             raise NatsClientError(
@@ -1462,12 +2027,13 @@ class NatsClient:
         )
 
         client = cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
-        # adopt the SAME list the dispatcher closes over, so ``add_reconnect_callback`` appends are
-        # visible to the already-installed ``reconnected_cb``.
-        client._reconnect_callbacks = reconnect_callbacks
-        # adopt the SAME dict the error/reconnect dispatchers close over, so :attr:`is_healthy` reads
-        # the live auth-violation count.
-        client._health_state = health_state
+        client._opener = opener
+        client._connections = {raw_client: state}
+        # adopt the SAME list and dict every connection's callbacks close over, so an
+        # ``add_reconnect_callback`` append is dispatched on the next reconnect and
+        # :attr:`is_healthy` reads the live counts.
+        client._reconnect_callbacks = opener.reconnect_callbacks
+        client._health_state = opener.health_state
         return client
 
     def add_reconnect_callback(self, callback: ReconnectCallback) -> None:
@@ -1634,18 +2200,16 @@ class NatsClient:
         nats-py exposes no public force-reconnect. this drives its OWN op-error reconnect path
         (``nats.aio.client.Client._process_op_err``) on a still-CONNECTED client: that transitions
         the client to ``RECONNECTING`` and spawns ``_attempt_reconnect``, which drops + re-opens the
-        transport, re-runs the server handshake -- under decentralized auth (platform-auth A) this
-        re-runs the Hub auth-callout, minting a FRESH user JWT with full TTL -- and replays every
-        live subscription under its original ``sid``. the registered
-        :meth:`add_reconnect_callback` hooks then fire.
+        transport, re-runs the server handshake, replays every live subscription under its original
+        ``sid``, and then fires the registered :meth:`add_reconnect_callback` hooks.
 
-        the motivating use is **proactive NATS-JWT re-auth**: a pod's auth-callout-minted user JWT
-        is short-lived, and at expiry the server sends an ``-ERR`` that nats-py routes STRAIGHT to a
-        terminal ``_close`` (it never enters ``_attempt_reconnect``, so forever-reconnect --
-        :data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` -- does NOT cover it). triggering this reconnect a
-        margin BEFORE expiry re-auths while the current JWT is still valid, so the connection never
-        reaches that terminal close. the SAME underlying ``_raw`` object is reused, so consumers
-        holding :attr:`raw` (e.g. the L3 proxy backend) stay valid across the cycle.
+        **This is a real disconnect, and it loses what is in flight.** While the transport is down
+        the server holds no subscription for this client, so a reply published to one of its
+        inboxes in that window is dropped, a request it received cannot be answered afterwards
+        (the server lets only the connection that received a request answer it), and a message
+        published to a subject it subscribes is never delivered. It exists to exercise the
+        reconnect path, the way a broker restart would. To replace a credential before it
+        expires, use :meth:`renew_connection`, which loses none of that.
 
         :return: nothing
         :rtype: None
@@ -1665,58 +2229,304 @@ class NatsClient:
             return
         # rationale: _process_op_err is nats-py's single internal entry point that, on a CONNECTED
         # client, transitions to RECONNECTING and spawns _attempt_reconnect (drop+reopen transport,
-        # re-run auth-callout, replay subs under their sid, fire reconnected_cb). we synthesize a
-        # StaleConnectionError -- the connection is about to go stale as the user JWT nears expiry --
-        # so the reconnect+re-auth happens proactively. the is_connected guard above keeps us out of
-        # the method's else-branch, which would _close. nats-py 2.x exposes no public alternative.
+        # re-run auth, replay subs under their sid, fire reconnected_cb). we synthesize a
+        # StaleConnectionError, the error a dead connection's ping timer would raise. the
+        # is_connected guard above keeps us out of the method's else-branch, which would _close.
+        # nats-py 2.x exposes no public alternative.
         await raw._process_op_err(_NatsStaleConnectionError())  # noqa: SLF001 -- no public force-reconnect; see rationale above
+
+    async def renew_connection(self, *, retire_after: timedelta) -> None:
+        """replace the current connection with a freshly authenticated one, losing nothing in flight.
+
+        A credential is per CONNECTION and stays valid until its own expiry, so it is renewed by
+        opening a SECOND connection -- the auth-callout mints it a fresh credential -- rather than
+        by reconnecting the one there is. The handover, in order:
+
+        1. open the successor (bounded by
+           :data:`~threetears.nats.credential_renewal.REAUTH_CONNECT_TIMEOUT_SECONDS`); a failure
+           here changes nothing and raises, and the caller retries while the current credential
+           is still valid;
+        2. subscribe every :class:`Subscription` on it, in the same queue group it holds on the
+           current connection, and round-trip it so the server has registered them all. Both
+           connections are now listening, and each message goes to exactly one of them (see
+           :class:`Subscription`). A failure here closes the successor and raises, again changing
+           nothing;
+        3. make it current: every publish, request, subscribe, KV operation and JetStream call
+           from here on uses it -- but only once the old connection has proved that everything
+           already published on it reached the server (:meth:`_settle_publishes`), so a message
+           published on the successor never overtakes one published before the renewal;
+        4. end each subscription's old half (:func:`_stop_routing_then_drain`), so whatever the
+           server had already routed to the old connection still reaches the callbacks, and
+           rebind each durable push consumer;
+        5. keep the old connection open for ``retire_after`` -- the longest request it may be
+           carrying -- then drain and close it. Until then a request sent on it still receives its
+           reply there, a reply this client owes for a request that arrived there still leaves
+           there (:meth:`publish_reply`), and a JetStream message received there is acknowledged
+           there. Anything that outlives the old connection and is bound to it -- a KV handle, a
+           key watch, a result waiter, a pull consumer -- rebinds to the current connection on its
+           own the next time it is used or its connection closes.
+
+        A connection this client did not open itself (constructed around a caller's nats-py
+        client) cannot be renewed: the client does not know how to open another.
+
+        :param retire_after: how long to keep the replaced connection open for the work it
+            carries before draining it
+        :ptype retire_after: timedelta
+        :return: nothing
+        :rtype: None
+        :raises NatsClientError: if the client is closed, or did not open its own connection
+        :raises Exception: whatever opening or subscribing the successor raised; the current
+            connection is untouched
+        """
+        opener = self._opener
+        if opener is None:
+            raise NatsClientError(
+                "this NATS client was built around a connection it did not open, so it cannot open a "
+                "successor to renew its credential; build it with NatsClient.connect",
+            )
+        previous = self._raw
+        if previous.is_closed:
+            raise NatsClientError("cannot renew the credential of a closed NATS client; it requires a fresh connect")
+        state = _ConnectionState()
+        successor = await asyncio.wait_for(opener.open(state), timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)
+        async with self._handover_lock:
+            moving: list[tuple[Subscription, Any]] = []
+            try:
+                for sub in [s for s in self._subscriptions if not s.is_closed]:
+                    moving.append((sub, await sub.subscribe_on(successor)))
+                # nats-py annotates flush(timeout: int) but waits via asyncio.wait_for (accepts float).
+                await successor.flush(timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)  # type: ignore[arg-type]
+            except BaseException:
+                await _close_quietly(successor)
+                raise
+            self._connections[successor] = state
+            # nothing is published on the successor until everything already published on the old
+            # connection has reached the server (_settle_publishes).
+            self._publish_gate.clear()
+            try:
+                self._raw = successor
+                await self._settle_publishes(previous)
+            finally:
+                self._publish_gate.set()
+            previous_state = self._connections.get(previous)
+            if previous_state is not None:
+                previous_state.retiring = True
+            # a freshly authenticated connection clears the wedged-auth and outbound-overflow
+            # signals, exactly as a successful reconnect does: a refusal before this one said
+            # nothing about the credential now in use.
+            self._health_state["auth_violations"] = 0
+            self._health_state["overflow_events"] = 0
+            handovers = [sub.move_to(raw_sub, successor) for sub, raw_sub in moving]
+            self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
+            js = self.jetstream_context()
+            handovers.extend(
+                asyncio.create_task(consumer.move_to(js, successor), name=f"nats-handover:{consumer.durable}")
+                for consumer in self._push_consumers
+            )
+        retirement = asyncio.create_task(
+            self._retire(previous, after=retire_after, handovers=handovers),
+            name=f"nats-retire:{self._client_name}",
+        )
+        self._retirements.add(retirement)
+        retirement.add_done_callback(self._retirements.discard)
+        log.info(
+            "NATS connection handed over to a successor with a fresh credential",
+            extra={
+                "extra_data": {
+                    "client_name": self._client_name,
+                    "subscriptions_moved": len(moving),
+                    "retire_after_seconds": retire_after.total_seconds(),
+                }
+            },
+        )
+
+    async def _retire(
+        self, connection: _NatsPyClient, *, after: timedelta, handovers: list[asyncio.Task[None]]
+    ) -> None:
+        """keep a replaced connection open for the work it carries, then drain and close it.
+
+        :param connection: the replaced connection
+        :ptype connection: nats.aio.client.Client
+        :param after: how long to keep it open
+        :ptype after: timedelta
+        :param handovers: the subscription handovers draining its old halves, awaited first
+        :ptype handovers: list[asyncio.Task[None]]
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            # each handover is bounded, and never raises (it logs); gathering them first means the
+            # connection-wide drain below never races one.
+            await asyncio.gather(*handovers, return_exceptions=True)
+            await asyncio.sleep(after.total_seconds())
+            await self._drain_retired(connection)
+        finally:
+            self._forget_connection(connection)
+
+    async def _drain_retired(self, connection: _NatsPyClient) -> None:
+        """drain a replaced connection within its bound, closing it outright past that.
+
+        ``drain`` unsubscribes everything still on it, lets its callbacks finish, flushes what it
+        still has to send, and closes it. A request still waiting on it after the hold outlived
+        the longest request its owner declared; it is cut off here, and said so, rather than
+        left to the server to cut off at expiry.
+
+        :param connection: the replaced connection
+        :ptype connection: nats.aio.client.Client
+        :return: nothing
+        :rtype: None
+        """
+        if connection.is_closed:
+            return
+        try:
+            await asyncio.wait_for(connection.drain(), timeout=REAUTH_RETIRE_DRAIN_SECONDS)
+        except Exception as exc:  # noqa: BLE001 -- the connection is closed either way; the reason is logged
+            log.warning(
+                "a replaced NATS connection could not be drained within %.0fs; closing it",
+                REAUTH_RETIRE_DRAIN_SECONDS,
+                extra={"extra_data": {"client_name": self._client_name, "error": str(exc)}},
+            )
+            await _close_quietly(connection)
+
+    def _forget_connection(self, connection: _NatsPyClient) -> None:
+        """drop a retired connection and every reply route that pointed at it.
+
+        :param connection: the retired connection
+        :ptype connection: nats.aio.client.Client
+        :return: nothing
+        :rtype: None
+        """
+        self._connections.pop(connection, None)
+        stale = [reply for reply, via in self._reply_routes.items() if via is connection]
+        for reply in stale:
+            del self._reply_routes[reply]
+
+    def _note_reply_route(self, reply_subject: str, connection: _NatsPyClient) -> None:
+        """remember which connection received a request, so its reply can leave on that connection.
+
+        Recorded only while a renewal is armed: only then can the connection that received a
+        request stop being the current one before the reply is sent. An entry leaves when the
+        reply is sent (:meth:`_reply_connection`), or when its connection is retired.
+
+        :param reply_subject: the request's reply subject
+        :ptype reply_subject: str
+        :param connection: the connection the request arrived on
+        :ptype connection: nats.aio.client.Client
+        :return: nothing
+        :rtype: None
+        """
+        if self._renewal_task is not None:
+            self._reply_routes[reply_subject] = connection
+
+    async def _reply_connection(self, reply_subject: str) -> _NatsPyClient:
+        """the connection a reply to ``reply_subject`` must leave on.
+
+        NATS lets a principal publish to a requester's inbox only through ``allow_responses``,
+        which the server grants to the CONNECTION that received the request -- so a reply sent
+        from any other connection is refused as a permissions violation and dropped, while the
+        publish itself reports success. The connection that received it, when it is still open;
+        otherwise the current one, which is the right one whenever no renewal intervened.
+
+        :param reply_subject: the request's reply subject
+        :ptype reply_subject: str
+        :return: the connection to publish the reply on
+        :rtype: nats.aio.client.Client
+        """
+        via = self._reply_routes.pop(reply_subject, None)
+        if via is not None and not via.is_closed:
+            return via
+        return await self._publishing_connection()
+
+    async def _publishing_connection(self) -> _NatsPyClient:
+        """the connection to publish on: the current one, once any handover has settled.
+
+        :return: the current connection
+        :rtype: nats.aio.client.Client
+        """
+        if not self._publish_gate.is_set():
+            await self._publish_gate.wait()
+        return self._raw
+
+    async def _settle_publishes(self, previous: _NatsPyClient) -> None:
+        """prove that everything published on a replaced connection has reached the server.
+
+        A publisher that sends A on the old connection and then B on its successor would otherwise
+        race them: they travel on two sockets, and B can be routed first -- a streamed answer's
+        tokens arriving out of order. Round-tripping the old connection settles it, since the server
+        processes each connection's input in order and routes a message before it reads the next.
+        TWICE, because nats-py writes a ``PING`` straight to the socket while a publish may still sit
+        in its pending buffer (see :func:`_stop_routing_then_drain`); the second ``PING`` follows
+        everything published before the first. The publish gate is closed meanwhile, so nothing is
+        published on the successor until this returns. A cluster that places the successor on a
+        different server than the old connection routes the two over different paths, and no round
+        trip can order those; on one server, and on the server the old connection shares with it,
+        the order holds.
+
+        Never raises: past its bound the handover proceeds, and says so.
+
+        :param previous: the replaced connection
+        :ptype previous: nats.aio.client.Client
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await previous.flush()
+            await previous.flush()
+        # NOSILENT: logged; the handover must not wedge publishing on a connection that stopped answering
+        except Exception as exc:  # noqa: BLE001 -- ordering is best-effort once the old connection is unresponsive
+            log.warning(
+                "could not confirm the replaced NATS connection delivered its last publishes; a message "
+                "published across this renewal may arrive out of order",
+                extra={"extra_data": {"client_name": self._client_name, "error": str(exc)}},
+            )
+
+    def _connection_age_seconds(self) -> float:
+        """how long ago the current connection was (re)established, which dates its credential.
+
+        :return: seconds since the current connection's latest successful (re)connect
+        :rtype: float
+        """
+        state = self._connections.get(self._raw)
+        return time.monotonic() - state.connected_at if state is not None else 0.0
 
     def renew_credential(
         self,
         *,
         ttl_seconds: Callable[[], int | None] = nats_user_jwt_ttl_seconds,
-        before_renewal: Callable[[int], Awaitable[None]] | None = None,
         longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS,
-        drain_grace_seconds: float = 0.0,
     ) -> None:
-        """keep this connection past its credential's expiry by renewing the credential first.
+        """keep this client connected past its credential's expiry by renewing the credential first.
 
         A connection authenticated by the auth-callout holds a user JWT with a finite TTL, and
         at expiry the server closes it in a way forever-reconnect does not cover
         (:mod:`threetears.nats.credential_renewal`). This runs a loop, owned by the client and
-        stopped by :meth:`shutdown`, that calls :meth:`reconnect` a margin before each expiry so
-        the auth-callout mints a fresh JWT and the connection rides on.
+        stopped by :meth:`shutdown`, that calls :meth:`renew_connection` before each expiry: a
+        successor connection with a fresh credential takes over, and the replaced one is kept
+        open until the work it carries is done. Nothing in flight is dropped.
 
         Opt-in, because only the owner knows the credential expires: a connection
-        authenticated as a static user holds one that never does, and renewing it would drop
-        its requests in flight for nothing. A second call replaces the running loop.
+        authenticated as a static user holds one that never does. A second call replaces the
+        running loop.
 
         :param ttl_seconds: reads the credential's current TTL, every cycle -- an agent's from
             its latest Hub handshake, so a changed TTL reschedules; defaults to the
             environment (:func:`~threetears.nats.credential_renewal.nats_user_jwt_ttl_seconds`)
         :ptype ttl_seconds: Callable[[], int | None]
-        :param before_renewal: awaited with the TTL just before each renewal, to settle what
-            the connection owes -- a tool pod drains the replies it still has to send, since
-            a reply cannot be delivered once the connection that received its request is gone
-        :ptype before_renewal: Callable[[int], Awaitable[None]] | None
-        :param longest_request_seconds: the longest request this connection makes; a cadence
-            that could not carry it is logged as an error every cycle, naming the TTL
+        :param longest_request_seconds: the longest request this client makes, and the longest a
+            reply it owes may take: the replaced connection is kept open this long after each
+            renewal. a TTL too short to allow that is logged as an error every cycle, naming it
         :ptype longest_request_seconds: float
-        :param drain_grace_seconds: how long ``before_renewal`` holds the connection open for
-            requests in flight, which widens the window a request has; ``0`` when it does not
-        :ptype drain_grace_seconds: float
         :return: nothing
         :rtype: None
         """
         if self._renewal_task is not None:
             self._renewal_task.cancel()
         renewal = _CredentialRenewal(
-            reconnect=self.reconnect,
+            renew=lambda retire_after: self.renew_connection(retire_after=retire_after),
             client_name=self._client_name,
             ttl_seconds=ttl_seconds,
-            before_renewal=before_renewal,
+            connection_age_seconds=self._connection_age_seconds,
             longest_request_seconds=longest_request_seconds,
-            drain_grace_seconds=drain_grace_seconds,
         )
         self._renewal_task = asyncio.create_task(renewal.run(), name=f"nats-credential-renewal:{self._client_name}")
 
@@ -1735,6 +2545,25 @@ class NatsClient:
             except asyncio.CancelledError:
                 # NOSILENT: this IS the cancellation requested on the line above
                 pass
+
+    async def _close_replaced_connections(self) -> None:
+        """end every pending retirement now and close the connections it was holding open.
+
+        :return: nothing
+        :rtype: None
+        """
+        retirements = list(self._retirements)
+        for task in retirements:
+            task.cancel()
+        for task in retirements:
+            try:
+                await task
+            except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested above
+                pass
+        for connection in [c for c in self._connections if c is not self._raw]:
+            await self._drain_retired(connection)
+            self._forget_connection(connection)
 
     @property
     def raw(self) -> _NatsPyClient:
@@ -1773,8 +2602,10 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        # first, and even when already closed: a renewal loop must not outlive its client.
+        # first, and even when already closed: a renewal loop must not outlive its client, nor a
+        # connection it replaced.
         await self._stop_renewal()
+        await self._close_replaced_connections()
         if self._raw.is_closed:
             return
         for sub in list(self._subscriptions):
@@ -2045,7 +2876,7 @@ class NatsClient:
             raise PublishError("reply_subject must be non-empty")
         payload = message.model_dump_json().encode("utf-8")
         try:
-            await self._raw.publish(reply_subject, payload)
+            await (await self._reply_connection(reply_subject)).publish(reply_subject, payload)
         except Exception as exc:
             self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise self._publish_failure(
@@ -2081,7 +2912,7 @@ class NatsClient:
         if not reply_subject:
             raise PublishError("reply_subject must be non-empty")
         try:
-            await self._raw.publish(reply_subject, payload)
+            await (await self._reply_connection(reply_subject)).publish(reply_subject, payload)
         except Exception as exc:
             self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise self._publish_failure(
@@ -2112,10 +2943,11 @@ class NatsClient:
         :raises PublishError: if underlying publish fails
         """
         try:
+            connection = await self._publishing_connection()
             if reply_to is None:
-                await self._raw.publish(subject.path, payload)
+                await connection.publish(subject.path, payload)
             else:
-                await self._raw.publish(subject.path, payload, reply=reply_to.path)
+                await connection.publish(subject.path, payload, reply=reply_to.path)
         except Exception as exc:
             # resilience-task-03: an outbound-buffer overflow is counted into is_healthy here (the
             # publish boundary) -- it never reaches error_cb. re-raised as a typed PublishError so the
@@ -2284,11 +3116,8 @@ class NatsClient:
         if isinstance(subject, str):
             subject = Subject.raw(subject)
 
-        try:
-            raw_sub = await self._raw.subscribe(subject.path, queue=queue or "")
-        except Exception as exc:
-            raise SubscribeError(f"subscribe failed: subject={subject.path} queue={queue!r}: {exc}") from exc
-
+        # a group of its own when the caller names none: see Subscription for why it is never plain.
+        wire_queue = queue or f"{_SOLE_MEMBER_QUEUE_PREFIX}{uuid.uuid7().hex}"
         semaphore: asyncio.Semaphore | None = asyncio.Semaphore(max_in_flight) if max_in_flight is not None else None
 
         async def _dispatch_one(msg: "_NatsMsg", received: float) -> None:
@@ -2360,32 +3189,20 @@ class NatsClient:
             finally:
                 slot.release()
 
-        async def _receive(backlog: ReceiptBacklog) -> None:
-            """take each message off the connection as it arrives and date it there.
-
-            nats-py's ``Msg`` carries no receipt time, and a message left in its pending
-            queue while every callback is busy is invisible; taken here instead, the time
-            it then waits for a callback counts toward its age (``monotonic_received``).
-            the backlog's bound stops this loop when the callbacks fall far enough behind,
-            so the excess waits on the connection under nats-py's own slow-consumer limit.
-
-            a stream failure is logged here rather than raised: an exception escaping into
-            the task group would cancel every in-flight callback and reach the outer
-            handler wrapped in an ``ExceptionGroup``. either way the backlog is closed, so
-            the dispatcher hands out what was already received and then ends.
-            """
-            try:
-                async for msg in raw_sub.messages:
-                    await backlog.put(msg, received=time.monotonic())
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — diag only
-                _log_loop_crash(exc)
-            finally:
-                await backlog.close()
+        backlog = ReceiptBacklog(
+            msgs_limit=DEFAULT_SUB_PENDING_MSGS_LIMIT,
+            bytes_limit=DEFAULT_SUB_PENDING_BYTES_LIMIT,
+        )
+        # a typed callback never sees a reply subject, so it can never reply; only a raw one
+        # records which connection received a request.
+        feed = _SubscriptionFeed(
+            backlog=backlog,
+            subject=subject,
+            note_reply=self._note_reply_route if raw_cb is not None else None,
+        )
 
         async def _dispatch() -> None:
-            """drive the subscription: one task receives, this one dispatches.
+            """drive the subscription: the feed receives, this task dispatches.
 
             with ``max_in_flight`` unset, each callback is awaited here before the next
             message is taken from the backlog: strictly serial and in arrival order, and
@@ -2396,19 +3213,14 @@ class NatsClient:
             cap. a slot is acquired before spawning, so once the cap is reached this loop
             parks and the backlog fills behind it.
 
-            the task group owns the receiver's and the callbacks' lifetimes: leaving the
-            block awaits them on normal exit (the message stream ending), and cancels *and
-            awaits* them when unsubscribe cancels this task. without that join, a callback
-            could still be mid-flight after ``unsubscribe`` returned and find the
-            connection drained out from under it.
+            the task group owns the callbacks' lifetimes, and the ``finally`` the feed's
+            receivers': leaving the block awaits them on normal exit (the message stream
+            ending), and cancels *and awaits* them when unsubscribe cancels this task.
+            without that join, a callback could still be mid-flight after ``unsubscribe``
+            returned and find the connection drained out from under it.
             """
-            backlog = ReceiptBacklog(
-                msgs_limit=DEFAULT_SUB_PENDING_MSGS_LIMIT,
-                bytes_limit=DEFAULT_SUB_PENDING_BYTES_LIMIT,
-            )
             try:
                 async with asyncio.TaskGroup() as group:
-                    group.create_task(_receive(backlog), name=f"nats-receive:{subject.path}")
                     while (item := await backlog.get()) is not None:
                         msg, received = item
                         if semaphore is None:
@@ -2423,18 +3235,31 @@ class NatsClient:
                 raise
             except Exception as exc:  # noqa: BLE001 — diag only
                 _log_loop_crash(exc)
+            finally:
+                await feed.cancel()
 
-        dispatch_task = asyncio.create_task(
-            _dispatch(),
-            name=f"nats-dispatch:{subject.path}",
-        )
-
-        sub = Subscription(
-            raw_subscription=raw_sub,
-            subject=subject,
-            dispatch_task=dispatch_task,
-        )
-        self._subscriptions.append(sub)
+        # the subscribe and the registration are one step against a renewal: a subscription
+        # made on the old connection after the renewal enumerated them would never be moved.
+        async with self._handover_lock:
+            connection = self._raw
+            try:
+                raw_sub = await connection.subscribe(subject.path, queue=wire_queue)
+            except Exception as exc:
+                raise SubscribeError(f"subscribe failed: subject={subject.path} queue={queue!r}: {exc}") from exc
+            feed.attach(raw_sub, connection)
+            dispatch_task = asyncio.create_task(
+                _dispatch(),
+                name=f"nats-dispatch:{subject.path}",
+            )
+            sub = Subscription(
+                raw_subscription=raw_sub,
+                subject=subject,
+                dispatch_task=dispatch_task,
+                queue=wire_queue,
+                feed=feed,
+                connection=connection,
+            )
+            self._subscriptions.append(sub)
 
         log.info(
             "NATS subscribed",
@@ -2552,7 +3377,7 @@ class NatsClient:
             sub = pos_subject if isinstance(pos_subject, Subject) else Subject.raw(str(pos_subject))
             secs = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
             try:
-                msg = await self._raw.request(sub.path, bytes(pos_payload), timeout=secs)
+                msg = await (await self._publishing_connection()).request(sub.path, bytes(pos_payload), timeout=secs)
             except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
                 raise RequestTimeoutError(
                     f"request timed out: subject={sub.path} timeout={secs:.1f}s",
@@ -2600,7 +3425,8 @@ class NatsClient:
         :raises RequestError: on timeout, no responders, transport failure
         """
         try:
-            msg = await self._raw.request(subject.path, payload, timeout=timeout.total_seconds())
+            connection = await self._publishing_connection()
+            msg = await connection.request(subject.path, payload, timeout=timeout.total_seconds())
         except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
             raise RequestTimeoutError(
                 f"request timed out: subject={subject.path} timeout={timeout.total_seconds():.1f}s"
@@ -2880,6 +3706,7 @@ class NatsClient:
         """
         seconds = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
         try:
+            await self._publishing_connection()
             await publish_bounded(self.jetstream_context(), subject.path, payload, timeout=seconds, headers=headers)
         except PublishError:
             raise
@@ -2972,21 +3799,43 @@ class NatsClient:
                     subject=subject,
                 )
 
-        js = self.jetstream_context()
         config = _NatsConsumerConfig(
             durable_name=durable,
             ack_policy=_NatsAckPolicy.EXPLICIT,
             max_deliver=max_deliver,
             ack_wait=ack_wait_seconds,
         )
-        sub = await js.subscribe(
-            subject.path,
-            durable=durable,
-            cb=_bounded_cb,
-            manual_ack=True,
-            stream=stream,
-            config=config,
-        )
+
+        async def _bind(js: Any) -> Any:
+            """bind the durable through ``js``, delivering to the bounded callback.
+
+            :param js: a JetStream context on the connection to bind on
+            :ptype js: Any
+            :return: the nats-py push subscription
+            :rtype: Any
+            """
+            return await js.subscribe(
+                subject.path,
+                durable=durable,
+                cb=_bounded_cb,
+                manual_ack=True,
+                stream=stream,
+                config=config,
+            )
+
+        # bound and registered as one step against a renewal, which would otherwise miss a
+        # consumer bound on the old connection after it enumerated them.
+        async with self._handover_lock:
+            connection = self._raw
+            sub = await _bind(self.jetstream_context())
+            consumer = JetStreamPushConsumer(
+                raw_subscription=sub,
+                subject=subject,
+                durable=durable,
+                resubscribe=_bind,
+                connection=connection,
+            )
+            self._push_consumers.append(consumer)
         log.info(
             "jetstream durable consumer subscribed: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s",
             subject.path,
@@ -2995,7 +3844,7 @@ class NatsClient:
             max_deliver,
             dead_letter_subject.path if dead_letter_subject is not None else None,
         )
-        return JetStreamPushConsumer(raw_subscription=sub, subject=subject, durable=durable)
+        return consumer
 
     async def _redeliver_or_deadletter(
         self,
@@ -3138,7 +3987,6 @@ class NatsClient:
             raise ValueError(
                 f"max_deliver must be >= 1: a durable consumer cannot redeliver forever (got {max_deliver})",
             )
-        js = self.jetstream_context()
         config = _NatsConsumerConfig(
             durable_name=durable,
             ack_policy=_NatsAckPolicy.EXPLICIT,
@@ -3146,12 +3994,22 @@ class NatsClient:
             ack_wait=ack_wait_seconds,
             filter_subject=subject.path,
         )
-        psub = await js.pull_subscribe(
-            subject.path,
-            durable=durable,
-            stream=stream,
-            config=config,
-        )
+
+        async def _bind() -> Any:
+            """bind the durable on the client's current connection.
+
+            :return: the nats-py pull subscription
+            :rtype: Any
+            """
+            return await self.jetstream_context().pull_subscribe(
+                subject.path,
+                durable=durable,
+                stream=stream,
+                config=config,
+            )
+
+        bound_to = self._raw
+        psub = await _bind()
 
         async def _redeliver(msg: Any, exc: BaseException) -> None:
             """route a raised handler through the shared bounded-redelivery policy.
@@ -3180,6 +4038,9 @@ class NatsClient:
             subject=subject,
             batch=batch,
             fetch_timeout_seconds=fetch_timeout_seconds,
+            bound_to=bound_to,
+            current_connection=lambda: self._raw,
+            resubscribe=_bind,
         )
         log.info(
             "jetstream pull consumer bound: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s batch=%d",
@@ -3225,8 +4086,8 @@ class NatsClient:
         :rtype: JetStreamResultWaiter
         """
         waiter = JetStreamResultWaiter(
-            raw=self._raw,
-            js=self.jetstream_context(),
+            connection=lambda: self._raw,
+            jetstream=self.jetstream_context,
             subject=subject,
             stream=stream,
             inactive_threshold_seconds=(wait_budget.total_seconds() + _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS),
@@ -3285,7 +4146,7 @@ class NatsClient:
             "payload_b64": payload.hex(),
         }
         try:
-            await self._raw.publish(
+            await (await self._publishing_connection()).publish(
                 dl_subject.path,
                 json.dumps(envelope).encode("utf-8"),
             )
@@ -3327,11 +4188,36 @@ async def _establish_connection(
     :rtype: nats.aio.client.Client
     :raises NatsClientError: if connection fails
     """
+    nc = _NatsPyClient()
+    # the options are heterogeneous by nature (callbacks, bounds, credentials); nats-py types each
+    # keyword separately, which an options dict cannot express.
+    connect_options: dict[str, Any] = dict(options)
     try:
-        nc: _NatsPyClient = await nats.connect(servers, **options)
-    except Exception as exc:
-        raise NatsClientError(f"failed to connect to NATS at {primary_url}: {exc}") from exc
+        await nc.connect(servers, **connect_options)
+    except BaseException as exc:
+        # the caller bounds this with a timeout, and a cancelled connect leaves nats-py's
+        # reconnect loop and transport alive on an object nothing else holds: close it here.
+        await _close_quietly(nc)
+        if isinstance(exc, Exception):
+            raise NatsClientError(f"failed to connect to NATS at {primary_url}: {exc}") from exc
+        raise
     return nc
+
+
+async def _close_quietly(nc: _NatsPyClient) -> None:
+    """close a nats-py connection nothing will use again, logging rather than raising.
+
+    :param nc: the connection
+    :ptype nc: nats.aio.client.Client
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        if not nc.is_closed:
+            await nc.close()
+    # NOSILENT: logged; the connection is abandoned either way
+    except Exception as exc:  # noqa: BLE001 -- closing an abandoned connection must not mask its cause
+        log.debug("closing an abandoned NATS connection failed: %s", exc)
 
 
 async def _verify_jetstream(nc: _NatsPyClient, primary_url: str) -> None:

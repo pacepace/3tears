@@ -109,6 +109,14 @@ class _FakeSubscription:
         self.mark_closed()
         self._bus.subscribers.pop(self._subject_path, None)
 
+    async def subscribe_on(self, connection: object) -> object:
+        """the bus is one connection that is never renewed; a pipe test never moves a subscription."""
+        raise AssertionError("a pipe test has one connection; nothing renews it")
+
+    def move_to(self, raw_subscription: object, connection: object) -> object:
+        """the bus is one connection that is never renewed; a pipe test never moves a subscription."""
+        raise AssertionError("a pipe test has one connection; nothing renews it")
+
 
 # parity-with: threetears.nats.pipe.PipeTransport
 class _FakePipeTransport:

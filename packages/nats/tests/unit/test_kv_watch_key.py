@@ -119,11 +119,17 @@ class _JetStream:
         raise AssertionError("watch_key must not open nats-py's KeyValue: its watch() is refused under a key grant")
 
 
-# parity-exempt: stands in for NatsClient; the watch calls only raw and jetstream_context
+# parity-exempt: stands in for NatsClient; the watch calls only raw, is_closed and jetstream_context
 class _Client:
     def __init__(self, raw: _Raw, js: _JetStream) -> None:
+        # the CURRENT connection: a credential renewal replaces it, as NatsClient.raw is replaced
         self.raw = raw
         self._js = js
+
+    @property
+    def is_closed(self) -> bool:
+        # as NatsClient.is_closed: the client is closed when its current connection is
+        return self.raw.is_closed
 
     def jetstream_context(self) -> _JetStream:
         return self._js
@@ -319,10 +325,44 @@ class TestRefusals:
             await anext(bucket.watch_key(key=_KEY))
 
     async def test_a_connection_closed_mid_watch_ends_it_with_an_error(self) -> None:
-        bucket, _raw, _js, _log = _bucket([[_delivered(b"3", sequence=7)]], closed_after_scripts=True)
+        bucket, raw, _js, _log = _bucket([[_delivered(b"3", sequence=7)]], closed_after_scripts=True)
         watch = bucket.watch_key(key=_KEY, heartbeat=_FAST)
 
         async with aclosing(watch) as updates:
             assert await anext(updates) == KvKeyUpdate(key=_KEY, value=b"3", revision=7)
+            raw.is_closed = True  # the client's own connection: nothing will ever deliver again
             with pytest.raises(KvError, match="closed"):
                 await anext(updates)
+
+
+class TestACredentialRenewal:
+    """a renewal retires the watch's connection while the client lives on a successor."""
+
+    async def test_the_watch_moves_to_the_successor_and_misses_nothing(self) -> None:
+        """the consumer's connection closing is a replacement, not the end of the watch.
+
+        the replacement redelivers the key's latest message, which the watch has already yielded
+        and does not yield again; the write after it arrives.
+        """
+        log: list[str] = []
+        old_raw = _Raw([[_delivered(b"3", sequence=7)]], log, closed_after_scripts=True)
+        successor = _Raw([[_delivered(b"3", sequence=7), _delivered(b"4", sequence=8)]], log)
+        js = _JetStream(log)
+        client = _Client(old_raw, js)
+        bucket = NatsKvBucket(
+            client=client,  # type: ignore[arg-type]
+            full_name=_BUCKET,
+            kv=_ForbiddenKv(),  # type: ignore[arg-type]
+            ttl=None,
+        )
+        watch = bucket.watch_key(key=_KEY, heartbeat=_FAST, retry=_FAST)
+
+        async with aclosing(watch) as updates:
+            assert await anext(updates) == KvKeyUpdate(key=_KEY, value=b"3", revision=7)
+            # the renewal: the client now uses the successor, and the old connection is retired
+            client.raw = successor
+            old_raw.is_closed = True
+            assert await asyncio.wait_for(anext(updates), timeout=2) == KvKeyUpdate(key=_KEY, value=b"4", revision=8)
+
+        assert len(js.creates) == 2
+        assert len(successor.inboxes) == 1

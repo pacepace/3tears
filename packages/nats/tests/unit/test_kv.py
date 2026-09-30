@@ -122,6 +122,8 @@ class _FakeClient:
 
     def __init__(self, healed_kv: _FakeKv) -> None:
         self._js = _FakeJetStream(healed_kv)
+        # the connection an opened bucket records, and follows across a credential renewal
+        self.raw = object()
 
     def jetstream_context(self) -> _FakeJetStream:
         return self._js
@@ -155,6 +157,8 @@ class _CapturingJetStream:
 class _CapturingClient:
     def __init__(self, js: _CapturingJetStream) -> None:
         self._js = js
+        # the connection an opened bucket records, and follows across a credential renewal
+        self.raw = object()
 
     def jetstream_context(self) -> _CapturingJetStream:
         return self._js
@@ -940,3 +944,42 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
         )
         assert await bucket.get(key="nonce") == b"1"
         assert js.binds == 3
+
+
+class TestACredentialRenewal:
+    """a renewal replaces the client's connection; a cached handle follows it before its next operation."""
+
+    async def test_an_operation_after_a_renewal_runs_on_the_successor(self) -> None:
+        """the handle rebinds -- one bind, no declaration -- and the old connection sees nothing more."""
+        old_kv, successor_kv = _FakeKv(), _FakeKv()
+        client = _FakeClient(successor_kv)
+        bucket = NatsKvBucket(
+            client=client,  # type: ignore[arg-type]
+            full_name="3tears-tests",
+            kv=old_kv,  # type: ignore[arg-type]
+            ttl=None,
+            bound_to=client.raw,
+        )
+        assert await bucket.put(key="k", value=b"before") == 1
+        client.raw = object()  # the renewal: a successor connection is now current
+
+        assert await bucket.put(key="k", value=b"after") == 1
+
+        assert old_kv.store == {"k": (b"before", 1)}
+        assert successor_kv.store == {"k": (b"after", 1)}
+
+    async def test_an_unmoved_connection_does_not_rebind(self) -> None:
+        kv, never = _FakeKv(), _FakeKv()
+        client = _FakeClient(never)
+        bucket = NatsKvBucket(
+            client=client,  # type: ignore[arg-type]
+            full_name="3tears-tests",
+            kv=kv,  # type: ignore[arg-type]
+            ttl=None,
+            bound_to=client.raw,
+        )
+        await bucket.put(key="k", value=b"v")
+        await bucket.put(key="k", value=b"w")
+
+        assert never.store == {}
+        assert kv.store == {"k": (b"w", 2)}

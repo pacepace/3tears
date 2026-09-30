@@ -86,6 +86,8 @@ class _ScriptedJetStream:
 class _ScriptedClient:
     def __init__(self, js: _ScriptedJetStream) -> None:
         self._js = js
+        # the connection an opened bucket records, and follows across a credential renewal
+        self.raw = object()
 
     def jetstream_context(self) -> _ScriptedJetStream:
         return self._js
