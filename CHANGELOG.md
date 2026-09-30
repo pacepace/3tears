@@ -6,6 +6,90 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A NATS credential renewal no longer drops anything in flight: it is make-before-break
+
+Every agent and tool pod renewed its auth-callout credential by RECONNECTING its one connection,
+every `ttl - 90s`. For the 0.1-1s of the reconnect -- transport down, auth-callout round trip, SUB
+replay -- the server held no subscription for the pod, so core NATS dropped whatever was published
+to it: a reply to a request in flight, a message on a subscribed subject, a KV-watch delivery. A
+reply the pod owed for a request it had received could not be sent afterwards either, because the
+server lets only the connection that received a request answer it. On cobalt-prod this failed live
+agent turns: an L3 read sent ~0.4s before a renewal lost its reply in the gap and failed closed
+7s later as `DataLayerUnavailableError: NATS request failed`.
+
+The pre-renewal drain did not cover it and could not: it waited only for replies the in-process
+ToolServer OWED, never for the pod's own requests, and `drain_grace_seconds` only fed the cadence
+arithmetic. A request of ANY length is lost if its reply lands in the gap.
+
+**The decision.** A credential is per connection and stays valid until its own `exp`, and NATS has
+no in-band re-authentication that keeps a connection's interest (a second `CONNECT` makes
+nats-server drop every subscription the connection holds). So the renewal opens a SECOND
+connection, which the auth-callout mints a fresh credential, moves everything onto it, and keeps
+the old connection open for the longest request it may be carrying before draining it -- well
+before its credential expires.
+
+**Contract changes:**
+
+- **BREAKING:** `NatsClient.renew_credential(ttl_seconds=, longest_request_seconds=)`. The
+  `before_renewal` and `drain_grace_seconds` parameters are gone: nothing needs draining before a
+  renewal. `longest_request_seconds` is now also how long the replaced connection is held open.
+- New `NatsClient.renew_connection(*, retire_after)`: the handover. It opens the successor with
+  the options `connect` used (a client built around a caller's own nats-py connection cannot
+  renew and raises `NatsClientError`); subscribes every `Subscription` on it in the same queue
+  group and round-trips it; proves by two round trips that everything already published on the
+  old connection reached the server, holding new publishes meanwhile, so a message published
+  after the renewal never overtakes one published before it; makes it current; ends each
+  subscription's old half without dropping what the server had routed to it; rebinds each durable
+  push consumer; and retires the old connection after `retire_after`. A failure before the switch
+  closes the successor and changes nothing.
+- **BREAKING (wire):** a `Subscription` made without a queue group now joins a group of its own
+  (`_solo.<uuid7>`, `Subscription.queue`). To every other subscriber it is indistinguishable from
+  a plain subscription; it is what lets the old and new connections both be subscribed during the
+  handover while each message is delivered to exactly one of them. A plain subscription on both
+  would deliver twice (the live test doubles messages when this is reverted).
+- A reply to a request received on a connection since replaced leaves on THAT connection
+  (`publish_reply` / `publish_raw_reply`); recorded only while a renewal is armed.
+- Everything else bound to a connection follows the current one: `NatsKvBucket` rebinds its
+  handle (one `STREAM.INFO`, no declaration) before its next operation after a renewal; a
+  `watch_key` whose connection is retired replaces its consumer on the successor rather than
+  raising; a `JetStreamResultWaiter` rebuilds on the current connection
+  (**BREAKING:** its constructor takes `connection=` / `jetstream=` providers instead of `raw=` /
+  `js=`); a `JetStreamPullConsumer` rebinds its durable before its next fetch.
+- A replaced connection's disconnect is logged as a retirement at INFO, not "NATS disconnected",
+  and its errors do not count toward `is_healthy`.
+- **BREAKING:** `credential_renewal`: `seconds_until_reauth(ttl, *, longest_request_seconds)`
+  opens the successor at `ttl - leeway - buffer - longest`, measured from when the current
+  connection was established; new `seconds_until_retirement(...)`; `unsafe_reauth_delay_reason`
+  is replaced by `unsafe_renewal_reason(ttl, *, longest_request_seconds)`, unsafe exactly when
+  `ttl <= longest + REAUTH_MARGIN_SECONDS` -- the same floor the Hub already refuses. New
+  `REAUTH_CONNECT_TIMEOUT_SECONDS`, `REAUTH_RETIRE_DRAIN_SECONDS`.
+- `threetears.agent.tools`: `ToolServer.drain_before_reauth` and `DRAIN_BEFORE_RENEWAL_SECONDS`
+  are removed. `sync_replies_in_flight` / `await_sync_replies` stay, as the "may this connection
+  be closed" query.
+- `NatsClient.reconnect()` is unchanged, and its docstring now says it loses what is in flight.
+
+**Two nats-py defects the handover works around**, both proven against a real server:
+
+- `Subscription.drain()` writes its `PING` straight to the socket while its `UNSUB` still sits in
+  the pending buffer, so the `PING` reaches the server first (wire order observed:
+  `PING`, `UNSUB`). The drain then forgets the subscription while the server may still route to
+  it, and drops what arrives. With a shared queue group that is an outright loss: 1 of 11858
+  streamed messages across a few dozen renewals. The handover sends the `UNSUB` on its own and
+  round-trips twice before nats-py's drain runs.
+- A flush that times out, or is cancelled, leaves its future in nats-py's PONG queue; the next
+  PONG raises `InvalidStateError` in `_process_pong` and the read loop's catch-all ends the read
+  loop -- the connection reports itself connected and never reads again. The handover's bounds
+  are set so they never cancel a flush in progress. `NatsClient.ping()`'s own timeout is still
+  exposed to it (unchanged by this work).
+
+**Proven live** (`packages/nats/tests/integration/test_credential_renewal_live.py`, a real
+nats-server with config-mode `auth_callout` and the real `AuthCalloutResponder`): a request in
+flight across a renewal completes (it timed out on the old code), a reply owed across it is
+delivered (it was refused as a permissions violation), a subscription receives everything before,
+during and after it exactly once, a KV watch sees the write made during it, and everything bound to
+the old connection carries on after it is retired; 100 back-to-back renewals under two streams lose,
+double and reorder nothing.
+
 ### One core owner for a cache-bypassing write; no scan writes L1 outside the per-key fence
 
 Evicting after a targeted UPDATE was hand-rolled four times in three packages (memory, intention,
