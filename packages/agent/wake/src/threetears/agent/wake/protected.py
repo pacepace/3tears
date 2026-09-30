@@ -107,7 +107,7 @@ async def update_protected(
         extra={
             "extra_data": {
                 "agent_id": str(agent_id),
-                "schedule_id": str(schedule_id),
+                "schedule_id": str(schedule_id),  # convert at border: protected-wake-changed log extra_data field
                 "schedule_type": entity.schedule_type,
                 "next_fire_at": next_fire_at.isoformat() if next_fire_at else None,
             }

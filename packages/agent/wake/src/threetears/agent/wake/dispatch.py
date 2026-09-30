@@ -408,7 +408,9 @@ async def _start_fire_conversation(
             "extra_data": {
                 "fire_id": str(fire_id),
                 "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
-                "started_conversation_id": str(started_conversation_id),
+                "started_conversation_id": str(
+                    started_conversation_id
+                ),  # convert at border: fire-conversation-started log extra_data field
             }
         },
     )
