@@ -2383,6 +2383,21 @@ class BaseCollection(ABC, Generic[EntityT]):
         only through this method: an unfenced :meth:`save_entity` on the
         same row invalidates the key for every peer, and stores no order.
 
+        **The one sanctioned second writer shares the owner's scope.** A
+        principal granted write on another principal's rows -- a tool pod
+        granted write on an agent's tables -- does not build its registry
+        from its own scope. It builds it from the OWNER's id:
+        ``kv_key_scope_for(Principal.AGENT_POD, agent_id=owner)`` for the L2
+        scope, and the owner's namespace for its L3 backend, both derived
+        from that one id. Its swaps then compare against the owner's key, so
+        the two writers share one revision fence and neither overwrites the
+        other; the invalidation it publishes names that shared scope, so the
+        owner's replicas keep the key rather than evicting it. It still
+        authenticates as itself, so L3 refuses it without the grant and the
+        write audit names it, not the owner. A writer that keys on its own
+        scope instead is the two-principal case above, so derive both halves
+        in one place rather than at two call sites that can name two owners.
+
         **L1-only fallback**: when no NATS client is wired
         (:meth:`_ensure_kv` is ``None`` -- unit / single-pod), there is
         no cross-pod contention to CAS against, so the method degrades
