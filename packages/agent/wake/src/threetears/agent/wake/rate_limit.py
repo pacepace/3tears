@@ -441,7 +441,9 @@ async def resume_schedule_serialized(
     3. Raise :class:`ScheduleCapExceeded` when ``count >= cap`` -- BEFORE
        the UPDATE, so re-activation can never exceed the cap.
     4. ``collection.resume(..., conn=conn)`` -- the L3 UPDATE flips
-       paused -> active bound to the locked transaction.
+       paused -> active bound to the locked transaction, which is opened
+       through :class:`~threetears.core.collections.CallerTransaction` so
+       the row is evicted from every cache tier once it commits.
 
     The caller owns ``next_fire_at`` computation (the platform does not
     own scheduling math) and any status/ownership pre-validation; this
@@ -465,7 +467,7 @@ async def resume_schedule_serialized(
     :raises ScheduleCapExceeded: when the conversation is at/over cap
     """
     async with pool.acquire() as conn:
-        async with conn.transaction():
+        async with CallerTransaction(conn):
             await conn.execute(
                 _ADVISORY_XACT_LOCK_SQL, str(conversation_id)
             )  # convert at border: pg_advisory_xact_lock(hashtext($1)) text arg
@@ -498,14 +500,14 @@ async def resume_schedule_serialized(
                 next_fire_at=next_fire_at,
                 conn=conn,
             )
-    # NOTE: like :meth:`WakeScheduleCollection.resume` / ``.pause``, the
-    # flip is a cache-bypass L3 UPDATE -- the L1/L2 row cache is "read-
-    # mostly, invalidated naturally on the next fetch" (the established
-    # contract for these status transitions). We deliberately do NOT call
-    # ``invalidate_cache`` here: an eviction would strip the row out from
-    # under any LIVE entity proxy the caller still holds (the proxy reads
-    # every field through L1 via ``get_field_sync``), turning a subsequent
-    # ``entity.schedule_id`` read into ``None``. The REST caller
-    # reflects the new ``status`` / ``next_fire_at`` onto its proxy via
-    # field setters (which write through to L1) for the response; the
-    # agent tool caller returns a string and re-reads on the next ``get``.
+    # The row is evicted from L1 and L2 on every replica, and the eviction
+    # broadcast, when the CallerTransaction above ends -- after the commit,
+    # never before it. This used to be skipped on the stated grounds that an
+    # eviction strips the row from under a live entity proxy the caller still
+    # holds (a proxy reads every field through L1). The skip was wrong: the
+    # schedule tools read the row with ``get`` before every edit, and the edit
+    # saves the row it read, so a cached pre-resume row was written back over
+    # L3 and undid the resume. The proxy concern does not arise at the one
+    # caller: the ``wake_schedule_resume`` tool reads its proxy only BEFORE
+    # this call (to recompute ``next_fire_at``) and returns a string built
+    # from locals after it.

@@ -16,13 +16,16 @@ wants. The user-facing read :meth:`find_by_user` therefore takes
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
 
+from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
@@ -48,6 +51,28 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+
+async def _evict_rows(collection: BaseCollection[Any], entity_ids: Sequence[Any]) -> None:
+    """evict every row in ``entity_ids`` from every cache tier and broadcast it, to completion.
+
+    Shielded: the rows were written to L3 before this runs, so a cancellation that stopped
+    the loop partway left the rest cached with the value L3 no longer holds -- and
+    ``asyncio.CancelledError`` is not an ``Exception``, so nothing on the way out caught it.
+
+    :param collection: the collection whose rows were written
+    :ptype collection: BaseCollection[Any]
+    :param entity_ids: the written rows' primary keys, in declared column order
+    :ptype entity_ids: Sequence[Any]
+    :return: nothing
+    :rtype: None
+    """
+
+    async def _evict_each() -> None:
+        for entity_id in entity_ids:
+            await collection.invalidate_cache(entity_id)
+
+    await asyncio.shield(_evict_each())
 
 
 # Embedding dimension carried by the intentions table. Matches memory's
@@ -406,15 +431,17 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         """
         if self.l3_pool is None or not intention_ids:
             return None
-        await self.l3_pool.execute(
-            "UPDATE intentions SET salience = LEAST(1.0, salience + $1) "
-            "WHERE agent_id = $2 AND intention_id = ANY($3::uuid[])",
-            access_bump,
-            agent_id,
-            intention_ids,
-        )
-        for intention_id in intention_ids:
-            await self.invalidate_cache((agent_id, intention_id))
+        try:
+            await self.l3_pool.execute(
+                "UPDATE intentions SET salience = LEAST(1.0, salience + $1) "
+                "WHERE agent_id = $2 AND intention_id = ANY($3::uuid[])",
+                access_bump,
+                agent_id,
+                intention_ids,
+            )
+        finally:
+            # runs however the UPDATE ended: one that raised may have landed.
+            await _evict_rows(self, [(agent_id, intention_id) for intention_id in intention_ids])
         return None
 
     @spans_partitions(marker_only=True)
@@ -470,6 +497,6 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             returning_columns=self.primary_key_columns,
         )
         decayed_pks = result if isinstance(result, list) else []
-        for pk in decayed_pks:
-            await self.invalidate_cache(pk)
+        # the decay has committed, so the eviction runs to completion even if this task is cancelled.
+        await _evict_rows(self, decayed_pks)
         return len(decayed_pks)

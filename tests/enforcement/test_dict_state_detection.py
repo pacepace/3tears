@@ -78,6 +78,20 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scan_cache.py",
+        class_name="ScanCache",
+        attr_name="_evictions",
+        rationale=(
+            "per-table count of THIS process's scan-cache evictions, which a ScanReadToken is "
+            "compared against to refuse a result read before an eviction and stored after it. "
+            "it orders reads in this process against evictions in this process -- every pod's "
+            "writes reach it through drop_for_table, locally or via the listener -- so a shared "
+            "copy would count evictions of caches that are not this one. keyed by table name, "
+            "bounded by the tables the pod's scans depend on, and a restart correctly starts "
+            "from zero with an empty cache and no read in flight"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/utils/yugabyte_pool_recycler.py",
         class_name="YugabytePoolRecycler",
         attr_name="_expired_at_by_trigger",

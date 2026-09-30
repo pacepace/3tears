@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### No cache tier serves a row a bypassing write already replaced
+
+Three families of write reached L3 without leaving every cache tier agreeing with it.
+
+- A visibility scan read from L3 before a dependent write, and stored after that write's
+  eviction ran, was cached where no eviction could reach it and served until the 60-second TTL --
+  for a revoked grant as much as for new knowledge.
+- The wake collections' targeted UPDATEs (schedule pause / resume / reschedule / claim / expire;
+  webhook subscription pause / resume / rotate-secret / record-fire) evicted nothing. The schedule
+  and webhook tools read those rows with `get` and save the row they read, so a stale cached row
+  was written back over L3: a paused schedule resumed, a tick-expired one-shot re-armed, a rotated
+  webhook secret restored.
+- The raw salience and supersession UPDATEs on memories and intentions evicted afterwards, but not
+  when the UPDATE raised after reaching L3, and not past a cancellation partway through the loop.
+
+**Contract changes:**
+
+- **BREAKING:** `ScanCache.put(key, rows, *, token, now_monotonic) -> bool`. `depends_on=` moves
+  to `ScanCache.begin_read(depends_on) -> ScanReadToken`, called BEFORE the scan queries. `put`
+  refuses (returns `False`) when any table the token names was evicted since, and raises
+  `ValueError` for a token another `ScanCache` issued. New export `ScanReadToken`.
+- Every targeted UPDATE on `agent_wake_schedules` and `webhook_subscriptions` evicts the row from
+  L1 and L2 and broadcasts the invalidation, however the UPDATE ended. A lost
+  `claim_and_reschedule` changed nothing and evicts nothing.
+- **BREAKING:** `WakeScheduleCollection.resume(..., conn=conn)` requires the connection's
+  transaction to be opened by `CallerTransaction`, which evicts the row once it ends, and raises
+  `ValueError` otherwise. `resume_schedule_serialized` does this itself.
+- The wake tick's due-schedule adapter reads every field when the row is listed. It read them
+  through the entity's L1 proxy after the claim, which now evicts the row.
+- `wake_fires` and `scheduled_jobs` / `job_fires` UPDATEs still evict nothing, and their comments
+  now say why: no code reads those rows by primary key. A by-pk reader added later needs the
+  eviction.
+
 ### A pod reaches only its own keys in the platform's shared pod buckets
 
 `{ns}-ratelimits`, `{ns}-proxy_assertion_nonces` and `{ns}-leases` are each one bucket every pod of

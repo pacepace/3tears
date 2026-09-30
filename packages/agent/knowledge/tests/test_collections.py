@@ -11,8 +11,11 @@ stub L3 pool.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
+from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.scan_cache import ScanCache
 from threetears.knowledge import Scope, build_table_ref
 
 from threetears.agent.knowledge.collections import (
@@ -249,3 +252,138 @@ class TestConceptCollectionSql:
         )
         drafts = await coll.list_own_drafts(uuid7(), customer_scope=uuid7())
         assert drafts[0].target == "concept"
+
+
+class _WriteLandsDuringReadPool:
+    """L3 pool whose first read is overtaken by a write that commits while it is in flight.
+
+    The first ``fetch`` returns the row set as it stood BEFORE the write, and -- while
+    that read is still in flight -- runs the write's post-commit eviction exactly as
+    :meth:`CollectionRegistry.publish_invalidation` runs it: ``drop_for_table`` on the
+    pod's scan cache. Every later ``fetch`` returns the row set AFTER the write.
+
+    That ordering is the whole defect: the eviction lands between the read and the
+    cache store, so it evicts nothing, and the pre-write result is then stored and
+    served until the TTL backstop.
+    """
+
+    def __init__(
+        self,
+        scan_cache: ScanCache,
+        table: str,
+        before: list[dict[str, Any]],
+        after: list[dict[str, Any]],
+    ) -> None:
+        self._scan_cache = scan_cache
+        self._table = table
+        self._before = before
+        self._after = after
+        self.fetches = 0
+
+    async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[dict[str, Any]]:
+        self.fetches += 1
+        if self.fetches == 1:
+            self._scan_cache.drop_for_table(self._table)
+            return list(self._before)
+        return list(self._after)
+
+
+def _registry_with_scan_cache(scan_cache: ScanCache, pool: Any) -> Any:
+    """a registry stand-in carrying a REAL scan cache over a REAL L1 backend.
+
+    :param scan_cache: the pod's scan cache
+    :ptype scan_cache: ScanCache
+    :param pool: the L3 pool the collection reads through
+    :ptype pool: Any
+    :return: a registry stand-in
+    :rtype: Any
+    """
+    registry = MagicMock()
+    registry.get_l1_backend.return_value = None
+    registry.scan_cache = scan_cache
+    registry.get_l3_pool.return_value = pool
+    registry.register.return_value = None
+    registry.publish_invalidation = AsyncMock(return_value=None)
+    return registry
+
+
+def _config() -> Any:
+    config = MagicMock()
+    config.collection_flush = "ALWAYS"
+    config.collection_flush_tables = ""
+    return config
+
+
+class TestAScanOvertakenByAWriteIsNotCached:
+    """a scan read before a write and stored after that write's eviction must not be served.
+
+    Without a read token, ``put`` cannot tell a result read before the eviction from one
+    read after it, so the stale result is cached and served for the whole TTL.
+    """
+
+    async def test_concept_scan(self) -> None:
+        cache = ScanCache(SQLiteBackend())
+        before = [_concept_row()]
+        after = [_concept_row(), _concept_row()]
+        pool = _WriteLandsDuringReadPool(cache, "concepts", before, after)
+        registry = _registry_with_scan_cache(cache, pool)
+        coll = ConceptCollection(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope = uuid7(), uuid7()
+
+        first = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+        second = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+
+        assert len(first) == 1
+        assert len(second) == 2, "the pre-write scan was cached after the write evicted it"
+        assert pool.fetches == 2
+
+    async def test_entry_scan(self) -> None:
+        cache = ScanCache(SQLiteBackend())
+        before = [_entry_row()]
+        after = [_entry_row(), _entry_row()]
+        pool = _WriteLandsDuringReadPool(cache, "role_assignments", before, after)
+        registry = _registry_with_scan_cache(cache, pool)
+        coll = PlaybookEntryCollection(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope = uuid7(), uuid7()
+
+        first = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+        second = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+
+        assert len(first) == 1
+        assert len(second) == 2, "a scan read before a grant change was cached after its eviction"
+        assert pool.fetches == 2
+
+    async def test_an_undisturbed_scan_is_still_cached(self) -> None:
+        """the guard refuses only overtaken reads; an ordinary read still caches."""
+        cache = ScanCache(SQLiteBackend())
+        pool = _StubPool([_concept_row()])
+        registry = _registry_with_scan_cache(cache, pool)
+        coll = ConceptCollection(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope = uuid7(), uuid7()
+
+        await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+        pool.sql = None
+        again = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+
+        assert len(again) == 1
+        assert pool.sql is None, "an undisturbed scan must be served from the cache"
+
+
+def _concept_row() -> dict[str, Any]:
+    return {
+        "id": str(uuid7()),
+        "customer_id": None,
+        "user_id": None,
+        "origin_concept_id": None,
+        "name": "active users",
+        "aliases": [],
+        "definition": "seen in last 30 days",
+        "datasource_id": str(uuid7()),
+        "datasource_table_id": None,
+        "sql_fragment": None,
+        "caveats": None,
+        "tags": [],
+        "always_inject": False,
+        "bound_schema_name": None,
+        "bound_table_name": None,
+    }

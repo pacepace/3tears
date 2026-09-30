@@ -409,15 +409,14 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
             now = monotonic()
             cached = None if cache is None else cache.get(cache_key, now_monotonic=now)
             if cached is None:
+                # the token is taken BEFORE the read: a write evicted while the read is in
+                # flight makes put() refuse, instead of caching the pre-write rows where
+                # that eviction can no longer reach them.
+                token = None if cache is None else cache.begin_read(_ENTRY_SCAN_DEPENDS_ON)
                 fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
                 cached = [dict(row) for row in fetched]
-                if cache is not None:
-                    cache.put(
-                        cache_key,
-                        cached,
-                        depends_on=_ENTRY_SCAN_DEPENDS_ON,
-                        now_monotonic=now,
-                    )
+                if cache is not None and token is not None:
+                    cache.put(cache_key, cached, token=token, now_monotonic=now)
             for row in cached:
                 result.append(_row_to_snapshot(row))
         return result
@@ -653,15 +652,14 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
             now = monotonic()
             cached = None if cache is None else cache.get(cache_key, now_monotonic=now)
             if cached is None:
+                # the token is taken BEFORE the read: a write evicted while the read is in
+                # flight makes put() refuse, instead of caching the pre-write rows where
+                # that eviction can no longer reach them.
+                token = None if cache is None else cache.begin_read(_CONCEPT_SCAN_DEPENDS_ON)
                 fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
                 cached = [dict(row) for row in fetched]
-                if cache is not None:
-                    cache.put(
-                        cache_key,
-                        cached,
-                        depends_on=_CONCEPT_SCAN_DEPENDS_ON,
-                        now_monotonic=now,
-                    )
+                if cache is not None and token is not None:
+                    cache.put(cache_key, cached, token=token, now_monotonic=now)
             for row in cached:
                 result.append(_row_to_concept_snapshot(row))
         return result
