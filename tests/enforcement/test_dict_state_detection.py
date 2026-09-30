@@ -238,6 +238,18 @@ _ALLOWLIST = (
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
+        attr_name="_key_watchers",
+        rationale=(
+            "the asyncio queues of each open watch_key iterator, keyed by the key it watches, "
+            "standing in for the server-side consumers a real watch creates. The values are live "
+            "in-process queues bound to one event loop, which no backend can serialise, and they "
+            "live exactly as long as the iterator that registered them -- same test-double "
+            "rationale as FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeNatsClient",
         attr_name="_buckets",
         rationale=(

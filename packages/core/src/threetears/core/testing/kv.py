@@ -33,6 +33,11 @@ use:
   bucket once something has recreated it; :meth:`FakeKvBucket.vanish` leaves
   it absent until the next operation recreates it, as the real wrapper's
   self-heal does.
+- :meth:`FakeKvBucket.watch_key` yields the key's latest message -- a value,
+  or a deletion marker with ``value=None`` -- then every later write or
+  delete of that key, as :meth:`threetears.nats.NatsKvBucket.watch_key`
+  does. It yields :class:`threetears.nats.kv_watch.KvKeyUpdate`, the same
+  type, so a consumer's test runs the code path production runs.
 - :meth:`FakeNatsClient.add_reconnect_callback` registers a hook and
   :meth:`FakeNatsClient.reconnect` runs every hook, as a real reconnect does.
 
@@ -44,12 +49,14 @@ starts again at 1, as a recreated stream's sequence does.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.observe import get_logger
 
 __all__ = ["FakeKvBucket", "FakeNatsClient"]
@@ -135,6 +142,8 @@ class FakeKvBucket:
         # a clock only this bucket reads, moved by advance_clock, so a test can make a per-entry
         # TTL lapse without sleeping.
         self._elapsed = timedelta(0)
+        # one queue per open watch_key iterator, keyed by the key it watches.
+        self._key_watchers: dict[str, list[asyncio.Queue[KvKeyUpdate]]] = {}
 
     async def _arrive(self) -> None:
         """what every operation does first: yield to the loop, then heal a vanished bucket.
@@ -208,7 +217,91 @@ class FakeKvBucket:
         self._revision += 1
         self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=expires_at)
         self._markers.pop(key, None)
+        self._notify(KvKeyUpdate(key=key, value=value, revision=self._revision))
         return self._revision
+
+    def _mark_deleted(self, key: str) -> None:
+        """append the deletion marker a real delete publishes, the key's latest message from now on.
+
+        :param key: the deleted key
+        :ptype key: str
+        :return: None
+        :rtype: None
+        """
+        self._revision += 1
+        self._markers[key] = self._revision
+        self._notify(KvKeyUpdate(key=key, value=None, revision=self._revision))
+
+    def _notify(self, update: KvKeyUpdate) -> None:
+        """hand one new message to every open watch of its key.
+
+        :param update: the message just appended
+        :ptype update: KvKeyUpdate
+        :return: None
+        :rtype: None
+        """
+        for queue in self._key_watchers.get(update.key, ()):
+            queue.put_nowait(update)
+
+    def _latest_message(self, key: str) -> KvKeyUpdate | None:
+        """the key's latest message as a watch first delivers it, or ``None`` when it has none.
+
+        :param key: key to look up
+        :ptype key: str
+        :return: the live value, the deletion marker, or ``None``
+        :rtype: KvKeyUpdate | None
+        """
+        entry = self._live(key)
+        marker = self._markers.get(key)
+        latest: KvKeyUpdate | None = None
+        if entry is not None:
+            latest = KvKeyUpdate(key=key, value=entry.value, revision=entry.revision)
+        elif marker is not None:
+            latest = KvKeyUpdate(key=key, value=None, revision=marker)
+        return latest
+
+    async def watch_key(
+        self,
+        *,
+        key: str,
+        heartbeat: timedelta = DEFAULT_KEY_WATCH_HEARTBEAT,
+        retry: timedelta = DEFAULT_KEY_WATCH_RETRY,
+    ) -> AsyncGenerator[KvKeyUpdate]:
+        """the key's latest message, then every later write or delete of it, until iteration stops.
+
+        Mirrors :meth:`threetears.nats.NatsKvBucket.watch_key`: a delete arrives with
+        ``value=None``, and a key with no message yields nothing until one is written. There is no
+        consumer to lose in memory, so ``heartbeat`` and ``retry`` are accepted and unused.
+
+        :param key: the key to watch; one literal key, never a wildcard
+        :ptype key: str
+        :param heartbeat: accepted for signature parity; unused
+        :ptype heartbeat: timedelta
+        :param retry: accepted for signature parity; unused
+        :ptype retry: timedelta
+        :return: the key's messages, in order
+        :rtype: AsyncGenerator[KvKeyUpdate]
+        :raises ValueError: when ``key`` is empty or not literal, as the real watch refuses it
+        """
+        del heartbeat, retry
+        if not key or any(char in "*> \t\r\n" for char in key):
+            raise ValueError(f"watch_key needs one literal key, got {key!r}")
+        await self._arrive()
+        queue: asyncio.Queue[KvKeyUpdate] = asyncio.Queue()
+        # registered and read with no await between, so no write can fall between the two.
+        self._key_watchers.setdefault(key, []).append(queue)
+        try:
+            latest = self._latest_message(key)
+            if latest is not None:
+                yield latest
+            while True:
+                yield await queue.get()
+        finally:
+            watchers = self._key_watchers.get(key, [])
+            if queue in watchers:
+                watchers.remove(queue)
+            if not watchers:
+                self._key_watchers.pop(key, None)
 
     def _expiry(self, ttl: timedelta | None) -> timedelta | None:
         """the bucket-clock removal time for an entry written now with ``ttl``.
@@ -418,15 +511,13 @@ class FakeKvBucket:
             # passed a concurrency test. An unguarded one still publishes a marker, as the real
             # server does: a delete is a message whether or not the key held anything.
             if revision is None:
-                self._revision += 1
-                self._markers[key] = self._revision
+                self._mark_deleted(key)
             return revision is None
         if revision is not None and entry.revision != revision:
             return False
         del self._entries[key]
         # a real delete publishes a marker, which is the key's latest message from now on.
-        self._revision += 1
-        self._markers[key] = self._revision
+        self._mark_deleted(key)
         return True
 
     async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:

@@ -25,16 +25,34 @@ design notes
   ``create_key_value`` cannot express every field the platform needs and
   offers no way to reconcile a bucket that already exists. see
   :func:`open_kv_stream`.
+- a key is watched through :meth:`NatsKvBucket.watch_key`, never through
+  nats-py's ``KeyValue.watch``: the stock watch creates an UNNAMED consumer,
+  which a grant narrowed to one key cannot admit. see
+  :mod:`threetears.nats.kv_watch`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import time
+import uuid
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
-from nats.js.api import DiscardPolicy, Header, StorageType, StreamConfig, StreamInfo
+from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
+from nats.js.api import (
+    AckPolicy,
+    ConsumerConfig,
+    DeliverPolicy,
+    DiscardPolicy,
+    Header,
+    StorageType,
+    StreamConfig,
+    StreamInfo,
+)
 from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.observe import get_logger
 
@@ -46,8 +64,11 @@ from threetears.nats.errors import (
     PublishTimeoutError,
     StreamSubjectsOverlapError,
 )
+from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 
 if TYPE_CHECKING:
+    from nats.aio.msg import Msg
+    from nats.aio.subscription import Subscription as _NatsSubscription
     from nats.js.kv import KeyValue
 
     from threetears.nats.client import NatsClient
@@ -166,6 +187,35 @@ _KV_OP_TIMEOUT_SECONDS: float = 10.0
 #: for as long as it persists, producing one timeout per operation. The remedy does not
 #: change between them, so repeating it verbatim buries itself.
 _TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS: float = 300.0
+
+#: Heartbeats a key watch's consumer may miss before the watch replaces it. One missed beat is
+#: ordinary scheduling jitter; three is a consumer the server no longer has.
+_KEY_WATCH_MISSED_HEARTBEATS: Final[int] = 3
+
+#: The status an idle heartbeat carries. Any OTHER status on a key watch's inbox is the server
+#: ending the consumer.
+_STATUS_IDLE_HEARTBEAT: Final[str] = "100"
+
+#: How long the server keeps a key watch's consumer once nothing is subscribed to its deliver subject.
+#:
+#: This, not a delete, is what removes a closed watch's consumer: a grant narrowed to one key
+#: (``JsCapability.KV_KEY_READ``) carries ``CONSUMER.CREATE`` and nothing else, so a
+#: ``CONSUMER.DELETE`` would be refused -- and a refused JetStream call does not raise, it blocks to
+#: its deadline, which would turn every close into a ten-second stall. Long enough to ride out a
+#: client reconnect without losing the consumer; short enough that an abandoned one is gone soon.
+_KEY_WATCH_INACTIVE_THRESHOLD_SECONDS: Final[float] = 30.0
+
+#: The header nats KV stamps on a delete or purge marker, and the values that mean one.
+_KV_OPERATION_HEADER: Final[str] = "KV-Operation"
+_KV_REMOVAL_OPERATIONS: Final[frozenset[str]] = frozenset({"DEL", "PURGE"})
+
+#: Consumer names a key watch mints carry this prefix, so an operator listing a stream's consumers
+#: can tell a watch from anything else.
+_KEY_WATCH_CONSUMER_PREFIX: Final[str] = "kw_"
+
+#: Characters that make a subject token a wildcard or split it. A watched key must be literal: the
+#: grant names it literally, and a wildcard filter would be a different consumer from the one granted.
+_KEY_WATCH_FORBIDDEN: Final[frozenset[str]] = frozenset({"*", ">", " ", "\t", "\r", "\n"})
 
 #: Last time the remedy was logged, keyed by fully-qualified bucket name.
 #:
@@ -1119,6 +1169,267 @@ class NatsKvBucket:
         if info.created is None:
             raise KvError(f"KV stream info carries no creation time: bucket={self._full_name}")
         return info.created
+
+    async def watch_key(
+        self,
+        *,
+        key: str,
+        heartbeat: timedelta = DEFAULT_KEY_WATCH_HEARTBEAT,
+        retry: timedelta = DEFAULT_KEY_WATCH_RETRY,
+    ) -> AsyncGenerator[KvKeyUpdate]:
+        """the key's latest message, then every later one, until the caller stops iterating.
+
+        Watches through a push consumer created by NAME with its filter in the create subject
+        (``$JS.API.CONSUMER.CREATE.{stream}.{name}.$KV.{bucket}.{key}``) -- the one consumer shape a
+        grant narrowed to a single key can admit. nats-py's ``KeyValue.watch`` creates an unnamed
+        consumer, which such a grant refuses by blocking to its deadline.
+
+        The consumer delivers the key's last message first and acknowledges nothing. Every consumer
+        gets a FRESH name: a name still held by a consumer the server has not yet reaped would
+        refuse the create. It sends a heartbeat while the key is quiet, and when three go missing --
+        a broker restart emptied the stream, or the consumer was reaped during a long disconnect --
+        or the server says it ended the consumer, the watch replaces it. The replacement redelivers the key's latest
+        message, so nothing written in between is missed; a redelivery of the message this watch
+        last yielded is not yielded again.
+
+        A consumer create that fails is logged, naming the grant to check, and retried after
+        ``retry``; it is never raised, because the watch's whole job is to outlast the conditions
+        that make a create fail. A closed consumer's server-side state is left to the server to
+        reap -- a key-scoped grant carries no ``CONSUMER.DELETE``.
+
+        Close it by stopping iteration -- ``aclose()``, or leaving an ``aclosing`` block -- which
+        drops the subscription behind the current consumer.
+
+        :param key: the key to watch; one literal key, never a wildcard
+        :ptype key: str
+        :param heartbeat: how often a quiet consumer proves it is alive
+        :ptype heartbeat: timedelta
+        :param retry: the pause after a consumer create failed
+        :ptype retry: timedelta
+        :return: the key's messages, in order; a delete or purge arrives with ``value=None``
+        :rtype: AsyncGenerator[KvKeyUpdate]
+        :raises ValueError: when ``key`` is empty or not a literal subject token sequence
+        :raises KvError: when the NATS connection is closed, so no consumer can ever deliver again
+        """
+        if not key or any(char in _KEY_WATCH_FORBIDDEN for char in key):
+            raise ValueError(f"watch_key needs one literal key, got {key!r}")
+        subject = f"$KV.{self._full_name}.{key}"
+        stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        last: KvKeyUpdate | None = None
+        while True:
+            consumer = await _KeyWatchConsumer.open(
+                client=self._client,
+                stream=stream,
+                subject=subject,
+                heartbeat=heartbeat,
+                retry=retry,
+            )
+            if consumer is None:
+                await asyncio.sleep(retry.total_seconds())
+                continue
+            try:
+                async with aclosing(consumer.updates(key=key)) as updates:
+                    async for update in updates:
+                        if update == last:
+                            continue
+                        last = update
+                        yield update
+            finally:
+                await consumer.close()
+
+
+class _KeyWatchConsumer:
+    """one named push consumer on one key, and the inbox subscription it delivers to.
+
+    Built by :meth:`open` and consumed once by :meth:`updates`; :meth:`NatsKvBucket.watch_key`
+    replaces it when it goes quiet.
+
+    :param subscription: the core subscription on the consumer's deliver inbox
+    :ptype subscription: Any
+    :param name: the consumer's name
+    :ptype name: str
+    :param subject: the watched key's subject
+    :ptype subject: str
+    :param heartbeat: the consumer's idle heartbeat
+    :ptype heartbeat: timedelta
+    """
+
+    __slots__ = ("_heartbeat", "_name", "_subject", "_subscription")
+
+    def __init__(self, *, subscription: _NatsSubscription, name: str, subject: str, heartbeat: timedelta) -> None:
+        self._subscription = subscription
+        self._name = name
+        self._subject = subject
+        self._heartbeat = heartbeat
+
+    @classmethod
+    async def open(
+        cls,
+        *,
+        client: NatsClient,
+        stream: str,
+        subject: str,
+        heartbeat: timedelta,
+        retry: timedelta,
+    ) -> _KeyWatchConsumer | None:
+        """subscribe a fresh inbox, then create a freshly named consumer delivering to it.
+
+        The inbox is subscribed FIRST so nothing the consumer delivers can arrive before anything
+        is listening for it.
+
+        :param client: the connected wrapper client
+        :ptype client: NatsClient
+        :param stream: the bucket's backing stream
+        :ptype stream: str
+        :param subject: the watched key's subject
+        :ptype subject: str
+        :param heartbeat: the consumer's idle heartbeat
+        :ptype heartbeat: timedelta
+        :param retry: the pause the caller takes after a failure, for the log line
+        :ptype retry: timedelta
+        :return: the consumer, or ``None`` when it could not be created
+        :rtype: _KeyWatchConsumer | None
+        :raises KvError: when the NATS connection is closed
+        """
+        raw = client.raw
+        if raw.is_closed:
+            raise KvError(f"cannot watch {subject}: the NATS connection is closed")
+        name = f"{_KEY_WATCH_CONSUMER_PREFIX}{uuid.uuid7().hex}"
+        inbox = raw.new_inbox()
+        subscription = await raw.subscribe(inbox)
+        config = ConsumerConfig(
+            name=name,
+            deliver_subject=inbox,
+            filter_subject=subject,
+            deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
+            ack_policy=AckPolicy.NONE,
+            idle_heartbeat=heartbeat.total_seconds(),
+            inactive_threshold=_KEY_WATCH_INACTIVE_THRESHOLD_SECONDS,
+            mem_storage=True,
+        )
+        js = client.jetstream_context()
+        consumer: _KeyWatchConsumer | None = None
+        try:
+            await run_bounded(
+                lambda: js.add_consumer(stream, config=config),
+                timeout=_KV_OP_TIMEOUT_SECONDS,
+                what=f"key watch consumer create on {stream}",
+            )
+            consumer = cls(subscription=subscription, name=name, subject=subject, heartbeat=heartbeat)
+        # NOSILENT: logged naming the grant to check; the caller pauses and creates another
+        except Exception as exc:  # noqa: BLE001 -- a failed create is retried, never raised
+            log.warning(
+                "key watch consumer %s on %s could not be created; retrying in %.0fs. an ungranted "
+                "create blocks to its deadline -- check this principal's grant on "
+                "$JS.API.CONSUMER.CREATE.%s.*.%s: %s",
+                name,
+                subject,
+                retry.total_seconds(),
+                stream,
+                subject,
+                exc,
+                extra={"extra_data": {"subject": subject, "stream": stream, "consumer": name, "error": str(exc)}},
+            )
+            await _drop_subscription(subscription, subject=subject)
+        if consumer is not None:
+            log.debug(
+                "key watch consumer created",
+                extra={"extra_data": {"subject": subject, "stream": stream, "consumer": name}},
+            )
+        return consumer
+
+    async def updates(self, *, key: str) -> AsyncGenerator[KvKeyUpdate]:
+        """every message the consumer delivers, until its heartbeats stop.
+
+        :param key: the watched key, carried onto each update
+        :ptype key: str
+        :return: the key's messages, in order
+        :rtype: AsyncGenerator[KvKeyUpdate]
+        :raises KvError: when the NATS connection is closed
+        """
+        silence = self._heartbeat.total_seconds() * _KEY_WATCH_MISSED_HEARTBEATS
+        while True:
+            try:
+                msg = await self._subscription.next_msg(timeout=silence)
+            except _NatsConnectionClosedError as exc:
+                raise KvError(f"key watch on {self._subject} ended: the NATS connection is closed") from exc
+            except TimeoutError:
+                # NOSILENT: a consumer that stopped heartbeating is replaced by the caller
+                log.info(
+                    "key watch consumer %s on %s missed %d heartbeats; replacing it",
+                    self._name,
+                    self._subject,
+                    _KEY_WATCH_MISSED_HEARTBEATS,
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name}},
+                )
+                return
+            headers = msg.headers or {}
+            status = headers.get(Header.STATUS) if not msg.data else None
+            if status == _STATUS_IDLE_HEARTBEAT:
+                # proof of life, and nothing to yield
+                continue
+            if status is not None:
+                # the server ended the consumer (``409 Consumer Deleted``, and its kin): replace it
+                # now rather than wait out the heartbeats it will never send.
+                log.info(
+                    "key watch consumer %s on %s ended by the server (%s %s); replacing it",
+                    self._name,
+                    self._subject,
+                    status,
+                    headers.get(Header.DESCRIPTION, ""),
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name, "status": status}},
+                )
+                return
+            yield self._update_of(msg, key=key)
+
+    def _update_of(self, msg: Msg, *, key: str) -> KvKeyUpdate:
+        """the update a delivered data message carries.
+
+        :param msg: the delivered message
+        :ptype msg: Msg
+        :param key: the watched key
+        :ptype key: str
+        :return: the update
+        :rtype: KvKeyUpdate
+        """
+        headers = msg.headers or {}
+        try:
+            revision = int(msg.metadata.sequence.stream)
+        except Exception as exc:  # noqa: BLE001 -- the value is still delivered; only its revision is unknown
+            log.warning(
+                "key watch message on %s carries no stream sequence; delivering it with revision 0: %s",
+                self._subject,
+                exc,
+                extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
+            )
+            revision = 0
+        removed = headers.get(_KV_OPERATION_HEADER) in _KV_REMOVAL_OPERATIONS
+        return KvKeyUpdate(key=key, value=None if removed else bytes(msg.data), revision=revision)
+
+    async def close(self) -> None:
+        """drop the inbox subscription; the server reaps the consumer after its inactivity threshold.
+
+        :return: nothing
+        :rtype: None
+        """
+        await _drop_subscription(self._subscription, subject=self._subject)
+
+
+async def _drop_subscription(subscription: _NatsSubscription, *, subject: str) -> None:
+    """unsubscribe a key watch's inbox, logging rather than raising a failure.
+
+    :param subscription: the core subscription on the deliver inbox
+    :ptype subscription: _NatsSubscription
+    :param subject: the watched key's subject, for the log line
+    :ptype subject: str
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        await subscription.unsubscribe()
+    # NOSILENT: logged; the consumer behind it is reaped by the server once nothing listens
+    except Exception as exc:  # noqa: BLE001 -- teardown continues regardless
+        log.debug("key watch unsubscribe on %s failed: %s", subject, exc)
 
 
 @runtime_checkable
