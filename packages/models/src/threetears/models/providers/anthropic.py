@@ -201,7 +201,7 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
 
         _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
 
-        def bind_tools(  # type: ignore[override] # the mixin's signature, which already overrides ChatAnthropic's
+        def bind_tools(
             self,
             tools: Sequence[Any],
             **kwargs: Any,
