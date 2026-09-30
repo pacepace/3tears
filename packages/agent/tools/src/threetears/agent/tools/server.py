@@ -1882,19 +1882,24 @@ class ToolServer:
             # to the pod's bootstrap, which builds it only once NATS is up and never for an
             # in-process pod riding its agent's connection -- so this server takes the ANCHOR
             # rather than the registry, and a caller with no L3 can still supply one.
+            #
+            # BIND-ONLY. A tool server runs in a pod, and a pod holds no stream-management verb:
+            # ``STREAM.CREATE`` carries ``sources`` in its body, a read of any stream on the bus.
+            # The hub declares ``{ns}-proxy_assertion_nonces`` at startup and after every NATS
+            # reconnect; a guard that finds it missing refuses every assertion until it is back.
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
                 bucket_name="proxy_assertion_nonces",
                 ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
                 verifier_future_tolerance=timedelta(seconds=_ASSERTION_LEEWAY_SECONDS),
                 anchor=self._assertion_replay_anchor,
+                create_if_missing=False,
             )
         # BOUND HERE, before the call subject is subscribed, whether this server built the guard
         # or was handed one. After a broker restart the guard refuses every assertion issued
-        # before its bucket's creation time plus its reach, and the bucket is created by whoever
-        # opens it first. Left to the first call, that call creates it and is refused as a replay
-        # it is not. Binding now puts the creation time before anything this pod can answer. The
-        # hub builds its tool pods without injecting a guard, so no owner can do this for them.
+        # before its bucket's creation time plus its reach. Binding now fails the start loudly
+        # when the hub has not declared the bucket, rather than on the first call. The hub builds
+        # its tool pods without injecting a guard, so no owner can do this for them.
         await self._assertion_replay_guard.bind()
 
         # QUEUE-GROUPED, because a pod identity is not a process. The DQ-B7 sweep

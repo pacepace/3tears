@@ -390,7 +390,7 @@ class TestToolServerServe:
 
     @pytest.mark.asyncio
     async def test_the_self_provisioned_assertion_guard_is_bound_before_the_pod_is_reachable(self) -> None:
-        """the pod creates its nonce bucket at start, not at the first call it answers.
+        """the pod binds its nonce bucket at start, not at the first call it answers.
 
         After a broker restart the guard refuses every assertion issued before its bucket's
         creation time plus its reach. Left to the first call, the bucket is created by that call,
@@ -434,6 +434,49 @@ class TestToolServerServe:
         assert "kv_bucket:proxy_assertion_nonces" in order, order
         assert "subscribe" in order, order
         assert order.index("kv_bucket:proxy_assertion_nonces") < order.index("subscribe"), order
+
+    @pytest.mark.asyncio
+    async def test_the_self_provisioned_assertion_guard_binds_and_never_creates(self) -> None:
+        """a pod holds no STREAM.CREATE: the hub declares the nonce bucket, the pod binds it.
+
+        ``STREAM.CREATE`` carries ``sources`` in its body, so a pod allowed to create a bucket of its
+        own could copy any stream on the bus into it. The guard the server builds itself therefore
+        opens bind-only.
+        """
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod-guard-bind-only",
+        )
+        server.register(StubTool())
+
+        opened: list[dict[str, Any]] = []
+
+        def _open_bucket(**kwargs: Any) -> AsyncMock:
+            opened.append(kwargs)
+            return AsyncMock()
+
+        mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
+        mock_nc.is_connected = True
+        mock_nc.kv_bucket = AsyncMock(side_effect=_open_bucket)
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        nonces = [kwargs for kwargs in opened if kwargs["name"] == "proxy_assertion_nonces"]
+        assert nonces, opened
+        assert all(kwargs["create_if_missing"] is False for kwargs in nonces), nonces
 
     @pytest.mark.asyncio
     async def test_an_injected_assertion_guard_is_bound_before_the_pod_is_reachable(self) -> None:

@@ -183,6 +183,7 @@ def _make_extractor(
     nats_client: Any = None,
     summary_callback: Any = None,
     on_memory_created: Any = None,
+    rate_limit_bucket_create_if_missing: bool = True,
 ) -> MemoryExtractor:
     """build a :class:`MemoryExtractor` with a registry-bound Collection."""
     real_pool = pool or _make_pool()
@@ -196,6 +197,7 @@ def _make_extractor(
         nats_client=nats_client,
         summary_callback=summary_callback,
         on_memory_created=on_memory_created,
+        rate_limit_bucket_create_if_missing=rate_limit_bucket_create_if_missing,
     )
 
 
@@ -435,7 +437,26 @@ class TestRateLimit:
         ext = _make_extractor(permissive_memory_authorizer, nats_client=client)
         await ext.check_rate_limit(uuid.uuid7())
         await ext.claim_rate_limit(uuid.uuid7())
-        assert client.opened_with == [{"name": "ratelimits"}, {"name": "ratelimits"}]
+        assert client.opened_with == [
+            {"name": "ratelimits", "create_if_missing": True},
+            {"name": "ratelimits", "create_if_missing": True},
+        ]
+
+    async def test_a_pod_extractor_binds_the_bucket_and_never_creates_it(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """an agent pod holds no STREAM.CREATE; the hub declares the bucket and the pod binds it."""
+        client = _SingleBucketClient(await FakeNatsClient().kv_bucket(name="ratelimits"))
+        ext = _make_extractor(
+            permissive_memory_authorizer, nats_client=client, rate_limit_bucket_create_if_missing=False
+        )
+        await ext.check_rate_limit(uuid.uuid7())
+        await ext.claim_rate_limit(uuid.uuid7())
+        assert client.opened_with == [
+            {"name": "ratelimits", "create_if_missing": False},
+            {"name": "ratelimits", "create_if_missing": False},
+        ]
 
 
 class TestACooldownOfZeroOrLessIsOff:

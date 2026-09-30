@@ -255,6 +255,7 @@ class MemoryExtractor:
         rate_limit_bucket: str = "ratelimits",
         summary_callback: Callable[[str, str], Awaitable[None]] | None = None,
         on_memory_created: Callable[["MemoryEntity"], Awaitable[None]] | None = None,
+        rate_limit_bucket_create_if_missing: bool = True,
     ) -> None:
         """initialize the extractor with the memories Collection + rbac authorizer.
 
@@ -298,6 +299,11 @@ class MemoryExtractor:
             extraction pipeline (the row is already committed; the
             push is best-effort)
         :ptype on_memory_created: Callable[[MemoryEntity], Awaitable[None]] | None
+        :param rate_limit_bucket_create_if_missing: ``True`` (the default) creates the rate-limit
+            bucket when absent; ``False`` only BINDS one another identity declared and never
+            issues STREAM.CREATE -- what an agent pod passes, since a pod holds no
+            stream-management verb and the hub declares the bucket
+        :ptype rate_limit_bucket_create_if_missing: bool
         """
         self._config = config
         self._embedding_provider = embedding_provider
@@ -305,6 +311,7 @@ class MemoryExtractor:
         self._nats_client = nats_client
         self._prompts = prompts or ExtractionPrompts()
         self._rate_limit_bucket = rate_limit_bucket
+        self._rate_limit_bucket_create_if_missing = rate_limit_bucket_create_if_missing
         self._summary_callback = summary_callback
         self._on_memory_created = on_memory_created
         self._authorizer = authorizer
@@ -412,7 +419,9 @@ class MemoryExtractor:
         if claim.revision is None or self._nats_client is None:
             return
         try:
-            bucket = await self._nats_client.kv_bucket(name=self._rate_limit_bucket)
+            bucket = await self._nats_client.kv_bucket(
+                name=self._rate_limit_bucket, create_if_missing=self._rate_limit_bucket_create_if_missing
+            )
             released = await bucket.delete(key=self._rate_limit_key(conversation_id), revision=claim.revision)
         except Exception as exc:
             log.warning("could not release the extraction cooldown of a turn that stored nothing: %s", exc)
@@ -661,7 +670,9 @@ class MemoryExtractor:
         if self._nats_client is None or cooldown <= 0:
             return True, 0
         try:
-            bucket = await self._nats_client.kv_bucket(name=self._rate_limit_bucket)
+            bucket = await self._nats_client.kv_bucket(
+                name=self._rate_limit_bucket, create_if_missing=self._rate_limit_bucket_create_if_missing
+            )
             running = await bucket.get(key=self._rate_limit_key(conversation_id)) is not None
         except Exception as exc:
             log.warning("rate limit read failed, allowing extraction: %s", exc)
@@ -714,7 +725,9 @@ class MemoryExtractor:
         revision: int | None = None
         bucket_name = self._rate_limit_bucket
         try:
-            bucket = await self._nats_client.kv_bucket(name=bucket_name)
+            bucket = await self._nats_client.kv_bucket(
+                name=bucket_name, create_if_missing=self._rate_limit_bucket_create_if_missing
+            )
             bucket_name = bucket.name
             revision = await bucket.create(
                 key=self._rate_limit_key(conversation_id),

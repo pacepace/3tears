@@ -118,6 +118,7 @@ class ReplayGuard:
         ttl_seconds: int,
         verifier_future_tolerance: timedelta,
         anchor: "ReplayAnchor | None" = None,
+        create_if_missing: bool = True,
     ) -> None:
         """configure the guard; the bucket is opened by :meth:`bind`, which a service calls at start.
 
@@ -147,6 +148,12 @@ class ReplayGuard:
             only a NATS client, and a minute of refused internal RPC that retries does not
             justify wiring durable storage into them
         :ptype anchor: ReplayAnchor | None
+        :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it when
+            absent -- and recreating it after a broker wipe; ``False`` only BINDS a bucket another
+            identity declared and never issues STREAM.CREATE. A pod holds no stream-management verb,
+            so a pod's guard binds, and after a wipe it refuses every artifact until the declarer
+            (the hub) has recreated the bucket -- failing closed, never recording into nothing
+        :ptype create_if_missing: bool
         :raises ValueError: when ``ttl_seconds`` is not positive or the tolerance is negative
         """
         if ttl_seconds <= 0:
@@ -160,6 +167,7 @@ class ReplayGuard:
         self._ttl = timedelta(seconds=ttl_seconds)
         self._verifier_future_tolerance = verifier_future_tolerance
         self._anchor = anchor
+        self._create_if_missing = create_if_missing
         # Read once, at bind, and kept: the anchor is a fact about this ledger's whole history, so
         # re-reading it per artifact would put a durable round trip on the hot path to learn
         # something that cannot change while the process runs. A failed read stays None and is
@@ -323,7 +331,7 @@ class ReplayGuard:
                 )
 
     async def bind(self) -> None:
-        """open this guard's KV bucket, creating it when absent. Idempotent and async-safe.
+        """open this guard's KV bucket, creating it when absent unless built bind-only. Idempotent and async-safe.
 
         **A service calls this at startup, before it serves any artifact.** After a wipe the
         guard refuses every artifact issued before its bucket's creation time plus the refusal
@@ -394,7 +402,7 @@ class ReplayGuard:
                     bucket = await self._client.kv_bucket(
                         name=self._bucket_name,
                         ttl=self._ttl,
-                        create_if_missing=True,
+                        create_if_missing=self._create_if_missing,
                         history=1,
                     )
                     # after the bucket exists, so a first run stamps a moment no earlier than its
