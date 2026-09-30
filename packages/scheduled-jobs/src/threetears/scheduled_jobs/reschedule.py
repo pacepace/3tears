@@ -5,7 +5,7 @@ domain-neutral already (it operates only on a ``schedule_type``, a
 config dict, a missed-fire policy, and timestamps), so the
 generalization is a rename (``_compute_next_fire_at`` ->
 :func:`compute_next_fire_at`, now public) plus dropping the
-agent-specific module references. The branch bodies are unchanged.
+agent-specific module references.
 
 design notes
 ------------
@@ -20,8 +20,14 @@ design notes
   (spring-forward day advances by 23h not 24h, fall-back day advances
   by 25h not 24h).
 - **Missed-fire policy honored.** ``'coalesce'`` (default) fires once
-  for a backlog and recomputes the next ``next_fire_at`` forward into
-  the future. ``'catch_up'`` advances ``next_fire_at`` by exactly one
+  for a backlog and moves ``next_fire_at`` to the first slot of the
+  schedule's OWN grid that is still in the future: for the fixed-step
+  types (``interval``, ``every_n_hours``) that is ``current_fire_at +
+  k * step`` for the smallest ``k >= 1`` landing after ``now``, never
+  ``now + step``. Anchoring on the tick instant made the schedule drift
+  later by however late each tick ran, fire after fire. ``daily_at`` and
+  ``cron`` already resolve to their own next wall-clock slot after
+  ``now``. ``'catch_up'`` advances ``next_fire_at`` by exactly one
   increment *from the occurrence being fired* (``current_fire_at``, the
   claimed row's ``next_fire_at``) so subsequent ticks fire once per
   missed interval until caught up. It deliberately does NOT anchor on
@@ -79,6 +85,13 @@ def compute_next_fire_at(
     once per missed interval). When ``current_fire_at`` is ``None`` (no
     occurrence in flight, e.g. the very first schedule pass) ``catch_up``
     falls through to the ``coalesce`` anchor.
+
+    ``'coalesce'`` also reads ``current_fire_at``, as the origin of the
+    schedule's grid: the fixed-step types return the first ``current_fire_at
+    + k * step`` (``k >= 1``) strictly after ``now``, so late ticks never
+    shift the grid and an outage costs one fire, not a new phase. With no
+    ``current_fire_at`` (create, retune, resume) there is no grid yet and
+    the next fire is ``now + step``.
 
     :param schedule_type: one of the values pinned by
         :data:`threetears.scheduled_jobs.types.ScheduleType`
@@ -204,13 +217,7 @@ def _next_every_n_hours(
         raise ValueError(msg)
     step = timedelta(hours=n)
 
-    if missed_fire_policy == "catch_up" and current_fire_at is not None:
-        # step one interval past the occurrence being fired, draining a
-        # backlog one fire per tick.
-        return _ensure_utc(current_fire_at + step)
-
-    # coalesce default: anchor on now (skip the backlog)
-    return _ensure_utc(now + step)
+    return _next_fixed_step(step, missed_fire_policy, current_fire_at, now)
 
 
 def _next_random_within_window(
@@ -436,17 +443,37 @@ def _next_interval(
         msg = f"interval requires positive seconds, got {seconds}"
         raise ValueError(msg)
     step = timedelta(seconds=seconds)
-
-    if missed_fire_policy == "catch_up" and current_fire_at is not None:
-        # step one interval past the occurrence being fired, draining a
-        # backlog one fire per tick.
-        return _ensure_utc(current_fire_at + step)
-    return _ensure_utc(now + step)
+    return _next_fixed_step(step, missed_fire_policy, current_fire_at, now)
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _next_fixed_step(
+    step: timedelta,
+    missed_fire_policy: str,
+    current_fire_at: datetime | None,
+    now: datetime,
+) -> datetime:
+    """Next fire of a fixed-step schedule (``interval``, ``every_n_hours``).
+
+    ``catch_up`` steps once past the occurrence being fired, so a backlog
+    drains one fire per tick. ``coalesce`` jumps to the first slot of the
+    grid ``current_fire_at + k * step`` (``k >= 1``) strictly after
+    ``now``: one fire for the whole backlog, and the grid stays where the
+    schedule put it however late the tick ran. With no occurrence in
+    flight there is no grid to keep, so both policies start from ``now``.
+    """
+    if current_fire_at is None:
+        return _ensure_utc(now + step)
+    anchor = _ensure_utc(current_fire_at)
+    if missed_fire_policy == "catch_up":
+        return anchor + step
+    tick = _ensure_utc(now)
+    steps = 1 if tick < anchor else (tick - anchor) // step + 1
+    return anchor + step * steps
 
 
 def _parse_delay(delay: str) -> timedelta:

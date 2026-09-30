@@ -677,3 +677,66 @@ class TestReturnedFailureIsLogged:
             await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
         assert fires.failed[0]["error"] == "downstream rejected"
         assert [r.getMessage() for r in caplog.records].count(tick_mod.EVENT_FIRE_FAILED) == 1
+
+
+def _pin_tick_clock(monkeypatch: pytest.MonkeyPatch, instant: datetime) -> None:
+    """Make the engine's ``datetime.now`` return ``instant`` for one tick."""
+
+    class _PinnedClock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+            return instant if tz is None else instant.astimezone(tz)
+
+    monkeypatch.setattr(tick_mod, "datetime", _PinnedClock)
+
+
+class TestCoalesceHoldsTheScheduleGrid:
+    """Through the engine: a ``coalesce`` job re-arms on its own slots, never on the tick instant.
+
+    Each tick re-reads the row as the store left it -- ``next_fire_at`` is the
+    previous claim's ``computed_next_fire`` and ``last_fired_at`` the previous
+    tick -- so the whole reschedule path runs, not just the maths.
+    """
+
+    async def test_late_ticks_do_not_drift_an_interval_job(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_lock(monkeypatch, _CtxHealthy())
+        step = timedelta(hours=1)
+        start = _now()
+        job_id = uuid4()
+        partition = uuid4()
+        next_fire = start + step
+        last_fired: datetime | None = None
+        fired: list[datetime] = []
+        for lateness_minutes in itertools.islice(itertools.cycle([1, 17, 43, 5, 58, 29]), 24):
+            tick_at = next_fire + timedelta(minutes=lateness_minutes)
+            _pin_tick_clock(monkeypatch, tick_at)
+            row = _FakeDueSchedule(
+                job_id=job_id,
+                partition_key=partition,
+                schedule_config={"seconds": int(step.total_seconds())},
+                missed_fire_policy="coalesce",
+                next_fire_at=next_fire,
+                last_fired_at=last_fired,
+            )
+            store = _FakeScheduleStore([row])
+            await tick_mod.scheduled_tick_job(store, _FakeFireStore(), _routes(_record_success), nats_client=object())
+            claim = store.claims[0]
+            fired.append(claim["expected_next_fire"])
+            next_fire = claim["computed_next_fire"]
+            last_fired = tick_at
+        assert fired == [start + step * k for k in range(1, 25)]
+        assert fired[23] == start + step * 24
+
+    async def test_ten_hour_gap_fires_once_then_takes_the_next_whole_slot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_lock(monkeypatch, _CtxHealthy())
+        due = _now()
+        tick_at = due + timedelta(hours=10, minutes=17, seconds=42)
+        _pin_tick_clock(monkeypatch, tick_at)
+        row = _FakeDueSchedule(schedule_config={"seconds": 3600}, missed_fire_policy="coalesce", next_fire_at=due)
+        store = _FakeScheduleStore([row])
+        fires = _FakeFireStore()
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
+        assert len(fires.created) == 1
+        assert store.claims[0]["computed_next_fire"] == due + timedelta(hours=11)
