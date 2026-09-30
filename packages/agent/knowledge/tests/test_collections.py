@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
+import pytest
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.knowledge import Scope, build_table_ref
@@ -387,3 +388,31 @@ def _concept_row() -> dict[str, Any]:
         "bound_schema_name": None,
         "bound_table_name": None,
     }
+
+
+class TestAnOriginLinkChangeEvictsTheDatasourceScan:
+    """a datasource-scoped scan reads ``datasources`` for the origin link, so a write there evicts it.
+
+    The hub writes the link through ``CapabilitySourceCollection.save_entity`` with its
+    NATS client, which broadcasts an invalidation on ``datasources``. A scan that does
+    not declare the table keeps serving the pre-link knowledge set until the TTL.
+    """
+
+    @pytest.mark.parametrize(
+        ("collection_class", "row"),
+        [(ConceptCollection, _concept_row), (PlaybookEntryCollection, _entry_row)],
+        ids=["concepts", "playbook_entries"],
+    )
+    async def test_a_datasources_invalidation_drops_the_cached_scan(self, collection_class: Any, row: Any) -> None:
+        cache = ScanCache(SQLiteBackend())
+        pool = _StubPool([row()])
+        registry = _registry_with_scan_cache(cache, pool)
+        coll = collection_class(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope, datasource_id = uuid7(), uuid7(), uuid7()
+
+        await coll.list_visible_to_user(user_id, datasource_id=datasource_id, customer_scope=customer_scope)
+        pool.sql = None
+        cache.drop_for_table("datasources")
+        await coll.list_visible_to_user(user_id, datasource_id=datasource_id, customer_scope=customer_scope)
+
+        assert pool.sql is not None, "a changed origin link must re-read the scan, not serve the cached one"

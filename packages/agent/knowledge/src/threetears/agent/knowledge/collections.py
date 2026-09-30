@@ -50,11 +50,15 @@ from threetears.knowledge import (
 #: Every table the concept visibility scan reads. The RBAC pair is not optional:
 #: the visibility clause JOINs them, so a REVOKED GRANT must evict the cached
 #: result rather than linger until the TTL. Declaring only the data table would
-#: turn a staleness window into an authorization one.
-_CONCEPT_SCAN_DEPENDS_ON = ("concepts", "datasource_tables", "role_assignments", "group_members")
+#: turn a staleness window into an authorization one. ``datasources`` is read by the
+#: KNW-77 origin-link subquery of a datasource-scoped scan; the hub writes that link
+#: through ``CapabilitySourceCollection.save_entity`` with its NATS client, which
+#: broadcasts on ``datasources``, so linking or unlinking a datasource evicts the
+#: widened (or narrowed) knowledge set instead of serving it until the TTL.
+_CONCEPT_SCAN_DEPENDS_ON = ("concepts", "datasource_tables", "datasources", "role_assignments", "group_members")
 
 #: Same, for the entry scan.
-_ENTRY_SCAN_DEPENDS_ON = ("playbook_entries", "role_assignments", "group_members")
+_ENTRY_SCAN_DEPENDS_ON = ("playbook_entries", "datasources", "role_assignments", "group_members")
 
 
 def _scan_cache_for(collection: Any) -> Any:
