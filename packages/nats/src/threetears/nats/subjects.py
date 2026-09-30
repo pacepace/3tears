@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Final, Literal
 from uuid import UUID
 
+from threetears.nats.credential_refusal import CREDENTIAL_REFUSAL_SUBJECT_TOKEN
 from threetears.nats.errors import NamespaceNotConfiguredError
 
 __all__ = [
@@ -1372,6 +1373,24 @@ class Subjects:
         else:
             result = Subject(path=f"{_ns()}.audit.{area}.>", kind="pattern")
         return result
+
+    @classmethod
+    def credential_refusal(cls, inbox_prefix: str) -> Subject:
+        """the subject a principal is told on that the auth-callout refused its credential on purpose.
+
+        Under the principal's own inbox prefix, which its grant always admits, and which no other
+        principal may subscribe. Not namespaced: inboxes are not. See
+        :mod:`threetears.nats.credential_refusal`.
+
+        :param inbox_prefix: the principal's inbox prefix (:func:`threetears.nats.inbox_prefix_for`)
+        :ptype inbox_prefix: str
+        :return: subject ``{inbox_prefix}.credential-refused``
+        :rtype: Subject
+        :raises ValueError: if ``inbox_prefix`` is empty or carries a wildcard
+        """
+        if not inbox_prefix or any(char in inbox_prefix for char in "*> "):
+            raise ValueError(f"credential_refusal needs a literal inbox prefix, got {inbox_prefix!r}")
+        return Subject(path=f"{inbox_prefix}.{CREDENTIAL_REFUSAL_SUBJECT_TOKEN}", kind="point")
 
     @classmethod
     def tool_pod_audit_event(cls, pod_id: str | UUID, event_type: str, *, namespace: str | None = None) -> Subject:

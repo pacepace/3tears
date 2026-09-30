@@ -519,13 +519,14 @@ async def test_nothing_is_published_on_the_successor_before_the_old_connection_s
     await client.shutdown()
 
 
-async def test_refused_renewals_trip_the_health_signal_and_a_successful_one_clears_it(
+async def test_refused_renewals_do_not_count_against_the_connection_still_in_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """a pod whose renewals are refused -- revoked, or fenced as superseded -- must be restarted.
+    """a refused renewal leaves the current connection valid, and it is kept until it expires (Q16).
 
-    each refusal reaches the successor's error callback, which counts it toward ``is_healthy``;
-    a renewal that succeeds is a fresh credential and clears the count, as a reconnect does.
+    only a DELIBERATE refusal the auth-callout names this runner in stops it
+    (:meth:`NatsClient.abandon_on_refusal`); a refusal that says nothing -- a callout that was down,
+    or slow -- must not count the pod unhealthy and have its supervisor kill a working connection.
     """
     current, successor = _Conn("current"), _Conn("successor")
     # the first open is the client's own connect; then three refused renewals and one admitted
@@ -549,7 +550,23 @@ async def test_refused_renewals_trip_the_health_signal_and_a_successful_one_clea
         with pytest.raises(RuntimeError, match="refused"):
             await client.renew_connection(retire_after=timedelta(seconds=30))
 
-    assert client.is_healthy is False
-    await client.renew_connection(retire_after=timedelta(seconds=30))
     assert client.is_healthy is True
+    assert client.raw is current
+    await client.renew_connection(retire_after=timedelta(seconds=30))
+    assert client.raw is successor
     await client.shutdown()
+
+
+async def test_an_abandoned_client_closes_every_connection_and_never_renews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    await client.renew_connection(retire_after=timedelta(seconds=3600))
+
+    await client.abandon(reason="credential refused: superseded")
+
+    assert current.is_closed and successor.is_closed
+    assert client.is_closed
+    with pytest.raises(NatsClientError):
+        await client.renew_connection(retire_after=timedelta(seconds=30))

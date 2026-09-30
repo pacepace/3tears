@@ -138,9 +138,21 @@ Both reproduced against a real nats-server.
   message published just before the handover and one just after travel different routes; the
   settle orders them on one server only.
 
-## Fencing a superseded pod
+## A renewal refused on purpose, and one that is not
 
-A superseded agent pod (identity fencing, hub `resilience-task-05`) is refused when its successor
-connection presents a stale generation. The renewal then fails and is retried; each refused attempt
-counts toward `is_healthy`, which trips after three, and the liveness probe restarts the pod -- the
-old connection is never renewed and expires at its own `exp` at the latest.
+Owner ruling Q16 (2026-09-30). A connection the auth-callout refuses learns only
+`-ERR 'Authorization Violation'`: nats-server's `client.authViolation` sends that fixed text
+"regardless of the authErr override", and the reason the callout gave reaches only the server log
+(`auth_callout.go`: "auth callout service returned an error"). So the two cases are told apart out
+of band:
+
+- **Refused on purpose** -- the hub's fence refuses a superseded pod-session. The resolver returns a
+  `RefusedPrincipal`; the responder denies with the typed reason (`"superseded"`) and publishes a
+  `CredentialRefusal` to the principal's own inbox (`{inbox_prefix}.credential-refused`), which the
+  pod still holds a subscription on over its still-valid connection. The pod
+  (`NatsClient.abandon_on_refusal`, armed by the SDK with its pod-session and current generation)
+  closes every connection at once and stops the renewal; its supervisor restarts it.
+- **Anything else** -- the callout unreachable, timed out, or erroring. No refusal is published.
+  The renewal is retried every 5s on the current connection, which is kept until its own credential
+  expires; a candidate's refusals do not count against `is_healthy`, so nothing restarts a pod
+  whose connection still works.

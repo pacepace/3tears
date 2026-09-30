@@ -421,3 +421,49 @@ def test_constructing_with_a_bad_issuer_account_fails_closed(label: str) -> None
             policy=_FakePolicy(_perms()),
             issuer_account=bad,
         )
+
+
+# parity-exempt: narrow offline double for the NATS wire client, extended with the typed publish a deliberate refusal is sent with
+class _FakeNatsWithPublish(_FakeNats):
+    def __init__(self) -> None:
+        super().__init__()
+        self.published: list[tuple[Any, Any]] = []
+
+    async def publish(self, *, subject: Any, message: Any) -> None:
+        self.published.append((subject, message))
+
+
+async def test_a_deliberate_refusal_denies_with_its_reason_and_tells_the_principal() -> None:
+    """nats-server tells the refused client only "Authorization Violation", so the reason is sent too.
+
+    the denial carries the typed reason as its error (the server logs it), and the refusal itself is
+    published to the principal's own inbox subtree, over which the refused pod still listens.
+    """
+    from threetears.nats.auth_callout import decode_auth_request
+    from threetears.nats.credential_refusal import CredentialRefusal, CredentialRefusalReason, RefusedPrincipal
+
+    refusal = CredentialRefusal(reason=CredentialRefusalReason.SUPERSEDED, pod_id="pod-7", identity_generation="g-3")
+    resolver = _FakeResolver(RefusedPrincipal(inbox_prefix="_INBOX_agent_pod_a1", refusal=refusal))  # type: ignore[arg-type]
+    nc = _FakeNatsWithPublish()
+    responder = _responder(nc, resolver=resolver, policy=_FakePolicy(_perms()))
+
+    request_jwt = _request_jwt(server_id="NSRV", user_nkey="UME")
+    decision = await responder.build_decision(decode_auth_request(request_jwt))
+    nats_claim = _decode_payload(decision.response)["nats"]
+    assert nats_claim.get("error") == "superseded", "the deny carries the typed reason, not prose"
+    assert "jwt" not in nats_claim
+
+    await responder.handle_request(_FakeMsg(request_jwt.encode(), "_INBOX.srv.1"))
+    assert len(nc.replies) == 1, "the server still gets its signed deny"
+    assert nc.published == [(Subject.raw("_INBOX_agent_pod_a1.credential-refused"), refusal)]
+
+
+async def test_an_ordinary_denial_tells_nobody() -> None:
+    """a credential nothing authenticates is denied and nothing is published: it names no principal."""
+    nc = _FakeNatsWithPublish()
+    responder = _responder(nc, resolver=_FakeResolver(None), policy=_FakePolicy(_perms()))
+
+    await responder.handle_request(_FakeMsg(_request_jwt().encode(), "_INBOX.srv.1"))
+
+    assert len(nc.replies) == 1
+    assert nc.published == []

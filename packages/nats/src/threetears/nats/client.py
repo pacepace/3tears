@@ -96,6 +96,7 @@ from threetears.observe import get_logger, representative_exception
 from threetears.nats._diagnostics import permissions_violation_remedy
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
 from threetears.nats._receipt import ReceiptBacklog
+from threetears.nats.credential_refusal import CredentialRefusal
 from threetears.nats.credential_renewal import (
     REAUTH_CONNECT_TIMEOUT_SECONDS,
     REAUTH_MIN_SLEEP_SECONDS,
@@ -1539,19 +1540,25 @@ class _ConnectionState:
 
     :ivar retiring: set once a renewal has replaced the connection; its callbacks then stop
         speaking for the client (no health counting, no reconnect hooks, no disconnect warning)
+    :ivar candidate: set while a renewal is still opening the connection; its refusals do not
+        speak for the client either -- the connection it would replace is still current and still
+        valid, and it is kept until its own credential expires
     :ivar connected_at: ``time.monotonic()`` of the connection's latest successful
         (re)connect, which is when its current credential was minted
     """
 
-    __slots__ = ("retiring", "connected_at")
+    __slots__ = ("retiring", "candidate", "connected_at")
 
-    def __init__(self) -> None:
-        """a connection that is current and was established now.
+    def __init__(self, *, candidate: bool = False) -> None:
+        """a connection established now; current, or a renewal's ``candidate``.
 
+        :param candidate: whether a renewal is opening it to replace the current connection
+        :ptype candidate: bool
         :return: nothing
         :rtype: None
         """
         self.retiring = False
+        self.candidate = candidate
         self.connected_at = time.monotonic()
 
 
@@ -1694,8 +1701,9 @@ class _ConnectionOpener:
             # reset interleaves at that suspension point a post-reset stale += 1 could survive, leaving a
             # phantom count after a healthy reconnect. Incrementing first keeps the counter honest within a
             # run of failures; the next successful reconnect always resets it to 0. A retiring connection's
-            # refusals say nothing about whether the CURRENT credential is wedged, so they are not counted.
-            if not state.retiring and _is_authorization_violation(exc):
+            # refusals say nothing about whether the CURRENT credential is wedged, and neither does a
+            # renewal candidate's: the current connection is still valid, and is kept until it expires.
+            if not state.retiring and not state.candidate and _is_authorization_violation(exc):
                 health_state["auth_violations"] += 1
             await _on_error(exc)
 
@@ -1837,6 +1845,9 @@ class NatsClient:
         "_retirements",
         "_push_consumers",
         "_publish_gate",
+        "_abandonment",
+        "_abandoned",
+        "_opening",
     )
 
     def __init__(
@@ -1874,6 +1885,13 @@ class NatsClient:
         # (:meth:`_settle_publishes`). open the rest of the time.
         self._publish_gate = asyncio.Event()
         self._publish_gate.set()
+        # the abandonment a deliberate credential refusal started (:meth:`abandon_on_refusal`), held so
+        # the task is not collected mid-flight.
+        self._abandonment: asyncio.Task[None] | None = None
+        # set by :meth:`abandon`; nothing renews an abandoned client.
+        self._abandoned = False
+        # a renewal's successor while it is being opened, so :meth:`abandon` can stop the attempt.
+        self._opening: asyncio.Task[_NatsPyClient] | None = None
         self._subscriptions: list[Subscription] = []
         self._buckets: dict[str, NatsKvBucket] = {}
         self._kv_lock = asyncio.Lock()
@@ -2328,10 +2346,10 @@ class NatsClient:
                 "successor to renew its credential; build it with NatsClient.connect",
             )
         previous = self._raw
-        if previous.is_closed:
+        if previous.is_closed or self._abandoned:
             raise NatsClientError("cannot renew the credential of a closed NATS client; it requires a fresh connect")
-        state = _ConnectionState()
-        successor = await asyncio.wait_for(opener.open(state), timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)
+        state = _ConnectionState(candidate=True)
+        successor = await self._open_successor(opener, state)
         async with self._handover_lock:
             moving: list[tuple[Subscription, Any]] = []
             try:
@@ -2342,6 +2360,7 @@ class NatsClient:
                 await _close_quietly(successor)
                 raise
             self._connections[successor] = state
+            state.candidate = False
             # nothing is published on the successor until everything already published on the old
             # connection has reached the server (_settle_publishes).
             self._publish_gate.clear()
@@ -2381,6 +2400,37 @@ class NatsClient:
                 }
             },
         )
+
+    async def _open_successor(self, opener: _ConnectionOpener, state: _ConnectionState) -> _NatsPyClient:
+        """open a renewal's successor, in a task :meth:`abandon` can stop.
+
+        nats-py retries a refused connect until the bound, so a successor the callout refuses on
+        purpose would otherwise keep asking for the whole of it after the client was abandoned.
+
+        :param opener: how to open it
+        :ptype opener: _ConnectionOpener
+        :param state: its state
+        :ptype state: _ConnectionState
+        :return: the connected successor
+        :rtype: nats.aio.client.Client
+        :raises NatsClientError: when the client was abandoned while the successor was opening
+        """
+        opening = asyncio.create_task(opener.open(state), name=f"nats-open-successor:{self._client_name}")
+        self._opening = opening
+        try:
+            successor = await asyncio.wait_for(opening, timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if self._abandoned and (current is None or current.cancelling() == 0):
+                # the attempt was stopped by abandon(), not the caller cancelled: say so.
+                raise NatsClientError("the NATS client was abandoned while a renewal was opening") from None
+            raise
+        finally:
+            self._opening = None
+        if self._abandoned:
+            await _close_quietly(successor)
+            raise NatsClientError("the NATS client was abandoned while a renewal was opening")
+        return successor
 
     async def _retire(
         self, connection: _NatsPyClient, *, after: timedelta, handovers: list[asyncio.Task[None]]
@@ -2585,6 +2635,82 @@ class NatsClient:
             except asyncio.CancelledError:
                 # NOSILENT: this IS the cancellation requested on the line above
                 pass
+
+    async def abandon(self, *, reason: str) -> None:
+        """close every connection this client holds at once, without draining, and stop renewing.
+
+        For a client whose identity has been refused on purpose -- superseded by a newer runner of
+        the same pod-session -- and which must stop serving NOW rather than finish what it holds:
+        nothing is drained, flushed or handed over. The client is closed afterwards
+        (:attr:`is_closed`), which is how its owner's supervision learns to restart it. Idempotent.
+
+        :param reason: why, for the log line
+        :ptype reason: str
+        :return: nothing
+        :rtype: None
+        """
+        log.error(
+            "NATS client abandoned: every connection closed at once, without draining",
+            extra={"extra_data": {"client_name": self._client_name, "reason": reason}},
+        )
+        self._abandoned = True
+        renewal = self._renewal_task
+        self._renewal_task = None
+        if renewal is not None and renewal is not asyncio.current_task():
+            renewal.cancel()
+        opening = self._opening
+        if opening is not None:
+            opening.cancel()
+        for retirement in list(self._retirements):
+            retirement.cancel()
+        for connection in list(self._connections):
+            await _close_quietly(connection)
+
+    async def abandon_on_refusal(
+        self,
+        *,
+        inbox_prefix: str,
+        is_mine: Callable[[CredentialRefusal], bool],
+    ) -> Subscription:
+        """abandon this client the moment the auth-callout says it refused this client's credential.
+
+        nats-server tells a refused connection only "Authorization Violation", whether the callout
+        refused it on purpose or could not be reached, so a deliberate refusal is also published to
+        the principal's inbox (:mod:`threetears.nats.credential_refusal`). A principal's inbox can be
+        shared by several runners -- every pod of one agent -- so ``is_mine`` decides whether a refusal
+        names THIS one (its pod-session and the identity generation it currently presents). One
+        that does closes every connection at once (:meth:`abandon`); any other refusal is ignored,
+        and a renewal refused for any other reason keeps the current connection until it expires.
+
+        :param inbox_prefix: this principal's inbox prefix, as it connected with
+        :ptype inbox_prefix: str
+        :param is_mine: whether a refusal names this runner; read at the moment it arrives
+        :ptype is_mine: Callable[[CredentialRefusal], bool]
+        :return: the subscription, for :meth:`unsubscribe`
+        :rtype: Subscription
+        """
+
+        async def _on_refusal(refusal: CredentialRefusal) -> None:
+            if not is_mine(refusal):
+                log.info(
+                    "a credential refusal for another runner of this principal was ignored",
+                    extra={"extra_data": {"client_name": self._client_name, "pod_id": refusal.pod_id}},
+                )
+                return
+            if self._abandonment is None:
+                # a task of its own: closing the connection this callback arrived on must not have to
+                # wait for this callback to return.
+                self._abandonment = asyncio.create_task(
+                    self.abandon(reason=f"credential refused: {refusal.reason.value}"),
+                    name=f"nats-abandon:{self._client_name}",
+                )
+
+        return await self.subscribe_typed(
+            subject=Subjects.credential_refusal(inbox_prefix),
+            cb=_on_refusal,
+            message_type=CredentialRefusal,
+            deadletter_on_failure=False,
+        )
 
     async def _close_replaced_connections(self) -> None:
         """end every pending retirement now and close the connections it was holding open.

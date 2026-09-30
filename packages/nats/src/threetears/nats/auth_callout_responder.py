@@ -9,7 +9,12 @@ codecs; THIS module holds the generic responder LOOP, parameterized by two consu
 * :class:`PrincipalResolver` -- "who is this connection?": map an :class:`AuthCalloutRequest` to a
   :class:`ResolvedPrincipal`, or ``None`` to DENY. Each consumer implements its own (a
   bootstrap-token-hash lookup; an EdDSA identity-JWT verification; ...). Fail closed: a resolver
-  returns ``None`` for anything it does not positively authenticate.
+  returns ``None`` for anything it does not positively authenticate. A resolver that refuses an
+  authenticated principal ON PURPOSE -- a superseded identity -- returns a
+  :class:`~threetears.nats.credential_refusal.RefusedPrincipal`: the connection is denied exactly
+  as for ``None``, and the refusal is also published to the principal's own inbox, because
+  nats-server tells a denied client only "Authorization Violation"
+  (:mod:`threetears.nats.credential_refusal`).
 * :class:`GrantPolicy` -- "what may this principal do?": the least-privilege
   :class:`PrincipalPermissions` allow-list for a resolved principal.
 
@@ -31,8 +36,9 @@ from typing import Any, Protocol, runtime_checkable
 from nkeys import PREFIX_BYTE_ACCOUNT, NkeysError
 
 from threetears.nats.auth_callout import AuthCalloutRequest, decode_auth_request, mint_auth_response
+from threetears.nats.credential_refusal import RefusedPrincipal
 from threetears.nats.subject_permissions import PrincipalPermissions
-from threetears.nats.subjects import Subject
+from threetears.nats.subjects import Subject, Subjects
 from threetears.nats.user_jwt import account_public_key, mint_user_jwt
 from threetears.observe import get_logger
 
@@ -41,6 +47,7 @@ __all__ = [
     "DEFAULT_AUTH_CALLOUT_QUEUE_GROUP",
     "DEFAULT_NATS_USER_JWT_TTL_SECONDS",
     "AuthAccountKeyError",
+    "AuthCalloutDecision",
     "AuthCalloutResponder",
     "GrantPolicy",
     "PrincipalResolver",
@@ -133,13 +140,15 @@ class ResolvedPrincipal:
 class PrincipalResolver(Protocol):
     """maps an inbound auth-callout request to an authenticated principal, or denies (fail closed)."""
 
-    async def resolve(self, request: AuthCalloutRequest) -> ResolvedPrincipal | None:
-        """resolve ``request`` to a :class:`ResolvedPrincipal`, or ``None`` to DENY the connection.
+    async def resolve(self, request: AuthCalloutRequest) -> ResolvedPrincipal | RefusedPrincipal | None:
+        """resolve ``request`` to a :class:`ResolvedPrincipal`, or DENY the connection.
 
         :param request: the decoded AuthorizationRequest (the presented credential + connect opts).
         :ptype request: AuthCalloutRequest
-        :return: the authenticated principal, or ``None`` when nothing is positively authenticated.
-        :rtype: ResolvedPrincipal | None
+        :return: the authenticated principal; a :class:`RefusedPrincipal` to deny an authenticated
+            principal on purpose and tell it why; or ``None`` when nothing is positively
+            authenticated.
+        :rtype: ResolvedPrincipal | RefusedPrincipal | None
         """
         ...
 
@@ -159,11 +168,27 @@ class GrantPolicy(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class AuthCalloutDecision:
+    """what the responder answers one authorization request with.
+
+    :param response: the signed AuthorizationResponse JWT (admit, or deny)
+    :ptype response: str
+    :param refused: the deliberate refusal to tell the principal about, when the resolver refused it
+        on purpose; ``None`` for an admit and for any other denial
+    :ptype refused: RefusedPrincipal | None
+    """
+
+    response: str
+    refused: RefusedPrincipal | None = None
+
+
 class AuthCalloutResponder:
     """answers NATS auth-callout requests by minting per-connection user JWTs from a grant policy.
 
     :param nc: a connected NATS client that is a member of the system account (so it can subscribe
-        ``$SYS.REQ.USER.AUTH``). Only ``subscribe``/``unsubscribe``/``publish_raw_reply`` are used.
+        ``$SYS.REQ.USER.AUTH``), and that may publish to a refused principal's inbox. Only
+        ``subscribe``/``unsubscribe``/``publish_raw_reply``/``publish`` are used.
     :ptype nc: Any
     :param account_seed: the NATS auth-account nkey seed that SIGNS the response + user JWTs. Either
         the account's identity seed, or a subordinate SIGNING seed registered in the account's
@@ -284,10 +309,45 @@ class AuthCalloutResponder:
             # malformed / non-UTF-8 / absent (``data is None``) payload — not ours to answer.
             log.warning("auth-callout: undecodable request (%s)", type(exc).__name__)
             return
-        response = await self.build_response(request)
-        await self._nc.publish_raw_reply(reply_subject=msg.reply_subject, payload=response.encode("utf-8"))
+        decision = await self.build_decision(request)
+        await self._nc.publish_raw_reply(reply_subject=msg.reply_subject, payload=decision.response.encode("utf-8"))
+        if decision.refused is not None:
+            await self.publish_refusal(decision.refused)
+
+    async def publish_refusal(self, refused: RefusedPrincipal) -> None:
+        """tell a principal refused on purpose why, over the connection it still holds; never raises.
+
+        Published to the principal's own inbox subtree, which its grant always admits. A failure is
+        logged and nothing more: the connection is denied either way, and the principal falls back to
+        retrying until its current credential expires -- what it does for a refusal it cannot see.
+
+        :param refused: the deliberate refusal
+        :ptype refused: RefusedPrincipal
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await self._nc.publish(subject=Subjects.credential_refusal(refused.inbox_prefix), message=refused.refusal)
+        # NOSILENT: logged; see the docstring for what the principal does without it
+        except Exception as exc:  # noqa: BLE001 -- the denial stands whether or not the notice is sent
+            log.warning(
+                "auth-callout: could not tell a refused principal why (reason=%s pod_id=%s): %s",
+                refused.refusal.reason.value,
+                refused.refusal.pod_id,
+                exc,
+            )
 
     async def build_response(self, request: AuthCalloutRequest) -> str:
+        """the signed AuthorizationResponse for ``request``; see :meth:`build_decision`.
+
+        :param request: the decoded AuthorizationRequest.
+        :ptype request: AuthCalloutRequest
+        :return: the signed AuthorizationResponse JWT (admit with a scoped user JWT, or deny).
+        :rtype: str
+        """
+        return (await self.build_decision(request)).response
+
+    async def build_decision(self, request: AuthCalloutRequest) -> AuthCalloutDecision:
         """resolve + authorize the principal, then mint the admit/deny AuthorizationResponse.
 
         Delegates "who is this?" to the :class:`PrincipalResolver` and "what may they do?" to the
@@ -298,32 +358,43 @@ class AuthCalloutResponder:
         cannot be signed a deny (there is no ``aud`` to bind it to), so it is left unanswered and the
         server times out — the only fail-closed option when a deny itself cannot be minted.
 
+        A resolver's deliberate refusal denies with the refusal's reason as the response's error --
+        which nats-server logs and does not pass on -- and is returned with the decision so
+        :meth:`handle_request` can tell the principal.
+
         :param request: the decoded AuthorizationRequest.
         :ptype request: AuthCalloutRequest
-        :return: the signed AuthorizationResponse JWT (admit with a scoped user JWT, or deny).
-        :rtype: str
+        :return: the signed response, and the deliberate refusal when there is one
+        :rtype: AuthCalloutDecision
         """
         server_id = request.server_id_value
         user_nkey = request.user_nkey
-        user_jwt = await self._authorize(request)
-        if user_jwt is None:
-            return mint_auth_response(
-                account_seed=self._account_seed,
-                server_id=server_id,
-                user_nkey=user_nkey,
-                issuer_account=self._issuer_account,
-                error="authentication failed",
+        outcome = await self._authorize(request)
+        if isinstance(outcome, str):
+            decision = AuthCalloutDecision(
+                response=mint_auth_response(
+                    account_seed=self._account_seed,
+                    server_id=server_id,
+                    user_nkey=user_nkey,
+                    issuer_account=self._issuer_account,
+                    user_jwt=outcome,
+                )
             )
-        return mint_auth_response(
-            account_seed=self._account_seed,
-            server_id=server_id,
-            user_nkey=user_nkey,
-            issuer_account=self._issuer_account,
-            user_jwt=user_jwt,
-        )
+        else:
+            decision = AuthCalloutDecision(
+                response=mint_auth_response(
+                    account_seed=self._account_seed,
+                    server_id=server_id,
+                    user_nkey=user_nkey,
+                    issuer_account=self._issuer_account,
+                    error=outcome.refusal.reason.value if outcome is not None else "authentication failed",
+                ),
+                refused=outcome,
+            )
+        return decision
 
-    async def _authorize(self, request: AuthCalloutRequest) -> str | None:
-        """resolve + grant + mint the scoped user JWT, or ``None`` to DENY.
+    async def _authorize(self, request: AuthCalloutRequest) -> str | RefusedPrincipal | None:
+        """resolve + grant + mint the scoped user JWT, or DENY: ``None``, or the resolver's refusal.
 
         The security boundary. The resolver + policy are consumer-supplied code, so ANY exception
         they (or the mint) raise must DENY — never propagate to admit-by-accident or wedge the
@@ -332,14 +403,22 @@ class AuthCalloutResponder:
 
         :param request: the decoded AuthorizationRequest.
         :ptype request: AuthCalloutRequest
-        :return: the minted user JWT to admit with, or ``None`` to deny.
-        :rtype: str | None
+        :return: the minted user JWT to admit with; the resolver's deliberate refusal; or ``None``
+            to deny.
+        :rtype: str | RefusedPrincipal | None
         """
         try:
             resolved = await self._resolver.resolve(request)
             if resolved is None:
                 log.warning("auth-callout: denied -- no principal resolved for the presented credential")
                 return None
+            if isinstance(resolved, RefusedPrincipal):
+                log.warning(
+                    "auth-callout: refused on purpose -- reason=%s pod_id=%s",
+                    resolved.refusal.reason.value,
+                    resolved.refusal.pod_id,
+                )
+                return resolved
             permissions = self._policy.permissions(resolved)
             user_jwt = mint_user_jwt(
                 account_seed=self._account_seed,

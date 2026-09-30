@@ -6,6 +6,45 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A credential the auth-callout refuses ON PURPOSE stops the client at once; any other refusal does not
+
+Owner ruling Q16 (2026-09-30). nats-server tells a refused connection only
+`-ERR 'Authorization Violation'` -- `client.authViolation` sends that fixed text "regardless of the
+authErr override", and the callout's `AuthorizationResponse.error` reaches only the server log -- so
+a client renewing its credential could not tell "your identity was superseded, stop serving" from
+"the callout is down, try again".
+
+**Contract changes:**
+
+- New `threetears.nats.credential_refusal`: `CredentialRefusal` (typed: `reason`, `pod_id`,
+  `identity_generation`), `CredentialRefusalReason` (`SUPERSEDED`, wire value `"superseded"`),
+  `RefusedPrincipal`, and `Subjects.credential_refusal(inbox_prefix)` --
+  `{inbox_prefix}.credential-refused`, inside the principal's own inbox grant.
+- `PrincipalResolver.resolve` may return a `RefusedPrincipal`: the responder denies with the typed
+  reason as the response error and publishes the `CredentialRefusal` to the principal's inbox
+  (`AuthCalloutResponder.publish_refusal`). New `AuthCalloutResponder.build_decision` returns the
+  response and the refusal; `build_response` is unchanged. An ordinary denial (`None`) publishes
+  nothing.
+- New `NatsClient.abandon_on_refusal(inbox_prefix=, is_mine=)`: a refusal that names this runner
+  closes every connection at once (`NatsClient.abandon`, also new: no drain, the renewal loop and
+  any renewal still opening its successor are stopped, and nothing renews an abandoned client).
+  A refusal naming another runner sharing the inbox is ignored.
+- A renewal candidate's refusals no longer count toward `is_healthy`: the connection in use is
+  still valid, and is kept -- and the renewal retried -- until its own credential expires. The
+  earlier count would have had a pod's supervisor restart it during a callout outage.
+
+Proven live (`test_credential_refusal_live.py`, config-mode `auth_callout`, the real responder
+serving it through `handle_request`): a refusal naming this runner closes the pod within
+moments of the refusal and stops the renewal attempt; one naming another generation is ignored;
+with the callout unreachable the pod keeps serving, healthy, and requests on it complete.
+
+### The display-claim grant test binds the leases bucket the way a tool pod does
+
+`test_forward_grants_live::test_tool_pod_can_open_the_bucket_its_display_claim_uses` failed on every
+run: it built `KVLease(pod, pod_id)` -- declaring, unscoped -- which no tool pod does since the pod
+grant on `{ns}-leases` became owner-keyed and bind-only. The grant was right and the test wrong; it
+now claims through `operator_session_lease`, over a bucket the admin declares as the hub does.
+
 ### A NATS credential renewal no longer drops anything in flight: it is make-before-break
 
 Every agent and tool pod renewed its auth-callout credential by RECONNECTING its one connection,

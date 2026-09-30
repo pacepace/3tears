@@ -94,6 +94,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         DEFAULT_AUTH_CALLOUT_QUEUE_GROUP,
         DEFAULT_NATS_USER_JWT_TTL_SECONDS,
         AuthAccountKeyError,
+        AuthCalloutDecision,
         AuthCalloutResponder,
         GrantPolicy,
         PrincipalResolver,
@@ -110,6 +111,12 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     from threetears.nats.kv import NatsKvBucket
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
 
+from threetears.nats.credential_refusal import (
+    CREDENTIAL_REFUSAL_SUBJECT_TOKEN,
+    CredentialRefusal,
+    CredentialRefusalReason,
+    RefusedPrincipal,
+)
 from threetears.nats.credential_renewal import (
     NATS_USER_JWT_TTL_ENV,
     PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS,
@@ -259,6 +266,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "DEFAULT_AUTH_CALLOUT_QUEUE_GROUP",
         "DEFAULT_NATS_USER_JWT_TTL_SECONDS",
         "AuthAccountKeyError",
+        "AuthCalloutDecision",
         "AuthCalloutResponder",
         "GrantPolicy",
         "PrincipalResolver",
@@ -359,6 +367,10 @@ __all__ = [
     # renewing a connection whose credential expires (NatsClient.renew_credential's arithmetic)
     "NATS_USER_JWT_TTL_ENV",
     "PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS",
+    "CREDENTIAL_REFUSAL_SUBJECT_TOKEN",
+    "CredentialRefusal",
+    "CredentialRefusalReason",
+    "RefusedPrincipal",
     "REAUTH_BUFFER_SECONDS",
     "REAUTH_CONNECT_TIMEOUT_SECONDS",
     "REAUTH_LEEWAY_SECONDS",
@@ -434,6 +446,7 @@ __all__ = [
     "DEFAULT_AUTH_CALLOUT_QUEUE_GROUP",
     "DEFAULT_NATS_USER_JWT_TTL_SECONDS",
     "AuthAccountKeyError",
+    "AuthCalloutDecision",
     "AuthCalloutResponder",
     "GrantPolicy",
     "PrincipalResolver",
