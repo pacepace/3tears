@@ -18,12 +18,15 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import pytest
 from uuid_utils import uuid7
 
 from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
+    SkillShapeError,
     _AGENT_SKILL_INVOCATIONS_UPSERT_SQL,
+    _AGENT_SKILLS_FETCH_SQL,
     _AGENT_SKILLS_UPSERT_CAS_SQL,
     _AGENT_SKILLS_UPSERT_SQL,
     _INVOCATION_INSERT_COLUMNS,
@@ -327,3 +330,63 @@ class TestSkillSaveCasFence:
         data = {"agent_id": _new_uuid(), "skill_id": _new_uuid(), "user_id": _new_uuid(), "name": "x", "summary": "s"}
         affected = await coll.save_to_store(data, datetime.now(UTC))
         assert affected == 0
+
+
+class TestSkillSaveShape:
+    """``save_to_store`` refuses a row that is both kinds before any SQL runs."""
+
+    @staticmethod
+    def _row(**fields: Any) -> dict[str, Any]:
+        return {
+            "agent_id": _new_uuid(),
+            "skill_id": _new_uuid(),
+            "user_id": _new_uuid(),
+            "name": "x",
+            "summary": "s",
+        } | fields
+
+    async def test_body_and_tool_refused_before_sql(self) -> None:
+        pool = _RecordingPool(status="INSERT 0 1")
+        coll, _ = _bare_skill_collection(pool)
+        with pytest.raises(SkillShapeError, match="not both"):
+            await coll.save_to_store(self._row(body="steps", tool="loki.query"))
+        assert pool.calls == []
+
+    async def test_arguments_without_tool_refused_before_sql(self) -> None:
+        pool = _RecordingPool(status="INSERT 0 1")
+        coll, _ = _bare_skill_collection(pool)
+        with pytest.raises(SkillShapeError, match="arguments need a tool"):
+            await coll.save_to_store(self._row(body="steps", arguments={"q": 1}))
+        assert pool.calls == []
+
+    async def test_non_object_arguments_refused_before_sql(self) -> None:
+        pool = _RecordingPool(status="INSERT 0 1")
+        coll, _ = _bare_skill_collection(pool)
+        with pytest.raises(SkillShapeError, match="JSON object"):
+            await coll.save_to_store(self._row(tool="loki.query", arguments=[1, 2]))
+        assert pool.calls == []
+
+    async def test_tool_only_row_binds_tool_and_arguments(self) -> None:
+        pool = _RecordingPool(status="INSERT 0 1")
+        coll, _ = _bare_skill_collection(pool)
+        affected = await coll.save_to_store(self._row(tool="loki.query", arguments={"q": "error"}))
+        assert affected == 1
+        [(_, params)] = pool.calls
+        bound = dict(zip(_SKILL_INSERT_COLUMNS, params, strict=True))
+        assert bound["body"] is None
+        assert bound["tool"] == "loki.query"
+        # a native object for the jsonb codec, never pre-encoded text.
+        assert bound["arguments"] == {"q": "error"}
+
+    async def test_arguments_read_back_as_json_text_still_save(self) -> None:
+        """A row read through a pool without the jsonb codec carries arguments as text."""
+        pool = _RecordingPool(status="INSERT 0 1")
+        coll, _ = _bare_skill_collection(pool)
+        await coll.save_to_store(self._row(tool="loki.query", arguments='{"q": "error"}'))
+        [(_, params)] = pool.calls
+        assert dict(zip(_SKILL_INSERT_COLUMNS, params, strict=True))["arguments"] == {"q": "error"}
+
+    def test_every_written_column_is_read(self) -> None:
+        """The fetch selects exactly the written columns, so ``tool`` / ``arguments`` reach every read."""
+        assert _AGENT_SKILLS_FETCH_SQL.startswith(f"SELECT {', '.join(_SKILL_INSERT_COLUMNS)} FROM")
+        assert {"tool", "arguments"} <= set(_SKILL_INSERT_COLUMNS)

@@ -25,6 +25,7 @@ not benefit from L1 row caching -- the row cache still serves
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,6 +41,7 @@ from threetears.agent.skills.types import (
     SkillOutcome,
 )
 from threetears.core.backends.protocol import parse_rowcount
+from threetears.core.backends.schema_sql import decode_jsonb, encode_jsonb
 from threetears.core.collections.base import BaseCollection
 from threetears.core.data.gin import gin_filter
 from threetears.core.serialization import (
@@ -51,6 +53,8 @@ from threetears.observe import get_logger
 __all__ = [
     "AgentSkillCollection",
     "AgentSkillInvocationCollection",
+    "SkillShapeError",
+    "skill_shape_error",
 ]
 
 
@@ -68,6 +72,8 @@ _SKILL_FIELD_TYPES: dict[str, Any] = {
     "name": str,
     "summary": str,
     "body": str | None,
+    "tool": str | None,
+    "arguments": dict | None,
     "prompt_mode": str,
     "tool_additions": list[str],
     "tool_restrictions": list[str],
@@ -114,6 +120,8 @@ _SKILL_INSERT_COLUMNS: tuple[str, ...] = (
     "name",
     "summary",
     "body",
+    "tool",
+    "arguments",
     "prompt_mode",
     "tool_additions",
     "tool_restrictions",
@@ -137,6 +145,12 @@ _SKILL_INSERT_COLUMNS: tuple[str, ...] = (
 _SKILL_UPDATE_COLUMNS: tuple[str, ...] = tuple(
     c for c in _SKILL_INSERT_COLUMNS if c not in {"agent_id", "skill_id", "date_created"}
 )
+
+
+# columns every skill read selects: exactly the written ones, so a column
+# added to the insert list reaches every read with no second edit.
+# ``search_vector`` is server-side ranking state, never read into an entity.
+_SKILL_SELECT_LIST = ", ".join(_SKILL_INSERT_COLUMNS)
 
 
 _INVOCATION_INSERT_COLUMNS: tuple[str, ...] = (
@@ -163,6 +177,78 @@ _INVOCATION_UPDATE_COLUMNS: tuple[str, ...] = (
     "outcome_source",
     "notes",
 )
+
+
+class SkillShapeError(ValueError):
+    """A skill that would be both a body skill and a tool-call skill, or a malformed tool call.
+
+    Raised by :meth:`AgentSkillCollection.save_to_store` before the row reaches
+    the database, whose CHECK constraints refuse the same rows. The message is
+    :func:`skill_shape_error`'s.
+    """
+
+
+def skill_shape_error(
+    *,
+    body: str | None,
+    tool: str | None,
+    arguments: Any,
+) -> str | None:
+    """Say what is wrong with a skill's body / tool / arguments, or ``None`` when nothing is.
+
+    A skill is one of two kinds, fixed by what it carries: a ``body`` (steps a
+    model follows) or a ``tool`` (called with ``arguments``, no model). The rules
+    mirror the ``agent_skills`` CHECK constraints, so the caller hears the reason
+    before the database refuses the row:
+
+    - never both a body and a tool (any non-``None`` body counts, as it does in
+      the database);
+    - a tool is a non-blank name;
+    - arguments only with a tool, and only as a JSON object with string keys.
+
+    :param body: the skill's body, or ``None``
+    :ptype body: str | None
+    :param tool: the tool's canonical name, or ``None``
+    :ptype tool: str | None
+    :param arguments: the tool's arguments, or ``None``
+    :ptype arguments: Any
+    :return: the error, or ``None`` when the shape is valid
+    :rtype: str | None
+    """
+    error: str | None = None
+    if tool is not None and (not isinstance(tool, str) or not tool.strip()):
+        error = "tool must be a tool's name, not blank"
+    elif body is not None and tool is not None:
+        error = (
+            "a skill has a body or a tool, not both: a body skill is steps to follow, "
+            "a tool skill is one tool call; remove one of them"
+        )
+    elif arguments is not None and tool is None:
+        error = "arguments need a tool: set tool, or leave arguments out"
+    elif arguments is not None and not isinstance(arguments, dict):
+        error = "arguments must be a JSON object of named arguments"
+    elif arguments is not None:
+        error = _arguments_json_error(arguments)
+    return error
+
+
+def _arguments_json_error(arguments: dict[str, Any]) -> str | None:
+    """Say why ``arguments`` cannot be stored as a JSON object, or ``None`` when it can.
+
+    :param arguments: candidate arguments
+    :ptype arguments: dict[str, Any]
+    :return: the error, or ``None``
+    :rtype: str | None
+    """
+    error: str | None = None
+    if not all(isinstance(key, str) for key in arguments):
+        error = "arguments must be a JSON object: every key a string"
+    else:
+        try:
+            json.dumps(arguments)
+        except (TypeError, ValueError) as exc:
+            error = f"arguments must be plain JSON: {exc}"
+    return error
 
 
 def _build_upsert_sql(
@@ -246,13 +332,7 @@ _AGENT_SKILL_INVOCATIONS_UPSERT_SQL = _build_upsert_sql(
 )
 
 
-_AGENT_SKILLS_FETCH_SQL = (
-    "SELECT agent_id, skill_id, user_id, name, summary, body, prompt_mode, "
-    "tool_additions, tool_restrictions, trigger_keywords, tags, source, "
-    "enabled, use_count, last_used_at, success_count, failure_count, "
-    "last_failure_at, date_created, date_updated "
-    "FROM agent_skills WHERE agent_id = $1 AND skill_id = $2"
-)
+_AGENT_SKILLS_FETCH_SQL = f"SELECT {_SKILL_SELECT_LIST} FROM agent_skills WHERE agent_id = $1 AND skill_id = $2"
 
 
 _AGENT_SKILLS_DELETE_SQL = "DELETE FROM agent_skills WHERE agent_id = $1 AND skill_id = $2"
@@ -355,7 +435,19 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         :ptype conn: Any
         :return: rows affected (1 on success, 0 on CAS-fence mismatch)
         :rtype: int
+        :raises SkillShapeError: when the row carries both a body and a tool,
+            arguments without a tool, or arguments that are not a JSON object;
+            raised before any SQL runs, so :meth:`BaseCollection.save_entity`
+            withdraws the working copy from L1
         """
+        shape_error = skill_shape_error(
+            body=data.get("body"),
+            tool=data.get("tool"),
+            # a row read through a pool without the jsonb codec carries the object as JSON text.
+            arguments=decode_jsonb(data.get("arguments")),
+        )
+        if shape_error is not None:
+            raise SkillShapeError(shape_error)
         params = _skill_insert_params(data)
         target = conn if conn is not None else self.l3_pool
         if target is None:
@@ -424,12 +516,7 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         # lookups only; keeping the query on the Collection preserves
         # the single entry point.
         row = await self.l3_pool.fetchrow(
-            "SELECT agent_id, skill_id, user_id, name, summary, body, prompt_mode, "
-            "tool_additions, tool_restrictions, trigger_keywords, tags, source, "
-            "enabled, use_count, last_used_at, success_count, failure_count, "
-            "last_failure_at, date_created, date_updated "
-            "FROM agent_skills "
-            "WHERE agent_id = $1 AND user_id = $2 AND name = $3",
+            f"SELECT {_SKILL_SELECT_LIST} FROM agent_skills WHERE agent_id = $1 AND user_id = $2 AND name = $3",
             agent_id,
             user_id,
             name,
@@ -501,11 +588,7 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         # primary-key addressable; L1 row cache cannot serve. method
         # on the Collection preserves the single SQL entry point.
         sql = (
-            "SELECT agent_id, skill_id, user_id, name, summary, body, prompt_mode, "
-            "tool_additions, tool_restrictions, trigger_keywords, tags, source, "
-            "enabled, use_count, last_used_at, success_count, failure_count, "
-            "last_failure_at, date_created, date_updated"
-            f"{select_extra} "
+            f"SELECT {_SKILL_SELECT_LIST}{select_extra} "
             f"FROM agent_skills WHERE {where_clause} "
             f"ORDER BY {order_clause} "
             f"LIMIT {limit_param} OFFSET {offset_param}"
@@ -1109,6 +1192,9 @@ def _skill_value_for_column(col: str, data: dict[str, Any]) -> Any:
         value = data[col]
         if col in {"tool_additions", "tool_restrictions", "tags"} and value is not None:
             return list(value)
+        if col == "arguments":
+            # bound as a native object for the pool's jsonb codec: one encode, never two.
+            return encode_jsonb(value)
         return value
     # column-specific defaults that mirror the L3 schema
     if col == "prompt_mode":
