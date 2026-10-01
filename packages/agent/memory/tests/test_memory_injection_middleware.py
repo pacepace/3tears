@@ -189,6 +189,50 @@ class TestInjection:
         assert req.system_message.content.startswith(_MEMORY_CONTEXT_PREFIX)
 
 
+class _QueryRecordingRetriever(_StubRetriever):
+    """stub retriever that records every query it was asked."""
+
+    def __init__(self, context: str) -> None:
+        super().__init__(context)
+        self.queries: list[Any] = []
+
+    async def retrieve(
+        self,
+        user_id: Any,
+        query: Any,
+        *,
+        agent_id: Any,
+        customer_id: Any,
+        caller_user_id: Any,
+        caller_agent_id: Any,
+    ) -> str:
+        self.queries.append(query)
+        return await super().retrieve(
+            user_id,
+            query,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            caller_user_id=caller_user_id,
+            caller_agent_id=caller_agent_id,
+        )
+
+
+class TestMultimodalQuery:
+    def test_a_turn_carrying_an_image_queries_by_its_text_alone(self) -> None:
+        # a person attached an image: the turn is a block list (an object reference, then
+        # the text). the query is what they asked, never the Python repr of the list.
+        retriever = _QueryRecordingRetriever("user prefers dark mode")
+        configurable = {"memory_integration": _StubIntegration(retriever), "call_context": _call_context()}
+        turn = HumanMessage(
+            content=[
+                {"type": "object_reference", "object_id": str(uuid7()), "mime_type": "image/png"},
+                {"type": "text", "text": "what is in this picture"},
+            ]
+        )
+        _drive(MemoryInjectionMiddleware(), _request(SystemMessage(content="base"), messages=[turn]), configurable)
+        assert retriever.queries == ["what is in this picture"]
+
+
 class TestNoop:
     def test_noop_without_integration(self) -> None:
         req_in = _request(SystemMessage(content="base"))

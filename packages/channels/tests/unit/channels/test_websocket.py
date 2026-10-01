@@ -8,6 +8,7 @@ import inspect
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -1055,6 +1056,28 @@ class TestAChatMessageTheAgentCannotUseIsRefused:
             pytest.param({"type": "message", "content": ["hi"], "metadata": {}}, id="content-a-list"),
             pytest.param({"type": "message", "content": "hi", "metadata": "tz"}, id="metadata-a-string"),
             pytest.param({"type": "message", "content": "hi", "metadata": ["tz"]}, id="metadata-a-list"),
+            pytest.param(
+                {
+                    "type": "message",
+                    "content": "hi",
+                    "metadata": {},
+                    "attachment_ids": "0192f0a0-0000-7000-8000-000000000001",
+                },
+                id="attachment-ids-a-string",
+            ),
+            pytest.param(
+                {"type": "message", "content": "hi", "metadata": {}, "attachment_ids": ["not-a-uuid"]},
+                id="attachment-ids-not-uuids",
+            ),
+            pytest.param(
+                {
+                    "type": "message",
+                    "content": "hi",
+                    "metadata": {},
+                    "attachment_ids": ["0192f0a0-0000-7000-8000-000000000001", 7],
+                },
+                id="attachment-ids-one-bad-element",
+            ),
         ],
     )
     async def test_a_malformed_chat_frame_is_refused_and_the_socket_keeps_serving(self, frame: dict[str, Any]) -> None:
@@ -1065,6 +1088,30 @@ class TestAChatMessageTheAgentCannotUseIsRefused:
         assert sent[0] == {"type": "error", "message": "invalid message"}
         assert sent[1] == {"type": "response", "content": "echo: still here", "metadata": {}}
         assert [message.content for message in router.routed] == ["still here"]
+
+
+class TestAttachmentIdsReachTheRouter:
+    """a chat frame's ``attachment_ids`` ride the routed message as ids, in order."""
+
+    @pytest.mark.asyncio
+    async def test_attachment_ids_are_parsed_in_order(self) -> None:
+        first = "0192f0a0-0000-7000-8000-000000000001"
+        second = "0192f0a0-0000-7000-8000-000000000002"
+        router = _CountingEchoRouter()
+
+        await _serve([{"type": "message", "content": "what is this", "attachment_ids": [first, second]}], router)
+
+        assert [message.attachment_ids for message in router.routed] == [[UUID(first), UUID(second)], []]
+
+    def test_parse_attachment_ids_reads_a_list_of_ids_whole_or_not_at_all(self) -> None:
+        from threetears.channels.websocket import parse_attachment_ids
+
+        one = "0192f0a0-0000-7000-8000-000000000001"
+        assert parse_attachment_ids([]) == []
+        assert parse_attachment_ids([one]) == [UUID(one)]
+        assert parse_attachment_ids([one, "nope"]) is None
+        assert parse_attachment_ids(one) is None
+        assert parse_attachment_ids(None) is None
 
 
 class TestWebSocketHandlerRateLimiting:

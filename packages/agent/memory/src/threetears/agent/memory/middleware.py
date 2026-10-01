@@ -173,7 +173,10 @@ def _extract_last_user_message(messages: Sequence[BaseMessage]) -> str:
     query = ""
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
-            query = str(msg.content)
+            # ``text`` joins the message's text blocks. a turn carrying an image is a
+            # block list, and ``str()`` of that list would embed its Python repr --
+            # object-reference blocks included -- as the retrieval query.
+            query = msg.text
             break
     return query
 

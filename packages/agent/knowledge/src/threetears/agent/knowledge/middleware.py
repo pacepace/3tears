@@ -1382,9 +1382,10 @@ def _turn_query_text(messages: Sequence[BaseMessage]) -> str:
     The query side embeds the SAME shape the back-fill matches against: the user's
     turn MESSAGE (the situational question). The most-recent
     :class:`~langchain_core.messages.HumanMessage` in the running message list is
-    the turn query; its string content is returned (a non-string content payload --
-    a multimodal message -- yields an empty string so the ranker soft-fails to
-    stable-order rather than embedding garbage).
+    the turn query; its text is returned -- for a multimodal message, its text
+    blocks joined, so a turn carrying an image still ranks by what the person
+    asked. a message with no text yields an empty string and the ranker soft-fails
+    to stable-order.
 
     :param messages: the running message list
     :ptype messages: Sequence[BaseMessage]
@@ -1394,8 +1395,10 @@ def _turn_query_text(messages: Sequence[BaseMessage]) -> str:
     result = ""
     for message in reversed(messages):
         if isinstance(message, HumanMessage):
-            content = message.content
-            result = content if isinstance(content, str) else ""
+            # ``text`` is the message's text blocks joined: a turn carrying an image
+            # still ranks by what the person asked, and the reference blocks beside
+            # it add nothing to embed.
+            result = message.text
             break
     return result
 

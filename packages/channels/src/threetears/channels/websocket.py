@@ -51,6 +51,7 @@ __all__ = [
     "StreamingChannelRouter",
     "WebSocketHandler",
     "WebSocketProtocol",
+    "parse_attachment_ids",
 ]
 
 log = get_logger(__name__)
@@ -132,6 +133,29 @@ async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
         )
         ok = False
     return ok
+
+
+def parse_attachment_ids(raw: object) -> list[UUID] | None:
+    """read a chat frame's ``attachment_ids`` into ids, or ``None`` when it is malformed.
+
+    the value is client-supplied JSON: it must be a list, and every element a string
+    in UUID form. anything else -- a single string, a number, one bad element among
+    good ones -- is malformed as a whole, never partly read, so a frame cannot
+    reach an agent missing an image its sender attached. whether the sender may
+    attach each id is the host's decision, made by its router.
+
+    :param raw: the frame's ``attachment_ids`` value (``[]`` when absent)
+    :ptype raw: object
+    :return: the ids in order, or ``None`` when the value is malformed
+    :rtype: list[UUID] | None
+    """
+    result: list[UUID] | None = None
+    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+        try:
+            result = [UUID(item) for item in raw]
+        except ValueError:
+            result = None
+    return result
 
 
 @runtime_checkable
@@ -644,12 +668,15 @@ class WebSocketHandler:
 
             content = data.get("content", "")
             metadata = data.get("metadata", {})
+            attachment_ids = parse_attachment_ids(data.get("attachment_ids", []))
             # a chat frame with nothing an agent can use is answered here, before the
             # router: dispatching it would spend a model call on nothing (the REST chat
             # door refuses an empty message too), and a non-object ``metadata`` would
-            # fail the ``.get`` reads below, outside the per-message safety net.
+            # fail the ``.get`` reads below, outside the per-message safety net. an
+            # ``attachment_ids`` that is not a list of ids is refused the same way:
+            # half-reading it would send the turn without an image the person attached.
             refusal: str | None = None
-            if not isinstance(content, str) or not isinstance(metadata, dict):
+            if not isinstance(content, str) or not isinstance(metadata, dict) or attachment_ids is None:
                 refusal = "invalid message"
             elif not content:
                 refusal = "empty message"
@@ -684,6 +711,7 @@ class WebSocketHandler:
                 metadata=metadata,
                 user_timezone=user_tz if isinstance(user_tz, str) and user_tz else None,
                 user_locale=user_locale if isinstance(user_locale, str) and user_locale else None,
+                attachment_ids=attachment_ids or [],
             )
 
             try:

@@ -57,6 +57,7 @@ from threetears.agent.knowledge.middleware import (
     _resolve_situational_budget,
     _split_invariant_concepts,
     _split_invariant_entries,
+    _turn_query_text,
     _warn_on_situational_starvation,
     _warn_on_stable_order_fallback,
 )
@@ -920,3 +921,21 @@ class TestShadowLedgers:
         by_scope = {d["shadows_scope"] for d in ledger}
         assert "customer" in by_scope
         assert any(d["ambiguous"] == "true" for d in ledger)
+
+
+class TestTurnQueryText:
+    """the situational ranker embeds what the person asked."""
+
+    def test_a_plain_turn_is_its_text(self) -> None:
+        assert _turn_query_text([HumanMessage(content="which roofs need work")]) == "which roofs need work"
+
+    def test_a_turn_carrying_an_image_is_its_text_blocks(self) -> None:
+        # an attached image makes the turn a block list. the query is the question, not
+        # an empty string (which dropped ranking to stable order) and not the list's repr.
+        turn = HumanMessage(
+            content=[
+                {"type": "object_reference", "object_id": str(uuid7()), "mime_type": "image/png"},
+                {"type": "text", "text": "which roofs need work"},
+            ]
+        )
+        assert _turn_query_text([AIMessage(content="earlier"), turn]) == "which roofs need work"
