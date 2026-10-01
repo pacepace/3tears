@@ -138,9 +138,9 @@ async def test_fail_closed_on_transport_error() -> None:
 
 async def test_fail_closed_on_hub_error_reply() -> None:
     """A hub error reply raises with the hub's reason."""
-    nc = _RecordingNats(responses=_err(code="IDENTITY_UNVERIFIED", message="no session"))
+    nc = _RecordingNats(responses=_err(code="IDENTITY_REFUSED", message="no session"))
     resolver = HubEngagementScopeResolver(nc, request_timeout_seconds=5.0)  # type: ignore[arg-type]
-    with pytest.raises(ResolveEngagementScopeError, match="IDENTITY_UNVERIFIED"):
+    with pytest.raises(ResolveEngagementScopeError, match="IDENTITY_REFUSED"):
         await resolver.resolve(_ENGAGEMENT, customer_id=_CUSTOMER, identity_token=_TOKEN)
 
 
