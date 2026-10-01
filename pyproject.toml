@@ -239,6 +239,14 @@ ignore = ["N818", "N811"]
 # is the only way to re-init the provider (required for tests and re-init
 # flows). paired entry lives in tests/enforcement/_underscore_exemptions.txt.
 "packages/observe/src/threetears/observe/setup.py" = ["SLF001"]
+# the ONE module that touches nats-py's private members (Client._pending, _pending_data_size,
+# _transport, _pongs, _flush_queue, _send_unsubscribe, _process_op_err; Subscription._id,
+# _pending_queue, _pending_size; PullSubscription._sub). nats-py has no public way to write the
+# pending buffer and a PING in one step, drop a subscription's server interest while keeping it
+# registered, reach a pull subscription's inbox queue, or force a reconnect; the module docstring
+# names the caller of each. nothing else in the workspace touches these names. paired entries
+# live in tests/enforcement/_underscore_exemptions.txt.
+"packages/nats/src/threetears/nats/_nats_py_internals.py" = ["SLF001"]
 # sys._getframe is the stdlib's documented API for call-site frame access;
 # the public sys.settrace alternative has different semantics. paired entry
 # lives in tests/enforcement/_underscore_exemptions.txt.

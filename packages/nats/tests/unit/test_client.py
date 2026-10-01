@@ -12,6 +12,8 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -35,6 +37,8 @@ from threetears.nats import (
     Subscription,
     set_default_namespace,
 )
+
+from ._wire_server import wire_server
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +164,10 @@ class _FakeNatsPyClient:
     def pongs(self) -> list[asyncio.Future[bool]]:
         """the PONG futures still waiting for their PONG, oldest first."""
         return self._pongs
+
+    def pending_buffer(self) -> tuple[list[bytes], int]:
+        """what nats-py would still hold to write: the buffered commands and their byte count."""
+        return self._pending, self._pending_data_size
 
     def queue_pending(self, command: bytes) -> None:
         """a command nats-py has buffered but its flusher has not yet written out."""
@@ -1261,7 +1269,7 @@ async def test_ping_round_trips_after_the_pending_buffer() -> None:
     result = await client.ping(timeout=1.5)
     assert result is True
     assert fake.wire == ["UNSUB 1", "PING"]
-    assert fake._pending == [] and fake._pending_data_size == 0  # noqa: SLF001 -- the fake's own buffer
+    assert fake.pending_buffer() == ([], 0)
 
 
 @pytest.mark.asyncio
@@ -1607,30 +1615,44 @@ class TestAPublishThatNeverGetsItsAck:
         Dropping the last reference to a live task makes asyncio warn about a task that was
         "destroyed but it is pending" -- noise in exactly the incident where the log matters.
 
+        After its swallowed cancellation the orphan waits on a future nothing else references, so
+        the event loop holds no strong reference to it either: if the client let go of the task,
+        a collection would reclaim it here. It must survive the collection, still running.
+
         :return: nothing
         :rtype: None
         """
+        import gc
+        import weakref
+
         from threetears.nats.errors import PublishTimeoutError
 
         client, js = _client_with_js()
+        orphans: list[weakref.ref[asyncio.Task[Any]]] = []
 
         async def _swallows_the_first_cancellation(*_args: Any, **_kwargs: Any) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            orphans.append(weakref.ref(task))
             try:
                 await asyncio.sleep(3600)
             except asyncio.CancelledError:
                 pass
-            await asyncio.sleep(3600)
+            await asyncio.get_running_loop().create_future()
 
         js.publish = _swallows_the_first_cancellation
 
         with pytest.raises(PublishTimeoutError):
             await client.jetstream_publish(subject=Subjects.channels_deliver("slack"), payload=b"x", timeout=0.05)
 
-        # The registry is module-private for a reason (see `_publish`), so this reads it
-        # there rather than asking the client for a handle on something nobody can act on.
-        from threetears.nats import _publish
+        await asyncio.sleep(0)  # the cancellation lands; the orphan swallows it and waits again
+        gc.collect()
 
-        assert len(_publish._abandoned) == 1  # noqa: SLF001
+        orphan = orphans[0]()
+        assert orphan is not None, "the abandoned publish was garbage-collected while still pending"
+        assert not orphan.done()
+        orphan.cancel()
+        await asyncio.wait({orphan})
 
     @pytest.mark.asyncio
     async def test_a_broker_rejection_is_still_a_plain_publish_error(self) -> None:
@@ -2081,47 +2103,60 @@ async def test_pull_stop_unsubscribes_and_halts_run() -> None:
     psub.unsubscribe.assert_awaited_once()
 
 
-def _stopping_pull_consumer(
+@asynccontextmanager
+async def _stopping_pull_consumer(
     *,
     leftovers: list[bytes],
     cb: AsyncMock,
     redeliver: AsyncMock,
     unsubscribe: AsyncMock,
     connection: _FakeNatsPyClient | None = None,
-) -> tuple[Any, _FakeNatsPyClient]:
+) -> AsyncIterator[tuple[Any, _FakeNatsPyClient, int]]:
     """a pull consumer whose fetch inbox holds ``leftovers``, as the server left them at stop.
 
-    the inbox is a real nats-py subscription, so the stop's release reads the queue nats-py keeps.
+    the inbox is a real nats-py subscription on a real connection, and the leftovers reach it the
+    way they do in production: a server delivers them and nats-py's read loop queues them. the
+    pull subscription carrying it is nats-py's own, built through its constructor, so the stop's
+    release reads exactly what it reads in production.
+
+    :return: the consumer, the connection it is bound to, and the inbox's sid on the wire
+    :rtype: AsyncIterator[tuple[Any, _FakeNatsPyClient, int]]
     """
     from nats.aio.client import Client as NatsPyClient
-    from nats.aio.msg import Msg
-    from nats.aio.subscription import Subscription as NatsPySubscription
+    from nats.js.client import JetStreamContext
 
     from threetears.nats import JetStreamPullConsumer
 
     fake = connection if connection is not None else _FakeNatsPyClient()
-    inbox = NatsPySubscription(NatsPyClient(), id=9, subject="_INBOX.pull")
-    for index, data in enumerate(leftovers):
-        msg = Msg(_client=NatsPyClient(), subject=f"3tears.channels.deliver.slack.{index}", data=data)
-        inbox._pending_queue.put_nowait(msg)  # noqa: SLF001 -- seeding what nats-py's read loop would
-        inbox._pending_size += len(data)  # noqa: SLF001 -- seeding what nats-py's read loop would
-    psub = MagicMock()
-    psub._sub = inbox  # noqa: SLF001 -- the attribute nats-py's PullSubscription carries its inbox on
-    psub.unsubscribe = unsubscribe
-    consumer = JetStreamPullConsumer(
-        psub=psub,
-        cb=cb,
-        redeliver=redeliver,
-        durable="d",
-        subject=Subjects.channels_deliver("slack"),
-        batch=1,
-        fetch_timeout_seconds=0.01,
-        ack_wait_seconds=60.0,
-        bound_to=fake,
-        current_connection=lambda: fake,
-        resubscribe=AsyncMock(),
-    )
-    return consumer, fake
+    async with wire_server() as server:
+        delivering = NatsPyClient()
+        await delivering.connect(server.url, allow_reconnect=False)
+        try:
+            inbox = await delivering.subscribe("_INBOX.pull")
+            await delivering.flush()
+            for data in leftovers:
+                await server.deliver("_INBOX.pull", data)
+            async with asyncio.timeout(2.0):
+                while inbox.pending_msgs < len(leftovers):
+                    await asyncio.sleep(0.01)
+            psub = JetStreamContext.PullSubscription(JetStreamContext(delivering), inbox, "stream", "d", b"_INBOX.pull")
+            psub.unsubscribe = unsubscribe  # type: ignore[method-assign]
+            consumer = JetStreamPullConsumer(
+                psub=psub,
+                cb=cb,
+                redeliver=redeliver,
+                durable="d",
+                subject=Subjects.channels_deliver("slack"),
+                batch=1,
+                fetch_timeout_seconds=0.01,
+                ack_wait_seconds=60.0,
+                bound_to=fake,  # type: ignore[arg-type]
+                current_connection=lambda: fake,  # type: ignore[arg-type,return-value]
+                resubscribe=AsyncMock(),
+            )
+            yield consumer, fake, server.sid_for("_INBOX.pull")
+        finally:
+            await delivering.close()
 
 
 @pytest.mark.asyncio
@@ -2130,17 +2165,16 @@ async def test_pull_stop_handles_every_leftover_when_one_redelivery_fails(caplog
     cb = AsyncMock(side_effect=RuntimeError("handler failed"))
     redeliver = AsyncMock(side_effect=[ConnectionError("nak on a failing transport"), None, None])
     unsubscribe = AsyncMock()
-    consumer, fake = _stopping_pull_consumer(
+    async with _stopping_pull_consumer(
         leftovers=[b"a", b"b", b"c"], cb=cb, redeliver=redeliver, unsubscribe=unsubscribe
-    )
-
-    with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
-        await consumer.stop()
+    ) as (consumer, fake, inbox_sid):
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+            await consumer.stop()
 
     assert [call.args[0].data for call in cb.await_args_list] == [b"a", b"b", b"c"]
     assert redeliver.await_count == 3
     unsubscribe.assert_awaited_once()
-    assert "UNSUB 9" in fake.wire, "the server was told to drop the inbox before the leftovers were taken"
+    assert f"UNSUB {inbox_sid}" in fake.wire, "the server was told to drop the inbox before the leftovers were taken"
     assert any("neither handled nor redelivered" in r.getMessage() and "d" in r.getMessage() for r in caplog.records)
 
 
@@ -2150,12 +2184,11 @@ async def test_pull_stop_does_not_raise_when_the_final_unsubscribe_fails(caplog:
     from nats.errors import ConnectionClosedError
 
     unsubscribe = AsyncMock(side_effect=ConnectionClosedError())
-    consumer, _fake = _stopping_pull_consumer(
+    async with _stopping_pull_consumer(
         leftovers=[], cb=AsyncMock(), redeliver=AsyncMock(), unsubscribe=unsubscribe
-    )
-
-    with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
-        await consumer.stop()
+    ) as (consumer, _fake, _sid):
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+            await consumer.stop()
 
     unsubscribe.assert_awaited_once()
     assert any("final unsubscribe failed" in r.getMessage() and "durable=d" in r.getMessage() for r in caplog.records)
@@ -2170,11 +2203,10 @@ async def test_pull_stop_on_a_closed_connection_takes_the_plain_fallback_without
     closed.is_closed = True
     cb = AsyncMock()
     unsubscribe = AsyncMock(side_effect=ConnectionClosedError())
-    consumer, _fake = _stopping_pull_consumer(
+    async with _stopping_pull_consumer(
         leftovers=[b"never-released"], cb=cb, redeliver=AsyncMock(), unsubscribe=unsubscribe, connection=closed
-    )
-
-    await consumer.stop()
+    ) as (consumer, _fake, _sid):
+        await consumer.stop()
 
     unsubscribe.assert_awaited_once()
     cb.assert_not_awaited()
@@ -2184,13 +2216,12 @@ async def test_pull_stop_on_a_closed_connection_takes_the_plain_fallback_without
 async def test_pull_stop_is_idempotent() -> None:
     """a second stop() sends no second UNSUB and unsubscribes nothing again."""
     unsubscribe = AsyncMock()
-    consumer, fake = _stopping_pull_consumer(
+    async with _stopping_pull_consumer(
         leftovers=[], cb=AsyncMock(), redeliver=AsyncMock(), unsubscribe=unsubscribe
-    )
-
-    await consumer.stop()
-    wire_after_first = list(fake.wire)
-    await consumer.stop()
+    ) as (consumer, fake, _sid):
+        await consumer.stop()
+        wire_after_first = list(fake.wire)
+        await consumer.stop()
 
     unsubscribe.assert_awaited_once()
     assert fake.wire == wire_after_first
@@ -2333,6 +2364,7 @@ async def test_pull_run_survives_transport_error_and_retries(
     monkeypatch.setattr(client_module, "_PULL_CONSUMER_ERROR_BACKOFF_SECONDS", 0.0)
 
     calls = {"n": 0}
+    stopping: list[asyncio.Task[None]] = []
     psub = MagicMock()
     psub.unsubscribe = AsyncMock()
 
@@ -2340,7 +2372,11 @@ async def test_pull_run_survives_transport_error_and_retries(
         calls["n"] += 1
         if calls["n"] == 1:
             raise ConnectionClosedError()  # the reconnect-window transport error
-        consumer._stopped = True  # noqa: SLF001  # second cycle: end the loop cleanly
+        if not stopping:
+            # second cycle: a shutdown stops the consumer while this fetch is in flight, which is
+            # how the loop ends in production
+            stopping.append(asyncio.create_task(consumer.stop()))
+        await asyncio.sleep(0)
         return []
 
     psub.fetch = _fetch
@@ -2355,6 +2391,7 @@ async def test_pull_run_survives_transport_error_and_retries(
 
     # run() must return normally (not propagate the transport error) after retrying past it.
     await asyncio.wait_for(consumer.run(), timeout=5.0)
+    await stopping[0]
     assert calls["n"] >= 2  # it retried after the transport error rather than dying
 
 

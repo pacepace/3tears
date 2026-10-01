@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from threetears.nats._receipt import ReceiptBacklog  # noqa: SLF001 - module is private by design; this is its test
+from threetears.nats._receipt import ReceiptBacklog
 
 
 # parity-exempt: the backlog reads only ``.data`` off a nats-py Msg, so the stand-in carries only that

@@ -14,11 +14,17 @@ connection open), and the deadline the refused operation eventually blows.
 from __future__ import annotations
 
 import logging
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
 from nats import errors as nats_errors
+from nats.aio.client import Client as NatsPyClient
 
-from threetears.nats._diagnostics import (  # noqa: SLF001 - module is private by design; this is its test
+from threetears.nats import NatsClient
+
+from threetears.nats._diagnostics import (
     kv_grant_remedy,
     kv_timeout_remedy,
     permissions_violation_remedy,
@@ -195,44 +201,81 @@ class TestTheRemedyText:
 
 
 class TestTheClientErrorCallback:
-    """The remedy reaches the log, through the callback ``nats-py`` actually calls."""
+    """The remedy reaches the log, through the callback ``nats-py`` actually calls.
+
+    The callback is taken from the options :meth:`NatsClient.connect` hands nats-py, so these tests
+    drive the exact callable a live connection invokes. Each error carries text no other test uses:
+    the callback rate-limits per distinct error, and a repeat inside the window logs only at DEBUG.
+    """
 
     @pytest.mark.asyncio
-    async def test_a_permissions_violation_is_logged_as_a_remedy(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_a_permissions_violation_is_logged_as_a_remedy(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """The refusal that leaves the connection up gets the loud line.
 
+        :param monkeypatch: pytest's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
         :param caplog: pytest log capture
         :ptype caplog: pytest.LogCaptureFixture
         :return: nothing
         :rtype: None
         """
-        from threetears.nats import client as client_module
-
-        client_module._last_error_log.clear()  # noqa: SLF001 - module-level rate-limit state
-        exc = nats_errors.Error('nats: permissions violation for publish to "$kv.prod-epochs.k"')
+        error_cb = await _connection_error_callback(monkeypatch)
+        bucket = f"prod-epochs-{uuid.uuid4().hex[:8]}"
+        exc = nats_errors.Error(f'nats: permissions violation for publish to "$kv.{bucket}.k"')
 
         with caplog.at_level(logging.ERROR):
-            await client_module._on_error(exc)  # noqa: SLF001 - the callback under test
+            await error_cb(exc)
 
         assert any("PERMISSIONS VIOLATION" in record.getMessage() for record in caplog.records)
         assert any("js_resources" in record.getMessage() for record in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_an_ordinary_error_keeps_the_ordinary_line(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_an_ordinary_error_keeps_the_ordinary_line(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Nothing else acquires a remediation it does not have.
 
+        :param monkeypatch: pytest's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
         :param caplog: pytest log capture
         :ptype caplog: pytest.LogCaptureFixture
         :return: nothing
         :rtype: None
         """
-        from threetears.nats import client as client_module
-
-        client_module._last_error_log.clear()  # noqa: SLF001 - module-level rate-limit state
+        error_cb = await _connection_error_callback(monkeypatch)
 
         with caplog.at_level(logging.ERROR):
-            await client_module._on_error(nats_errors.StaleConnectionError())  # noqa: SLF001
+            await error_cb(nats_errors.Error(f"nats: stale connection {uuid.uuid4().hex}"))
 
         messages = [record.getMessage() for record in caplog.records]
         assert any("NATS error:" in message for message in messages)
         assert not any("PERMISSIONS VIOLATION" in message for message in messages)
+
+
+async def _connection_error_callback(monkeypatch: pytest.MonkeyPatch) -> Callable[[Exception], Awaitable[None]]:
+    """the ``error_cb`` :meth:`NatsClient.connect` hands nats-py, with no broker behind it.
+
+    nats-py's own ``Client.connect`` is replaced by one that records its options and connects
+    nothing, so the callback under test is the one a live connection would call.
+
+    :param monkeypatch: pytest's patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the connection's error callback
+    :rtype: Callable[[Exception], Awaitable[None]]
+    """
+    captured: dict[str, Any] = {}
+
+    async def _record_options(self: NatsPyClient, servers: list[str], **options: Any) -> None:
+        captured.update(options)
+
+    monkeypatch.setattr(NatsPyClient, "connect", _record_options)
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
+        client_name="diagnostics-test",
+        verify_jetstream=False,
+    )
+    error_cb: Callable[[Exception], Awaitable[None]] = captured["error_cb"]
+    return error_cb

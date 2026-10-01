@@ -329,6 +329,31 @@ packages/models/tests/unit/models/test_tracking_dimensions.py:TestUsageTrackerDi
 # rationale: paired with _TRACER_PROVIDER_SET_ONCE on the same line -- the flag and its ._done reset travel together.
 packages/models/tests/unit/models/test_tracking_dimensions.py:TestUsageTrackerDimensionSpanAttrs.setup_class#0:_done
 
+# rationale: nats-py Client._transport: the round trip writes the pending buffer and its PING to the socket in one synchronous step; nats-py's public flush writes the PING ahead of the buffer, so its PONG proves nothing about a SUB/UNSUB sent just before
+packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_transport
+# rationale: nats-py Client._flush_queue: wakes nats-py's own flusher after the synchronous write, for a transport that sends only when drained (websocket); there is no public wake
+packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_flush_queue
+# rationale: nats-py Client._pending: read to write the commands nats-py has buffered but not yet flushed, ahead of the PING, exactly as its own _flusher does; no public accessor
+packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_pending
+# rationale: nats-py Client._pending: cleared once written, as nats-py's _flusher clears it, so the flusher does not write the same commands twice; no public reset
+packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#1:_pending
+# rationale: nats-py Client._pending_data_size: zeroed with the buffer it counts, keeping nats-py's own pending-bytes accounting right; no public setter
+packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_pending_data_size
+# rationale: nats-py Client._pongs: the PONG future is queued in the same step as its PING so every PONG resolves its own PING; a timed-out public flush instead leaves a cancelled future that ends the read loop
+packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_pongs
+# rationale: nats-py Subscription._id: the sid the UNSUB names; nats-py exposes no public sid
+packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_id
+# rationale: nats-py Client._send_unsubscribe: drops a subscription's interest at the server while it stays registered here, so messages routed before the UNSUB are still delivered; public unsubscribe forgets the subscription first and drain races its PING ahead of the UNSUB
+packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_send_unsubscribe
+# rationale: nats-py PullSubscription._sub: the plain subscription a pull subscription's fetches arrive on; nats-py exposes no public handle to it, and a stopping pull consumer must take what is queued there
+packages/nats/src/threetears/nats/_nats_py_internals.py:pull_subscription_inbox#0:_sub
+# rationale: nats-py Subscription._pending_queue: a pull inbox has no callback and no public queue accessor; a stopping consumer takes the messages the server delivered to a fetch still live there instead of stranding them
+packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_queue
+# rationale: nats-py Subscription._pending_size: decremented per taken message, as nats-py's own readers do, so its slow-consumer byte accounting stays right; public pending_bytes is read-only
+packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_size
+# rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
+packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
+
 # rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
 packages/observe/src/threetears/observe/logging.py:_find_call_site#0:_getframe
 

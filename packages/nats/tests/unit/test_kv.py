@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,7 +21,6 @@ from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
 from threetears.nats import KvError, NatsKvBucket
 from threetears.nats.errors import PublishTimeoutError
-from threetears.nats.kv import _last_timeout_remedy_log  # noqa: SLF001 - module-level throttle state under test
 
 
 # parity-exempt: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
@@ -372,8 +372,11 @@ async def test_miss_does_not_trigger_reopen() -> None:
     bucket = _make_self_healing_bucket(kv, healed_kv)
 
     assert await bucket.get(key="absent") is None
-    # The handle was never swapped: a miss must not pay a re-open round trip.
-    assert bucket._kv is kv  # noqa: SLF001 - asserting no self-heal on a normal miss
+    # The handle was never swapped: a miss must not pay a re-open round trip, so the next
+    # operation still lands on the handle the bucket was opened with.
+    await bucket.put(key="after-the-miss", value=b"v")
+    assert "after-the-miss" in kv.store
+    assert healed_kv.store == {}
 
 
 @pytest.mark.asyncio
@@ -464,21 +467,19 @@ async def test_ttl_property() -> None:
     assert bucket.ttl == timedelta(seconds=60)
 
 
-@pytest.fixture(autouse=True)
-def _clear_timeout_remedy_throttle() -> Iterator[None]:
-    """Reset the per-bucket remedy throttle around every test in this module.
+def _unique_bucket(prefix: str) -> str:
+    """a bucket name no other test uses.
 
-    The throttle is module-level state with a 300s window, so without this the
-    FIRST test to wedge a given bucket logs the remedy and every later one is
-    silently suppressed. That failure is ordering-dependent, which is the kind
-    that shows up in CI and not locally.
+    The KV-timeout remedy is throttled per bucket name for 300s across the whole process, so a
+    test sharing a name with an earlier one would find its remedy already logged and suppressed.
+    That failure is ordering-dependent, which is the kind that shows up in CI and not locally.
 
-    :return: nothing
-    :rtype: Iterator[None]
+    :param prefix: readable stem the log assertions can match on
+    :ptype prefix: str
+    :return: ``prefix`` with a random suffix
+    :rtype: str
     """
-    _last_timeout_remedy_log.clear()
-    yield
-    _last_timeout_remedy_log.clear()
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
 class TestAKvOperationThatNeverAnswers:
@@ -500,20 +501,18 @@ class TestAKvOperationThatNeverAnswers:
         :return: nothing
         :rtype: None
         """
-        from threetears.nats.kv import _KV_OP_TIMEOUT_SECONDS  # noqa: SLF001
-
         kv = MagicMock()
 
         async def _never_answers(*_args: object, **_kwargs: object) -> None:
             await asyncio.sleep(3600)
 
         kv.put = _never_answers
-        bucket = NatsKvBucket(client=None, full_name="itest-b", kv=kv, ttl=None)  # type: ignore[arg-type]
+        bucket = NatsKvBucket(client=None, full_name=_unique_bucket("itest-b"), kv=kv, ttl=None)  # type: ignore[arg-type]
 
-        with patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
-            assert _KV_OP_TIMEOUT_SECONDS > 0  # the real bound is a real number, not a sentinel
-            with pytest.raises((PublishTimeoutError, KvError)):
-                await bucket.put(key="k", value=b"v")
+        # The shipped bound, unpatched: this is the one test proving the real deadline is a
+        # deadline rather than a sentinel that disables it. The outer wait is only a hang guard.
+        with pytest.raises((PublishTimeoutError, KvError)):
+            await asyncio.wait_for(bucket.put(key="k", value=b"v"), timeout=60.0)
 
     @pytest.mark.asyncio
     async def test_a_wedged_operation_is_not_retried_through_reopen(self) -> None:
@@ -537,7 +536,7 @@ class TestAKvOperationThatNeverAnswers:
             await asyncio.sleep(3600)
 
         kv.put = _never_answers
-        bucket = NatsKvBucket(client=None, full_name="itest-b", kv=kv, ttl=None)  # type: ignore[arg-type]
+        bucket = NatsKvBucket(client=None, full_name=_unique_bucket("itest-b"), kv=kv, ttl=None)  # type: ignore[arg-type]
 
         with patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
             with pytest.raises((PublishTimeoutError, KvError)):
@@ -566,14 +565,15 @@ class TestAKvOperationThatNeverAnswers:
             await asyncio.sleep(3600)
 
         kv.put = _never_answers
-        bucket = NatsKvBucket(client=None, full_name="prod-epochs", kv=kv, ttl=None)  # type: ignore[arg-type]
+        name = _unique_bucket("prod-epochs")
+        bucket = NatsKvBucket(client=None, full_name=name, kv=kv, ttl=None)  # type: ignore[arg-type]
 
         with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
             with pytest.raises((PublishTimeoutError, KvError)):
                 await bucket.put(key="k", value=b"v")
 
         messages = [record.getMessage() for record in caplog.records]
-        assert any("'prod-epochs'" in message and "js_resources" in message for message in messages), messages
+        assert any(f"'{name}'" in message and "js_resources" in message for message in messages), messages
 
     @pytest.mark.asyncio
     async def test_the_remedy_is_not_repeated_for_every_wedged_operation(
@@ -597,16 +597,15 @@ class TestAKvOperationThatNeverAnswers:
             await asyncio.sleep(3600)
 
         kv.put = _never_answers
-        bucket = NatsKvBucket(client=None, full_name="throttle-probe", kv=kv, ttl=None)  # type: ignore[arg-type]
+        name = _unique_bucket("throttle-probe")
+        bucket = NatsKvBucket(client=None, full_name=name, kv=kv, ttl=None)  # type: ignore[arg-type]
 
         with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
             for _ in range(3):
                 with pytest.raises((PublishTimeoutError, KvError)):
                     await bucket.put(key="k", value=b"v")
 
-        remedies = [
-            r for r in caplog.records if "throttle-probe" in r.getMessage() and "js_resources" in r.getMessage()
-        ]
+        remedies = [r for r in caplog.records if name in r.getMessage() and "js_resources" in r.getMessage()]
         assert len(remedies) == 1, f"remedy logged {len(remedies)} times across 3 wedged operations"
 
 
@@ -722,7 +721,8 @@ class TestTheRemedyIsNotSuppressedOnAFreshlyBootedMachine:
             await asyncio.sleep(3600)
 
         kv.put = _never_answers
-        bucket = NatsKvBucket(client=None, full_name="fresh-boot", kv=kv, ttl=None)  # type: ignore[arg-type]
+        name = _unique_bucket("fresh-boot")
+        bucket = NatsKvBucket(client=None, full_name=name, kv=kv, ttl=None)  # type: ignore[arg-type]
 
         with (
             caplog.at_level(logging.ERROR),
@@ -734,7 +734,7 @@ class TestTheRemedyIsNotSuppressedOnAFreshlyBootedMachine:
             with pytest.raises((PublishTimeoutError, KvError)):
                 await bucket.put(key="k", value=b"v")
 
-        assert any("'fresh-boot'" in r.getMessage() and "js_resources" in r.getMessage() for r in caplog.records), (
+        assert any(f"'{name}'" in r.getMessage() and "js_resources" in r.getMessage() for r in caplog.records), (
             "the first remedy was suppressed because the machine had not been up long enough"
         )
 

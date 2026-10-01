@@ -20,6 +20,7 @@ skips cleanly.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -117,11 +118,31 @@ async def test_declaring_flips_allow_direct_on_a_live_bucket(nats_container: str
         assert (await js.stream_info("KV_fliptest-coll")).config.allow_direct is True
         # js.key_value() still binds after the reconcile, and the data survived.
         rebound = await js.key_value("fliptest-coll")
+        # And both handles read over the DIRECT path, which is the only form a key-scoped
+        # $KV grant can constrain. Observed on the wire: a direct read is a request on the
+        # stream's DIRECT.GET subject, which a plain subscription in the account also receives.
+        direct_reads: list[str] = []
+
+        async def _record(msg: Any) -> None:
+            direct_reads.append(msg.subject)
+
+        spies = [
+            await nc.raw.subscribe("$JS.API.DIRECT.GET.KV_fliptest-coll", cb=_record),
+            await nc.raw.subscribe("$JS.API.DIRECT.GET.KV_fliptest-coll.>", cb=_record),
+        ]
+        await nc.raw.flush()
         assert (await rebound.get("before")).value == b"1"
-        # And the handle the wrapper hands back reads over the DIRECT path, which
-        # is the only form a key-scoped $KV grant can constrain.
-        assert rebound._direct is True  # noqa: SLF001 - nats-py's own read-path switch
+        await nc.raw.flush()
+        await asyncio.sleep(0.2)
+        assert direct_reads, "nats-py's handle read over the body-carried STREAM.MSG.GET form, not DIRECT.GET"
+
+        direct_reads.clear()
         assert await bucket.get(key="before") == b"1"
+        await nc.raw.flush()
+        await asyncio.sleep(0.2)
+        assert direct_reads, "the wrapper's bucket read over the body-carried STREAM.MSG.GET form, not DIRECT.GET"
+        for spy in spies:
+            await spy.unsubscribe()
 
 
 async def test_ensure_kv_bucket_shares_the_client_bucket_cache(nats_container: str) -> None:
