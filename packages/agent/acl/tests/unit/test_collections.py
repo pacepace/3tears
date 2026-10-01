@@ -621,10 +621,10 @@ class TestEnsureGroupRoleAssignment:
 
     @pytest.mark.asyncio
     async def test_inserts_new_when_absent(self) -> None:
-        """missing row triggers INSERT and returns fresh uuid7."""
+        """missing row triggers INSERT and returns the id it inserted."""
         pool = AsyncMock()
         pool.fetchrow.return_value = None
-        pool.execute.return_value = "INSERT 0 1"
+        pool.fetchval.side_effect = lambda sql, *args: args[1]
         coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
         assignment_id, created = await coll.ensure_group_role_assignment(
             group_id=uuid7(),
@@ -634,7 +634,45 @@ class TestEnsureGroupRoleAssignment:
         )
         assert isinstance(assignment_id, UUID)
         assert created is True
-        pool.execute.assert_awaited_once()
+        insert_sql = pool.fetchval.await_args_list[0].args[0]
+        assert "ON CONFLICT DO NOTHING" in insert_sql
+        assert pool.fetchval.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_lost_race_answers_the_row_that_won(self) -> None:
+        """the insert absorbed by the natural-key index: the winner is read back, created=False."""
+        winner = uuid7()
+        pool = AsyncMock()
+        pool.fetchrow.return_value = None
+        pool.fetchval.side_effect = [None, winner]
+        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        group_id, role_id, scope_id = uuid7(), uuid7(), uuid7()
+        assignment_id, created = await coll.ensure_group_role_assignment(
+            group_id=group_id,
+            role_id=role_id,
+            scope_type="namespace",
+            scope_id=scope_id,
+            managed_by="bootstrap",
+        )
+        assert (assignment_id, created) == (winner, False)
+        reread = pool.fetchval.await_args_list[1]
+        assert reread.args[1:] == (group_id, role_id, "namespace", scope_id, "bootstrap")
+        assert "row_scope" not in reread.args[0]
+
+    @pytest.mark.asyncio
+    async def test_an_absorbed_insert_with_no_winner_is_not_reported_as_found(self) -> None:
+        """a conflict on something other than the grant is raised, never answered as the grant."""
+        pool = AsyncMock()
+        pool.fetchrow.return_value = None
+        pool.fetchval.side_effect = [None, None]
+        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        with pytest.raises(RuntimeError, match="no row holds that grant"):
+            await coll.ensure_group_role_assignment(
+                group_id=uuid7(),
+                role_id=uuid7(),
+                scope_type="namespace",
+                scope_id=uuid7(),
+            )
 
     @pytest.mark.asyncio
     async def test_rejects_unsupported_scope_type(self) -> None:

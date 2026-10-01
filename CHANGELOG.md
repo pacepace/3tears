@@ -19,6 +19,20 @@ packages (bumped in lock-step).
   `python -m threetears.agent.tools.serve` passes the installed `3tears-agent-tools` version.
   Subclasses pass their own distribution's version.
 
+### A grant ensured by racing callers is held once
+
+- `RoleAssignmentCollection.ensure_group_role_assignment` inserts with `ON CONFLICT DO NOTHING`.
+  When the deploying application's unique index over the natural key absorbs the insert, it reads
+  back the row that won and answers `(id, created=False)`. It looks in both partitions, because a
+  grant can be filed under either. The aibots hub's v121 declares those indexes:
+  `(group_id, role_id, scope_namespace_id, managed_by)` for namespace scope and
+  `(group_id, role_id, managed_by)` for scope `all`.
+- The docstring called the race between the lookup and the insert theoretical. It was not: hub
+  replicas run the ensure together and left grants held twice.
+- **Without such an index the race still writes copies.** This package declares no table.
+- An absorbed insert with no row holding the grant raises `RuntimeError`. It is never answered
+  as found.
+
 ### Long logins, an instant kick, and a lossless move off a restarting server
 
 Owner ruling Q17 (2026-09-30). nats-server takes a credential away from a live connection only at
