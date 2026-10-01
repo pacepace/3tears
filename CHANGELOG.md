@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A junk-named tool call reaches no consumer of a chat model, streamed or not
+
+The provider wrappers (OpenAI, OpenRouter, Anthropic) dropped a junk-named tool call (a name the
+canonical regex rejects, like the 2026-05-19 `memory_recall" name="memory_recall`) only from each
+chunk's `invalid_tool_calls`. A streamed call's name also rides `tool_call_chunks`, so adding the
+chunks up brought it back; Anthropic names a call in one event and sends its arguments in later
+ones, so the named chunk parsed as a valid `tool_calls` entry no filter looked at; and a finished
+answer with well-formed arguments carried it in `tool_calls` and, from Anthropic, as a `tool_use`
+content block. Only a finished `ainvoke` with malformed arguments was protected.
+
+- **Streams are filtered per call, inside the model run.** The wrappers' `_astream` and `_stream`
+  release, hold or drop each fragment by its call's name, so `astream`, `stream`,
+  `astream_events`, a streaming `ainvoke`'s callbacks, LangGraph's messages stream and the
+  `on_chat_model_end` aggregate all see the same clean chunks. A call named on its first fragment
+  -- every wired provider does this -- streams with no delay; a fragment that arrives before its
+  name is held until the name does, and text never waits for it. A junk call's content blocks go
+  with it.
+- **Finished answers drop the call from `tool_calls`, `invalid_tool_calls` and the content
+  blocks**, not only from `invalid_tool_calls`.
+- `drop_junk_invalid_tool_calls` (in the private `providers._name_translation_mixin`) is gone;
+  `providers._junk_tool_calls` holds the filter. Nothing outside the package used it.
+
 ### An SLF001 suppression outside a recorded src module fails the build
 
 A leading underscore is a stability contract in `src/` and `tests/` alike (owner ruling,
