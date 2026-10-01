@@ -127,6 +127,9 @@ packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
 packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_datastore_create_table_threads_registry_l2#0:_nats_client
 
+# rationale: redshift_connector (verified 2.1.7) keeps a connection's socket on Connection._usock and has no public accessor for it; the Redshift driver must set the TCP keepalive idle/interval/count knobs connect() does not accept, and lift the login timeout connect(timeout=) leaves on the socket, which would otherwise fail every statement longer than the login bound. this module is the one owner of the access; packages/datasources/tests/unit/test_redshift_connector_internals.py pins that Connection.__init__ still assigns it.
+packages/datasources/src/threetears/datasources/drivers/_redshift_connector_internals.py:connection_socket#0:_usock
+
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
 packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_emits_on_chat_model_stream#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).

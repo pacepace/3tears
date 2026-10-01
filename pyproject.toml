@@ -344,6 +344,11 @@ ignore = ["N818", "N811"]
 # (callbacks, validation); calling delegate.arun/run would double-fire
 # that chain. paired entries in tests/enforcement/_underscore_exemptions.txt.
 "packages/models/src/threetears/models/tool_name_translation.py" = ["SLF001"]
+# redshift_connector keeps a connection's socket on the private ``Connection._usock`` and offers
+# no public accessor; the Redshift driver needs it to set the keepalive knobs ``connect()`` does
+# not accept and to lift the login timeout ``connect()`` leaves on the socket. this module is the
+# one owner of that access. paired entry in tests/enforcement/_underscore_exemptions.txt.
+"packages/datasources/src/threetears/datasources/drivers/_redshift_connector_internals.py" = ["SLF001"]
 # OpenRouter name-translation tests exercise the LangChain BaseTool proxy
 # and the ChatOpenRouter subclass: ``_arun`` / ``_astream`` are the
 # LangChain-internal entry points the production translation layer
