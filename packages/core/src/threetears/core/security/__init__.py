@@ -15,7 +15,8 @@ public surface:
   :class:`IdentityKeyNotFoundError` (the recoverable kid-not-in-cache signal a verifier reacts to
   with a reactive JWKS refresh) /
   :func:`sign_identity_token` / :func:`verify_identity_token` / :func:`build_jwks` /
-  :func:`generate_signing_keypair` — Hub-issued EdDSA-signed JWS asserting a VERIFIED caller
+  :func:`generate_signing_keypair` / :data:`IDENTITY_REFUSED` (the one code every door answers a
+  forwarded identity that does not verify) — Hub-issued EdDSA-signed JWS asserting a VERIFIED caller
   identity, verified against the Hub JWKS before RBAC (platform-auth Option B).
   :class:`~threetears.core.security.jwks_provider.CachedHubJwksProvider` fetches + caches that
   JWKS over NATS so a verifier's ``jwks_provider()`` returns it with no hot-path IO.
@@ -28,6 +29,8 @@ from threetears.core.security.identity_minter import (
     static_token_provider,
 )
 from threetears.core.security.identity_token import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
     PLATFORM_CUSTOMER_SENTINEL,
     IdentityClaims,
     IdentityKeyNotFoundError,
@@ -83,6 +86,8 @@ __all__ = [
     "seal",
     # identity tokens
     "DEFAULT_IDENTITY_TTL_SECONDS",
+    "IDENTITY_REFUSED",
+    "IDENTITY_REFUSED_MESSAGE",
     "PLATFORM_CUSTOMER_SENTINEL",
     "CachedHubJwksProvider",
     "IdentityClaims",

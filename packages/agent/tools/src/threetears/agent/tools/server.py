@@ -2702,8 +2702,8 @@ class ToolServer:
         # attribution and breaking the per-user ToolContextManager. verify it against the SAME
         # issuer/JWKS and BIND it to the handshake token (``sub`` + ``customer_id`` MUST match) so a
         # user-assertion minted for agent A (customer X) cannot be replayed under agent B (or
-        # customer Y). on ANY failure the call is rejected fail-closed (mirroring the proxy's
-        # TOOL_USER_IDENTITY_UNVERIFIED). an empty string is treated as ABSENT (the user_id stays
+        # customer Y). on ANY failure the call is rejected fail-closed (the proxy refuses the
+        # same failure IDENTITY_REFUSED). an empty string is treated as ABSENT (the user_id stays
         # the handshake token's) -- a caller that builds the envelope without a user-assertion must
         # never trip a fail-closed deny on the empty value.
         user_assertion = context.user_identity_token

@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### The registry answers a forwarded identity that does not verify `IDENTITY_REFUSED`
+
+The tool-call door answered the condition every hub door answers `IDENTITY_REFUSED` with two codes
+of its own: `TOOL_IDENTITY_UNVERIFIED` when the handshake token did not verify, and
+`TOOL_USER_IDENTITY_UNVERIFIED` when the per-turn user assertion did not verify or bind (or rode on
+a tool pod's token). Its message named the exception that failed. One condition answers one code.
+
+- **Breaking: `CallProxy` answers `IDENTITY_REFUSED`, message `forwarded identity could not be
+  verified`, for every identity-check failure.** `TOOL_IDENTITY_UNVERIFIED` and
+  `TOOL_USER_IDENTITY_UNVERIFIED` are no longer sent. A caller branching on either branches on
+  `IDENTITY_REFUSED`. The registry's WARNING log still names which check refused and why, beside
+  the correlation id; the caller learns only that it was refused. Nothing retries it.
+- **`TOOL_POP_UNVERIFIED` is unchanged, on purpose.** It answers a different condition: the token
+  verified, and the caller did not prove it holds the key the token is bound to (absent or invalid
+  proof, a spliced body, a replayed nonce). The hub doors verify no proof of possession, so they
+  have no code for it to join.
+- **`threetears.core.security.IDENTITY_REFUSED` and `IDENTITY_REFUSED_MESSAGE`** (new): the code and
+  message, spelled once. The registry answers with them and the hub's identity-refusal owner
+  imports them.
+
 ### An SLF001 suppression outside a recorded src module fails the build
 
 A leading underscore is a stability contract in `src/` and `tests/` alike (owner ruling,

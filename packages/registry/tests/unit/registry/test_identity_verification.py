@@ -5,7 +5,8 @@ The contract this pins (exercised end-to-end through the public dispatch surface
 
 - verification is UNCONDITIONAL and fail-closed -- there is no off/warn ladder. a call the proxy
   cannot authenticate (absent/invalid/expired/wrong-issuer token, unverifiable pop, replayed nonce)
-  is rejected with ``TOOL_IDENTITY_UNVERIFIED`` / ``TOOL_POP_UNVERIFIED`` and never forwarded;
+  is rejected with ``IDENTITY_REFUSED`` (the token or the user assertion did not verify) or
+  ``TOOL_POP_UNVERIFIED`` (the caller did not prove it holds the token's key) and never forwarded;
 - on a VALID token the verified ``agent_id``/``user_id``/``customer_id`` OVERWRITE whatever the
   envelope claimed -- so a lying envelope cannot impersonate another agent or inject a user_id; the
   verified identity is what reaches BOTH the authorizer and the tool pod;
@@ -34,6 +35,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.core.security.identity_token import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
     PLATFORM_CUSTOMER_SENTINEL,
     IdentityClaims,
     build_jwks,
@@ -291,7 +294,7 @@ class TestDispatchIdentityEnforcement:
         nc.request_raw.assert_not_called()
         reply = self._reply(nc)
         assert reply.success is False
-        assert reply.error_code == "TOOL_IDENTITY_UNVERIFIED"
+        assert reply.error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_forwards_verified_identity_to_pod_over_a_lie(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -394,7 +397,7 @@ class TestDispatchIdentityEnforcement:
             req = _request(agent_id=uuid7(), token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None))
         nc = await self._drive(provider, req)
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_forwards_within_leeway(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -436,7 +439,7 @@ class TestDispatchIdentityEnforcement:
         token = sign_identity_token(claims, signing_key=priv, kid=_KID)
         nc = await self._drive(lambda: jwks, _request(agent_id=uuid7(), token=token))
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
 
 class TestDispatchToolPodPrincipal:
@@ -566,7 +569,7 @@ class TestDispatchToolPodPrincipal:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_a_pod_presenting_a_user_assertion_is_refused(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -595,7 +598,7 @@ class TestDispatchToolPodPrincipal:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
 
 # ---------------------------------------------------------------------------
@@ -772,7 +775,7 @@ class TestDispatchUserAssertion:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_customer_mismatch_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -791,7 +794,7 @@ class TestDispatchUserAssertion:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_expired_user_assertion_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -809,7 +812,7 @@ class TestDispatchUserAssertion:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_invalid_user_assertion_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -828,7 +831,7 @@ class TestDispatchUserAssertion:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_null_user_id_user_assertion_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -850,7 +853,7 @@ class TestDispatchUserAssertion:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_user_assertion_for_same_conversation_is_accepted(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -902,7 +905,7 @@ class TestDispatchUserAssertion:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_user_assertion_with_no_conversation_id_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -923,7 +926,7 @@ class TestDispatchUserAssertion:
             ),
         )
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_pop_still_verifies_against_handshake_token_with_user_assertion(
@@ -1113,7 +1116,7 @@ class TestDispatchReactiveJwksRefresh:
         )
         assert provider.refresh_calls == 0  # NO reactive refresh on an expired token
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_invalid_signature_does_not_trigger_refresh(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -1126,7 +1129,7 @@ class TestDispatchReactiveJwksRefresh:
         nc = await self._drive(provider, _request(agent_id=uuid7(), token=forged))
         assert provider.refresh_calls == 0  # bad signature against a PRESENT key is not refreshable
         nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
     @pytest.mark.asyncio
     async def test_kid_miss_unresolved_refreshes_once_then_rejects(self, hub: tuple[Any, dict[str, Any]]) -> None:
@@ -1141,7 +1144,7 @@ class TestDispatchReactiveJwksRefresh:
         )
         assert provider.refresh_calls == 1  # tried exactly once
         nc.request_raw.assert_not_called()  # still rejected (the key truly is not at the Hub)
-        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+        assert self._reply(nc).error_code == IDENTITY_REFUSED
 
 
 class TestVerificationObservability:
@@ -1485,3 +1488,107 @@ class TestAHostFailureIsAnsweredNotTimedOut:
 
         nc.request_raw.assert_called_once()
         assert self._reply(nc).error_code == "TOOL_RESPONSE_MALFORMED"
+
+
+class TestOneAnswerForEveryUnverifiedIdentity:
+    """a forwarded identity that does not verify answers what every hub door answers.
+
+    The proxy used to answer ``TOOL_IDENTITY_UNVERIFIED`` for the handshake token and
+    ``TOOL_USER_IDENTITY_UNVERIFIED`` for the user assertion, with a message naming the exception
+    type that failed, while every hub door answered the same condition ``IDENTITY_REFUSED`` with
+    one undiscriminating message. One condition answers one code: whichever check refused, the
+    caller reads the same code and the same message, and the reason stays in the registry's log.
+    """
+
+    async def _reply_for(self, jwks: dict[str, Any], req: ProxyCallRequest) -> tuple[AsyncMock, ProxyCallResponse]:
+        proxy = CallProxy(
+            await _catalog(),
+            AllowAllAuthorizer(),
+            FakeReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
+            namespace="test",
+            jwks_provider=lambda: jwks,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_tool_reply())
+        await proxy.start(nc)
+        await proxy.handle_call(
+            IncomingMessage(
+                data=req.model_dump_json().encode("utf-8"),
+                reply_subject="reply.subject",
+                subject="test.tools.call",
+            )
+        )
+        await asyncio.sleep(0)
+        reply: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
+        return nc, reply
+
+    def test_the_code_is_the_platform_wide_spelling(self) -> None:
+        """the wire value every hub door answers; the hub imports this constant rather than re-spelling it."""
+        assert IDENTITY_REFUSED == "IDENTITY_REFUSED"
+        assert IDENTITY_REFUSED_MESSAGE == "forwarded identity could not be verified"
+
+    @pytest.mark.asyncio
+    async def test_every_failed_identity_check_answers_the_same_code_and_message(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        """an absent token, an expired token, an unbound assertion and an assertion on a tool pod.
+
+        Four different checks, one answer. A caller that could tell them apart would learn which
+        check its credential failed, which is exactly what the message must not disclose.
+        """
+        priv, jwks = hub
+        agent, cust, conv, pod_id = uuid7(), uuid7(), uuid7(), uuid7()
+        requests = [
+            _request(agent_id=uuid7(), token=None),
+            _authed_request(
+                priv, token_sub=agent, token_customer=cust, token_user=None, envelope_agent=agent, exp_delta=-600
+            ),
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=agent,
+                user_assertion=_user_assertion(priv, sub=uuid7(), customer_id=cust, user_id=uuid7()),
+            ),
+            _authed_request(
+                priv,
+                token_sub=pod_id,
+                token_customer=PLATFORM_CUSTOMER_SENTINEL,
+                token_user=None,
+                envelope_agent=pod_id,
+                conversation_id=conv,
+                user_assertion=_user_assertion(
+                    priv, sub=pod_id, customer_id=PLATFORM_CUSTOMER_SENTINEL, user_id=uuid7(), conversation_id=conv
+                ),
+            ),
+        ]
+        answers = []
+        for req in requests:
+            nc, reply = await self._reply_for(jwks, req)
+            nc.request_raw.assert_not_called()
+            assert reply.success is False
+            answers.append((reply.error_code, reply.error))
+        assert answers == [(IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE)] * len(requests)
+
+    @pytest.mark.asyncio
+    async def test_the_reason_stays_in_the_registry_log(
+        self, hub: tuple[Any, dict[str, Any]], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the caller learns nothing about which check refused; the operator reading the log does."""
+        priv, jwks = hub
+        agent, cust = uuid7(), uuid7()
+        req = _authed_request(
+            priv,
+            token_sub=agent,
+            token_customer=cust,
+            token_user=None,
+            envelope_agent=agent,
+            user_assertion=_user_assertion(priv, sub=uuid7(), customer_id=cust, user_id=uuid7()),
+        )
+        with caplog.at_level(logging.WARNING, logger="threetears.registry.proxy"):
+            _nc, reply = await self._reply_for(jwks, req)
+        assert "sub/customer mismatch" not in (reply.error or "")
+        details = [getattr(record, "extra_data", {}).get("detail", "") for record in caplog.records]
+        assert any("sub/customer mismatch" in detail for detail in details)

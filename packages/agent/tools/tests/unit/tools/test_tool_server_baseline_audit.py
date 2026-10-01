@@ -606,7 +606,7 @@ async def test_absent_user_assertion_leaves_actor_none_and_no_context_manager() 
 async def test_user_assertion_failclosed_denies(flavor: str) -> None:
     """a mis-bound / expired / invalid / user-less user-assertion is denied fail-closed (no dispatch).
 
-    mirrors the proxy's TOOL_USER_IDENTITY_UNVERIFIED: the pod rejects the call before the tool runs,
+    mirrors the proxy's IDENTITY_REFUSED: the pod rejects the call before the tool runs,
     so the reply is an error and the baseline audit records a ``user-assertion verification failed``
     failure rather than a successful tool.call.
     """

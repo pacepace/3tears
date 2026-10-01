@@ -35,6 +35,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
 __all__ = [
+    "IDENTITY_REFUSED",
+    "IDENTITY_REFUSED_MESSAGE",
     "PLATFORM_CUSTOMER_SENTINEL",
     "IdentityClaims",
     "IdentityKeyNotFoundError",
@@ -93,6 +95,23 @@ _REQUIRED_CLAIMS = ("iss", "sub", "customer_id", "sid", "pod_id", "iat", "exp")
 #: carrying their own copy, because a second spelling is a discriminator that silently stops
 #: discriminating.
 PLATFORM_CUSTOMER_SENTINEL = "aibots-platform"
+
+#: the code every door that verifies a forwarded identity token answers when it does not verify.
+#:
+#: One condition, one code, across the platform: the registry's tool-call door and every hub
+#: NATS door (L3, datasource, memory, objects, engagements, approvals, anonymize, secrets) answer
+#: it, so a caller branches the same way whichever door refused it. It covers a token that does
+#: not verify (absent, expired, another hub's key, a malformed claim) and a user assertion that
+#: does not verify or does not bind. It does NOT cover a proof of possession that fails: the
+#: token verified, and the caller did not prove it holds the key the token is bound to, which
+#: the registry answers ``TOOL_POP_UNVERIFIED``. Nothing retries it except the one recovery a
+#: door documents for itself; the same token meets the same refusal. Spelled ONCE here; the hub
+#: imports it rather than carrying its own copy.
+IDENTITY_REFUSED = "IDENTITY_REFUSED"
+
+#: the one message :data:`IDENTITY_REFUSED` carries. Deliberately undiscriminating: a caller
+#: learns that it was refused, never which check refused it. The refusing door logs the reason.
+IDENTITY_REFUSED_MESSAGE = "forwarded identity could not be verified"
 
 
 @dataclass(frozen=True, slots=True)

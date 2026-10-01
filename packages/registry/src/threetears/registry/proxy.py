@@ -26,6 +26,8 @@ from pydantic import (
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.core.security.identity_token import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
     IdentityClaims,
     IdentityKeyNotFoundError,
     IdentityTokenError,
@@ -627,7 +629,7 @@ class CallProxy:
 
         verification is UNCONDITIONAL and fail-closed (caller guarantees ``request.context`` and
         ``context.agent_id`` present): verify; on success return the re-stamped request; on ANY
-        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>, None)`` so the dispatcher
+        failure return ``(request, <IDENTITY_REFUSED response>, None)`` so the dispatcher
         rejects the call without forwarding. there is no off/warn passthrough -- a call the proxy
         cannot authenticate never reaches the tool pod on the self-asserted envelope.
 
@@ -662,7 +664,7 @@ class CallProxy:
                 raise IdentityTokenError("no JWKS provider configured for identity verification")
             claims = await self._verify_token_reactively(token, refreshed=refreshed)
             # the VERIFIED handshake identity. these UUID conversions live INSIDE the try so a
-            # malformed-but-signed non-UUID claim fails closed (TOOL_IDENTITY_UNVERIFIED) rather
+            # malformed-but-signed non-UUID claim fails closed (IDENTITY_REFUSED) rather
             # than escaping as an uncaught ValueError. user_id DEFAULTS to the handshake token's:
             # ``None`` for an agent handshake token (one per pod; it CANNOT carry the per-turn
             # user), the system principal for a hub-originated call. the bound user-assertion below
@@ -690,14 +692,7 @@ class CallProxy:
                 }
             }
             log.warning("identity verification failed; rejecting call", extra=extra)
-            response = ProxyCallResponse(
-                success=False,
-                content="",
-                error=f"identity verification failed ({reason})",
-                error_code="TOOL_IDENTITY_UNVERIFIED",
-                context=context,
-            )
-            return request, response, None
+            return request, _identity_refused(context), None
 
         if principal.is_tool_pod:
             # the decision tier: a signed claim was read as "platform principal, no customer",
@@ -728,17 +723,7 @@ class CallProxy:
                         }
                     },
                 )
-                return (
-                    request,
-                    ProxyCallResponse(
-                        success=False,
-                        content="",
-                        error="user-assertion verification failed (IdentityTokenError)",
-                        error_code="TOOL_USER_IDENTITY_UNVERIFIED",
-                        context=context,
-                    ),
-                    None,
-                )
+                return request, _identity_refused(context), None
 
         # the verified user identity DEFAULTS to the handshake token's user_id: ``None`` for an
         # agent handshake token (one per pod; it CANNOT carry the per-turn user), the system
@@ -808,14 +793,7 @@ class CallProxy:
                     }
                 }
                 log.warning("user-assertion verification failed; rejecting call", extra=extra)
-                response = ProxyCallResponse(
-                    success=False,
-                    content="",
-                    error=f"user-assertion verification failed ({reason})",
-                    error_code="TOOL_USER_IDENTITY_UNVERIFIED",
-                    context=context,
-                )
-                return request, response, None
+                return request, _identity_refused(context), None
 
         verified_context = context.model_copy(
             update={
@@ -1873,6 +1851,31 @@ class CallProxy:
                 user_id=str(context.user_id) if context.user_id is not None else None,
             )
         return result
+
+
+def _identity_refused(context: CallContext) -> ProxyCallResponse:
+    """the one answer to a forwarded identity that does not verify.
+
+    every hub door answers this condition :data:`~threetears.core.security.IDENTITY_REFUSED`
+    with one undiscriminating message, and the registry's tool-call door answers it the same
+    way: a caller learns that it was refused, never which check refused it. which check it was
+    -- an absent, expired or foreign token, a malformed claim, an unverified or unbound user
+    assertion, an assertion on a tool pod's token -- is logged by the caller of this function,
+    beside the correlation id. a proof of possession that fails is a different condition and
+    answers ``TOOL_POP_UNVERIFIED``.
+
+    :param context: the call's context, echoed on the reply as every proxy reply echoes it
+    :ptype context: CallContext
+    :return: the refusal to publish
+    :rtype: ProxyCallResponse
+    """
+    return ProxyCallResponse(
+        success=False,
+        content="",
+        error=IDENTITY_REFUSED_MESSAGE,
+        error_code=IDENTITY_REFUSED,
+        context=context,
+    )
 
 
 def _correlation_id_str(request: ProxyCallRequest) -> str:
