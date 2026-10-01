@@ -25,8 +25,17 @@ from threetears.agent.tools.engagement_resolver import (
     ResolveEngagementScopeError,
     ScopeTarget,
 )
-from threetears.agent.tools.server import CallRequest, ToolServer
+from threetears.core.testing.replay_guard import FakeReplayGuard
 
+from packages.agent.tools.tests.unit.tools._pod_auth import (
+    ScopeRecordingTool,
+    deliver_call,
+    jwks_provider,
+    recording_tool_server,
+    signed_call_payload,
+)
+
+_POD_ID = "engagement-pod"
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _OTHER_CUSTOMER = UUID("06a41d51-a6d5-7824-8000-2222aaaa2222")
 _ENGAGEMENT = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")
@@ -170,15 +179,18 @@ async def test_refuses_empty_scope() -> None:
 async def test_tool_server_wires_injected_engagement_resolver_into_scope() -> None:
     """An injected engagement resolver flows onto every per-call scope (like the store)."""
     resolver = _FakeResolver(scope=None)
-    server = ToolServer(
-        nats_url="nats://localhost:4222",
-        engagement_resolver=resolver,  # type: ignore[arg-type]
+    server, rec = recording_tool_server(
+        pod_id=_POD_ID,
+        jwks_provider=jwks_provider,
+        assertion_replay_guard=FakeReplayGuard(),
+        engagement_resolver=resolver,
     )
-    request = CallRequest(
-        tool_name="t",
-        tool_version="1.0.0",
-        arguments={},
-        context=CallContext(customer_id=_CUSTOMER, engagement_id=_ENGAGEMENT),
-    )
-    scope = await server._build_call_scope(request, principal_is_tool_pod=False)  # noqa: SLF001 -- wiring seam: server propagates its resolver to the per-call scope
+    tool = ScopeRecordingTool()
+    server.register(tool)
+    payload = signed_call_payload(pod_id=_POD_ID, customer_id=_CUSTOMER)
+    payload["context"]["engagement_id"] = str(_ENGAGEMENT)
+    await deliver_call(server, payload, pod_id=_POD_ID)
+    assert rec.last_reply[1].success is True, rec.last_reply[1].error
+    (scope,) = tool.scopes
+    assert scope is not None
     assert scope.engagement_resolver is resolver

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid7
@@ -109,15 +110,17 @@ def _refusal(name: str = "threetears.calculator", code: str = "NOT_PLATFORM_SHAR
     return RefusedTool(name=name, version="1.0", code=code, reason="only the platform serves this to everyone")
 
 
-def _server(*names: str) -> ToolServer:
-    """a server holding the named tools, with no live connection.
+def _server(nc: AsyncMock, *names: str) -> ToolServer:
+    """a server holding the named tools, attached to the NATS double ``nc`` and not serving.
 
+    :param nc: the NATS double the server is constructed over
+    :ptype nc: AsyncMock
     :param names: tool names; one calculator when omitted
     :ptype names: str
     :return: the server
     :rtype: ToolServer
     """
-    server = ToolServer(agent_id=uuid7(), nats_url="nats://test:4222", pod_id=_POD)
+    server = ToolServer(agent_id=uuid7(), nats_client=nc, pod_id=_POD)
     for name in names or ("threetears.calculator",):
         server.register(_Tool(name))
     return server
@@ -145,8 +148,7 @@ class TestTheReplyNamesTheRefusals:
         :return: none
         :rtype: None
         """
-        server = _server("threetears.calculator", "threetears.dictionary")
-        server._nc = _replying(  # noqa: SLF001
+        nc = _replying(
             RegistrationResponse(
                 success=False,
                 pod_id=_POD,
@@ -155,6 +157,7 @@ class TestTheReplyNamesTheRefusals:
                 error_code="NO_TOOLS_ADMITTED",
             )
         )
+        server = _server(nc, "threetears.calculator", "threetears.dictionary")
         with caplog.at_level(logging.ERROR, logger="threetears.agent.tools.server"):
             await server.publish_registration(await_reply=True)
 
@@ -171,11 +174,11 @@ class TestTheReplyNamesTheRefusals:
         :return: none
         :rtype: None
         """
-        server = _server()
-        server._nc = _replying(  # noqa: SLF001
+        nc = _replying(
             RegistrationResponse(success=True, pod_id=_POD, refused_tools=[_refusal("threetears.other")]),
             RegistrationResponse(success=True, pod_id=_POD, registered_tools=["threetears.calculator@1.0"]),
         )
+        server = _server(nc)
         await server.publish_registration(await_reply=True)
         assert len(server.refused_tools) == 1
         await server.publish_registration(await_reply=True)
@@ -187,9 +190,8 @@ class TestTheReplyNamesTheRefusals:
         :return: none
         :rtype: None
         """
-        server = _server()
         nc = AsyncMock()
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         await server.publish_registration()
         nc.request.assert_not_awaited()
         assert server.refused_tools == ()
@@ -204,9 +206,8 @@ class TestReadinessIsThisPodsOwnCopy:
         :return: none
         :rtype: None
         """
-        server = _server()
         nc = _replying(RegistrationResponse(success=False, pod_id=_POD, refused_tools=[_refusal()]))
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         await server.publish_registration(await_reply=True)
         nc.request.reset_mock()
 
@@ -223,7 +224,6 @@ class TestReadinessIsThisPodsOwnCopy:
         :return: none
         :rtype: None
         """
-        server = _server()
         absent = DiscoveryProbeResponse(
             agent_id=_POD,
             tools=[
@@ -234,7 +234,7 @@ class TestReadinessIsThisPodsOwnCopy:
         )
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=absent)
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         assert await server.wait_until_ready(timeout=0.3) is False
 
     async def test_its_own_available_copy_makes_it_ready_and_the_poll_names_the_pod(self) -> None:
@@ -243,7 +243,6 @@ class TestReadinessIsThisPodsOwnCopy:
         :return: none
         :rtype: None
         """
-        server = _server()
         ready = DiscoveryProbeResponse(
             agent_id=_POD,
             tools=[
@@ -254,7 +253,7 @@ class TestReadinessIsThisPodsOwnCopy:
         )
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=ready)
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         assert await server.wait_until_ready(timeout=2.0) is True
         request = nc.request.await_args.kwargs["message"]
         assert isinstance(request, DiscoveryProbeRequest)
@@ -270,17 +269,20 @@ class TestADynamicRegistrationHearsItsAnswer:
         :return: none
         :rtype: None
         """
-        server = _server()
-        nc = _replying(
-            RegistrationResponse(success=True, pod_id=_POD, refused_tools=[_refusal("threetears.dictionary")])
+        registry = _ScriptedRegistry(
+            _ADMITTED,
+            RegistrationResponse(success=True, pod_id=_POD, refused_tools=[_refusal("threetears.dictionary")]),
         )
-        server._nc = nc  # noqa: SLF001
-        server._ready_event.set()  # noqa: SLF001
+        server = _heartbeating_server(registry, heartbeat_interval=3600.0)
+        async with _serving(server):
+            with pytest.raises(ToolRegistrationRefused):
+                await server.register_tool(_Tool("threetears.dictionary"))
 
-        with pytest.raises(ToolRegistrationRefused):
-            await server.register_tool(_Tool("threetears.dictionary"))
-
-        assert isinstance(nc.request.await_args.kwargs["message"], RegistrationManifest)
+        asked_with_the_new_tool = [
+            awaited and "threetears.dictionary" in {t.name for t in manifest.tools}
+            for manifest, awaited in zip(registry.manifests, registry.awaited, strict=True)
+        ]
+        assert any(asked_with_the_new_tool)
 
     async def test_an_admitted_new_tool_does_not_raise_for_an_older_refusal(self) -> None:
         """only the tool being added is this call's business.
@@ -288,12 +290,12 @@ class TestADynamicRegistrationHearsItsAnswer:
         :return: none
         :rtype: None
         """
-        server = _server()
-        server._nc = _replying(  # noqa: SLF001
+        registry = _ScriptedRegistry(
             RegistrationResponse(success=True, pod_id=_POD, refused_tools=[_refusal("threetears.calculator")])
         )
-        server._ready_event.set()  # noqa: SLF001
-        await server.register_tool(_Tool("threetears.dictionary"))
+        server = _heartbeating_server(registry, heartbeat_interval=3600.0)
+        async with _serving(server):
+            await server.register_tool(_Tool("threetears.dictionary"))
 
     async def test_before_serving_the_manifest_is_published_without_waiting(self) -> None:
         """no probe subject is bound yet, so waiting would only wait out the registry's probe.
@@ -301,9 +303,8 @@ class TestADynamicRegistrationHearsItsAnswer:
         :return: none
         :rtype: None
         """
-        server = _server()
         nc = AsyncMock()
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         await server.register_tool(_Tool("threetears.dictionary"))
         nc.request.assert_not_awaited()
         nc.publish.assert_awaited()
@@ -425,18 +426,57 @@ class _ScriptedRegistry:
         return DiscoveryProbeResponse(agent_id=_POD, tools=[entry])
 
 
-def _heartbeating_server(registry: _ScriptedRegistry) -> ToolServer:
-    """a server wired to ``registry`` with a fast heartbeat, not yet heartbeating.
+def _heartbeating_server(registry: _ScriptedRegistry, *, heartbeat_interval: float = 0.05) -> ToolServer:
+    """a server wired to ``registry`` with a fast heartbeat, not yet serving.
+
+    the JWKS provider is injected so :meth:`ToolServer.serve` does not self-provision one over the
+    double; nothing these tests drive verifies a token.
 
     :param registry: the registry double
     :ptype registry: _ScriptedRegistry
+    :param heartbeat_interval: seconds between heartbeats once the server serves
+    :ptype heartbeat_interval: float
     :return: the server
     :rtype: ToolServer
     """
-    server = ToolServer(agent_id=uuid7(), nats_url="nats://test:4222", pod_id=_POD, heartbeat_interval=0.05)
+    server = ToolServer(
+        agent_id=uuid7(),
+        nats_client=registry.nc,
+        pod_id=_POD,
+        heartbeat_interval=heartbeat_interval,
+        jwks_provider=lambda: {"keys": []},
+    )
     server.register(_Tool())
-    server._nc = registry.nc  # noqa: SLF001
     return server
+
+
+@contextlib.asynccontextmanager
+async def _serving(server: ToolServer) -> AsyncIterator[None]:
+    """run ``server.serve()`` for the body of the block, entered once the server is ready.
+
+    ``serve`` is the one thing that makes a pod a SERVING pod: it binds the call and probe
+    subjects, reads its first registration reply, marks itself ready and starts the heartbeat.
+    the server is shut down on exit, which releases ``serve``.
+
+    :param server: the server to run
+    :ptype server: ToolServer
+    :return: an async iterator yielding once, while the server serves
+    :rtype: AsyncIterator[None]
+    :raises AssertionError: if ``serve`` returns before the server is ready
+    """
+    serve_task = asyncio.create_task(server.serve())
+    ready_task = asyncio.create_task(server.wait_ready(timeout=5.0))
+    try:
+        done, _ = await asyncio.wait({serve_task, ready_task}, return_when=asyncio.FIRST_COMPLETED)
+        if serve_task in done:
+            ready_task.cancel()
+            serve_task.result()
+            raise AssertionError("serve() returned before the server was ready")
+        await ready_task
+        yield
+    finally:
+        await server.shutdown()
+        await asyncio.wait_for(serve_task, timeout=5.0)
 
 
 def _graph_unavailable(*, success: bool) -> RegistrationResponse:
@@ -513,16 +553,9 @@ class TestATemporaryRefusalIsWaitedOut:
         """
         registry = _ScriptedRegistry(_graph_unavailable(success=False), _ADMITTED)
         server = _heartbeating_server(registry)
-        await server.publish_registration(await_reply=True)
-        server._running = True  # noqa: SLF001
-        heartbeat = asyncio.create_task(server._heartbeat_loop())  # noqa: SLF001
-        try:
+        async with _serving(server):
             assert await server.wait_until_ready(timeout=3.0) is True
-        finally:
-            server._running = False  # noqa: SLF001
-            heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
+        assert registry.awaited[0] is True
         assert len(registry.manifests) >= 2
         assert server.refused_tools == ()
 
@@ -534,20 +567,13 @@ class TestATemporaryRefusalIsWaitedOut:
         """
         registry = _ScriptedRegistry(_graph_unavailable(success=True), _ADMITTED)
         server = _heartbeating_server(registry)
-        await server.publish_registration(await_reply=True)
-        assert server.owned_namespaces == ("tools.calc",)
-        server._running = True  # noqa: SLF001
-        heartbeat = asyncio.create_task(server._heartbeat_loop())  # noqa: SLF001
-        try:
+        async with _serving(server):
+            # serve's own registration read the first reply, which named the pod's node
+            assert server.owned_namespaces == ("tools.calc",)
             for _ in range(100):
                 if len(registry.manifests) >= 2:
                     break
                 await asyncio.sleep(0.01)
-        finally:
-            server._running = False  # noqa: SLF001
-            heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
         assert registry.awaited[1] is True
         assert server.refused_tools == ()
 
@@ -581,10 +607,8 @@ class TestATemporaryRefusalIsWaitedOut:
         :rtype: None
         """
         admitted = RegistrationResponse(success=True, pod_id=_POD, registered_tools=["threetears.calculator@1.0"])
-        server = _server()
-        server._nc = _replying(  # noqa: SLF001
-            _graph_unavailable(success=False), admitted, _graph_unavailable(success=False)
-        )
+        nc = _replying(_graph_unavailable(success=False), admitted, _graph_unavailable(success=False))
+        server = _server(nc)
         with caplog.at_level(logging.INFO, logger="threetears.agent.tools.server"):
             for _ in range(3):
                 await server.publish_registration(await_reply=True)
@@ -699,17 +723,18 @@ class TestATemporaryRefusalIsWaitedOut:
         :return: none
         :rtype: None
         """
-        server = _server()
-        server._nc = _replying(  # noqa: SLF001
+        registry = _ScriptedRegistry(
+            _ADMITTED,
             RegistrationResponse(
                 success=True,
                 pod_id=_POD,
                 refused_tools=[_refusal("threetears.dictionary", "OWNERSHIP_GRAPH_UNAVAILABLE")],
-            )
+            ),
         )
-        server._ready_event.set()  # noqa: SLF001
-        await server.register_tool(_Tool("threetears.dictionary"))
-        assert [r.code for r in server.refused_tools] == ["OWNERSHIP_GRAPH_UNAVAILABLE"]
+        server = _heartbeating_server(registry, heartbeat_interval=3600.0)
+        async with _serving(server):
+            await server.register_tool(_Tool("threetears.dictionary"))
+            assert [r.code for r in server.refused_tools] == ["OWNERSHIP_GRAPH_UNAVAILABLE"]
 
 
 class TestAnOlderRegistrysDiscovery:

@@ -25,7 +25,6 @@ from threetears.agent.workspace.validators import (
     _resolve_validator,
     dispatch_validators,
 )
-from threetears.agent.workspace import validators as validators_module
 from packages.agent.workspace.tests._helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
@@ -125,6 +124,13 @@ class _FakePool(FakeAsyncpgPool):
 # ---------------------------------------------------------------------------
 
 
+#: every stub module name installed in this process. the resolver caches by dotted path for the
+#: life of the process -- that is its production contract -- so two tests sharing a module name
+#: would see each other's callables. each test therefore owns its name, and a reuse fails loudly
+#: here rather than leaking a stale callable into another test.
+_INSTALLED_STUB_NAMES: set[str] = set()
+
+
 def _install_stub_module(
     monkeypatch: pytest.MonkeyPatch,
     module_name: str,
@@ -134,18 +140,27 @@ def _install_stub_module(
 
     returns the created module so the test can mutate it mid-flight (e.g.
     simulate module reload between resolver calls).
+
+    :param monkeypatch: pytest monkeypatch, which removes the module at teardown
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param module_name: a name no other test in this process has installed
+    :ptype module_name: str
+    :param attrs: attributes to set on the module
+    :ptype attrs: dict[str, Any]
+    :return: the installed module
+    :rtype: types.ModuleType
+    :raises AssertionError: if ``module_name`` was already installed in this process
     """
+    assert module_name not in _INSTALLED_STUB_NAMES, (
+        f"stub module {module_name!r} already installed in this process; the validator resolver "
+        "caches by dotted path for the process lifetime, so every test must use its own name"
+    )
+    _INSTALLED_STUB_NAMES.add(module_name)
     module = types.ModuleType(module_name)
     for name, value in attrs.items():
         setattr(module, name, value)
     monkeypatch.setitem(sys.modules, module_name, module)
     return module
-
-
-@pytest.fixture(autouse=True)
-def _clear_resolve_cache() -> None:
-    """every test runs against a clean _RESOLVED cache so order doesn't leak."""
-    validators_module._RESOLVED.clear()
 
 
 # ---------------------------------------------------------------------------

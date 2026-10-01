@@ -19,20 +19,31 @@ they ship together and roll out apart:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.call_scope import ToolCallScope
 from threetears.agent.tools.server import (
     CallRequest,
     CallResponse,
-    HardCallTimeout,
     ToolCallFailure,
     ToolServer,
     _effective_ceiling,
 )
+from threetears.core.testing.replay_guard import FakeReplayGuard
+from threetears.nats import IncomingMessage
+
+from packages.agent.tools.tests.unit.tools._pod_auth import (
+    RecordingNatsClient,
+    jwks_provider,
+    recording_tool_server,
+    signed_call_payload,
+)
+
+_POD_ID = "envelope-pod"
+_HARD_LIMIT = "tool exceeded the pod hard execution limit"
 
 
 class _FakeTool(TearsTool):  # parity-with: threetears.agent.tools.base_tool.TearsTool
@@ -59,9 +70,50 @@ def _request(**overrides: Any) -> CallRequest:
     return CallRequest(tool_name="test.fake", tool_version="1.0.0", arguments={}, **overrides)
 
 
-def _server(**kwargs: Any) -> ToolServer:
-    """a tool server with no NATS wired, configured with the given guards."""
-    return ToolServer(nats_url="nats://stub", **kwargs)
+def _serving(body: Any, **guards: Any) -> tuple[ToolServer, RecordingNatsClient]:
+    """a tool server holding one fake tool, configured with the given guards and driven by hand.
+
+    :param body: the coroutine function the fake tool's ``execute`` awaits
+    :ptype body: Any
+    :param guards: ``max_call_seconds`` when the pod has a ceiling
+    :ptype guards: Any
+    :return: the server and the client it answers on
+    :rtype: tuple[ToolServer, RecordingNatsClient]
+    """
+    server, rec = recording_tool_server(
+        pod_id=_POD_ID,
+        jwks_provider=jwks_provider,
+        assertion_replay_guard=FakeReplayGuard(),
+        **guards,
+    )
+    server.register(_FakeTool(body))
+    return server, rec
+
+
+async def _call(server: ToolServer, rec: RecordingNatsClient, *, deadline_seconds: float) -> CallResponse:
+    """deliver one authenticated call carrying a caller deadline, and return the pod's answer.
+
+    :param server: the pod
+    :ptype server: ToolServer
+    :param rec: the client the pod answers on
+    :ptype rec: RecordingNatsClient
+    :param deadline_seconds: what the caller says it has left
+    :ptype deadline_seconds: float
+    :return: the pod's reply
+    :rtype: CallResponse
+    """
+    payload = signed_call_payload(pod_id=_POD_ID, tool_name="test.fake", tool_version="1.0.0")
+    payload["deadline_seconds"] = deadline_seconds
+    await server.handle_call(
+        IncomingMessage(
+            data=json.dumps(payload).encode("utf-8"),
+            reply_subject="_INBOX.envelope",
+            subject=f"3tears.tools.internal.{_POD_ID}",
+        )
+    )
+    _subject, reply = rec.last_reply
+    assert isinstance(reply, CallResponse)
+    return reply
 
 
 # ---------------------------------------------------------------- §10.9 ----
@@ -161,12 +213,12 @@ async def test_a_caller_deadline_bounds_a_call_on_an_unbounded_pod() -> None:
         await asyncio.sleep(10)
         return ToolResult(success=True, content="never")
 
-    server = _server()
+    server, rec = _serving(body)
 
-    with pytest.raises(HardCallTimeout):
-        await server._run_tool_guarded(  # noqa: SLF001 -- guard seam
-            _FakeTool(body), _request(deadline_seconds=0.05), ToolCallScope()
-        )
+    answer = await _call(server, rec, deadline_seconds=0.05)
+
+    assert answer.success is False
+    assert answer.error is not None and _HARD_LIMIT in answer.error
 
 
 async def test_a_generous_caller_cannot_loosen_the_pod_ceiling() -> None:
@@ -176,12 +228,12 @@ async def test_a_generous_caller_cannot_loosen_the_pod_ceiling() -> None:
         await asyncio.sleep(10)
         return ToolResult(success=True, content="never")
 
-    server = _server(max_call_seconds=0.05)
+    server, rec = _serving(body, max_call_seconds=0.05)
 
-    with pytest.raises(HardCallTimeout):
-        await server._run_tool_guarded(  # noqa: SLF001 -- guard seam
-            _FakeTool(body), _request(deadline_seconds=20.0), ToolCallScope()
-        )
+    answer = await _call(server, rec, deadline_seconds=20.0)
+
+    assert answer.success is False
+    assert answer.error is not None and _HARD_LIMIT in answer.error
 
 
 async def test_a_call_inside_both_bounds_is_untouched() -> None:
@@ -190,10 +242,9 @@ async def test_a_call_inside_both_bounds_is_untouched() -> None:
     async def body() -> ToolResult:
         return ToolResult(success=True, content="done")
 
-    server = _server(max_call_seconds=5.0)
+    server, rec = _serving(body, max_call_seconds=5.0)
 
-    result = await server._run_tool_guarded(  # noqa: SLF001 -- guard seam
-        _FakeTool(body), _request(deadline_seconds=5.0), ToolCallScope()
-    )
+    answer = await _call(server, rec, deadline_seconds=5.0)
 
-    assert result.content == "done"
+    assert answer.success is True, answer.error
+    assert answer.content == "done"

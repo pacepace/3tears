@@ -24,8 +24,18 @@ from threetears.agent.tools.consume import (
 )
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.object_resolver import ResolveObjectError
-from threetears.agent.tools.server import CallRequest, ToolServer
+from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.media.contracts import ObjectHandle, ObjectListing
+
+from packages.agent.tools.tests.unit.tools._pod_auth import (
+    ScopeRecordingTool,
+    deliver_call,
+    jwks_provider,
+    recording_tool_server,
+    signed_call_payload,
+)
+
+_POD_ID = "consume-pod"
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _OTHER_CUSTOMER = UUID("06a41d51-a6d5-7824-8000-2222aaaa2222")
@@ -280,15 +290,16 @@ async def test_resolve_object_rejects_foreign_resolved_key() -> None:
 async def test_tool_server_wires_injected_resolver_into_scope() -> None:
     """An injected resolver flows onto every per-call scope (like the store)."""
     resolver = _FakeResolver(handle=None)
-    server = ToolServer(
-        nats_url="nats://localhost:4222",
-        object_resolver=resolver,  # type: ignore[arg-type]
+    server, rec = recording_tool_server(
+        pod_id=_POD_ID,
+        jwks_provider=jwks_provider,
+        assertion_replay_guard=FakeReplayGuard(),
+        object_resolver=resolver,
     )
-    request = CallRequest(
-        tool_name="t",
-        tool_version="1.0.0",
-        arguments={},
-        context=CallContext(customer_id=_CUSTOMER),
-    )
-    scope = await server._build_call_scope(request, principal_is_tool_pod=False)  # noqa: SLF001 -- wiring seam: server propagates its resolver to the per-call scope
+    tool = ScopeRecordingTool()
+    server.register(tool)
+    await deliver_call(server, signed_call_payload(pod_id=_POD_ID, customer_id=_CUSTOMER), pod_id=_POD_ID)
+    assert rec.last_reply[1].success is True, rec.last_reply[1].error
+    (scope,) = tool.scopes
+    assert scope is not None
     assert scope.object_resolver is resolver

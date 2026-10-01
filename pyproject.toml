@@ -248,24 +248,6 @@ ignore = ["N818", "N811"]
 # names the caller of each. nothing else in the workspace touches these names. paired entries
 # live in tests/enforcement/_underscore_exemptions.txt.
 "packages/nats/src/threetears/nats/_nats_py_internals.py" = ["SLF001"]
-# autouse fixture clears the module-level _RESOLVED cache between tests so
-# import-order does not leak stub-resolved entries across cases. the cache
-# itself is an import-time implementation-stable anchor for the
-# import-at-most-once contract; no public clear-cache helper on the module
-# because the only legitimate caller is this test fixture. paired entry
-# lives in tests/enforcement/_underscore_exemptions.txt.
-"packages/agent/workspace/tests/unit/test_validators.py" = ["SLF001"]
-# lazy-surface consistency tests pin the three-way agreement between
-# __all__, the _LAZY map, and the TYPE_CHECKING block in each lazy
-# package __init__ (docs/separate-concerns-decisions.md). _LAZY is the
-# internal lazy-resolution table; a public accessor would add API
-# surface only these consistency tests need. paired entries live in
-# tests/enforcement/_underscore_exemptions.txt.
-"packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/identity/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/intention/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/knowledge/tests/test_lazy_init.py" = ["SLF001"]
 
 # scrape suites assert on the private state that IS the behaviour under test, one reason per
 # file so the list and the reasons cannot drift apart:

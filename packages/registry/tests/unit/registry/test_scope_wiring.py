@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import asyncio
+import runpy
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -229,28 +230,11 @@ class TestShutdownReleasesWhatStartupSubscribed:
     Nothing asserted the pairing, which is why the gap survived the shard that was
     supposed to close it. The registry server is also the in-repo model three consumer
     repos copy, so an unpaired lifecycle here propagates.
+
+    The listener-and-collections half is pinned against the registry ``serve()`` really builds,
+    in ``tests/integration/test_registry_server_lifecycle_live.py``; these pin the seams a server
+    torn down without a connection still owes.
     """
-
-    @pytest.mark.asyncio
-    async def test_shutdown_stops_the_invalidation_listener_and_closes_the_collections(self) -> None:
-        """both halves of the registry teardown run: the listener, and the collections' own work.
-
-        A collection can start background work of its own -- a write-behind coordination
-        collection runs a periodic flusher -- and it owes one last flush on the way out.
-
-        :return: nothing
-        :rtype: None
-        """
-        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
-        collection_registry = MagicMock()
-        collection_registry.stop_invalidation_listener = AsyncMock()
-        collection_registry.close_collections = AsyncMock()
-        server._collection_registry = collection_registry  # noqa: SLF001 - drives the teardown under test
-
-        await server.shutdown()
-
-        collection_registry.stop_invalidation_listener.assert_awaited_once()
-        collection_registry.close_collections.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_runs_the_caller_supplied_teardown(self) -> None:
@@ -330,7 +314,8 @@ class TestTheTeardownSeamIsBoundInEveryAuthorizerMode:
         # coroutine to the stub and never execute it -- the test would pass against the
         # NameError it exists to catch. `_CapturingServer.serve` is already a no-op.
 
-        server_module._run_server()  # noqa: SLF001 - the module entry point under test
+        # `python -m threetears.registry`, the entry point a deployment runs.
+        runpy.run_module("threetears.registry", run_name="__main__")
 
         on_shutdown = captured["on_shutdown"]
         assert callable(on_shutdown)

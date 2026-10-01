@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -32,7 +36,6 @@ from threetears.agent.tools.object_resolution_collection import (
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import Principal, Subjects, kv_key_scope_for
-from threetears.observe import HealthTier
 
 
 def _collection_tables() -> MetaData:
@@ -410,19 +413,107 @@ class TestRunServe:
         server.serve.assert_awaited_once()
 
 
-class _ReadinessFakeServer:
+class _ReadinessFakeServer(_FakeToolServer):
     """a ToolServer stand-in exposing the three probe surfaces the bootstrap health server reads;
     ``jwks_warmed`` is flipped by the test to drive the NOT-READY -> READY transition. ``is_healthy``
     (not ``is_connected``) is the nats liveness surface the probe now reads -- real NATS health, so a
     dead connection trips liveness instead of reporting healthy forever."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.is_healthy = True
         self.tools_count = 1
         self.jwks_warmed = False
 
-    def render_metrics(self) -> tuple[str, bytes]:
-        return ("text/plain; version=0.0.4; charset=utf-8", b"")
+
+def _free_port() -> int:
+    """a TCP port nothing is listening on right now.
+
+    :return: the port
+    :rtype: int
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port: int = sock.getsockname()[1]
+    return port
+
+
+async def _probe(port: int, path: str) -> tuple[int, dict[str, Any]]:
+    """GET a health route as a kube probe would, asking for the JSON body.
+
+    :param port: the pod's health port
+    :ptype port: int
+    :param path: the route, e.g. ``/healthz/ready``
+    :ptype path: str
+    :return: the HTTP status and the decoded status body
+    :rtype: tuple[int, dict[str, Any]]
+    """
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(f"GET {path}?format=json HTTP/1.1\r\nHost: pod\r\nConnection: close\r\n\r\n".encode())
+        await writer.drain()
+        raw = await reader.read()
+    finally:
+        writer.close()
+        await writer.wait_closed()
+    head, _, body = raw.partition(b"\r\n\r\n")
+    status = int(head.split()[1])
+    return status, json.loads(body)
+
+
+@contextlib.asynccontextmanager
+async def _serving_pod(server: _ReadinessFakeServer, *, version: str | None = None) -> AsyncIterator[int]:
+    """run a tool pod over ``server`` through ``run_async`` until the block exits.
+
+    the health listener is the one ``run_async`` starts, probed over HTTP exactly as kube probes it.
+
+    :param server: the server the pod builds
+    :ptype server: _ReadinessFakeServer
+    :param version: the release version the pod is constructed with
+    :ptype version: str | None
+    :return: an async iterator yielding the pod's health port once it is listening
+    :rtype: AsyncIterator[int]
+    """
+    port = _free_port()
+
+    class _HealthBootstrap(ToolServerBootstrap):
+        async def build_server(self) -> Any:
+            return server
+
+        async def register_tools(self, server: Any) -> None:
+            return None
+
+    run_task = asyncio.create_task(_HealthBootstrap("test-pod", health_port=port, version=version).run_async())
+    try:
+        for _ in range(500):
+            if run_task.done():
+                run_task.result()
+                raise AssertionError("run_async returned before its health listener came up")
+            try:
+                _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            except OSError:
+                await asyncio.sleep(0.01)
+                continue
+            writer.close()
+            await writer.wait_closed()
+            break
+        else:
+            raise AssertionError(f"the pod's health listener never bound port {port}")
+        yield port
+    finally:
+        server.serve_event.set()
+        await asyncio.wait_for(run_task, timeout=5.0)
+
+
+def _components(body: dict[str, Any]) -> dict[str, bool]:
+    """the per-component verdicts of a health status body.
+
+    :param body: the decoded status body
+    :ptype body: dict[str, Any]
+    :return: component name -> healthy
+    :rtype: dict[str, bool]
+    """
+    return {component["name"]: component["healthy"] for component in body["components"]}
 
 
 class TestHealthServerReadinessGate:
@@ -431,24 +522,20 @@ class TestHealthServerReadinessGate:
 
     async def test_reports_not_ready_until_jwks_warmed(self) -> None:
         srv = _ReadinessFakeServer()
-        # health_port=0 -> OS-assigned ephemeral port, so the listener never collides in CI.
-        bootstrap = ToolServerBootstrap("test-pod", health_port=0)
-        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
-        assert health_server is not None
-        try:
+        async with _serving_pod(srv) as port:
             # before the JWKS warms: the jwks_warmed component is unhealthy -> overall NOT-READY.
-            before = await health_server.get_status(HealthTier.READY)
-            comps = {c.name: c.healthy for c in before.components}
+            status, before = await _probe(port, "/healthz/ready")
+            comps = _components(before)
             assert "jwks_warmed" in comps, "the tool-pod health server must wire a jwks_warmed readiness gate"
             assert comps["jwks_warmed"] is False
-            assert before.healthy is False
+            assert before["healthy"] is False
+            assert status == 503
             # after the first successful JWKS fetch: the gate clears -> READY.
             srv.jwks_warmed = True
-            after = await health_server.get_status(HealthTier.READY)
-            assert all(c.healthy for c in after.components)
-            assert after.healthy is True
-        finally:
-            await health_server.stop()
+            status, after = await _probe(port, "/healthz/ready")
+            assert all(_components(after).values())
+            assert after["healthy"] is True
+            assert status == 200
 
     async def test_cold_jwks_cache_does_not_fail_liveness(self) -> None:
         """the readiness gate must be invisible to the liveness verdict.
@@ -460,33 +547,27 @@ class TestHealthServerReadinessGate:
         srv = _ReadinessFakeServer()
         srv.jwks_warmed = False
         srv.tools_count = 0
-        bootstrap = ToolServerBootstrap("test-pod", health_port=0)
-        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
-        assert health_server is not None
-        try:
-            live = await health_server.get_status(HealthTier.LIVE)
-            ready = await health_server.get_status(HealthTier.READY)
-            assert live.healthy is True, "a cold JWKS cache must never restart the pod"
-            assert [c.name for c in live.components] == ["nats"]
-            assert ready.healthy is False
-        finally:
-            await health_server.stop()
+        async with _serving_pod(srv) as port:
+            live_status, live = await _probe(port, "/healthz/live")
+            ready_status, ready = await _probe(port, "/healthz/ready")
+        assert live["healthy"] is True, "a cold JWKS cache must never restart the pod"
+        assert live_status == 200
+        assert [c["name"] for c in live["components"]] == ["nats"]
+        assert ready["healthy"] is False
+        assert ready_status == 503
 
     async def test_dead_nats_fails_both_tiers(self) -> None:
         """a terminally wedged data plane restarts the pod AND pulls it from rotation."""
         srv = _ReadinessFakeServer()
         srv.is_healthy = False
         srv.jwks_warmed = True
-        bootstrap = ToolServerBootstrap("test-pod", health_port=0)
-        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
-        assert health_server is not None
-        try:
-            live = await health_server.get_status(HealthTier.LIVE)
-            ready = await health_server.get_status(HealthTier.READY)
-            assert live.healthy is False
-            assert ready.healthy is False
-        finally:
-            await health_server.stop()
+        async with _serving_pod(srv) as port:
+            live_status, live = await _probe(port, "/healthz/live")
+            ready_status, ready = await _probe(port, "/healthz/ready")
+        assert live["healthy"] is False
+        assert ready["healthy"] is False
+        assert live_status == 503
+        assert ready_status == 503
 
 
 class TestTheToolPodHealthServerCarriesItsVersion:
@@ -494,25 +575,18 @@ class TestTheToolPodHealthServerCarriesItsVersion:
 
     async def test_the_constructor_version_reaches_the_health_status(self) -> None:
         srv = _ReadinessFakeServer()
-        bootstrap = ToolServerBootstrap("test-pod", health_port=0, version="9.9.9")
-        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
-        assert health_server is not None
-        try:
-            assert health_server.version == "9.9.9"
-            live = await health_server.get_status(HealthTier.LIVE)
-            assert live.version == "9.9.9"
-        finally:
-            await health_server.stop()
+        async with _serving_pod(srv, version="9.9.9") as port:
+            _status, live = await _probe(port, "/healthz/live")
+            _status, ready = await _probe(port, "/healthz/ready")
+        assert live["version"] == "9.9.9"
+        assert ready["version"] == "9.9.9"
 
     async def test_a_subclass_passing_no_version_still_serves(self) -> None:
         srv = _ReadinessFakeServer()
-        bootstrap = ToolServerBootstrap("test-pod", health_port=0)
-        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
-        assert health_server is not None
-        try:
-            assert health_server.version is None
-        finally:
-            await health_server.stop()
+        async with _serving_pod(srv) as port:
+            status, live = await _probe(port, "/healthz/live")
+        assert status == 200
+        assert live["version"] is None
 
     def test_the_builtin_tool_server_passes_the_installed_distribution_version(
         self, monkeypatch: pytest.MonkeyPatch

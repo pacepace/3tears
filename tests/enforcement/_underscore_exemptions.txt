@@ -66,34 +66,6 @@
 # the one direction a consistency check cannot cover, since a blinded access is
 # never flagged in the first place.
 
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/identity/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/identity/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
-
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/intention/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/intention/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
-
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/knowledge/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/knowledge/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
-
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/memory/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/memory/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
-
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/tools/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/tools/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
-
-# rationale: autouse fixture clears the module-level _RESOLVED validators cache between tests so fake-stub resolvers from one case do not leak across cases; no public clear-cache helper exists because the only legitimate caller is this fixture.
-packages/agent/workspace/tests/unit/test_validators.py:_clear_resolve_cache#0:_RESOLVED
-
 # rationale: redshift_connector (verified 2.1.7) keeps a connection's socket on Connection._usock and has no public accessor for it; the Redshift driver must set the TCP keepalive idle/interval/count knobs connect() does not accept, and lift the login timeout connect(timeout=) leaves on the socket, which would otherwise fail every statement longer than the login bound. this module is the one owner of the access; packages/datasources/tests/unit/test_redshift_connector_internals.py pins that Connection.__init__ still assigns it.
 packages/datasources/src/threetears/datasources/drivers/_redshift_connector_internals.py:connection_socket#0:_usock
 

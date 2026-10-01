@@ -1,6 +1,6 @@
 """lazy-surface consistency tests for the agent-tools package __init__.
 
-pins the three-way agreement between ``__all__``, the ``_LAZY`` map,
+pins the three-way agreement between ``__all__``, the lazily-resolved names ``dir()`` advertises,
 and the ``TYPE_CHECKING`` import block, plus the headline import-cost
 win from the separate-concerns proposal: importing the pure protocols
 shim must no longer detonate the agent-memory/core trunk.
@@ -9,10 +9,12 @@ shim must no longer detonate the agent-memory/core trunk.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import threetears.agent.tools as tools
 
@@ -43,13 +45,41 @@ def _type_checking_names(init_path: Path) -> set[str]:
     return names
 
 
+def _lazy_names(package: ModuleType) -> set[str]:
+    """names the package resolves on first access rather than binding at import.
+
+    executes the package ``__init__`` into a fresh module object that is never
+    registered in ``sys.modules``, so no other test's attribute access has
+    materialized a lazy name into it yet. the package's ``__dir__`` advertises
+    every lazily-resolvable name, so whatever ``dir()`` reports that the fresh
+    namespace does not yet hold is exactly the lazy surface.
+
+    :param package: the imported package whose lazy surface to read
+    :ptype package: ModuleType
+    :return: the names ``__getattr__`` resolves on first access
+    :rtype: set[str]
+    """
+    spec = importlib.util.find_spec(package.__name__)
+    assert spec is not None
+    assert spec.loader is not None
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    return set(dir(fresh)) - set(vars(fresh))
+
+
 class TestLazySurfaceConsistency:
     def test_all_is_subset_of_lazy(self) -> None:
-        assert set(tools.__all__) <= set(tools._LAZY)
+        lazy = _lazy_names(tools)
+        assert lazy, "the package advertises no lazily-resolved names; the probe is vacuous"
+        assert set(tools.__all__) <= lazy
 
     def test_type_checking_block_matches_lazy(self) -> None:
         init_path = Path(tools.__file__)
-        assert _type_checking_names(init_path) == set(tools._LAZY)
+        type_checking = _type_checking_names(init_path)
+        lazy = _lazy_names(tools)
+        assert type_checking, "no TYPE_CHECKING imports found; the probe is vacuous"
+        assert lazy, "the package advertises no lazily-resolved names; the probe is vacuous"
+        assert type_checking == lazy
 
     def test_every_public_name_resolves(self) -> None:
         for name in tools.__all__:

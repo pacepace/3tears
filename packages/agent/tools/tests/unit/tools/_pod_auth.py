@@ -19,6 +19,7 @@ from __future__ import annotations
 
 
 import base64
+import json
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -26,7 +27,10 @@ from uuid import UUID, uuid4
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.call_scope import ToolCallScope, current_scope
 from threetears.agent.tools.server import ToolServer
+from threetears.nats import IncomingMessage
 from threetears.core.security import ProxyAssertionSigner, canonical_call_hash
 from threetears.core.security.identity_token import (
     IdentityClaims,
@@ -37,6 +41,8 @@ from threetears.core.security.identity_token import (
 
 __all__ = [
     "RecordingNatsClient",
+    "ScopeRecordingTool",
+    "deliver_call",
     "jwks_provider",
     "mint_user_assertion",
     "recording_tool_server",
@@ -235,3 +241,79 @@ def signed_call_payload(
         "context": context,
         "proxy_assertion": proxy_assertion,
     }
+
+
+class ScopeRecordingTool(TearsTool):
+    """a ``test.stub`` 1.0 tool that records the per-call scope each call ran under.
+
+    what a real tool reads its pod-level wiring through -- the object store, the object and
+    engagement resolvers -- is that scope, so recording it is how a test observes that the server
+    installed its wiring on a call without reaching into how the scope is built.
+    """
+
+    def __init__(self) -> None:
+        """start with no recorded calls.
+
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__()
+        self.scopes: list[ToolCallScope | None] = []
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """record the active call scope.
+
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: a successful empty result
+        :rtype: ToolResult
+        """
+        self.scopes.append(current_scope())
+        return ToolResult(success=True, content="")
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """the stub's schema.
+
+        :return: an object-typed schema
+        :rtype: MCPToolDefinition
+        """
+        return MCPToolDefinition(
+            name="test.stub", version="1.0", description="records its scope", input_schema={"type": "object"}
+        )
+
+    def mcp_name(self) -> str:
+        """the stub's mcp name.
+
+        :return: the name
+        :rtype: str
+        """
+        return "test.stub"
+
+    def mcp_version(self) -> str:
+        """the stub's version.
+
+        :return: the version
+        :rtype: str
+        """
+        return "1.0"
+
+
+async def deliver_call(server: ToolServer, payload: dict[str, Any], *, pod_id: str) -> None:
+    """deliver one call payload to the pod's call handler, as the registry's request arrives.
+
+    :param server: the pod
+    :ptype server: ToolServer
+    :param payload: the call body, normally from :func:`signed_call_payload`
+    :ptype payload: dict[str, Any]
+    :param pod_id: the pod id the call subject is addressed to
+    :ptype pod_id: str
+    :return: nothing
+    :rtype: None
+    """
+    await server.handle_call(
+        IncomingMessage(
+            data=json.dumps(payload).encode("utf-8"),
+            reply_subject="_INBOX.test",
+            subject=f"3tears.tools.internal.{pod_id}",
+        )
+    )
