@@ -29,8 +29,9 @@ these tests exercise:
 
 from __future__ import annotations
 
+import asyncio
+import runpy
 from collections.abc import Callable
-
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid7
@@ -48,7 +49,6 @@ from threetears.agent.acl import (
     RoleCollection,
     RoleInvalidatePayload,
 )
-from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.registry.auth import (
     AllowAllAuthorizer,
@@ -65,6 +65,7 @@ from threetears.registry.rbac_stack import (
     build_registry_rbac_stack,
 )
 from threetears.registry import server as server_module
+from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
 from threetears.registry.server import RegistryServer
 
 
@@ -81,25 +82,6 @@ def _identity_token_provider(token: str = "registry.identity.token") -> "Callabl
     :rtype: Callable[[], str | None]
     """
     return lambda: token
-
-
-def _unwrap_l3(resolved: Any) -> Any:
-    """unwrap a resolved L3 backend to the raw transport it wraps.
-
-    L3B-03: the registry normalizes a raw L3 transport (here the rbac
-    :class:`NatsProxyL3Backend`) into a :class:`SqlL3Backend` so the collection
-    CRUD lifecycle gets the structured ``DurableStore`` ops. The pinning contract
-    (namespace + service-sentinel agent_id) lives on the wrapped NatsProxy, so peel
-    the wrapper before asserting on it.
-
-    :param resolved: the value returned by ``get_l3_pool``.
-    :ptype resolved: Any
-    :return: the wrapped transport, or ``resolved`` unchanged.
-    :rtype: Any
-    """
-    if isinstance(resolved, SqlL3Backend):
-        return resolved._pool  # noqa: SLF001 -- peel the wrapper to the wrapped NatsProxy transport
-    return resolved
 
 
 def _make_nats_client() -> MagicMock:
@@ -215,14 +197,16 @@ class TestBuildRegistryRbacStack:
             l1_backend=l1,
             identity_token=_identity_token_provider(),
         )
-        # the rbac pool is wired onto the registry as the default L3.
-        # introspect the registry's default pool through the public
-        # accessor. L3B-03: the registry wraps the raw NatsProxy transport
-        # in a ``SqlL3Backend`` so the collection CRUD lifecycle gets the
-        # structured ``DurableStore`` ops; the rbac NatsProxy is the pool
-        # the wrapper wraps, so unwrap before asserting its pinning.
-        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
-        assert isinstance(pool, NatsProxyL3Backend)
+        # the rbac pool is wired onto the registry as the default L3, read
+        # through the registry's public accessor. L3B-03: the registry wraps
+        # the raw NatsProxy transport in a ``SqlL3Backend`` so the collection
+        # CRUD lifecycle gets the structured ``DurableStore`` ops; the wrapper
+        # forwards every attribute it does not define to the transport it
+        # wraps, so the transport's pinning reads straight through it.
+        pool = stack.registry.get_l3_pool("namespaces")
+        assert isinstance(pool, SqlL3Backend)
+        # the namespace-aware broker transport, not a bare SQL pool
+        assert pool.accepts_scoped_reads is True
         assert pool.default_namespace == PLATFORM_RBAC_READ_NAMESPACE
 
     def test_proxy_backend_uses_service_sentinel_agent_id(self) -> None:
@@ -240,7 +224,7 @@ class TestBuildRegistryRbacStack:
             l1_backend=l1,
             identity_token=_identity_token_provider(),
         )
-        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
+        pool = stack.registry.get_l3_pool("namespaces")
         assert pool.agent_id == str(REGISTRY_SERVICE_SENTINEL_AGENT_ID)
 
 
@@ -809,7 +793,7 @@ class TestTheProviderIsForwardedByReferenceNotByValue:
             l1_backend=create_registry_l1_backend(),
             identity_token=lambda: held["token"],
         )
-        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
+        pool = stack.registry.get_l3_pool("namespaces")
         assert pool.forwarded_identity_token() == "first.token"
         held["token"] = "re-minted.token"
         assert pool.forwarded_identity_token() == "re-minted.token"
@@ -824,37 +808,78 @@ class TestTheIdentityTokenProviderFactoryHook:
     pod-authenticator, limit-guard and usage-emitter hooks -- and unlike those three it
     has no weaker-but-working default, because a broker that refuses an unidentified
     request leaves nothing to fall back to.
+
+    Driven through the entry point a deployment runs, ``python -m threetears.registry``: it
+    hands the server an rbac factory, and the server calls that factory with its live
+    connection. These tests make that call, which is where the hook is resolved. They are
+    synchronous because the entry point runs its own event loop, as ``python -m`` does.
     """
 
-    @pytest.mark.asyncio
-    async def test_unset_resolves_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """unset -> ``None``, which the stack turns into a wiring-time refusal."""
-        monkeypatch.delenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", raising=False)
-        assert await server_module._resolve_identity_token_provider(_make_nats_client()) is None  # noqa: SLF001 -- module-private resolver under test
+    @staticmethod
+    def _entry_point_rbac_factory(monkeypatch: pytest.MonkeyPatch) -> Any:
+        """run the registry entry point in rbac mode and return the factory it hands the server.
 
-    @pytest.mark.asyncio
-    async def test_a_malformed_spec_raises_rather_than_degrading(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: the ``rbac_authorizer_factory`` the entry point constructs the server with
+        :rtype: Any
+        """
+        monkeypatch.delenv("THREETEARS_REGISTRY_ALLOW_ALL_TOOLS", raising=False)
+        monkeypatch.delenv("THREETEARS_REGISTRY_FORCE_DENY_ALL", raising=False)
+        captured: dict[str, Any] = {}
+
+        class _CapturingServer:
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            async def serve(self) -> None:
+                return None
+
+        monkeypatch.setattr(server_module, "RegistryServer", _CapturingServer)
+        runpy.run_module("threetears.registry", run_name="__main__")
+        factory = captured["rbac_authorizer_factory"]
+        assert factory is not None, "rbac mode must hand the server an rbac factory"
+        return factory
+
+    def test_unset_is_a_wiring_time_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """unset resolves to no provider, which the stack refuses at wiring time."""
+        monkeypatch.delenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", raising=False)
+        factory = self._entry_point_rbac_factory(monkeypatch)
+        with pytest.raises(RegistryIdentityUnavailableError, match="no identity_token provider"):
+            asyncio.run(factory(_make_nats_client()))
+
+    def test_a_malformed_spec_raises_rather_than_degrading(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a misconfigured identity plugin must crash startup, never run unidentified."""
         monkeypatch.setenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", "not-a-dotted-path")
+        factory = self._entry_point_rbac_factory(monkeypatch)
         with pytest.raises(ValueError, match="module:callable"):
-            await server_module._resolve_identity_token_provider(_make_nats_client())  # noqa: SLF001 -- module-private resolver under test
+            asyncio.run(factory(_make_nats_client()))
 
-    @pytest.mark.asyncio
-    async def test_the_resolved_factory_is_awaited_with_the_live_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """the host factory needs the connection to handshake over, so it gets it."""
+    def test_the_resolved_factory_is_awaited_with_the_live_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the host factory needs the connection to handshake over, and its provider reaches the stack."""
         nc = _make_nats_client()
         seen: list[Any] = []
+        asked: list[bool] = []
+
+        def _provider() -> str | None:
+            asked.append(True)
+            return "host.minted.token"
 
         async def _factory(client: Any) -> "Callable[[], str | None]":
             seen.append(client)
-            return lambda: "host.minted.token"
+            return _provider
 
-        monkeypatch.setattr(server_module, "_HOST_FACTORY_FOR_TEST", _factory, raising=False)
+        monkeypatch.setattr(server_module, "HOST_FACTORY_FOR_TEST", _factory, raising=False)
         monkeypatch.setenv(
             "THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY",
-            "threetears.registry.server:_HOST_FACTORY_FOR_TEST",
+            "threetears.registry.server:HOST_FACTORY_FOR_TEST",
         )
-        provider = await server_module._resolve_identity_token_provider(nc)  # noqa: SLF001 -- module-private resolver under test
+        factory = self._entry_point_rbac_factory(monkeypatch)
+
+        authorizer = asyncio.run(factory(nc))
+
         assert seen == [nc]
-        assert provider is not None
-        assert provider() == "host.minted.token"
+        # the stack asks the provider for a token before it builds, so the host's provider is
+        # the one the rbac stack was wired with -- a missing one would have refused above.
+        assert asked
+        assert isinstance(authorizer, RbacEvaluatorAuthorizer)
