@@ -28,7 +28,11 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from langchain_core.tools import StructuredTool
-from threetears.media.contracts import MediaSizeLimitExceeded
+from threetears.media.contracts import (
+    EXTRACTION_STATUS_COMPLETE,
+    EXTRACTION_STATUS_PENDING,
+    MediaSizeLimitExceeded,
+)
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.document import DocumentParseError, can_parse_document, parse_document
@@ -46,6 +50,8 @@ from threetears.observe import get_logger
 
 __all__ = [
     "MAX_DOCUMENT_BYTES",
+    "MAX_TRANSCRIPTION_BYTES",
+    "MAX_VISION_IMAGE_BYTES",
     "AnalyzeMediaTool",
     "AnalyzerConfig",
     "OnAnalysisCallback",
@@ -75,6 +81,30 @@ _DEFAULT_TRANSCRIPT_MAX_CHARS = 10_000
 #: stops at this bound too, because a recorded size can be absent or wrong.
 MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 
+#: The largest audio or video file this tool downloads to transcribe: 100 MiB.
+#: A transcription backend that takes bytes is handed the whole recording in
+#: one buffer, and the HTTP client sending it builds a second copy for the
+#: upload, so the pod holds about twice this while the call runs -- beside
+#: every other call it is serving. Recordings are legitimately larger than
+#: documents, so this is five times the document bound: 100 MiB is well over
+#: an hour of speech at ordinary compressed bitrates and over the 25 MB
+#: upload cap the Whisper API puts on a single request, so nothing a
+#: transcription backend would accept is refused here. What it stops is a
+#: catalogued multi-gigabyte video, which no backend would transcribe in one
+#: call, being buffered whole into a tool pod. Refused from its recorded size
+#: without a byte moving; the read itself stops at this bound too.
+MAX_TRANSCRIPTION_BYTES = 100 * 1024 * 1024
+
+#: The largest image this tool downloads for a bytes-taking vision backend:
+#: 20 MiB, the same bound the model gateway puts on a referenced image
+#: (``aibots.gateway.media.MAX_MEDIA_BYTES``). An image is downloaded whole and
+#: decoded before :func:`prepare_image_for_vision` resizes it, so the decoded
+#: pixels are a multiple of the file. Keeping the bytes path at the gateway's
+#: bound means an image is answerable the same way whichever vision backend
+#: an analyzer uses. Refused from its recorded size without a byte moving; the
+#: read itself stops at this bound too.
+MAX_VISION_IMAGE_BYTES = 20 * 1024 * 1024
+
 
 @dataclass
 class AnalyzerConfig:
@@ -101,19 +131,68 @@ def _tool_error(step: str, detail: str) -> str:
     return f"[analyze_media/{step}] Error: {detail}"
 
 
-def _too_large(size_bytes: int | None) -> str:
-    """what the model is told about a document over :data:`MAX_DOCUMENT_BYTES`.
+def _too_large(kind: str, size_bytes: int | None, limit_bytes: int, ask: str) -> str:
+    """what the model is told about media over the size bound for its kind.
 
-    :param size_bytes: the document's size when known, or ``None`` when the read passed the limit
+    :param kind: what the media is, as the model reads it (``"document"``, ``"image"``)
+    :ptype kind: str
+    :param size_bytes: the media's size when known, or ``None`` when the read passed the limit
     :ptype size_bytes: int | None
+    :param limit_bytes: the bound it passed
+    :ptype limit_bytes: int
+    :param ask: what the model can ask for instead
+    :ptype ask: str
     :return: the sentence
     :rtype: str
     """
     size = f"it is {size_bytes:,} bytes" if size_bytes is not None else "it passed that size while being read"
-    return (
-        f"This document is too large to read (too_large): {size}, and documents over "
-        f"{MAX_DOCUMENT_BYTES:,} bytes are not read. Ask for a smaller document or a specific excerpt."
+    return f"This {kind} is too large to read (too_large): {size}, and {kind}s over {limit_bytes:,} bytes are not read. {ask}"
+
+
+def _refused_too_large(
+    kind: str,
+    mid_str: str,
+    size_bytes: int | None,
+    limit_bytes: int,
+    ask: str,
+) -> str:
+    """log a refused read and return what the model is told about it.
+
+    one place for the refusal, so every byte-taking path logs the same fields and
+    gives the same plain answer: before a download when the recorded size is over
+    the bound (``size_bytes`` set), or when a bounded read passed it (``None``).
+
+    :param kind: what the media is, as the model reads it
+    :ptype kind: str
+    :param mid_str: media UUID string for logging
+    :ptype mid_str: str
+    :param size_bytes: the recorded size, or ``None`` when the read passed the limit
+    :ptype size_bytes: int | None
+    :param limit_bytes: the bound it passed
+    :ptype limit_bytes: int
+    :param ask: what the model can ask for instead
+    :ptype ask: str
+    :return: the sentence for the tool error
+    :rtype: str
+    """
+    when = "its recorded size is over" if size_bytes is not None else "the read passed"
+    _log.warning(
+        f"{kind} not read: {when} the {kind} size limit",
+        extra={
+            "extra_data": {
+                "media_id": mid_str,
+                "kind": kind,
+                "size_bytes": size_bytes,
+                "limit_bytes": limit_bytes,
+            }
+        },
     )
+    return _too_large(kind, size_bytes, limit_bytes, ask)
+
+
+_DOCUMENT_ASK = "Ask for a smaller document or a specific excerpt."
+_RECORDING_ASK = "Ask for a shorter recording or a specific excerpt."
+_IMAGE_ASK = "Ask for a smaller image."
 
 
 def create_analyze_media_tool(
@@ -454,13 +533,7 @@ class AnalyzeMediaTool(TearsTool):
         try:
             dl = await self._storage.download_media(mid, max_bytes=MAX_DOCUMENT_BYTES)
         except MediaSizeLimitExceeded as exc:
-            _log.warning(
-                "document not read: over the document size limit",
-                extra={
-                    "extra_data": {"media_id": mid_str, "limit_bytes": exc.limit_bytes, "size_bytes": exc.size_bytes}
-                },
-            )
-            return None, _too_large(exc.size_bytes)
+            return None, _refused_too_large("document", mid_str, exc.size_bytes, exc.limit_bytes, _DOCUMENT_ASK)
         if dl is not None:
             data, mime_type = dl
             try:
@@ -506,7 +579,7 @@ class AnalyzeMediaTool(TearsTool):
         :return: provider response or formatted error string
         :rtype: str
         """
-        if info.extraction_status == "pending":
+        if info.extraction_status == EXTRACTION_STATUS_PENDING:
             return "This document is still being processed and cannot be read yet. Try again in a minute."
 
         extracted = await self._storage.get_content(mid, "extracted_text")
@@ -532,17 +605,10 @@ class AnalyzeMediaTool(TearsTool):
                     f"This document could not be read (unsupported_type): no parser reads {info.mime_type!r}",
                 )
             if info.size_bytes is not None and info.size_bytes > MAX_DOCUMENT_BYTES:
-                _log.warning(
-                    "document not downloaded: its recorded size is over the document size limit",
-                    extra={
-                        "extra_data": {
-                            "media_id": mid_str,
-                            "size_bytes": info.size_bytes,
-                            "limit_bytes": MAX_DOCUMENT_BYTES,
-                        }
-                    },
+                return _tool_error(
+                    "document analysis",
+                    _refused_too_large("document", mid_str, info.size_bytes, MAX_DOCUMENT_BYTES, _DOCUMENT_ASK),
                 )
-                return _tool_error("document analysis", _too_large(info.size_bytes))
             extracted, parse_error = await self._extract_from_bytes(mid, mid_str)
             if parse_error is not None:
                 return _tool_error("document analysis", parse_error)
@@ -640,14 +706,28 @@ class AnalyzeMediaTool(TearsTool):
 
         # Check for cached transcript
         cached_transcript = None
-        if info.extraction_status == "complete":
+        if info.extraction_status == EXTRACTION_STATUS_COMPLETE:
             cached_transcript = await self._storage.get_content(mid, "transcript")
 
         if cached_transcript:
             transcript = cached_transcript
         else:
-            # Download and transcribe
-            dl = await self._storage.download_media(mid)
+            # download and transcribe, never more than MAX_TRANSCRIPTION_BYTES:
+            # refused here from its recorded size, and bounded on the read for a
+            # size that is unknown or wrong.
+            kind = f"{info.media_category} file"
+            if info.size_bytes is not None and info.size_bytes > MAX_TRANSCRIPTION_BYTES:
+                return _tool_error(
+                    "transcribe",
+                    _refused_too_large(kind, mid_str, info.size_bytes, MAX_TRANSCRIPTION_BYTES, _RECORDING_ASK),
+                )
+            try:
+                dl = await self._storage.download_media(mid, max_bytes=MAX_TRANSCRIPTION_BYTES)
+            except MediaSizeLimitExceeded as exc:
+                return _tool_error(
+                    "transcribe",
+                    _refused_too_large(kind, mid_str, exc.size_bytes, exc.limit_bytes, _RECORDING_ASK),
+                )
             if dl is None:
                 return _tool_error(
                     "transcribe",
@@ -759,11 +839,26 @@ class AnalyzeMediaTool(TearsTool):
             prepare_image_for_vision,
         )
 
-        # Download and preprocess all images
+        # download and preprocess all images, each never more than
+        # MAX_VISION_IMAGE_BYTES. one image over the bound refuses the whole
+        # analysis: an answer about the others would read as an answer about all.
         image_parts: list[tuple[bytes, str]] = []
         for mid_str in media_ids:
             mid = UUID(mid_str)
-            dl = await self._storage.download_media(mid)
+            info = media_info.get(mid_str)
+            if info is not None and info.size_bytes is not None and info.size_bytes > MAX_VISION_IMAGE_BYTES:
+                return _tool_error(
+                    "load media",
+                    f"{mid_str}: "
+                    + _refused_too_large("image", mid_str, info.size_bytes, MAX_VISION_IMAGE_BYTES, _IMAGE_ASK),
+                )
+            try:
+                dl = await self._storage.download_media(mid, max_bytes=MAX_VISION_IMAGE_BYTES)
+            except MediaSizeLimitExceeded as exc:
+                return _tool_error(
+                    "load media",
+                    f"{mid_str}: " + _refused_too_large("image", mid_str, exc.size_bytes, exc.limit_bytes, _IMAGE_ASK),
+                )
             if dl is None:
                 _log.warning(
                     "Media not found for analysis",

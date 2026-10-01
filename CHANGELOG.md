@@ -120,6 +120,26 @@ access is taken away when it must be, by closing the connection and refusing its
   whichever method sends it (the positional `publish(subject, payload)` shorthand and
   `publish_raw` included), and forgets its route.
 
+### analyze_media bounds every download, not only documents
+
+The document bound below left two byte-taking paths reading whole objects into the tool pod:
+transcription and the bytes path of vision. A catalogued multi-gigabyte video sent for
+transcription was buffered whole.
+
+- New `analyze_media.MAX_TRANSCRIPTION_BYTES` (100 MiB). The transcription backend gets the whole
+  recording in one buffer and its HTTP upload copies it, so the pod holds about twice this. It is
+  well over an hour of compressed speech and over Whisper's 25 MB request cap, so nothing a
+  backend would accept is refused.
+- New `analyze_media.MAX_VISION_IMAGE_BYTES` (20 MiB), the model gateway's bound on a referenced
+  image, so an image is answerable the same way whichever vision backend an analyzer uses.
+- Both work like the document bound: refused from the recorded `size_bytes` before a byte moves,
+  and `download_media(max_bytes=...)` otherwise. The model is told "This audio file is too large
+  to read (too_large): ..." (or image, video file).
+- One image over the bound refuses the whole vision call and names that image. An answer about
+  the other images would read as an answer about all of them.
+- The extraction-status checks use `EXTRACTION_STATUS_PENDING` and `EXTRACTION_STATUS_COMPLETE`
+  instead of string literals. No behaviour change.
+
 ### analyze_media refuses an unreadable document before downloading it
 
 - New `threetears.agent.tools.document.can_parse_document(mime_type, filename=None)`: whether

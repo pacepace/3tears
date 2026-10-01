@@ -589,6 +589,122 @@ class TestDocumentSizeLimit:
         assert text.answer_calls == []
 
 
+class TestTranscriptionSizeLimit:
+    """audio and video are read for transcription only up to MAX_TRANSCRIPTION_BYTES."""
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_TRANSCRIPTION_BYTES
+
+        storage = FakeMediaStorage()
+        transcription = FakeTranscriptionProvider()
+        mid = uuid4()
+        storage.add_media(
+            mid,
+            MediaInfo(mid, "video", "video/mp4", size_bytes=MAX_TRANSCRIPTION_BYTES + 1),
+            b"small in this double",
+            "video/mp4",
+        )
+        tool = _make_tool(storage, transcription=transcription, categories={"video"}, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert f"{MAX_TRANSCRIPTION_BYTES + 1:,} bytes" in result
+        assert storage.download_limits == [], "a recording whose recorded size is over the limit was downloaded"
+        assert transcription.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_TRANSCRIPTION_BYTES
+
+        storage = FakeMediaStorage()
+        transcription = FakeTranscriptionProvider("Hello from audio.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "audio", "audio/mpeg"), b"fake-audio-data", "audio/mpeg")
+        tool = _make_tool(storage, transcription=transcription, categories={"audio"}, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?", "analyzer": "TestVision"})
+
+        assert "Hello from audio." in result
+        assert storage.download_limits == [MAX_TRANSCRIPTION_BYTES]
+
+    @pytest.mark.asyncio
+    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch):
+        from threetears.agent.tools.builtin import analyze_media
+
+        monkeypatch.setattr(analyze_media, "MAX_TRANSCRIPTION_BYTES", 8)
+        storage = FakeMediaStorage()
+        transcription = FakeTranscriptionProvider()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "audio", "audio/mpeg"), b"more than eight bytes", "audio/mpeg")
+        tool = _make_tool(storage, transcription=transcription, categories={"audio"}, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert "passed that size while being read" in result
+        assert transcription.calls == []
+
+
+class TestVisionImageSizeLimit:
+    """a bytes-taking vision backend is sent an image only up to MAX_VISION_IMAGE_BYTES."""
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_VISION_IMAGE_BYTES
+
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider()
+        mid = uuid4()
+        storage.add_media(
+            mid, MediaInfo(mid, "image", "image/jpeg", size_bytes=MAX_VISION_IMAGE_BYTES + 1), _small_jpeg()
+        )
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert storage.download_limits == [], "an image whose recorded size is over the limit was downloaded"
+        assert vision.analyze_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_VISION_IMAGE_BYTES
+
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider("A red square.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe", "analyzer": "TestVision"})
+
+        assert "A red square." in result
+        assert storage.download_limits == [MAX_VISION_IMAGE_BYTES]
+
+    @pytest.mark.asyncio
+    async def test_one_image_over_the_limit_refuses_the_analysis_rather_than_dropping_it(self, monkeypatch):
+        from threetears.agent.tools.builtin import analyze_media
+
+        small = _small_jpeg()
+        monkeypatch.setattr(analyze_media, "MAX_VISION_IMAGE_BYTES", len(small))
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider()
+        fits, too_big = uuid4(), uuid4()
+        storage.add_media(fits, MediaInfo(fits, "image", "image/jpeg"), small)
+        storage.add_media(too_big, MediaInfo(too_big, "image", "image/jpeg"), small + b"-one-byte-more")
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke(
+            {"media_ids": [str(fits), str(too_big)], "question": "Describe", "analyzer": "TestVision"}
+        )
+
+        assert "too large" in result
+        assert str(too_big) in result, "the refusal names the image it could not read"
+        assert vision.analyze_calls == [], "an analysis of the other images would read as an analysis of all of them"
+
+
 class TestAudioVideoRouting:
     """Audio/video should route through transcription."""
 
