@@ -689,6 +689,41 @@ class TestErrorHandling:
             await proxy.fetch("SELECT * FROM foo")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("door", ["fetch", "execute_batch", "transaction"])
+    async def test_a_refused_identity_is_raised_once_and_never_retried(self, door: str) -> None:
+        """the broker's ``IDENTITY_REFUSED`` reaches the caller after exactly one request.
+
+        every L3 door answers a forwarded identity that does not verify with this code. A
+        refresh-less retry would send the same token and be refused the same way, so the proxy
+        must raise it as the failure it is -- not as a data-version refusal the pod waits out,
+        and not after a second request.
+        """
+        mock_nc = MagicMock()
+        mock_nc.request_raw = AsyncMock(
+            return_value=_make_reply(
+                {
+                    "success": False,
+                    "error_code": "IDENTITY_REFUSED",
+                    "error_message": "forwarded identity could not be verified",
+                }
+            )
+        )
+        proxy = _make_proxy(mock_nc)
+
+        with pytest.raises(DataLayerUnavailableError, match="IDENTITY_REFUSED") as raised:
+            if door == "fetch":
+                await proxy.fetch("SELECT * FROM foo")
+            elif door == "execute_batch":
+                await proxy.execute_batch([{"query": "SELECT 1", "params": []}])
+            else:
+                async with proxy.acquire() as conn:
+                    async with conn.transaction():
+                        pass
+
+        assert type(raised.value) is DataLayerUnavailableError
+        assert mock_nc.request_raw.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_nats_timeout_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request_raw = AsyncMock(side_effect=TimeoutError("request timed out"))
