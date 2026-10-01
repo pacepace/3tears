@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A saved handle reads the row it saved, not L1's copy of the key
+
+A new entity read its fields through L1 after a save that cached, so anything that later dropped
+L1's copy of the key -- a `CallerTransaction` settling a key its writes touched, a peer's
+invalidation broadcast, `invalidate_cache`, expiry -- left the handle answering every field as
+missing (`IdentityVersionEntity.version_id` raised on a `None`). Until the unreleased "no scan writes L1"
+change, the next scan of the key happened to re-warm L1 and masked it; identity's
+`test_conn_binds_apply_to_caller_transaction` failed from that commit on. An edit on such a handle
+also wrote L1 before the save reached L3, so a reader in the same process was served it unsaved.
+
+**Behaviour change:** `BaseCollection.save_entity` (synchronous and write-behind) and
+`reload_entity` now always have the entity hold its row (`BaseEntity.hold_row`), exactly as a
+loaded entity does: the row as stored, plus any keys the caller carried that the table does not.
+Its reads answer from that row, and its edits stay on the handle until the next save. A saved
+handle no longer reflects later writes of its key through L1; read the key again (`get`) for the
+current row. `reload_entity` no longer writes L1 outside its fence through `set_data`.
+`HeartbeatCollection.save_entity` and the presence collections' `save_entity` hold their row too.
+A new entity reads through L1 only until its first save.
+
 ### An SLF001 suppression outside a recorded src module fails the build
 
 A leading underscore is a stability contract in `src/` and `tests/` alike (owner ruling,

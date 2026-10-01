@@ -88,6 +88,24 @@ class TestConnectionEntry:
         assert hit.pod_id == "pod-a"
         assert hit.customer_id == "cust"
 
+    async def test_a_saved_handle_reads_its_row_after_l1_drops_the_key(self, bus: InMemoryNatsBus) -> None:
+        """L1 is a cache of L2 here; a peer's broadcast may drop the key, and the handle must not read None."""
+        collection, _ = make_pod(bus)
+        entity = collection.connections.create(
+            {
+                "connection_id": "conn-held",
+                "room_id": "cust:story:main:scene.md",
+                "user_id": "user-1",
+                "pod_id": "pod-a",
+                "customer_id": "cust",
+                "date_last_heartbeat": datetime.now(UTC),
+            }
+        )
+        await collection.connections.save_entity(entity)
+        collection.connections.evict_from_cache_sync("conn-held")
+        assert entity.user_id == "user-1"
+        assert entity.date_updated is not None
+
     async def test_get_unknown_returns_none(self, bus: InMemoryNatsBus) -> None:
         collection, _ = make_pod(bus)
         assert await collection.connections.get("nope") is None
