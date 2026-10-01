@@ -22,6 +22,8 @@ back one careless line at a time:
 from __future__ import annotations
 
 import ast
+import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -480,21 +482,49 @@ class TestReadPathClosesTransaction:
         self,
         redshift_config: RedshiftConnectionConfig,
     ) -> None:
-        """ordering matters: a connection must never enter the cache mid-snapshot."""
+        """ordering matters: a connection must never enter the cache mid-snapshot.
+
+        the release-path rollback is held open while a second caller queries.
+        were the connection already back in the cache, that caller would be
+        handed it mid-snapshot; instead it must log in to a session of its own.
+        """
+        # room for a second caller: a one-connection cache would make it wait on
+        # the open-connection permit, and it could not then tell where the
+        # first connection was.
+        config = redshift_config.model_copy(update={"executor_max_workers": 2, "connection_cache_size": 2})
         conn = build_mock_redshift_connection()
-        cache_state_at_rollback: list[int] = []
+        other = build_mock_redshift_connection()
+        loop = asyncio.get_running_loop()
+        rollback_running = asyncio.Event()
+        second_caller_done = threading.Event()
+        held_until_the_second_caller_finished: list[bool] = []
+
+        def _held_rollback() -> None:
+            loop.call_soon_threadsafe(rollback_running.set)
+            held_until_the_second_caller_finished.append(second_caller_done.wait(timeout=5.0))
+
+        conn.rollback.side_effect = _held_rollback
 
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-            return_value=conn,
-        ):
-            driver = RedshiftDriver(redshift_config)
-            conn.rollback.side_effect = lambda: cache_state_at_rollback.append(len(driver._cache))  # noqa: SLF001
-            await driver.fetch("SELECT 1")
-            assert cache_state_at_rollback, "release path never closed the transaction"
-            assert all(size == 0 for size in cache_state_at_rollback), (
+            side_effect=[conn, other],
+        ) as connect_mock:
+            driver = RedshiftDriver(config)
+            first = asyncio.create_task(driver.fetch("SELECT 'first caller'"))
+            await asyncio.wait_for(rollback_running.wait(), timeout=5.0)
+            try:
+                await driver.fetch("SELECT 'second caller'")
+            finally:
+                second_caller_done.set()
+            await first
+            assert held_until_the_second_caller_finished == [True], (
+                "release path never closed the transaction, or the second caller could not run while it did"
+            )
+            assert connect_mock.call_count == 2, (
                 "the connection was already back in the cache when the transaction closed"
             )
+            assert [entry["sql"] for entry in conn.statement_log] == ["SELECT 'first caller'"]
+            assert [entry["sql"] for entry in other.statement_log] == ["SELECT 'second caller'"]
             await driver.close()
 
     @pytest.mark.asyncio

@@ -13,7 +13,9 @@ deterministically.
 from __future__ import annotations
 
 import asyncio
+import gc
 import socket
+import threading
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +28,8 @@ from threetears.datasources.drivers import (
     DriverConnectError,
     DriverMissingCredentialError,
 )
+from threetears.datasources.drivers._redshift_connector_internals import connection_socket
+from threetears.datasources.drivers._sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.redshift_driver import (
     RedshiftDriver,
     _CANCEL_TIMEOUT_SECONDS,
@@ -81,7 +85,6 @@ def _build_mock_connection(
     description: list[tuple[str, Any]] | None = None,
     fetchone_row: tuple[Any, ...] | None = None,
     fetchmany_chunks: list[list[tuple[Any, ...]]] | None = None,
-    usock: MagicMock | None = None,
 ) -> MagicMock:
     """build a MagicMock that behaves like a ``redshift_connector.Connection``.
 
@@ -98,10 +101,8 @@ def _build_mock_connection(
     :param fetchmany_chunks: successive return values for fetchmany;
         the final element should be ``[]`` to terminate the loop
     :ptype fetchmany_chunks: list[list[tuple]] | None
-    :param usock: the socket the connection talks over, for a test asserting on what the driver
-        does to it; a fresh mock otherwise
-    :ptype usock: MagicMock | None
-    :return: connection mock with cursor/close/commit wired
+    :return: connection mock with cursor/close/commit wired; the cursor every
+        ``conn.cursor()`` call returns is on ``conn.recorded_cursor``
     :rtype: MagicMock
     """
     conn = MagicMock(name="MockRedshiftConn")
@@ -119,11 +120,7 @@ def _build_mock_connection(
     conn.commit = MagicMock(return_value=None)
     conn.close = MagicMock(return_value=None)
     # surface the cursor on the conn mock for assertions.
-    conn._cursor = cursor  # noqa: SLF001 - test surface only
-    if usock is not None:
-        # the stand-in reproduces redshift_connector's private socket slot, because that slot is
-        # what the driver reads; the test then asserts on its own socket object.
-        conn._usock = usock  # noqa: SLF001 - mirrors the third-party slot the driver reads
+    conn.recorded_cursor = cursor
     return conn
 
 
@@ -167,68 +164,173 @@ def redshift_config() -> RedshiftConnectionConfig:
     )
 
 
+async def _fetch_without_a_password(**driver_kwargs: Any) -> None:
+    """run one query on a driver whose config names no password, so it refuses by name.
+
+    the refusal names the datasource the driver was built for, which is how a test reads
+    the ``datasource_name`` a driver carries without reaching into it.
+
+    :param driver_kwargs: keyword arguments for :class:`RedshiftDriver`
+    :ptype driver_kwargs: Any
+    :return: nothing; raises :class:`DriverMissingCredentialError`
+    :rtype: None
+    """
+    config = RedshiftConnectionConfig(
+        datasource_type=DataSourceType.REDSHIFT,
+        host="rs.example.com",
+        database="analytics",
+        username="rs_user",
+        password_ref=None,
+    )
+    driver = RedshiftDriver(config, **driver_kwargs)
+    try:
+        await driver.fetch("SELECT 1")
+    finally:
+        await driver.close()
+
+
+async def _cache_both(driver: RedshiftDriver, first: MagicMock, second: MagicMock) -> None:
+    """put two connections in ``driver``'s cache the way production does: two concurrent queries.
+
+    each query's statement waits until both are in flight, so the driver must open a second
+    connection rather than reuse the first; both go back to the cache on release.
+
+    :param driver: a driver with ``connection_cache_size`` of at least two
+    :ptype driver: RedshiftDriver
+    :param first: the connection the first login returns
+    :ptype first: MagicMock
+    :param second: the connection the second login returns
+    :ptype second: MagicMock
+    :return: nothing
+    :rtype: None
+    """
+    both_in_flight = threading.Barrier(2, timeout=5.0)
+
+    def _wait_for_the_other(*args: Any, **kwargs: Any) -> None:
+        if args and _is_open_setup_stmt(args[0]):
+            return
+        both_in_flight.wait()
+
+    for conn in (first, second):
+        conn.recorded_cursor.execute.side_effect = _wait_for_the_other
+    with patch(
+        "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+        side_effect=[first, second],
+    ):
+        await asyncio.gather(driver.fetch("SELECT 1"), driver.fetch("SELECT 2"))
+
+
+async def _assert_next_query_logs_in_afresh(driver: RedshiftDriver, evicted: MagicMock) -> None:
+    """assert ``evicted`` is out of the cache: the next query logs in again and never runs on it.
+
+    :param driver: the driver that should have dropped ``evicted``
+    :ptype driver: RedshiftDriver
+    :param evicted: the connection that must not be handed out again
+    :ptype evicted: MagicMock
+    :return: nothing
+    :rtype: None
+    """
+    fresh = _build_mock_connection(fetchall_rows=[], description=[])
+    with patch(
+        "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+        return_value=fresh,
+    ) as connect_mock:
+        await driver.fetch("SELECT 'after eviction'")
+    connect_mock.assert_called_once()
+    assert any(c.args and c.args[0] == "SELECT 'after eviction'" for c in fresh.recorded_cursor.execute.call_args_list)
+    assert not any(
+        c.args and c.args[0] == "SELECT 'after eviction'" for c in evicted.recorded_cursor.execute.call_args_list
+    )
+
+
 # ---------------------------------------------------------------------------
 # Construction + lifecycle
 # ---------------------------------------------------------------------------
 
 
 class TestConstruction:
-    """``__init__`` stores config + bridge + cache; no I/O."""
+    """``__init__`` captures config + bridge + cache; no I/O."""
 
-    def test_init_does_not_open_connection(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """constructing the driver does NOT open a redshift connection."""
-        with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect") as connect_mock:
+    @pytest.mark.asyncio
+    async def test_init_does_not_open_connection(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """constructing the driver opens nothing; the first query opens one, with the config's identity."""
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ) as connect_mock:
             driver = RedshiftDriver(redshift_config)
-            assert driver._config is redshift_config  # noqa: SLF001
-            assert driver._closed is False  # noqa: SLF001
-            assert len(driver._cache) == 0  # noqa: SLF001
             connect_mock.assert_not_called()
+            # not closed at construction: a query goes through, and it is a cache MISS
+            # (the cache starts empty), logging in with the config it was built from.
+            await driver.fetch("SELECT 1")
+            connect_mock.assert_called_once()
+            kwargs = connect_mock.call_args.kwargs
+            assert (kwargs["host"], kwargs["port"], kwargs["database"], kwargs["user"]) == (
+                redshift_config.host,
+                redshift_config.port,
+                redshift_config.database,
+                redshift_config.username,
+            )
+            await driver.close()
 
     def test_init_bridge_sized_from_config(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """bridge's executor max_workers matches ``executor_max_workers``."""
-        driver = RedshiftDriver(redshift_config)
-        # public surface on AsyncSyncBridge
-        assert driver._bridge.max_workers == 2  # noqa: SLF001
+        """the bridge is built with ``executor_max_workers`` from the config."""
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.AsyncSyncBridge",
+            wraps=AsyncSyncBridge,
+        ) as bridge_cls:
+            RedshiftDriver(redshift_config)
+        assert bridge_cls.call_args.kwargs["max_workers"] == 2
 
-    def test_init_datasource_name_default_is_unknown(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """omitting ``datasource_name`` defaults to ``"unknown"``."""
-        driver = RedshiftDriver(redshift_config)
-        assert driver._datasource_name == "unknown"  # noqa: SLF001
+    @pytest.mark.asyncio
+    async def test_init_datasource_name_default_is_unknown(self) -> None:
+        """omitting ``datasource_name`` defaults to ``"unknown"`` -- the name a refusal reports."""
+        with pytest.raises(DriverMissingCredentialError, match="datasource 'unknown'"):
+            await _fetch_without_a_password()
 
-    def test_init_datasource_name_captured(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """passing ``datasource_name`` is stored for metric tagging."""
-        driver = RedshiftDriver(redshift_config, datasource_name="ots")
-        assert driver._datasource_name == "ots"  # noqa: SLF001
+    @pytest.mark.asyncio
+    async def test_init_datasource_name_captured(self) -> None:
+        """a passed ``datasource_name`` is the name the driver reports itself under."""
+        with pytest.raises(DriverMissingCredentialError, match="datasource 'ots'"):
+            await _fetch_without_a_password(datasource_name="ots")
 
-    def test_init_registers_finalize(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """:func:`weakref.finalize` is registered for pod-crash mitigation."""
-        driver = RedshiftDriver(redshift_config)
-        # the finalize is alive until detach() / GC.
-        assert driver._finalize.alive  # noqa: SLF001
+    @pytest.mark.asyncio
+    async def test_init_registers_finalize(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """a driver collected without ``close`` still closes its cached connection (pod-crash mitigation)."""
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.fetch("SELECT 1")
+        conn.close.assert_not_called()
+        del driver
+        gc.collect()
+        conn.close.assert_called_once()
 
-    def test_finalize_drains_cache_added_after_init(
+    @pytest.mark.asyncio
+    async def test_finalize_drains_cache_added_after_init(
         self,
         redshift_config: RedshiftConnectionConfig,
     ) -> None:
         """finalize closes connections added to the cache POST-init.
 
         regression guard for the bug where ``weakref.finalize`` was
-        registered with ``list(self._cache)`` -- a snapshot at init
-        time, when the cache is empty due to lazy-fill. the finalize
-        MUST see the live cache state at GC time so connections added
-        between init and GC actually get closed.
+        registered with a snapshot of the cache at init time, when the
+        cache is empty due to lazy-fill. the finalize MUST see the live
+        cache state at GC time so connections added between init and GC
+        actually get closed.
         """
         driver = RedshiftDriver(redshift_config)
         c1 = _build_mock_connection()
         c2 = _build_mock_connection()
-        driver._cache.append(c1)  # noqa: SLF001
-        driver._cache.append(c2)  # noqa: SLF001
-        # directly invoke the finalize (simulates GC-time invocation).
-        # this exercises the ``self._cache`` reference the finalize
-        # captured at __init__; a snapshot would close nothing.
-        driver._finalize()  # noqa: SLF001
-        c1.close.assert_called()
-        c2.close.assert_called()
+        await _cache_both(driver, c1, c2)
+        del driver
+        gc.collect()
+        c1.close.assert_called_once()
+        c2.close.assert_called_once()
 
 
 class TestClose:
@@ -236,26 +338,36 @@ class TestClose:
 
     @pytest.mark.asyncio
     async def test_close_idempotent(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """second :meth:`close` is a no-op."""
-        driver = RedshiftDriver(redshift_config)
+        """second :meth:`close` is a no-op: it neither raises nor closes anything twice."""
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.fetch("SELECT 1")
         await driver.close()
-        assert driver._closed is True  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="closed"):
+            await driver.fetch("SELECT 1")
         # second call: no-op
         await driver.close()
+        conn.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_close_drains_cache(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """every cached connection has ``close`` called on close()."""
+        """every cached connection has ``close`` called on close(), exactly once."""
         driver = RedshiftDriver(redshift_config)
-        # inject two mock connections into the cache
         c1 = _build_mock_connection()
         c2 = _build_mock_connection()
-        driver._cache.append(c1)  # noqa: SLF001
-        driver._cache.append(c2)  # noqa: SLF001
+        await _cache_both(driver, c1, c2)
         await driver.close()
-        c1.close.assert_called()
-        c2.close.assert_called()
-        assert len(driver._cache) == 0  # noqa: SLF001
+        c1.close.assert_called_once()
+        c2.close.assert_called_once()
+        # nothing is left behind for the GC-time drain to close again.
+        del driver
+        gc.collect()
+        c1.close.assert_called_once()
+        c2.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_methods_reject_after_close(self, redshift_config: RedshiftConnectionConfig) -> None:
@@ -286,11 +398,19 @@ class TestClose:
 
     @pytest.mark.asyncio
     async def test_close_detaches_finalize(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """post-close, the weakref finalize is detached."""
-        driver = RedshiftDriver(redshift_config)
+        """post-close, the GC-time drain is detached: a closed connection is not closed again."""
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.fetch("SELECT 1")
         await driver.close()
-        # detached finalize is no longer alive
-        assert not driver._finalize.alive  # noqa: SLF001
+        conn.close.assert_called_once()
+        del driver
+        gc.collect()
+        conn.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -317,8 +437,9 @@ class TestConnectionCaching:
             assert rows == [{"a": 1, "b": "alpha"}]
             # connect called once on miss
             connect_mock.assert_called_once()
-            # connection released back to cache
-            assert len(driver._cache) == 1  # noqa: SLF001
+            # connection released back to cache: the next query reuses it
+            await driver.fetch("SELECT a, b FROM t")
+            connect_mock.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_connect_passes_default_sslmode(self, redshift_config: RedshiftConnectionConfig) -> None:
@@ -340,8 +461,9 @@ class TestConnectionCaching:
         via setsockopt on the underlying socket -- passing them as connect kwargs raises
         TypeError (the regression that silently broke every datasource connection).
         """
-        usock = MagicMock(name="MockRedshiftSocket")
-        conn = _build_mock_connection(fetchall_rows=[], description=[], usock=usock)
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        # the socket the driver sees, read through the one module that owns the access.
+        usock = connection_socket(conn)
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
@@ -413,7 +535,7 @@ class TestConnectionCaching:
             await driver.fetch("SELECT 1")
             # the cursor saw at least one execute call with the
             # statement_timeout SQL (plus the fetch's own execute).
-            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            calls = conn.recorded_cursor.execute.call_args_list
             stmt_timeout_calls = [c for c in calls if c.args and _is_set_stmt_timeout(c.args[0])]
             assert len(stmt_timeout_calls) == 1
             # ms value is inlined into the SQL (Redshift rejects
@@ -454,7 +576,7 @@ class TestSetSearchPathOnOpen:
         ):
             driver = RedshiftDriver(config)
             await driver.fetch("SELECT 1")
-            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            calls = conn.recorded_cursor.execute.call_args_list
             search_path_calls = [c for c in calls if c.args and c.args[0].startswith("SET search_path")]
             assert len(search_path_calls) == 1, (
                 f"expected exactly one SET search_path on open, got {len(search_path_calls)}: "
@@ -493,7 +615,7 @@ class TestSetSearchPathOnOpen:
             await driver.fetch("SELECT 1")  # miss -> open (SET on open)
             await driver.fetch("SELECT 2")  # hit -> re-apply (SET on cache-hit)
             connect_mock.assert_called_once()  # second fetch reused the connection
-            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            calls = conn.recorded_cursor.execute.call_args_list
             search_path_calls = [c for c in calls if c.args and c.args[0].startswith("SET search_path")]
             assert len(search_path_calls) == 2, (
                 f"expected SET search_path on open AND cache-hit, got {len(search_path_calls)}"
@@ -514,7 +636,7 @@ class TestSetSearchPathOnOpen:
         ):
             driver = RedshiftDriver(redshift_config)
             await driver.fetch("SELECT 1")
-            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            calls = conn.recorded_cursor.execute.call_args_list
             search_path_calls = [c for c in calls if c.args and c.args[0].startswith("SET search_path")]
             assert search_path_calls == [], (
                 f"expected zero SET search_path statements, got: {[c.args[0] for c in search_path_calls]}"
@@ -540,7 +662,7 @@ class TestSetSearchPathOnOpen:
         ):
             driver = RedshiftDriver(config)
             await driver.fetch("SELECT 1")
-            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            calls = conn.recorded_cursor.execute.call_args_list
             search_path_calls = [c for c in calls if c.args and c.args[0].startswith("SET search_path")]
             assert len(search_path_calls) == 1
             # internal double-quote is doubled per SQL-standard quoting
@@ -570,7 +692,7 @@ class TestSetSearchPathOnOpen:
         ):
             driver = RedshiftDriver(config)
             await driver.fetch("SELECT 1")
-            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            calls = conn.recorded_cursor.execute.call_args_list
             set_calls = [c.args[0] for c in calls if c.args and c.args[0].startswith("SET ")]
             assert len(set_calls) >= 2
             timeout_idx = next(i for i, s in enumerate(set_calls) if _is_set_stmt_timeout(s))
@@ -605,9 +727,7 @@ class TestQueryRouting:
             await driver.fetch("SELECT $1, $2", 1, "x")
             # find the non-statement_timeout execute call
             calls = [
-                c
-                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_open_setup_stmt(c.args[0])
+                c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             assert len(calls) == 1
             assert calls[0].args[0] == "SELECT %s, %s"
@@ -628,9 +748,7 @@ class TestQueryRouting:
             rows = await driver.list_tables(["s1"])
             assert rows == [{"table_schema": "s1", "table_name": "t1"}]
             calls = [
-                c
-                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_open_setup_stmt(c.args[0])
+                c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             # SQL is built from template + IN-clause placeholder for one schema
             expected_sql = _REDSHIFT_TABLES_SQL_TEMPLATE.format(placeholders="%s")
@@ -664,9 +782,7 @@ class TestQueryRouting:
             assert rows[1]["is_nullable"] == "YES"
             assert isinstance(rows[0]["is_nullable"], str)
             calls = [
-                c
-                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_open_setup_stmt(c.args[0])
+                c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             expected_sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders="%s")
             assert calls[0].args[0] == expected_sql
@@ -692,9 +808,7 @@ class TestQueryRouting:
             hashes = await driver.table_hashes(["s1"])
             assert hashes == {("s1", "t1"): "abc123"}
             calls = [
-                c
-                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_open_setup_stmt(c.args[0])
+                c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             expected_sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders="%s")
             assert calls[0].args[0] == expected_sql
@@ -735,9 +849,7 @@ class TestTestConnection:
             await driver.test_connection()
             # the PING SQL was issued
             calls = [
-                c
-                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_open_setup_stmt(c.args[0])
+                c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             assert any(c.args[0] == _PING_SQL for c in calls)
 
@@ -908,8 +1020,8 @@ class TestFetchIter:
             # arraysize attribute was set on the cursor (>=1000 per
             # module constant; we don't import to avoid coupling, just
             # check it's a positive int)
-            assert isinstance(conn._cursor.arraysize, int)  # noqa: SLF001
-            assert conn._cursor.arraysize > 0  # noqa: SLF001
+            assert isinstance(conn.recorded_cursor.arraysize, int)
+            assert conn.recorded_cursor.arraysize > 0
 
 
 # ---------------------------------------------------------------------------
@@ -944,7 +1056,7 @@ class TestCancellation:
             # safety bail
             return
 
-        conn._cursor.execute.side_effect = _blocking_execute  # noqa: SLF001
+        conn.recorded_cursor.execute.side_effect = _blocking_execute
 
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
@@ -959,8 +1071,8 @@ class TestCancellation:
                 await task
             # the connection was closed via the cancel path
             conn.close.assert_called()
-            # cache should not contain the poisoned connection
-            assert conn not in driver._cache  # noqa: SLF001
+            # the poisoned connection is not handed to the next caller
+            await _assert_next_query_logs_in_afresh(driver, conn)
             await driver.close()
 
     @pytest.mark.asyncio
@@ -1001,7 +1113,7 @@ class TestCancellation:
             time.sleep(_CANCEL_TIMEOUT_SECONDS + 2)
             # release after the wait_for has already fired
 
-        conn._cursor.execute.side_effect = _blocking_execute  # noqa: SLF001
+        conn.recorded_cursor.execute.side_effect = _blocking_execute
         conn.close.side_effect = _hanging_close
 
         with patch(
@@ -1053,8 +1165,13 @@ class TestBackendPidCancel:
         ):
             driver = RedshiftDriver(redshift_config)
             await driver.fetch("SELECT 1")
-            assert driver._backend_pids.get(conn) == 4242  # noqa: SLF001
             await driver.close()
+        # the pid is read once, at open, on the connection itself; the cancel path terminating
+        # exactly this pid is pinned by the test below.
+        pid_reads = [
+            c for c in conn.recorded_cursor.execute.call_args_list if c.args and c.args[0] == "SELECT pg_backend_pid()"
+        ]
+        assert len(pid_reads) == 1
 
     @pytest.mark.asyncio
     async def test_cancellation_terminates_backend_via_fresh_connection(
@@ -1085,7 +1202,7 @@ class TestBackendPidCancel:
                 time.sleep(0.05)
             return
 
-        main_conn._cursor.execute.side_effect = _blocking_execute  # noqa: SLF001
+        main_conn.recorded_cursor.execute.side_effect = _blocking_execute
 
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
@@ -1102,15 +1219,15 @@ class TestBackendPidCancel:
             # the fresh connection executed pg_terminate_backend(4242)
             terminate_calls = [
                 c.args[0]
-                for c in terminate_conn._cursor.execute.call_args_list  # noqa: SLF001
+                for c in terminate_conn.recorded_cursor.execute.call_args_list
                 if c.args and "pg_terminate_backend" in c.args[0]
             ]
             assert len(terminate_calls) == 1
             assert "4242" in terminate_calls[0]
             # the client socket is still closed + evicted (unchanged path)
             main_conn.close.assert_called()
-            assert main_conn not in driver._cache  # noqa: SLF001
-            await driver.close()
+        await _assert_next_query_logs_in_afresh(driver, main_conn)
+        await driver.close()
 
     @pytest.mark.asyncio
     async def test_backend_terminate_failure_is_nonfatal(
@@ -1137,7 +1254,7 @@ class TestBackendPidCancel:
                 time.sleep(0.05)
             return
 
-        main_conn._cursor.execute.side_effect = _blocking_execute  # noqa: SLF001
+        main_conn.recorded_cursor.execute.side_effect = _blocking_execute
 
         # first connect returns the main conn; the cancel path's fresh
         # connect raises -- the terminate must degrade non-fatally.
@@ -1165,8 +1282,8 @@ class TestBackendPidCancel:
             assert any("terminate" in r.getMessage().lower() for r in warnings)
             # the client socket close + evict still ran.
             main_conn.close.assert_called()
-            assert main_conn not in driver._cache  # noqa: SLF001
-            await driver.close()
+        await _assert_next_query_logs_in_afresh(driver, main_conn)
+        await driver.close()
 
     @pytest.mark.asyncio
     async def test_backend_pid_read_failure_nonfatal_on_open(
@@ -1183,21 +1300,44 @@ class TestBackendPidCancel:
         def _fetchone_side_effect(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("pg_backend_pid read failed")
 
-        conn._cursor.fetchone.side_effect = _fetchone_side_effect  # noqa: SLF001
+        conn.recorded_cursor.fetchone.side_effect = _fetchone_side_effect
 
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
-        ):
+        ) as connect_mock:
             driver = RedshiftDriver(redshift_config)
             # the connection still opens and the fetch succeeds despite
             # the pid read failing.
             rows = await driver.fetch("SELECT 1 AS ok")
             assert rows == [{"ok": 1}]
-            # pid absent because the read failed
-            assert driver._backend_pids.get(conn) is None  # noqa: SLF001
             warnings = [r for r in caplog.records if r.levelname == "WARNING"]
             assert any("pid" in r.getMessage().lower() for r in warnings)
+
+            # pid absent because the read failed: cancelling a query on this
+            # connection has no backend to terminate, so no terminate login is made.
+            execute_blocked = asyncio.Event()
+            loop = asyncio.get_running_loop()
+
+            def _blocking_execute(*args: Any, **kwargs: Any) -> None:
+                if args and _is_open_setup_stmt(args[0]):
+                    return
+                loop.call_soon_threadsafe(execute_blocked.set)
+                import time
+
+                for _ in range(100):
+                    if conn.close.called:
+                        return
+                    time.sleep(0.05)
+
+            conn.recorded_cursor.execute.side_effect = _blocking_execute
+            task = asyncio.create_task(driver.fetch("SELECT pg_sleep(60)"))
+            await asyncio.wait_for(execute_blocked.wait(), timeout=2.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            connect_mock.assert_called_once()
+            conn.close.assert_called()
             await driver.close()
 
 
@@ -1238,12 +1378,12 @@ class TestRollbackOnError:
                 return
             raise _ProgrammingError("relation does not exist")
 
-        conn._cursor.execute.side_effect = _execute_side_effect  # noqa: SLF001
+        conn.recorded_cursor.execute.side_effect = _execute_side_effect
 
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
-        ):
+        ) as connect_mock:
             driver = RedshiftDriver(redshift_config)
             with pytest.raises(_ProgrammingError, match="relation does not exist"):
                 await driver.fetch("SELECT * FROM missing")
@@ -1252,7 +1392,14 @@ class TestRollbackOnError:
             conn.rollback.assert_called_once()
             # connection survived: it's the one in the cache, ready
             # for the next caller (post-rollback the session is clean)
-            assert list(driver._cache) == [conn]  # noqa: SLF001
+            # -- the next query runs on it, with no new login.
+            with pytest.raises(_ProgrammingError):
+                await driver.fetch("SELECT * FROM missing_again")
+            connect_mock.assert_called_once()
+            assert any(
+                c.args and c.args[0] == "SELECT * FROM missing_again"
+                for c in conn.recorded_cursor.execute.call_args_list
+            )
             await driver.close()
 
     @pytest.mark.asyncio
@@ -1275,7 +1422,7 @@ class TestRollbackOnError:
                 return
             raise _ProgrammingError("relation does not exist")
 
-        conn._cursor.execute.side_effect = _execute_side_effect  # noqa: SLF001
+        conn.recorded_cursor.execute.side_effect = _execute_side_effect
         conn.rollback.side_effect = _RollbackError("connection broken")
 
         with patch(
@@ -1290,7 +1437,7 @@ class TestRollbackOnError:
                 await driver.fetch("SELECT * FROM missing")
             # the doubly-poisoned connection is NOT in the cache:
             # never hand a broken connection to the next caller.
-            assert conn not in driver._cache  # noqa: SLF001
+            await _assert_next_query_logs_in_afresh(driver, conn)
             # WARNING captured so the rollback failure is not silently
             # swallowed even though it does not replace the raised
             # exception. matches the project no-silent-swallow rule.
@@ -1335,7 +1482,7 @@ class TestRollbackOnError:
                 raise _ProgrammingError("relation does not exist")
             return None
 
-        conn._cursor.execute.side_effect = _execute_side_effect  # noqa: SLF001
+        conn.recorded_cursor.execute.side_effect = _execute_side_effect
 
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
