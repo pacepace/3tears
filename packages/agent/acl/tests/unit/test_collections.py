@@ -617,7 +617,13 @@ class TestEnsureGroupRoleAssignment:
         )
         assert assignment_id == existing_id
         assert created is False
-        pool.execute.assert_not_awaited()
+        # the insert goes through fetchval (``ON CONFLICT DO NOTHING RETURNING``),
+        # so that is the call that must not happen; and no statement on ANY pool
+        # method may be an INSERT, so moving the write to another method still fails.
+        pool.fetchval.assert_not_awaited()
+        statements = [call.args[0] for call in pool.mock_calls if call.args and isinstance(call.args[0], str)]
+        assert statements, "the lookup was not seen; the no-INSERT check below would be vacuous"
+        assert not [sql for sql in statements if "INSERT" in sql.upper()], statements
 
     @pytest.mark.asyncio
     async def test_inserts_new_when_absent(self) -> None:
