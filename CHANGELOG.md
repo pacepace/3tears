@@ -56,6 +56,9 @@ update sending `NULL` for a `NOT NULL` default column, whose stored value the UP
   completed row still leaves a column to the database read it from L3 once the write commits,
   and cache that in L2 and L1 and on the saving handle. A read back that fails caches nothing
   and drops the key from L1 and L2; the save still succeeds, and the next read goes to L3.
+  A key the caller carried that the stored row does not (a column the table does not declare,
+  such as the hub's own `spec` on a capability source) stays on the saving handle, and only
+  there: the tiers hold what an L3 read gives.
 - **A write ahead of L3 refuses such a row.** A write-behind `save_entity` or assignment, and
   `l2_cas_mutate` on a collection with an L3 pool, put the row in L2 before L3 has it, so there
   is nothing to read back: they raise `ValueError`, naming the columns, before any tier takes

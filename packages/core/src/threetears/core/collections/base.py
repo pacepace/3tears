@@ -2680,10 +2680,14 @@ class BaseCollection(ABC, Generic[EntityT]):
                 else:
                     entity.original_date_updated = stored.get("date_updated")
                     cached = await self._cache_committed_row(entity_id, stored, before, ticket)
-                    if not cached or entity.holds_row:
+                    # a key the stored row does not carry is one this table does not hold: the
+                    # caller's own, which a read back cannot speak to. the handle keeps it; the
+                    # tiers do not, since they hold what an L3 read gives.
+                    carried = {key: value for key, value in data.items() if key not in stored}
+                    if not cached or entity.holds_row or carried:
                         # the handle still reads what it saved, as on a collection with no L1; an
                         # entity that holds its row keeps holding it, now the row as stored.
-                        entity.hold_row(stored)
+                        entity.hold_row({**carried, **stored})
 
         await self._publish_invalidation(entity_id)
         if generation_failure is not None:

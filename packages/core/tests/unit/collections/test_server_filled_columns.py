@@ -255,6 +255,34 @@ class TestASynchronousWriteCachesTheRowL3Holds:
         assert (served.target_version, served.max_tables) == (0, 50), "a replica reading L2 got the partial row"
 
     @pytest.mark.asyncio
+    async def test_the_saving_handle_keeps_what_it_carried_that_the_table_does_not_declare(self) -> None:
+        """a key the schema does not declare is the caller's, not the store's: the read back cannot drop it.
+
+        The hub's capability-source create carries hub-owned columns (``spec``, the faces) on the
+        entity, saves the schema's columns, writes its own after, and hands the entity on. Once the
+        read back replaced the handle's row with the stored one, ``entity.spec`` raised
+        ``AttributeError`` and every source create answered 500 (pre-PR live validation,
+        2026-10-01). The tiers still hold only the row L3 holds.
+
+        No L1 here, as for the hub's capability sources: an L1 table built from the schema has no
+        column for an undeclared key, so the handle loses it at ``create``, before any save.
+        """
+        nats, store = FakeNatsClient(), _FakeDefaultingStore(_SCHEMA)
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=None, l2_client=nats, l3_pool=store, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        coll = _Ledger(registry, _config())
+        entity = coll.create({"id": _ID, "label": "first", "spec": {"openapi": "3.1.0"}})
+        assert entity.spec == {"openapi": "3.1.0"}, "the handle no longer carries the key before the save"
+        await coll.save_entity(entity)
+
+        assert store.fetches == 1, "the row left server defaults, so it was read back"
+        assert entity.target_version == 0, "the handle holds the row as stored"
+        assert entity.spec == {"openapi": "3.1.0"}, "the handle lost a key the caller carried"
+        l2 = await _l2_row(nats)
+        assert l2 is not None
+        assert "spec" not in l2, "L2 took a key L3 does not hold"
+
+    @pytest.mark.asyncio
     async def test_a_whole_row_is_cached_without_reading_l3_back(self) -> None:
         nats, store = FakeNatsClient(), _FakeDefaultingStore(_SCHEMA)
         coll = _ledger(nats, store)
