@@ -580,6 +580,9 @@ class TestConversationFolderId:
                 "folder_id": folder_id,
                 "status": "active",
                 "summary": None,
+                # a row read from L3 carries every declared column, the trigger-maintained
+                # search_vector included; without it the save reads the row back from the pool
+                "search_vector": None,
                 "date_created": now,
                 "date_updated": now,
                 "date_last_message": None,

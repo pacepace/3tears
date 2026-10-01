@@ -1526,6 +1526,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
     schema: ClassVar[TableSchema]
     partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
+    #: whether every L3 write this collection makes is a statement generated from :attr:`schema`,
+    #: so :meth:`complete_written_row` may fill in the columns those statements write ``NULL``.
+    #: ``None`` infers it: ``True`` unless the subclass overrides :meth:`save_to_store`. A
+    #: subclass whose override only wraps the generated write (calls ``super().save_to_store``
+    #: for every row it writes) declares ``True``; one that writes its own SQL leaves it inferred.
+    stores_through_generated_sql: ClassVar[bool | None] = None
     # lazily-built (underlying_pool, SqlL3Backend) cache for the case where a raw
     # transport is assigned directly to ``l3_pool`` (registry not in play); keeps the
     # on-demand wrapper stable across CRUD calls. ``None`` until first wrap.
@@ -1640,6 +1646,74 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         """
         store = self._durable_store()
         return self.schema.declares_l2_order and (store is None or isinstance(store, OrderedDurableStore))
+
+    def complete_written_row(self, data: dict[str, Any]) -> dict[str, Any]:
+        """``data`` with each declared column every generated statement stores as ``NULL`` filled in.
+
+        see :meth:`BaseCollection.complete_written_row`. a nullable, mutable, non-key column with no
+        ``server_default`` that ``data`` leaves out is written ``NULL`` by every statement this
+        collection generates: the INSERT names it (:func:`~threetears.core.backends.schema_sql
+        .pull_value` answers ``None``), its ``DO UPDATE SET`` and the fenced UPDATE both set it. so
+        its stored value is known without reading it, and the row is completed with it.
+
+        only while this collection's L3 writes are the generated statements
+        (:attr:`stores_through_generated_sql`): a subclass that writes its own SQL may leave such a
+        column out of an UPDATE and keep its stored value, so nothing is completed for it, and
+        :meth:`columns_decided_by_store` sends the row to a read back.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: ``data`` with those columns present as ``None``; ``data`` itself when none is missing
+            or this collection writes its own SQL
+        :rtype: dict[str, Any]
+        """
+        generated = self.stores_through_generated_sql
+        if generated is None:
+            generated = type(self).save_to_store is SchemaBackedCollection.save_to_store
+        known_nulls = [
+            col.name
+            for col in self.schema.columns
+            if generated
+            and col.name not in data
+            and col.nullable
+            and not col.immutable
+            and col.server_default is None
+            and col.name not in self.schema.pk_columns
+        ]
+        completed = {**data, **dict.fromkeys(known_nulls)} if known_nulls else data
+        return completed
+
+    def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """the declared columns whose stored value writing ``data`` leaves to the database.
+
+        see :meth:`BaseCollection.columns_decided_by_store` for what the framework does with the
+        answer. two shapes, both read off the schema:
+
+        * a declared column ``data`` does not name. the generated INSERT drops it when it has a
+          ``server_default`` and the database fills the default in; an immutable one is kept by
+          any update of an existing row; a statement this collection writes itself may keep any
+          of them. none of those is knowable from ``data``. (the framework asks after
+          :meth:`complete_written_row`, so a column every generated statement writes ``NULL`` is
+          already present.)
+        * a ``NOT NULL`` ``server_default`` column ``data`` names as ``None``. the fenced UPDATE
+          skips it and keeps the stored value (:func:`~threetears.core.backends.schema_sql
+          .cas_mutable_columns_for_data`).
+
+        conservative by construction: a column it names costs one read of the row after the
+        commit, while a column it missed would be served wrong from every tier.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the names of the columns the database decides, in declared order
+        :rtype: tuple[str, ...]
+        """
+        decided: list[str] = []
+        for col in self.schema.columns:
+            if col.name not in data:
+                decided.append(col.name)
+            elif col.server_default is not None and not col.nullable and data[col.name] is None:
+                decided.append(col.name)
+        return tuple(decided)
 
     async def save_ordered_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
         """persist a compare-and-swap row fenced on its order, via the ordered durable store.

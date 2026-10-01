@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A row the database completes is cached as L3 holds it, never as it was sent
+
+A save that named only some of a table's columns, leaving the rest to their server defaults,
+cached the dict it sent on every tier: L1, L2, and every replica reading L2 served a row without
+the columns the database filled in. The hub's data-space ledger answered 500 on the missing
+`target_version` (found in the pre-PR live validation, 2026-09-30). The same held for a fenced
+update sending `NULL` for a `NOT NULL` default column, whose stored value the UPDATE keeps.
+
+- **`BaseCollection.columns_decided_by_store(data)`** (new public extension point) names the
+  columns whose stored value a write leaves to the database. `SchemaBackedCollection` answers
+  from its schema: a declared column the row leaves out, and a `NOT NULL` `server_default`
+  column it sends as `None`. The default names none.
+- **`BaseCollection.complete_written_row(data)`** (new public extension point) fills in the
+  columns a write stores as a value known before it runs. `SchemaBackedCollection` fills `None`
+  into each nullable, mutable, non-key column with no `server_default` that every generated
+  statement writes `NULL`, so a row leaving only those out costs no read.
+- **`SchemaBackedCollection.stores_through_generated_sql`** (new class attribute) says whether
+  every L3 write is a generated statement, which is what makes that completion sound. Inferred
+  (`None`) as "unless `save_to_store` is overridden"; `CoordinationCollection` declares `True`,
+  since its override only answers for a registry with no L3.
+- **A synchronous write reads the row back.** `save_entity` and a subscript assignment whose
+  completed row still leaves a column to the database read it from L3 once the write commits,
+  and cache that in L2 and L1 and on the saving handle. A read back that fails caches nothing
+  and drops the key from L1 and L2; the save still succeeds, and the next read goes to L3.
+- **A write ahead of L3 refuses such a row.** A write-behind `save_entity` or assignment, and
+  `l2_cas_mutate` on a collection with an L3 pool, put the row in L2 before L3 has it, so there
+  is nothing to read back: they raise `ValueError`, naming the columns, before any tier takes
+  it. Name every column in the row.
+- A collection with no L3 pool is its own record and is never read back or refused.
+- Remaining, not fixed here: a save joining a caller's transaction (`conn=`) caches nothing,
+  as before, but its handle still holds the row as sent until reloaded; and an insert that
+  meets an existing row under `ON CONFLICT DO UPDATE` keeps that row's immutable columns while
+  the cache takes the values sent; and a column a trigger rewrites on every write
+  (`conversations.search_vector`) is cached as sent whenever the row names it, since the schema
+  has no way to declare it computed.
+
 ### Release tooling has one owner: `threetears.enforcement.release`
 
 The API-growth gate and the version-bump script were byte-copied into every aibots repo and

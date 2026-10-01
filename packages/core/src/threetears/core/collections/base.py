@@ -708,6 +708,149 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return False
 
+    def complete_written_row(self, data: dict[str, Any]) -> dict[str, Any]:
+        """``data`` with every column the write stores as a value known before it runs, filled in.
+
+        Public extension point, paired with :meth:`columns_decided_by_store`: a column a write
+        leaves out is not always one the database decides. When the write is certain to store a
+        known value for it -- ``NULL``, for a nullable column with no default that the statement
+        writes either way -- the row cached is completed with that value instead of being read
+        back. The framework completes the row before asking which columns the database decides,
+        and caches the completed row.
+
+        The default completes nothing. :class:`~threetears.core.collections.schema_backed
+        .SchemaBackedCollection` completes from its declared columns when it writes through its
+        generated SQL.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the row with every column of known stored value present; ``data`` itself when
+            there is none to add
+        :rtype: dict[str, Any]
+        """
+        return data
+
+    def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """the columns whose stored value writing ``data`` leaves to the database, not to ``data``.
+
+        Public extension point. A write may leave columns for the database to decide: a server
+        default for a column it does not name, the stored value an update keeps for a column it
+        leaves out. The row the write sent is then not the row L3 holds, and a tier that cached
+        it would serve a row missing those columns -- on every replica reading L2, for as long as
+        the entry lives. A non-empty answer says so, and the framework acts on it at every write:
+
+        - a synchronous write (:meth:`save_entity`, an assignment) reads the row back from L3 once
+          it commits, and caches that;
+        - a write that reaches L1 and L2 before L3 (write-behind, :meth:`l2_cas_mutate` on a
+          collection with an L3 pool) has nothing to read back yet, so it is refused before any
+          tier takes it.
+
+        The default answers none: a collection that declares no columns writes the row it is
+        given. :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection` answers
+        from its declared columns. Never consulted on a collection with no L3 pool, whose L1 and
+        L2 are the record and fill nothing in.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the names of the columns the database decides, in declared order; empty when
+            ``data`` is the row L3 holds after the write
+        :rtype: tuple[str, ...]
+        """
+        return ()
+
+    def _write_ahead_row(self, data: dict[str, Any]) -> dict[str, Any]:
+        """the row a write that reaches L1 and L2 before L3 caches, refused when the database decides any of it.
+
+        Such a write has no committed row to read back when it is cached, so the tiers would hold
+        the row as sent until it expired: missing the columns the database filled in, on every
+        replica reading L2. A collection with no L3 pool is the record itself and caches ``data``.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the row completed by :meth:`complete_written_row`, or ``data`` with no L3 pool
+        :rtype: dict[str, Any]
+        :raises ValueError: when this collection has an L3 pool and :meth:`columns_decided_by_store`
+            names any column of the completed row
+        """
+        if self.l3_pool is None:
+            return data
+        completed = self.complete_written_row(data)
+        decided = self.columns_decided_by_store(completed)
+        if decided:
+            raise ValueError(
+                f"{type(self).__name__}: a write to {self.table_name!r} reaches L1 and L2 before L3, so "
+                f"its row must be the row L3 will hold, but the database decides {list(decided)!r}. "
+                f"name every one of them in the row, with the value it should store"
+            )
+        return completed
+
+    async def _stored_row(self, entity_id: Any, data: dict[str, Any]) -> dict[str, Any] | None:
+        """the whole row L3 holds after a committed write of ``data``: ``data`` itself, or a read of it.
+
+        The row is first completed by :meth:`complete_written_row`, and read from L3 only when
+        :meth:`columns_decided_by_store` names a column of it; never on a collection with no L3
+        pool. The read runs after the commit, so it sees this write or a later one; either is what
+        L3 holds, and the caller's fences decide whether it is cached.
+
+        A read that fails answers ``None``, which caches nothing: the write has committed, so the
+        save still succeeds, and the next read of the key goes to L3. A read that finds no row
+        (deleted since the commit) answers ``None`` too. A cancelled read drops the key from this
+        process's L1, which may hold the row as sent, and propagates.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param data: the row as written, stamped
+        :ptype data: dict[str, Any]
+        :return: the row L3 holds, or ``None`` when it could not be read
+        :rtype: dict[str, Any] | None
+        """
+        completed = data if self.l3_pool is None else self.complete_written_row(data)
+        decided = () if self.l3_pool is None else self.columns_decided_by_store(completed)
+        stored: dict[str, Any] | None = completed
+        if decided:
+            stored = None
+            try:
+                stored = await self.fetch_from_store(entity_id)
+            except Exception as exc:
+                log.warning(
+                    "reading back a row the database completed failed; nothing caches it and the next read goes to L3",
+                    extra={
+                        "extra_data": {
+                            "entity_id": str(entity_id),  # convert at border: log extra_data field
+                            "table": self.table_name,
+                            "decided_by_store": list(decided),
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    },
+                )
+            # BaseException after Exception: a cancellation is not an Exception, and leaves L1
+            # holding the row as sent unless it is dropped here.
+            except BaseException:
+                self._evict_l1(entity_id)
+                raise
+            else:
+                if stored is None:
+                    log.info(
+                        "a row the database completed was deleted before it was read back; it is cached nowhere",
+                        extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
+                    )
+        return stored
+
+    async def _drop_unread_row(self, entity_id: Any) -> None:
+        """drop a committed row that could not be read back from this replica's L1 and from L2.
+
+        L2 may hold the row this write replaced, so its key is deleted, which is always correct:
+        the next read seeds it from L3. Peers are told by the write's own broadcast.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        self._clear_l1_marker(entity_id)
+        self._evict_l1(entity_id)
+        await self._delete_from_l2(entity_id)
+
     @property
     def persists_l2_order(self) -> bool:
         """whether this collection's L3 stores the order a compare-and-swap won, and fences on it.
@@ -2055,6 +2198,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         its L3 writes writes L2 first and buffers the L3 write for a later
         flush.
 
+        A row the database completes (:meth:`columns_decided_by_store`) is read back from L3 once
+        the write commits, and that is what L2 and L1 keep. On a write-behind collection there is
+        nothing to read back before L2 takes the row, so such an assignment raises ``ValueError``
+        before L1 takes it.
+
         Refused on a collection that caches absences: the fire-and-forget write has no caller to
         tell when its write generation failed to advance, and an unadvanced generation keeps an
         absence recorded before the write answering. Use :meth:`save_entity`.
@@ -2066,6 +2214,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         if isinstance(key, tuple):
             entity_id, field = key
+            current = self.get_row_sync(entity_id)
+            if current is not None and self._defers_l3_writes:
+                self._refuse_store_decided_assignment({**current, field: value})
             self.set_field_sync(entity_id, field, value)
             row = self.get_row_sync(entity_id)
             if row is not None:
@@ -2074,8 +2225,26 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity_id = key
             if not isinstance(value, dict):
                 raise TypeError(f"collection[id] = value requires a dict, got {type(value).__name__}")
+            if self._defers_l3_writes:
+                self._refuse_store_decided_assignment(value)
             self.write_to_cache_sync(value)
             self._propagate_write(entity_id, value)
+
+    def _refuse_store_decided_assignment(self, row: dict[str, Any]) -> None:
+        """refuse a write-behind assignment whose row, as propagation sends it, the database completes.
+
+        Checked before L1 takes the row, on the row :meth:`_async_propagate_write` will send:
+        stamped with ``date_updated``, and carrying no order where this collection persists one.
+        The propagation completes the row it caches itself (:meth:`_write_ahead_row`).
+
+        :param row: the row the assignment writes
+        :ptype row: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the database would decide any column of it
+        """
+        sent = {**row, "date_updated": datetime.now(UTC)}
+        self._write_ahead_row(without_l2_order(sent) if self.persists_l2_order else sent)
 
     def _propagate_write(self, entity_id: Any, data: dict[str, Any]) -> None:
         """Non-blocking propagation of a write to L3, L2 and the broadcast (:meth:`_async_propagate_write`)."""
@@ -2107,6 +2276,8 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         if self._defers_l3_writes:
             assert self._write_buffer is not None
+            # refused at the assignment when the database would decide any of it; completed here
+            data = self._write_ahead_row(data)
             self._l1_fence.changed(self._fence_key(entity_id))
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, data, self.primary_key_columns)
@@ -2162,7 +2333,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                         },
                     )
                 return
-            await self._cache_committed_row(entity_id, data, before, ticket)
+            # the database may have filled in columns the assignment did not name; what is cached
+            # is the row L3 holds, never the row as sent.
+            stored = await self._stored_row(entity_id, data)
+            if stored is None:
+                await self.invalidate_cache(entity_id)
+                return
+            await self._cache_committed_row(entity_id, stored, before, ticket)
 
         # Signal other pods to evict stale L1
         await self._publish_invalidation(entity_id)
@@ -2348,6 +2525,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         key from L1 and L2 and broadcasts the eviction once the transaction has committed or
         rolled back; the next read takes whichever row L3 ended with.
 
+        **Cached as L3 holds it.** A row that leaves columns for the database to decide -- a
+        server default for a column it does not name, the stored value an update keeps
+        (:meth:`columns_decided_by_store`) -- is read back from L3 once the write commits, and the
+        read is what L2, L1 and the handle keep. A read back that fails caches nothing; the save
+        still succeeds and the next read goes to L3. A write-behind collection, whose L2 takes the
+        row before L3 does, refuses such a row with ``ValueError`` before any tier takes it.
+
         Unchanged elsewhere: a collection with no L3 pool (L2 is its source of truth) and a
         write-behind collection keep the unconditional put, and a collection with no L2 caches in
         L1 as before, subject to the in-process ordering above.
@@ -2370,7 +2554,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             mismatch when the entity carries an
             ``original_date_updated`` value
         :raises ValueError: when ``conn`` is passed to a collection that caches absences or defers
-            its L3 writes, or its transaction was not opened by ``CallerTransaction``
+            its L3 writes, or its transaction was not opened by ``CallerTransaction``; and when a
+            collection that defers its L3 writes is given a row the database would complete
         :raises GenerationUnavailableError: when a collection that caches absences committed the
             write but could not advance its write generation; retry the save
         """
@@ -2434,7 +2619,13 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         if defer:
             # the row is visible in L1 and L2 before L3 by design: L2 is ahead of L3 for up to one
-            # flush interval. A read of the key in flight read it before this write.
+            # flush interval, so it must already be the row L3 will hold. A read of the key in
+            # flight read it before this write.
+            try:
+                data = self._write_ahead_row(data)
+            except ValueError:
+                self._withdraw_unstored(entity, entity_id, working)
+                raise
             self._l1_fence.changed(self._fence_key(entity_id))
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, data, self.primary_key_columns)
@@ -2476,13 +2667,23 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # a reader recorded from an L3 read that predated this commit stops answering as
                 # soon as possible. a failure is raised only once L1, L2 and the broadcast have run.
                 generation_failure = await self._advance_generation()
+                # the database may have filled in columns the row did not name; what every tier
+                # and the handle keep is the row L3 holds, never the row as sent.
+                stored = await self._stored_row(entity_id, data)
                 entity.mark_clean()
-                entity.original_date_updated = data.get("date_updated")
-                cached = await self._cache_committed_row(entity_id, data, before, ticket)
-                if not cached or entity.holds_row:
-                    # the handle still reads what it saved, as on a collection with no L1; an
-                    # entity that holds its row keeps holding it, now the row as stored.
+                if stored is None:
+                    # committed, but not readable back: nothing caches it, and the handle keeps
+                    # what it sent until it is reloaded.
+                    entity.original_date_updated = data.get("date_updated")
+                    await self._drop_unread_row(entity_id)
                     entity.hold_row(data)
+                else:
+                    entity.original_date_updated = stored.get("date_updated")
+                    cached = await self._cache_committed_row(entity_id, stored, before, ticket)
+                    if not cached or entity.holds_row:
+                        # the handle still reads what it saved, as on a collection with no L1; an
+                        # entity that holds its row keeps holding it, now the row as stored.
+                        entity.hold_row(stored)
 
         await self._publish_invalidation(entity_id)
         if generation_failure is not None:
@@ -2962,8 +3163,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             generation
         :raises ValueError: on a collection with an L3 pool whose every L3
             write is fenced (``cas_null_safe``), or that does not persist the
-            L2 order, before L2 is touched; and on a ``"delete"`` there,
-            before L2 is touched
+            L2 order, before L2 is touched; on a ``"delete"`` there, before L2
+            is touched; and there on an ``"upsert"`` whose row leaves any column
+            for the database to decide (:meth:`columns_decided_by_store`), before
+            L2 is touched
         :raises L2EpochRegressedError: when L3 holds the row under an order
             later than anything the current bucket can write, before L2 is
             touched
@@ -3049,6 +3252,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # the L2 value is written before its own revision exists, so it carries no
                     # order; the order is stamped on the row once the swap has won.
                     new_row = without_l2_order(new_row)
+                # L2 takes the row before L3 does, so it must already be the row L3 will hold.
+                new_row = self._write_ahead_row(new_row)
                 lifetime = self._l2_entry_lifetime(new_row)
                 # as in _save_to_l2: the ttl keyword is sent only when this table declares an
                 # expiry, so a bucket shim that predates per-entry lifetimes still satisfies the
