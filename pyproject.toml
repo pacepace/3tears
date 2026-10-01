@@ -234,11 +234,12 @@ ignore = ["N818", "N811"]
 # and both read correctly. Zero N803 findings exist in any `src` tree, so this narrows the rule to
 # where it is noise instead of switching it off where it would catch something.
 "**/tests/**" = ["N803", "N806"]
-# OpenTelemetry SDK >=1.39 guards set_tracer_provider behind an internal
-# once-flag with no public reset; resetting _TRACER_PROVIDER_SET_ONCE._done
-# is the only way to re-init the provider (required for tests and re-init
-# flows). paired entry lives in tests/enforcement/_underscore_exemptions.txt.
-"packages/observe/src/threetears/observe/setup.py" = ["SLF001"]
+# the ONE module that touches OpenTelemetry's private members: trace._TRACER_PROVIDER_SET_ONCE
+# and its _done flag. opentelemetry-api >= 1.39 guards set_tracer_provider with that set-once
+# flag and offers no public reset, so init_telemetry could never install a provider again after
+# shutdown_telemetry without clearing it. nothing else in the workspace's src touches these
+# names. paired entries live in tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/src/threetears/observe/_otel_internals.py" = ["SLF001"]
 # the ONE module that touches nats-py's private members (Client._pending, _pending_data_size,
 # _transport, _pongs, _flush_queue, _send_unsubscribe, _process_op_err; Subscription._id,
 # _pending_queue, _pending_size; PullSubscription._sub). nats-py has no public way to write the
@@ -247,10 +248,6 @@ ignore = ["N818", "N811"]
 # names the caller of each. nothing else in the workspace touches these names. paired entries
 # live in tests/enforcement/_underscore_exemptions.txt.
 "packages/nats/src/threetears/nats/_nats_py_internals.py" = ["SLF001"]
-# sys._getframe is the stdlib's documented API for call-site frame access;
-# the public sys.settrace alternative has different semantics. paired entry
-# lives in tests/enforcement/_underscore_exemptions.txt.
-"packages/observe/src/threetears/observe/logging.py" = ["SLF001"]
 # lifecycle test asserts fire_and_forget holds a strong reference to a task
 # scheduled on a caller's running loop until it completes (asyncio keeps only a
 # weak reference, so an unheld task can be GC'd mid-flight). _pending_tasks is
@@ -258,18 +255,6 @@ ignore = ["N818", "N811"]
 # would add API surface only this test needs. paired entries live in
 # tests/enforcement/_underscore_exemptions.txt.
 "packages/core/tests/test_bridge.py" = ["SLF001"]
-# test monkeypatches module-level _otel_available cache sentinel to exercise
-# both the "otel installed" and "otel missing" branches; the sentinel is an
-# import-time implementation anchor with no public accessor (would become a
-# new public api surface just for tests; no library caller needs it). paired
-# entries live in tests/enforcement/_underscore_exemptions.txt.
-"packages/observe/tests/test_tracing.py" = ["SLF001"]
-# test monkeypatches module-level _prometheus_available cache sentinel to
-# exercise both the "prometheus installed" and "prometheus missing"
-# branches; same import-time-anchor reasoning as _otel_available above --
-# no public accessor warranted. paired entries live in
-# tests/enforcement/_underscore_exemptions.txt.
-"packages/observe/tests/test_metrics.py" = ["SLF001"]
 # test monkeypatches module-level _HAS_DUCKDB import-availability sentinel to
 # force the ImportError branch without uninstalling the duckdb package.
 # Analogous to _otel_available above: a stable import-time anchor that tests

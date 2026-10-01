@@ -354,59 +354,10 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_
 # rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
 packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
 
-# rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
-packages/observe/src/threetears/observe/logging.py:_find_call_site#0:_getframe
-
-# rationale: OpenTelemetry SDK >=1.39 guards trace.set_tracer_provider with the internal _TRACER_PROVIDER_SET_ONCE sentinel; resetting ._done is required for test isolation and repeat-init, and OTel exposes no public reset. type-ignored at the call site. upstream issue: open-telemetry/opentelemetry-python#3978
-packages/observe/src/threetears/observe/setup.py:init_telemetry#0:_TRACER_PROVIDER_SET_ONCE
-# rationale: same as _TRACER_PROVIDER_SET_ONCE above -- ._done is the only way to reset the once-flag to re-initialize the tracer provider
-packages/observe/src/threetears/observe/setup.py:init_telemetry#0:_done
-# rationale: OpenTelemetry SDK >=1.39 guards trace.set_tracer_provider with the internal _TRACER_PROVIDER_SET_ONCE sentinel; resetting ._done is required for test isolation and repeat-init, and OTel exposes no public reset. type-ignored at the call site. upstream issue: open-telemetry/opentelemetry-python#3978
-packages/observe/src/threetears/observe/setup.py:shutdown_telemetry#0:_TRACER_PROVIDER_SET_ONCE
-# rationale: same as _TRACER_PROVIDER_SET_ONCE above -- ._done is the only way to reset the once-flag to re-initialize the tracer provider
-packages/observe/src/threetears/observe/setup.py:shutdown_telemetry#0:_done
-
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:_reset_prometheus_check#0:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:_reset_prometheus_check#1:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_available_when_installed#0:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_cached_after_first_check#0:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_cached_after_first_check#1:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_cached_after_first_check#2:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_cached_after_first_check#3:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:TestAccessors.test_accessor_passthrough_without_prometheus#0:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:TestMeteredDecorator.test_metered_passthrough_without_prometheus#0:_prometheus_available
-# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:TestMeteredDecorator.test_metered_async_passthrough_without_prometheus#0:_prometheus_available
-
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:_reset_otel_check#0:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:_reset_otel_check#1:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_available_when_installed#0:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_cached_after_first_check#0:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_cached_after_first_check#1:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_cached_after_first_check#2:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_cached_after_first_check#3:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:TestTracedDecorator.test_traced_passthrough_without_otel#0:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:TestTracedDecorator.test_traced_async_passthrough_without_otel#0:_otel_available
-# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:TestSetSpanAttribute.test_noop_without_otel#0:_otel_available
+# rationale: opentelemetry-api trace._TRACER_PROVIDER_SET_ONCE: the set-once guard on set_tracer_provider (>= 1.39) has no public reset, and init_telemetry must install a provider again after shutdown_telemetry
+packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE
+# rationale: opentelemetry Once._done: the flag that guard reads; clearing it is the only way to let the next set_tracer_provider take effect
+packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_done
 
 # rationale: module-private helper called from SessionManager in the same module; the isolated-context creation is deliberately not part of hitl.py's public surface because a caller reaching it directly would skip the slot accounting that makes the working set bounded
 packages/scrape/sidecar/hitl.py:_open_isolated#0:_create_isolated_tab
