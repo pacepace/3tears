@@ -132,6 +132,10 @@ class _FakeNatsPyClient:
     async def _process_op_err(self, e: Exception) -> None:
         self.op_err_calls.append(e)
 
+    async def _send_unsubscribe(self, sid: int, limit: int = 0) -> None:
+        # queued, exactly as nats-py queues it, so the round trip after it carries it out first
+        self.queue_pending(f"UNSUB {sid}\r\n".encode())
+
     async def publish(self, subject: str, payload: bytes, reply: str | None = None) -> None:
         self.published.append((subject, payload, reply))
 
@@ -2068,6 +2072,120 @@ async def test_pull_stop_unsubscribes_and_halts_run() -> None:
     await consumer.run()  # already stopped -> returns immediately
 
     psub.unsubscribe.assert_awaited_once()
+
+
+def _stopping_pull_consumer(
+    *,
+    leftovers: list[bytes],
+    cb: AsyncMock,
+    redeliver: AsyncMock,
+    unsubscribe: AsyncMock,
+    connection: _FakeNatsPyClient | None = None,
+) -> tuple[Any, _FakeNatsPyClient]:
+    """a pull consumer whose fetch inbox holds ``leftovers``, as the server left them at stop.
+
+    the inbox is a real nats-py subscription, so the stop's release reads the queue nats-py keeps.
+    """
+    from nats.aio.client import Client as NatsPyClient
+    from nats.aio.msg import Msg
+    from nats.aio.subscription import Subscription as NatsPySubscription
+
+    from threetears.nats import JetStreamPullConsumer
+
+    fake = connection if connection is not None else _FakeNatsPyClient()
+    inbox = NatsPySubscription(NatsPyClient(), id=9, subject="_INBOX.pull")
+    for index, data in enumerate(leftovers):
+        msg = Msg(_client=NatsPyClient(), subject=f"3tears.channels.deliver.slack.{index}", data=data)
+        inbox._pending_queue.put_nowait(msg)  # noqa: SLF001 -- seeding what nats-py's read loop would
+        inbox._pending_size += len(data)  # noqa: SLF001 -- seeding what nats-py's read loop would
+    psub = MagicMock()
+    psub._sub = inbox  # noqa: SLF001 -- the attribute nats-py's PullSubscription carries its inbox on
+    psub.unsubscribe = unsubscribe
+    consumer = JetStreamPullConsumer(
+        psub=psub,
+        cb=cb,
+        redeliver=redeliver,
+        durable="d",
+        subject=Subjects.channels_deliver("slack"),
+        batch=1,
+        fetch_timeout_seconds=0.01,
+        bound_to=fake,
+        current_connection=lambda: fake,
+        resubscribe=AsyncMock(),
+    )
+    return consumer, fake
+
+
+@pytest.mark.asyncio
+async def test_pull_stop_handles_every_leftover_when_one_redelivery_fails(caplog: pytest.LogCaptureFixture) -> None:
+    """a redelivery that raises is logged; the later leftovers are still handled, and the inbox removed."""
+    cb = AsyncMock(side_effect=RuntimeError("handler failed"))
+    redeliver = AsyncMock(side_effect=[ConnectionError("nak on a failing transport"), None, None])
+    unsubscribe = AsyncMock()
+    consumer, fake = _stopping_pull_consumer(
+        leftovers=[b"a", b"b", b"c"], cb=cb, redeliver=redeliver, unsubscribe=unsubscribe
+    )
+
+    with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+        await consumer.stop()
+
+    assert [call.args[0].data for call in cb.await_args_list] == [b"a", b"b", b"c"]
+    assert redeliver.await_count == 3
+    unsubscribe.assert_awaited_once()
+    assert "UNSUB 9" in fake.wire, "the server was told to drop the inbox before the leftovers were taken"
+    assert any("neither handled nor redelivered" in r.getMessage() and "d" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_pull_stop_does_not_raise_when_the_final_unsubscribe_fails(caplog: pytest.LogCaptureFixture) -> None:
+    """a closed connection's unsubscribe raises; stop() logs it with the durable and returns."""
+    from nats.errors import ConnectionClosedError
+
+    unsubscribe = AsyncMock(side_effect=ConnectionClosedError())
+    consumer, _fake = _stopping_pull_consumer(
+        leftovers=[], cb=AsyncMock(), redeliver=AsyncMock(), unsubscribe=unsubscribe
+    )
+
+    with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+        await consumer.stop()
+
+    unsubscribe.assert_awaited_once()
+    assert any("final unsubscribe failed" in r.getMessage() and "durable=d" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_pull_stop_on_a_closed_connection_takes_the_plain_fallback_without_raising() -> None:
+    """the docstring's fallback: release refused by a closed connection, unsubscribe refused too; no raise."""
+    from nats.errors import ConnectionClosedError
+
+    closed = _FakeNatsPyClient()
+    closed.is_closed = True
+    cb = AsyncMock()
+    unsubscribe = AsyncMock(side_effect=ConnectionClosedError())
+    consumer, _fake = _stopping_pull_consumer(
+        leftovers=[b"never-released"], cb=cb, redeliver=AsyncMock(), unsubscribe=unsubscribe, connection=closed
+    )
+
+    await consumer.stop()
+
+    unsubscribe.assert_awaited_once()
+    cb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pull_stop_is_idempotent() -> None:
+    """a second stop() sends no second UNSUB and unsubscribes nothing again."""
+    unsubscribe = AsyncMock()
+    consumer, fake = _stopping_pull_consumer(
+        leftovers=[], cb=AsyncMock(), redeliver=AsyncMock(), unsubscribe=unsubscribe
+    )
+
+    await consumer.stop()
+    wire_after_first = list(fake.wire)
+    await consumer.stop()
+
+    unsubscribe.assert_awaited_once()
+    assert fake.wire == wire_after_first
 
 
 @pytest.mark.asyncio

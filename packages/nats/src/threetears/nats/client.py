@@ -1145,11 +1145,27 @@ class JetStreamPullConsumer:
         except _NatsTimeoutError:
             msgs = []
         for msg in msgs:
-            try:
-                await self._cb(msg)
-            except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
-                await self._redeliver(msg, exc)
+            await self._handle(msg)
         return len(msgs)
+
+    async def _handle(self, msg: Any) -> None:
+        """run the handler on one message, and route a raise through the bounded-redelivery policy.
+
+        the one "handle, else redeliver" step, for a fetched message and for one :meth:`stop`
+        collects alike. a raise from the handler never escapes; a raise from the policy itself
+        (its ``nak``, ``ack`` or dead-letter publish on a failing transport) does, and the caller
+        decides what it costs.
+
+        :param msg: the JetStream message
+        :ptype msg: Any
+        :return: nothing
+        :rtype: None
+        :raises Exception: whatever the redelivery policy raises
+        """
+        try:
+            await self._cb(msg)
+        except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
+            await self._redeliver(msg, exc)
 
     async def run(self) -> None:
         """loop fetch+dispatch until :meth:`stop` (or task cancellation).
@@ -1211,9 +1227,21 @@ class JetStreamPullConsumer:
         A connection that cannot carry step 2 (closed, reconnecting) is unsubscribed the plain way,
         and that is logged with what it costs.
 
+        **Never raises, and idempotent**, like :meth:`JetStreamPushConsumer.stop` and
+        :meth:`Subscription.unsubscribe`: its callers are shutdown paths, and a raise would skip
+        whatever teardown follows. A message whose redelivery itself fails (its ``nak``, ``ack`` or
+        dead-letter publish on a failing transport) is logged and the next one is still handled --
+        an unhandled one is redelivered by the server after ``ack_wait``, which is what one failed
+        message costs, never every message after it. Step 4 runs whatever happened before it, and a
+        failure of it is logged: nats-py forgets the inbox before it sends the ``UNSUB``, and a
+        closed connection has already forgotten every subscription, so nothing stays registered
+        here. A second call returns at once.
+
         :return: nothing
         :rtype: None
         """
+        if self._stopped:
+            return
         self._stopped = True
         bound = self._fetch_timeout_seconds + _PULL_CONSUMER_STOP_HANDLER_GRACE_SECONDS
         try:
@@ -1236,12 +1264,31 @@ class JetStreamPullConsumer:
                 exc,
             )
             leftovers = []
-        for msg in leftovers:
+        try:
+            for msg in leftovers:
+                try:
+                    await self._handle(msg)
+                except Exception as exc:  # noqa: BLE001 — one failed redelivery must not strand the rest
+                    log.warning(
+                        "durable pull consumer stop: a message collected at stop was neither handled nor "
+                        "redelivered (durable=%s, subject=%s): %s: %s -- the server redelivers it after the "
+                        "durable's ack_wait",
+                        self._durable,
+                        getattr(msg, "subject", None),
+                        type(exc).__name__,
+                        exc,
+                    )
+        finally:
             try:
-                await self._cb(msg)
-            except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
-                await self._redeliver(msg, exc)
-        await self._psub.unsubscribe()
+                await self._psub.unsubscribe()
+            except Exception as exc:  # noqa: BLE001 — a stop never raises; nothing stays registered, see the docstring
+                log.warning(
+                    "durable pull consumer stop: the final unsubscribe failed (durable=%s, subject=%s): %s: %s",
+                    self._durable,
+                    self._subject.path,
+                    type(exc).__name__,
+                    exc,
+                )
 
     async def _release_inbox(self) -> list[Any]:
         """drop the fetch inbox's interest at the server, keeping it here, and collect what was delivered.

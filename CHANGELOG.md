@@ -73,6 +73,13 @@ parallel load. Both were reproduced in isolation before they were fixed.
     timer fires first. A stop that only waited for the fetch still stranded messages, in 5 of 24
     loaded hub test runs.
   - It now takes up to one fetch timeout when idle, where before it returned at once.
+  - **It never raises, and a second call does nothing**, like `JetStreamPushConsumer.stop()`.
+    Before, a failed redelivery of one collected message (a `nak`, `ack` or dead-letter publish
+    on a failing transport) ended `stop()` early. The rest waited out `ack_wait` and the inbox
+    was never unsubscribed. The closing unsubscribe also raised `ConnectionClosedError` on a
+    closed connection. Now each failure is logged with the durable and the stop carries on. The
+    unsubscribe always runs, and a failure there is logged. A second call sent a second `UNSUB`;
+    now it returns at once.
 
 ### A health probe names the release that answered it
 
