@@ -17,15 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import sys
 from pathlib import Path
 
 import hitl
 import pytest
+from tests.conftest import RFB_TEST_PORT, X11vncStub
 from hitl import VncLifecycle, VncUnavailable
-
-#: Ports well away from anything a developer machine runs, since these bind for real.
-_RFB_TEST_PORT = 55901
 
 
 def _free_port_is_free(port: int) -> bool:
@@ -35,57 +32,10 @@ def _free_port_is_free(port: int) -> bool:
         return probe.connect_ex(("127.0.0.1", port)) != 0
 
 
-def _write_stub(directory: Path, name: str, *, listens: bool = True, exit_code: int = 0) -> None:
-    """Install a fake *name* on PATH that binds whichever port its argv names.
-
-    Parses the port out of the real argv shape this module builds -- ``-rfbport N`` -- so the
-    stub only listens if the production code actually passed a port where it claims to.
-
-    :param listens: when False, exits immediately without binding, which is the
-        started-then-died failure the port wait exists to catch
-    """
-    body = f"""#!{sys.executable}
-import socket, sys, time
-argv = sys.argv[1:]
-if not {listens}:
-    sys.exit({exit_code})
-port = None
-for i, a in enumerate(argv):
-    if a == "-rfbport" and i + 1 < len(argv):
-        port = int(argv[i + 1])
-        break
-if port is None:
-    for a in argv:
-        if ":" in a and a.split(":")[-1].isdigit() and not a.startswith("-"):
-            port = int(a.split(":")[-1])
-            break
-if port is None:
-    sys.exit(3)
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("127.0.0.1", port))
-s.listen(5)
-while True:
-    time.sleep(0.05)
-"""
-    path = directory / name
-    path.write_text(body)
-    path.chmod(0o755)
-
-
 @pytest.fixture()
-def stub_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Put a working x11vnc stub at the front of PATH, on a free RFB port."""
-    monkeypatch.setattr(hitl, "_RFB_PORT", _RFB_TEST_PORT)
-    _write_stub(tmp_path, "x11vnc")
-    monkeypatch.setenv("PATH", str(tmp_path), prepend=":")
-    return tmp_path
-
-
-@pytest.fixture()
-async def lifecycle(stub_path: Path):
+async def lifecycle(x11vnc_stub: X11vncStub):
     """A lifecycle on test ports, always torn down even when the test fails."""
-    del stub_path
+    del x11vnc_stub
     vnc = VncLifecycle(display_num=99)
     try:
         yield vnc
@@ -100,7 +50,7 @@ async def test_nothing_listens_before_the_first_start(lifecycle: VncLifecycle) -
     that, almost all of the time, has nobody looking at it.
     """
     assert not lifecycle.health()
-    assert _free_port_is_free(_RFB_TEST_PORT)
+    assert _free_port_is_free(RFB_TEST_PORT)
 
 
 async def test_start_serves_the_display_and_names_it(lifecycle: VncLifecycle) -> None:
@@ -113,39 +63,41 @@ async def test_start_serves_the_display_and_names_it(lifecycle: VncLifecycle) ->
     session = await lifecycle.start()
 
     assert lifecycle.health()
-    assert not _free_port_is_free(_RFB_TEST_PORT), "x11vnc is not accepting connections"
+    assert not _free_port_is_free(RFB_TEST_PORT), "x11vnc is not accepting connections"
     assert session.display == ":99"
 
 
-async def test_start_is_idempotent(lifecycle: VncLifecycle) -> None:
+async def test_start_is_idempotent(lifecycle: VncLifecycle, x11vnc_stub: X11vncStub) -> None:
     """ "Open a session" is the operation a human-facing queue retries.
 
     A second start that spawned a second ``x11vnc`` would have it lose the RFB port race and
     exit, leaving a lifecycle holding a handle to a dead process while reporting healthy.
+
+    Counted at the process, not at the lifecycle's handle: the stub logs every time it is
+    executed, so a second spawn is visible however the lifecycle then accounts for it.
     """
     first = await lifecycle.start()
-    x11vnc_pid = lifecycle._x11vnc.pid
 
     second = await lifecycle.start()
 
     assert second == first
-    assert lifecycle._x11vnc.pid == x11vnc_pid, "a second x11vnc was spawned over the running one"
+    assert len(x11vnc_stub.launches()) == 1, "a second x11vnc was spawned over the running one"
     assert lifecycle.health()
 
 
 async def test_nothing_survives_teardown(lifecycle: VncLifecycle) -> None:
     """A stopped session must leave the container as it was before anyone arrived."""
     await lifecycle.start()
-    assert not _free_port_is_free(_RFB_TEST_PORT)
+    assert not _free_port_is_free(RFB_TEST_PORT)
 
     await lifecycle.stop()
 
     assert not lifecycle.health()
     for _ in range(50):
-        if _free_port_is_free(_RFB_TEST_PORT):
+        if _free_port_is_free(RFB_TEST_PORT):
             break
         await asyncio.sleep(0.1)
-    assert _free_port_is_free(_RFB_TEST_PORT), "x11vnc outlived the teardown"
+    assert _free_port_is_free(RFB_TEST_PORT), "x11vnc outlived the teardown"
 
 
 async def test_stop_is_safe_to_call_twice_and_before_any_start(lifecycle: VncLifecycle) -> None:
@@ -167,7 +119,7 @@ async def test_start_after_stop_works(lifecycle: VncLifecycle) -> None:
 
 
 async def test_a_process_that_never_listens_fails_loudly_and_leaves_nothing_running(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    dead_x11vnc_stub: X11vncStub,
 ) -> None:
     """Started-then-died is the failure mode that otherwise reaches a human as a black screen.
 
@@ -175,17 +127,13 @@ async def test_a_process_that_never_listens_fails_loudly_and_leaves_nothing_runn
     this a success. And the teardown on failure is what keeps ``start`` to two outcomes
     instead of leaving a half-up pair for the next caller to find.
     """
-    monkeypatch.setattr(hitl, "_RFB_PORT", _RFB_TEST_PORT)
-    monkeypatch.setattr(hitl, "_START_TIMEOUT_SECONDS", 1.0)
-    _write_stub(tmp_path, "x11vnc", listens=False, exit_code=1)
-    monkeypatch.setenv("PATH", str(tmp_path), prepend=":")
-
+    del dead_x11vnc_stub
     vnc = VncLifecycle(display_num=99)
     with pytest.raises(VncUnavailable, match="x11vnc"):
         await vnc.start()
 
     assert not vnc.health()
-    assert _free_port_is_free(_RFB_TEST_PORT), "a failed start left x11vnc holding the RFB port"
+    assert _free_port_is_free(RFB_TEST_PORT), "a failed start left x11vnc holding the RFB port"
 
 
 async def test_a_missing_binary_says_the_image_lacks_vnc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,31 +162,39 @@ async def test_the_display_number_is_a_parameter_not_a_constant(monkeypatch: pyt
     assert VncLifecycle().display == ":99", "the default stopped matching entrypoint.sh's Xvfb"
 
 
-def test_x11vnc_is_bound_to_loopback_so_the_pod_is_the_boundary(stub_path: Path) -> None:
+async def test_x11vnc_is_bound_to_loopback_so_the_pod_is_the_boundary(
+    lifecycle: VncLifecycle, x11vnc_stub: X11vncStub
+) -> None:
     """``-localhost`` IS the access control on this port, not a hardening extra.
 
     Containers in one Kubernetes pod share a network namespace, so 127.0.0.1 is reachable by
     the MIT container beside this one and by nothing else. Bound wide, the RFB port would be
     reachable by anything that can route to the container, going straight around the capability
     check in front of the relay -- and silently, because the operator's path would keep working.
+
+    Read from the argv the process was actually EXECUTED with, as the stub recorded it, so this
+    holds for what `start` launches rather than for a builder `start` might stop calling.
     """
-    del stub_path
-    argv = VncLifecycle(display_num=99)._x11vnc_argv()
+    await lifecycle.start()
+    (argv,) = x11vnc_stub.launches()
     assert "-localhost" in argv
     assert "-display" in argv and ":99" in argv
     assert "-nopw" in argv, "a password prompt with no password to check would stall the connection"
     assert "-xrandr" in argv and "resize" in argv, "a server-side geometry change would leave viewers on a stale size"
 
 
-async def test_the_child_never_gets_an_undrained_pipe(stub_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_child_never_gets_an_undrained_pipe(x11vnc_stub: X11vncStub, monkeypatch: pytest.MonkeyPatch) -> None:
     """A pipe nobody reads is a 64 KiB ceiling on how long the child survives.
 
     x11vnc logs per connection and this session is explicitly built for reconnects
     (``-forever``, ``-shared``), so a long operator session fills the buffer and blocks x11vnc
     inside a write. The visible result is a display that stops painting, which is precisely the
     failure this module claims to prevent -- so the claim and the plumbing have to agree.
+
+    Driven through ``start``, the only way anything spawns x11vnc, so the kwargs captured are
+    the ones the real launch passes.
     """
-    del stub_path
+    del x11vnc_stub
     captured: dict[str, object] = {}
 
     async def _fake_exec(*argv: str, **kwargs: object) -> object:
@@ -248,8 +204,9 @@ async def test_the_child_never_gets_an_undrained_pipe(stub_path: Path, monkeypat
     monkeypatch.setattr(hitl.asyncio, "create_subprocess_exec", _fake_exec)
     vnc = VncLifecycle(display_num=99)
     with pytest.raises(VncUnavailable):
-        await vnc._spawn(["x11vnc"], what="x11vnc")
+        await vnc.start()
 
+    assert captured, "start never reached the spawn, so nothing below asserts anything"
     assert captured.get("stderr") is not asyncio.subprocess.PIPE, (
         "stderr is a pipe nobody reads, which caps the child's life at 64 KiB of output"
     )

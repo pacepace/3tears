@@ -1,8 +1,8 @@
 """The one stand-in for a cross-pod pacer, shared by every suite that needs one.
 
 Extracted because there were two, and only one of them was checked. `test_robots.py` had
-`_FakeDelayPacer`; `test_tool.py` grew a second copy called `_Pacer`, and the fake-parity
-walker filters on the NAME alone -- `_FAKE_NAME_PREFIXES` is `("Fake", "_Fake")` and is its
+`_FakeDelayPacer` (now `FakeDelayPacer`: public, because two suites import it); `test_tool.py`
+grew a second copy called `_Pacer`, and the fake-parity walker filters on the NAME alone -- `_FAKE_NAME_PREFIXES` is `("Fake", "_Fake")` and is its
 only test -- so `_Pacer` was invisible and its `# parity-with:` marker checked nothing.
 
 Confirmed in both directions rather than reasoned about: a module-level class with a non-`Fake`
@@ -23,11 +23,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-__all__ = ["_FakeDelayPacer"]
+__all__ = ["FakeDelayPacer"]
 
 
 # parity-with: threetears.core.coordination.token_bucket.TokenBucket
-class _FakeDelayPacer:
+class FakeDelayPacer:
     """The one method `RobotsGate` calls on a pacer, so drift in its signature fails here."""
 
     def __init__(self, *, claimed: bool = True, retry_after_seconds: float = 0.0) -> None:

@@ -52,6 +52,26 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
+# The names `main` (the other half of this container) and its tests may bind to. Everything
+# with a leading underscore stays this module's own. `apply_context_state` and
+# `apply_origin_storage` are here because the render path in `main` restores a human's session
+# state with them too -- a real second caller, not a door opened for a test.
+__all__ = [
+    "DEFAULT_MAX_SLOTS",
+    "DEFAULT_SESSION_TTL_SECONDS",
+    "REAPER_INTERVAL_SECONDS",
+    "HitlSession",
+    "HitlTab",
+    "SessionManager",
+    "SessionNotFound",
+    "SessionUnavailable",
+    "VncLifecycle",
+    "VncSession",
+    "VncUnavailable",
+    "apply_context_state",
+    "apply_origin_storage",
+]
+
 log = logging.getLogger("nodriver_sidecar.hitl")
 
 #: RFB port ``x11vnc`` listens on, loopback only. Not published by the container and not
@@ -930,16 +950,16 @@ async def _open_isolated(
     """
     import main  # noqa: PLC0415 -- deliberate late import; see docstring
 
-    tab, context_id = await main._create_isolated_tab(browser, url)
+    tab, context_id = await main.create_isolated_tab(browser, url)
     if session_state:
-        await _apply_context_state(browser, context_id, session_state)
+        await apply_context_state(browser, context_id, session_state)
         # Storage after the cookies and before the reload: the tab is already on the target
         # origin at this point, which is the only place localStorage can be written, and the
         # reload is what makes the page load with both in place.
-        await _apply_origin_storage(tab, session_state)
+        await apply_origin_storage(tab, session_state)
         await tab.reload()
     if nav_steps:
-        await main._execute_nav_steps(tab, nav_steps, _NAV_STEP_TIMEOUT_SECONDS, [])
+        await main.execute_nav_steps(tab, nav_steps, _NAV_STEP_TIMEOUT_SECONDS, [])
     return tab, context_id
 
 
@@ -986,7 +1006,7 @@ async def _export_context_state(browser: Any, tab: Any, context_id: Any) -> dict
             await_promise=False,
         )
     except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- storage is a bonus; a page that refuses script evaluation still yields the cookies that actually carry a cleared challenge, and losing the rest must not lose those
-        # WARNING with the traceback, matching `_apply_origin_storage`'s handler for the
+        # WARNING with the traceback, matching `apply_origin_storage`'s handler for the
         # mirror-image failure one poll later. The two are the same event -- a page refusing
         # script evaluation -- and produce the same silent half-result, so logging one at
         # WARNING and the other at DEBUG means the capture side of a systematic failure leaves
@@ -1002,7 +1022,7 @@ async def _export_context_state(browser: Any, tab: Any, context_id: Any) -> dict
     return exported
 
 
-async def _apply_context_state(browser: Any, context_id: Any, state: dict[str, Any]) -> None:
+async def apply_context_state(browser: Any, context_id: Any, state: dict[str, Any]) -> None:
     """Put a previously exported state's COOKIES back into a fresh isolated context.
 
     Applied BEFORE the navigation, which is the whole point: a cookie set after the page has
@@ -1013,10 +1033,13 @@ async def _apply_context_state(browser: Any, context_id: Any, state: dict[str, A
     rejected on a page session.
 
     Cookies only. Origin storage cannot be restored here and has its own function --
-    :func:`_apply_origin_storage` -- because ``localStorage`` is origin-scoped and only
+    :func:`apply_origin_storage` -- because ``localStorage`` is origin-scoped and only
     writable while a page from that origin is loaded, which is not true yet at this point in
     the sequence. Splitting them keeps that ordering constraint visible instead of hiding it
     inside a function whose name promises to restore everything.
+
+    Public because :mod:`main`'s render path restores a human's session state with it as well
+    as this module's own tab-opening path.
     """
     import nodriver as uc  # noqa: PLC0415 -- deliberate late import; see _export_context_state
 
@@ -1037,7 +1060,7 @@ async def _apply_context_state(browser: Any, context_id: Any, state: dict[str, A
     await browser.send(uc.cdp.storage.set_cookies(cookies=params, browser_context_id=context_id))
 
 
-async def _apply_origin_storage(tab: Any, state: dict[str, Any]) -> None:
+async def apply_origin_storage(tab: Any, state: dict[str, Any]) -> None:
     """Restore exported ``localStorage`` into a tab already sitting on the right origin.
 
     Separate from the cookie restore and deliberately later in the sequence: ``localStorage``
@@ -1055,6 +1078,9 @@ async def _apply_origin_storage(tab: Any, state: dict[str, Any]) -> None:
 
     Best-effort, and it never raises. Cookies are what carry a cleared challenge; storage is a
     bonus, and losing it must not lose them or fail the fetch they were restored for.
+
+    Public for the same reason as :func:`apply_context_state`: :mod:`main`'s render path is a
+    second caller.
     """
     origins = state.get("origins") or []
     if not origins:

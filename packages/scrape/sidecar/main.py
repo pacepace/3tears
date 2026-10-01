@@ -34,6 +34,29 @@ from fastapi.responses import JSONResponse
 from nodriver.core.connection import ProtocolException
 from pydantic import BaseModel
 
+# What this module offers beyond its HTTP routes. `create_isolated_tab` and `execute_nav_steps`
+# are here because `hitl` -- the other half of this container -- opens an operator's tabs with
+# them; everything with a leading underscore stays this module's own.
+__all__ = [
+    "CHROMIUM_PATH",
+    "EGRESS_NAME",
+    "EGRESS_PROXY",
+    "UI_SCALE",
+    "DownloadError",
+    "DownloadRequest",
+    "DownloadResponse",
+    "HitlSessionRequest",
+    "HitlTabRequest",
+    "NavStepError",
+    "NavStepModel",
+    "NetworkCall",
+    "RenderRequest",
+    "RenderResponse",
+    "app",
+    "create_isolated_tab",
+    "execute_nav_steps",
+]
+
 log = logging.getLogger("nodriver_sidecar")
 logging.basicConfig(level=logging.INFO)
 
@@ -335,7 +358,7 @@ async def _select_with_retry(tab: Any, selector: str, timeout: float, action: st
     return el
 
 
-async def _execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: float, eval_results: list[Any]) -> None:
+async def execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: float, eval_results: list[Any]) -> None:
     """Drive *tab* through *nav_steps* in order, before the caller's own settle-wait.
 
     Each step gets the full outer *timeout* to find its selector, matching
@@ -348,6 +371,9 @@ async def _execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: f
     ``evaluate`` step, matching ``ScrapeDriver.render``'s own ``seen_urls``
     mutate-in-place precedent for a per-call accumulator that isn't this
     function's own return value.
+
+    Public because :mod:`hitl` replays a target's nav steps with it when an operator opens
+    that target in a session -- the same replay a render performs, by the same code.
     """
     for i, step in enumerate(nav_steps):
         if step.action == "wait_ms":
@@ -443,16 +469,16 @@ async def _render(
         # setting overrides the container-wide `--proxy-server` applied at launch. Falling
         # through to the shared browser instead would route an explicitly-direct request out
         # through the container's proxy while still reporting `direct` back to the caller.
-        tab, render_context_id = await _create_isolated_tab(_browser, "about:blank", proxy_server=egress_proxy)
+        tab, render_context_id = await create_isolated_tab(_browser, "about:blank", proxy_server=egress_proxy)
         if session_state:
-            await hitl._apply_context_state(_browser, render_context_id, session_state)
+            await hitl.apply_context_state(_browser, render_context_id, session_state)
     elif session_state:
         # about:blank first so the cookies are in place before the real navigation -- a cookie
         # set after the page loads arrives too late to have been sent with the request that
         # was going to be challenged. Storage is applied after that navigation instead, since
         # localStorage is origin-scoped and about:blank is not the origin.
-        tab, render_context_id = await _create_isolated_tab(_browser, "about:blank")
-        await hitl._apply_context_state(_browser, render_context_id, session_state)
+        tab, render_context_id = await create_isolated_tab(_browser, "about:blank")
+        await hitl.apply_context_state(_browser, render_context_id, session_state)
     else:
         tab = await _browser.get("about:blank", new_tab=True)
     main_frame_id = str(tab.target.target_id)
@@ -507,7 +533,7 @@ async def _render(
             # localStorage is origin-scoped: it can only be written while a page from that
             # origin is loaded, which about:blank was not. The cookies were already in place
             # for the navigation above, which is the part that carries a cleared challenge.
-            await hitl._apply_origin_storage(tab, session_state)
+            await hitl.apply_origin_storage(tab, session_state)
             await tab.send(uc.cdp.page.navigate(url))
         if nav_steps:
             # A settle wait before interacting, not just before the final content
@@ -521,7 +547,7 @@ async def _render(
             # earlier in the sequence (before ANY interaction, not only before
             # get_content()).
             await tab.sleep(1.0)
-            await _execute_nav_steps(tab, nav_steps, timeout, eval_results)
+            await execute_nav_steps(tab, nav_steps, timeout, eval_results)
         if wait_for:
             # _select_with_retry (not a bare tab.select()): the same stale-CDP-
             # node race nav_steps hit live also reproduced here, against this
@@ -631,7 +657,7 @@ class _DownloadResult(NamedTuple):
     data: bytes
 
 
-async def _create_isolated_tab(
+async def create_isolated_tab(
     browser: Any, url: str, *, proxy_server: str | None = None
 ) -> tuple[Any, uc.cdp.browser.BrowserContextID]:
     """Create a fresh, isolated browser context + one tab within it, navigated to *url*.
@@ -644,6 +670,9 @@ async def _create_isolated_tab(
     ``_select_with_retry`` already established for a different CDP timing
     race in this file, rather than trusting the library's own single-shot
     lookup.
+
+    Public because :mod:`hitl` opens every operator tab in its own context through it, as well
+    as the render and download paths here.
 
     :return: the new tab, and its isolated browser context's id (needed by
         the caller to scope ``Browser.setDownloadBehavior`` and to dispose
@@ -693,7 +722,7 @@ async def _download(url: str, *, timeout: float = 30.0) -> _DownloadResult:
     :raises DownloadError: no file appeared in the download directory within *timeout*
     """
     download_dir = tempfile.mkdtemp(prefix="nodriver-download-")
-    tab, context_id = await _create_isolated_tab(_browser, "about:blank")
+    tab, context_id = await create_isolated_tab(_browser, "about:blank")
     try:
         await _browser.send(
             uc.cdp.browser.set_download_behavior(
@@ -889,9 +918,10 @@ UI_SCALE = os.environ.get("UI_SCALE", "1.0")
 def _browser_args() -> list[str]:
     """Chromium's launch arguments, including the egress exit when one is configured.
 
-    A function rather than a literal inside ``_lifespan`` so a test can assert on the arguments
-    PRODUCTION builds. The first version of that test rebuilt the list itself and asserted on
-    its own copy, which stayed green with the production line deleted -- a test of the test.
+    A function rather than a literal because the startup launch and the post-HITL relaunch both
+    need the same list. The tests read it where it lands -- the arguments ``uc.start`` receives --
+    because the first version of that test rebuilt the list itself and asserted on its own copy,
+    which stayed green with the production line deleted -- a test of the test.
     """
     # `about:blank` as a positional URL, so Chromium's startup page IS blank rather than the
     # new-tab page, which on this image renders a search engine's home page.
@@ -996,7 +1026,7 @@ async def _heal_render_path_after_hitl() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    global _browser
+    global _browser, _ready
     # Pinned user_data_dir (not nodriver's own auto-generated temp one) so this
     # Preferences file is guaranteed to be the ONE the persistent browser instance
     # below actually reads -- see _CHROME_PREFERENCES' own comment for why this is
@@ -1026,6 +1056,11 @@ async def _lifespan(_app: FastAPI):
     await _sessions.shutdown()
     if _browser is not None:
         _browser.stop()
+    # A stopped browser is no browser. Left set, `/healthz` would go on answering "ok" and the
+    # routes would hand requests to a dead process for however long the event loop outlives this
+    # -- the state has to say what is true after shutdown as well as during the run.
+    _browser = None
+    _ready = False
 
 
 app = FastAPI(lifespan=_lifespan)

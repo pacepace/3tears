@@ -399,14 +399,41 @@ class TestListingDetailDriver:
         with pytest.raises(ListingDetailDriverError):
             await driver.render("https://example.gov/warn")
 
-    async def test_default_pace_delay_is_nonzero(self):
+    async def test_default_pace_delay_is_nonzero(self, monkeypatch):
         """This module's own docstring, 'Politeness, on by default' -- unlike
         MultiDocumentDriver, this brand-new driver defaults to NOT hammering an
-        unprotected government server."""
-        driver = ListingDetailDriver(
-            row_selector="tr", listing_field_columns={}, detail_link_column=0, detail_field_labels={}
+        unprotected government server.
+
+        Observed as the pause a driver built WITHOUT a pace argument actually takes
+        between two detail fetches.
+        """
+        listing = _listing_html(
+            [
+                ("Acme Corp", "/notices/1", "City", "Jun 1, 2026"),
+                ("Beta LLC", "/notices/2", "City", "Jun 2, 2026"),
+            ]
         )
-        assert driver._pace_delay_seconds > 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/notices/" in str(request.url):
+                return httpx.Response(200, content=_detail_html(affected_count="1").encode())
+            return httpx.Response(200, content=listing.encode())
+
+        driver = ListingDetailDriver(
+            row_selector="table tr",
+            listing_field_columns=_LISTING_FIELD_COLUMNS,
+            detail_link_column=_DETAIL_LINK_COLUMN,
+            detail_field_labels=_DETAIL_FIELD_LABELS,
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        sleep_mock = AsyncMock()
+        import threetears.scrape.drivers.listing_detail as listing_detail_module
+
+        monkeypatch.setattr(listing_detail_module.asyncio, "sleep", sleep_mock)
+        await driver.render("https://example.gov/warn")
+
+        assert sleep_mock.await_count == 1
+        assert sleep_mock.await_args.args[0] > 0
 
 
 class TestListingDetailAnnouncesADroppedSolve:
