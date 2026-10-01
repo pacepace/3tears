@@ -21,6 +21,7 @@ from threetears.agent.tools.server import (
     ToolManifestEntry,
     ToolServer,
 )
+from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE
 from threetears.core.security.identity_token import (
     IdentityClaims,
     build_jwks,
@@ -1704,7 +1705,8 @@ class TestToolServerIdentityVerification:
         await server.handle_call(self._msg(agent_id=uuid4(), token=None))
         response = self._response(rec)
         assert response["success"] is False
-        assert "identity verification failed" in response["error"]
+        assert response["error_code"] == IDENTITY_REFUSED
+        assert response["error"] == IDENTITY_REFUSED_MESSAGE
 
     @pytest.mark.asyncio
     async def test_enforce_accepts_valid_matching_token(self) -> None:
@@ -1786,7 +1788,8 @@ class TestToolServerIdentityVerification:
         await server.handle_call(self._msg(agent_id=uuid4(), customer_id=uuid4(), token=token))
         response = self._response(rec)
         assert response["success"] is False
-        assert "identity verification failed" in response["error"]
+        assert response["error_code"] == IDENTITY_REFUSED
+        assert response["error"] == IDENTITY_REFUSED_MESSAGE
 
 
 class TestToolServerProxyAssertionVerification:
@@ -2048,7 +2051,8 @@ class TestToolServerReactiveJwksRefresh:
         assert provider.refresh_calls == 0  # NO reactive refresh on an expired token
         response = json.loads(rec.last_reply[1].model_dump_json())
         assert response["success"] is False
-        assert "identity verification failed" in response["error"]
+        assert response["error_code"] == IDENTITY_REFUSED
+        assert response["error"] == IDENTITY_REFUSED_MESSAGE
 
 
 class TestToolServerVerificationObservability:
