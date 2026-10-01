@@ -241,7 +241,7 @@ class TestRegisterVerifier:
         # The default ``generic_hmac_sha256`` scheme is wired at
         # construction time so subscriptions land with a working
         # verifier without consumer ceremony.
-        assert receiver._verifiers["generic_hmac_sha256"] is verify_generic_hmac_sha256  # noqa: SLF001
+        assert receiver.verifier_for("generic_hmac_sha256") is verify_generic_hmac_sha256
 
     def test_register_custom_scheme(self) -> None:
         receiver = _build_receiver()
@@ -251,7 +251,7 @@ class TestRegisterVerifier:
             return True
 
         receiver.register_verifier("github", _github_stub)
-        assert receiver._verifiers["github"] is _github_stub  # noqa: SLF001
+        assert receiver.verifier_for("github") is _github_stub
 
     def test_register_overrides_existing(self) -> None:
         receiver = _build_receiver()
@@ -261,7 +261,7 @@ class TestRegisterVerifier:
             return False
 
         receiver.register_verifier("generic_hmac_sha256", _replacement)
-        assert receiver._verifiers["generic_hmac_sha256"] is _replacement  # noqa: SLF001
+        assert receiver.verifier_for("generic_hmac_sha256") is _replacement
 
 
 # ============================================================

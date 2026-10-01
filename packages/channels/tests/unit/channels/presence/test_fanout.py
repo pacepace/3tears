@@ -52,8 +52,9 @@ class _BoomSocket:
 class _FakeSubscription:
     """records whether it was torn down via ``unsubscribe``."""
 
-    def __init__(self, subject: str) -> None:
+    def __init__(self, subject: str, cb: Any) -> None:
         self.subject = subject
+        self.cb = cb
         self.unsubscribed = False
 
     async def unsubscribe(self) -> None:
@@ -72,9 +73,16 @@ class _FakeNats:
         self.publishes.append((str(subject), message))
 
     async def subscribe_typed(self, *, subject: Any, message_type: Any, cb: Any) -> _FakeSubscription:  # noqa: ARG002
-        sub = _FakeSubscription(str(subject))
+        sub = _FakeSubscription(str(subject), cb)
         self.subscriptions.append(sub)
         return sub
+
+    async def deliver(self, frame: RoomFrame) -> None:
+        """hand a received frame to the callback subscribed on its room's subject, as the broker would."""
+        subject = str(Subjects.room(frame.room_id))
+        live = [s for s in self.subscriptions if s.subject == subject and not s.unsubscribed]
+        assert len(live) == 1, f"expected exactly one live subscription on {subject}, found {len(live)}"
+        await live[0].cb(frame)
 
 
 class _GatedNats(_FakeNats):
@@ -211,29 +219,41 @@ class TestPublishOnly:
 
 
 class TestDeliver:
-    """_deliver fans a received frame to local sockets, honouring exclude."""
+    """the subscription callback fans a received frame to local sockets, honouring exclude.
 
-    async def test_deliver_sends_to_every_local_member(self, fanout: RoomFanout, state: _FakeRoomState) -> None:
+    each test joins the room so the fanout subscribes, then hands the frame to
+    the callback that subscription registered -- the same entry the broker
+    drives in production, exercised via the real broker in the integration proof.
+    """
+
+    async def test_deliver_sends_to_every_local_member(
+        self, fanout: RoomFanout, state: _FakeRoomState, nats: _FakeNats
+    ) -> None:
         s1, s2 = _FakeSocket(), _FakeSocket()
         state.local[ROOM] = [("c1", s1), ("c2", s2)]
-        # _deliver is the subscription callback; unit-tested directly here, exercised
-        # via the real broker in the integration proof.
-        await fanout._deliver(RoomFrame(room_id=ROOM, payload="p", origin_pod="pod-a"))  # noqa: SLF001 -- testing the subscription callback
+        await fanout.join_room(ROOM, "c1", "user-1", "cust")
+        await nats.deliver(RoomFrame(room_id=ROOM, payload="p", origin_pod="pod-a"))
         assert s1.frames == ["p"]
         assert s2.frames == ["p"]
 
-    async def test_deliver_skips_excluded_connection(self, fanout: RoomFanout, state: _FakeRoomState) -> None:
+    async def test_deliver_skips_excluded_connection(
+        self, fanout: RoomFanout, state: _FakeRoomState, nats: _FakeNats
+    ) -> None:
         excluded, kept = _FakeSocket(), _FakeSocket()
         state.local[ROOM] = [("c1", excluded), ("c2", kept)]
-        await fanout._deliver(RoomFrame(room_id=ROOM, payload="p", exclude="c1", origin_pod="pod-a"))  # noqa: SLF001 -- testing the subscription callback
+        await fanout.join_room(ROOM, "c1", "user-1", "cust")
+        await nats.deliver(RoomFrame(room_id=ROOM, payload="p", exclude="c1", origin_pod="pod-a"))
         assert excluded.frames == []  # excluded by connection-id
         assert kept.frames == ["p"]
 
-    async def test_deliver_no_local_members_is_noop(self, fanout: RoomFanout) -> None:
-        # no entry for the room → nothing to deliver, no error.
-        await fanout._deliver(RoomFrame(room_id="unknown", payload="p", origin_pod="pod-a"))  # noqa: SLF001 -- testing the subscription callback
+    async def test_deliver_no_local_members_is_noop(self, fanout: RoomFanout, nats: _FakeNats) -> None:
+        # no local socket for the room -> nothing to deliver, no error.
+        await fanout.join_room("unknown", "c1", "user-1", "cust")
+        await nats.deliver(RoomFrame(room_id="unknown", payload="p", origin_pod="pod-a"))
 
-    async def test_one_failing_socket_does_not_starve_the_rest(self, fanout: RoomFanout, state: _FakeRoomState) -> None:
+    async def test_one_failing_socket_does_not_starve_the_rest(
+        self, fanout: RoomFanout, state: _FakeRoomState, nats: _FakeNats
+    ) -> None:
         """a socket whose send raises must not abort delivery to the room's other members.
 
         transient fast-notify is best-effort PER socket: one dead/slow
@@ -243,7 +263,8 @@ class TestDeliver:
         """
         before, boom, after = _FakeSocket(), _BoomSocket(), _FakeSocket()
         state.local[ROOM] = [("c1", before), ("c2", boom), ("c3", after)]
-        await fanout._deliver(RoomFrame(room_id=ROOM, payload="p", origin_pod="pod-a"))  # noqa: SLF001 -- testing the subscription callback
+        await fanout.join_room(ROOM, "c1", "user-1", "cust")
+        await nats.deliver(RoomFrame(room_id=ROOM, payload="p", origin_pod="pod-a"))
         assert before.frames == ["p"]
         assert after.frames == ["p"]  # delivered despite the dead socket between them
 
@@ -281,8 +302,8 @@ class TestSubscriptionLifecycleRaces:
         assert nats.subscriptions[0].unsubscribed is True, (
             "subscription orphaned: room has no members but stays subscribed"
         )
-        assert ROOM not in fanout._subscriptions  # noqa: SLF001 -- white-box: no retained handle
-        assert ROOM not in fanout._ref_counts  # noqa: SLF001 -- white-box: no retained ref
+        assert ROOM not in fanout.subscribed_rooms()
+        assert ROOM not in fanout.referenced_rooms()
 
 
 class TestRoomFrameWire:

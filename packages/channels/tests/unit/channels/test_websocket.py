@@ -311,7 +311,7 @@ class TestConnectionRegistry:
         registry.unregister("user-1", ws)
         # bucket is gone, not a lingering empty list
         assert registry.get_connections("user-1") == []
-        assert "user-1" not in registry._connections  # noqa: SLF001 -- migration assertion on internal state
+        assert "user-1" not in registry.user_ids()
 
     def test_concurrent_register_unregister_does_not_race(self) -> None:
         """parallel register/unregister from threads keeps a consistent map.

@@ -154,6 +154,29 @@ class RoomFanout:
             self._ref_counts.pop(room_id, None)
             await self._unsubscribe_locked(room_id)
 
+    def subscribed_rooms(self) -> frozenset[str]:
+        """return a snapshot of the rooms this pod holds a live subscription for.
+
+        a room is present exactly while the pod retains its subscription
+        handle; the last :meth:`leave_room` removes it as it unsubscribes.
+
+        :return: room keys with a retained subscription handle
+        :rtype: frozenset[str]
+        """
+        return frozenset(self._subscriptions)
+
+    def referenced_rooms(self) -> frozenset[str]:
+        """return a snapshot of the rooms this pod holds a local ref-count for.
+
+        a room is present exactly while at least one local connection has
+        joined it; the last :meth:`leave_room` drops the entry rather than
+        leaving a zero behind.
+
+        :return: room keys with a local ref-count entry
+        :rtype: frozenset[str]
+        """
+        return frozenset(self._ref_counts)
+
     async def broadcast(
         self,
         room_id: str,
