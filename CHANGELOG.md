@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A refused websocket connection tells the client which refusal it was
+
+`WebSocketHandler`'s auth seam was `async (token) -> dict | None`. `None` carried no reason, so
+every refusal reached the client as `{"type": "error", "message": "authentication failed"}` and a
+1008 close: an expired token, and a rule the host applied to the connection (the hub's
+cross-customer rule, its `channel.send` gate), read identically. A client could not tell "refresh
+and retry" from "you may not", and could not show the person which.
+
+- **Breaking: the seam is `AuthValidator = async (token) -> dict`, raising
+  `WebSocketAuthRefused(code, message)` to refuse.** Returning `None` is no longer a refusal; the
+  handler raises `TypeError` naming the new shape. A host updates its validator to raise. Use
+  `UNAUTHENTICATED` (new) for a token it cannot verify, and its own code for anything else --
+  ideally the code its other doors answer for the same condition.
+- **Every `error` frame sent before a 1008 close carries a `code`**:
+  `{"type": "error", "code": ..., "message": ...}`. The handler's own refusals -- no token, a peer
+  gone before it sent one -- and `disconnect_user` answer `UNAUTHENTICATED`. A validator's refusal
+  answers its own code and message, and is logged with the code.
+- `threetears.channels` exports `UNAUTHENTICATED`, `AuthValidator` and `WebSocketAuthRefused`.
+
 ### A pull consumer's handler holds its message while it runs
 
 `ack_wait` on a durable pull consumer did two jobs: it was how long a message a dead fetcher held

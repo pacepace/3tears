@@ -24,7 +24,7 @@ import pytest
 
 from threetears.agent.acl import AccessDenied
 from threetears.channels.frames import Frame, OpResult, RoomAccessRequest
-from threetears.channels.websocket import WebSocketHandler
+from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused, WebSocketHandler
 
 from .test_websocket import _EchoRouter
 
@@ -173,9 +173,11 @@ class _Pod:
 
         monkeypatch.setattr(ws_mod, "authorize_on_entity", _gate)
 
-        async def _auth(token: str) -> dict[str, Any] | None:
+        async def _auth(token: str) -> dict[str, Any]:
             identity = self.users.get(token)
-            return None if identity is None else {"user_id": identity[0], "customer_id": identity[1]}
+            if identity is None:
+                raise WebSocketAuthRefused(UNAUTHENTICATED, "authentication required")
+            return {"user_id": identity[0], "customer_id": identity[1]}
 
         self.handler = WebSocketHandler(
             router=_EchoRouter(),

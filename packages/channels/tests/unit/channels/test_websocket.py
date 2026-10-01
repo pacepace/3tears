@@ -79,23 +79,34 @@ class _NullRouter:
 # -- Mock auth validators --
 
 
-async def _valid_auth(token: str) -> dict[str, Any] | None:
+def _refuse_unauthenticated() -> Exception:
+    """the refusal a validator raises for a token it cannot verify.
+
+    :return: an ``UNAUTHENTICATED`` refusal
+    :rtype: Exception
+    """
+    from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused
+
+    return WebSocketAuthRefused(UNAUTHENTICATED, "authentication required")
+
+
+async def _valid_auth(token: str) -> dict[str, Any]:
     """auth validator that accepts 'valid-token' and returns user payload."""
-    if token == "valid-token":
-        return {"user_id": "user-123", "name": "Test User"}
-    return None
+    if token != "valid-token":
+        raise _refuse_unauthenticated()
+    return {"user_id": "user-123", "name": "Test User"}
 
 
-async def _always_reject_auth(token: str) -> dict[str, Any] | None:
-    """auth validator that always rejects."""
-    return None
+async def _always_reject_auth(token: str) -> dict[str, Any]:
+    """auth validator that always refuses."""
+    raise _refuse_unauthenticated()
 
 
-async def _valid_auth_with_customer(token: str) -> dict[str, Any] | None:
+async def _valid_auth_with_customer(token: str) -> dict[str, Any]:
     """auth validator that returns a user id AND a customer scope on the payload."""
-    if token == "valid-token":
-        return {"user_id": "user-123", "customer_id": "cust-authenticated", "name": "Test User"}
-    return None
+    if token != "valid-token":
+        raise _refuse_unauthenticated()
+    return {"user_id": "user-123", "customer_id": "cust-authenticated", "name": "Test User"}
 
 
 # ============================================================
@@ -441,6 +452,118 @@ class TestWebSocketHandlerAuthFailure:
                 break
         assert error_sent
         assert ws.closed
+
+
+class TestAValidatorRefusalCarriesItsCode:
+    """the seam: a validator refuses with a code and a message, and the client receives both.
+
+    The seam used to be ``token -> claims | None``. ``None`` carried no reason, so every refusal
+    reached the client as ``authentication failed`` -- an expired token, a person the host had
+    blocked, and an authorization rule the host applied to the connection all read the same, and
+    a client could not tell "refresh and retry" from "you may not".
+    """
+
+    @staticmethod
+    def _frames(ws: MockWebSocket) -> list[dict[str, Any]]:
+        return [json.loads(text) for text in ws.sent]
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_code_and_message_reach_the_client_before_1008(self) -> None:
+        """a host rule's refusal arrives as itself, then the socket closes as a policy violation."""
+        from threetears.channels.websocket import WebSocketAuthRefused, WebSocketHandler
+
+        async def _refuse(token: str) -> dict[str, Any]:
+            raise WebSocketAuthRefused("SHARED_AGENT_ACCESS_DENIED", "agent is not shared with your customer")
+
+        ws = MockWebSocket(query_params={"token": "valid-token"})
+        await WebSocketHandler(router=_EchoRouter(), auth_validator=_refuse).handle_connection(ws)
+
+        assert self._frames(ws) == [
+            {
+                "type": "error",
+                "code": "SHARED_AGENT_ACCESS_DENIED",
+                "message": "agent is not shared with your customer",
+            }
+        ]
+        assert ws.closed
+        assert ws.close_code == 1008
+
+    @pytest.mark.asyncio
+    async def test_a_refused_connection_never_reaches_the_router(self) -> None:
+        """no ``connected`` frame and no routed message after a refusal."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        ws = MockWebSocket(
+            messages=[json.dumps({"type": "message", "content": "hi"})],
+            query_params={"token": "bad-token"},
+        )
+        await WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth).handle_connection(ws)
+
+        assert [frame["type"] for frame in self._frames(ws)] == ["error"]
+        assert self._frames(ws)[0]["code"] == "UNAUTHENTICATED"
+
+    @pytest.mark.asyncio
+    async def test_no_token_answers_unauthenticated(self) -> None:
+        """the handler's own refusal speaks the same vocabulary a validator's does."""
+        from threetears.channels.websocket import UNAUTHENTICATED, WebSocketHandler
+
+        ws = MockWebSocket(messages=[json.dumps({"type": "message", "content": "no auth first"})])
+        await WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth).handle_connection(ws)
+
+        assert self._frames(ws) == [
+            {"type": "error", "code": UNAUTHENTICATED, "message": "no authentication token provided"}
+        ]
+        assert ws.close_code == 1008
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_during_authentication_answers_unauthenticated(self) -> None:
+        """a peer gone before it sent a token is refused with the authentication code."""
+        from threetears.channels.websocket import UNAUTHENTICATED, WebSocketHandler
+
+        ws = MockWebSocket(messages=[])
+        await WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth).handle_connection(ws)
+
+        assert self._frames(ws) == [{"type": "error", "code": UNAUTHENTICATED, "message": "authentication failed"}]
+        assert ws.close_code == 1008
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_is_logged_with_its_code(self, caplog: pytest.LogCaptureFixture) -> None:
+        """the server log names the code the client received."""
+        import logging
+
+        from threetears.channels.websocket import WebSocketAuthRefused, WebSocketHandler
+
+        async def _refuse(token: str) -> dict[str, Any]:
+            raise WebSocketAuthRefused("CHANNEL_ACCESS_DENIED", "no channel.send")
+
+        ws = MockWebSocket(query_params={"token": "valid-token"})
+        with caplog.at_level(logging.INFO):
+            await WebSocketHandler(router=_EchoRouter(), auth_validator=_refuse).handle_connection(ws)
+
+        assert any("CHANNEL_ACCESS_DENIED" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_validator_returning_none_is_a_programming_error(self) -> None:
+        """the seam changed outright: ``None`` is not a refusal any more, and is named as the break."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        async def _old_shape(token: str) -> Any:
+            return None
+
+        ws = MockWebSocket(query_params={"token": "valid-token"})
+        with pytest.raises(TypeError, match="WebSocketAuthRefused"):
+            await WebSocketHandler(router=_EchoRouter(), auth_validator=_old_shape).handle_connection(ws)
+        assert not any(json.loads(text).get("type") == "connected" for text in ws.sent)
+
+    def test_the_refusal_carries_its_code_and_message(self) -> None:
+        """the typed refusal exposes both halves, for a host that inspects one it raised."""
+        from threetears.channels.websocket import WebSocketAuthRefused
+
+        refusal = WebSocketAuthRefused("CHANNEL_ACCESS_DENIED", "no channel.send")
+
+        assert refusal.code == "CHANNEL_ACCESS_DENIED"
+        assert refusal.message == "no channel.send"
+        assert "CHANNEL_ACCESS_DENIED" in str(refusal)
 
 
 class TestWebSocketHandlerConnectedMessage:
@@ -1257,7 +1380,7 @@ class TestDisconnectUser:
 
         await handler.disconnect_user("user-1", reason="account disabled")
 
-        assert json.loads(ws.sent[0]) == {"type": "error", "message": "account disabled"}
+        assert json.loads(ws.sent[0]) == {"type": "error", "code": "UNAUTHENTICATED", "message": "account disabled"}
 
     async def test_leaves_other_users_connected(self) -> None:
         handler = self._handler()

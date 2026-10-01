@@ -30,7 +30,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from uuid import UUID, uuid7
 
 from pydantic import ValidationError
@@ -47,14 +47,63 @@ if TYPE_CHECKING:
     from threetears.channels.presence.room_state import RoomState
 
 __all__ = [
+    "UNAUTHENTICATED",
+    "AuthValidator",
     "ConnectionRegistry",
     "StreamingChannelRouter",
+    "WebSocketAuthRefused",
     "WebSocketHandler",
     "WebSocketProtocol",
     "parse_attachment_ids",
 ]
 
 log = get_logger(__name__)
+
+#: the code a connection is refused with when it does not prove who it is: no token, a peer
+#: gone before it sent one, a token the host's validator cannot verify, or a session the host
+#: ended. A client reads it as "obtain a fresh credential and reconnect", where any other code
+#: a validator answers is a refusal a fresh credential does not change.
+UNAUTHENTICATED: Final = "UNAUTHENTICATED"
+
+#: the close code every refused or ended connection is closed with: policy violation, distinct
+#: from an ordinary 1000/1001/1006 drop. The ``error`` frame sent just before it carries the code.
+_POLICY_VIOLATION_CLOSE_CODE: Final = 1008
+
+
+class WebSocketAuthRefused(Exception):
+    """an auth validator's refusal of a connection, carried to the client as itself.
+
+    The host's :data:`AuthValidator` raises this to refuse a connection. The handler sends
+    ``{"type": "error", "code": code, "message": message}`` and closes the socket 1008, so a
+    client can tell an expired credential (:data:`UNAUTHENTICATED`) from a rule that refuses
+    this caller whatever credential it presents, and show the person which.
+
+    :param code: stable, screaming-snake identifier a client branches on; the host's own
+        vocabulary, ideally the code its other doors answer for the same condition
+    :ptype code: str
+    :param message: client-safe text, shown to a person and never parsed
+    :ptype message: str
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        """record the code and the message.
+
+        :param code: stable identifier a client branches on
+        :ptype code: str
+        :param message: client-safe text
+        :ptype message: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+#: the host's authentication seam: verify the connection's token and return its claims
+#: (``user_id``, and ``customer_id`` when the host scopes by customer), or raise
+#: :class:`WebSocketAuthRefused` with the code and message the client should receive.
+AuthValidator = Callable[[str], Awaitable[dict[str, Any]]]
 
 _DEFAULT_HEARTBEAT_INTERVAL = 30
 _DEFAULT_MAX_MESSAGE_SIZE = 65536  # 64KB
@@ -326,9 +375,9 @@ class WebSocketHandler:
 
     :param router: channel router for processing inbound messages
     :ptype router: ChannelRouter-conforming object
-    :param auth_validator: callable that validates JWT token string and
-        returns decoded payload dict or None if invalid
-    :ptype auth_validator: Callable[[str], Awaitable[dict | None]]
+    :param auth_validator: verifies the connection's token and returns its claims, or
+        raises :class:`WebSocketAuthRefused` with the code the client receives
+    :ptype auth_validator: AuthValidator
     :param config: optional handler configuration overrides
     :ptype config: dict[str, Any] | None
     """
@@ -336,7 +385,7 @@ class WebSocketHandler:
     def __init__(
         self,
         router: Any,
-        auth_validator: Callable[[str], Awaitable[dict[str, Any] | None]],
+        auth_validator: AuthValidator,
         config: dict[str, Any] | None = None,
         *,
         room_state: RoomState | None = None,
@@ -370,9 +419,9 @@ class WebSocketHandler:
 
         :param router: channel router for processing inbound messages
         :ptype router: ChannelRouter-conforming object
-        :param auth_validator: callable that validates JWT token string and
-            returns decoded payload dict or None if invalid
-        :ptype auth_validator: Callable[[str], Awaitable[dict | None]]
+        :param auth_validator: verifies the connection's token and returns its claims, or
+            raises :class:`WebSocketAuthRefused` with the code the client receives
+        :ptype auth_validator: AuthValidator
         :param config: optional handler configuration overrides
         :ptype config: dict[str, Any] | None
         :param room_state: cross-pod presence/room state (task-01); enables
@@ -517,13 +566,16 @@ class WebSocketHandler:
         """authenticate websocket connection via query param or first message.
 
         checks query_params for token first. if not present, waits for
-        first message containing auth payload. sends error and closes
-        connection on authentication failure.
+        first message containing auth payload. a refusal -- no token, or the
+        validator's :class:`WebSocketAuthRefused` -- sends an ``error`` frame
+        carrying its code and message, then closes the connection 1008.
 
         :param websocket: websocket connection to authenticate
         :ptype websocket: Any
-        :return: decoded auth payload dict or None on failure
+        :return: the validator's claims, or ``None`` when the connection was refused and closed
         :rtype: dict[str, Any] | None
+        :raises TypeError: when the validator returns anything but a claims dict -- the seam's
+            old ``None``-for-refused shape, which carries no code, is a break to fix at the host
         """
         token: str | None = None
 
@@ -539,20 +591,30 @@ class WebSocketHandler:
                     token = data.get("token")
             except Exception:
                 log.warning("websocket disconnected during authentication")
-                await self._close_with_error(websocket, "authentication failed")
+                await self._close_with_error(websocket, UNAUTHENTICATED, "authentication failed")
                 return None
 
         if token is None:
-            await self._close_with_error(websocket, "no authentication token provided")
+            await self._close_with_error(websocket, UNAUTHENTICATED, "no authentication token provided")
             return None
 
-        payload = await self._auth_validator(token)
-        if payload is None:
-            await self._close_with_error(websocket, "authentication failed")
+        try:
+            payload = await self._auth_validator(token)
+        except WebSocketAuthRefused as refusal:
+            log.info(
+                "websocket connection refused: code=%s",
+                refusal.code,
+                extra={"extra_data": {"code": refusal.code, "message": refusal.message}},
+            )
+            await self._close_with_error(websocket, refusal.code, refusal.message)
             return None
 
-        result = payload
-        return result
+        if not isinstance(payload, dict):
+            raise TypeError(
+                f"auth_validator returned {type(payload).__name__}; it must return the claims dict "
+                "or raise WebSocketAuthRefused with the code the client should receive"
+            )
+        return payload
 
     async def _message_loop(
         self,
@@ -1323,15 +1385,16 @@ class WebSocketHandler:
 
         :param user_id: the authenticated user whose sockets should be closed.
         :ptype user_id: str
-        :param reason: human-readable text delivered as an ``error`` frame before the close, so the
-            client can distinguish this from a network drop and route to sign-in rather than retry.
+        :param reason: human-readable text delivered as an ``error`` frame before the close, under
+            :data:`UNAUTHENTICATED`, so the client can distinguish this from a network drop and
+            route to sign-in rather than retry.
         :ptype reason: str
         :return: how many sockets were closed on this pod.
         :rtype: int
         """
         sockets = self.registry.get_connections(user_id)
         for socket in sockets:
-            await self._close_with_error(socket, reason)
+            await self._close_with_error(socket, UNAUTHENTICATED, reason)
         if sockets:
             log.info(
                 "disconnected a user's live sockets",
@@ -1339,25 +1402,29 @@ class WebSocketHandler:
             )
         return len(sockets)
 
-    async def _close_with_error(self, websocket: Any, error_message: str) -> None:
-        """send error message and close websocket connection.
+    async def _close_with_error(self, websocket: Any, error_code: str, error_message: str) -> None:
+        """send an ``error`` frame carrying the refusal's code, then close the connection 1008.
 
         :param websocket: websocket connection to close
         :ptype websocket: Any
-        :param error_message: human-readable error description
+        :param error_code: stable identifier the client branches on
+        :ptype error_code: str
+        :param error_message: client-safe description
         :ptype error_message: str
+        :return: nothing
+        :rtype: None
         """
         try:
-            await websocket.send_text(json.dumps({"type": "error", "message": error_message}))
+            await websocket.send_text(json.dumps({"type": "error", "code": error_code, "message": error_message}))
         except Exception as exc:  # noqa: BLE001 -- the close below still has to happen
             # The peer never received the reason it is being disconnected, so from its side the
             # connection simply drops. Only this log connects the two.
             log.debug(
                 "could not deliver websocket error message before closing",
-                extra={"extra_data": {"reason": error_message, "error": str(exc)}},
+                extra={"extra_data": {"code": error_code, "reason": error_message, "error": str(exc)}},
             )
         try:
-            await websocket.close(code=1008)
+            await websocket.close(code=_POLICY_VIOLATION_CLOSE_CODE)
         except Exception as exc:  # noqa: BLE001 -- nothing further to try
             log.debug(
                 "websocket close failed",

@@ -36,6 +36,7 @@ import pytest
 from threetears.agent.acl import AccessDenied
 from threetears.channels.frames import Frame, OpResult
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
+from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused
 
 from .test_websocket import MockWebSocket, _EchoRouter, _valid_auth
 
@@ -166,10 +167,10 @@ def _room_seam_handler(
 def _auth_with_customer(token: str) -> Any:
     """auth validator returning a user_id + customer_id as UUID strings."""
 
-    async def _v(tok: str) -> dict[str, Any] | None:
-        if tok == "valid-token":
-            return {"user_id": str(uuid4()), "customer_id": str(uuid4())}
-        return None
+    async def _v(tok: str) -> dict[str, Any]:
+        if tok != "valid-token":
+            raise WebSocketAuthRefused(UNAUTHENTICATED, "authentication required")
+        return {"user_id": str(uuid4()), "customer_id": str(uuid4())}
 
     return _v
 
@@ -577,10 +578,10 @@ class TestMalformedPrincipal:
         """
         handler, state, fanout, recorded = _room_seam_handler(monkeypatch)
 
-        async def _bad_auth(token: str) -> dict[str, Any] | None:
-            if token == "valid-token":
-                return {"user_id": "not-a-uuid", "customer_id": str(uuid4())}
-            return None
+        async def _bad_auth(token: str) -> dict[str, Any]:
+            if token != "valid-token":
+                raise WebSocketAuthRefused(UNAUTHENTICATED, "authentication required")
+            return {"user_id": "not-a-uuid", "customer_id": str(uuid4())}
 
         handler._auth_validator = _bad_auth  # noqa: SLF001
 
