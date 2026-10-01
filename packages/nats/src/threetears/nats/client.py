@@ -81,6 +81,7 @@ from nats.aio.client import (
     Client as _NatsPyClient,
 )
 from nats.aio.subscription import DEFAULT_SUB_PENDING_BYTES_LIMIT, DEFAULT_SUB_PENDING_MSGS_LIMIT
+from nats.js.client import JetStreamContext as _NatsJetStreamContext
 from nats.js.api import (
     AckPolicy as _NatsAckPolicy,
     ConsumerConfig as _NatsConsumerConfig,
@@ -1179,22 +1180,30 @@ class JetStreamPullConsumer:
                 await asyncio.sleep(_PULL_CONSUMER_ERROR_BACKOFF_SECONDS)
 
     async def stop(self) -> None:
-        """halt the fetch loop, let the fetch in flight finish, then unsubscribe the pull consumer.
+        """halt the fetch loop, release the inbox at the server, and handle whatever reached it first.
 
-        **Why it waits.** A fetch is a pull request the SERVER holds until it is satisfied or
-        expires. Unsubscribing removes the inbox client-side at once, but the server learns of it
-        only when the ``UNSUB`` arrives; a message published meanwhile -- on any other connection,
-        by any pod -- is delivered to that request, dropped by this client, and counted awaiting
-        ack until the durable's ``ack_wait`` runs out. No other fetcher of the durable can have it
-        until then. Measured: 6 of 20 messages published as a stop began. The aibots hub's erasure
-        waits on the audit durable's ack floor, and a stop of its audit consumer stalled it.
+        **Why this is more than an unsubscribe.** A fetch is a pull request the SERVER holds until
+        it is satisfied or expires, and it can outlive the fetch that sent it: the client's timer
+        starts before the request reaches the server, so under load the fetch gives up while the
+        request is still live. nats-py's unsubscribe drops the inbox client-side at once and only
+        then tells the server, so a message delivered to such a request -- published by any pod, on
+        any connection, before the server processes the ``UNSUB`` -- was dropped here and counted
+        awaiting ack until the durable's ``ack_wait`` ran out, out of every other fetcher's reach.
+        Measured: 6 of 20 messages published as a stop began. The aibots hub's erasure waits on
+        the audit durable's ack floor, and its audit consumer's stop stalled it.
 
-        So no new fetch starts, the one in flight is let finish -- it returns when its request is
-        satisfied or expired, with its messages handled and acked -- and only then is the inbox
-        unsubscribed, when the server holds no request that names it. Bounded by one fetch's
-        timeout plus :data:`_PULL_CONSUMER_STOP_HANDLER_GRACE_SECONDS` for its handlers; past
-        that it unsubscribes anyway and says what that costs. A consumer whose loop is not
-        running stops at once.
+        So, in order:
+
+        1. no new fetch starts, and the one in flight is let finish with its messages handled
+           (bounded by one fetch timeout plus :data:`_PULL_CONSUMER_STOP_HANDLER_GRACE_SECONDS`);
+        2. the server is told to drop the inbox while it is still subscribed here, and one round
+           trip proves it did -- the server writes every message it delivered to the inbox before
+           the ``PONG``, so each is now queued here, and nothing more can arrive;
+        3. each queued message is handled exactly as a fetched one would be, and acked;
+        4. the inbox is removed client-side.
+
+        A connection that cannot carry step 2 (closed, reconnecting) is unsubscribed the plain way,
+        and that is logged with what it costs.
 
         :return: nothing
         :rtype: None
@@ -1206,12 +1215,62 @@ class JetStreamPullConsumer:
         except TimeoutError:
             log.warning(
                 "durable pull consumer stop: the fetch in flight did not finish within %.1fs (durable=%s); "
-                "unsubscribing anyway -- a message the server delivers to it now waits out the durable's "
-                "ack_wait before another fetcher can have it",
+                "releasing the inbox anyway",
                 bound,
                 self._durable,
             )
+        try:
+            leftovers = await self._release_inbox()
+        except Exception as exc:  # noqa: BLE001 — the plain unsubscribe below still runs; what it costs is logged
+            log.warning(
+                "durable pull consumer stop: the inbox could not be released at the server first (durable=%s): "
+                "%s: %s -- a message delivered to a request still live there waits out the durable's ack_wait",
+                self._durable,
+                type(exc).__name__,
+                exc,
+            )
+            leftovers = []
+        for msg in leftovers:
+            try:
+                await self._cb(msg)
+            except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
+                await self._redeliver(msg, exc)
         await self._psub.unsubscribe()
+
+    async def _release_inbox(self) -> list[Any]:
+        """drop the fetch inbox's interest at the server, keeping it here, and collect what was delivered.
+
+        The same ``UNSUB`` then ordered :func:`_round_trip` as :func:`_stop_routing_then_drain`,
+        for the same reason; the queue is then taken here rather than by nats-py's ``drain``,
+        because a pull inbox has no callback to take it and the messages in it are to be HANDLED,
+        not merely waited out.
+
+        :return: every message the server delivered to the inbox, status messages excluded
+        :rtype: list[Any]
+        :raises Exception: when the connection cannot carry the ``UNSUB`` or its round trip
+        """
+        # rationale: nats-py exposes no way to remove a subscription's interest without also forgetting
+        # the subscription, nor the queue of a pull subscription's inbox; see the docstring.
+        sub = self._psub._sub  # noqa: SLF001 -- see rationale above
+        connection = self._bound_to
+        await connection._send_unsubscribe(sub._id)  # noqa: SLF001 -- see rationale above
+        await _round_trip(connection)
+        delivered: list[Any] = []
+        queue = sub._pending_queue  # noqa: SLF001 -- see rationale above
+        while not queue.empty():
+            msg = queue.get_nowait()
+            queue.task_done()
+            sub._pending_size -= len(msg.data)  # noqa: SLF001 -- see rationale above
+            if not _NatsJetStreamContext.is_status_msg(msg):
+                delivered.append(msg)
+        if delivered:
+            log.info(
+                "durable pull consumer stop: %d message(s) delivered to a request the last fetch had left "
+                "are handled here rather than stranded (durable=%s)",
+                len(delivered),
+                self._durable,
+            )
+        return delivered
 
 
 class JetStreamResultWaiter:

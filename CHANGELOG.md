@@ -23,8 +23,13 @@ parallel load. Both were reproduced in isolation before they were fixed.
   whole `ack_wait`, where no other fetcher could have it. That happened to 6 of 20 messages; it
   is now 0.
   - `stop()` starts no new fetch. It waits for the current one to return, with its messages
-    handled and acked, and only then unsubscribes.
-  - It is bounded by one fetch timeout plus 10 seconds for handlers.
+    handled and acked (bounded by one fetch timeout plus 10 seconds for handlers).
+  - The server is then told to drop the inbox while it is still subscribed here, and one ordered
+    round trip proves it did. Every message the server delivered to the inbox is queued here at
+    that point, and each is handled like a fetched one before the inbox is removed. This step is
+    needed because a pull request can outlive the fetch that sent it: under load the client's
+    timer fires first. A stop that only waited for the fetch still stranded messages, in 5 of 24
+    loaded hub test runs.
   - It now takes up to one fetch timeout when idle, where before it returned at once.
 
 ### A health probe names the release that answered it
