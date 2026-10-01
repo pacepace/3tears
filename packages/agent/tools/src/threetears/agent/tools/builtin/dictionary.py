@@ -32,7 +32,7 @@ __all__ = [
 _MAX_CHARS = 3000
 
 #: Wikimedia asks every client to say who it is.
-_USER_AGENT = "threetears-dictionary/1.1 (https://github.com/pacepace/3tears)"
+_USER_AGENT = "threetears-dictionary/1.0 (https://github.com/pacepace/3tears)"
 _TAGS = re.compile(r"<[^>]+>")
 
 
