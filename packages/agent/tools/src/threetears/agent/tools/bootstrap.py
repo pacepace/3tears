@@ -51,7 +51,7 @@ import asyncio
 import contextlib
 import os
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -353,7 +353,9 @@ class ToolServerBootstrap:
     """canonical tool-pod lifecycle: logging, signals, serve loop.
 
     subclasses customize the build-and-serve pipeline by overriding
-    ``build_server``, ``register_tools``, and ``run_serve``. the
+    ``build_server``, ``register_tools``, and ``run_serve``, and add
+    their own health checks by passing ``extra_health_checks`` rather
+    than by reaching into how the health server is built. the
     base ``run`` is the one-line entrypoint every tool-pod ``main()``
     calls.
 
@@ -383,6 +385,7 @@ class ToolServerBootstrap:
         health_port: int | None = None,
         collection_tables: "MetaData | None" = None,
         version: str | None = None,
+        extra_health_checks: Sequence[HealthCheck] = (),
     ) -> None:
         """initialize bootstrap with service identity and log level.
 
@@ -413,9 +416,21 @@ class ToolServerBootstrap:
             server's JSON body and the pod's ``starting`` log line. ``None`` (a subclass that
             passes none) leaves both carrying a null version
         :ptype version: str | None
+        :param extra_health_checks: the pod's OWN checks, evaluated by the health server beside
+            the bootstrap's (``nats`` LIVE, ``tools_registered`` and ``jwks_warmed`` READY). each
+            carries its own :class:`~threetears.observe.HealthTier`, so a pod states the blast
+            radius of its own failure: READY for state a restart cannot fix (storage still being
+            wired, a cache warming), LIVE only when a restart is the remedy. a probe reads the
+            pod's state when the health server asks, not when the check is built, so a pod may
+            construct its checks before the state they read exists. names must be unique and
+            must not repeat a bootstrap check's, because two components with one name make the
+            ``?format=json`` body ambiguous; a collision is a :class:`ToolPodConfigError` raised
+            before the pod serves. empty -> the bootstrap's checks alone
+        :ptype extra_health_checks: Sequence[HealthCheck]
         """
         self._service_name = service_name
         self._version = version
+        self._extra_health_checks: tuple[HealthCheck, ...] = tuple(extra_health_checks)
         self._log_level = log_level
         self._collection_tables = collection_tables
         self._collection_registry: CollectionRegistry | None = None
@@ -854,12 +869,51 @@ class ToolServerBootstrap:
         so a port-bind collision (multiple pods on the same docker
         network competing for 8000) must not abort startup.
 
+        the pod's own ``extra_health_checks`` are appended after the bootstrap's, in the order
+        given, so a readiness probe that short-circuits names a bootstrap failure (a dead NATS
+        data plane) before a pod-specific one it may be causing.
+
         :param server: tool server whose state the checks read from
         :ptype server: ToolServer
         :return: started :class:`HealthServer`, or ``None`` if the
             listener failed to bind
         :rtype: HealthServer | None
+        :raises ToolPodConfigError: if a contributed check repeats a name already in the list
         """
+        checks = [
+            HealthCheck(
+                # key liveness on REAL NATS health, not object-existence: a
+                # terminal close (user-JWT expiry) or a persistent auth /
+                # overflow wedge trips is_healthy so k8s recycles the pod. the
+                # old is_connected probe reported healthy forever with a dead
+                # connection (the silent-zombie bug). the in-process
+                # heartbeat-loop supervisor is the no-k8s net (host / docker).
+                name="nats",
+                probe=lambda: server.is_healthy,
+                tier=HealthTier.LIVE,
+            ),
+            # readiness, NOT liveness: a pod that has registered no tools cannot
+            # serve a call, but restarting it does not conjure tools -- it just
+            # replays the same startup. this check being tier-less is why the
+            # tool pods shipped with no livenessProbe at all.
+            HealthCheck(
+                name="tools_registered",
+                probe=lambda: server.tools_count > 0,
+                tier=HealthTier.READY,
+            ),
+            # readiness gate: report NOT-READY until the pod's Hub-JWKS cache has had its first
+            # successful fetch. before it warms, the pod verifies every inbound identity token
+            # against an EMPTY keyset and rejects fail-closed, so a k8s readiness probe that
+            # flipped ready too early would route calls the pod is guaranteed to fail. gating on
+            # jwks_warmed keeps the pod out of rotation until it can actually verify a token.
+            HealthCheck(
+                name="jwks_warmed",
+                probe=lambda: server.jwks_warmed,
+                tier=HealthTier.READY,
+            ),
+        ]
+        self._refuse_colliding_health_checks(checks)
+        checks.extend(self._extra_health_checks)
         health_server = HealthServer(
             port=self._health_port,
             service_name=self._service_name,
@@ -869,38 +923,7 @@ class ToolServerBootstrap:
             # aggregate in-flight call load through the one HTTP listener the
             # pod already runs for /healthz.
             metrics_provider=server.render_metrics,
-            checks=[
-                HealthCheck(
-                    # key liveness on REAL NATS health, not object-existence: a
-                    # terminal close (user-JWT expiry) or a persistent auth /
-                    # overflow wedge trips is_healthy so k8s recycles the pod. the
-                    # old is_connected probe reported healthy forever with a dead
-                    # connection (the silent-zombie bug). the in-process
-                    # heartbeat-loop supervisor is the no-k8s net (host / docker).
-                    name="nats",
-                    probe=lambda: server.is_healthy,
-                    tier=HealthTier.LIVE,
-                ),
-                # readiness, NOT liveness: a pod that has registered no tools cannot
-                # serve a call, but restarting it does not conjure tools -- it just
-                # replays the same startup. this check being tier-less is why the
-                # tool pods shipped with no livenessProbe at all.
-                HealthCheck(
-                    name="tools_registered",
-                    probe=lambda: server.tools_count > 0,
-                    tier=HealthTier.READY,
-                ),
-                # readiness gate: report NOT-READY until the pod's Hub-JWKS cache has had its first
-                # successful fetch. before it warms, the pod verifies every inbound identity token
-                # against an EMPTY keyset and rejects fail-closed, so a k8s readiness probe that
-                # flipped ready too early would route calls the pod is guaranteed to fail. gating on
-                # jwks_warmed keeps the pod out of rotation until it can actually verify a token.
-                HealthCheck(
-                    name="jwks_warmed",
-                    probe=lambda: server.jwks_warmed,
-                    tier=HealthTier.READY,
-                ),
-            ],
+            checks=checks,
         )
         try:
             await health_server.start()
@@ -916,6 +939,32 @@ class ToolServerBootstrap:
             )
             return None
         return health_server
+
+    def _refuse_colliding_health_checks(self, builtin: list[HealthCheck]) -> None:
+        """refuse a contributed check whose name is already taken.
+
+        :class:`HealthServer` keys nothing by name, so a duplicate would be evaluated twice and
+        reported as two components called the same thing -- and an operator reading
+        ``/healthz/ready?format=json`` to find which subsystem is down could not tell which
+        ``nats`` is red.
+
+        :param builtin: the checks the bootstrap itself registers
+        :ptype builtin: list[HealthCheck]
+        :return: nothing
+        :rtype: None
+        :raises ToolPodConfigError: naming the colliding check
+        """
+        seen = {check.name for check in builtin}
+        for check in self._extra_health_checks:
+            if check.name in seen:
+                raise ToolPodConfigError(
+                    f"{self._service_name} contributes a health check named {check.name!r}, which "
+                    f"is already registered (bootstrap checks: "
+                    f"{', '.join(c.name for c in builtin)}); give each check in "
+                    f"extra_health_checks a unique name",
+                    variable="extra_health_checks",
+                )
+            seen.add(check.name)
 
     async def build_server(self) -> "ToolServer":
         """build the ``ToolServer`` instance.

@@ -11,7 +11,7 @@ import socket
 import subprocess
 import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -36,6 +36,7 @@ from threetears.agent.tools.object_resolution_collection import (
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import Principal, Subjects, kv_key_scope_for
+from threetears.observe import HealthCheck, HealthTier
 
 
 def _collection_tables() -> MetaData:
@@ -462,7 +463,12 @@ async def _probe(port: int, path: str) -> tuple[int, dict[str, Any]]:
 
 
 @contextlib.asynccontextmanager
-async def _serving_pod(server: _ReadinessFakeServer, *, version: str | None = None) -> AsyncIterator[int]:
+async def _serving_pod(
+    server: _ReadinessFakeServer,
+    *,
+    version: str | None = None,
+    extra_health_checks: Sequence[HealthCheck] = (),
+) -> AsyncIterator[int]:
     """run a tool pod over ``server`` through ``run_async`` until the block exits.
 
     the health listener is the one ``run_async`` starts, probed over HTTP exactly as kube probes it.
@@ -471,6 +477,8 @@ async def _serving_pod(server: _ReadinessFakeServer, *, version: str | None = No
     :ptype server: _ReadinessFakeServer
     :param version: the release version the pod is constructed with
     :ptype version: str | None
+    :param extra_health_checks: the checks the pod contributes beyond the bootstrap's own
+    :ptype extra_health_checks: Sequence[HealthCheck]
     :return: an async iterator yielding the pod's health port once it is listening
     :rtype: AsyncIterator[int]
     """
@@ -483,7 +491,11 @@ async def _serving_pod(server: _ReadinessFakeServer, *, version: str | None = No
         async def register_tools(self, server: Any) -> None:
             return None
 
-    run_task = asyncio.create_task(_HealthBootstrap("test-pod", health_port=port, version=version).run_async())
+    run_task = asyncio.create_task(
+        _HealthBootstrap(
+            "test-pod", health_port=port, version=version, extra_health_checks=extra_health_checks
+        ).run_async()
+    )
     try:
         for _ in range(500):
             if run_task.done():
@@ -568,6 +580,95 @@ class TestHealthServerReadinessGate:
         assert ready["healthy"] is False
         assert live_status == 503
         assert ready_status == 503
+
+
+class _Flag:
+    """a piece of pod state a contributed check reads, flipped by the test."""
+
+    def __init__(self, value: bool) -> None:
+        self.value = value
+
+
+class TestAPodContributesItsOwnHealthChecks:
+    """``extra_health_checks``: a pod adds checks to the bootstrap's health server without
+    overriding the private method that builds it (bluelabsio/bl-eng-client-delivery#95)."""
+
+    async def test_a_contributed_readiness_check_gates_ready_and_leaves_live_alone(self) -> None:
+        srv = _ReadinessFakeServer()
+        srv.jwks_warmed = True
+        wired = _Flag(False)
+        check = HealthCheck(name="catalogue_storage", probe=lambda: wired.value, tier=HealthTier.READY)
+        async with _serving_pod(srv, extra_health_checks=[check]) as port:
+            ready_status, before = await _probe(port, "/healthz/ready")
+            live_status, live = await _probe(port, "/healthz/live")
+            wired.value = True
+            after_status, after = await _probe(port, "/healthz/ready")
+        assert _components(before) == {
+            "nats": True,
+            "tools_registered": True,
+            "jwks_warmed": True,
+            "catalogue_storage": False,
+        }, "the contributed check is evaluated beside the bootstrap's own, not instead of them"
+        assert ready_status == 503
+        assert live_status == 200
+        assert [c["name"] for c in live["components"]] == ["nats"], "a READY check never reaches liveness"
+        assert after_status == 200
+        assert after["healthy"] is True
+
+    async def test_a_contributed_liveness_check_fails_both_tiers(self) -> None:
+        srv = _ReadinessFakeServer()
+        srv.jwks_warmed = True
+        check = HealthCheck(name="wedged_worker", probe=lambda: False, tier=HealthTier.LIVE)
+        async with _serving_pod(srv, extra_health_checks=[check]) as port:
+            live_status, live = await _probe(port, "/healthz/live")
+            ready_status, _ready = await _probe(port, "/healthz/ready")
+        assert _components(live) == {"nats": True, "wedged_worker": False}
+        assert live_status == 503
+        assert ready_status == 503
+
+    @pytest.mark.parametrize("name", ["nats", "tools_registered", "jwks_warmed"])
+    async def test_a_check_named_like_a_bootstrap_check_is_refused_before_serving(self, name: str) -> None:
+        """two components with one name make the JSON body ambiguous to the operator reading it."""
+        srv = _ReadinessFakeServer()
+        check = HealthCheck(name=name, probe=lambda: True, tier=HealthTier.READY)
+        pod = _ConcreteBootstrapWithChecks(server=srv, extra_health_checks=[check])
+        with pytest.raises(ToolPodConfigError, match=name) as raised:
+            await pod.run_async()
+        assert raised.value.variable == "extra_health_checks"
+        assert srv.serve_called is False
+
+    async def test_two_contributed_checks_with_one_name_are_refused(self) -> None:
+        srv = _ReadinessFakeServer()
+        checks = [
+            HealthCheck(name="storage", probe=lambda: True, tier=HealthTier.READY),
+            HealthCheck(name="storage", probe=lambda: False, tier=HealthTier.READY),
+        ]
+        pod = _ConcreteBootstrapWithChecks(server=srv, extra_health_checks=checks)
+        with pytest.raises(ToolPodConfigError, match="storage") as raised:
+            await pod.run_async()
+        assert raised.value.variable == "extra_health_checks"
+        assert srv.serve_called is False
+
+    def test_a_refused_check_exits_ex_config_through_run(self) -> None:
+        srv = _ReadinessFakeServer()
+        check = HealthCheck(name="nats", probe=lambda: True, tier=HealthTier.LIVE)
+        with pytest.raises(SystemExit) as exited:
+            _ConcreteBootstrapWithChecks(server=srv, extra_health_checks=[check]).run()
+        assert exited.value.code == EX_CONFIG
+
+
+class _ConcreteBootstrapWithChecks(ToolServerBootstrap):
+    """a pod contributing health checks through the public constructor parameter."""
+
+    def __init__(self, *, server: _FakeToolServer, extra_health_checks: Sequence[HealthCheck]) -> None:
+        super().__init__("checked-pod", health_port=0, extra_health_checks=extra_health_checks)
+        self.server = server
+
+    async def build_server(self) -> Any:
+        return self.server
+
+    async def register_tools(self, server: Any) -> None:
+        return None
 
 
 class TestTheToolPodHealthServerCarriesItsVersion:

@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A tool pod adds its own health checks through `ToolServerBootstrap(extra_health_checks=)`
+
+A pod that needed a readiness gate of its own -- storage still being wired, a background loop
+that died -- had one way in: override the private `_start_health_server` and register checks on
+what it returned. That bound the pod to SDK internals any release may move
+(bluelabsio/bl-eng-client-delivery#95).
+
+- **`ToolServerBootstrap(..., extra_health_checks=[HealthCheck(...)])`** (new, keyword-only,
+  default empty): the checks are evaluated by the pod's health server after the bootstrap's own
+  (`nats` LIVE, `tools_registered` and `jwks_warmed` READY), each in the tier it declares, on
+  `/healthz/live`, `/healthz/ready` and their aliases. A probe reads state when it is asked, so a
+  subclass can build its checks in `__init__` over state that does not exist yet.
+- **A contributed check whose name is already taken is refused** with `ToolPodConfigError`
+  (`variable="extra_health_checks"`) before the pod serves, so `run()` exits `EX_CONFIG`. Two
+  components with one name would make the `?format=json` body ambiguous to an operator.
+- No change to `HealthServer`, the probe routes, the tiers, or the bootstrap's own checks.
+  Migrating: delete the `_start_health_server` override and pass its checks to `super().__init__`.
+
 ### An SLF001 suppression outside a recorded src module fails the build
 
 A leading underscore is a stability contract in `src/` and `tests/` alike (owner ruling,
