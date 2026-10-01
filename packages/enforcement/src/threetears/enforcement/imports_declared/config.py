@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,6 +28,12 @@ class ImportsDeclaredConfig:
         no offenders to report
     :ivar pyproject: the manifest whose declarations are read; ``repo_root /
         "pyproject.toml"`` when ``None``
+    :ivar undeclarable_import_roots: top-level import roots the repo imports but must NOT
+        declare, each mapped to why -- the SDK lazily importing the hub, which hard-depends
+        on the SDK, so declaring it back would be a cycle. Never a convenience: a rationale
+        is required, and an entry no import uses is itself a finding, so the list cannot
+        outlive its reason unnoticed
+    :raises ValueError: when an undeclarable root carries no rationale
     """
 
     repo_root: Path
@@ -35,6 +42,20 @@ class ImportsDeclaredConfig:
     required_import_roots: frozenset[str] = field(default_factory=frozenset)
     required_owned_modules: frozenset[str] = frozenset({"threetears"})
     pyproject: Path | None = None
+    undeclarable_import_roots: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """refuse an undeclarable root with no stated reason.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when a rationale is empty
+        """
+        unexplained = sorted(root for root, why in self.undeclarable_import_roots.items() if not why.strip())
+        if unexplained:
+            raise ValueError(
+                f"undeclarable_import_roots {unexplained} carry no rationale; say why each is undeclarable"
+            )
 
     @property
     def manifest(self) -> Path:

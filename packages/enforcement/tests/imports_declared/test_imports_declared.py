@@ -108,6 +108,26 @@ class TestTheGateAsAWhole:
         assert "no_such_distribution_z" in imported_modules(_config(root))
 
 
+class TestUndeclarableRoots:
+    """an import that must NOT be declared (a dependency cycle) is set aside, with a reason."""
+
+    def test_an_undeclarable_root_is_set_aside(self, tmp_path: Path) -> None:
+        root = _repo(tmp_path, source="import pytest\nimport no_such_hub_q.app\n", dependencies=["pytest"])
+        config = _config(root, undeclarable_import_roots={"no_such_hub_q": "the hub depends on us; a cycle"})
+        assert imports_declared_findings(config) == []
+
+    def test_an_entry_no_import_uses_is_a_finding(self, tmp_path: Path) -> None:
+        """a stale entry would excuse a future import nobody reviewed."""
+        root = _repo(tmp_path, source="import pytest\n", dependencies=["pytest"])
+        config = _config(root, undeclarable_import_roots={"no_such_hub_q": "the hub depends on us; a cycle"})
+        findings = imports_declared_findings(config)
+        assert any("['no_such_hub_q'] match no import" in finding for finding in findings), findings
+
+    def test_an_entry_without_a_reason_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="carry no rationale"):
+            _config(tmp_path, undeclarable_import_roots={"no_such_hub_q": "  "})
+
+
 class TestTheComparison:
     def test_an_import_owned_only_by_an_undeclared_distribution_is_reported(self) -> None:
         offenders = undeclared_imports({"PIL": {Path("src/x/media.py")}}, {"PIL": {"pillow"}}, {"fastapi"})

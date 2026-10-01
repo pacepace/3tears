@@ -19,7 +19,9 @@ __all__ = ["imports_declared_findings", "run_imports_declared_enforcement"]
 def imports_declared_findings(config: ImportsDeclaredConfig) -> list[str]:
     """every reason the repo fails the gate, each a complete operator-facing message.
 
-    four checks, in the order an operator should read them: the two non-vacuity guards (an
+    an import under one of :attr:`~ImportsDeclaredConfig.undeclarable_import_roots` is set
+    aside first, and an entry no import uses is a finding. Then four checks, in the order an
+    operator should read them: the two non-vacuity guards (an
     empty or filtered-out import walk, an empty or blind owner map -- either makes the rule
     pass by having nothing to compare), then imports nothing installed provides (fixed by a
     sync), then the rule itself (fixed by a declaration).
@@ -30,7 +32,15 @@ def imports_declared_findings(config: ImportsDeclaredConfig) -> list[str]:
     :rtype: list[str]
     """
     findings: list[str] = []
-    imports = imported_modules(config)
+    walked = imported_modules(config)
+    undeclarable = set(config.undeclarable_import_roots)
+    imports = {module: files for module, files in walked.items() if module.split(".", 1)[0] not in undeclarable}
+    unused = sorted(undeclarable - {module.split(".", 1)[0] for module in walked})
+    if unused:
+        findings.append(
+            f"undeclarable_import_roots {unused} match no import under {', '.join(config.source_roots)} -- "
+            "remove the entry, so it cannot excuse a future import nobody reviewed."
+        )
     owners = module_owners()
     roots = ", ".join(config.source_roots)
     tops = {module.split(".", 1)[0] for module in imports}
