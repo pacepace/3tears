@@ -273,6 +273,9 @@ async def test_the_handover_moves_every_subscription_before_the_old_half_is_rele
         received.append(bytes(msg.data))
 
     sub = await client.subscribe(Subject.raw("events.>"), cb=_cb)
+    # subscribe's own round trip: the server has the SUB before subscribe returns
+    assert current.calls == ["round-trip"]
+    current.calls.clear()
     old_half = current.subs[0]
     await old_half.queue_in.put(_Msg(b"routed to the old connection"))
 

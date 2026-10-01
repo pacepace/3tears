@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A subscription exists when subscribe returns, and a stopping pull consumer strands nothing
+
+Both were found through the aibots hub's audit-anonymize test, which failed intermittently under
+parallel load. Both were reproduced in isolation before they were fixed.
+
+- **`NatsClient.subscribe` / `subscribe_typed` return only after the server has the `SUB`.** Before
+  this, the `SUB` was still in nats-py's pending buffer when the call returned. A request sent at
+  once from another connection was answered "no responders" in 108 of 200 tries; it is now 0.
+  The fix is one round trip per subscribe. If the connection cannot answer it, the subscription
+  is kept (nats-py replays it on reconnect) and a warning is logged.
+- **`JetStreamPullConsumer.stop()` lets the fetch in flight finish before it unsubscribes.** A
+  fetch is a pull request the server holds. Unsubscribing removed its inbox client-side at once,
+  but the server kept delivering to it until the `UNSUB` arrived. A message published in that
+  window on any other connection was delivered, dropped, and left awaiting ack for the durable's
+  whole `ack_wait`, where no other fetcher could have it. That happened to 6 of 20 messages; it
+  is now 0.
+  - `stop()` starts no new fetch. It waits for the current one to return, with its messages
+    handled and acked, and only then unsubscribes.
+  - It is bounded by one fetch timeout plus 10 seconds for handlers.
+  - It now takes up to one fetch timeout when idle, where before it returned at once.
+
 ### A health probe names the release that answered it
 
 - `HealthServer(version=...)` (observe): an optional release version, echoed as `version` on the

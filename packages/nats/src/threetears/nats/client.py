@@ -274,6 +274,10 @@ _RECONNECT_BACKOFF_FALLBACK_SECONDS: Final[float] = 1.0
 #: reconnect-window failure recovers without busy-spinning the CPU.
 _PULL_CONSUMER_ERROR_BACKOFF_SECONDS: Final[float] = 1.0
 
+#: how long :meth:`JetStreamPullConsumer.stop` waits, beyond one fetch's own timeout, for the
+#: handlers of the fetch in flight to finish before it unsubscribes anyway.
+_PULL_CONSUMER_STOP_HANDLER_GRACE_SECONDS: Final[float] = 10.0
+
 #: how often a :class:`JetStreamResultWaiter` re-checks its own deadline while waiting.
 #:
 #: This is a poll cadence, NOT added latency: a fetch already outstanding when the answer is
@@ -1087,6 +1091,9 @@ class JetStreamPullConsumer:
         self._batch = batch
         self._fetch_timeout_seconds = fetch_timeout_seconds
         self._stopped = False
+        # set whenever no fetch is in flight -- see stop()
+        self._idle = asyncio.Event()
+        self._idle.set()
         self._bound_to = bound_to
         self._current_connection = current_connection
         self._resubscribe = resubscribe
@@ -1152,26 +1159,58 @@ class JetStreamPullConsumer:
         :rtype: None
         """
         while not self._stopped:
+            failure: Exception | None = None
+            self._idle.clear()
             try:
                 await self.fetch_and_process()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — a transport blip must never kill the consumer
+                failure = exc
+            finally:
+                self._idle.set()
+            if failure is not None:
                 log.warning(
                     "durable pull consumer cycle failed (durable=%s); retrying after %.1fs: %s",
                     self._durable,
                     _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
-                    exc,
+                    failure,
                 )
                 await asyncio.sleep(_PULL_CONSUMER_ERROR_BACKOFF_SECONDS)
 
     async def stop(self) -> None:
-        """halt the fetch loop and unsubscribe the pull consumer.
+        """halt the fetch loop, let the fetch in flight finish, then unsubscribe the pull consumer.
+
+        **Why it waits.** A fetch is a pull request the SERVER holds until it is satisfied or
+        expires. Unsubscribing removes the inbox client-side at once, but the server learns of it
+        only when the ``UNSUB`` arrives; a message published meanwhile -- on any other connection,
+        by any pod -- is delivered to that request, dropped by this client, and counted awaiting
+        ack until the durable's ``ack_wait`` runs out. No other fetcher of the durable can have it
+        until then. Measured: 6 of 20 messages published as a stop began. The aibots hub's erasure
+        waits on the audit durable's ack floor, and a stop of its audit consumer stalled it.
+
+        So no new fetch starts, the one in flight is let finish -- it returns when its request is
+        satisfied or expired, with its messages handled and acked -- and only then is the inbox
+        unsubscribed, when the server holds no request that names it. Bounded by one fetch's
+        timeout plus :data:`_PULL_CONSUMER_STOP_HANDLER_GRACE_SECONDS` for its handlers; past
+        that it unsubscribes anyway and says what that costs. A consumer whose loop is not
+        running stops at once.
 
         :return: nothing
         :rtype: None
         """
         self._stopped = True
+        bound = self._fetch_timeout_seconds + _PULL_CONSUMER_STOP_HANDLER_GRACE_SECONDS
+        try:
+            await asyncio.wait_for(self._idle.wait(), timeout=bound)
+        except TimeoutError:
+            log.warning(
+                "durable pull consumer stop: the fetch in flight did not finish within %.1fs (durable=%s); "
+                "unsubscribing anyway -- a message the server delivers to it now waits out the durable's "
+                "ack_wait before another fetcher can have it",
+                bound,
+                self._durable,
+            )
         await self._psub.unsubscribe()
 
 
@@ -4123,6 +4162,28 @@ class NatsClient:
                 connection=connection,
             )
             self._subscriptions.append(sub)
+
+        # the SUB is only in nats-py's pending buffer when connection.subscribe returns, so a
+        # message published at once -- a request from another connection, say -- could reach a
+        # server that does not yet know of this subscription and be answered "no responders".
+        # measured: 108 of 200 requests sent right after subscribe returned. one round trip
+        # proves the server processed the SUB before this returns. a connection that cannot
+        # answer it (reconnecting, backpressured) keeps the subscription, which nats-py replays
+        # on reconnect; that is logged, not raised, since the subscription itself is sound.
+        try:
+            await _round_trip(connection, timeout=_NATS_FLUSH_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 — the subscription stands; only its confirmation failed, and that is logged
+            log.warning(
+                "NATS subscribed, but the server did not confirm the subscription in time; it is "
+                "registered client-side and sent again on reconnect",
+                extra={
+                    "extra_data": {
+                        "subject": subject.path,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                },
+            )
 
         log.info(
             "NATS subscribed",
