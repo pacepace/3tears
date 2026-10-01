@@ -13,8 +13,8 @@ nothing reads back -- and it rots in both directions:
 
 **both directions are needed, and neither implies the other.** a stale-entry check cannot see a
 missing entry, because a missing entry points at nothing. and the missing-direction check has to
-see accesses ruff would not report: an inline ``# noqa: SLF001`` on a per-file-ignored path
-suppresses the finding, so the access reaches neither ruff nor the ledger. everything here walks
+see accesses ruff would not report: an inline ``noqa`` pragma naming SLF001 on a per-file-ignored
+path suppresses the finding, so the access reaches neither ruff nor the ledger. everything here walks
 the AST for that reason; :func:`blanket_noqa_offenders` keeps the pragmas out regardless.
 """
 
