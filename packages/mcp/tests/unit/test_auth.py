@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -46,6 +47,18 @@ def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any], list[Any]
     fake_listener.subscribe = AsyncMock(side_effect=_subscribe)
     fake_listener.catch_up = AsyncMock(return_value=0)
     return fake_client, fake_listener, captured, captured_resets
+
+
+_CATCHUP_TASK_NAME = "mcp-rbac-catchup-loop"
+
+
+def _running_catchup_loops() -> list[asyncio.Task[Any]]:
+    """the live catch-up loop tasks on the running event loop.
+
+    the authorizer names its periodic task, so its presence is observable
+    from the event loop without reaching into the authorizer.
+    """
+    return [task for task in asyncio.all_tasks() if task.get_name() == _CATCHUP_TASK_NAME and not task.done()]
 
 
 async def _build_started_authorizer(
@@ -364,8 +377,10 @@ class TestLocalGrantAuthorizer:
         """stop() cancels the spawned tick; second stop is a no-op."""
         loader = AsyncMock(return_value=[])
         authz, _ = await _build_started_authorizer(loader=loader)
+        assert len(_running_catchup_loops()) == 1
         # first stop() cancels the task.
         await authz.stop()
+        assert _running_catchup_loops() == []
         # second stop() is safe (no-op).
         await authz.stop()
 
@@ -480,7 +495,7 @@ class TestLocalGrantAuthorizerOptionalEpoch:
             # cache primed (loader called once at start)
             assert loader.await_count == 1
             # no catchup task in single-process mode
-            assert authz._catchup_task is None  # noqa: SLF001
+            assert _running_catchup_loops() == []
         finally:
             await authz.stop()
 
