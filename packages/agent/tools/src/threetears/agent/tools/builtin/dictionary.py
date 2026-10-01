@@ -26,7 +26,6 @@ from threetears.agent.tools.utils import tool_error
 __all__ = [
     "DictionaryTool",
     "create_dictionary_tool",
-    "lookup",
 ]
 
 _MAX_CHARS = 3000
@@ -127,7 +126,7 @@ async def _from_wiktionary(client: httpx.AsyncClient, word: str, language: str, 
         return tool_error("dictionary", "lookup", f"{why}; Wiktionary failed too: {type(exc).__name__}")
 
 
-async def lookup(word: str, language: str = "en", *, transport: httpx.AsyncBaseTransport | None = None) -> str:
+async def _lookup(word: str, language: str = "en", *, transport: httpx.AsyncBaseTransport | None = None) -> str:
     """A word's definitions, from the Free Dictionary API or, when it does not answer, Wiktionary.
 
     :param word: the word
@@ -222,7 +221,7 @@ class DictionaryTool(TearsTool):
         :rtype: ToolResult
         """
         word = kwargs.get("word", "")
-        content = await lookup(word, self._language, transport=self._transport)
+        content = await _lookup(word, self._language, transport=self._transport)
         success = not content.startswith("[TOOL ERROR]")
         result = ToolResult(
             success=success,
