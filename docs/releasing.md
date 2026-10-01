@@ -34,7 +34,12 @@ An intra-family API addition ships in a MINOR bump
 
 ## Cutting a release
 
-1. Bump the version.
+1. Bump the version: `./scripts/bump-version.sh minor` for any new public API, `patch` for
+   everything else. It moves every lockstep location listed in the root pyproject's
+   `[tool.threetears-release]`, moves `## Unreleased` in `CHANGELOG.md` under
+   `## vX.Y.Z -- <today>`, and relocks. It refuses a bump from an untagged version, a version
+   whose tag exists, and a release with no notes. The logic is `threetears-release`, in
+   `threetears.enforcement.release`, the one copy every aibots repo runs too.
    - **A release that adds a package:** register that package's pending trusted publisher on
      PyPI first. Nothing checks for it -- `verify-dist-complete.sh` only confirms every member
      built -- and a tag pushed without it publishes the members ahead of the new one, then

@@ -7,6 +7,19 @@
 members = ["packages/*", "packages/agent/*"]
 exclude = ["packages/agent"]
 
+[tool.threetears-release]
+# Every place the family version lives, for `threetears-release` (scripts/bump-version.sh
+# is a one-line wrapper around it; the logic lives in threetears.enforcement.release).
+# The member globs mirror [tool.uv.workspace] exactly and are one level deep, so a
+# nested deployable with its own version (packages/scrape/sidecar) is never swept in.
+version-file = "packages/core/pyproject.toml"
+lockstep-files = ["packages/*/pyproject.toml", "packages/agent/*/pyproject.toml"]
+smoke-tests = ["packages/*/tests/test_smoke.py", "packages/agent/*/tests/test_smoke.py"]
+bake-file = "docker-bake.hcl"
+family-prefix = "3tears"
+notes = "CHANGELOG.md"
+notes-style = "3tears"
+
 [tool.uv]
 # Supply-chain cooldown: refuse any PyPI release younger than 14 days, so a version
 # published by a registry account takeover leaves the index before we can resolve to it.

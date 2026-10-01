@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Release tooling has one owner: `threetears.enforcement.release`
+
+The API-growth gate and the version-bump script were byte-copied into every aibots repo and
+held identical by a comment; two commits had already re-synced drift, and the script had no
+test anywhere. Both live in `3tears-enforcement` now.
+
+- **`api_growth_findings(ApiGrowthConfig(...))`** is the gate. Each repo's enforcement test
+  passes its source roots, first release, anchor exports and any extra surface extractors
+  (`http_routes`, or its own). It now refuses, naming the module, where it used to read an
+  empty set: a module that does not parse, and an `__all__` that is not a literal list, is
+  changed with anything but literal strings, is assigned twice or inside a block. A literal
+  `__all__.append("X")` under an optional-extra `try` is read, and counts. The baseline is
+  keyed by path, so byte-identical modules each keep theirs, and a tag whose tree or blobs the
+  clone lacks is a refusal rather than a crash or an empty baseline.
+- **`untagged_checkout_findings`** binds every CI job that runs the gate to a checkout with the
+  release tags (`fetch-depth: 0`). `release.yml`'s `check` job now has it: a manual dispatch's
+  shallow checkout carried no tag at all.
+- **`threetears-release patch|minor|major|release|sync|verify X.Y.Z`** is the bump. Every repo's
+  `scripts/bump-version.sh` is a one-line wrapper around it, configured by
+  `[tool.threetears-release]` (3tears' lockstep members, smoke tests, bake file, family bounds
+  and changelog style are listed there). It checks everything before it edits anything and
+  restores every file if a step fails. A `minor` or `major` from a declared-but-untagged patch
+  now proceeds when that patch's minor line has a tag, so the gate's own remedy works; the
+  untagged version's notes move to the new one.
+- `release.yml` calls `bump-version.sh verify X.Y.Z` (was `--verify`). The bump now also moves
+  `## Unreleased` under `## vX.Y.Z -- <date>`.
+
 ### A subscription exists when subscribe returns, and a stopping pull consumer strands nothing
 
 Both were found through the aibots hub's audit-anonymize test, which failed intermittently under

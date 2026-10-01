@@ -49,6 +49,7 @@ This replaces a previous pattern in which the same enforcement test files were v
 | `migration_yugabyte_safety` | Migration shapes are yugabyte-safe per `threetears.core.data.migrations.enforcement`. |
 | `nats_wrapper_usage` | All `nats-py` imports route through `threetears.nats.NatsClient`; no direct `import nats`. |
 | `no_silent_swallow` | Exception handlers must log, re-raise, or carry `# NOSILENT: <reason>`. |
+| `release` | Release tooling with one owner. `api_growth_findings(ApiGrowthConfig(...))` refuses public-API growth inside a patch since the latest `vX.Y.Z` tag, and never reads an unparseable module or a non-literal `__all__` as empty; `http_routes` and a repo's own extractors add surface a name sweep cannot see. `untagged_checkout_findings` binds every CI job running the gate to a checkout with the tags. `threetears-release patch\|minor\|major\|release\|sync\|verify X.Y.Z` is the version bump each repo's `scripts/bump-version.sh` wraps in one line, configured by `[tool.threetears-release]`. |
 | `no_stdlib_logging` | No production module imports stdlib `logging` directly; use `threetears.observe`. |
 
 ## How to use it
