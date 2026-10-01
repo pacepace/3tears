@@ -81,6 +81,48 @@ names on the way out, which matters when LangChain sends a `tool_use` block by i
 does whenever no `tool_calls` entry shares the block's id, as for history rebuilt from stored
 content -- and which Anthropic would otherwise refuse.
 
+### The registry answers a forwarded identity that does not verify `IDENTITY_REFUSED`
+
+The tool-call door answered the condition every hub door answers `IDENTITY_REFUSED` with two codes
+of its own: `TOOL_IDENTITY_UNVERIFIED` when the handshake token did not verify, and
+`TOOL_USER_IDENTITY_UNVERIFIED` when the per-turn user assertion did not verify or bind (or rode on
+a tool pod's token). Its message named the exception that failed. One condition answers one code.
+
+- **Breaking: `CallProxy` answers `IDENTITY_REFUSED`, message `forwarded identity could not be
+  verified`, for every identity-check failure.** `TOOL_IDENTITY_UNVERIFIED` and
+  `TOOL_USER_IDENTITY_UNVERIFIED` are no longer sent. A caller branching on either branches on
+  `IDENTITY_REFUSED`. The registry's WARNING log still names which check refused and why, beside
+  the correlation id; the caller learns only that it was refused. Nothing retries it.
+- **`TOOL_POP_UNVERIFIED` is unchanged, on purpose.** It answers a different condition: the token
+  verified, and the caller did not prove it holds the key the token is bound to (absent or invalid
+  proof, a spliced body, a replayed nonce). The hub doors verify no proof of possession, so they
+  have no code for it to join.
+- **`threetears.core.security.IDENTITY_REFUSED` and `IDENTITY_REFUSED_MESSAGE`** (new): the code and
+  message, spelled once. The registry answers with them and the hub's identity-refusal owner
+  imports them.
+
+### The registry server owns its host identity, once, and closes it on shutdown
+
+The rbac stack, the pod authenticator and the limit guard each build an L3 backend, and all three
+present the registry's one host-minted identity. Only the rbac factory resolved the identity hook;
+the other two factories, resolved independently by the entry point, reached the same identity
+through host module state, and nothing ever stopped the host's refresh loop -- it outlived the
+server that started it.
+
+- **Breaking: the identity hook returns a `RegistryIdentity`** (new, `threetears.registry.auth`):
+  `token()` returns the current token and `close()` stops keeping it fresh. The env var is
+  unchanged, `THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY`; the factory it names now
+  returns the identity object instead of a bare `Callable[[], str | None]`.
+- **`RegistryServer(identity_factory=...)`** (new) and `apply_identity_factory(nc)`: `serve()`
+  builds the identity once, before every other factory, and `shutdown()` closes it after the
+  `on_shutdown` teardown and before the connection drains. The entry point passes the resolved
+  factory unawaited, so a malformed spec still crashes startup.
+- **Breaking: the rbac, pod-authenticator and limit-guard factories are called
+  `(nc, identity_token)`**, each with the identity's bound `token` (`None` when no identity factory
+  is configured). The usage-emitter factory is unchanged, `(nc)`: it builds no L3 backend. A host
+  factory updates its signature and takes the provider it is handed instead of obtaining its own.
+- `threetears.registry.server.IdentityTokenProvider` (new): the provider type those factories take.
+
 ### An SLF001 suppression outside a recorded src module fails the build
 
 A leading underscore is a stability contract in `src/` and `tests/` alike (owner ruling,

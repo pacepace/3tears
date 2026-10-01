@@ -375,7 +375,8 @@ class TestRegistryServerRbacFactoryConstructor:
             rbac_authorizer_factory=factory,
         )
         result = await server.apply_rbac_factory(nc)
-        factory.assert_awaited_once_with(nc)
+        # no identity factory configured, so the factory is handed no token provider
+        factory.assert_awaited_once_with(nc, None)
         assert result is rbac_authorizer
 
     @pytest.mark.asyncio
@@ -420,7 +421,8 @@ class TestRegistryServerRbacFactoryConstructor:
         # this assertion.
         result = await server.apply_rbac_factory(nc)
 
-        factory.assert_awaited_once_with(nc)
+        # no identity factory configured, so the factory is handed no token provider
+        factory.assert_awaited_once_with(nc, None)
         assert result is rbac_authorizer
 
 
@@ -496,7 +498,7 @@ class TestRegistryServerPodAuthenticatorFactory:
             pod_authenticator_factory=factory,
         )
         result = await server.apply_pod_authenticator_factory(nc)
-        factory.assert_awaited_once_with(nc)
+        factory.assert_awaited_once_with(nc, None)
         assert result is authenticator
 
     @pytest.mark.asyncio
@@ -574,7 +576,7 @@ class TestRegistryServerLimitGuardFactory:
             limit_guard_factory=factory,
         )
         result = await server.apply_limit_guard_factory(nc)
-        factory.assert_awaited_once_with(nc)
+        factory.assert_awaited_once_with(nc, None)
         # apply_limit_guard_factory returns the value it stored on the slot the CallProxy reads,
         # so asserting on the return proves the resolved guard replaced the AllowAll default.
         assert result is guard
@@ -800,18 +802,16 @@ class TestTheProviderIsForwardedByReferenceNotByValue:
 
 
 class TestTheIdentityTokenProviderFactoryHook:
-    """3tears resolves the provider from config; it never implements one.
+    """the rbac factory the entry point builds wires the stack with the token provider it is handed.
 
     Identity is the sharpest case of the host-agnostic rule: the token is minted by the
     HOST, over a handshake 3tears does not define, against a principal store 3tears
-    cannot read. So this hook has the same ``module:callable`` shape as the
-    pod-authenticator, limit-guard and usage-emitter hooks -- and unlike those three it
-    has no weaker-but-working default, because a broker that refuses an unidentified
-    request leaves nothing to fall back to.
-
-    Driven through the entry point a deployment runs, ``python -m threetears.registry``: it
-    hands the server an rbac factory, and the server calls that factory with its live
-    connection. These tests make that call, which is where the hook is resolved. They are
+    cannot read. The server builds the host identity ONCE and hands its bound token to
+    every factory that builds an L3 backend (``test_registry_identity_lifecycle.py`` pins
+    that half); these pin the rbac factory's half, driven through the entry point a
+    deployment runs, ``python -m threetears.registry``. Unlike the pod-authenticator,
+    limit-guard and usage-emitter hooks there is no weaker-but-working default, because a
+    broker that refuses an unidentified request leaves nothing to fall back to. They are
     synchronous because the entry point runs its own event loop, as ``python -m`` does.
     """
 
@@ -841,45 +841,27 @@ class TestTheIdentityTokenProviderFactoryHook:
         assert factory is not None, "rbac mode must hand the server an rbac factory"
         return factory
 
-    def test_unset_is_a_wiring_time_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """unset resolves to no provider, which the stack refuses at wiring time."""
+    def test_no_provider_is_a_wiring_time_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """no host identity configured: the server hands no provider, which the stack refuses."""
         monkeypatch.delenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", raising=False)
         factory = self._entry_point_rbac_factory(monkeypatch)
         with pytest.raises(RegistryIdentityUnavailableError, match="no identity_token provider"):
-            asyncio.run(factory(_make_nats_client()))
+            asyncio.run(factory(_make_nats_client(), None))
 
-    def test_a_malformed_spec_raises_rather_than_degrading(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a misconfigured identity plugin must crash startup, never run unidentified."""
-        monkeypatch.setenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", "not-a-dotted-path")
-        factory = self._entry_point_rbac_factory(monkeypatch)
-        with pytest.raises(ValueError, match="module:callable"):
-            asyncio.run(factory(_make_nats_client()))
-
-    def test_the_resolved_factory_is_awaited_with_the_live_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """the host factory needs the connection to handshake over, and its provider reaches the stack."""
-        nc = _make_nats_client()
-        seen: list[Any] = []
+    def test_the_handed_provider_reaches_the_stack(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the stack is wired with the provider the server handed over, not one it resolved itself."""
+        monkeypatch.delenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", raising=False)
         asked: list[bool] = []
 
         def _provider() -> str | None:
             asked.append(True)
             return "host.minted.token"
 
-        async def _factory(client: Any) -> "Callable[[], str | None]":
-            seen.append(client)
-            return _provider
-
-        monkeypatch.setattr(server_module, "HOST_FACTORY_FOR_TEST", _factory, raising=False)
-        monkeypatch.setenv(
-            "THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY",
-            "threetears.registry.server:HOST_FACTORY_FOR_TEST",
-        )
         factory = self._entry_point_rbac_factory(monkeypatch)
 
-        authorizer = asyncio.run(factory(nc))
+        authorizer = asyncio.run(factory(_make_nats_client(), _provider))
 
-        assert seen == [nc]
-        # the stack asks the provider for a token before it builds, so the host's provider is
+        # the stack asks the provider for a token before it builds, so the handed provider is
         # the one the rbac stack was wired with -- a missing one would have refused above.
         assert asked
         assert isinstance(authorizer, RbacEvaluatorAuthorizer)
