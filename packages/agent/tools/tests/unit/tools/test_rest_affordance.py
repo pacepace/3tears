@@ -155,17 +155,20 @@ class _IncoherentTemplateTool(_StubTool):
         super().__init__(name=name, properties=_SURVEY_PROPERTIES)
 
 
-def _server() -> ToolServer:
+def _server(nats_client: AsyncMock | None = None) -> ToolServer:
     """build a ToolServer that never opens a connection.
 
+    :param nats_client: the NATS double to inject, or ``None`` for a server that is never connected
+    :ptype nats_client: AsyncMock | None
     :return: tool server
     :rtype: ToolServer
     """
-    return ToolServer(
-        agent_id=uuid7(),
-        customer_id=uuid7(),
-        nats_url="nats://test:4222",
-    )
+    server: ToolServer
+    if nats_client is None:
+        server = ToolServer(agent_id=uuid7(), customer_id=uuid7(), nats_url="nats://test:4222")
+    else:
+        server = ToolServer(agent_id=uuid7(), customer_id=uuid7(), nats_client=nats_client)
+    return server
 
 
 class TestSharedStructureWithHttpOperationDescriptor:
@@ -375,7 +378,7 @@ class TestRegistrationCoherence:
         """a tool with no REST face is not asked any REST question."""
         server = _server()
         server.register(_StubTool())
-        assert len(server._tools) == 1  # noqa: SLF001
+        assert server.tools_count == 1
 
 
 class TestManifestCarriesTheDeclaration:
@@ -383,10 +386,9 @@ class TestManifestCarriesTheDeclaration:
 
     async def test_manifest_entry_carries_the_declaration(self) -> None:
         """``publish_registration`` stamps ``face_rest`` onto the entry."""
-        server = _server()
-        server.register(_RestReadTool())
         mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
+        server = _server(mock_nc)
+        server.register(_RestReadTool())
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         assert isinstance(manifest, RegistrationManifest)
@@ -395,20 +397,18 @@ class TestManifestCarriesTheDeclaration:
 
     async def test_manifest_entry_defaults_to_no_declaration(self) -> None:
         """a tool with no REST face lands as ``None``, not as a stub object."""
-        server = _server()
-        server.register(_StubTool())
         mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
+        server = _server(mock_nc)
+        server.register(_StubTool())
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         assert manifest.tools[0].face_rest is None
 
     async def test_declaration_round_trips_through_json_without_loss(self) -> None:
         """method, template, derived placeholders, cache posture all survive."""
-        server = _server()
-        server.register(_RestReadTool(name="test.rest_roundtrip"))
         mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
+        server = _server(mock_nc)
+        server.register(_RestReadTool(name="test.rest_roundtrip"))
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         restored = RegistrationManifest.model_validate_json(manifest.model_dump_json())
@@ -440,10 +440,9 @@ class TestManifestCarriesTheDeclaration:
                 """
                 super().__init__(name="test.rest_private", properties=_SURVEY_PROPERTIES)
 
-        server = _server()
-        server.register(_PrivateReadTool())
         mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
+        server = _server(mock_nc)
+        server.register(_PrivateReadTool())
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         restored = RegistrationManifest.model_validate_json(manifest.model_dump_json())

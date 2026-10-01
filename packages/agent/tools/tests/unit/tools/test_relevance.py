@@ -215,14 +215,20 @@ async def test_cache_is_bounded_lru() -> None:
 
     # Three distinct tool sets (each > top_k so select() actually embeds),
     # bounded cache_size=2 -> the first set's entry gets evicted.
-    for i in range(3):
-        distinct_tools = _catalog(2)
-        # make each set's content hash unique
-        distinct_tools[0] = _make_tool(f"set{i}_tool_a", "a")
-        distinct_tools[1] = _make_tool(f"set{i}_tool_b", "b")
-        await index.select(distinct_tools, "q")
+    sets = [[_make_tool(f"set{i}_tool_a", "a"), _make_tool(f"set{i}_tool_b", "b")] for i in range(3)]
+    for tool_set in sets:
+        await index.select(tool_set, "q")
+    assert len(embedder.aembed_documents_calls) == 3
 
-    assert len(index._cache) == 2  # noqa: SLF001 -- whitebox test of the LRU bound
+    # the two most recent sets are still cached: selecting them again embeds nothing.
+    await index.select(sets[2], "q")
+    await index.select(sets[1], "q")
+    assert len(embedder.aembed_documents_calls) == 3
+
+    # the oldest set was evicted to hold the bound, so it is embedded afresh.
+    await index.select(sets[0], "q")
+    assert len(embedder.aembed_documents_calls) == 4
+    assert embedder.aembed_documents_calls[-1] == [_tool_text(t) for t in sets[0]]
 
 
 # ---------------------------------------------------------------------------

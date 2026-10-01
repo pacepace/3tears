@@ -125,14 +125,13 @@ class TestRegistrationManifestStampsFaceFlags:
     @pytest.mark.asyncio
     async def test_publish_registration_stamps_default_face_flags(self) -> None:
         """default tool emits ``face_platform_tool=True, face_api=False, face_mcp=False``."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_BaseStubTool())
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         assert isinstance(manifest, RegistrationManifest)
@@ -145,14 +144,13 @@ class TestRegistrationManifestStampsFaceFlags:
     @pytest.mark.asyncio
     async def test_publish_registration_stamps_api_mcp_face_flags(self) -> None:
         """external-reach tool emits ``face_api=True, face_mcp=True``."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_ApiMcpTool(name="test.api_mcp"))
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         entry = manifest.tools[0]
@@ -167,14 +165,13 @@ class TestManifestFaceFlagRoundTrip:
     @pytest.mark.asyncio
     async def test_round_trip_preserves_face_flags(self) -> None:
         """``RegistrationManifest.model_validate_json`` preserves face flags."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_ApiMcpTool(name="test.api_mcp_roundtrip"))
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         restored = RegistrationManifest.model_validate_json(manifest.model_dump_json())

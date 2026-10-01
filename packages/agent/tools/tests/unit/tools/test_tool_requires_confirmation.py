@@ -110,14 +110,13 @@ class TestRegistrationManifestStampsRequiresConfirmation:
     @pytest.mark.asyncio
     async def test_publish_registration_stamps_default_false(self) -> None:
         """default tool emits ``requires_confirmation=False``."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_BaseStubTool())
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         assert isinstance(manifest, RegistrationManifest)
@@ -127,14 +126,13 @@ class TestRegistrationManifestStampsRequiresConfirmation:
     @pytest.mark.asyncio
     async def test_publish_registration_stamps_true_for_intrusive_tool(self) -> None:
         """intrusive tool emits ``requires_confirmation=True``."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_IntrusiveTool(name="test.intrusive"))
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         assert manifest.tools[0].requires_confirmation is True
@@ -146,14 +144,13 @@ class TestManifestRequiresConfirmationRoundTrip:
     @pytest.mark.asyncio
     async def test_round_trip_preserves_requires_confirmation(self) -> None:
         """``RegistrationManifest.model_validate_json`` preserves the flag."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_IntrusiveTool(name="test.intrusive_roundtrip"))
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         restored = RegistrationManifest.model_validate_json(manifest.model_dump_json())
