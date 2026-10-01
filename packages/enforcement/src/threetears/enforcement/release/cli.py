@@ -79,6 +79,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ConfigError, OSError, ValueError) as exc:
         sys.stderr.write(f"error: {exc}\n")
     else:
-        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        # the operator's calendar date, as every release heading before this tool used:
+        # a release cut in the evening west of UTC is dated the day it was cut.
+        today = datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
         status = run_release(config, args.action, today, sys.stdout, sys.stderr, args.version)
     return status

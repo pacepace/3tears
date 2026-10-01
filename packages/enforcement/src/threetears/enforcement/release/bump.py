@@ -160,6 +160,7 @@ class _Run:
         :rtype: None
         """
         self.out.write(line + "\n")
+        self.out.flush()
 
     # ------------------------------------------------------------------ checks
 
