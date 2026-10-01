@@ -638,7 +638,7 @@ class TestAuthorizeMemoryAccess:
         customer_id = uuid4()
         namespace_collection = _NamespaceCollectionFake(None)
         provisioner = _ProvisionerFake(
-            failure=MemoryNamespaceUnavailableError("hub refused: IDENTITY_UNVERIFIED"),
+            failure=MemoryNamespaceUnavailableError("hub refused: IDENTITY_REFUSED"),
         )
         deps = _build_deps(
             namespace_collection=namespace_collection,

@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Audit anonymization answers a forwarded identity that does not verify `IDENTITY_REFUSED`
+
+The hub answered the same condition two ways: `IDENTITY_REFUSED` on its L3 doors, the datasource
+door and `namespace.discover`, and `IDENTITY_UNVERIFIED` on memory-namespace ensure, the object
+catalog, engagement scope, the channel default, the approval broker and audit anonymize. It now
+answers `IDENTITY_REFUSED` everywhere, with one message, and logs the reason and the fix on its
+side.
+
+- **Breaking: `AUDIT_ANONYMIZE_ERROR_CODES` names `IDENTITY_REFUSED` in place of
+  `IDENTITY_UNVERIFIED`.** `request_audit_anonymization` raises `AuditAnonymizeRefusedError` for
+  it after the one request it sent, as before: the same token meets the same refusal, and the cure
+  is a fresh handshake. A caller branching on `IDENTITY_UNVERIFIED` branches on
+  `IDENTITY_REFUSED` instead.
+- The object, engagement-scope and memory-namespace clients carry the hub's code into their
+  error text unchanged, so a log reading `IDENTITY_UNVERIFIED` now reads `IDENTITY_REFUSED`.
+
 ### A refused websocket connection tells the client which refusal it was
 
 `WebSocketHandler`'s auth seam was `async (token) -> dict | None`. `None` carried no reason, so

@@ -159,7 +159,7 @@ class TestTheModels:
     def test_the_error_codes_are_named(self) -> None:
         """the vocabulary a responder answers with and a caller branches on."""
         assert AUDIT_ANONYMIZE_ERROR_CODES == frozenset(
-            {"INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH", "OWNER_NOT_GRANTED", "ANONYMIZE_FAILED"}
+            {"INVALID_REQUEST", "IDENTITY_REFUSED", "AGENT_MISMATCH", "OWNER_NOT_GRANTED", "ANONYMIZE_FAILED"}
         )
 
     async def test_an_owner_a_tool_pod_is_not_granted_is_a_refusal(self) -> None:
@@ -209,7 +209,7 @@ class TestTheClient:
         assert not isinstance(raised.value, AuditAnonymizeRefusedError)
         assert "ANONYMIZE_FAILED" in str(raised.value)
 
-    @pytest.mark.parametrize("code", ["INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH"])
+    @pytest.mark.parametrize("code", ["INVALID_REQUEST", "IDENTITY_REFUSED", "AGENT_MISMATCH"])
     async def test_every_other_code_is_a_refusal(self, code: str) -> None:
         """the codes a retry would meet again are refusals.
 
@@ -221,6 +221,26 @@ class TestTheClient:
         with pytest.raises(AuditAnonymizeRefusedError):
             await _call(nats, [uuid7()])
 
+    async def test_an_identity_refusal_is_sent_once_and_never_retried(self) -> None:
+        """a forwarded identity the hub could not verify is refused on every hub door the same way.
+
+        the client raises it after the one request it made: retrying the same token meets the
+        same refusal, and the cure -- a fresh handshake -- is not this client's to perform.
+        """
+        nats = _ScriptedRequests(
+            {
+                "success": False,
+                "error_code": "IDENTITY_REFUSED",
+                "error_message": "forwarded identity could not be verified",
+            }
+        )
+
+        with pytest.raises(AuditAnonymizeRefusedError) as refused:
+            await _call(nats, [uuid7()])
+
+        assert refused.value.error_code == "IDENTITY_REFUSED"
+        assert len(nats.sent) == 1
+
     async def test_a_reply_to_a_different_request_is_not_an_answer(self) -> None:
         """a stray reply carrying another request's correlation id is unavailable, never counted."""
         nats = _ScriptedRequests({**_success(1, 1), "correlation_id": str(uuid7())})
@@ -228,7 +248,7 @@ class TestTheClient:
         with pytest.raises(AuditAnonymizeUnavailableError, match="correlation"):
             await _call(nats, [uuid7()])
 
-    @pytest.mark.parametrize("code", ["INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH"])
+    @pytest.mark.parametrize("code", ["INVALID_REQUEST", "IDENTITY_REFUSED", "AGENT_MISMATCH"])
     async def test_a_refusal_with_no_correlation_id_is_still_a_refusal(self, code: str) -> None:
         """a hub that could not decode the body has no correlation id to echo.
 

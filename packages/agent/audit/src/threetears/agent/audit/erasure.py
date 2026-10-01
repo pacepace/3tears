@@ -24,7 +24,8 @@ own ``event_type``, and its ``ip_address`` through
    stray reply, not an answer.
 2. Verify ``identity_token`` exactly as every other forwarded-token subject does, and
    derive the calling AGENT from the verified claims. A token that does not verify is
-   answered ``IDENTITY_UNVERIFIED``. The agent is NEVER taken from the body.
+   answered ``IDENTITY_REFUSED``, the one code every hub door answers a forwarded identity
+   that does not verify with. The agent is NEVER taken from the body.
 3. Compare the body's ``agent_id`` with the verified agent and answer ``AGENT_MISMATCH``
    when they differ, touching nothing. The body's copy exists only so the two can be
    compared: a request that believes it is someone else is refused, never silently
@@ -103,12 +104,13 @@ DEFAULT_ANONYMIZE_TIMEOUT_SECONDS: Final[float] = 60.0
 #: every ``error_code`` a responder answers with.
 #:
 #: - ``INVALID_REQUEST`` -- the body did not decode, or broke its bounds
-#: - ``IDENTITY_UNVERIFIED`` -- the forwarded identity token did not verify
+#: - ``IDENTITY_REFUSED`` -- the forwarded identity token did not verify; never retried, since the
+#:   same token meets the same refusal and the cure is a fresh handshake
 #: - ``AGENT_MISMATCH`` -- the body names an agent other than the verified caller
 #: - ``OWNER_NOT_GRANTED`` -- the verified caller is a tool pod granted no write on the body's agent
 #: - ``ANONYMIZE_FAILED`` -- the rewrite failed after verification; safe to retry
 AUDIT_ANONYMIZE_ERROR_CODES: Final[frozenset[str]] = frozenset(
-    {"INVALID_REQUEST", "IDENTITY_UNVERIFIED", "AGENT_MISMATCH", "OWNER_NOT_GRANTED", "ANONYMIZE_FAILED"}
+    {"INVALID_REQUEST", "IDENTITY_REFUSED", "AGENT_MISMATCH", "OWNER_NOT_GRANTED", "ANONYMIZE_FAILED"}
 )
 
 #: the codes a retry can get past. the client raises :class:`AuditAnonymizeUnavailableError`
@@ -124,7 +126,7 @@ class AuditAnonymizeError(Exception):
 class AuditAnonymizeRefusedError(AuditAnonymizeError):
     """the hub answered and refused; retrying the same request will be refused again.
 
-    raised for ``INVALID_REQUEST``, ``IDENTITY_UNVERIFIED``, ``AGENT_MISMATCH``,
+    raised for ``INVALID_REQUEST``, ``IDENTITY_REFUSED``, ``AGENT_MISMATCH``,
     ``OWNER_NOT_GRANTED``, and any code
     a newer hub sends that this client does not know. ``ANONYMIZE_FAILED`` is not a refusal:
     the hub verified the caller and then failed, and that is
@@ -264,7 +266,7 @@ async def request_audit_anonymization(
     :return: the rows matched and changed, summed over the batches
     :rtype: AuditAnonymization
     :raises AuditAnonymizeRefusedError: when the hub refuses a batch with ``INVALID_REQUEST``,
-        ``IDENTITY_UNVERIFIED``, ``AGENT_MISMATCH``, ``OWNER_NOT_GRANTED`` or a code this client
+        ``IDENTITY_REFUSED``, ``AGENT_MISMATCH``, ``OWNER_NOT_GRANTED`` or a code this client
         does not know
     :raises AuditAnonymizeUnavailableError: on no token, a transport failure or timeout, a
         reply that does not decode, a reply to a different request, a success without counts
