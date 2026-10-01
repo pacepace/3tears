@@ -6,7 +6,8 @@ waited out its timeout -- and the lookup was a blocking call inside an async
 tool, so each wait stalled every turn on the worker. The lookup is async now,
 waits less, and asks Wiktionary's REST API when the first source times out,
 cannot be reached or fails on its side. A "no such word" from the first source
-is an answer, not a failure: it is not asked again.
+is an answer, not a failure: it is not asked again. Each request takes httpx's
+default timeout (5 s); none is set here, so none is hardcoded.
 """
 
 from __future__ import annotations
@@ -30,9 +31,6 @@ __all__ = [
 
 _MAX_CHARS = 3000
 
-#: How long the first source gets before Wiktionary is asked.
-_PRIMARY_TIMEOUT_S = 5.0
-_FALLBACK_TIMEOUT_S = 10.0
 #: Wikimedia asks every client to say who it is.
 _USER_AGENT = "threetears-dictionary/1.1 (https://github.com/pacepace/3tears)"
 _TAGS = re.compile(r"<[^>]+>")
@@ -112,7 +110,6 @@ async def _from_wiktionary(client: httpx.AsyncClient, word: str, language: str, 
     try:
         resp = await client.get(
             f"https://en.wiktionary.org/api/rest_v1/page/definition/{word}",
-            timeout=_FALLBACK_TIMEOUT_S,
             headers={"User-Agent": _USER_AGENT},
         )
         if resp.status_code == 404:
@@ -140,9 +137,7 @@ async def _lookup(word: str, language: str = "en", *, transport: httpx.AsyncBase
     """
     async with httpx.AsyncClient(transport=transport) as client:
         try:
-            resp = await client.get(
-                f"https://api.dictionaryapi.dev/api/v2/entries/{language}/{word}", timeout=_PRIMARY_TIMEOUT_S
-            )
+            resp = await client.get(f"https://api.dictionaryapi.dev/api/v2/entries/{language}/{word}")
         except httpx.TimeoutException:
             return await _from_wiktionary(client, word, language, "the Free Dictionary API did not answer")
         except httpx.HTTPError as exc:
