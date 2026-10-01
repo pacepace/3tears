@@ -382,6 +382,7 @@ class ToolServerBootstrap:
         log_level: str = "INFO",
         health_port: int | None = None,
         collection_tables: "MetaData | None" = None,
+        version: str | None = None,
     ) -> None:
         """initialize bootstrap with service identity and log level.
 
@@ -408,8 +409,13 @@ class ToolServerBootstrap:
             (the tool pod's primary job is NATS, not health probing),
             so a collision degrades to "no /healthz" rather than aborting.
         :ptype health_port: int | None
+        :param version: release version of the pod's own distribution, echoed on the health
+            server's JSON body and the pod's ``starting`` log line. ``None`` (a subclass that
+            passes none) leaves both carrying a null version
+        :ptype version: str | None
         """
         self._service_name = service_name
+        self._version = version
         self._log_level = log_level
         self._collection_tables = collection_tables
         self._collection_registry: CollectionRegistry | None = None
@@ -425,6 +431,15 @@ class ToolServerBootstrap:
         else:
             env_port = os.environ.get("THREETEARS_TOOL_SERVER_HEALTH_PORT")
             self._health_port = int(env_port) if env_port else 8000
+
+    @property
+    def version(self) -> str | None:
+        """return the release version this pod reports on its health body and boot line.
+
+        :return: the version passed at construction, or ``None`` when none was given
+        :rtype: str | None
+        """
+        return self._version
 
     @property
     def collection_registry(self) -> CollectionRegistry | None:
@@ -641,6 +656,7 @@ class ToolServerBootstrap:
             extra={
                 "extra_data": {
                     "service": self._service_name,
+                    "version": self._version,
                     "tools_count": server.tools_count,
                     "owner_pid": owner_pid,
                 }
@@ -847,6 +863,7 @@ class ToolServerBootstrap:
         health_server = HealthServer(
             port=self._health_port,
             service_name=self._service_name,
+            version=self._version,
             # serve the pod's in-flight-requests gauge on /metrics so KEDA's
             # prometheus scaler can autoscale the tool-pod Deployment on
             # aggregate in-flight call load through the one HTTP listener the

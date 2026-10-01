@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A health probe names the release that answered it
+
+- `HealthServer(version=...)` (observe): an optional release version, echoed as `version` on the
+  `?format=json` body of every tier (a 503 included), on `HealthStatus.version` from
+  `get_status`, and on the `health server listening` startup line. The plain-text probe body is
+  unchanged. A consumer that passes none keeps working; its JSON body carries `"version": null`.
+- `RegistryServer(version=...)` (registry): passed through to its health server.
+  `python -m threetears.registry` passes the installed `3tears-registry` distribution's version.
+- `ToolServerBootstrap(version=...)` (agent-tools): passed through to the tool pod's health
+  server and onto its `<service> starting` line, and readable as `ToolServerBootstrap.version`.
+  `python -m threetears.agent.tools.serve` passes the installed `3tears-agent-tools` version.
+  Subclasses pass their own distribution's version.
+
 ### Long logins, an instant kick, and a lossless move off a restarting server
 
 Owner ruling Q17 (2026-09-30). nats-server takes a credential away from a live connection only at

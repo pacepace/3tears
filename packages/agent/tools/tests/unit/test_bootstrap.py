@@ -489,6 +489,72 @@ class TestHealthServerReadinessGate:
             await health_server.stop()
 
 
+class TestTheToolPodHealthServerCarriesItsVersion:
+    """the tool pod's probe body names the release answering it, read from its distribution."""
+
+    async def test_the_constructor_version_reaches_the_health_status(self) -> None:
+        srv = _ReadinessFakeServer()
+        bootstrap = ToolServerBootstrap("test-pod", health_port=0, version="9.9.9")
+        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
+        assert health_server is not None
+        try:
+            assert health_server.version == "9.9.9"
+            live = await health_server.get_status(HealthTier.LIVE)
+            assert live.version == "9.9.9"
+        finally:
+            await health_server.stop()
+
+    async def test_a_subclass_passing_no_version_still_serves(self) -> None:
+        srv = _ReadinessFakeServer()
+        bootstrap = ToolServerBootstrap("test-pod", health_port=0)
+        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
+        assert health_server is not None
+        try:
+            assert health_server.version is None
+        finally:
+            await health_server.stop()
+
+    def test_the_builtin_tool_server_passes_the_installed_distribution_version(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import importlib.metadata
+
+        from threetears.agent.tools import serve as serve_module
+
+        captured: dict[str, Any] = {}
+
+        def _capture_run(self: ToolServerBootstrap) -> None:
+            captured["version"] = self.version
+
+        monkeypatch.setattr(ToolServerBootstrap, "run", _capture_run)
+        serve_module.main()
+
+        installed = importlib.metadata.version("3tears-agent-tools")
+        assert installed
+        assert captured["version"] == installed
+
+    async def test_the_starting_line_names_the_version(self, caplog: pytest.LogCaptureFixture) -> None:
+        server = _FakeToolServer()
+
+        class _VersionedBootstrap(ToolServerBootstrap):
+            def __init__(self) -> None:
+                super().__init__("versioned-pod", health_port=0, version="9.9.9")
+
+            async def build_server(self) -> Any:
+                return server
+
+            async def register_tools(self, server: Any) -> None:
+                return None
+
+        server.serve_event.set()
+        with caplog.at_level(logging.INFO, logger="threetears.agent.tools.bootstrap"):
+            await _VersionedBootstrap().run_async()
+
+        starting = [r for r in caplog.records if r.getMessage() == "versioned-pod starting"]
+        assert len(starting) == 1
+        assert starting[0].__dict__["extra_data"]["version"] == "9.9.9"
+
+
 class _StartupFailureBootstrap(ToolServerBootstrap):
     """subclass whose ``build_server`` raises, to drive ``run``'s failure classification."""
 

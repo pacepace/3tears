@@ -11,6 +11,7 @@ usage: python -m threetears.registry.server
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import os
 import signal
 from collections.abc import Awaitable, Callable
@@ -208,6 +209,7 @@ class RegistryServer:
         usage_emitter: "EndpointUsageEmitter | None" = None,
         usage_emitter_factory: ("Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None") = None,
         on_shutdown: "Callable[[], Awaitable[None]] | None" = None,
+        version: str | None = None,
     ) -> None:
         """initialize registry server.
 
@@ -305,6 +307,11 @@ class RegistryServer:
             whose publish path needs the live connection can build against it. takes precedence over
             ``usage_emitter`` when both are set. ``None`` keeps the constructor-supplied ``usage_emitter``.
         :ptype usage_emitter_factory: Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None
+        :param version: release version the health server echoes on its JSON body and startup
+            log. ``python -m threetears.registry`` passes the installed ``3tears-registry``
+            distribution's version; ``None`` (an embedding caller that passes none) leaves the
+            body's ``version`` null
+        :ptype version: str | None
         """
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 
@@ -356,6 +363,7 @@ class RegistryServer:
         # returns only the authorizer -- so `RegistryRbacStack.close()` had no production
         # caller anywhere and its subscriptions outlived the server that made them.
         self._on_shutdown = on_shutdown
+        self._version = version
         self._health_server: HealthServer | None = None
         self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
@@ -799,10 +807,23 @@ class RegistryServer:
         # the consumer's devx preflight. port 8000 matches the inherited upstream
         # hub Dockerfile HEALTHCHECK so the same probe works whether the container
         # runs as the hub, the registry, or any other consumer of that base.
-        health_server = HealthServer(
+        health_server = self._build_health_server(inflight_gauge)
+        await health_server.start()
+        self._health_server = health_server
+
+    def _build_health_server(self, inflight_gauge: InflightRequestsGauge) -> HealthServer:
+        """build the registry's canonical health server, NOT yet started.
+
+        :param inflight_gauge: the proxy's in-flight gauge served on ``/metrics``
+        :ptype inflight_gauge: InflightRequestsGauge
+        :return: configured health server carrying this registry's version
+        :rtype: HealthServer
+        """
+        result = HealthServer(
             port=self._health_port,
             service_name="registry",
             metrics_provider=inflight_gauge.render,
+            version=self._version,
             checks=[
                 # key liveness on REAL NATS health (is_closed / is_healthy), NOT
                 # is_connected -- the latter is a stale-socket flag that stays True
@@ -844,8 +865,7 @@ class RegistryServer:
                 ),
             ],
         )
-        await health_server.start()
-        self._health_server = health_server
+        return result
 
     def _install_signal_handlers(self) -> None:
         """install SIGINT and SIGTERM handlers for graceful shutdown."""
@@ -1054,6 +1074,7 @@ def _run_server() -> None:
         pod_authenticator_factory=_resolve_pod_authenticator_factory(),
         limit_guard_factory=_resolve_limit_guard_factory(),
         usage_emitter_factory=_resolve_usage_emitter_factory(),
+        version=importlib.metadata.version("3tears-registry"),
     )
     asyncio.run(server.serve())
 
