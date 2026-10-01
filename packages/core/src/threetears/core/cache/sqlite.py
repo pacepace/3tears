@@ -19,6 +19,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import (
     _CACHED_AT_COLUMN,
     _TABLES_WITHOUT_CACHE_STAMP,
@@ -545,10 +546,14 @@ class SQLiteBackend:
 
         result: Any = value
 
+        # JSON values encode with the platform default L2 uses, so a UUID, datetime or
+        # Decimal nested in one caches as its string, as the other tiers store it. a bare
+        # json.dumps raised on them, AFTER the L3 commit: the caller was told a committed
+        # write failed, and the invalidation broadcast after the cache step never ran.
         if isinstance(value, enum.Enum):
             result = value.value
         elif isinstance(value, dict):
-            result = json.dumps(value)
+            result = json.dumps(value, default=json_default)
         elif isinstance(value, _UUID_TYPES):
             result = str(value)
         elif isinstance(value, datetime):
@@ -558,7 +563,7 @@ class SQLiteBackend:
         elif isinstance(value, Decimal):
             result = float(value)
         elif isinstance(value, (tuple, list)):
-            result = json.dumps(list(value))
+            result = json.dumps(list(value), default=json_default)
         elif isinstance(value, bytes):
             result = value.hex()
 
