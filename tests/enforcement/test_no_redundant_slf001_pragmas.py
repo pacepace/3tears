@@ -60,7 +60,7 @@ class TestNoRedundantSlf001Pragmas:
         # contract keeps -- so each must be discovered for as long as its ignore exists.
         scanned = set(all_exempted_files(_REPO_ROOT))
         for anchor in (
-            "packages/observe/src/threetears/observe/setup.py",
+            "packages/observe/src/threetears/observe/_otel_internals.py",
             "packages/models/src/threetears/models/_claude_sdk_internals.py",
         ):
             assert _REPO_ROOT / anchor in scanned, (
